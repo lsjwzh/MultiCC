@@ -139,6 +139,8 @@ function createSession(id, cwd) {
   });
 
   ptyProcess.onExit(({ exitCode }) => {
+    // Guard against stale exits (e.g. after relocate killed the old PTY)
+    if (sessions.get(id) !== session) return;
     console.log(`[webcc] Session ${id} exited (code ${exitCode})`);
     const exitMsg = `\r\n\x1b[33m[Claude Code process exited (code ${exitCode})]\x1b[0m\r\n`;
     for (const client of session.clients) {
@@ -193,6 +195,55 @@ app.delete('/api/sessions/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/sessions/:id/relocate', (req, res) => {
+  const id = req.params.id;
+  const rawCwd = (req.body.cwd || '').trim();
+  if (!rawCwd) return res.status(400).json({ error: 'cwd required' });
+
+  const currentCwd = (sessions.get(id) || persistedSessions.get(id))?.cwd || os.homedir();
+  const resolvedCwd = resolveCwd(currentCwd, rawCwd);
+
+  if (!fs.existsSync(resolvedCwd)) {
+    return res.status(400).json({ error: `目录不存在: ${resolvedCwd}` });
+  }
+
+  const oldSession = sessions.get(id);
+
+  // Notify clients before killing so they can clear & prepare to reconnect
+  if (oldSession) {
+    for (const client of oldSession.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ type: 'relocate', cwd: resolvedCwd }));
+      }
+    }
+  }
+
+  // Remove from map first so the onExit guard skips the stale exit
+  sessions.delete(id);
+  if (oldSession) {
+    try { oldSession.ptyProcess.kill(); } catch (_) {}
+  }
+
+  // Persist new cwd
+  const p = persistedSessions.get(id);
+  if (p) {
+    p.cwd = resolvedCwd;
+  } else {
+    persistedSessions.set(id, { id, cwd: resolvedCwd, createdAt: new Date() });
+  }
+  savePersistedSessions();
+
+  // Start fresh claude in the new directory
+  try {
+    createSession(id, resolvedCwd);
+    console.log(`[webcc] Session ${id} relocated → ${resolvedCwd}`);
+    res.json({ ok: true, cwd: resolvedCwd });
+  } catch (err) {
+    console.error('[webcc] Relocate failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 // ── WebSocket connections ──
@@ -245,7 +296,9 @@ wss.on('connection', (ws, req) => {
         for (const ch of msg.data) {
           if (ch === '\r' || ch === '\n') {
             const line = inputBuf.trim();
-            const cdMatch = line.match(/^cd(?:\s+(.+))?$/);
+            // Strip ANSI/VT escape sequences (e.g. bracketed-paste \x1b[200~…\x1b[201~)
+            const cleanLine = line.replace(/\x1b(?:\[[0-9;?]*[A-Za-z~]|.)/g, '');
+            const cdMatch = cleanLine.match(/^cd(?:\s+(.+))?$/);
             if (cdMatch) {
               const arg = (cdMatch[1] || '').trim().replace(/^["']|["']$/g, '');
               const newCwd = resolveCwd(session.cwd, arg);

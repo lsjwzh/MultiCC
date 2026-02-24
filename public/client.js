@@ -97,6 +97,11 @@ function connect() {
       } else if (msg.type === 'exit') {
         term.write(msg.data);
         setStatus('disconnected', 'Session ended');
+      } else if (msg.type === 'relocate') {
+        term.clear();
+        term.write(`\x1b[33m[正在切换到: ${msg.cwd}]\x1b[0m\r\n`);
+        ws.close();
+        setTimeout(connect, 800);
       } else if (msg.type === 'file_saved') {
         onFileSaved(msg);
       }
@@ -319,34 +324,75 @@ mobileInput.addEventListener('keydown', (e) => {
   }
 });
 
-/* ── Save CWD button ── */
-const saveCwdBtn = document.getElementById('save-cwd-btn');
-const cwdToast   = document.getElementById('cwd-toast');
-let cwdToastTimer = null;
+/* ── Relocate Directory Dialog ── */
+const saveCwdBtn       = document.getElementById('save-cwd-btn');
+const relocateModal    = document.getElementById('relocate-modal');
+const relocateCurrent  = document.getElementById('relocate-current');
+const relocateInput    = document.getElementById('relocate-input');
+const relocateCancel   = document.getElementById('relocate-cancel');
+const relocateConfirm  = document.getElementById('relocate-confirm');
+const relocateError    = document.getElementById('relocate-error');
 
-function showCwdToast(text, isError) {
-  cwdToast.textContent = text;
-  cwdToast.style.borderColor = isError ? '#f85149' : '#3fb950';
-  cwdToast.classList.add('show');
-  clearTimeout(cwdToastTimer);
-  cwdToastTimer = setTimeout(() => cwdToast.classList.remove('show'), 3000);
-}
-
-saveCwdBtn.addEventListener('click', async () => {
-  if (!currentSessionId) { showCwdToast('尚未连接到 session', true); return; }
+async function openRelocateDialog() {
+  if (!currentSessionId) return;
+  relocateError.style.display = 'none';
+  relocateCurrent.textContent = '获取中…';
+  relocateInput.value = '';
+  relocateModal.style.display = 'flex';
   try {
     const res = await fetch(`/api/sessions/${currentSessionId}`);
-    if (!res.ok) throw new Error('获取失败');
-    const session = await res.json();
-    const cwd = session.cwd || '(未知)';
-    try {
-      await navigator.clipboard.writeText(cwd);
-      showCwdToast(`已复制: ${cwd}`);
-    } catch (_) {
-      showCwdToast(`当前目录: ${cwd}`);
-    }
+    const s = await res.json();
+    const cwd = s.cwd || '';
+    relocateCurrent.textContent = cwd || '(未知)';
+    relocateInput.value = cwd;
+  } catch (_) {
+    relocateCurrent.textContent = '(获取失败)';
+  }
+  relocateInput.focus();
+  relocateInput.select();
+}
+
+saveCwdBtn.addEventListener('click', openRelocateDialog);
+
+relocateCancel.addEventListener('click', () => {
+  relocateModal.style.display = 'none';
+});
+
+relocateModal.addEventListener('click', (e) => {
+  if (e.target === relocateModal) relocateModal.style.display = 'none';
+});
+
+relocateInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') relocateConfirm.click();
+  if (e.key === 'Escape') relocateCancel.click();
+});
+
+relocateConfirm.addEventListener('click', async () => {
+  const newCwd = relocateInput.value.trim();
+  if (!newCwd) {
+    relocateError.textContent = '请输入目录路径';
+    relocateError.style.display = 'block';
+    return;
+  }
+  relocateConfirm.disabled = true;
+  relocateConfirm.textContent = '切换中…';
+  relocateError.style.display = 'none';
+  try {
+    const res = await fetch(`/api/sessions/${currentSessionId}/relocate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd: newCwd }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '切换失败');
+    relocateModal.style.display = 'none';
+    // Server sends a 'relocate' WS message which triggers clear + reconnect
   } catch (e) {
-    showCwdToast('获取工作目录失败', true);
+    relocateError.textContent = e.message;
+    relocateError.style.display = 'block';
+  } finally {
+    relocateConfirm.disabled = false;
+    relocateConfirm.textContent = '切换目录';
   }
 });
 
