@@ -96,6 +96,12 @@ function generateId() {
   return id.slice(0, 8);
 }
 
+function resolveCwd(current, arg) {
+  if (!arg || arg === '~') return os.homedir();
+  if (arg.startsWith('~/') || arg.startsWith('~\\')) return path.join(os.homedir(), arg.slice(2));
+  return path.resolve(current, arg);
+}
+
 function createSession(id, cwd) {
   cwd = cwd || os.homedir();
   const ptyProcess = pty.spawn(CLAUDE_CMD, CLAUDE_ARGS, {
@@ -218,10 +224,37 @@ wss.on('connection', (ws, req) => {
   }
 
   // WebSocket messages → PTY input / resize
+  let inputBuf = '';
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'input') {
+        // Track cd commands to keep session.cwd up to date
+        for (const ch of msg.data) {
+          if (ch === '\r' || ch === '\n') {
+            const line = inputBuf.trim();
+            const cdMatch = line.match(/^cd(?:\s+(.+))?$/);
+            if (cdMatch) {
+              const arg = (cdMatch[1] || '').trim().replace(/^["']|["']$/g, '');
+              const newCwd = resolveCwd(session.cwd, arg);
+              session.cwd = newCwd;
+              const p = persistedSessions.get(session.id);
+              if (p) {
+                p.cwd = newCwd;
+                savePersistedSessions();
+              }
+              console.log(`[webcc] Session ${session.id} cwd → ${newCwd}`);
+            }
+            inputBuf = '';
+          } else if (ch === '\x03' || ch === '\x15') {
+            // Ctrl+C or Ctrl+U clears the line
+            inputBuf = '';
+          } else if (ch === '\x7f' || ch === '\b') {
+            inputBuf = inputBuf.slice(0, -1);
+          } else if (ch >= ' ') {
+            inputBuf += ch;
+          }
+        }
         session.ptyProcess.write(msg.data);
         session.lastActivity = new Date();
       } else if (msg.type === 'resize') {
