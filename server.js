@@ -167,6 +167,18 @@ app.get('/api/sessions', (req, res) => {
   res.json(list);
 });
 
+app.get('/api/sessions/:id', (req, res) => {
+  const id = req.params.id;
+  const active = sessions.get(id);
+  const persisted = persistedSessions.get(id);
+  if (!active && !persisted) return res.status(404).json({ error: 'Session not found' });
+  if (active) {
+    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true });
+  } else {
+    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false });
+  }
+});
+
 app.delete('/api/sessions/:id', (req, res) => {
   const session = sessions.get(req.params.id);
   if (!session && !persistedSessions.has(req.params.id)) {

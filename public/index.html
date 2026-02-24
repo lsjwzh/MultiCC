@@ -84,6 +84,30 @@
       border-color: #58a6ff;
     }
 
+    #cwd-toast {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-size: 12px;
+      font-family: monospace;
+      color: #c9d1d9;
+      white-space: nowrap;
+      max-width: 90vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      box-shadow: 0 4px 16px #00000066;
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    #cwd-toast.show { opacity: 1; }
+
     #reconnect-btn {
       margin-left: auto;
       padding: 5px 14px;
@@ -316,8 +340,11 @@
     <div id="status-dot" class="connecting"></div>
     <span id="status-label">Connecting…</span>
     <span id="session-label"></span>
+    <button id="save-cwd-btn" title="保存当前工作目录" style="margin-left:auto; padding:5px 10px; background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; cursor:pointer; font-size:14px; transition:background 0.15s;" onmouseover="this.style.background='#30363d'" onmouseout="this.style.background='#21262d'">📁</button>
     <button id="reconnect-btn" onclick="connect()">Reconnect</button>
   </div>
+
+  <div id="cwd-toast"></div>
 
   <div id="input-toolbar">
     <button id="mic-btn" class="toolbar-btn" title="语音输入 (点击开始/停止)">🎤</button>

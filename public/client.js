@@ -319,6 +319,37 @@ mobileInput.addEventListener('keydown', (e) => {
   }
 });
 
+/* ── Save CWD button ── */
+const saveCwdBtn = document.getElementById('save-cwd-btn');
+const cwdToast   = document.getElementById('cwd-toast');
+let cwdToastTimer = null;
+
+function showCwdToast(text, isError) {
+  cwdToast.textContent = text;
+  cwdToast.style.borderColor = isError ? '#f85149' : '#3fb950';
+  cwdToast.classList.add('show');
+  clearTimeout(cwdToastTimer);
+  cwdToastTimer = setTimeout(() => cwdToast.classList.remove('show'), 3000);
+}
+
+saveCwdBtn.addEventListener('click', async () => {
+  if (!currentSessionId) { showCwdToast('尚未连接到 session', true); return; }
+  try {
+    const res = await fetch(`/api/sessions/${currentSessionId}`);
+    if (!res.ok) throw new Error('获取失败');
+    const session = await res.json();
+    const cwd = session.cwd || '(未知)';
+    try {
+      await navigator.clipboard.writeText(cwd);
+      showCwdToast(`已复制: ${cwd}`);
+    } catch (_) {
+      showCwdToast(`当前目录: ${cwd}`);
+    }
+  } catch (e) {
+    showCwdToast('获取工作目录失败', true);
+  }
+});
+
 /* ── Drag-and-drop images onto the toolbar ── */
 document.getElementById('input-toolbar').addEventListener('dragover', (e) => {
   e.preventDefault();
