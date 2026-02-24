@@ -57,8 +57,37 @@ const CLAUDE_CMD = resolveClaude();
 const CLAUDE_ARGS = process.env.CLAUDE_ARGS ? process.env.CLAUDE_ARGS.split(' ') : [];
 console.log(`[webcc] Using claude: ${CLAUDE_CMD}`);
 
+// ── Session persistence ──
+const SESSIONS_FILE = path.join(__dirname, 'sessions.json');
+
+function loadPersistedSessions() {
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+      const map = new Map();
+      for (const s of data) map.set(s.id, s);
+      console.log(`[webcc] Loaded ${map.size} persisted session(s)`);
+      return map;
+    }
+  } catch (e) {
+    console.error('[webcc] Failed to load sessions.json:', e.message);
+  }
+  return new Map();
+}
+
+function savePersistedSessions() {
+  const data = [...persistedSessions.values()].map(({ id, cwd, createdAt }) => ({ id, cwd, createdAt }));
+  try {
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error('[webcc] Failed to save sessions.json:', e.message);
+  }
+}
+
+const persistedSessions = loadPersistedSessions();
+
 // ── Session management ──
-// { id, ptyProcess, buffer: string[], clients: Set<ws>, createdAt, lastActivity }
+// { id, ptyProcess, buffer: string[], clients: Set<ws>, createdAt, lastActivity, cwd }
 const sessions = new Map();
 
 function generateId() {
@@ -67,23 +96,30 @@ function generateId() {
   return id.slice(0, 8);
 }
 
-function createSession(id) {
+function createSession(id, cwd) {
+  cwd = cwd || os.homedir();
   const ptyProcess = pty.spawn(CLAUDE_CMD, CLAUDE_ARGS, {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
-    cwd: os.homedir(),
+    cwd,
     env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
   });
 
+  const persisted = persistedSessions.get(id);
   const session = {
     id,
     ptyProcess,
     buffer: [],
     clients: new Set(),
-    createdAt: new Date(),
+    createdAt: persisted ? new Date(persisted.createdAt) : new Date(),
     lastActivity: new Date(),
+    cwd,
   };
+
+  // Save to persistence
+  persistedSessions.set(id, { id, cwd, createdAt: session.createdAt });
+  savePersistedSessions();
 
   ptyProcess.onData((data) => {
     session.buffer.push(data);
@@ -105,6 +141,7 @@ function createSession(id) {
       }
     }
     sessions.delete(id);
+    // Keep in persistedSessions so it can be restored on reconnect
   });
 
   sessions.set(id, session);
@@ -115,24 +152,30 @@ function createSession(id) {
 app.use(express.json());
 
 app.get('/api/sessions', (req, res) => {
-  const list = [...sessions.values()].map(s => ({
-    id: s.id,
-    createdAt: s.createdAt,
-    lastActivity: s.lastActivity,
-    clients: s.clients.size,
-  }));
+  const list = [...persistedSessions.values()].map(p => {
+    const active = sessions.get(p.id);
+    return active
+      ? { id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true }
+      : { id: p.id, cwd: p.cwd, createdAt: p.createdAt, lastActivity: null, clients: 0, active: false };
+  });
   res.json(list);
 });
 
 app.delete('/api/sessions/:id', (req, res) => {
   const session = sessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'Session not found' });
-  try { session.ptyProcess.kill(); } catch (_) {}
-  sessions.delete(req.params.id);
+  if (!session && !persistedSessions.has(req.params.id)) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+  if (session) {
+    try { session.ptyProcess.kill(); } catch (_) {}
+    sessions.delete(req.params.id);
+  }
+  persistedSessions.delete(req.params.id);
+  savePersistedSessions();
   res.json({ ok: true });
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 // ── WebSocket connections ──
 wss.on('connection', (ws, req) => {
@@ -145,9 +188,15 @@ wss.on('connection', (ws, req) => {
     console.log(`[webcc] Client attached to session ${sessionId} (${session.clients.size + 1} total)`);
   } else {
     if (!sessionId) sessionId = generateId();
-    console.log(`[webcc] Creating session ${sessionId}`);
+    const persisted = persistedSessions.get(sessionId);
+    const cwd = persisted ? persisted.cwd : os.homedir();
+    if (persisted) {
+      console.log(`[webcc] Restoring session ${sessionId} (cwd: ${cwd})`);
+    } else {
+      console.log(`[webcc] Creating session ${sessionId}`);
+    }
     try {
-      session = createSession(sessionId);
+      session = createSession(sessionId, cwd);
     } catch (err) {
       const msg = `Failed to launch Claude Code: ${err.message}\r\n` +
         `Make sure "claude" is installed and available in PATH.\r\n` +
