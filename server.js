@@ -244,6 +244,66 @@ app.post('/api/sessions/:id/relocate', (req, res) => {
   }
 });
 
+// ── File Browser API ──
+app.get('/api/files', (req, res) => {
+  let dirPath = (req.query.path || '').trim();
+  const sessionId = (req.query.session || '').trim();
+
+  if (!dirPath && sessionId) {
+    const active = sessions.get(sessionId);
+    const persisted = persistedSessions.get(sessionId);
+    dirPath = active?.cwd || persisted?.cwd || os.homedir();
+  } else if (!dirPath) {
+    dirPath = os.homedir();
+  }
+
+  if (dirPath === '~') dirPath = os.homedir();
+  else if (dirPath.startsWith('~/') || dirPath.startsWith('~\\')) {
+    dirPath = path.join(os.homedir(), dirPath.slice(2));
+  }
+  dirPath = path.resolve(dirPath);
+
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const files = entries
+      .map(e => {
+        const fullPath = path.join(dirPath, e.name);
+        const isDir = e.isDirectory();
+        let size = null;
+        if (!isDir) {
+          try { size = fs.statSync(fullPath).size; } catch (_) {}
+        }
+        return { name: e.name, isDir, path: fullPath, size };
+      })
+      .sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    const parent = dirPath !== path.parse(dirPath).root ? path.dirname(dirPath) : null;
+    res.json({ path: dirPath, parent, files });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/download', (req, res) => {
+  const filePath = (req.query.path || '').trim();
+  const inline = req.query.inline === '1';
+  if (!filePath) return res.status(400).json({ error: 'path required' });
+  const resolved = path.resolve(filePath);
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.isDirectory()) return res.status(400).json({ error: '不能下载目录' });
+    if (inline) {
+      res.sendFile(resolved);
+    } else {
+      res.download(resolved);
+    }
+  } catch (e) {
+    res.status(404).json({ error: '文件不存在' });
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 // ── WebSocket connections ──

@@ -100,8 +100,12 @@ function connect() {
       } else if (msg.type === 'relocate') {
         term.clear();
         term.write(`\x1b[33m[正在切换到: ${msg.cwd}]\x1b[0m\r\n`);
+        filesBrowsePath = null; // reset so panel loads new cwd on next open/refresh
         ws.close();
-        setTimeout(connect, 800);
+        setTimeout(() => {
+          connect();
+          if (filesPanelOpen) setTimeout(() => loadFiles(null), 1000);
+        }, 800);
       } else if (msg.type === 'file_saved') {
         onFileSaved(msg);
       }
@@ -395,6 +399,179 @@ relocateConfirm.addEventListener('click', async () => {
     relocateConfirm.textContent = '切换目录';
   }
 });
+
+/* ── File Browser Panel ── */
+const filesPanel      = document.getElementById('files-panel');
+const filesList       = document.getElementById('files-list');
+const filesPanelPath  = document.getElementById('files-panel-path');
+const filesError      = document.getElementById('files-error');
+const filesBtn        = document.getElementById('files-btn');
+const filesRefreshBtn = document.getElementById('files-refresh-btn');
+const filesCloseBtn   = document.getElementById('files-close-btn');
+
+let filesBrowsePath = null;   // current directory shown in panel
+let filesPanelOpen  = false;
+
+// File types that browsers can display inline
+const INLINE_EXTS = new Set([
+  'jpg','jpeg','png','gif','webp','svg','bmp','ico',
+  'pdf',
+  'txt','md','log','json','yaml','yml','toml','ini','conf',
+  'js','ts','jsx','tsx','mjs','cjs',
+  'html','htm','xml','css','scss','less',
+  'sh','bash','zsh','fish','py','rb','go','rs','java','c','cpp','h','cs',
+  'mp4','webm',
+  'mp3','wav','ogg','flac',
+]);
+
+function fileExt(name) {
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+function formatSize(bytes) {
+  if (bytes === null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function loadFiles(dirPath) {
+  filesError.style.display = 'none';
+  filesList.innerHTML = '<div style="padding:16px 12px; font-size:12px; color:#6e7681;">加载中…</div>';
+
+  const params = new URLSearchParams();
+  if (dirPath) {
+    params.set('path', dirPath);
+  } else if (currentSessionId) {
+    params.set('session', currentSessionId);
+  }
+
+  try {
+    const res  = await fetch(`/api/files?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '加载失败');
+
+    filesBrowsePath = data.path;
+    filesPanelPath.textContent = data.path;
+    renderFiles(data);
+  } catch (e) {
+    filesError.textContent = e.message;
+    filesError.style.display = 'block';
+    filesList.innerHTML = '';
+  }
+}
+
+function renderFiles({ path: dir, parent, files }) {
+  filesList.innerHTML = '';
+
+  // ".." entry
+  if (parent) {
+    const item = makeFileItem('..', true, null, null, () => loadFiles(parent));
+    item.classList.add('is-up');
+    filesList.appendChild(item);
+  }
+
+  if (files.length === 0) {
+    filesList.innerHTML += '<div style="padding:16px 12px; font-size:12px; color:#6e7681;">目录为空</div>';
+    return;
+  }
+
+  for (const f of files) {
+    const onDirClick = f.isDir ? () => loadFiles(f.path) : null;
+    filesList.appendChild(makeFileItem(f.name, f.isDir, f.path, f.size, onDirClick));
+  }
+}
+
+function makeFileItem(name, isDir, fullPath, size, onDirClick) {
+  const item = document.createElement('div');
+  item.className = 'file-item' + (isDir ? ' is-dir' : '');
+
+  const icon = document.createElement('span');
+  icon.className = 'fi-icon';
+  icon.textContent = isDir ? '📁' : getFileIcon(name);
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'fi-name';
+  nameEl.textContent = name;
+  if (onDirClick) nameEl.addEventListener('click', onDirClick);
+
+  item.append(icon, nameEl);
+
+  if (!isDir && fullPath) {
+    const sizeEl = document.createElement('span');
+    sizeEl.className = 'fi-size';
+    sizeEl.textContent = formatSize(size);
+
+    const actions = document.createElement('div');
+    actions.className = 'fi-actions';
+
+    const downloadBtn = document.createElement('a');
+    downloadBtn.className = 'fi-action-btn';
+    downloadBtn.title = '下载';
+    downloadBtn.textContent = '↓';
+    downloadBtn.href = `/api/download?path=${encodeURIComponent(fullPath)}`;
+    downloadBtn.download = name;
+
+    actions.appendChild(downloadBtn);
+
+    if (INLINE_EXTS.has(fileExt(name))) {
+      const viewBtn = document.createElement('a');
+      viewBtn.className = 'fi-action-btn';
+      viewBtn.title = '在浏览器中打开';
+      viewBtn.textContent = '👁';
+      viewBtn.href = `/api/download?path=${encodeURIComponent(fullPath)}&inline=1`;
+      viewBtn.target = '_blank';
+      viewBtn.rel = 'noopener';
+      actions.appendChild(viewBtn);
+    }
+
+    item.append(sizeEl, actions);
+  }
+
+  return item;
+}
+
+function getFileIcon(name) {
+  const ext = fileExt(name);
+  const imgExts = new Set(['jpg','jpeg','png','gif','webp','svg','bmp','ico']);
+  const videoExts = new Set(['mp4','webm','mov','avi']);
+  const audioExts = new Set(['mp3','wav','ogg','flac','m4a']);
+  const codeExts = new Set(['js','ts','jsx','tsx','py','go','rs','java','c','cpp','h','cs','sh','bash','rb','php']);
+  const docExts = new Set(['pdf','doc','docx']);
+  const archiveExts = new Set(['zip','tar','gz','7z','rar','bz2']);
+  if (imgExts.has(ext)) return '🖼️';
+  if (videoExts.has(ext)) return '🎬';
+  if (audioExts.has(ext)) return '🎵';
+  if (ext === 'pdf') return '📕';
+  if (codeExts.has(ext)) return '📝';
+  if (docExts.has(ext)) return '📄';
+  if (archiveExts.has(ext)) return '📦';
+  if (ext === 'json' || ext === 'yaml' || ext === 'yml') return '📋';
+  return '📄';
+}
+
+function openFilesPanel() {
+  filesPanelOpen = true;
+  filesPanel.classList.add('open');
+  filesBtn.style.background = '#1f6feb';
+  filesBtn.style.borderColor = '#58a6ff';
+  loadFiles(filesBrowsePath);
+}
+
+function closeFilesPanel() {
+  filesPanelOpen = false;
+  filesPanel.classList.remove('open');
+  filesBtn.style.background = '';
+  filesBtn.style.borderColor = '';
+}
+
+filesBtn.addEventListener('click', () => {
+  if (filesPanelOpen) closeFilesPanel(); else openFilesPanel();
+});
+
+filesRefreshBtn.addEventListener('click', () => loadFiles(filesBrowsePath));
+filesCloseBtn.addEventListener('click', closeFilesPanel);
 
 /* ── Drag-and-drop images onto the toolbar ── */
 document.getElementById('input-toolbar').addEventListener('dragover', (e) => {
