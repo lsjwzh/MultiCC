@@ -41,16 +41,70 @@ const isWindows = process.platform === 'win32';
 
 // Resolve the full path of the claude executable at startup
 function resolveClaude() {
-  if (process.env.CLAUDE_CMD) return process.env.CLAUDE_CMD;
+  if (process.env.CLAUDE_CMD) {
+    console.log(`[webcc] CLAUDE_CMD override: ${process.env.CLAUDE_CMD}`);
+    return process.env.CLAUDE_CMD;
+  }
+
+  const extraPaths = [
+    path.join(os.homedir(), '.local', 'bin'),
+    path.join(os.homedir(), '.local', 'share', 'claude', 'bin'),
+    path.join(os.homedir(), '.npm-global', 'bin'),
+    path.join(os.homedir(), '.npm', 'bin'),
+    '/usr/local/bin',
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+  ];
+  const sep = isWindows ? ';' : ':';
+  const augmentedPath = [...new Set([...extraPaths, ...(process.env.PATH || '').split(sep)])].join(sep);
+  process.env.PATH = augmentedPath;
+
+  if (!isWindows) {
+    // Try login shell first — it sources ~/.zshrc / ~/.bashrc and sees the real PATH
+    const shells = ['/bin/zsh', '/bin/bash'];
+    for (const sh of shells) {
+      if (!fs.existsSync(sh)) continue;
+      try {
+        const result = execSync(`${sh} -l -c 'which claude 2>/dev/null'`, {
+          encoding: 'utf8',
+          timeout: 5000,
+        });
+        const found = result.trim().split(/\r?\n/)[0].trim();
+        if (found && fs.existsSync(found)) {
+          console.log(`[webcc] Found claude via ${sh}: ${found}`);
+          return found;
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Try which/where with augmented PATH
   try {
-    const result = execSync(isWindows ? 'where claude' : 'which claude', { encoding: 'utf8' });
-    // 'where' may return multiple lines; take the first .exe on Windows
+    const result = execSync(isWindows ? 'where claude' : 'which claude', {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: augmentedPath },
+      timeout: 5000,
+    });
     const lines = result.trim().split(/\r?\n/);
     const exe = isWindows ? lines.find(l => l.endsWith('.exe')) || lines[0] : lines[0];
-    return exe.trim();
-  } catch (_) {
-    return isWindows ? 'claude.exe' : 'claude';
+    const found = exe.trim();
+    if (found) {
+      console.log(`[webcc] Found claude via which: ${found}`);
+      return found;
+    }
+  } catch (_) {}
+
+  // Direct file existence check
+  for (const dir of extraPaths) {
+    const candidate = path.join(dir, isWindows ? 'claude.exe' : 'claude');
+    if (fs.existsSync(candidate)) {
+      console.log(`[webcc] Found claude via direct check: ${candidate}`);
+      return candidate;
+    }
   }
+
+  console.warn('[webcc] WARNING: Could not locate claude binary, falling back to "claude"');
+  return isWindows ? 'claude.exe' : 'claude';
 }
 
 const CLAUDE_CMD = resolveClaude();
@@ -103,7 +157,12 @@ function resolveCwd(current, arg) {
 }
 
 function createSession(id, cwd) {
-  cwd = cwd || os.homedir();
+  // Fall back to homedir if the persisted cwd no longer exists (e.g. Windows paths on macOS)
+  if (!cwd || !fs.existsSync(cwd)) {
+    if (cwd) console.warn(`[webcc] cwd "${cwd}" not found, falling back to home dir`);
+    cwd = os.homedir();
+  }
+  console.log(`[webcc] Spawning: ${CLAUDE_CMD} ${CLAUDE_ARGS.join(' ')} in ${cwd}`);
   const ptyProcess = pty.spawn(CLAUDE_CMD, CLAUDE_ARGS, {
     name: 'xterm-256color',
     cols: 80,
@@ -200,7 +259,8 @@ app.post('/api/sessions/:id/relocate', (req, res) => {
   const rawCwd = (req.body.cwd || '').trim();
   if (!rawCwd) return res.status(400).json({ error: 'cwd required' });
 
-  const currentCwd = (sessions.get(id) || persistedSessions.get(id))?.cwd || os.homedir();
+  const rawCurrentCwd = (sessions.get(id) || persistedSessions.get(id))?.cwd;
+  const currentCwd = (rawCurrentCwd && fs.existsSync(rawCurrentCwd)) ? rawCurrentCwd : os.homedir();
   const resolvedCwd = resolveCwd(currentCwd, rawCwd);
 
   if (!fs.existsSync(resolvedCwd)) {
