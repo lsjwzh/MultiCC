@@ -143,12 +143,13 @@ term.onResize(() => sendResize());
 /* ── Start ── */
 connect();
 
-/* ── Voice Input ── */
+/* ── Voice Input (Whisper STT via MediaRecorder) ── */
 const micBtn    = document.getElementById('mic-btn');
 const micStatus = document.getElementById('mic-status');
-const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognition  = null;
-let isListening  = false;
+let mediaRecorder   = null;
+let audioChunks     = [];
+let isRecording     = false;
+let recordingStream = null;
 
 // Voice panel elements
 const voicePanel   = document.getElementById('voice-panel');
@@ -184,12 +185,16 @@ async function fetchRefined(raw) {
   vpRefined.value = '';
   vpRefined.placeholder = 'AI 处理中…';
   _vpRefinedFinal = '';
+  const timingInfo = {};
+  const vpTimingEl = document.getElementById('vp-timing');
+  if (vpTimingEl) vpTimingEl.textContent = '';
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     console.warn('[voice-client] AbortController timeout fired (75s)');
     controller.abort();
   }, 75000);
   try {
+    const fetchStart = Date.now();
     console.log('[voice-client] Sending POST /api/voice/refine ...');
     const res = await fetch('/api/voice/refine', {
       method: 'POST',
@@ -241,15 +246,23 @@ async function fetchRefined(raw) {
         }
         try {
           const parsed = JSON.parse(payload);
-          console.log('[voice-client] Parsed JSON text:', JSON.stringify(parsed.text?.slice(0, 100)));
-          vpRefined.value += parsed.text;
-          _vpRefinedFinal = vpRefined.value;
+          if (parsed.timing) {
+            console.log(`[voice-client] Timing event: ${parsed.timing} = ${parsed.ms}ms`);
+            timingInfo[parsed.timing] = parsed.ms;
+          } else {
+            console.log('[voice-client] Parsed JSON text:', JSON.stringify(parsed.text?.slice(0, 100)));
+            vpRefined.value += parsed.text;
+            _vpRefinedFinal = vpRefined.value;
+          }
         } catch (parseErr) {
           console.error('[voice-client] JSON parse error for payload:', JSON.stringify(payload), parseErr);
         }
       }
     }
+    // Calculate frontend total time
+    timingInfo.frontend_total = Date.now() - fetchStart;
     console.log('[voice-client] Stream processing complete. vpRefined.value:', JSON.stringify(vpRefined.value.slice(0, 200)));
+    console.log('[voice-client] Timing info:', timingInfo);
     if (vpRefined.value.trim()) {
       vpStatus.textContent = '✓ 完成';
     } else {
@@ -257,6 +270,15 @@ async function fetchRefined(raw) {
       console.warn('[voice-client] AI returned empty result after processing');
     }
     vpRefined.placeholder = '（AI 处理完毕，可手动编辑）';
+    // Display timing info
+    if (vpTimingEl) {
+      const labels = [];
+      if (timingInfo.queue != null) labels.push(`排队 ${(timingInfo.queue / 1000).toFixed(1)}s`);
+      if (timingInfo.first_token != null) labels.push(`首字节 ${(timingInfo.first_token / 1000).toFixed(1)}s`);
+      if (timingInfo.ai_process != null) labels.push(`AI处理 ${(timingInfo.ai_process / 1000).toFixed(1)}s`);
+      if (timingInfo.frontend_total != null) labels.push(`总耗时 ${(timingInfo.frontend_total / 1000).toFixed(1)}s`);
+      vpTimingEl.textContent = labels.join(' | ');
+    }
   } catch (e) {
     console.error('[voice-client] fetchRefined error:', e.name, e.message, e);
     if (e.name === 'AbortError') {
@@ -293,42 +315,89 @@ voicePanel.addEventListener('click', (e) => {
   if (e.target === voicePanel) closeVoicePanel();
 });
 
-if (!SpeechRec) {
-  micBtn.disabled = true;
-  micBtn.title = '此浏览器不支持语音识别（建议使用 Chrome）';
-} else {
-  recognition = new SpeechRec();
-  recognition.continuous    = false;
-  recognition.interimResults = false;
-  recognition.lang           = navigator.language || 'zh-CN';
+function startRecording() {
+  audioChunks = [];
+  // Prefer webm/opus, fallback to whatever the browser supports
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
 
-  recognition.onresult = (e) => {
-    const text = e.results[0][0].transcript;
-    micStatus.textContent = '';
-    showVoicePanel(text);
-  };
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    recordingStream = stream;
+    const options = mimeType ? { mimeType } : {};
+    mediaRecorder = new MediaRecorder(stream, options);
 
-  recognition.onend = () => {
-    isListening = false;
-    micBtn.classList.remove('active');
-    if (micStatus.textContent === '正在聆听…') micStatus.textContent = '';
-  };
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
 
-  recognition.onerror = (e) => {
-    isListening = false;
-    micBtn.classList.remove('active');
-    micStatus.textContent = `错误: ${e.error}`;
+    mediaRecorder.onstop = () => {
+      // Release microphone
+      if (recordingStream) {
+        recordingStream.getTracks().forEach(t => t.stop());
+        recordingStream = null;
+      }
+      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      audioChunks = [];
+      if (blob.size > 0) {
+        uploadAudioForSTT(blob);
+      }
+    };
+
+    mediaRecorder.start();
+    isRecording = true;
+    micBtn.classList.add('active');
+    micStatus.textContent = '正在录音…';
+  }).catch(err => {
+    console.error('[voice] getUserMedia error:', err);
+    micStatus.textContent = `麦克风错误: ${err.message}`;
     setTimeout(() => { micStatus.textContent = ''; }, 3000);
-  };
+  });
+}
 
-  micBtn.onclick = () => {
-    if (isListening) {
-      recognition.stop();
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+  isRecording = false;
+  micBtn.classList.remove('active');
+  micStatus.textContent = '';
+}
+
+async function uploadAudioForSTT(blob) {
+  micBtn.classList.add('processing');
+  micStatus.textContent = '识别中…';
+  try {
+    const formData = new FormData();
+    formData.append('file', blob, 'recording.webm');
+    const res = await fetch('/api/voice/stt', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    micStatus.textContent = '';
+    if (data.text && data.text.trim()) {
+      showVoicePanel(data.text.trim());
     } else {
-      recognition.start();
-      isListening = true;
-      micBtn.classList.add('active');
-      micStatus.textContent = '正在聆听…';
+      micStatus.textContent = '未识别到语音';
+      setTimeout(() => { micStatus.textContent = ''; }, 3000);
+    }
+  } catch (err) {
+    console.error('[voice] STT upload error:', err);
+    micStatus.textContent = `识别失败: ${err.message}`;
+    setTimeout(() => { micStatus.textContent = ''; }, 4000);
+  } finally {
+    micBtn.classList.remove('processing');
+  }
+}
+
+if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices) {
+  micBtn.disabled = true;
+  micBtn.title = '此浏览器不支持录音（需要 HTTPS 或 localhost）';
+} else {
+  micBtn.onclick = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
     }
   };
 }

@@ -108,8 +108,79 @@ function showToast(msg, isError = false) {
   setTimeout(() => toast.classList.remove('show'), 2500);
 }
 
+// ── Voice Settings ──
+async function loadVoiceSettings() {
+  try {
+    const res = await fetch('/api/settings/voice');
+    const data = await res.json();
+    document.getElementById('vs-base-url').value = data.baseUrl || '';
+    document.getElementById('vs-api-key').value = '';
+    document.getElementById('vs-api-key').placeholder = data.hasKey ? data.apiKey : 'sk-or-v1-...';
+    document.getElementById('vs-model').value = data.model || '';
+    // Whisper fields
+    document.getElementById('ws-base-url').value = data.whisperBaseUrl || '';
+    document.getElementById('ws-api-key').value = '';
+    document.getElementById('ws-api-key').placeholder = data.hasWhisperKey ? data.whisperApiKey : 'gsk_... (留空则复用 OpenRouter Key)';
+    document.getElementById('ws-model').value = data.whisperModel || '';
+    document.getElementById('ws-language').value = data.whisperLanguage || 'zh';
+    document.getElementById('ws-prompt').value = data.whisperPrompt || '';
+  } catch (_) {}
+}
+
+async function saveVoiceSettings() {
+  const vsStatus = document.getElementById('vs-status');
+  const wsStatus = document.getElementById('ws-status');
+  const body = {};
+  const baseUrl = document.getElementById('vs-base-url').value.trim();
+  const apiKey = document.getElementById('vs-api-key').value.trim();
+  const model = document.getElementById('vs-model').value.trim();
+  if (baseUrl) body.baseUrl = baseUrl;
+  if (apiKey) body.apiKey = apiKey;
+  if (model) body.model = model;
+  // Whisper fields
+  const wsBaseUrl = document.getElementById('ws-base-url').value.trim();
+  const wsApiKey = document.getElementById('ws-api-key').value.trim();
+  const wsModel = document.getElementById('ws-model').value.trim();
+  if (wsBaseUrl) body.whisperBaseUrl = wsBaseUrl;
+  if (wsApiKey) body.whisperApiKey = wsApiKey;
+  if (wsModel) body.whisperModel = wsModel;
+  const wsLanguage = document.getElementById('ws-language').value.trim();
+  const wsPrompt = document.getElementById('ws-prompt').value.trim();
+  body.whisperLanguage = wsLanguage;  // always send (empty string = auto-detect)
+  body.whisperPrompt = wsPrompt;      // always send (empty string = no static prompt)
+
+  if (Object.keys(body).length === 0) {
+    vsStatus.textContent = 'No changes';
+    vsStatus.className = 'status-text';
+    wsStatus.textContent = 'No changes';
+    wsStatus.className = 'status-text';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/settings/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    vsStatus.textContent = 'Saved — changes take effect immediately';
+    vsStatus.className = 'status-text ok';
+    wsStatus.textContent = 'Saved — changes take effect immediately';
+    wsStatus.className = 'status-text ok';
+    showToast('Voice settings saved');
+    loadVoiceSettings(); // refresh display (re-mask key)
+  } catch (err) {
+    vsStatus.textContent = `Save failed: ${err.message}`;
+    vsStatus.className = 'status-text err';
+    wsStatus.textContent = `Save failed: ${err.message}`;
+    wsStatus.className = 'status-text err';
+  }
+}
+
 // Initial load
 loadSessions();
+loadVoiceSettings();
 
 // Auto-refresh every 5 seconds
 autoRefreshTimer = setInterval(loadSessions, 5000);

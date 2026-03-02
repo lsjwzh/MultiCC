@@ -1,5 +1,14 @@
 'use strict';
 
+// Load .env file (lightweight, no dependencies)
+const _envPath = require('path').join(__dirname, '.env');
+try {
+  require('fs').readFileSync(_envPath, 'utf8').split('\n').forEach(line => {
+    const m = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+  });
+} catch (_) { /* .env not found, skip */ }
+
 const express = require('express');
 const http = require('http');
 const https = require('https');
@@ -9,6 +18,8 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { execSync, spawn } = require('child_process');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const app = express();
 
@@ -366,6 +377,7 @@ app.get('/api/download', (req, res) => {
 
 // ── Voice Refine Worker (global, starts with server) ──
 const VOICE_EXAMPLES_FILE = path.join(__dirname, 'voice_examples.json');
+const WHISPER_VOCAB_FILE = path.join(__dirname, 'whisper_vocab.json');
 
 function loadVoiceExamples() {
   try {
@@ -394,81 +406,229 @@ function appendVoiceExample(entry) {
   }
 }
 
-// Build a clean env for voice subprocess (no CLAUDECODE to avoid nested session error)
-const voiceChildEnv = { ...process.env };
-delete voiceChildEnv.CLAUDECODE;
+// ── Whisper vocabulary (user-corrected terms) ──
+function loadWhisperVocab() {
+  try {
+    if (fs.existsSync(WHISPER_VOCAB_FILE)) {
+      const data = JSON.parse(fs.readFileSync(WHISPER_VOCAB_FILE, 'utf8'));
+      return Array.isArray(data) ? data : [];
+    }
+  } catch (_) {}
+  return [];
+}
+
+function saveWhisperVocab(vocab) {
+  try {
+    fs.writeFileSync(WHISPER_VOCAB_FILE, JSON.stringify(vocab, null, 2));
+  } catch (e) {
+    console.error('[webcc] Failed to write whisper_vocab.json:', e.message);
+  }
+}
 
 /**
- * Global voice worker: processes refine requests sequentially via a queue.
- * Only one `claude -p` process runs at a time. The process is NOT killed
- * when the HTTP client disconnects — output is buffered and delivered.
+ * Extract correction terms by diffing raw STT output against user's final edit.
+ * Segments text into tokens, finds words the user replaced/added.
+ * Returns an array of { wrong, correct } pairs.
  */
-const voiceWorker = {
-  queue: [],       // { prompt, onChunk(text), onDone(), onError(msg) }
-  busy: false,
-  currentChild: null,
+function extractCorrections(raw, userFinal) {
+  if (!raw || !userFinal || raw === userFinal) return [];
 
-  enqueue(job) {
-    this.queue.push(job);
-    console.log(`[webcc/voice] Queued job (queue length: ${this.queue.length})`);
-    this._processNext();
-  },
+  // Tokenize: split into Chinese chars / English words / mixed tokens
+  const tokenize = s => s.match(/[a-zA-Z][a-zA-Z0-9_./-]*/g) || [];
 
-  _processNext() {
-    if (this.busy || this.queue.length === 0) return;
-    this.busy = true;
-    const job = this.queue.shift();
+  const rawTokens = new Set(tokenize(raw).map(t => t.toLowerCase()));
+  const finalTokens = tokenize(userFinal);
 
-    // Use stdin to pass prompt (avoids ARG_MAX issues with long prompts)
-    const child = spawn(CLAUDE_CMD, ['-p'], {
-      env: voiceChildEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
+  const corrections = [];
+  for (const token of finalTokens) {
+    // Token appears in userFinal but NOT in raw → user corrected something to this
+    if (token.length > 1 && !rawTokens.has(token.toLowerCase())) {
+      corrections.push(token);
+    }
+  }
+  return corrections;
+}
+
+/**
+ * Merge new correction terms into whisper_vocab.json (deduplicated).
+ * Each entry: { term, count, lastSeen }
+ */
+function mergeWhisperVocab(newTerms) {
+  if (!newTerms || newTerms.length === 0) return;
+  const vocab = loadWhisperVocab();
+  const termMap = new Map(vocab.map(v => [v.term.toLowerCase(), v]));
+
+  for (const term of newTerms) {
+    const key = term.toLowerCase();
+    if (termMap.has(key)) {
+      const existing = termMap.get(key);
+      existing.count = (existing.count || 1) + 1;
+      existing.lastSeen = new Date().toISOString();
+      // Keep the casing from the latest correction
+      existing.term = term;
+    } else {
+      termMap.set(key, { term, count: 1, lastSeen: new Date().toISOString() });
+    }
+  }
+
+  // Sort by count desc, keep top 100
+  const sorted = [...termMap.values()].sort((a, b) => b.count - a.count).slice(0, 100);
+  saveWhisperVocab(sorted);
+  console.log(`[webcc/stt] Whisper vocab updated: ${sorted.length} terms, added: ${newTerms.join(', ')}`);
+}
+
+// ── Backfill: seed whisper_vocab.json from existing voice_examples on first run ──
+(function backfillWhisperVocab() {
+  try {
+    if (fs.existsSync(WHISPER_VOCAB_FILE)) return; // already initialized
+    if (!fs.existsSync(VOICE_EXAMPLES_FILE)) return;
+    const examples = JSON.parse(fs.readFileSync(VOICE_EXAMPLES_FILE, 'utf8'));
+    if (!Array.isArray(examples)) return;
+    const allTerms = [];
+    for (const ex of examples) {
+      const corrections = extractCorrections(ex.raw, ex.userFinal);
+      allTerms.push(...corrections);
+    }
+    if (allTerms.length > 0) {
+      mergeWhisperVocab(allTerms);
+      console.log(`[webcc/stt] Backfilled whisper_vocab.json from ${examples.length} voice examples`);
+    }
+  } catch (e) {
+    console.error('[webcc/stt] Backfill error:', e.message);
+  }
+})();
+
+// ── OpenRouter API configuration for voice refinement ──
+let OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+let OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-001';
+let OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+
+// ── Whisper STT configuration ──
+let WHISPER_API_KEY = process.env.WHISPER_API_KEY || '';
+let WHISPER_BASE_URL = process.env.WHISPER_BASE_URL || 'https://openrouter.ai/api/v1';
+let WHISPER_MODEL = process.env.WHISPER_MODEL || 'whisper-large-v3-turbo';
+let WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || 'zh';
+let WHISPER_PROMPT = process.env.WHISPER_PROMPT || '';
+
+/**
+ * Build a prompt for Whisper STT to improve recognition of technical terms.
+ * Sources (in order):
+ *   1. WHISPER_PROMPT — user-configured static terms (from settings / .env)
+ *   2. whisper_vocab.json — auto-accumulated from user corrections (feedback)
+ * Whisper prompt limit is ~224 tokens, so we keep it concise.
+ */
+function buildWhisperPrompt() {
+  const parts = [];
+
+  // 1. User-configured static prompt (highest priority)
+  if (WHISPER_PROMPT) parts.push(WHISPER_PROMPT.trim());
+
+  // 2. Load accumulated vocabulary from user corrections
+  try {
+    const vocab = loadWhisperVocab();
+    if (vocab.length > 0) {
+      // Already sorted by count desc in mergeWhisperVocab; take top 40
+      const terms = vocab.slice(0, 40).map(v => v.term);
+      parts.push(terms.join(', '));
+    }
+  } catch (_) {}
+
+  const prompt = parts.join('. ');
+  // Whisper prompt is limited to ~224 tokens; truncate to ~500 chars as safety margin
+  return prompt.length > 500 ? prompt.slice(0, 500) : prompt;
+}
+
+/**
+ * Call OpenRouter API with streaming for voice refinement.
+ * Replaces the old CLI spawn approach for much lower latency.
+ * Supports concurrent requests (no sequential queue needed).
+ */
+async function callVoiceAPI(prompt, { reqId, onStart, onFirstToken, onChunk, onDone, onError }) {
+  if (typeof onStart === 'function') onStart();
+
+  if (!OPENROUTER_API_KEY) {
+    onError('OPENROUTER_API_KEY 环境变量未设置');
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 60000);
+
+  try {
+    const apiStart = Date.now();
+    console.log(`[webcc/voice][${reqId}] Sending request to OpenRouter (model: ${OPENROUTER_MODEL})`);
+    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        stream: true,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: controller.signal,
     });
-    this.currentChild = child;
-    console.log(`[webcc/voice] Worker spawned claude pid=${child.pid}`);
-    // Feed prompt via stdin, then close stdin to signal end-of-input
-    child.stdin.write(job.prompt);
-    child.stdin.end();
 
-    // 60-second timeout
-    const killTimer = setTimeout(() => {
-      console.error('[webcc/voice] Worker timeout: killing claude process');
-      try { child.kill(); } catch (_) {}
-      job.onChunk('[超时：AI处理超过60秒，已中止]');
-    }, 60000);
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`OpenRouter API ${response.status}: ${errText.slice(0, 200)}`);
+    }
 
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      console.log(`[webcc/voice] stdout chunk: ${text.slice(0, 80)}`);
-      job.onChunk(text);
-    });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let firstTokenSent = false;
 
-    child.stderr.on('data', (chunk) => {
-      console.error('[webcc/voice] stderr:', chunk.toString());
-    });
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-    child.on('close', (code, signal) => {
-      clearTimeout(killTimer);
-      console.log(`[webcc/voice] Worker claude exited code=${code} signal=${signal}`);
-      this.currentChild = null;
-      this.busy = false;
-      job.onDone();
-      // Process next job in queue
-      this._processNext();
-    });
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-    child.on('error', (err) => {
-      clearTimeout(killTimer);
-      console.error('[webcc/voice] Worker spawn error:', err.message);
-      this.currentChild = null;
-      this.busy = false;
-      job.onError(err.message);
-      this._processNext();
-    });
-  },
-};
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') continue;
 
-console.log('[webcc/voice] Voice worker initialized (queue-based, sequential processing)');
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              if (!firstTokenSent) {
+                firstTokenSent = true;
+                if (typeof onFirstToken === 'function') onFirstToken(Date.now() - apiStart);
+              }
+              onChunk(content);
+            }
+          } catch (_) { /* skip non-JSON lines */ }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    clearTimeout(timeout);
+    onDone();
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      onChunk('[超时：AI处理超过60秒，已中止]');
+      onDone();
+    } else {
+      onError(err.message);
+    }
+  }
+}
+
+console.log(`[webcc/voice] Voice API initialized (OpenRouter, model: ${OPENROUTER_MODEL})`);
 
 app.post('/api/voice/refine', (req, res) => {
   const reqId = `vr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -548,43 +708,46 @@ app.post('/api/voice/refine', (req, res) => {
     }
   }
 
-  console.log(`[webcc/voice][${reqId}] Enqueueing job to voiceWorker (busy=${voiceWorker.busy}, queue=${voiceWorker.queue.length})`);
+  const t0 = Date.now();
+  console.log(`[webcc/voice][${reqId}] Calling OpenRouter API (model: ${OPENROUTER_MODEL})`);
 
-  voiceWorker.enqueue({
-    prompt,
+  callVoiceAPI(prompt, {
+    reqId,
+    onStart() {
+      console.log(`[webcc/voice][${reqId}] API request started`);
+      sseWrite(`data: ${JSON.stringify({ timing: 'queue', ms: 0 })}\n\n`);
+    },
+    onFirstToken(ms) {
+      console.log(`[webcc/voice][${reqId}] First token: ${ms}ms`);
+      sseWrite(`data: ${JSON.stringify({ timing: 'first_token', ms })}\n\n`);
+    },
     onChunk(text) {
-      console.log(`[webcc/voice][${reqId}] onChunk called, text length: ${text.length}, text: ${JSON.stringify(text.slice(0, 100))}`);
-      const sseData = `data: ${JSON.stringify({ text })}\n\n`;
-      console.log(`[webcc/voice][${reqId}] SSE data to send: ${JSON.stringify(sseData.slice(0, 150))}`);
-      sseWrite(sseData);
+      sseWrite(`data: ${JSON.stringify({ text })}\n\n`);
     },
     onDone() {
       clearInterval(heartbeat);
-      console.log(`[webcc/voice][${reqId}] onDone called, clientDisconnected=${clientDisconnected}`);
+      const totalMs = Date.now() - t0;
+      console.log(`[webcc/voice][${reqId}] Done, total: ${totalMs}ms, clientDisconnected=${clientDisconnected}`);
       if (!clientDisconnected) {
         try {
-          const writeResult = res.write('data: [DONE]\n\n');
-          console.log(`[webcc/voice][${reqId}] [DONE] write result: ${writeResult}`);
+          sseWrite(`data: ${JSON.stringify({ timing: 'ai_process', ms: totalMs })}\n\n`);
+          sseWrite(`data: ${JSON.stringify({ timing: 'total', ms: totalMs })}\n\n`);
+          res.write('data: [DONE]\n\n');
           res.end();
-          console.log(`[webcc/voice][${reqId}] res.end() called successfully`);
         } catch (endErr) {
-          console.error(`[webcc/voice][${reqId}] Error writing [DONE] or ending response:`, endErr.message);
+          console.error(`[webcc/voice][${reqId}] Error ending response:`, endErr.message);
         }
-      } else {
-        console.log(`[webcc/voice][${reqId}] Skipping [DONE] (client already disconnected)`);
       }
     },
     onError(msg) {
       clearInterval(heartbeat);
-      console.error(`[webcc/voice][${reqId}] onError called: ${msg}, clientDisconnected=${clientDisconnected}`);
+      console.error(`[webcc/voice][${reqId}] Error: ${msg}`);
       if (!clientDisconnected) {
         try {
           res.write(`data: ${JSON.stringify({ text: `[错误: ${msg}]` })}\n\n`);
           res.write('data: [DONE]\n\n');
           res.end();
-        } catch (errWriteErr) {
-          console.error(`[webcc/voice][${reqId}] Error writing error response:`, errWriteErr.message);
-        }
+        } catch (_) {}
       }
     },
   });
@@ -594,7 +757,164 @@ app.post('/api/voice/feedback', (req, res) => {
   const { raw, refined, userFinal } = req.body;
   if (raw && refined !== undefined && userFinal !== undefined && userFinal !== refined) {
     appendVoiceExample({ raw, refined, userFinal, ts: new Date().toISOString() });
+
+    // Extract user corrections and merge into Whisper vocabulary
+    // Compare against raw (STT output) — these are the words Whisper got wrong
+    const corrections = extractCorrections(raw, userFinal);
+    if (corrections.length > 0) {
+      mergeWhisperVocab(corrections);
+    }
   }
+  res.json({ ok: true });
+});
+
+// ── Whisper vocabulary management ──
+app.get('/api/voice/vocab', (req, res) => {
+  res.json(loadWhisperVocab());
+});
+
+app.delete('/api/voice/vocab/:term', (req, res) => {
+  const target = req.params.term.toLowerCase();
+  const vocab = loadWhisperVocab().filter(v => v.term.toLowerCase() !== target);
+  saveWhisperVocab(vocab);
+  res.json({ ok: true, remaining: vocab.length });
+});
+
+// ── Whisper STT endpoint ──
+app.post('/api/voice/stt', upload.single('file'), async (req, res) => {
+  const reqId = `stt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  console.log(`[webcc/stt][${reqId}] POST /api/voice/stt received`);
+
+  if (!req.file) {
+    return res.status(400).json({ error: '未收到音频文件' });
+  }
+
+  const apiKey = WHISPER_API_KEY || OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'WHISPER_API_KEY 或 OPENROUTER_API_KEY 未设置' });
+  }
+
+  console.log(`[webcc/stt][${reqId}] File: ${req.file.originalname}, size: ${req.file.size}, mime: ${req.file.mimetype}`);
+  console.log(`[webcc/stt][${reqId}] Forwarding to ${WHISPER_BASE_URL}/audio/transcriptions (model: ${WHISPER_MODEL})`);
+
+  const t0 = Date.now();
+  try {
+    const formData = new FormData();
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' });
+    formData.append('file', blob, req.file.originalname || 'audio.webm');
+    formData.append('model', WHISPER_MODEL);
+
+    // Add language hint to skip auto-detection
+    if (WHISPER_LANGUAGE) {
+      formData.append('language', WHISPER_LANGUAGE);
+    }
+
+    // Add prompt to guide vocabulary and style recognition
+    const whisperPrompt = buildWhisperPrompt();
+    if (whisperPrompt) {
+      formData.append('prompt', whisperPrompt);
+      console.log(`[webcc/stt][${reqId}] Whisper prompt (${whisperPrompt.length} chars): ${whisperPrompt.slice(0, 120)}...`);
+    }
+
+    const response = await fetch(`${WHISPER_BASE_URL}/audio/transcriptions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`[webcc/stt][${reqId}] Whisper API error ${response.status}: ${errText.slice(0, 300)}`);
+      return res.status(502).json({ error: `Whisper API ${response.status}: ${errText.slice(0, 200)}` });
+    }
+
+    const result = await response.json();
+    const durationMs = Date.now() - t0;
+    console.log(`[webcc/stt][${reqId}] Success in ${durationMs}ms, text length: ${(result.text || '').length}`);
+    res.json({ text: result.text || '', duration_ms: durationMs });
+  } catch (err) {
+    const durationMs = Date.now() - t0;
+    console.error(`[webcc/stt][${reqId}] Error after ${durationMs}ms:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Voice settings API ──
+const ENV_PATH = path.join(__dirname, '.env');
+
+function readEnvFile() {
+  const vars = {};
+  try {
+    fs.readFileSync(ENV_PATH, 'utf8').split('\n').forEach(line => {
+      const m = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
+      if (m) vars[m[1]] = m[2];
+    });
+  } catch (_) {}
+  return vars;
+}
+
+function writeEnvFile(updates) {
+  let lines = [];
+  try { lines = fs.readFileSync(ENV_PATH, 'utf8').split('\n'); } catch (_) {}
+  const written = new Set();
+  lines = lines.map(line => {
+    const m = line.match(/^\s*([^#=]+?)\s*=/);
+    if (m && updates.hasOwnProperty(m[1])) {
+      written.add(m[1]);
+      return `${m[1]}=${updates[m[1]]}`;
+    }
+    return line;
+  }).filter(l => l.trim() !== '');
+  for (const [k, v] of Object.entries(updates)) {
+    if (!written.has(k)) lines.push(`${k}=${v}`);
+  }
+  fs.writeFileSync(ENV_PATH, lines.join('\n') + '\n');
+}
+
+app.get('/api/settings/voice', (req, res) => {
+  const env = readEnvFile();
+  const key = env.OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
+  const wsKey = env.WHISPER_API_KEY || process.env.WHISPER_API_KEY || '';
+  res.json({
+    baseUrl: env.OPENROUTER_BASE_URL || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    apiKey: key ? key.slice(0, 8) + '****' + key.slice(-4) : '',
+    model: env.OPENROUTER_MODEL || process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-001',
+    hasKey: !!key,
+    whisperBaseUrl: env.WHISPER_BASE_URL || process.env.WHISPER_BASE_URL || 'https://openrouter.ai/api/v1',
+    whisperApiKey: wsKey ? wsKey.slice(0, 8) + '****' + wsKey.slice(-4) : '',
+    whisperModel: env.WHISPER_MODEL || process.env.WHISPER_MODEL || 'whisper-large-v3-turbo',
+    hasWhisperKey: !!wsKey,
+    whisperLanguage: env.WHISPER_LANGUAGE || process.env.WHISPER_LANGUAGE || 'zh',
+    whisperPrompt: env.WHISPER_PROMPT || process.env.WHISPER_PROMPT || '',
+  });
+});
+
+app.post('/api/settings/voice', (req, res) => {
+  const { baseUrl, apiKey, model, whisperBaseUrl, whisperApiKey, whisperModel, whisperLanguage, whisperPrompt } = req.body;
+  const updates = {};
+  if (baseUrl !== undefined) updates.OPENROUTER_BASE_URL = baseUrl;
+  if (apiKey !== undefined && !apiKey.includes('****')) updates.OPENROUTER_API_KEY = apiKey;
+  if (model !== undefined) updates.OPENROUTER_MODEL = model;
+  if (whisperBaseUrl !== undefined) updates.WHISPER_BASE_URL = whisperBaseUrl;
+  if (whisperApiKey !== undefined && !whisperApiKey.includes('****')) updates.WHISPER_API_KEY = whisperApiKey;
+  if (whisperModel !== undefined) updates.WHISPER_MODEL = whisperModel;
+  if (whisperLanguage !== undefined) updates.WHISPER_LANGUAGE = whisperLanguage;
+  if (whisperPrompt !== undefined) updates.WHISPER_PROMPT = whisperPrompt;
+  writeEnvFile(updates);
+  // Update in-memory env + module-level constants
+  for (const [k, v] of Object.entries(updates)) process.env[k] = v;
+  if (updates.OPENROUTER_API_KEY) OPENROUTER_API_KEY = updates.OPENROUTER_API_KEY;
+  if (updates.OPENROUTER_MODEL) OPENROUTER_MODEL = updates.OPENROUTER_MODEL;
+  if (updates.OPENROUTER_BASE_URL) OPENROUTER_BASE_URL = updates.OPENROUTER_BASE_URL;
+  if (updates.WHISPER_API_KEY) WHISPER_API_KEY = updates.WHISPER_API_KEY;
+  if (updates.WHISPER_MODEL) WHISPER_MODEL = updates.WHISPER_MODEL;
+  if (updates.WHISPER_BASE_URL) WHISPER_BASE_URL = updates.WHISPER_BASE_URL;
+  if (updates.WHISPER_LANGUAGE) WHISPER_LANGUAGE = updates.WHISPER_LANGUAGE;
+  if (updates.WHISPER_PROMPT !== undefined) WHISPER_PROMPT = updates.WHISPER_PROMPT;
+  console.log(`[webcc/voice] Settings updated: model=${OPENROUTER_MODEL}, baseUrl=${OPENROUTER_BASE_URL}, key=${OPENROUTER_API_KEY ? 'set' : 'empty'}`);
+  console.log(`[webcc/stt] Settings updated: model=${WHISPER_MODEL}, baseUrl=${WHISPER_BASE_URL}, key=${WHISPER_API_KEY ? 'set' : 'empty'}`);
   res.json({ ok: true });
 });
 

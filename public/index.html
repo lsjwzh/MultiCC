@@ -133,6 +133,12 @@
       color: #fff;
       animation: pulse 1s infinite;
     }
+    .toolbar-btn.processing {
+      background: #d29922;
+      border-color: #d29922;
+      color: #fff;
+      animation: pulse 1s infinite;
+    }
 
     #mic-status {
       font-size: 11px;
@@ -497,6 +503,12 @@
       font-weight: 600;
     }
     .vp-actions button.primary:hover { background: #2ea043; }
+    .vp-timing {
+      font-size: 12px;
+      color: #8b949e;
+      padding: 4px 0;
+      min-height: 18px;
+    }
 
     /* ── Mobile overrides ── */
     @media (max-width: 768px) {
@@ -610,6 +622,7 @@
       <textarea id="vp-raw"></textarea>
       <div class="vp-section-label">AI 专业重排 <span id="vp-status"></span></div>
       <textarea id="vp-refined" placeholder="AI 处理中…"></textarea>
+      <div id="vp-timing" class="vp-timing"></div>
       <div class="vp-actions">
         <button id="vp-cancel">取消</button>
         <button id="vp-use-raw">使用原始文本</button>
