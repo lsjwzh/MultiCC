@@ -1,137 +1,208 @@
 'use strict';
 
-const hdrStatus   = document.getElementById('hdr-status');
-const cfgMcpUrl   = document.getElementById('cfg-mcp-url');
-const cfgChatName = document.getElementById('cfg-chat-name');
-const cfgSession  = document.getElementById('cfg-session');
-const cfgPoll     = document.getElementById('cfg-poll');
-const cfgIdle     = document.getElementById('cfg-idle');
-const btnStart    = document.getElementById('btn-start');
-const btnStop     = document.getElementById('btn-stop');
-const cfgStatus   = document.getElementById('cfg-status');
-const chatLog     = document.getElementById('chat-log');
-const msgInput    = document.getElementById('msg-input');
-const sendTarget  = document.getElementById('send-target');
+const _urlToken = new URLSearchParams(location.search).get('token');
+function tokenQS(prefix) { return _urlToken ? `${prefix}token=${_urlToken}` : ''; }
 
 let evtSource = null;
 let isRunning = false;
+let loginPollTimer = null;
 
-// ── Load config ──
+/* ── Helpers ── */
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* ── UI State ── */
+function setRunning(running) {
+  isRunning = running;
+  const hdr = document.getElementById('hdr-status');
+  const btnStart = document.getElementById('btn-start');
+  const btnStop = document.getElementById('btn-stop');
+  if (running) {
+    hdr.textContent = 'Running';
+    hdr.className = 'hdr-status on';
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+  } else {
+    hdr.textContent = 'Stopped';
+    hdr.className = 'hdr-status off';
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+  }
+}
+
+function setLoginStatus(text, cls) {
+  const el = document.getElementById('login-status');
+  el.textContent = text;
+  el.className = cls || '';
+}
+
+function showLoggedIn(loggedIn) {
+  const btnQR = document.getElementById('btn-get-qr');
+  const btnLogout = document.getElementById('btn-logout');
+  const qrImg = document.getElementById('qr-img');
+  if (loggedIn) {
+    btnQR.style.display = 'none';
+    btnLogout.style.display = '';
+    qrImg.style.display = 'none';
+    setLoginStatus('已登录微信', 'login-ok');
+  } else {
+    btnQR.style.display = '';
+    btnLogout.style.display = 'none';
+    setLoginStatus('', '');
+  }
+}
+
+function showStatus(text, isError) {
+  const el = document.getElementById('cfg-status');
+  el.textContent = text;
+  el.className = 'cfg-status ' + (isError ? 'err' : 'ok');
+  setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+/* ── QR Login ── */
+async function getQRCode() {
+  setLoginStatus('获取二维码中...', 'login-wait');
+  try {
+    const res = await fetch('/api/wechat/qrcode' + tokenQS('?'));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const qrImg = document.getElementById('qr-img');
+    if (data.image) {
+      qrImg.src = data.image.startsWith('data:') ? data.image : `data:image/png;base64,${data.image}`;
+      qrImg.style.display = 'block';
+    }
+    setLoginStatus('请用微信扫描二维码', 'login-wait');
+
+    // Start polling login status
+    stopLoginPoll();
+    loginPollTimer = setInterval(pollLoginStatus, 2000);
+  } catch (e) {
+    setLoginStatus(`获取失败: ${e.message}`, 'login-err');
+  }
+}
+
+async function pollLoginStatus() {
+  try {
+    const res = await fetch('/api/wechat/login-status' + tokenQS('?'));
+    const data = await res.json();
+    if (data.status === 'confirmed') {
+      stopLoginPoll();
+      showLoggedIn(true);
+      showStatus('登录成功');
+    } else if (data.status === 'expired' || data.status === 'error') {
+      stopLoginPoll();
+      setLoginStatus(data.error || '二维码已过期，请重新获取', 'login-err');
+      document.getElementById('qr-img').style.display = 'none';
+    }
+  } catch (_) { /* network error, keep trying */ }
+}
+
+function stopLoginPoll() {
+  if (loginPollTimer) { clearInterval(loginPollTimer); loginPollTimer = null; }
+}
+
+async function logout() {
+  try {
+    await fetch('/api/wechat/logout' + tokenQS('?'), { method: 'POST' });
+    showLoggedIn(false);
+    setRunning(false);
+    disconnectSSE();
+    showStatus('已退出登录');
+  } catch (e) {
+    showStatus(`退出失败: ${e.message}`, true);
+  }
+}
+
+/* ── Config ── */
 async function loadConfig() {
   try {
-    const res = await fetch('/api/wechat/config');
+    const res = await fetch('/api/wechat/config' + tokenQS('?'));
     const cfg = await res.json();
-    cfgMcpUrl.value   = cfg.mcpUrl || '';
-    cfgChatName.value = cfg.chatName || '';
-    cfgPoll.value     = cfg.pollInterval || 3000;
-    cfgIdle.value     = cfg.outputIdle || 5000;
-    // Session will be set after loadSessions
-    if (cfg.sessionId) cfgSession.dataset.pending = cfg.sessionId;
+    document.getElementById('cfg-idle').value = cfg.outputIdle || 5000;
+    document.getElementById('cfg-session').dataset.pending = cfg.defaultSession || '';
+    showLoggedIn(!!cfg.loggedIn);
   } catch (_) {}
 }
 
 async function loadSessions() {
   try {
-    const res = await fetch('/api/sessions');
-    const list = await res.json();
-    const current = cfgSession.value || cfgSession.dataset.pending || '';
-    cfgSession.innerHTML = '<option value="">-- 选择会话 --</option>';
-    for (const s of list) {
+    const res = await fetch('/api/sessions' + tokenQS('?'));
+    const sessions = await res.json();
+    const sel = document.getElementById('cfg-session');
+    const pending = sel.dataset.pending || sel.value;
+    sel.innerHTML = '<option value="">-- 选择会话 --</option>';
+    for (const s of sessions) {
       const opt = document.createElement('option');
       opt.value = s.id;
       opt.textContent = `${s.id} — ${s.cwd || '?'}${s.active ? '' : ' (inactive)'}`;
-      if (s.id === current) opt.selected = true;
-      cfgSession.appendChild(opt);
+      if (s.id === pending) opt.selected = true;
+      sel.appendChild(opt);
     }
-    delete cfgSession.dataset.pending;
+    sel.dataset.pending = '';
   } catch (_) {}
 }
 
 async function saveConfig() {
+  const body = {
+    defaultSession: document.getElementById('cfg-session').value,
+    outputIdle: Number(document.getElementById('cfg-idle').value) || 5000,
+  };
   try {
-    const res = await fetch('/api/wechat/config', {
+    const res = await fetch('/api/wechat/config' + tokenQS('?'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mcpUrl: cfgMcpUrl.value.trim(),
-        chatName: cfgChatName.value.trim(),
-        sessionId: cfgSession.value,
-        pollInterval: parseInt(cfgPoll.value) || 3000,
-        outputIdle: parseInt(cfgIdle.value) || 5000,
-      }),
+      body: JSON.stringify(body),
     });
-    const data = await res.json();
-    showStatus(data.ok ? '已保存' : '保存失败', data.ok);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showStatus('配置已保存');
   } catch (e) {
-    showStatus(`保存失败: ${e.message}`, false);
+    showStatus(`保存失败: ${e.message}`, true);
   }
 }
 
-// ── Bridge control ──
+/* ── Bridge Control ── */
 async function startBridge() {
-  btnStart.disabled = true;
-  showStatus('启动中...', true);
+  const body = {
+    defaultSession: document.getElementById('cfg-session').value,
+    outputIdle: Number(document.getElementById('cfg-idle').value) || 5000,
+  };
   try {
-    const res = await fetch('/api/wechat/start', {
+    const res = await fetch('/api/wechat/start' + tokenQS('?'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mcpUrl: cfgMcpUrl.value.trim(),
-        chatName: cfgChatName.value.trim(),
-        sessionId: cfgSession.value,
-        pollInterval: parseInt(cfgPoll.value) || 3000,
-        outputIdle: parseInt(cfgIdle.value) || 5000,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Start failed');
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     setRunning(true);
-    showStatus('桥接已启动', true);
-    chatLog.innerHTML = '';
     connectSSE();
+    showStatus('桥接已启动');
   } catch (e) {
-    showStatus(`启动失败: ${e.message}`, false);
-    btnStart.disabled = false;
+    showStatus(`启动失败: ${e.message}`, true);
   }
 }
 
 async function stopBridge() {
   try {
-    await fetch('/api/wechat/stop', { method: 'POST' });
+    await fetch('/api/wechat/stop' + tokenQS('?'), { method: 'POST' });
     setRunning(false);
-    showStatus('桥接已停止', true);
     disconnectSSE();
+    showStatus('桥接已停止');
   } catch (e) {
-    showStatus(`停止失败: ${e.message}`, false);
+    showStatus(`停止失败: ${e.message}`, true);
   }
 }
 
-function setRunning(on) {
-  isRunning = on;
-  btnStart.disabled = on;
-  btnStop.disabled = !on;
-  hdrStatus.className = `hdr-status ${on ? 'on' : 'off'}`;
-  hdrStatus.textContent = on ? 'Running' : 'Stopped';
-}
-
-function showStatus(text, ok) {
-  cfgStatus.textContent = text;
-  cfgStatus.className = `cfg-status ${ok ? 'ok' : 'err'}`;
-  setTimeout(() => { cfgStatus.textContent = ''; }, 5000);
-}
-
-// ── SSE for live log ──
+/* ── SSE Log Stream ── */
 function connectSSE() {
   disconnectSSE();
-  evtSource = new EventSource('/api/wechat/events');
+  evtSource = new EventSource('/api/wechat/events' + tokenQS('?'));
   evtSource.onmessage = (e) => {
-    try {
-      const entry = JSON.parse(e.data);
-      appendLog(entry);
-    } catch (_) {}
+    try { appendLog(JSON.parse(e.data)); } catch (_) {}
   };
   evtSource.onerror = () => {
-    // Reconnect after a delay
     disconnectSSE();
     if (isRunning) setTimeout(connectSSE, 3000);
   };
@@ -141,85 +212,73 @@ function disconnectSSE() {
   if (evtSource) { evtSource.close(); evtSource = null; }
 }
 
-// ── Log rendering ──
+const PREFIXES = { in: 'WeChat >', out: 'Claude <', system: 'SYS', error: 'ERR' };
+
 function appendLog(entry) {
-  // Remove empty placeholder
+  const chatLog = document.getElementById('chat-log');
   const empty = chatLog.querySelector('.log-empty');
   if (empty) empty.remove();
 
   const div = document.createElement('div');
   div.className = `log-entry type-${entry.type}`;
-
-  const time = document.createElement('span');
-  time.className = 'log-time';
   const d = new Date(entry.ts);
-  time.textContent = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
-
-  const prefix = document.createElement('span');
-  prefix.className = 'log-prefix';
-  const prefixMap = { in: 'WeChat >', out: 'Claude <', system: 'SYS', error: 'ERR' };
-  prefix.textContent = (prefixMap[entry.type] || entry.type) + ' ';
-
-  const text = document.createTextNode(entry.text);
-
-  div.append(time, prefix, text);
+  const time = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+  const prefix = PREFIXES[entry.type] || '';
+  div.innerHTML = `<span class="log-time">${time}</span><span class="log-prefix">${prefix}</span> ${escapeHtml(entry.text || '')}`;
   chatLog.appendChild(div);
 
-  // Auto-scroll
-  chatLog.scrollTop = chatLog.scrollHeight;
-
-  // Limit DOM nodes
   while (chatLog.children.length > 500) chatLog.removeChild(chatLog.firstChild);
+  chatLog.scrollTop = chatLog.scrollHeight;
 }
 
-// ── Manual send ──
+/* ── Manual Send ── */
 async function sendMsg() {
-  const text = msgInput.value.trim();
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
   if (!text) return;
-  msgInput.value = '';
+  input.value = '';
 
-  const target = sendTarget.value;
+  const target = document.getElementById('send-target').value;
   try {
-    const res = await fetch('/api/wechat/send', {
+    const res = await fetch('/api/wechat/send' + tokenQS('?'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, target }),
     });
     if (!res.ok) {
-      const data = await res.json();
-      showStatus(data.error || '发送失败', false);
+      const data = await res.json().catch(() => ({}));
+      showStatus(data.error || `发送失败: HTTP ${res.status}`, true);
     }
   } catch (e) {
-    showStatus(`发送失败: ${e.message}`, false);
+    showStatus(`发送失败: ${e.message}`, true);
   }
 }
 
-msgInput.addEventListener('keydown', (e) => {
+document.getElementById('msg-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); sendMsg(); }
 });
 
-// ── Mobile config toggle ──
+/* ── Mobile Toggle ── */
 function toggleConfig() {
   document.getElementById('config-panel').classList.toggle('open');
 }
 
-// ── Check running state on load ──
+/* ── Check Status on Load ── */
 async function checkStatus() {
   try {
-    const res = await fetch('/api/wechat/status');
+    const res = await fetch('/api/wechat/status' + tokenQS('?'));
     const data = await res.json();
-    setRunning(data.running);
+    showLoggedIn(data.loggedIn);
     if (data.running) {
+      setRunning(true);
       connectSSE();
-      // Load existing log
-      const logRes = await fetch('/api/wechat/log');
-      const log = await logRes.json();
-      chatLog.innerHTML = '';
-      for (const entry of log) appendLog(entry);
+      const logRes = await fetch('/api/wechat/log' + tokenQS('?'));
+      const entries = await logRes.json();
+      for (const e of entries) appendLog(e);
     }
   } catch (_) {}
 }
 
-// ── Init ──
+/* ── Init ── */
 loadConfig().then(() => loadSessions());
 checkStatus();

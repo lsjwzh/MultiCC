@@ -21,7 +21,7 @@ const { StringDecoder } = require('string_decoder');
 const { execSync, execFileSync, spawn } = require('child_process');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
-const wechatBridge = require('./wechat-bridge');
+const wechatBridge = require('./wechat-ilink');
 const webpush = require('web-push');
 
 const app = express();
@@ -1442,7 +1442,7 @@ function triggerPush(sessionId, type, message) {
 }
 
 // ── WeChat Bridge ──
-wechatBridge.init(sessions, persistedSessions);
+wechatBridge.init(sessions, persistedSessions, tmuxWriteInput);
 app.use('/api/wechat', wechatBridge.router);
 
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
@@ -1508,6 +1508,7 @@ wss.on('connection', (ws, req) => {
 
   // WebSocket messages → PTY input / resize
   let inputBuf = '';
+  let firstResize = true;  // toggle-resize on first resize to trigger full TUI redraw
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
@@ -1549,9 +1550,11 @@ wss.on('connection', (ws, req) => {
       } else if (msg.type === 'resize') {
         const cols = Math.max(1, msg.cols);
         const rows = Math.max(1, msg.rows);
-        // Toggle size first to force a full TUI redraw (ensures reconnecting clients
-        // see the current pane state via pipe-pane output capture)
-        tmuxResize(session.id, cols + 1, rows);
+        if (firstResize) {
+          // Toggle size on first resize to force TUI redraw for reconnecting clients
+          firstResize = false;
+          tmuxResize(session.id, cols + 1, rows);
+        }
         tmuxResize(session.id, cols, rows);
       } else if (msg.type === 'upload') {
         const { tempId, name, mime, data } = msg;

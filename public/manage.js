@@ -48,8 +48,6 @@ const NOTIFY_MIN_CHARS = 80;
 // Per-session monitor state: { ws, state, chars, recentText, idleTimer, connectedAt }
 const monitors = new Map();
 // Notification log entries: [{ id, sessionId, type, message, time }]
-let notifications = [];
-let notifIdCounter = 0;
 
 function stripAnsi(str) {
   return str.replace(ANSI_RE, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
@@ -99,7 +97,11 @@ function startMonitor(sessionId) {
 
       if (printable.length > 0) {
         mon.chars += printable.length;
-        if (mon.state === 'idle') mon.state = 'active';
+        if (mon.state === 'idle') {
+          mon.state = 'active';
+          // New activity cycle — allow notifications again
+          _acknowledgedSessions.delete(sessionId);
+        }
       }
 
       // Immediate pattern check
@@ -169,22 +171,14 @@ function clearCardNotify(sessionId) {
   if (badge) badge.className = 'notify-badge';
 }
 
-/* ── Notification log bar ── */
-const notifyBar = document.getElementById('notify-bar');
+/* ── Notifications: card badge only, voice once per event ── */
+const _acknowledgedSessions = new Set(); // sessions user has interacted with
 
 function addNotification(sessionId, type, message) {
-  const entry = {
-    id: ++notifIdCounter,
-    sessionId,
-    type,
-    message,
-    time: new Date(),
-  };
-  notifications.push(entry);
-  if (notifications.length > 50) notifications = notifications.slice(-50);
-  renderNotifyBar();
-
-  // Voice notification
+  // If user already acknowledged this session, skip
+  if (_acknowledgedSessions.has(sessionId)) return;
+  setCardNotify(sessionId, type);
+  // One-shot voice notification
   if (window.speechSynthesis) {
     const text = `Session ${sessionId}: ${message}`;
     const utterance = new SpeechSynthesisUtterance(text);
@@ -195,46 +189,11 @@ function addNotification(sessionId, type, message) {
   }
 }
 
-function dismissNotification(nid) {
-  notifications = notifications.filter(n => n.id !== nid);
-  renderNotifyBar();
+function acknowledgeSession(sessionId) {
+  _acknowledgedSessions.add(sessionId);
+  clearCardNotify(sessionId);
+  window.speechSynthesis && window.speechSynthesis.cancel();
 }
-
-function renderNotifyBar() {
-  if (notifications.length === 0) {
-    notifyBar.innerHTML = '';
-    notifyBar.classList.remove('has-items');
-    return;
-  }
-  notifyBar.classList.add('has-items');
-  // Show most recent first, max 10
-  const recent = notifications.slice(-10).reverse();
-  notifyBar.innerHTML = recent.map(n => `
-    <div class="notify-item" onclick="focusSession('${escapeHtml(n.sessionId)}')">
-      <span class="ni-dot ${n.type}"></span>
-      <span class="ni-id">#${escapeHtml(n.sessionId)}</span>
-      <span class="ni-msg">${escapeHtml(n.message)}</span>
-      <span class="ni-time">${formatTime(n.time.toISOString())}</span>
-      <span class="ni-dismiss" onclick="event.stopPropagation(); dismissNotification(${n.id})" title="Dismiss">✕</span>
-    </div>
-  `).join('');
-  notifyBar.scrollTop = 0;
-}
-
-/* ── Notify toggle button ── */
-const notifyToggle = document.getElementById('notify-toggle');
-let _notifyBarVisible = true;
-notifyToggle.addEventListener('click', () => {
-  _notifyBarVisible = !_notifyBarVisible;
-  notifyToggle.classList.toggle('active', _notifyBarVisible);
-  if (!_notifyBarVisible) {
-    notifyBar.style.display = 'none';
-  } else {
-    notifyBar.style.display = '';
-    renderNotifyBar();
-  }
-});
-notifyToggle.classList.add('active');
 
 /* ── Session loading ── */
 async function loadSessions() {
@@ -244,6 +203,7 @@ async function loadSessions() {
     _cachedSessions = sessions;
     renderSessions(sessions);
     syncMonitors(sessions);
+    if (typeof wechatPopulateSessionSelect === 'function') wechatPopulateSessionSelect(sessions);
   } catch (err) {
     console.error('Failed to load sessions:', err);
     document.getElementById('session-list').innerHTML =
@@ -327,8 +287,8 @@ function focusSession(id) {
   const s = _cachedSessions.find(s => s.id === id);
   if (!s) return;
 
-  // Clear notification badge when focusing
-  clearCardNotify(id);
+  // Mark as acknowledged — stops voice and clears badge
+  acknowledgeSession(id);
 
   if (_focusedSessionId === id) return; // already focused
   _focusedSessionId = id;
@@ -364,6 +324,7 @@ function openSessionNewTab(id) {
   const urlToken = new URLSearchParams(location.search).get('token');
   const tokenParam = urlToken ? `?token=${urlToken}&id=${id}` : `?id=${id}`;
   window.open(`/${tokenParam}`, '_blank');
+  acknowledgeSession(id);
 }
 
 async function deleteSession(id) {
@@ -521,7 +482,225 @@ function hideQR(e) {
   document.getElementById('qr-modal').classList.remove('visible');
 }
 
+/* ── WeChat Bridge (iLink) ── */
+let _wxEvtSource = null;
+let _wxRunning = false;
+let _wxLoginPollTimer = null;
+
+function wechatSetLoginUI(loggedIn) {
+  const btnQR = document.getElementById('wx-btn-qr');
+  const btnLogout = document.getElementById('wx-btn-logout');
+  const qrImg = document.getElementById('wx-qr-img');
+  const statusEl = document.getElementById('wx-login-status');
+  if (loggedIn) {
+    btnQR.style.display = 'none';
+    btnLogout.style.display = '';
+    qrImg.style.display = 'none';
+    statusEl.textContent = '已登录微信';
+    statusEl.style.color = '#3fb950';
+  } else {
+    btnQR.style.display = '';
+    btnLogout.style.display = 'none';
+    statusEl.textContent = '';
+  }
+}
+
+function wechatSetRunning(running) {
+  _wxRunning = running;
+  const btnStart = document.getElementById('wx-btn-start');
+  const btnStop = document.getElementById('wx-btn-stop');
+  const badge = document.getElementById('wx-running-badge');
+  btnStart.disabled = running;
+  btnStop.disabled = !running;
+  badge.style.display = running ? '' : 'none';
+}
+
+async function wechatGetQR() {
+  const statusEl = document.getElementById('wx-login-status');
+  statusEl.textContent = '获取二维码中...';
+  statusEl.style.color = '#d29922';
+  try {
+    const res = await fetch('/api/wechat/qrcode' + tokenQS('?'));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const qrImg = document.getElementById('wx-qr-img');
+    if (data.image) {
+      qrImg.src = data.image.startsWith('data:') ? data.image : `data:image/png;base64,${data.image}`;
+      qrImg.style.display = 'block';
+    }
+    statusEl.textContent = '请用微信扫描二维码';
+    if (_wxLoginPollTimer) clearInterval(_wxLoginPollTimer);
+    _wxLoginPollTimer = setInterval(wechatPollLogin, 2000);
+  } catch (e) {
+    statusEl.textContent = `获取失败: ${e.message}`;
+    statusEl.style.color = '#f85149';
+  }
+}
+
+async function wechatPollLogin() {
+  try {
+    const res = await fetch('/api/wechat/login-status' + tokenQS('?'));
+    const data = await res.json();
+    if (data.status === 'confirmed') {
+      if (_wxLoginPollTimer) { clearInterval(_wxLoginPollTimer); _wxLoginPollTimer = null; }
+      wechatSetLoginUI(true);
+      showToast('微信登录成功');
+    } else if (data.status === 'expired' || data.status === 'error') {
+      if (_wxLoginPollTimer) { clearInterval(_wxLoginPollTimer); _wxLoginPollTimer = null; }
+      const statusEl = document.getElementById('wx-login-status');
+      statusEl.textContent = data.error || '二维码已过期';
+      statusEl.style.color = '#f85149';
+      document.getElementById('wx-qr-img').style.display = 'none';
+    }
+  } catch (_) {}
+}
+
+async function wechatLogout() {
+  try {
+    await fetch('/api/wechat/logout' + tokenQS('?'), { method: 'POST' });
+    wechatSetLoginUI(false);
+    wechatSetRunning(false);
+    wechatDisconnectSSE();
+    showToast('已退出微信登录');
+  } catch (e) {
+    showToast(`退出失败: ${e.message}`, true);
+  }
+}
+
+async function wechatStart() {
+  const body = {
+    defaultSession: document.getElementById('wx-session').value,
+    outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
+  };
+  try {
+    const res = await fetch('/api/wechat/start' + tokenQS('?'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    wechatSetRunning(true);
+    wechatConnectSSE();
+    showToast('微信桥接已启动');
+  } catch (e) {
+    showToast(`启动失败: ${e.message}`, true);
+  }
+}
+
+async function wechatStop() {
+  try {
+    await fetch('/api/wechat/stop' + tokenQS('?'), { method: 'POST' });
+    wechatSetRunning(false);
+    wechatDisconnectSSE();
+    showToast('微信桥接已停止');
+  } catch (e) {
+    showToast(`停止失败: ${e.message}`, true);
+  }
+}
+
+async function wechatSaveConfig() {
+  const body = {
+    defaultSession: document.getElementById('wx-session').value,
+    outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
+  };
+  try {
+    const res = await fetch('/api/wechat/config' + tokenQS('?'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('微信配置已保存');
+  } catch (e) {
+    showToast(`保存失败: ${e.message}`, true);
+  }
+}
+
+function wechatConnectSSE() {
+  wechatDisconnectSSE();
+  _wxEvtSource = new EventSource('/api/wechat/events' + tokenQS('?'));
+  _wxEvtSource.onmessage = (e) => {
+    try { wechatAppendLog(JSON.parse(e.data)); } catch (_) {}
+  };
+  _wxEvtSource.onerror = () => {
+    wechatDisconnectSSE();
+    if (_wxRunning) setTimeout(wechatConnectSSE, 3000);
+  };
+}
+
+function wechatDisconnectSSE() {
+  if (_wxEvtSource) { _wxEvtSource.close(); _wxEvtSource = null; }
+}
+
+const _wxPrefixes = { in: '← WeChat', out: '→ Claude', system: 'SYS', error: 'ERR' };
+const _wxColors = { in: '#58a6ff', out: '#3fb950', system: '#d29922', error: '#f85149' };
+
+function wechatAppendLog(entry) {
+  const log = document.getElementById('wx-log');
+  // Remove placeholder
+  const ph = log.querySelector('div[style*="text-align:center"]');
+  if (ph) ph.remove();
+
+  const div = document.createElement('div');
+  div.style.cssText = `border-left:2px solid ${_wxColors[entry.type] || '#484f58'};padding:2px 6px;line-height:1.4;word-break:break-word;`;
+  const d = new Date(entry.ts);
+  const time = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
+  const prefix = _wxPrefixes[entry.type] || entry.type;
+  div.innerHTML = `<span style="color:#484f58;font-size:10px;margin-right:4px;">${time}</span><span style="color:${_wxColors[entry.type]};font-weight:600;">${escapeHtml(prefix)}</span> ${escapeHtml(entry.text || '')}`;
+  log.appendChild(div);
+
+  while (log.children.length > 100) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+function wechatPopulateSessionSelect(sessions) {
+  const sel = document.getElementById('wx-session');
+  if (!sel) return;
+  const current = sel.value || sel.dataset.pending || '';
+  sel.innerHTML = '<option value="">-- 选择会话 --</option>';
+  for (const s of sessions) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `${s.id} — ${s.cwd || '?'}${s.active ? '' : ' (inactive)'}`;
+    if (s.id === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.dataset.pending = '';
+}
+
+async function wechatLoadConfig() {
+  try {
+    const res = await fetch('/api/wechat/config' + tokenQS('?'));
+    const cfg = await res.json();
+    document.getElementById('wx-idle').value = cfg.outputIdle || 5000;
+    const sel = document.getElementById('wx-session');
+    if (sel) sel.dataset.pending = cfg.defaultSession || '';
+    wechatSetLoginUI(!!cfg.loggedIn);
+  } catch (_) {}
+}
+
+async function wechatCheckStatus() {
+  try {
+    const res = await fetch('/api/wechat/status' + tokenQS('?'));
+    const data = await res.json();
+    wechatSetLoginUI(data.loggedIn);
+    if (data.running) {
+      wechatSetRunning(true);
+      wechatConnectSSE();
+      // Load existing log
+      try {
+        const logRes = await fetch('/api/wechat/log' + tokenQS('?'));
+        const entries = await logRes.json();
+        for (const e of entries.slice(-50)) wechatAppendLog(e);
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
 /* ── Init ── */
 loadSessions();
 loadVoiceSettings();
+wechatLoadConfig();
+wechatCheckStatus();
 autoRefreshTimer = setInterval(loadSessions, 5000);

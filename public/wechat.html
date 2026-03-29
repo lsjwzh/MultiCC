@@ -137,6 +137,26 @@
     .cfg-status.ok  { color: #3fb950; }
     .cfg-status.err { color: #f85149; }
 
+    /* ── QR Login Area ── */
+    #login-area {
+      text-align: center;
+      padding: 8px 0;
+    }
+    #qr-img {
+      max-width: 200px;
+      border-radius: 8px;
+      border: 2px solid #30363d;
+      margin: 8px 0;
+      display: none;
+    }
+    #login-status {
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    .login-ok { color: #3fb950; }
+    .login-wait { color: #d29922; }
+    .login-err { color: #f85149; }
+
     /* ── Chat Log (center) ── */
     #chat-area {
       flex: 1;
@@ -251,7 +271,7 @@
 <body>
   <div id="header">
     <a class="logo" href="/">Web<span>CC</span></a>
-    <span class="title">/ WeChat Bridge</span>
+    <span class="title">/ WeChat Bridge (iLink)</span>
     <button class="cfg-toggle" id="cfg-toggle" onclick="toggleConfig()">&#9776;</button>
     <span class="spacer"></span>
     <span class="hdr-status off" id="hdr-status">Stopped</span>
@@ -259,26 +279,29 @@
 
   <div id="main">
     <div id="config-panel">
+      <!-- Login Section -->
       <div class="cfg-section">
-        <div class="cfg-title">WeChat-MCP 连接</div>
-        <div class="cfg-row">
-          <span class="cfg-label">MCP Server URL</span>
-          <input class="cfg-input" id="cfg-mcp-url" placeholder="http://localhost:8000/mcp" />
+        <div class="cfg-title">微信登录 (iLink)</div>
+        <div id="login-area">
+          <img id="qr-img" alt="QR Code" />
+          <div id="login-status"></div>
+          <div style="margin-top:8px;">
+            <button class="btn" id="btn-get-qr" onclick="getQRCode()">获取登录二维码</button>
+            <button class="btn btn-danger" id="btn-logout" onclick="logout()" style="display:none;">退出登录</button>
+          </div>
         </div>
-        <div class="cfg-row">
-          <span class="cfg-label">聊天对象 (微信联系人/群名)</span>
-          <input class="cfg-input" id="cfg-chat-name" placeholder="文件传输助手" />
-        </div>
-        <div class="cfg-hint">
-          WeChat-MCP 需以 streamable-http 模式运行:<br>
-          <code>wechat-mcp --transport streamable-http</code>
+        <div class="cfg-hint" style="margin-top:8px;">
+          使用微信扫描二维码绑定 ClawBot。<br>
+          需先在微信中启用 ClawBot 插件。<br>
+          登录有效期 24 小时，过期需重新扫码。
         </div>
       </div>
 
+      <!-- Session Binding -->
       <div class="cfg-section">
         <div class="cfg-title">Claude Code 会话</div>
         <div class="cfg-row">
-          <span class="cfg-label">绑定会话</span>
+          <span class="cfg-label">默认会话</span>
           <select class="cfg-input" id="cfg-session">
             <option value="">-- 选择会话 --</option>
           </select>
@@ -286,20 +309,21 @@
         <div class="cfg-row">
           <button class="btn" onclick="loadSessions()" style="font-size:12px;padding:4px 10px;">刷新会话列表</button>
         </div>
+        <div class="cfg-hint">
+          微信用户可发送 <code>/bind &lt;id&gt;</code> 绑定到其他会话。
+        </div>
       </div>
 
+      <!-- Advanced -->
       <div class="cfg-section">
         <div class="cfg-title">高级设置</div>
-        <div class="cfg-row">
-          <span class="cfg-label">轮询间隔 (ms)</span>
-          <input class="cfg-input" id="cfg-poll" type="number" value="3000" min="1000" step="500" />
-        </div>
         <div class="cfg-row">
           <span class="cfg-label">输出缓冲超时 (ms)</span>
           <input class="cfg-input" id="cfg-idle" type="number" value="5000" min="2000" step="500" />
         </div>
       </div>
 
+      <!-- Actions -->
       <div class="cfg-section">
         <div class="cfg-actions">
           <button class="btn btn-green" id="btn-start" onclick="startBridge()">启动桥接</button>
@@ -309,20 +333,23 @@
         <div class="cfg-status" id="cfg-status"></div>
       </div>
 
+      <!-- Help -->
       <div class="cfg-section">
         <div class="cfg-hint">
           <b>微信命令:</b> 在微信中发送<br>
           <code>/help</code> — 显示帮助<br>
           <code>/status</code> — 查看状态<br>
           <code>/sessions</code> — 列出会话<br>
-          <code>/bind &lt;id&gt;</code> — 切换会话
+          <code>/bind &lt;id&gt;</code> — 绑定到指定会话<br>
+          <code>/unbind</code> — 回到默认会话<br>
+          <code>/send &lt;id&gt; &lt;text&gt;</code> — 向指定会话发命令
         </div>
       </div>
     </div>
 
     <div id="chat-area">
       <div id="chat-log">
-        <div class="log-empty">桥接未启动。配置左侧面板后点击「启动桥接」。</div>
+        <div class="log-empty">桥接未启动。先扫码登录微信，选择会话后点击「启动桥接」。</div>
       </div>
       <div id="input-bar">
         <input id="msg-input" type="text" placeholder="输入消息..." autocomplete="off" />
