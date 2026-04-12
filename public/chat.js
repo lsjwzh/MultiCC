@@ -15,6 +15,25 @@ function withToken(url) {
   return url + (url.includes('?') ? '&' : '?') + `token=${encodeURIComponent(_token)}`;
 }
 
+/* ── Dynamic favicon + title from session name ── */
+const _TAB_COLORS = ['#58a6ff','#f78166','#3fb950','#d29922','#bc8cff','#f97583','#79c0ff','#56d364'];
+function _hashColor(s) {
+  let h = 0; for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i) * 31) | 0;
+  return _TAB_COLORS[Math.abs(h) % _TAB_COLORS.length];
+}
+function updateTabIdentity(id) {
+  if (!id) return;
+  document.title = `${id} — MultiCC Chat`;
+  const letter = id.charAt(0).toUpperCase();
+  const color = _hashColor(id);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#161b22"/><text x="32" y="45" text-anchor="middle" font-family="system-ui,sans-serif" font-size="38" font-weight="700" fill="${color}">${letter}</text></svg>`;
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+  link.type = 'image/svg+xml';
+  link.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+if (_sessionName) updateTabIdentity(_sessionName);
+
 /* ── Markdown setup ── */
 marked.setOptions({
   highlight(code, lang) {
@@ -130,6 +149,7 @@ function handleEvent(msg) {
         if (!('is_streaming' in msg)) break;
 
         sessionId = msg.session_id || msg.session || sessionId;
+        if (!_sessionName && sessionId) updateTabIdentity(sessionId);
         if (msg.cwd) updateCwdDisplay(msg.cwd);
         const parts = [];
         if (sessionId) parts.push(`Session: ${sessionId.slice(0, 8)}...`);
@@ -154,7 +174,7 @@ function handleEvent(msg) {
       break;
 
     case 'session_id':
-      if (msg.id) sessionId = msg.id;
+      if (msg.id) { sessionId = msg.id; if (!_sessionName) updateTabIdentity(msg.id); }
       break;
 
     case 'stream_event':
@@ -656,11 +676,40 @@ function updateAttachArea() {
 
 async function uploadFile(file) {
   const fileName = file.name || guessPastedFileName(file);
+  const isImage = file.type.startsWith('image/');
   const chip = document.createElement('div');
-  chip.className = 'attach-chip';
-  chip.innerHTML = `<span class="chip-name">${escHtml(fileName)}</span><span class="chip-remove">&times;</span>`;
+  chip.className = 'attach-chip' + (isImage ? ' is-image' : '');
   chip.style.opacity = '0.5';
-  chip.querySelector('.chip-remove').onclick = () => { chip.remove(); updateAttachArea(); };
+
+  // Build chip contents: thumbnail (if image) + name + remove button
+  let thumbUrl = null;
+  if (isImage) {
+    thumbUrl = URL.createObjectURL(file);
+    const img = document.createElement('img');
+    img.className = 'chip-thumb';
+    img.src = thumbUrl;
+    chip.appendChild(img);
+  }
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'chip-name';
+  nameSpan.textContent = fileName;
+  chip.appendChild(nameSpan);
+
+  const rm = document.createElement('span');
+  rm.className = 'chip-remove';
+  rm.innerHTML = '&times;';
+  rm.onclick = (e) => { e.stopPropagation(); chip.remove(); updateAttachArea(); if (thumbUrl) URL.revokeObjectURL(thumbUrl); };
+  chip.appendChild(rm);
+
+  // Click chip to preview image
+  if (isImage) {
+    chip.onclick = (e) => {
+      if (e.target === rm) return;
+      openLightbox(thumbUrl || chip.querySelector('.chip-thumb')?.src, fileName);
+    };
+    chip.title = 'Click to preview';
+  }
+
   attachArea.appendChild(chip);
   updateAttachArea();
 
@@ -673,12 +722,26 @@ async function uploadFile(file) {
     chip.dataset.path = data.path;
     chip.style.opacity = '1';
   } catch (err) {
-    chip.querySelector('.chip-name').textContent = `Failed: ${fileName}`;
+    nameSpan.textContent = `Failed: ${fileName}`;
     chip.style.borderColor = '#f85149';
     chip.style.opacity = '1';
     setTimeout(() => { chip.remove(); updateAttachArea(); }, 3000);
   }
 }
+
+/* ── Image lightbox ── */
+const _lightbox = document.getElementById('img-lightbox');
+function openLightbox(src, name) {
+  _lightbox.querySelector('img').src = src;
+  _lightbox.querySelector('.lb-name').textContent = name || '';
+  _lightbox.classList.add('show');
+}
+function closeLightbox() {
+  _lightbox.classList.remove('show');
+  _lightbox.querySelector('img').src = '';
+}
+_lightbox.querySelector('.lb-close').onclick = closeLightbox;
+_lightbox.onclick = (e) => { if (e.target === _lightbox) closeLightbox(); };
 
 function guessPastedFileName(file) {
   const ext = file.type === 'image/jpeg'

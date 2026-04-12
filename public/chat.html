@@ -264,7 +264,13 @@
     .attach-chip {
       display: flex; align-items: center; gap: 4px;
       background: #21262d; border: 1px solid #30363d; border-radius: 6px;
-      padding: 3px 6px; font-size: 11px; color: #8b949e; max-width: 180px;
+      padding: 3px 6px; font-size: 11px; color: #8b949e; max-width: 200px;
+      cursor: default;
+    }
+    .attach-chip.is-image { cursor: pointer; }
+    .attach-chip.is-image:hover { border-color: #58a6ff; }
+    .attach-chip .chip-thumb {
+      width: 24px; height: 24px; object-fit: cover; border-radius: 3px; flex-shrink: 0;
     }
     .attach-chip .chip-name {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
@@ -273,6 +279,27 @@
       cursor: pointer; color: #6e7681; font-size: 14px; line-height: 1; flex-shrink: 0;
     }
     .attach-chip .chip-remove:hover { color: #f85149; }
+
+    /* ── Image preview lightbox ── */
+    #img-lightbox {
+      display: none; position: fixed; inset: 0; z-index: 9999;
+      background: rgba(0,0,0,.85); align-items: center; justify-content: center;
+    }
+    #img-lightbox.show { display: flex; }
+    #img-lightbox img {
+      max-width: 92vw; max-height: 88vh; border-radius: 8px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.6);
+    }
+    #img-lightbox .lb-close {
+      position: absolute; top: 16px; right: 20px;
+      font-size: 32px; color: #ccc; cursor: pointer; line-height: 1;
+    }
+    #img-lightbox .lb-close:hover { color: #fff; }
+    #img-lightbox .lb-name {
+      position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+      color: #8b949e; font-size: 13px; max-width: 80vw;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
 
     /* ── Input bar ── */
     #input-bar {
@@ -457,6 +484,13 @@
   </style>
 </head>
 <body>
+
+  <!-- Image preview lightbox -->
+  <div id="img-lightbox">
+    <span class="lb-close">&times;</span>
+    <img src="" alt="preview" />
+    <span class="lb-name"></span>
+  </div>
 
   <!-- Header -->
   <div id="header">

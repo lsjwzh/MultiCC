@@ -668,6 +668,33 @@
           </div>
         </div>
       </details>
+
+      <!-- Temp Uploads Storage (collapsible) -->
+      <details class="settings-section" id="storage-section">
+        <summary>Temp Uploads</summary>
+        <div class="settings-card">
+          <div class="sc-header">Uploaded File Cache</div>
+          <div class="sc-body">
+            <div class="setting-row">
+              <label>Files</label>
+              <span id="st-count" style="font-size:13px;color:#c9d1d9;">—</span>
+            </div>
+            <div class="setting-row">
+              <label>Total Size</label>
+              <span id="st-size" style="font-size:13px;color:#c9d1d9;">—</span>
+            </div>
+            <div class="setting-row">
+              <label>Location</label>
+              <span id="st-dir" style="font-size:11px;color:#8b949e;word-break:break-all;font-family:monospace;">—</span>
+            </div>
+          </div>
+          <div class="sc-footer">
+            <button class="btn" onclick="loadUploadStats()">Refresh</button>
+            <button class="btn btn-danger" id="st-cleanup-btn" onclick="cleanupUploads()">Clean Up</button>
+            <span class="status-text" id="st-status"></span>
+          </div>
+        </div>
+      </details>
     </div>
 
     <!-- Focus panel: embedded terminal -->

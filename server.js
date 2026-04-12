@@ -987,6 +987,49 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   res.json({ path: tmpPath, name: req.file.originalname });
 });
 
+// ── Temp upload stats & cleanup ──
+app.get('/api/uploads/stats', (req, res) => {
+  try {
+    const tmpDir = os.tmpdir();
+    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('multicc_'));
+    let totalSize = 0;
+    const items = [];
+    for (const f of files) {
+      try {
+        const st = fs.statSync(path.join(tmpDir, f));
+        if (!st.isFile()) continue;
+        totalSize += st.size;
+        items.push({ name: f, size: st.size, mtime: st.mtime });
+      } catch (_) { /* skip */ }
+    }
+    res.json({ count: items.length, totalSize, dir: tmpDir, files: items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/uploads/cleanup', (req, res) => {
+  try {
+    const tmpDir = os.tmpdir();
+    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('multicc_'));
+    let deleted = 0, freed = 0;
+    for (const f of files) {
+      try {
+        const fp = path.join(tmpDir, f);
+        const st = fs.statSync(fp);
+        if (!st.isFile()) continue;
+        fs.unlinkSync(fp);
+        deleted++;
+        freed += st.size;
+      } catch (_) { /* skip */ }
+    }
+    console.log(`[multicc] Cleanup: deleted ${deleted} temp files, freed ${(freed / 1024 / 1024).toFixed(2)} MB`);
+    res.json({ deleted, freed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/voice/refine', (req, res) => {
   const reqId = `vr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const raw = (req.body.raw || '').trim();

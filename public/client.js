@@ -82,13 +82,31 @@ function withToken(url) {
   return url + (url.includes('?') ? '&' : '?') + `token=${encodeURIComponent(_urlToken)}`;
 }
 
+/* ── Dynamic favicon + title from session ID ── */
+const _TAB_COLORS = ['#58a6ff','#f78166','#3fb950','#d29922','#bc8cff','#f97583','#79c0ff','#56d364'];
+function _hashColor(s) {
+  let h = 0; for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i) * 31) | 0;
+  return _TAB_COLORS[Math.abs(h) % _TAB_COLORS.length];
+}
+function updateTabIdentity(id) {
+  if (!id) return;
+  document.title = `${id} — MultiCC`;
+  const letter = id.charAt(0).toUpperCase();
+  const color = _hashColor(id);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#161b22"/><text x="32" y="45" text-anchor="middle" font-family="system-ui,sans-serif" font-size="38" font-weight="700" fill="${color}">${letter}</text></svg>`;
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+  link.type = 'image/svg+xml';
+  link.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+
 function updateSessionLabel(id) {
   if (!sessionLabel) return;
   sessionLabel.textContent = `#${id}`;
   sessionLabel.title = `Session ID: ${id} — click to copy URL`;
 }
 
-if (currentSessionId) updateSessionLabel(currentSessionId);
+if (currentSessionId) { updateSessionLabel(currentSessionId); updateTabIdentity(currentSessionId); }
 
 if (sessionLabel) {
   sessionLabel.addEventListener('click', () => {
@@ -415,6 +433,7 @@ function connect() {
       if (msg.type === 'session_id') {
         currentSessionId = msg.id;
         updateSessionLabel(msg.id);
+        updateTabIdentity(msg.id);
         const _urlParams = new URLSearchParams(location.search);
         _urlParams.set('id', msg.id);
         const newUrl = `${location.pathname}?${_urlParams.toString()}`;

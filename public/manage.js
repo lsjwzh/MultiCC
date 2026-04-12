@@ -965,12 +965,48 @@ async function loadApkInfo() {
   } catch {}
 }
 
+/* ── Temp upload stats & cleanup ── */
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(2) + ' MB';
+}
+
+async function loadUploadStats() {
+  try {
+    const res = await fetch('/api/uploads/stats' + tokenQS('?'));
+    const data = await res.json();
+    document.getElementById('st-count').textContent = data.count + ' files';
+    document.getElementById('st-size').textContent = fmtSize(data.totalSize);
+    document.getElementById('st-dir').textContent = data.dir;
+    document.getElementById('st-cleanup-btn').disabled = data.count === 0;
+    document.getElementById('st-status').textContent = '';
+  } catch (err) {
+    document.getElementById('st-status').textContent = 'Load failed';
+  }
+}
+
+async function cleanupUploads() {
+  const stStatus = document.getElementById('st-status');
+  if (!confirm('Delete all temporary uploaded files?')) return;
+  try {
+    stStatus.textContent = 'Cleaning...';
+    const res = await fetch('/api/uploads/cleanup' + tokenQS('?'), { method: 'DELETE' });
+    const data = await res.json();
+    stStatus.textContent = `Deleted ${data.deleted} files, freed ${fmtSize(data.freed)}`;
+    loadUploadStats();
+  } catch (err) {
+    stStatus.textContent = 'Cleanup failed';
+  }
+}
+
 /* ── Init ── */
 loadSessions();
 loadVoiceSettings();
 loadPushDiagnostics();
 loadNotifySettings();
 loadApkInfo();
+loadUploadStats();
 wechatLoadConfig();
 wechatCheckStatus();
 autoRefreshTimer = setInterval(loadSessions, 5000);
