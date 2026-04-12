@@ -2019,6 +2019,15 @@ function handleChatWs(ws, req, urlObj) {
                   }
                 }
 
+                // Drop Claude CLI's own `system init` event — the server already
+                // sent its own `system init` on WS connect. Forwarding Claude's
+                // init (which has no `is_streaming` field) causes the client to
+                // spuriously fire the "completed while disconnected" warning and
+                // to insert extra "Session: …" dividers into the chat.
+                if (evt.type === 'system' && evt.subtype === 'init') {
+                  continue;
+                }
+
                 // Buffer for reconnect replay (keep last 500 events to avoid unbounded growth)
                 cs.streamReplay.push(evt);
                 if (cs.streamReplay.length > 500) cs.streamReplay.shift();

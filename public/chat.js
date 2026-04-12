@@ -123,6 +123,12 @@ function handleEvent(msg) {
   switch (msg.type) {
     case 'system':
       if (msg.subtype === 'init') {
+        // Only the SERVER's init carries `is_streaming`. Claude CLI's own
+        // stream-json init has the same shape but no `is_streaming`, and
+        // must NOT be treated as a (re)connect init — otherwise it would
+        // fire the "completed while disconnected" warning every single turn.
+        if (!('is_streaming' in msg)) break;
+
         sessionId = msg.session_id || msg.session || sessionId;
         if (msg.cwd) updateCwdDisplay(msg.cwd);
         const parts = [];
@@ -186,6 +192,7 @@ function handleEvent(msg) {
     case 'error':
       addSystemMsg(`Error: ${msg.error || JSON.stringify(msg)}`);
       isStreaming = false;
+      finishStreaming();
       updateUI();
       break;
   }
@@ -197,15 +204,12 @@ function handleStreamEvent(evt) {
     case 'message_start':
       isStreaming = true;
       hideThinking();
-      currentTextContent = '';
-      currentToolCards = new Map();
-      if (currentMsgEl) {
-        // Reconnecting mid-stream: reset bubble so replay rebuilds it cleanly
-        const ce = currentMsgEl.querySelector('.msg-content');
-        if (ce) { ce.textContent = ''; ce.classList.add('streaming-dot'); }
-      } else {
-        currentMsgEl = createAssistantBubble();
-      }
+      // Always start a fresh bubble at the end of the conversation.
+      // Reusing a stale `currentMsgEl` (e.g. left over from an error or
+      // a previous turn) puts streaming content into the wrong spot and
+      // can place tool cards above the user message that triggered them.
+      finishStreaming();
+      currentMsgEl = createAssistantBubble();
       updateUI();
       break;
 

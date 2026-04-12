@@ -99,6 +99,12 @@ class ChatService {
     switch (type) {
       case 'system':
         if (msg['subtype'] == 'init') {
+          // Only the server's own init carries `is_streaming`. Claude CLI's
+          // stream-json emits a `system/init` event too, but without this
+          // field — it must not be treated as a (re)connect init, otherwise
+          // it fires the "completed while disconnected" warning every turn.
+          if (!msg.containsKey('is_streaming')) break;
+
           _sessionId = (msg['session_id'] ?? msg['session'] ?? _sessionId)?.toString();
           final serverStreaming = msg['is_streaming'] == true;
           if (serverStreaming != isStreaming) {
