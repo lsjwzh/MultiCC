@@ -71,12 +71,68 @@ let _pendingCancel = false; // cancel requested while WS was disconnected
 // Context window tracking
 let _contextWindow = 1000000;
 let _usedTokens = 0;
+let _costText = '';  // latest cost summary string, kept separate from the context readout
 
 let currentMsgEl = null;
 let currentTextContent = '';
 let currentToolCards = new Map();
 let activeContentType = null;
 let activeContentIndex = -1;
+
+/* ── Debug panel ──
+   Records every WS event and every thinking/streaming state transition so the
+   "stuck on Thinking..." bug can be diagnosed live. The panel highlights the
+   exact failure signature in red: thinking bubble visible while not streaming. */
+const _dbgPanel   = document.getElementById('debug-panel');
+const _dbgLogEl   = document.getElementById('dbg-log');
+const _dbgStateEl = document.getElementById('dbg-state');
+const _DBG_MAX = 600;
+let _dbgEntries = [];
+
+function _dbgTime() {
+  const d = new Date();
+  const p = (n, l = 2) => String(n).padStart(l, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
+function _wsStateName() {
+  if (!ws) return 'null';
+  return ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][ws.readyState] || String(ws.readyState);
+}
+
+function dbg(cat, text) {
+  const time = _dbgTime();
+  _dbgEntries.push(`${time} [${cat}] ${text}`);
+  if (_dbgEntries.length > _DBG_MAX) _dbgEntries.shift();
+  if (_dbgLogEl) {
+    const line = document.createElement('div');
+    line.className = 'dbg-line';
+    line.innerHTML =
+      `<span class="dbg-time">${time}</span> ` +
+      `<span class="dbg-cat-${cat}">[${cat}]</span> ${escHtml(text)}`;
+    const nearBottom = _dbgLogEl.scrollHeight - _dbgLogEl.scrollTop - _dbgLogEl.clientHeight < 60;
+    _dbgLogEl.appendChild(line);
+    while (_dbgLogEl.children.length > _DBG_MAX) _dbgLogEl.removeChild(_dbgLogEl.firstChild);
+    if (nearBottom) _dbgLogEl.scrollTop = _dbgLogEl.scrollHeight;
+  }
+  dbgState();
+}
+
+function dbgState() {
+  if (!_dbgStateEl) return;
+  const wsName = _wsStateName();
+  const thinking = !!thinkingEl;
+  const stuck = thinking && !isStreaming;  // the exact bug signature
+  const badges = [
+    `<span class="dbg-badge ${wsName === 'OPEN' ? 'ok' : 'bad'}"><b>ws</b> ${wsName}</span>`,
+    `<span class="dbg-badge ${isStreaming ? 'warn' : ''}"><b>streaming</b> ${isStreaming}</span>`,
+    `<span class="dbg-badge ${stuck ? 'bad' : (thinking ? 'warn' : '')}"><b>thinking</b> ${thinking}</span>`,
+    `<span class="dbg-badge"><b>msgEl</b> ${!!currentMsgEl}</span>`,
+    `<span class="dbg-badge"><b>session</b> ${sessionId ? sessionId.slice(0, 8) : '-'}</span>`,
+  ];
+  if (stuck) badges.push('<span class="dbg-badge bad">&#9888; STUCK: thinking 显示中但已不在 streaming</span>');
+  _dbgStateEl.innerHTML = badges.join('');
+}
 
 /* ── CWD display ── */
 function updateCwdDisplay(p) {
@@ -90,6 +146,8 @@ updateCwdDisplay(_cwd);
 let _reconnectAttempt = 0;
 let _reconnectTimer = null;
 let _historyLoaded = false;  // prevent duplicate history render across reconnects
+let _wasConnected = false;       // true once we've successfully opened at least one WS
+let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
 
 function connect() {
   if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
@@ -107,10 +165,20 @@ function connect() {
   statusEl.textContent = 'Connecting...';
   statusEl.className = '';
 
+  dbg('ws', `connect() → ${url.replace(/token=[^&]*/, 'token=***')}`);
+
   ws.onopen = () => {
     statusEl.textContent = 'Connected';
     statusEl.className = 'connected';
     _reconnectAttempt = 0;
+    dbg('ws', 'onopen — 连接已建立');
+    // If we'd shown the disconnect banner, replace it with a reconnected marker.
+    if (_disconnectBannerEl) {
+      _disconnectBannerEl.remove();
+      _disconnectBannerEl = null;
+      addSystemMsg('✓ 已重新连接');
+    }
+    _wasConnected = true;
     // Show thinking while we wait for server's init message (which tells us real streaming state)
     if (isStreaming) showThinking();
     updateUI();
@@ -124,16 +192,20 @@ function connect() {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (e) => {
+    dbg('ws', `onclose — code=${e.code} (isStreaming=${isStreaming})`);
     // Don't reset isStreaming here — server may still be running.
     // UI stays in streaming state so user sees "reconnecting" rather than a broken state.
     updateUI();
     // Auto-reconnect with exponential backoff (1s, 2s, 4s, 8s, max 15s)
     const delay = Math.min(1000 * Math.pow(2, _reconnectAttempt), 15000);
     _reconnectAttempt++;
-    statusEl.textContent = `Reconnecting in ${Math.round(delay/1000)}s...`;
+    const secs = Math.round(delay / 1000);
+    statusEl.textContent = `Reconnecting in ${secs}s...`;
     statusEl.className = 'error';
     statusEl.onclick = () => { _reconnectAttempt = 0; connect(); };
+    // Sticky in-chat banner so the reconnect state is visible without scrolling up.
+    if (_wasConnected) showDisconnectBanner(secs);
     _reconnectTimer = setTimeout(connect, delay);
   };
 
@@ -142,6 +214,17 @@ function connect() {
 
 /* ── Event handler ── */
 function handleEvent(msg) {
+  let _s = msg.type;
+  if (msg.type === 'system') _s += `/${msg.subtype || '?'}` + ('is_streaming' in msg ? ` is_streaming=${msg.is_streaming}` : '');
+  else if (msg.type === 'stream_event') _s += `/${msg.event?.type || '?'}`;
+  else if (msg.type === 'assistant') {
+    const kinds = (msg.message?.content || []).map(b => b.type).join(',');
+    _s += kinds ? ` [${kinds}]` : '';
+  }
+  else if (msg.type === 'result') _s += ` cost=${msg.total_cost_usd ?? 'null'}`;
+  else if (msg.type === 'error') _s += ` ${msg.error || ''}`;
+  dbg('event', `WS ◀ ${_s}`);
+
   switch (msg.type) {
     case 'system':
       if (msg.subtype === 'init') {
@@ -154,8 +237,20 @@ function handleEvent(msg) {
         sessionId = msg.session_id || msg.session || sessionId;
         if (!_sessionName && sessionId) updateTabIdentity(sessionId);
         if (msg.cwd) updateCwdDisplay(msg.cwd);
+        // Update CLI badge in the header (Claude orange / Codex green)
+        if (msg.cli) {
+          const badge = document.querySelector('.badge');
+          if (badge) {
+            badge.textContent = msg.cli === 'codex' ? 'Codex · Chat' : 'Claude · Chat';
+            badge.style.background = msg.cli === 'codex' ? '#2ea043' : '#f78166';
+          }
+          if (document.title && !document.title.includes(msg.cli)) {
+            document.title = `MultiCC Chat · ${msg.cli}`;
+          }
+        }
         const parts = [];
         if (sessionId) parts.push(`Session: ${sessionId.slice(0, 8)}...`);
+        if (msg.cli) parts.push(msg.cli);
         if (msg.model) parts.push(msg.model);
         if (parts.length) addSystemMsg(parts.join(' | '));
         // Sync streaming state with server on (re)connect
@@ -206,7 +301,7 @@ function handleEvent(msg) {
       stopTitleAnimation();
       speakNotify('任务已完成', 'completed');
       if (msg.total_cost_usd) {
-        costBar.textContent = `$${msg.total_cost_usd.toFixed(4)} | ${msg.duration_ms}ms | ${msg.num_turns} turn(s)`;
+        _costText = `$${msg.total_cost_usd.toFixed(4)} | ${msg.duration_ms}ms | ${msg.num_turns} turn(s)`;
       }
       updateContextBar(msg.usage, msg.modelUsage);
       updateUI();
@@ -320,6 +415,10 @@ function handleToolResult(msg) {
 
 function finalizeAssistantMsg(message) {
   if (!message?.content) return;
+  // Real assistant content arrived — the thinking bubble must go away now.
+  // Codex never emits a `message_start` stream event (which is what hides the
+  // bubble for Claude), so without this the bubble lingers until `result`.
+  hideThinking();
   for (const block of message.content) {
     if (block.type === 'text' && block.text && !currentTextContent) {
       currentTextContent = block.text;
@@ -330,6 +429,9 @@ function finalizeAssistantMsg(message) {
 }
 
 function finishStreaming() {
+  // Catch-all: every terminal/transition path funnels through here, so this is
+  // the one reliable place to guarantee the thinking bubble is cleared.
+  hideThinking();
   if (currentMsgEl) {
     const dot = currentMsgEl.querySelector('.streaming-dot');
     if (dot) dot.classList.remove('streaming-dot');
@@ -434,6 +536,17 @@ function addSystemMsg(text) {
   scrollToBottom();
 }
 
+function showDisconnectBanner(secs) {
+  if (!_disconnectBannerEl) {
+    _disconnectBannerEl = document.createElement('div');
+    _disconnectBannerEl.className = 'msg system-msg disconnect-banner';
+    _disconnectBannerEl.onclick = () => { _reconnectAttempt = 0; connect(); };
+    messagesEl.appendChild(_disconnectBannerEl);
+  }
+  _disconnectBannerEl.textContent = `⚠️ 连接断开，${secs}s 后自动重连（点此立即重试）`;
+  scrollToBottom();
+}
+
 /* ── Replay saved history ── */
 function replayHistory(messages) {
   if (!messages || !messages.length) return;
@@ -508,16 +621,21 @@ function replayHistory(messages) {
 let thinkingEl = null;
 
 function showThinking() {
-  if (thinkingEl) return;
+  if (thinkingEl) { dbg('think', 'showThinking() — 已在显示，忽略'); return; }
   thinkingEl = document.createElement('div');
   thinkingEl.className = 'thinking-bubble';
   thinkingEl.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div> Thinking...';
   messagesEl.appendChild(thinkingEl);
   scrollToBottom();
+  dbg('think', 'showThinking() — 气泡已显示');
 }
 
 function hideThinking() {
-  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+  if (thinkingEl) {
+    thinkingEl.remove();
+    thinkingEl = null;
+    dbg('think', 'hideThinking() — 气泡已移除');
+  }
 }
 
 /* ── Send ── */
@@ -569,6 +687,7 @@ function send() {
   inputEl.style.height = 'auto';
 
   if (ws?.readyState === WebSocket.OPEN) {
+    dbg('state', `send() — WS ▶ user_message (${text.length} chars)`);
     ws.send(JSON.stringify({ type: 'user_message', text }));
     _pendingCancel = false;
     isStreaming = true;
@@ -581,6 +700,7 @@ function send() {
 
 /* ── Cancel ── */
 function cancelStreaming() {
+  dbg('state', `cancelStreaming() — isStreaming=${isStreaming}`);
   // Always try to send cancel to server (idempotent on server side).
   // This avoids the race where a 'result' event sets isStreaming=false
   // right before the user's click is processed — we still want the
@@ -631,8 +751,10 @@ function updateContextBar(usage, modelUsage) {
     const color = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#3fb950';
     const usedK = (_usedTokens / 1000).toFixed(1);
     const totalK = (_contextWindow / 1000).toFixed(0);
+    // Rebuild from scratch each time — never read back costBar's own rendered
+    // content, or the "Context: ..." readout concatenates onto itself forever.
     costBar.innerHTML =
-      `<span style="margin-right:12px">${costBar.textContent ? costBar.textContent : ''}</span>` +
+      (_costText ? `<span style="margin-right:12px">${escHtml(_costText)}</span>` : '') +
       `<span style="color:${color}">Context: ${usedK}k / ${totalK}k (${pct.toFixed(1)}%)</span>` +
       `<span style="display:inline-block;width:80px;height:6px;background:#21262d;border-radius:3px;margin-left:6px;vertical-align:middle;">` +
         `<span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span>` +
@@ -1129,5 +1251,38 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+/* ── Debug panel wiring ── */
+(function initDebugPanel() {
+  const btn = document.getElementById('dbg-btn');
+  if (btn) btn.addEventListener('click', () => {
+    _dbgPanel.classList.toggle('open');
+    if (_dbgPanel.classList.contains('open')) {
+      dbgState();
+      _dbgLogEl.scrollTop = _dbgLogEl.scrollHeight;
+    }
+  });
+  const closeBtn = document.getElementById('dbg-close');
+  if (closeBtn) closeBtn.addEventListener('click', () => _dbgPanel.classList.remove('open'));
+  const clearBtn = document.getElementById('dbg-clear');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    _dbgEntries = [];
+    _dbgLogEl.innerHTML = '';
+    dbg('state', 'debug log cleared');
+  });
+  const copyBtn = document.getElementById('dbg-copy');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    const text = _dbgEntries.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      copyBtn.textContent = 'Copied';
+    } catch (_) {
+      copyBtn.textContent = 'Failed';
+    }
+    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+  });
+  dbgState();
+})();
+
 /* ── Start ── */
+dbg('state', 'page loaded — 开始连接');
 connect();
