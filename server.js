@@ -3327,10 +3327,12 @@ function handleChatWs(ws, req, urlObj) {
             env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
             stdio: ['ignore', 'pipe', 'pipe'],
           });
+          cs.claudeProc = proc;
 
           const spawnTs = Date.now();
           console.log(`[multicc/chat] [${sessionName}] ${cs.cli} spawned pid=${proc.pid} turn=${cs.chatTurnCount} isRetry=${!!isRetry} clients=${cs.clients.size}`);
           let stderrBuf = '';
+          const isActiveProc = () => cs.claudeProc === proc;
 
           // Normalize a single JSONL line into the claude-shaped event stream the frontend
           // already consumes. Returns an array of events to forward (may be empty), or null
@@ -3480,6 +3482,7 @@ function handleChatWs(ws, req, urlObj) {
           };
 
           proc.stdout.on('data', (chunk) => {
+            if (!isActiveProc()) return;
             cs.lineBuf += chunk.toString();
             const lines = cs.lineBuf.split('\n');
             cs.lineBuf = lines.pop();
@@ -3490,15 +3493,21 @@ function handleChatWs(ws, req, urlObj) {
           });
 
           proc.stderr.on('data', (chunk) => {
+            if (!isActiveProc()) return;
             stderrBuf += chunk.toString();
             console.error(`[multicc/chat] stderr: ${chunk.toString().slice(0, 200)}`);
           });
 
           proc.on('error', (err) => {
+            if (!isActiveProc()) return;
             console.error(`[multicc/chat] [${sessionName}] pid=${proc.pid} spawn error: ${err.message}`);
           });
 
           proc.on('close', (code, signal) => {
+            if (!isActiveProc()) {
+              console.log(`[multicc/chat] [${sessionName}] stale proc pid=${proc.pid} closed after replacement (code=${code}, signal=${signal || ''})`);
+              return;
+            }
             const durMs = Date.now() - spawnTs;
             const killReason = cs._killReason || null;
             cs._killReason = null;

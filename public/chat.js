@@ -689,9 +689,10 @@ function send() {
   let text = inputEl.value.trim();
   if (!text) return;
 
-  // If streaming, finalize current response before sending new message
-  // (handles yes/no prompts and mid-stream replies)
-  if (isStreaming) {
+  // A new user message is a hard boundary. Codex can briefly leave a live
+  // assistant bubble while the client-side streaming flag is already false,
+  // so finalize any open bubble before appending the user's message.
+  if (isStreaming || currentMsgEl) {
     hideThinking();
     isStreaming = false;
     finishStreaming();
