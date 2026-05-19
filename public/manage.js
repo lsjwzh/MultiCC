@@ -334,6 +334,11 @@ function renderDashboard(directories, sessions) {
   const dirHtml = directories.map(d => renderDirectoryBlock(d, byDir.get(d.id) || [])).join('');
   const orphanHtml = orphans.length ? renderOrphans(orphans) : '';
   listEl.innerHTML = dirHtml + orphanHtml;
+
+  // Keep a live workspace socket open for every expanded directory.
+  for (const d of directories) {
+    if (_expandedDirs.has(d.id)) connectWorkspace(d.id);
+  }
 }
 
 function renderDirectoryBlock(dir, dirSessions) {
@@ -411,6 +416,9 @@ function renderSessionRow(s) {
   if (monStatus === 'waiting') { statusCls = 'waiting'; statusText = '等待'; }
   else if (monStatus === 'completed') { statusCls = 'completed'; statusText = '完成'; }
   else if (mon && mon.state === 'active') { statusCls = 'active'; statusText = '运行中'; }
+  // Live workspace status (from /ws/workspace) takes precedence when available.
+  const wb = _workspaceStatus.get(s.id);
+  if (wb) { const info = wbStatusInfo(wb.status); statusText = info.text; statusCls = info.cls; }
 
   const openBtn = s.kind === 'chat'
     ? `<button class="btn" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')">Open</button>`
@@ -421,10 +429,11 @@ function renderSessionRow(s) {
       <div class="sess-row-top">
         <span class="cli-chip ${s.cli || 'claude'}">${escapeHtml(s.cli || 'claude')}</span>
         <span class="kind-chip">${escapeHtml(s.kind || 'terminal')}</span>
-        <span class="sess-status ${statusCls}">${statusText}</span>
+        <span class="sess-status ${statusCls}" id="sess-status-${escapeHtml(s.id)}">${statusText}</span>
       </div>
       <div class="sess-id">#${escapeHtml(s.id)}</div>
       <div class="sess-label">${escapeHtml(s.label || s.cwd || '')}</div>
+      <div class="sess-file" id="sess-file-${escapeHtml(s.id)}" style="font-size:11px;color:#d29922;font-family:monospace;${wb && wb.currentFile ? '' : 'display:none'}">${wb && wb.currentFile ? '✎ ' + escapeHtml(wb.currentFile.split('/').pop()) : ''}</div>
       <div class="sess-row-bottom">
         <span class="sess-label">${escapeHtml(formatRelative(s.lastActivity || s.createdAt))}</span>
         <span class="sess-actions">
@@ -451,8 +460,8 @@ function renderOrphans(sessions) {
 }
 
 function toggleDirectory(id) {
-  if (_expandedDirs.has(id)) _expandedDirs.delete(id);
-  else _expandedDirs.add(id);
+  if (_expandedDirs.has(id)) { _expandedDirs.delete(id); disconnectWorkspace(id); }
+  else { _expandedDirs.add(id); connectWorkspace(id); }
   renderDashboard(_cachedDirectories, _cachedSessions);
 }
 
@@ -678,6 +687,65 @@ async function mergeSession(id) {
     }
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
+  }
+}
+
+/* ── Workspace status board (live agent statuses per directory) ── */
+const _workspaceWs = new Map();      // dirId → WebSocket
+const _workspaceStatus = new Map();  // sessionId → { status, currentFile, lastActivity }
+
+function wbStatusInfo(status) {
+  switch (status) {
+    case 'thinking': return { text: '思考中', cls: 'active' };
+    case 'editing':  return { text: '编辑中', cls: 'active' };
+    case 'running':  return { text: '运行中', cls: 'active' };
+    case 'waiting':  return { text: '等待',   cls: 'waiting' };
+    default:         return { text: 'idle',  cls: '' };
+  }
+}
+
+function connectWorkspace(dirId) {
+  if (_workspaceWs.has(dirId)) return;  // idempotent
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let url = `${proto}//${location.host}/ws/workspace?dirId=${encodeURIComponent(dirId)}`;
+  if (_urlToken) url += `&token=${_urlToken}`;
+  let ws;
+  try { ws = new WebSocket(url); } catch (_) { return; }
+  _workspaceWs.set(dirId, ws);
+  ws.onmessage = ({ data }) => {
+    let msg; try { msg = JSON.parse(data); } catch { return; }
+    if (msg.type === 'snapshot') {
+      for (const s of msg.sessions) {
+        _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity });
+        updateSessionStatusDom(s.id);
+      }
+    } else if (msg.type === 'status') {
+      _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity });
+      updateSessionStatusDom(msg.sessionId);
+    }
+  };
+  ws.onclose = () => { if (_workspaceWs.get(dirId) === ws) _workspaceWs.delete(dirId); };
+  ws.onerror = () => {};
+}
+
+function disconnectWorkspace(dirId) {
+  const ws = _workspaceWs.get(dirId);
+  if (ws) { try { ws.close(); } catch (_) {} _workspaceWs.delete(dirId); }
+}
+
+function updateSessionStatusDom(sessionId) {
+  const st = _workspaceStatus.get(sessionId);
+  if (!st) return;
+  const chip = document.getElementById(`sess-status-${sessionId}`);
+  if (chip) {
+    const info = wbStatusInfo(st.status);
+    chip.textContent = info.text;
+    chip.className = 'sess-status ' + info.cls;
+  }
+  const fileEl = document.getElementById(`sess-file-${sessionId}`);
+  if (fileEl) {
+    fileEl.textContent = st.currentFile ? '✎ ' + st.currentFile.split('/').pop() : '';
+    fileEl.style.display = st.currentFile ? '' : 'none';
   }
 }
 

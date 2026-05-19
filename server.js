@@ -1014,6 +1014,14 @@ function createSession(id) {
     wechatBridge.onSessionOutput(id, str);
     // Server-side push notification detection
     pushOnOutput(id, str);
+    // Coarse status for the workspace board: output → running, 2s of silence → idle.
+    if (workspaceStatus.get(id)?.status !== 'running') {
+      setSessionStatus(id, { status: 'running' });
+    }
+    if (session._statusIdleTimer) clearTimeout(session._statusIdleTimer);
+    session._statusIdleTimer = setTimeout(() => {
+      setSessionStatus(id, { status: 'idle' });
+    }, 2000);
   });
 
   // Detect session exit or stream failure
@@ -1221,6 +1229,7 @@ app.delete('/api/directories/:id', (req, res) => {
     if (s.worktreePath && s.branch) gitWorktreeRemove(d.path, s.worktreePath, s.branch);
     persistedSessions.delete(s.id);
     invalidSessions.delete(s.id);
+    workspaceStatus.delete(s.id);
   }
   directories.delete(d.id);
   saveDirectories();
@@ -1248,6 +1257,13 @@ app.get('/api/directories/:id/sessions', (req, res) => {
       };
     });
   res.json({ directory: d, sessions: owned });
+});
+
+// Live status board snapshot for a directory (same shape as the /ws/workspace snapshot).
+app.get('/api/directories/:id/workspace', (req, res) => {
+  const d = directories.get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'directory not found' });
+  res.json({ directory: d, sessions: workspaceSnapshot(d.id) });
 });
 
 app.post('/api/directories/:id/sessions', (req, res) => {
@@ -1344,6 +1360,7 @@ app.delete('/api/sessions/:id', (req, res) => {
   }
   persistedSessions.delete(id);
   invalidSessions.delete(id);
+  workspaceStatus.delete(id);
   savePersistedSessions();
   res.json({ ok: true });
 });
@@ -2852,6 +2869,78 @@ function chatBroadcast(sessionName, payload) {
   }
 }
 
+// ── Workspace status board ──
+// Per-session live status (runtime only, never persisted). Broadcast to /ws/workspace
+// subscribers grouped by directory so every agent in a directory can see the others.
+// status ∈ idle | thinking | editing | running | waiting
+const workspaceStatus = new Map();   // sessionId → { status, currentFile, lastActivity }
+const workspaceClients = new Map();  // dirId → Set<ws>
+
+function workspaceBroadcast(dirId, payload) {
+  const set = workspaceClients.get(dirId);
+  if (!set) return;
+  const json = JSON.stringify(payload);
+  for (const wsc of set) {
+    if (wsc.readyState === WebSocket.OPEN) { try { wsc.send(json); } catch (_) {} }
+  }
+}
+
+// Update a session's live status and push the delta to workspace subscribers.
+function setSessionStatus(sessionId, patch) {
+  const persisted = persistedSessions.get(sessionId);
+  if (!persisted || persisted.type === 'aux') return;
+  const prev = workspaceStatus.get(sessionId) || { status: 'idle', currentFile: null, lastActivity: 0 };
+  const next = {
+    status: patch.status !== undefined ? patch.status : prev.status,
+    currentFile: patch.currentFile !== undefined ? patch.currentFile : prev.currentFile,
+    lastActivity: Date.now(),
+  };
+  workspaceStatus.set(sessionId, next);
+  // Only broadcast when the status or current file actually changed — callers may
+  // fire this on every output chunk / text delta.
+  if (next.status === prev.status && next.currentFile === prev.currentFile) return;
+  workspaceBroadcast(persisted.dirId, {
+    type: 'status', sessionId,
+    status: next.status, currentFile: next.currentFile, lastActivity: next.lastActivity,
+  });
+}
+
+function workspaceSnapshot(dirId) {
+  const out = [];
+  for (const s of persistedSessions.values()) {
+    if (s.dirId !== dirId || s.type === 'aux') continue;
+    const st = workspaceStatus.get(s.id) || { status: 'idle', currentFile: null, lastActivity: 0 };
+    const active = sessions.get(s.id);
+    const chat = chatSessions.get(s.id);
+    out.push({
+      id: s.id, label: s.label || null, cli: s.cli || 'claude', kind: s.kind || 'terminal',
+      branch: s.branch || null, invalid: invalidSessions.get(s.id) || null,
+      status: st.status, currentFile: st.currentFile, lastActivity: st.lastActivity,
+      clients: s.kind === 'chat' ? (chat?.clients.size || 0) : (active?.clients.size || 0),
+    });
+  }
+  return out;
+}
+
+function handleWorkspaceWs(ws, req, urlObj) {
+  const dirId = urlObj.searchParams.get('dirId') || '';
+  if (!directories.has(dirId)) {
+    ws.send(JSON.stringify({ type: 'error', error: 'unknown directory' }));
+    ws.close();
+    return;
+  }
+  let set = workspaceClients.get(dirId);
+  if (!set) { set = new Set(); workspaceClients.set(dirId, set); }
+  set.add(ws);
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.send(JSON.stringify({ type: 'snapshot', dirId, sessions: workspaceSnapshot(dirId) }));
+  ws.on('close', () => {
+    set.delete(ws);
+    if (set.size === 0) workspaceClients.delete(dirId);
+  });
+}
+
 // ── Chat intent classification: 30s delayed trigger ──
 const CLASSIFY_DELAY_MS = 30000;
 
@@ -2896,6 +2985,10 @@ ${tail}`,
       const state = result.text.trim().toUpperCase().startsWith('W') ? 'waiting' : 'completed';
       const msg = state === 'waiting' ? '等待操作' : '任务已完成';
       triggerPush(sessionId, state, `[Chat] ${msg}`);
+      // Reflect on the status board — but only if no new turn has started since.
+      if (!cs.isStreaming) {
+        setSessionStatus(sessionName, { status: state === 'waiting' ? 'waiting' : 'idle' });
+      }
       console.log(`[multicc/aux] Intent classify for ${sessionName}: ${state}`);
     }).catch(() => {
       cs.pendingClassifyTaskId = null;
@@ -3077,6 +3170,7 @@ function handleChatWs(ws, req, urlObj) {
         cs.isStreaming = true;
         cs.streamReplay = [];
         cs._resultSaved = false;
+        setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
 
         const provider = cliProviders[cs.cli] || cliProviders.claude;
         // For claude: first turn → --session-id <uuid>, subsequent → --resume <uuid>.
@@ -3124,6 +3218,7 @@ function handleChatWs(ws, req, urlObj) {
                   };
                   forward(mapped);
                   cs.currentToolCalls.push({ name: 'Bash', input: { command: it.command }, id: it.id });
+                  setSessionStatus(sessionName, { status: 'running', currentFile: null });
                 }
                 return;
               }
@@ -3148,6 +3243,7 @@ function handleChatWs(ws, req, urlObj) {
                   const text = it.text || '';
                   cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + text;
                   forward({ type: 'assistant', message: { content: [{ type: 'text', text: text + '\n\n' }] } });
+                  setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
                   return;
                 }
                 if (it.type === 'reasoning') {
@@ -3175,6 +3271,7 @@ function handleChatWs(ws, req, urlObj) {
                   cs._resultSaved = true;
                 }
                 forward({ type: 'result', total_cost_usd: null, usage });
+                setSessionStatus(sessionName, { status: 'idle', currentFile: null });
                 scheduleIntentClassify(cs, sessionName);
                 return;
               }
@@ -3184,9 +3281,20 @@ function handleChatWs(ws, req, urlObj) {
             // ── Claude: unchanged path ──
             if (evt.type === 'assistant' && evt.message?.content) {
               for (const block of evt.message.content) {
-                if (block.type === 'text') cs.currentAssistantText += block.text;
+                if (block.type === 'text') {
+                  cs.currentAssistantText += block.text;
+                  setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+                }
                 if (block.type === 'tool_use') {
                   cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
+                  const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+                  if (editTools.includes(block.name)) {
+                    setSessionStatus(sessionName, { status: 'editing', currentFile: block.input?.file_path || null });
+                  } else if (block.name === 'Bash') {
+                    setSessionStatus(sessionName, { status: 'running', currentFile: null });
+                  } else {
+                    setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+                  }
                 }
               }
             }
@@ -3215,6 +3323,7 @@ function handleChatWs(ws, req, urlObj) {
                 cs.chatTurnCount++;
                 cs._resultSaved = true;
               }
+              setSessionStatus(sessionName, { status: 'idle', currentFile: null });
               scheduleIntentClassify(cs, sessionName);
             }
             // Drop claude's `system init` — server already sent its own
@@ -3319,6 +3428,7 @@ function handleChatWs(ws, req, urlObj) {
             cs.currentToolCalls = [];
             cs._resultSaved = false;
 
+            setSessionStatus(sessionName, { status: 'idle', currentFile: null });
             chatBroadcast(sessionName, { type: 'stream_end' });
           });
 
@@ -3360,6 +3470,11 @@ wss.on('connection', (ws, req) => {
   // Route to chat handler if path matches
   if (urlObj.pathname === '/ws/chat') {
     return handleChatWs(ws, req, urlObj);
+  }
+
+  // Route to the per-directory workspace status board
+  if (urlObj.pathname === '/ws/workspace') {
+    return handleWorkspaceWs(ws, req, urlObj);
   }
 
   // Route to aux queue monitor (read-only WebSocket for __aux__ session)
