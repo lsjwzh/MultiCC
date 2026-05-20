@@ -161,6 +161,7 @@ let _reconnectTimer = null;
 let _historyLoaded = false;  // prevent duplicate history render across reconnects
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
+let _hiddenAt = 0;
 
 function connect() {
   if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
@@ -1401,11 +1402,38 @@ function ensureWsAlive() {
   connect();
 }
 
+function forceReconnect(reason) {
+  dbg('ws', `force reconnect — ${reason}`);
+  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  _reconnectAttempt = 0;
+  const old = ws;
+  if (old && old.readyState !== WebSocket.CLOSED) {
+    old.onclose = null;
+    old.onerror = null;
+    old.onmessage = null;
+    try { old.close(1000, 'client reconnect'); } catch (_) {}
+  }
+  ws = null;
+  connect();
+}
+
 /* ── Reconnect when tab becomes visible again ── */
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') ensureWsAlive();
+  if (document.visibilityState === 'hidden') {
+    _hiddenAt = Date.now();
+    return;
+  }
+  if (document.visibilityState === 'visible') {
+    const hiddenMs = _hiddenAt ? Date.now() - _hiddenAt : 0;
+    _hiddenAt = 0;
+    if (hiddenMs > 10000) forceReconnect(`visible after ${Math.round(hiddenMs / 1000)}s hidden`);
+    else ensureWsAlive();
+  }
 });
-window.addEventListener('pageshow', ensureWsAlive);
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) forceReconnect('pageshow from bfcache');
+  else ensureWsAlive();
+});
 window.addEventListener('focus', ensureWsAlive);
 
 /* ── Debug panel wiring ── */
