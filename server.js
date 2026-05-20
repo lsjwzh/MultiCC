@@ -2864,16 +2864,6 @@ app.post('/api/aux/enqueue', (req, res) => {
     .catch(err => res.json({ ok: false, error: err?.message || 'cancelled' }));
 });
 
-// ── WeChat Bridge ──
-wechatBridge.init({
-  persistedSessions,
-  chatSessions,
-  savePersistedSessions,
-  chatBroadcast,
-  port: PORT,
-});
-app.use('/api/wechat', wechatBridge.router);
-
 // Root → manage page (unless ?id= is specified, which means a terminal session)
 app.get('/', (req, res, next) => {
   if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
@@ -2964,6 +2954,17 @@ function chatBroadcast(sessionName, payload) {
     }
   }
 }
+
+// ── WeChat Bridge ──
+// Must come after chatSessions/chatBroadcast are declared (TDZ would crash otherwise).
+wechatBridge.init({
+  persistedSessions,
+  chatSessions,
+  savePersistedSessions,
+  chatBroadcast,
+  port: PORT,
+});
+app.use('/api/wechat', wechatBridge.router);
 
 // ── Workspace status board ──
 // Per-session live status (runtime only, never persisted). Broadcast to /ws/workspace
