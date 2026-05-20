@@ -11,11 +11,19 @@ class SessionStatus {
   final String status;
   final String? currentFile;
   final int lastActivity;
+  final bool mergeReady;
+  final bool dirty;
+  final int ahead;
+  final String? baseBranch;
 
   const SessionStatus({
     required this.status,
     this.currentFile,
     this.lastActivity = 0,
+    this.mergeReady = false,
+    this.dirty = false,
+    this.ahead = 0,
+    this.baseBranch,
   });
 }
 
@@ -32,7 +40,7 @@ class WorkspaceService extends ChangeNotifier {
   bool _disposed = false;
 
   final Map<String, SessionStatus> statuses = {};
-  final Map<String, int> pendingNotes = {};   // sessionId → pending note count
+  final Map<String, int> pendingNotes = {}; // sessionId → pending note count
   final List<Map<String, dynamic>> events = []; // newest last, capped at 200
 
   WorkspaceService({required this.settings, required this.dirId});
@@ -50,11 +58,13 @@ class WorkspaceService extends ChangeNotifier {
         onError: (_) => _scheduleReconnect(),
         onDone: _scheduleReconnect,
       );
-      channel.ready.then((_) {
-        _reconnectAttempt = 0;
-      }).catchError((_) {
-        _scheduleReconnect();
-      });
+      channel.ready
+          .then((_) {
+            _reconnectAttempt = 0;
+          })
+          .catchError((_) {
+            _scheduleReconnect();
+          });
     } catch (_) {
       _scheduleReconnect();
     }
@@ -68,17 +78,27 @@ class WorkspaceService extends ChangeNotifier {
     final params = <String, String>{'dirId': dirId};
     if (settings.token.isNotEmpty) params['token'] = settings.token;
     final query = params.entries
-        .map((e) =>
-            '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+        .map(
+          (e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
+        )
         .join('&');
     return '$wsScheme://$bare/ws/workspace?$query';
   }
 
-  SessionStatus _parse(Map m) => SessionStatus(
-        status: (m['status'] ?? 'idle') as String,
-        currentFile: m['currentFile'] as String?,
-        lastActivity: (m['lastActivity'] ?? 0) as int,
-      );
+  SessionStatus _parse(Map m) {
+    final merge = m['mergeState'];
+    final mergeMap = merge is Map ? merge : const {};
+    return SessionStatus(
+      status: (m['status'] ?? 'idle') as String,
+      currentFile: m['currentFile'] as String?,
+      lastActivity: (m['lastActivity'] ?? 0) as int,
+      mergeReady: mergeMap['mergeReady'] == true,
+      dirty: mergeMap['dirty'] == true,
+      ahead: (mergeMap['ahead'] as num?)?.toInt() ?? 0,
+      baseBranch: mergeMap['baseBranch']?.toString(),
+    );
+  }
 
   void _onMessage(dynamic raw) {
     String text;
@@ -110,14 +130,33 @@ class WorkspaceService extends ChangeNotifier {
       }
       events
         ..clear()
-        ..addAll((msg['events'] as List? ?? const [])
-            .whereType<Map>()
-            .map((e) => e.cast<String, dynamic>()));
+        ..addAll(
+          (msg['events'] as List? ?? const []).whereType<Map>().map(
+            (e) => e.cast<String, dynamic>(),
+          ),
+        );
       notifyListeners();
     } else if (type == 'status') {
       final id = msg['sessionId'];
       if (id is String) {
         statuses[id] = _parse(msg);
+        notifyListeners();
+      }
+    } else if (type == 'merge_status') {
+      final id = msg['sessionId'];
+      if (id is String) {
+        final prev = statuses[id] ?? const SessionStatus(status: 'idle');
+        final merge = msg['mergeState'];
+        final mergeMap = merge is Map ? merge : const {};
+        statuses[id] = SessionStatus(
+          status: prev.status,
+          currentFile: prev.currentFile,
+          lastActivity: prev.lastActivity,
+          mergeReady: mergeMap['mergeReady'] == true,
+          dirty: mergeMap['dirty'] == true,
+          ahead: (mergeMap['ahead'] as num?)?.toInt() ?? 0,
+          baseBranch: mergeMap['baseBranch']?.toString(),
+        );
         notifyListeners();
       }
     } else if (type == 'event') {

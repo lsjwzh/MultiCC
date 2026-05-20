@@ -338,6 +338,17 @@
     .sess-row .sess-actions { display: flex; gap: 4px; opacity: 0.7; flex-shrink: 0; }
     .sess-row:hover .sess-actions { opacity: 1; }
     .sess-row .sess-actions .btn { padding: 2px 8px; font-size: 10px; }
+    .sess-row .sess-actions .btn.merge-ready {
+      background: #d29922;
+      border-color: #e3b341;
+      color: #0d1117;
+      font-weight: 700;
+      box-shadow: 0 0 0 2px #d2992230;
+    }
+    .sess-row .sess-actions .btn.merge-ready:hover {
+      background: #e3b341;
+      border-color: #f2cc60;
+    }
 
     /* ── Session Cards Grid (legacy — still used by aux section) ── */
     .session-grid {

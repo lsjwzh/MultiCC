@@ -641,6 +641,36 @@ function gitWorktreeCommitAll(worktreePath, message) {
   return true;
 }
 
+function gitWorktreeMergeState(dir, session) {
+  if (!dir || !session || !session.worktreePath || !session.branch) {
+    return { mergeReady: false, dirty: false, ahead: 0, reason: 'no-worktree' };
+  }
+  const wtPath = session.worktreePath;
+  const baseBranch = dir.baseBranch || gitBaseBranch(dir.path);
+  let dirty = false;
+  let ahead = 0;
+  let baseCheckedOut = true;
+
+  try {
+    dirty = fs.existsSync(wtPath) && gitRun(wtPath, ['status', '--porcelain']).length > 0;
+  } catch (_) {}
+  try {
+    ahead = parseInt(gitRun(dir.path, ['rev-list', '--count', `${baseBranch}..${session.branch}`]) || '0', 10);
+  } catch (_) {}
+  try {
+    baseCheckedOut = gitBaseBranch(dir.path) === baseBranch;
+  } catch (_) {}
+
+  return {
+    mergeReady: dirty || ahead > 0,
+    dirty,
+    ahead,
+    baseBranch,
+    branch: session.branch,
+    baseCheckedOut,
+  };
+}
+
 // Commit pending work in the worktree, then merge its branch into the base branch.
 function gitMergeBack(dir, session) {
   const dirPath = dir.path;
@@ -1111,6 +1141,7 @@ app.get('/api/sessions', (req, res) => {
         label: p.label || null,
         cwd,
         createdAt: p.createdAt,
+        mergeState: p.dirId ? gitWorktreeMergeState(directories.get(p.dirId), p) : null,
       };
       if (p.kind === 'chat' || active === undefined) {
         // Chat sessions don't live in `sessions` (terminal) map; derive active state from chatSessions
@@ -1253,6 +1284,7 @@ app.get('/api/directories/:id/sessions', (req, res) => {
         branch: s.branch || null,
         worktreePath: s.worktreePath || null,
         invalid: invalidSessions.get(s.id) || null,
+        mergeState: gitWorktreeMergeState(d, s),
         active: s.kind === 'terminal' ? !!active : !!(activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming)),
         clients: s.kind === 'terminal' ? (active?.clients.size || 0) : (activeChat?.clients.size || 0),
       };
@@ -1329,11 +1361,21 @@ app.get('/api/sessions/:id', (req, res) => {
   const active = sessions.get(id);
   const persisted = persistedSessions.get(id);
   if (!active && !persisted) return res.status(404).json({ error: 'Session not found' });
+  const dir = persisted?.dirId ? directories.get(persisted.dirId) : null;
+  const mergeState = persisted ? gitWorktreeMergeState(dir, persisted) : null;
   if (active) {
-    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true });
+    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState });
   } else {
-    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false });
+    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState });
   }
+});
+
+app.get('/api/sessions/:id/merge-status', (req, res) => {
+  const persisted = persistedSessions.get(req.params.id);
+  if (!persisted) return res.status(404).json({ error: 'session not found' });
+  const dir = directories.get(persisted.dirId);
+  if (!dir) return res.status(404).json({ error: 'directory not found' });
+  res.json(gitWorktreeMergeState(dir, persisted));
 });
 
 app.delete('/api/sessions/:id', (req, res) => {
@@ -1506,6 +1548,7 @@ app.post('/api/sessions/:id/merge', (req, res) => {
     (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
   appendEvent(dir.id, 'merged',
     result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', id);
+  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: gitWorktreeMergeState(dir, persisted) });
   res.json(result);
 });
 
@@ -2946,6 +2989,7 @@ function setSessionStatus(sessionId, patch) {
   workspaceBroadcast(persisted.dirId, {
     type: 'status', sessionId,
     status: next.status, currentFile: next.currentFile, lastActivity: next.lastActivity,
+    mergeState: gitWorktreeMergeState(directories.get(persisted.dirId), persisted),
   });
 }
 
@@ -2962,6 +3006,7 @@ function workspaceSnapshot(dirId) {
       status: st.status, currentFile: st.currentFile, lastActivity: st.lastActivity,
       clients: s.kind === 'chat' ? (chat?.clients.size || 0) : (active?.clients.size || 0),
       pendingNotes: pendingNotesFor(s.id).length,
+      mergeState: gitWorktreeMergeState(directories.get(s.dirId), s),
     });
   }
   return out;

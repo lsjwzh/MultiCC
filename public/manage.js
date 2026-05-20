@@ -421,6 +421,11 @@ function renderSessionRow(s) {
   const wb = _workspaceStatus.get(s.id);
   if (wb) { const info = wbStatusInfo(wb.status); statusText = info.text; statusCls = info.cls; }
   const pendingNotes = _workspaceNotes.get(s.id) || 0;
+  const mergeState = wb?.mergeState || s.mergeState || {};
+  const mergeReady = !!mergeState.mergeReady;
+  const mergeTitle = mergeReady
+    ? `可合并：${mergeState.dirty ? '有未提交改动' : ''}${mergeState.dirty && mergeState.ahead > 0 ? '，' : ''}${mergeState.ahead > 0 ? `${mergeState.ahead} 个提交领先` : ''}`
+    : '把 worktree 合并回基分支';
 
   const openBtn = s.kind === 'chat'
     ? `<button class="btn" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')">Open</button>`
@@ -442,7 +447,7 @@ function renderSessionRow(s) {
         <span class="sess-actions">
           ${openBtn}
           <button class="btn" onclick="event.stopPropagation(); openNoteModal('${escapeHtml(s.id)}')" title="给同目录其他 agent 留言">留言</button>
-          <button class="btn" onclick="event.stopPropagation(); mergeSession('${escapeHtml(s.id)}')" title="把 worktree 合并回基分支">合并</button>
+          <button class="btn${mergeReady ? ' merge-ready' : ''}" id="merge-btn-${escapeHtml(s.id)}" onclick="event.stopPropagation(); mergeSession('${escapeHtml(s.id)}')" title="${escapeHtml(mergeTitle)}">合并</button>
           <button class="btn btn-danger" onclick="event.stopPropagation(); deleteSession('${escapeHtml(s.id)}')">Del</button>
         </span>
       </div>
@@ -684,6 +689,9 @@ async function mergeSession(id) {
     const data = await res.json();
     if (res.ok) {
       showToast(data.merged ? `已合并 ${data.commits} 个提交回基分支` : (data.message || '没有新提交需要合并'));
+      const prev = _workspaceStatus.get(id) || {};
+      _workspaceStatus.set(id, { ...prev, mergeState: { ...(prev.mergeState || {}), mergeReady: false, dirty: false, ahead: 0 } });
+      updateSessionMergeDom(id);
     } else if (res.status === 409) {
       showToast(`合并冲突，已 abort：${(data.conflicts || []).join(', ')}`, true);
     } else {
@@ -696,7 +704,7 @@ async function mergeSession(id) {
 
 /* ── Workspace status board (live agent statuses per directory) ── */
 const _workspaceWs = new Map();        // dirId → WebSocket
-const _workspaceStatus = new Map();    // sessionId → { status, currentFile, lastActivity }
+const _workspaceStatus = new Map();    // sessionId → { status, currentFile, lastActivity, mergeState }
 const _workspaceEvents = new Map();    // dirId → event[]
 const _workspaceNotes = new Map();     // sessionId → pending note count
 
@@ -722,16 +730,22 @@ function connectWorkspace(dirId) {
     let msg; try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'snapshot') {
       for (const s of msg.sessions) {
-        _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity });
+        _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity, mergeState: s.mergeState || null });
         _workspaceNotes.set(s.id, s.pendingNotes || 0);
         updateSessionStatusDom(s.id);
         updateSessionNotesDom(s.id);
+        updateSessionMergeDom(s.id);
       }
       _workspaceEvents.set(dirId, msg.events || []);
       updateEventTimelineDom(dirId);
     } else if (msg.type === 'status') {
-      _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity });
+      _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity, mergeState: msg.mergeState || _workspaceStatus.get(msg.sessionId)?.mergeState || null });
       updateSessionStatusDom(msg.sessionId);
+      updateSessionMergeDom(msg.sessionId);
+    } else if (msg.type === 'merge_status') {
+      const prev = _workspaceStatus.get(msg.sessionId) || {};
+      _workspaceStatus.set(msg.sessionId, { ...prev, mergeState: msg.mergeState || null });
+      updateSessionMergeDom(msg.sessionId);
     } else if (msg.type === 'event') {
       const arr = _workspaceEvents.get(dirId) || [];
       arr.push(msg.event);
@@ -803,6 +817,18 @@ function updateSessionNotesDom(sessionId) {
   const n = _workspaceNotes.get(sessionId) || 0;
   el.textContent = n > 0 ? `📨 ${n}` : '';
   el.style.display = n > 0 ? '' : 'none';
+}
+
+function updateSessionMergeDom(sessionId) {
+  const btn = document.getElementById(`merge-btn-${sessionId}`);
+  if (!btn) return;
+  const st = _workspaceStatus.get(sessionId);
+  const ms = st?.mergeState || {};
+  const ready = !!ms.mergeReady;
+  btn.classList.toggle('merge-ready', ready);
+  btn.title = ready
+    ? `可合并：${ms.dirty ? '有未提交改动' : ''}${ms.dirty && ms.ahead > 0 ? '，' : ''}${ms.ahead > 0 ? `${ms.ahead} 个提交领先` : ''}`
+    : '把 worktree 合并回基分支';
 }
 
 /* ── Leave-a-note modal ── */
@@ -1043,8 +1069,24 @@ async function wechatGetQR() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     const qrImg = document.getElementById('wx-qr-img');
-    if (data.image) {
-      qrImg.src = data.image.startsWith('data:') ? data.image : `data:image/png;base64,${data.image}`;
+    const img = data.image || '';
+    if (img) {
+      if (/^https?:\/\//i.test(img)) {
+        renderQrUrlToImg(qrImg, img);
+      } else if (img.startsWith('data:')) {
+        qrImg.src = img;
+      } else {
+        qrImg.src = `data:image/png;base64,${img}`;
+      }
+      qrImg.onerror = () => {
+        if (data.qrcode) {
+          qrImg.onerror = null;
+          renderQrUrlToImg(qrImg, wechatLoginUrl(data.qrcode));
+        }
+      };
+      qrImg.style.display = 'block';
+    } else if (data.qrcode) {
+      renderQrUrlToImg(qrImg, wechatLoginUrl(data.qrcode));
       qrImg.style.display = 'block';
     }
     statusEl.textContent = '请用微信扫描二维码';
@@ -1054,6 +1096,39 @@ async function wechatGetQR() {
     statusEl.textContent = `获取失败: ${e.message}`;
     statusEl.style.color = '#f85149';
   }
+}
+
+function wechatLoginUrl(qrcodeToken) {
+  return `https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=${encodeURIComponent(qrcodeToken)}&bot_type=3`;
+}
+
+function renderQrUrlToImg(imgEl, url) {
+  if (typeof qrcode !== 'function') {
+    imgEl.src = url;
+    return;
+  }
+  const qr = qrcode(0, 'M');
+  qr.addData(url);
+  qr.make();
+  const cellSize = 5;
+  const margin = 8;
+  const count = qr.getModuleCount();
+  const size = count * cellSize + margin * 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = '#000';
+  for (let r = 0; r < count; r++) {
+    for (let c = 0; c < count; c++) {
+      if (qr.isDark(r, c)) {
+        ctx.fillRect(margin + c * cellSize, margin + r * cellSize, cellSize, cellSize);
+      }
+    }
+  }
+  imgEl.src = canvas.toDataURL('image/png');
 }
 
 async function wechatPollLogin() {

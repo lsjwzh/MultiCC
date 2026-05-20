@@ -54,6 +54,13 @@
     }
     .hdr-btn:hover { background: #30363d; }
     .hdr-btn:active { background: #388bfd; }
+    .hdr-btn.merge-ready {
+      background: #d29922;
+      border-color: #e3b341;
+      color: #0d1117;
+      font-weight: 700;
+      box-shadow: 0 0 0 2px #d2992230;
+    }
 
     /* ── CWD bar ── */
     #cwd-bar {
@@ -370,6 +377,38 @@
     #input-bar textarea:focus { border-color: #388bfd; }
     #input-bar textarea::placeholder { color: #484f58; }
 
+    #merge-hint {
+      display: none;
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: calc(62px + env(safe-area-inset-bottom));
+      z-index: 8500;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 10px;
+      background: #2d2108;
+      border: 1px solid #d29922;
+      border-radius: 8px;
+      box-shadow: 0 10px 28px #00000066;
+      color: #f2cc60;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    #merge-hint.show { display: flex; }
+    #merge-hint .merge-hint-text { flex: 1; min-width: 0; }
+    #merge-hint button {
+      flex-shrink: 0;
+      border: 1px solid #e3b341;
+      background: #d29922;
+      color: #0d1117;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
     #send-btn {
       flex-shrink: 0;
       width: 40px; height: 40px;
@@ -620,6 +659,11 @@
 
   <!-- Attachments area -->
   <div id="attach-area"></div>
+
+  <div id="merge-hint">
+    <span class="merge-hint-text">当前 worktree 有可合并内容。</span>
+    <button id="merge-hint-btn">合并</button>
+  </div>
 
   <!-- Input bar -->
   <div id="input-bar">

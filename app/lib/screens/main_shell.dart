@@ -48,6 +48,14 @@ String _wbStatusLabel(String? status) {
   }
 }
 
+String _mergeReadyLabel(SessionStatus status) {
+  final bits = <String>[];
+  if (status.dirty) bits.add('有未提交改动');
+  if (status.ahead > 0) bits.add('${status.ahead} 个提交领先');
+  final detail = bits.isEmpty ? '有可合并内容' : bits.join('，');
+  return '$detail，可合并回 ${status.baseBranch ?? '基分支'}';
+}
+
 class MainShell extends StatefulWidget {
   final SettingsService settings;
   const MainShell({super.key, required this.settings});
@@ -1124,6 +1132,7 @@ class _SessionCard extends StatelessWidget {
     final statusColor = live != null
         ? _wbStatusColor(live.status)
         : (session.active ? const Color(0xFF3fb950) : const Color(0xFF6e7681));
+    final mergeReady = live?.mergeReady == true;
     final title = session.label?.isNotEmpty == true
         ? session.label!
         : session.id;
@@ -1223,8 +1232,11 @@ class _SessionCard extends StatelessWidget {
                 const SizedBox(height: 4),
                 Row(
                   children: [
-                    const Icon(Icons.edit_outlined,
-                        size: 11, color: Color(0xFFd29922)),
+                    const Icon(
+                      Icons.edit_outlined,
+                      size: 11,
+                      color: Color(0xFFd29922),
+                    ),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
@@ -1245,6 +1257,32 @@ class _SessionCard extends StatelessWidget {
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  IconButton(
+                    icon: Icon(
+                      Icons.merge_type_rounded,
+                      size: 16,
+                      color: mergeReady
+                          ? const Color(0xFF0d1117)
+                          : const Color(0xFF8b949e),
+                    ),
+                    style: IconButton.styleFrom(
+                      backgroundColor: mergeReady
+                          ? const Color(0xFFd29922)
+                          : Colors.transparent,
+                      side: mergeReady
+                          ? const BorderSide(color: Color(0xFFe3b341))
+                          : BorderSide.none,
+                    ),
+                    tooltip: mergeReady
+                        ? _mergeReadyLabel(live!)
+                        : '合并 worktree',
+                    onPressed: () => _mergeSession(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 30,
+                      minHeight: 28,
+                    ),
+                  ),
                   IconButton(
                     icon: const Icon(
                       Icons.mail_outline_rounded,
@@ -1303,9 +1341,9 @@ class _SessionCard extends StatelessWidget {
         .where((x) => x.dirId == session.dirId && x.id != session.id)
         .toList();
     if (siblings.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('该目录下没有其他会话可留言')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('该目录下没有其他会话可留言')));
       return;
     }
     final messenger = ScaffoldMessenger.of(context);
@@ -1316,8 +1354,10 @@ class _SessionCard extends StatelessWidget {
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF161b22),
-          title: const Text('留言',
-              style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc))),
+          title: const Text(
+            '留言',
+            style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1356,7 +1396,8 @@ class _SessionCard extends StatelessWidget {
                   filled: true,
                   fillColor: const Color(0xFF0d1117),
                   border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6)),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
                 ),
               ),
             ],
@@ -1364,14 +1405,20 @@ class _SessionCard extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消',
-                  style: TextStyle(color: Color(0xFF8b949e))),
+              child: const Text(
+                '取消',
+                style: TextStyle(color: Color(0xFF8b949e)),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('发送',
-                  style: TextStyle(
-                      color: Color(0xFF58a6ff), fontWeight: FontWeight.w600)),
+              child: const Text(
+                '发送',
+                style: TextStyle(
+                  color: Color(0xFF58a6ff),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ],
         ),
@@ -1381,14 +1428,63 @@ class _SessionCard extends StatelessWidget {
     final body = bodyCtrl.text.trim();
     if (body.isEmpty) return;
     try {
-      await SessionService(settings: settings).postNote(
-        fromSessionId: session.id,
-        toSessionId: targetId,
-        body: body,
-      );
+      await SessionService(
+        settings: settings,
+      ).postNote(fromSessionId: session.id, toSessionId: targetId, body: body);
       messenger.showSnackBar(const SnackBar(content: Text('留言已发送')));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('发送失败：$e')));
+    }
+  }
+
+  Future<void> _mergeSession(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF161b22),
+        title: const Text(
+          '合并 worktree',
+          style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+        ),
+        content: const Text(
+          '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
+          style: TextStyle(color: Color(0xFFc9d1d9)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消', style: TextStyle(color: Color(0xFF8b949e))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              '合并',
+              style: TextStyle(
+                color: Color(0xFF58a6ff),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在合并 worktree...')));
+    try {
+      final result = await SessionService(
+        settings: settings,
+      ).mergeSession(session.id);
+      final msg = result['ok'] == true
+          ? (result['merged'] == true
+                ? '✓ 已合并 ${result['commits']} 个提交回基分支'
+                : '✓ ${result['message'] ?? '没有新提交需要合并'}')
+          : '合并失败：${result['error'] ?? ''}';
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text('合并请求失败：$e')));
     }
   }
 

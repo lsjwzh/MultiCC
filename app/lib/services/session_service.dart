@@ -27,7 +27,9 @@ class SessionService {
         .timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) throw Exception('${res.statusCode}');
     final list = jsonDecode(res.body) as List;
-    return list.map((j) => Session.fromJson(j as Map<String, dynamic>)).toList();
+    return list
+        .map((j) => Session.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   Future<void> deleteSession(String id) async {
@@ -51,6 +53,22 @@ class SessionService {
     final res = await http
         .post(Uri.parse(_url('/api/sessions/$id/merge')), headers: _headers)
         .timeout(const Duration(seconds: 30));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
+  Future<Map<String, dynamic>> fetchMergeStatus(String id) async {
+    final res = await http
+        .get(
+          Uri.parse(_url('/api/sessions/$id/merge-status')),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 10));
     final body = jsonDecode(res.body);
     final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
     if (res.statusCode >= 400) {
@@ -99,10 +117,15 @@ class SessionService {
         .timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) throw Exception('${res.statusCode}');
     final list = jsonDecode(res.body) as List;
-    return list.map((j) => Directory.fromJson(j as Map<String, dynamic>)).toList();
+    return list
+        .map((j) => Directory.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
-  Future<Directory> createDirectory({required String name, required String path}) async {
+  Future<Directory> createDirectory({
+    required String name,
+    required String path,
+  }) async {
     final res = await http
         .post(
           Uri.parse(_url('/api/directories')),

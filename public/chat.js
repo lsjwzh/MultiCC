@@ -37,16 +37,23 @@ function updateTabIdentity(id) {
 if (_sessionName) updateTabIdentity(_sessionName);
 
 /* ── Markdown setup ── */
-marked.setOptions({
-  highlight(code, lang) {
-    if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
-      try { return hljs.highlight(code, { language: lang }).value; } catch (_) {}
-    }
-    return code;
-  },
-  breaks: true,
-  gfm: true,
-});
+if (typeof marked !== 'undefined' && marked.setOptions) {
+  marked.setOptions({
+    highlight(code, lang) {
+      if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
+        try { return hljs.highlight(code, { language: lang }).value; } catch (_) {}
+      }
+      return code;
+    },
+    breaks: true,
+    gfm: true,
+  });
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  return (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : escHtml(text);
+}
 
 /* ── DOM refs ── */
 const messagesEl  = document.getElementById('messages');
@@ -61,6 +68,9 @@ const fileInput   = document.getElementById('file-input');
 const micBtn      = document.getElementById('mic-btn');
 const micToast    = document.getElementById('mic-toast');
 const cancelBtn   = document.getElementById('cancel-btn');
+const mergeBtn    = document.getElementById('merge-btn');
+const mergeHint   = document.getElementById('merge-hint');
+const mergeHintBtn = document.getElementById('merge-hint-btn');
 
 /* ── State ── */
 let ws = null;
@@ -79,6 +89,8 @@ let currentToolCards = new Map();
 let activeContentType = null;
 let activeContentIndex = -1;
 let currentCli = 'claude';
+let _mergeReady = false;
+let _mergePollTimer = null;
 
 /* ── Debug panel ──
    Records every WS event and every thinking/streaming state transition so the
@@ -469,7 +481,12 @@ function finishStreaming() {
   if (currentMsgEl) {
     const dot = currentMsgEl.querySelector('.streaming-dot');
     if (dot) dot.classList.remove('streaming-dot');
-    renderCurrentText(true);
+    try {
+      renderCurrentText(true);
+    } catch (e) {
+      console.warn('Failed to render final assistant text:', e);
+      dbg('event', `render final failed: ${e.message}`);
+    }
   }
   currentMsgEl = null;
   currentTextContent = '';
@@ -492,7 +509,10 @@ function renderCurrentText(final = false) {
   if (!contentEl) return;
 
   const toolEls = contentEl.querySelectorAll('.tool-card');
-  let html = currentTextContent.trim() ? marked.parse(currentTextContent) : '';
+  let html = '';
+  if (currentTextContent.trim()) {
+    html = renderMarkdown(currentTextContent);
+  }
 
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
@@ -507,8 +527,16 @@ function renderCurrentText(final = false) {
   }
 
   if (final) {
-    contentEl.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+    highlightCodeBlocks(contentEl);
   }
+}
+
+function highlightCodeBlocks(root) {
+  const highlighter = window.hljs;
+  if (!highlighter || typeof highlighter.highlightElement !== 'function') return;
+  root.querySelectorAll('pre code').forEach(block => {
+    try { highlighter.highlightElement(block); } catch (_) {}
+  });
 }
 
 function createToolCard(name, id) {
@@ -609,12 +637,8 @@ function replayHistory(messages) {
 
       // Render text as markdown
       if (m.content?.trim()) {
-        contentEl.innerHTML = marked.parse(m.content);
-        if (typeof hljs !== 'undefined') {
-          contentEl.querySelectorAll('pre code').forEach(block => {
-            try { hljs.highlightElement(block); } catch (_) {}
-          });
-        }
+        contentEl.innerHTML = renderMarkdown(m.content);
+        highlightCodeBlocks(contentEl);
       }
 
       // Render tool calls as collapsed cards
@@ -721,6 +745,14 @@ function send() {
     // Other slash commands (like /compact, /cost) — pass through to Claude
   }
 
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    addSystemMsg('连接已断开，正在重连。请稍后再发送。');
+    _reconnectAttempt = 0;
+    connect();
+    updateUI();
+    return;
+  }
+
   // Collect attachment paths
   const chips = attachArea.querySelectorAll('.attach-chip[data-path]');
   const paths = [];
@@ -734,13 +766,21 @@ function send() {
 
   if (ws?.readyState === WebSocket.OPEN) {
     dbg('state', `send() — WS ▶ user_message (${text.length} chars)`);
-    ws.send(JSON.stringify({ type: 'user_message', text }));
-    _pendingCancel = false;
-    isStreaming = true;
-    showThinking();
-    startTitleAnimation();
-    dismissNotifyToast();
-    updateUI();
+    try {
+      ws.send(JSON.stringify({ type: 'user_message', text }));
+      _pendingCancel = false;
+      isStreaming = true;
+      showThinking();
+      startTitleAnimation();
+      dismissNotifyToast();
+      updateUI();
+    } catch (e) {
+      addSystemMsg('发送失败，正在重连：' + e.message);
+      inputEl.value = text;
+      _reconnectAttempt = 0;
+      connect();
+      updateUI();
+    }
   }
 }
 
@@ -853,10 +893,49 @@ sendBtn.addEventListener('touchend', (e) => { e.preventDefault(); send(); });
 cancelBtn.addEventListener('click', cancelStreaming);
 cancelBtn.addEventListener('touchend', (e) => { e.preventDefault(); cancelStreaming(); });
 
+function mergeStatusText(st) {
+  if (!st || !st.mergeReady) return '当前 worktree 没有需要合并的内容。';
+  const bits = [];
+  if (st.dirty) bits.push('有未提交改动');
+  if ((st.ahead || 0) > 0) bits.push(`${st.ahead} 个提交领先`);
+  return `当前 worktree ${bits.join('，')}，可以合并回 ${st.baseBranch || '基分支'}。`;
+}
+
+function applyMergeStatus(st) {
+  _mergeReady = !!(st && st.mergeReady);
+  if (mergeBtn) {
+    mergeBtn.classList.toggle('merge-ready', _mergeReady);
+    mergeBtn.title = _mergeReady ? mergeStatusText(st) : '把此会话 worktree 合并回基分支';
+  }
+  if (mergeHint) {
+    mergeHint.classList.toggle('show', _mergeReady);
+    const text = mergeHint.querySelector('.merge-hint-text');
+    if (text) text.textContent = mergeStatusText(st);
+  }
+}
+
+async function refreshMergeStatus() {
+  if (!_sessionName) return;
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge-status`));
+    if (!res.ok) return;
+    applyMergeStatus(await res.json());
+  } catch (_) {}
+}
+
+function startMergeStatusPolling() {
+  refreshMergeStatus();
+  if (_mergePollTimer) clearInterval(_mergePollTimer);
+  _mergePollTimer = setInterval(refreshMergeStatus, 5000);
+}
+
 /* ── Merge worktree button ── */
-document.getElementById('merge-btn').addEventListener('click', async () => {
+async function requestMerge() {
   if (!_sessionName) { addSystemMsg('无 session id，无法合并 worktree'); return; }
-  if (!confirm('把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。')) return;
+  const prompt = _mergeReady
+    ? '当前 worktree 有可合并内容。\n合并前会自动提交未提交改动，是否继续？'
+    : '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。';
+  if (!confirm(prompt)) return;
   addSystemMsg('正在合并 worktree...');
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge`), { method: 'POST' });
@@ -865,6 +944,7 @@ document.getElementById('merge-btn').addEventListener('click', async () => {
       addSystemMsg(data.merged
         ? `✓ 已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}`
         : `✓ ${data.message || '没有新提交需要合并'}`);
+      applyMergeStatus({ mergeReady: false, dirty: false, ahead: 0 });
     } else if (res.status === 409) {
       addSystemMsg('⚠️ 合并冲突，已 abort，基分支未改动。冲突文件：' + (data.conflicts || []).join(', '));
       addSystemMsg('请打开一个该目录的终端会话手动解决冲突。');
@@ -874,7 +954,11 @@ document.getElementById('merge-btn').addEventListener('click', async () => {
   } catch (e) {
     addSystemMsg('合并请求失败：' + e.message);
   }
-});
+}
+
+mergeBtn?.addEventListener('click', requestMerge);
+mergeHintBtn?.addEventListener('click', requestMerge);
+startMergeStatusPolling();
 
 /* ── Clear context button ── */
 document.getElementById('clear-ctx-btn').addEventListener('click', () => {
@@ -1308,17 +1392,20 @@ if (_isMobile && window.visualViewport) {
   fixH();
 }
 
+function ensureWsAlive() {
+  const dead = !ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING;
+  if (!dead) { updateUI(); return; }
+  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  _reconnectAttempt = 0;
+  connect();
+}
+
 /* ── Reconnect when tab becomes visible again ── */
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    const dead = !ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING;
-    if (dead) {
-      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
-      _reconnectAttempt = 0;
-      connect();
-    }
-  }
+  if (document.visibilityState === 'visible') ensureWsAlive();
 });
+window.addEventListener('pageshow', ensureWsAlive);
+window.addEventListener('focus', ensureWsAlive);
 
 /* ── Debug panel wiring ── */
 (function initDebugPanel() {
