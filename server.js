@@ -869,6 +869,7 @@ function initWorktrees() {
   let built = 0;
   for (const s of persistedSessions.values()) {
     if (s.type === 'aux' || s.id === AUX_SESSION_ID) continue;
+    if (s.type === 'gateway') continue;
     const dir = directories.get(s.dirId);
     if (!dir) { invalidSessions.set(s.id, 'no directory'); continue; }
     if (dupDirIds.has(dir.id)) { invalidSessions.set(s.id, 'duplicate directory path'); continue; }
@@ -908,6 +909,11 @@ function initWorktrees() {
 function cwdForSession(session) {
   if (!session) return os.homedir();
   if (session.type === 'aux') return session.cwd || __dirname;
+  if (session.type === 'gateway') {
+    const p = session.cwd || path.join(os.homedir(), '.multicc', 'gateway');
+    try { fs.mkdirSync(p, { recursive: true }); } catch (_) {}
+    return p;
+  }
   if (session.worktreePath && fs.existsSync(session.worktreePath)) return session.worktreePath;
   const dir = directories.get(session.dirId);
   if (dir && dir.path) return dir.path;
@@ -1040,8 +1046,6 @@ function createSession(id) {
         client.send(JSON.stringify({ type: 'output', data: str }));
       }
     }
-    // Forward to WeChat bridge if active for this session
-    wechatBridge.onSessionOutput(id, str);
     // Server-side push notification detection
     pushOnOutput(id, str);
     // Coarse status for the workspace board: output → running, 2s of silence → idle.
@@ -1092,7 +1096,6 @@ function createSession(id) {
                 client.send(JSON.stringify({ type: 'output', data: str }));
               }
             }
-            wechatBridge.onSessionOutput(id, str);
             pushOnOutput(id, str);
           });
           newStream.on('end', onStreamEnd);
@@ -1127,7 +1130,7 @@ app.use(express.json());
 
 app.get('/api/sessions', (req, res) => {
   const list = [...persistedSessions.values()]
-    .filter(p => p.type !== 'aux')
+    .filter(p => p.type !== 'aux' && p.type !== 'gateway')
     .map(p => {
       const active = sessions.get(p.id);
       const activeChat = chatSessions.get(p.id);
@@ -2862,7 +2865,13 @@ app.post('/api/aux/enqueue', (req, res) => {
 });
 
 // ── WeChat Bridge ──
-wechatBridge.init(sessions, persistedSessions, tmuxWriteInput);
+wechatBridge.init({
+  persistedSessions,
+  chatSessions,
+  savePersistedSessions,
+  chatBroadcast,
+  port: PORT,
+});
 app.use('/api/wechat', wechatBridge.router);
 
 // Root → manage page (unless ?id= is specified, which means a terminal session)
@@ -2996,7 +3005,7 @@ function setSessionStatus(sessionId, patch) {
 function workspaceSnapshot(dirId) {
   const out = [];
   for (const s of persistedSessions.values()) {
-    if (s.dirId !== dirId || s.type === 'aux') continue;
+    if (s.dirId !== dirId || s.type === 'aux' || s.type === 'gateway') continue;
     const st = workspaceStatus.get(s.id) || { status: 'idle', currentFile: null, lastActivity: 0 };
     const active = sessions.get(s.id);
     const chat = chatSessions.get(s.id);
