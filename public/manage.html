@@ -841,16 +841,41 @@
           </div>
         </div>
 
-        <!-- Config -->
+        <!-- Gateway session -->
         <div class="settings-card">
-          <div class="sc-header">桥接配置</div>
+          <div class="sc-header">
+            Gateway 会话
+            <span id="wx-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:#21262d;color:#8b949e;">未创建</span>
+          </div>
           <div class="sc-body">
-            <div class="setting-row">
-              <label>默认会话</label>
-              <select id="wx-session" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:7px 10px;color:#c9d1d9;font-size:13px;">
-                <option value="">-- 选择会话 --</option>
-              </select>
+            <div class="setting-row" id="wx-gw-cli-row">
+              <label>Agent</label>
+              <div style="display:flex;gap:12px;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+                  <input type="radio" name="wx-gw-cli" value="claude" checked /> Claude
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+                  <input type="radio" name="wx-gw-cli" value="codex" /> Codex
+                </label>
+              </div>
             </div>
+            <div class="setting-row" style="font-size:11px;color:#6e7681;line-height:1.5;">
+              单一专用聊天会话，所有微信消息都路由到这里。无多窗口、不走 worktree，运行目录 <code>~/.multicc/gateway</code>。
+            </div>
+          </div>
+          <div class="sc-footer">
+            <button class="btn btn-green" id="wx-gw-create" onclick="wechatGatewayCreate()">创建 Gateway</button>
+            <button class="btn" id="wx-gw-open" onclick="wechatGatewayOpen()" style="display:none;">打开聊天</button>
+            <button class="btn" id="wx-gw-reset" onclick="wechatGatewayReset()" style="display:none;">重置对话</button>
+            <button class="btn btn-danger" id="wx-gw-destroy" onclick="wechatGatewayDestroy()" style="display:none;">销毁</button>
+            <span class="status-text" id="wx-gw-status"></span>
+          </div>
+        </div>
+
+        <!-- Bridge runtime -->
+        <div class="settings-card">
+          <div class="sc-header">桥接运行</div>
+          <div class="sc-body">
             <div class="setting-row">
               <label>输出缓冲 (ms)</label>
               <input id="wx-idle" type="number" value="5000" min="2000" step="500" />

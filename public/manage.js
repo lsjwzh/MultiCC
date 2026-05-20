@@ -243,7 +243,6 @@ async function loadDashboard() {
     }
     renderDashboard(directories, sessions);
     syncMonitors(sessions);
-    if (typeof wechatPopulateSessionSelect === 'function') wechatPopulateSessionSelect(sessions);
   } catch (err) {
     console.error('Failed to load dashboard:', err);
     const el = document.getElementById('directory-list');
@@ -1088,7 +1087,6 @@ async function wechatLogout() {
 
 async function wechatStart() {
   const body = {
-    defaultSession: document.getElementById('wx-session').value,
     outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
   };
   try {
@@ -1120,7 +1118,6 @@ async function wechatStop() {
 
 async function wechatSaveConfig() {
   const body = {
-    defaultSession: document.getElementById('wx-session').value,
     outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
   };
   try {
@@ -1173,19 +1170,104 @@ function wechatAppendLog(entry) {
   log.scrollTop = log.scrollHeight;
 }
 
-function wechatPopulateSessionSelect(sessions) {
-  const sel = document.getElementById('wx-session');
-  if (!sel) return;
-  const current = sel.value || sel.dataset.pending || '';
-  sel.innerHTML = '<option value="">-- 选择会话 --</option>';
-  for (const s of sessions) {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = `${s.id} — ${s.cwd || '?'}${s.active ? '' : ' (inactive)'}`;
-    if (s.id === current) opt.selected = true;
-    sel.appendChild(opt);
+/* ── Gateway session ── */
+function _wxSelectedCli() {
+  const checked = document.querySelector('input[name="wx-gw-cli"]:checked');
+  return checked ? checked.value : 'claude';
+}
+
+function wechatRenderGateway(gw) {
+  const stateEl = document.getElementById('wx-gw-state');
+  const createBtn = document.getElementById('wx-gw-create');
+  const openBtn = document.getElementById('wx-gw-open');
+  const resetBtn = document.getElementById('wx-gw-reset');
+  const destroyBtn = document.getElementById('wx-gw-destroy');
+  if (!stateEl) return;
+
+  if (gw) {
+    stateEl.textContent = `${gw.cli}`;
+    stateEl.style.background = '#23863640';
+    stateEl.style.color = '#3fb950';
+    createBtn.style.display = 'none';
+    openBtn.style.display = '';
+    resetBtn.style.display = '';
+    destroyBtn.style.display = '';
+    // Sync radio with current cli
+    const radio = document.querySelector(`input[name="wx-gw-cli"][value="${gw.cli}"]`);
+    if (radio) radio.checked = true;
+  } else {
+    stateEl.textContent = '未创建';
+    stateEl.style.background = '#21262d';
+    stateEl.style.color = '#8b949e';
+    createBtn.style.display = '';
+    openBtn.style.display = 'none';
+    resetBtn.style.display = 'none';
+    destroyBtn.style.display = 'none';
   }
-  sel.dataset.pending = '';
+}
+
+async function wechatGatewayRefresh() {
+  try {
+    const res = await fetch('/api/wechat/gateway' + tokenQS('?'));
+    const gw = await res.json();
+    wechatRenderGateway(gw);
+    return gw;
+  } catch (_) { return null; }
+}
+
+async function wechatGatewayCreate() {
+  const cli = _wxSelectedCli();
+  try {
+    const res = await fetch('/api/wechat/gateway' + tokenQS('?'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cli }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    wechatRenderGateway(data);
+    showToast(`Gateway 已创建 (${cli})`);
+  } catch (e) { showToast(`创建失败: ${e.message}`, true); }
+}
+
+async function wechatGatewaySwitchCli() {
+  const cli = _wxSelectedCli();
+  try {
+    const res = await fetch('/api/wechat/gateway' + tokenQS('?'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cli }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    wechatRenderGateway(data);
+    showToast(`已切换到 ${cli}`);
+  } catch (e) {
+    showToast(`切换失败: ${e.message}`, true);
+    wechatGatewayRefresh();  // revert radio
+  }
+}
+
+function wechatGatewayOpen() {
+  const url = '/chat?session=__gateway__' + tokenQS('&');
+  window.open(url, '_blank');
+}
+
+async function wechatGatewayReset() {
+  if (!confirm('清空 Gateway 对话历史？')) return;
+  try {
+    const res = await fetch('/api/wechat/gateway/reset' + tokenQS('?'), { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    showToast('已清空对话历史');
+  } catch (e) { showToast(`重置失败: ${e.message}`, true); }
+}
+
+async function wechatGatewayDestroy() {
+  if (!confirm('销毁 Gateway 会话？历史会保留在 chat_history。')) return;
+  try {
+    const res = await fetch('/api/wechat/gateway' + tokenQS('?'), { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    wechatRenderGateway(null);
+    showToast('Gateway 已销毁');
+  } catch (e) { showToast(`销毁失败: ${e.message}`, true); }
 }
 
 async function wechatLoadConfig() {
@@ -1193,8 +1275,6 @@ async function wechatLoadConfig() {
     const res = await fetch('/api/wechat/config' + tokenQS('?'));
     const cfg = await res.json();
     document.getElementById('wx-idle').value = cfg.outputIdle || 5000;
-    const sel = document.getElementById('wx-session');
-    if (sel) sel.dataset.pending = cfg.defaultSession || '';
     wechatSetLoginUI(!!cfg.loggedIn);
   } catch (_) {}
 }
@@ -1204,10 +1284,10 @@ async function wechatCheckStatus() {
     const res = await fetch('/api/wechat/status' + tokenQS('?'));
     const data = await res.json();
     wechatSetLoginUI(data.loggedIn);
+    wechatRenderGateway(data.gateway);
     if (data.running) {
       wechatSetRunning(true);
       wechatConnectSSE();
-      // Load existing log
       try {
         const logRes = await fetch('/api/wechat/log' + tokenQS('?'));
         const entries = await logRes.json();
@@ -1216,6 +1296,14 @@ async function wechatCheckStatus() {
     }
   } catch (_) {}
 }
+
+// Hook up radio change → switch cli (only when gateway already exists)
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.name === 'wx-gw-cli') {
+    const stateEl = document.getElementById('wx-gw-state');
+    if (stateEl && stateEl.textContent !== '未创建') wechatGatewaySwitchCli();
+  }
+});
 
 /* ── Push Notification Diagnostics ── */
 
