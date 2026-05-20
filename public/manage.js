@@ -1163,6 +1163,7 @@ async function wechatLogout() {
 async function wechatStart() {
   const body = {
     outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
+    router: wechatReadRouterConfig(),
   };
   try {
     const res = await fetch('/api/wechat/start' + tokenQS('?'), {
@@ -1194,6 +1195,7 @@ async function wechatStop() {
 async function wechatSaveConfig() {
   const body = {
     outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
+    router: wechatReadRouterConfig(),
   };
   try {
     const res = await fetch('/api/wechat/config' + tokenQS('?'), {
@@ -1345,12 +1347,62 @@ async function wechatGatewayDestroy() {
   } catch (e) { showToast(`销毁失败: ${e.message}`, true); }
 }
 
+/* ── Gateway router ── */
+function wechatReadRouterConfig() {
+  const enabled = document.getElementById('wx-router-enabled');
+  if (!enabled) return undefined;
+  const cfg = {
+    enabled: enabled.checked,
+    appendFooter: document.getElementById('wx-router-footer').checked,
+    autoSwitchOnRoute: document.getElementById('wx-router-autoswitch').checked,
+    confidenceThreshold: Number(document.getElementById('wx-router-threshold').value) || 0.62,
+    baseUrl: document.getElementById('wx-router-base-url').value.trim(),
+    model: document.getElementById('wx-router-model').value.trim(),
+  };
+  const apiKey = document.getElementById('wx-router-api-key').value.trim();
+  if (apiKey) cfg.apiKey = apiKey;
+  return cfg;
+}
+
+function wechatApplyRouterConfig(router) {
+  if (!router || !document.getElementById('wx-router-enabled')) return;
+  document.getElementById('wx-router-enabled').checked = !!router.enabled;
+  document.getElementById('wx-router-footer').checked = !!router.appendFooter;
+  document.getElementById('wx-router-autoswitch').checked = !!router.autoSwitchOnRoute;
+  document.getElementById('wx-router-threshold').value = router.confidenceThreshold || 0.62;
+  document.getElementById('wx-router-base-url').value = router.baseUrl || '';
+  document.getElementById('wx-router-model').value = router.model || '';
+  const keyEl = document.getElementById('wx-router-api-key');
+  keyEl.value = '';
+  keyEl.placeholder = router.apiKey || (router.hasKey ? 'configured' : 'sk-or-v1-...');
+}
+
+async function wechatRouterRefresh() {
+  const el = document.getElementById('wx-router-memory');
+  if (!el) return;
+  try {
+    const res = await fetch('/api/wechat/gateway/memory' + tokenQS('?'));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const sessions = data.sessions || [];
+    const routable = sessions.filter(s => s.routable).length;
+    const active = sessions.filter(s => s.active).length;
+    const waiting = sessions.filter(s => s.status === 'waiting').length;
+    const current = data.currentSessionId ? ` · current ${data.currentSessionId}` : '';
+    el.textContent = `${routable}/${sessions.length} routable · ${active} active · ${waiting} waiting${current}`;
+  } catch (e) {
+    el.textContent = `加载失败: ${e.message}`;
+  }
+}
+
 async function wechatLoadConfig() {
   try {
     const res = await fetch('/api/wechat/config' + tokenQS('?'));
     const cfg = await res.json();
     document.getElementById('wx-idle').value = cfg.outputIdle || 5000;
+    wechatApplyRouterConfig(cfg.router);
     wechatSetLoginUI(!!cfg.loggedIn);
+    wechatRouterRefresh();
   } catch (_) {}
 }
 
@@ -1360,6 +1412,10 @@ async function wechatCheckStatus() {
     const data = await res.json();
     wechatSetLoginUI(data.loggedIn);
     wechatRenderGateway(data.gateway);
+    const routerEl = document.getElementById('wx-router-memory');
+    if (routerEl && data.router) {
+      routerEl.textContent = `${data.router.memoryCount || 0} sessions · router ${data.router.enabled ? 'on' : 'off'}${data.router.currentSessionId ? ` · current ${data.router.currentSessionId}` : ''}`;
+    }
     if (data.running) {
       wechatSetRunning(true);
       wechatConnectSSE();

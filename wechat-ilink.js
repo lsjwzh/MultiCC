@@ -949,6 +949,7 @@ router.get('/status', (req, res) => {
     loggedIn: !!_config.botToken,
     loginTime: _loginTime ? new Date(_loginTime).toISOString() : null,
     gateway: rec ? { id: rec.id, cli: rec.cli, cliSessionId: rec.cliSessionId || null } : null,
+    router: { enabled: !!_routerConfig().enabled, currentSessionId: _currentSessionId || null, memoryCount: _memorySnapshot().length },
     chatConnected: !!(_chatWs && _chatWs.readyState === WebSocket.OPEN),
     currentUser: _currentUserId ? { hasToken: !!_currentContextToken } : null,
   });
@@ -959,14 +960,53 @@ router.get('/config', (req, res) => {
   res.json({
     outputIdle: _config.outputIdle || 5000,
     loggedIn: !!_config.botToken,
+    router: _publicRouterConfig(),
   });
 });
 
 router.post('/config', (req, res) => {
-  const { outputIdle } = req.body;
+  const { outputIdle, router: routerConfig } = req.body;
   if (outputIdle !== undefined) _config.outputIdle = Number(outputIdle) || 5000;
+  if (routerConfig && typeof routerConfig === 'object') {
+    const current = _routerConfig();
+    for (const key of ['enabled', 'appendFooter', 'autoSwitchOnRoute']) {
+      if (routerConfig[key] !== undefined) current[key] = !!routerConfig[key];
+    }
+    if (routerConfig.confidenceThreshold !== undefined) {
+      const n = Number(routerConfig.confidenceThreshold);
+      if (!Number.isNaN(n)) current.confidenceThreshold = Math.max(0.1, Math.min(0.95, n));
+    }
+    if (routerConfig.baseUrl !== undefined) current.baseUrl = String(routerConfig.baseUrl || '').trim();
+    if (routerConfig.model !== undefined) current.model = String(routerConfig.model || '').trim();
+    if (routerConfig.apiKey !== undefined && !String(routerConfig.apiKey).includes('****')) {
+      current.apiKey = String(routerConfig.apiKey || '').trim();
+    }
+    _config.router = current;
+  }
   saveConfig(_config);
   res.json({ ok: true });
+});
+
+router.get('/gateway/memory', (req, res) => {
+  res.json({
+    router: _publicRouterConfig(),
+    currentSessionId: _currentSessionId || null,
+    sessions: _memorySnapshot().map(m => ({
+      id: m.id,
+      label: m.label,
+      cli: m.cli,
+      kind: m.kind,
+      cwd: m.cwd,
+      active: m.active,
+      routable: m.routable,
+      status: m.status,
+      aliases: m.aliases,
+      lastInput: m.lastInput,
+      lastOutput: m.lastOutput,
+      lastRouteReason: m.lastRouteReason,
+      updatedAt: m.updatedAt,
+    })),
+  });
 });
 
 // Gateway lifecycle
@@ -999,8 +1039,9 @@ router.post('/start', async (req, res) => {
   try {
     if (req.body && req.body.outputIdle) {
       _config.outputIdle = Number(req.body.outputIdle) || 5000;
-      saveConfig(_config);
     }
+    if (req.body?.router && typeof req.body.router === 'object') _config.router = { ..._routerConfig(), ...req.body.router };
+    saveConfig(_config);
     await startBridge();
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -1066,6 +1107,8 @@ router.post('/logout', (req, res) => {
   saveConfig(_config);
   _currentUserId = null;
   _currentContextToken = null;
+  _currentSessionId = '';
+  _disconnectRoutedWs();
   _log('system', 'Logged out');
   res.json({ ok: true });
 });
