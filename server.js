@@ -939,14 +939,159 @@ function buildGatewayPrompt(userText) {
   return [
     '[MultiCC Gateway system prompt]',
     '你是 MultiCC 的微信 Gateway 会话。所有微信消息都统一进入这个会话。',
-    '你负责基于用户消息和可用 session 上下文判断如何回应：可以直接回答、追问澄清，或建议用户把任务交给某个具体 session。',
-    '不要假装后台已经自动转发到其他 session；如果需要某个 session 处理，明确说明你建议使用的 session id 和原因。',
-    '当用户问 Gateway/Router/会话管理相关问题时，直接以 Gateway 身份回答。',
+    '你负责基于用户消息和可用 session 上下文判断如何回应：可以直接回答、追问澄清，或把任务分发给某个具体 session。',
+    '当你判断需要某个 session 来处理任务时，在回复的最后单独输出一行分发标记：',
+    '<<dispatch target="SESSION_ID">要交给该 session 执行的完整、自包含指令</dispatch>>',
+    '其中 SESSION_ID 必须是上面可见 sessions 列表里的 id；dispatch 内的指令要完整到该 session 无需追问即可执行。',
+    '分发不会立即生效——系统会先向用户复述并等待用户回复「确认」后才真正投递，所以你可以在标记前用自然语言说明你打算交给谁、做什么。',
+    '只有真的需要某个 session 干活时才输出该标记；纯聊天、答疑、澄清类回复不要输出标记。每条回复最多一个 dispatch 标记。',
+    '当用户问 Gateway/Router/会话管理相关问题时，直接以 Gateway 身份回答，不要输出标记。',
     `当前可见 sessions: ${context}`,
     '[Gateway system prompt end]',
     '',
     userText,
   ].join('\n');
+}
+
+// ── Gateway dispatch (auto-dispatch v1) ──
+// The gateway LLM can emit a <<dispatch target="ID">...</dispatch>> marker; we
+// hold it as a pending request, ask the WeChat user to confirm, and only then
+// drive the target session via runChatTurn. The target's result is pushed back.
+const GATEWAY_ID = '__gateway__';
+const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;   // pending confirmation expires after 10 min
+let pendingDispatch = null;                    // { id, targetId, message, createdAt }
+const dispatchRuns = new Map();                // dispatchId → { targetId, chatSessionId, createdAt }
+const DISPATCH_RE = /<<dispatch\s+target="([^"]+)"\s*>([\s\S]*?)<\/dispatch>>/;
+const DISPATCH_CONFIRM_RE = /^(确认|确定|yes|y|ok)$/i;
+const DISPATCH_CANCEL_RE = /^(取消|算了|no|n)$/i;
+
+// Pull a single dispatch marker out of gateway reply text.
+// Returns { target, message, cleanText } (marker removed) or null.
+function parseDispatchMarker(text) {
+  if (!text) return null;
+  const m = text.match(DISPATCH_RE);
+  if (!m) return null;
+  const target = (m[1] || '').trim();
+  const message = (m[2] || '').trim();
+  if (!target || !message) return null;
+  const cleanText = text.replace(DISPATCH_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { target, message, cleanText };
+}
+
+// Push a server-originated assistant message into the gateway chat. Web clients
+// render it; the WeChat bridge (a gateway WS client) forwards it on `result`.
+function pushToGateway(text, { persist = true } = {}) {
+  if (!text) return;
+  if (persist) appendChatMessage(GATEWAY_ID, { role: 'assistant', content: text, ts: Date.now() });
+  chatBroadcast(GATEWAY_ID, { type: 'assistant', message: { content: [{ type: 'text', text }] } });
+  chatBroadcast(GATEWAY_ID, { type: 'result', total_cost_usd: null });
+}
+
+// A dispatch target must be a real, non-system session.
+function validateDispatchTarget(targetId) {
+  const rec = persistedSessions.get(targetId);
+  if (!rec) return { ok: false, error: `目标 session「${targetId}」不存在` };
+  if (rec.type === 'aux' || rec.type === 'gateway') return { ok: false, error: `不能把任务分发给系统会话「${targetId}」` };
+  return { ok: true, rec };
+}
+
+// Remove the raw marker from the most recent persisted gateway assistant message.
+function stripMarkerFromGatewayHistory() {
+  const hist = chatHistories.get(GATEWAY_ID);
+  if (!hist) return;
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const m = hist[i];
+    if (m.role !== 'assistant') continue;
+    if (typeof m.content === 'string' && DISPATCH_RE.test(m.content)) {
+      m.content = m.content.replace(DISPATCH_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+      saveChatHistory(GATEWAY_ID);
+    }
+    return;   // only inspect the latest assistant message
+  }
+}
+
+// Called when a gateway turn completes: detect a dispatch marker, stage it as a
+// pending request, and ask the user to confirm. Does NOT deliver yet.
+function handleGatewayTurnComplete(finalText) {
+  const parsed = parseDispatchMarker(finalText);
+  if (!parsed) return;
+  stripMarkerFromGatewayHistory();
+  const v = validateDispatchTarget(parsed.target);
+  if (!v.ok) { pushToGateway(`⚠️ 无法分发：${v.error}`); return; }
+  pendingDispatch = { id: crypto.randomUUID(), targetId: parsed.target, message: parsed.message, createdAt: Date.now() };
+  const label = (v.rec.label && v.rec.label !== parsed.target) ? `${parsed.target}（${v.rec.label}）` : parsed.target;
+  const summary = parsed.message.length > 80 ? parsed.message.slice(0, 80) + '…' : parsed.message;
+  pushToGateway(`📨 准备把任务投给 ${label}：\n「${summary}」\n回复「确认」执行，回复「取消」放弃。`);
+}
+
+// Intercept gateway inbound messages for confirm/cancel of a pending dispatch.
+// Returns true if the message was consumed (caller should NOT run the LLM).
+function handleGatewayControl(rawText) {
+  if (!pendingDispatch) return false;
+  if (Date.now() - pendingDispatch.createdAt > DISPATCH_TIMEOUT_MS) {
+    pendingDispatch = null;            // expired → fall through to the LLM
+    return false;
+  }
+  const text = (rawText || '').trim();
+  if (DISPATCH_CONFIRM_RE.test(text)) {
+    const pd = pendingDispatch; pendingDispatch = null;
+    appendChatMessage(GATEWAY_ID, { role: 'user', content: rawText, ts: Date.now() });
+    dispatchToSession(pd.targetId, pd.message)
+      .then(r => pushToGateway(r.ok ? `✅ 已投递给 ${pd.targetId}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`))
+      .catch(e => pushToGateway(`⚠️ 投递异常：${e.message}`));
+    return true;
+  }
+  if (DISPATCH_CANCEL_RE.test(text)) {
+    pendingDispatch = null;
+    appendChatMessage(GATEWAY_ID, { role: 'user', content: rawText, ts: Date.now() });
+    pushToGateway('已取消分发。');
+    return true;
+  }
+  return false;   // anything else → let the LLM handle (user may revise/add)
+}
+
+// Deliver a confirmed dispatch to its target session, creating an ephemeral chat
+// for terminal-only targets. Returns { ok, chatId } or { ok:false, error }.
+async function dispatchToSession(targetId, message) {
+  const v = validateDispatchTarget(targetId);
+  if (!v.ok) return { ok: false, error: v.error };
+  const rec = v.rec;
+
+  let chatId;
+  if (rec.kind === 'chat') {
+    chatId = targetId;
+  } else {
+    // terminal-only target → create/reuse an ephemeral chat in the same directory.
+    const created = createSessionRecord({
+      dir: directories.get(rec.dirId),
+      cli: rec.cli || 'claude',
+      kind: 'chat',
+      label: `${rec.label || targetId} (gw)`,
+      id: `${targetId}-gw-chat`,
+      ephemeral: true,
+    });
+    if (!created.ok) return { ok: false, error: `创建临时 chat 失败：${created.error}` };
+    chatId = created.id;
+  }
+
+  // Busy guard: v1 refuses rather than queueing.
+  const cs = chatSessions.get(chatId);
+  if (cs && cs.claudeProc) return { ok: false, error: `${targetId} 正在忙，稍后再试` };
+
+  const dispatchId = crypto.randomUUID();
+  dispatchRuns.set(dispatchId, { targetId, chatSessionId: chatId, createdAt: Date.now() });
+  const ok = runChatTurn(chatId, message, { originDispatchId: dispatchId });
+  if (ok === false) { dispatchRuns.delete(dispatchId); return { ok: false, error: `启动 ${targetId} 回合失败` }; }
+  return { ok: true, chatId };
+}
+
+// A dispatched turn finished → push its final text back to the gateway/WeChat.
+function finalizeDispatch(dispatchId, sessionName, finalText) {
+  const run = dispatchRuns.get(dispatchId);
+  dispatchRuns.delete(dispatchId);
+  const targetId = run ? run.targetId : sessionName;
+  const text = (finalText || '').trim() || '（本次运行没有产生文本输出）';
+  pushToGateway(`【${targetId} 回复】\n${text}`);
 }
 
 // ── Session management ──
@@ -1366,33 +1511,31 @@ app.get('/api/directories/:id/workspace', (req, res) => {
   res.json({ directory: d, sessions: workspaceSnapshot(d.id) });
 });
 
-app.post('/api/directories/:id/sessions', (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  const cli = (req.body.cli || '').trim();
-  const kind = (req.body.kind || '').trim();
-  const label = (req.body.label || '').trim() || null;
-  if (!['claude', 'codex'].includes(cli)) return res.status(400).json({ error: 'cli must be claude or codex' });
-  if (!['terminal', 'chat'].includes(kind)) return res.status(400).json({ error: 'kind must be terminal or chat' });
-
-  const id = allocateSessionId(d, cli, kind);
+// Create + persist an isolated session record (its own git worktree + branch).
+// Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
+// to create/reuse a named session (e.g. ephemeral gateway chats). Returns
+// { ok:true, id, session, reused? } or { ok:false, error }.
+function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false }) {
+  if (!dir) return { ok: false, error: 'directory not found' };
+  if (!['claude', 'codex'].includes(cli)) return { ok: false, error: 'cli must be claude or codex' };
+  if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
+  const sid = id || allocateSessionId(dir, cli, kind);
+  if (persistedSessions.has(sid)) return { ok: true, id: sid, session: persistedSessions.get(sid), reused: true };
 
   // Every session is isolated — make sure the directory is a git repo, then give the
   // session its own worktree + branch.
-  const ready = ensureDirGitReady(d);
-  if (!ready.ok) {
-    return res.status(400).json({ error: `目录无法用于隔离会话（git 未就绪: ${ready.reason}）` });
-  }
+  const ready = ensureDirGitReady(dir);
+  if (!ready.ok) return { ok: false, error: `目录无法用于隔离会话（git 未就绪: ${ready.reason}）` };
   let worktreePath, branch;
   try {
-    ({ worktreePath, branch } = gitWorktreeAdd(d.path, id, d.baseBranch));
+    ({ worktreePath, branch } = gitWorktreeAdd(dir.path, sid, dir.baseBranch));
   } catch (e) {
-    return res.status(500).json({ error: 'worktree 创建失败: ' + e.message });
+    return { ok: false, error: 'worktree 创建失败: ' + e.message };
   }
 
   const session = {
-    id,
-    dirId: d.id,
+    id: sid,
+    dirId: dir.id,
     cli, kind,
     cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
     label,
@@ -1400,10 +1543,22 @@ app.post('/api/directories/:id/sessions', (req, res) => {
     worktreePath,
     branch,
   };
-  persistedSessions.set(id, session);
+  if (ephemeral) session.ephemeral = true;
+  persistedSessions.set(sid, session);
   savePersistedSessions();
-  appendEvent(d.id, 'session_created', `${cli} ${kind}`, id);
-  res.json(session);
+  appendEvent(dir.id, 'session_created', `${cli} ${kind}${ephemeral ? ' (gw)' : ''}`, sid);
+  return { ok: true, id: sid, session };
+}
+
+app.post('/api/directories/:id/sessions', (req, res) => {
+  const d = directories.get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'directory not found' });
+  const cli = (req.body.cli || '').trim();
+  const kind = (req.body.kind || '').trim();
+  const label = (req.body.label || '').trim() || null;
+  const r = createSessionRecord({ dir: d, cli, kind, label });
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json(r.session);
 });
 
 // PATCH a session — supports display-name edits via label.
@@ -3233,6 +3388,396 @@ ${tail}`,
   }, CLASSIFY_DELAY_MS);
 }
 
+// Run one chat turn end-to-end: build prompt → spawn the CLI → stream events to
+// clients → persist the assistant message. Extracted from the WS handler so the
+// dispatch path can drive a session with no connected client. opts.isFirstTurn
+// forces first-turn spawn semantics; opts.originDispatchId, when set, pushes the
+// final assistant text back to WeChat once the turn completes (auto-回流).
+function runChatTurn(sessionName, text, opts = {}) {
+  const { isFirstTurn: forceFirstTurn, originDispatchId } = opts;
+  const persisted = persistedSessions.get(sessionName);
+  if (!persisted) {
+    console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
+    return false;
+  }
+  // Ensure session-level state exists even when no WS client is connected.
+  let cs = chatSessions.get(sessionName);
+  if (!cs) {
+    const csCli = persisted.cli || 'claude';
+    if (csCli === 'claude' && !persisted.cliSessionId) {
+      persisted.cliSessionId = crypto.randomUUID();
+      savePersistedSessions();
+    }
+    const hist = loadChatHistory(sessionName);
+    cs = {
+      clients: new Set(),
+      claudeProc: null,
+      lineBuf: '',
+      cli: csCli,
+      chatTurnCount: hist.filter(m => m.role === 'assistant').length,
+      cwd: cwdForSession(persisted),
+      currentAssistantText: '',
+      currentToolCalls: [],
+      currentCost: null,
+      isStreaming: false,
+      streamReplay: [],
+      pendingClassifyTimer: null,
+      pendingClassifyTaskId: null,
+    };
+    chatSessions.set(sessionName, cs);
+  }
+
+  cancelPendingClassify(cs);
+  // Kill previous process if still running
+  if (cs.claudeProc) {
+    console.log(`[multicc/chat] [${sessionName}] New user_message while claude pid=${cs.claudeProc.pid} still running, killing previous turn`);
+    cs._killReason = 'new_user_message';
+    try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
+    cs.claudeProc = null;
+    cs.lineBuf = '';
+    cs.isStreaming = false;
+    cs.streamReplay = [];
+    // Save partial assistant response before starting new turn
+    if (cs.currentAssistantText || cs.currentToolCalls.length) {
+      appendChatMessage(sessionName, {
+        role: 'assistant', content: cs.currentAssistantText,
+        tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+        ts: Date.now(), cancelled: true,
+      });
+      cs.chatTurnCount++;
+    }
+  }
+
+  // Save user message to history
+  appendChatMessage(sessionName, {
+    role: 'user', content: text, ts: Date.now(),
+  });
+
+  // Reset accumulators
+  cs.currentAssistantText = '';
+  cs.currentToolCalls = [];
+  cs.currentCost = null;
+  cs.isStreaming = true;
+  cs.streamReplay = [];
+  cs._resultSaved = false;
+  cs.originDispatchId = originDispatchId || null;
+  setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+
+  const provider = cliProviders[cs.cli] || cliProviders.claude;
+  // For claude: first turn → --session-id <uuid>, subsequent → --resume <uuid>.
+  // For codex:  first turn → exec --json, subsequent → exec resume <id> --json.
+  const isFirstTurn = (typeof forceFirstTurn === 'boolean') ? forceFirstTurn : (cs.chatTurnCount === 0 || !persisted.cliSessionId);
+
+  // Passive inter-agent notes: prepend any pending notes addressed to this
+  // session onto the prompt, then mark them delivered.
+  let promptText = text;
+  const pendingNotes = pendingNotesFor(sessionName).slice(0, 10);
+  if (pendingNotes.length) {
+    let block = '[multicc 跨 agent 留言 — 来自同目录下的其他 agent]\n';
+    for (const n of pendingNotes) block += `- 来自「${n.fromLabel}」：${n.body}\n`;
+    block += '[留言结束]\n\n';
+    if (block.length > 4000) block = block.slice(0, 4000) + '\n…(截断)\n\n';
+    promptText = block + text;
+    const now = Date.now();
+    for (const n of pendingNotes) { n.delivered = true; n.deliveredAt = now; }
+    saveNotes();
+    appendEvent(persisted.dirId, 'note_delivered', `${pendingNotes.length} 条留言已送达`, sessionName);
+    workspaceBroadcast(persisted.dirId, {
+      type: 'note_pending', sessionId: sessionName, count: pendingNotesFor(sessionName).length,
+    });
+    chatBroadcast(sessionName, {
+      type: 'system', subtype: 'agent_notes',
+      notes: pendingNotes.map(n => ({ from: n.fromLabel, body: n.body })),
+    });
+  }
+  if (persisted.type === 'gateway') {
+    promptText = buildGatewayPrompt(promptText);
+  }
+
+  const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn });
+  console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
+
+  const spawnChat = (spawnArgs, isRetry) => {
+    const proc = spawn(provider.cmd, spawnArgs, {
+      cwd: cs.cwd,
+      env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    cs.claudeProc = proc;
+
+    const spawnTs = Date.now();
+    console.log(`[multicc/chat] [${sessionName}] ${cs.cli} spawned pid=${proc.pid} turn=${cs.chatTurnCount} isRetry=${!!isRetry} clients=${cs.clients.size}`);
+    let stderrBuf = '';
+    const isActiveProc = () => cs.claudeProc === proc;
+
+    // Normalize a single JSONL line into the claude-shaped event stream the frontend
+    // already consumes. Returns an array of events to forward (may be empty), or null
+    // to forward the original event as-is (claude path).
+    const handleLine = (line) => {
+      let evt;
+      try { evt = JSON.parse(line); } catch { return; }
+
+      if (cs.cli === 'codex') {
+        // ── Codex → claude-shaped events ──
+        if (evt.type === 'thread.started') {
+          if (evt.thread_id && !persisted.cliSessionId) {
+            persisted.cliSessionId = evt.thread_id;
+            savePersistedSessions();
+            console.log(`[multicc/chat] [${sessionName}] captured codex thread_id=${evt.thread_id}`);
+          }
+          return;  // don't forward
+        }
+        if (evt.type === 'turn.started') return;  // noise, drop
+        if (evt.type === 'item.started') {
+          const it = evt.item || {};
+          if (it.type === 'command_execution') {
+            // Emit an assistant event with a tool_use block so a tool card appears
+            const mapped = {
+              type: 'assistant',
+              message: { content: [{ type: 'tool_use', name: 'Bash', id: it.id, input: { command: it.command } }] },
+            };
+            forward(mapped);
+            cs.currentToolCalls.push({ name: 'Bash', input: { command: it.command }, id: it.id });
+            setSessionStatus(sessionName, { status: 'running', currentFile: null });
+          }
+          return;
+        }
+        if (evt.type === 'item.completed') {
+          const it = evt.item || {};
+          if (it.type === 'command_execution') {
+            // Emit a tool_result event to fill in the existing tool card
+            const resultText = it.aggregated_output || '';
+            const mapped = {
+              type: 'user',
+              message: { content: [{ type: 'tool_result', tool_use_id: it.id, content: resultText, is_error: (it.exit_code && it.exit_code !== 0) || false }] },
+            };
+            forward(mapped);
+            const tc = cs.currentToolCalls.find(t => t.id === it.id);
+            if (tc) {
+              tc.result = resultText.length > 1000 ? resultText.slice(0, 1000) + '...' : resultText;
+              tc.is_error = (it.exit_code && it.exit_code !== 0) || false;
+            }
+            return;
+          }
+          if (it.type === 'agent_message') {
+            const text = it.text || '';
+            cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + text;
+            forward({ type: 'assistant', message: { content: [{ type: 'text', text: text + '\n\n' }] } });
+            setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+            return;
+          }
+          if (it.type === 'reasoning') {
+            // Emit as a collapsible thinking-style tool card so users can see but it
+            // doesn't pollute the main assistant text stream.
+            forward({
+              type: 'assistant',
+              message: { content: [{ type: 'tool_use', name: 'Thinking', id: it.id, input: { text: it.text || '' } }] },
+            });
+            cs.currentToolCalls.push({ name: 'Thinking', input: { text: it.text || '' }, id: it.id, result: it.text || '' });
+            return;
+          }
+          return;
+        }
+        if (evt.type === 'turn.completed') {
+          cs.currentCost = null;  // codex doesn't report dollar cost
+          const usage = evt.usage || {};
+          if (cs.currentAssistantText || cs.currentToolCalls.length) {
+            appendChatMessage(sessionName, {
+              role: 'assistant', content: cs.currentAssistantText,
+              tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+              cost: null, usage, ts: Date.now(),
+            });
+            cs.chatTurnCount++;
+            cs._resultSaved = true;
+          }
+          forward({ type: 'result', total_cost_usd: null, usage });
+          setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+          scheduleIntentClassify(cs, sessionName);
+          return;
+        }
+        return;  // unknown event type: drop
+      }
+
+      // ── Claude: unchanged path ──
+      if (evt.type === 'assistant' && evt.message?.content) {
+        for (const block of evt.message.content) {
+          if (block.type === 'text') {
+            cs.currentAssistantText += block.text;
+            setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+          }
+          if (block.type === 'tool_use') {
+            cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
+            const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+            if (editTools.includes(block.name)) {
+              setSessionStatus(sessionName, { status: 'editing', currentFile: block.input?.file_path || null });
+            } else if (block.name === 'Bash') {
+              setSessionStatus(sessionName, { status: 'running', currentFile: null });
+            } else {
+              setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+            }
+          }
+        }
+      }
+      if (evt.type === 'user' && evt.message?.content) {
+        for (const r of (Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content])) {
+          if (r.type === 'tool_result') {
+            const tc = cs.currentToolCalls.find(t => t.id === r.tool_use_id);
+            if (tc) {
+              tc.result = typeof r.content === 'string' ? r.content :
+                Array.isArray(r.content) ? r.content.map(c => c.text || '').join('') :
+                JSON.stringify(r.content);
+              tc.is_error = r.is_error || false;
+              if (tc.result && tc.result.length > 1000) tc.result = tc.result.slice(0, 1000) + '...';
+            }
+          }
+        }
+      }
+      if (evt.type === 'result') {
+        cs.currentCost = evt.total_cost_usd || null;
+        if (cs.currentAssistantText || cs.currentToolCalls.length) {
+          appendChatMessage(sessionName, {
+            role: 'assistant', content: cs.currentAssistantText,
+            tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+            cost: cs.currentCost, ts: Date.now(),
+          });
+          cs.chatTurnCount++;
+          cs._resultSaved = true;
+        }
+        setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+        scheduleIntentClassify(cs, sessionName);
+      }
+      // Drop claude's `system init` — server already sent its own
+      if (evt.type === 'system' && evt.subtype === 'init') return;
+      forward(evt);
+    };
+
+    const forward = (evt) => {
+      cs.streamReplay.push(evt);
+      if (cs.streamReplay.length > 500) cs.streamReplay.shift();
+      chatBroadcast(sessionName, evt);
+    };
+
+    proc.stdout.on('data', (chunk) => {
+      if (!isActiveProc()) return;
+      cs.lineBuf += chunk.toString();
+      const lines = cs.lineBuf.split('\n');
+      cs.lineBuf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { handleLine(line); } catch (_) {}
+      }
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      if (!isActiveProc()) return;
+      stderrBuf += chunk.toString();
+      console.error(`[multicc/chat] stderr: ${chunk.toString().slice(0, 200)}`);
+    });
+
+    proc.on('error', (err) => {
+      if (!isActiveProc()) return;
+      console.error(`[multicc/chat] [${sessionName}] pid=${proc.pid} spawn error: ${err.message}`);
+    });
+
+    proc.on('close', (code, signal) => {
+      if (!isActiveProc()) {
+        console.log(`[multicc/chat] [${sessionName}] stale proc pid=${proc.pid} closed after replacement (code=${code}, signal=${signal || ''})`);
+        return;
+      }
+      const durMs = Date.now() - spawnTs;
+      const killReason = cs._killReason || null;
+      cs._killReason = null;
+      const diag = {
+        session: sessionName, cli: cs.cli, pid: proc.pid, code, signal, durMs, killReason,
+        resultSaved: !!cs._resultSaved,
+        gotText: (cs.currentAssistantText || '').length,
+        toolCalls: cs.currentToolCalls.length,
+        liveClients: cs.clients.size,
+        isRetry: !!isRetry,
+        stderrTail: stderrBuf.slice(-300).trim(),
+      };
+      let kind = 'normal';
+      if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
+      else if (code !== 0) kind = 'nonzero_exit';
+      else if (!cs._resultSaved && !cs.currentAssistantText) kind = 'empty_exit';
+      console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
+
+      if (cs.lineBuf.trim()) {
+        try { handleLine(cs.lineBuf); } catch (_) {}
+      }
+      cs.lineBuf = '';
+      cs.isStreaming = false;
+      cs.streamReplay = [];
+
+      // If spawn yielded no assistant text and it's not a user-initiated kill, retry
+      // once with a fresh session id (covers resume-failed / session-id conflict cases).
+      if (!isRetry && !cs.currentAssistantText && !killReason) {
+        const stderrTail = stderrBuf.slice(-300).trim();
+        const reason = stderrTail.includes('already in use') ? 'session-id conflict'
+          : stderrTail.includes('No conversation found') || stderrTail.includes('session not found') ? 'resume target missing'
+          : `exit ${code}${signal ? '/' + signal : ''}`;
+        console.warn(`[multicc/chat] [${sessionName}] ${cs.cli} yielded no output (${reason}), retrying fresh. stderr: ${stderrTail.slice(0, 200)}`);
+        // Reset session id so the retry starts a brand-new conversation
+        if (cs.cli === 'claude') persisted.cliSessionId = crypto.randomUUID();
+        else persisted.cliSessionId = null;  // codex will allocate on first turn
+        savePersistedSessions();
+        cs.chatTurnCount = 0;
+        cs.isStreaming = true;
+        cs.streamReplay = [];
+        const fallbackArgs = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn: true });
+        chatBroadcast(sessionName, {
+          type: 'system', subtype: 'warning',
+          message: `${cs.cli} 启动失败（${reason}），已用新会话重试`,
+        });
+        cs.claudeProc = spawnChat(fallbackArgs, true);
+        return;
+      }
+
+      if (isRetry && !cs.currentAssistantText) {
+        const stderrTail = stderrBuf.slice(-300).trim();
+        chatBroadcast(sessionName, {
+          type: 'error',
+          error: stderrTail ? `${cs.cli} 无响应：${stderrTail}` : `${cs.cli} 无响应（exit ${code}${signal ? '/' + signal : ''}）`,
+        });
+      }
+
+      cs.claudeProc = null;
+
+      if (!cs._resultSaved && (cs.currentAssistantText || cs.currentToolCalls.length)) {
+        appendChatMessage(sessionName, {
+          role: 'assistant', content: cs.currentAssistantText,
+          tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+          cost: cs.currentCost, ts: Date.now(),
+        });
+        cs.chatTurnCount++;
+      }
+      const finalText = cs.currentAssistantText;
+      cs.currentAssistantText = '';
+      cs.currentToolCalls = [];
+      cs._resultSaved = false;
+
+      setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+      chatBroadcast(sessionName, { type: 'stream_end' });
+
+      // Auto-回流: turn was dispatched on the gateway's behalf → push result back.
+      if (cs.originDispatchId) {
+        const did = cs.originDispatchId;
+        cs.originDispatchId = null;
+        finalizeDispatch(did, sessionName, finalText);
+      } else if (persisted.type === 'gateway') {
+        // Gateway's own turn: detect a dispatch marker → stage pending confirmation.
+        handleGatewayTurnComplete(finalText);
+      }
+    });
+
+    return proc;
+  };
+
+  cs.claudeProc = spawnChat(args, false);
+
+  return true;
+}
+
 // ── Chat mode: stream-json WebSocket ──
 function handleChatWs(ws, req, urlObj) {
   const sessionName = urlObj.searchParams.get('session') || '_default';
@@ -3374,341 +3919,10 @@ function handleChatWs(ws, req, urlObj) {
       }
 
       if (msg.type === 'user_message' && msg.text) {
-        cancelPendingClassify(cs);
-        // Kill previous process if still running
-        if (cs.claudeProc) {
-          console.log(`[multicc/chat] [${sessionName}] New user_message while claude pid=${cs.claudeProc.pid} still running, killing previous turn`);
-          cs._killReason = 'new_user_message';
-          try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
-          cs.claudeProc = null;
-          cs.lineBuf = '';
-          cs.isStreaming = false;
-          cs.streamReplay = [];
-          // Save partial assistant response before starting new turn
-          if (cs.currentAssistantText || cs.currentToolCalls.length) {
-            appendChatMessage(sessionName, {
-              role: 'assistant', content: cs.currentAssistantText,
-              tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-              ts: Date.now(), cancelled: true,
-            });
-            cs.chatTurnCount++;
-          }
-        }
-
-        // Save user message to history
-        appendChatMessage(sessionName, {
-          role: 'user', content: msg.text, ts: Date.now(),
-        });
-
-        // Reset accumulators
-        cs.currentAssistantText = '';
-        cs.currentToolCalls = [];
-        cs.currentCost = null;
-        cs.isStreaming = true;
-        cs.streamReplay = [];
-        cs._resultSaved = false;
-        setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-
-        const provider = cliProviders[cs.cli] || cliProviders.claude;
-        // For claude: first turn → --session-id <uuid>, subsequent → --resume <uuid>.
-        // For codex:  first turn → exec --json, subsequent → exec resume <id> --json.
-        const isFirstTurn = cs.chatTurnCount === 0 || !persisted.cliSessionId;
-
-        // Passive inter-agent notes: prepend any pending notes addressed to this
-        // session onto the prompt, then mark them delivered.
-        let promptText = msg.text;
-        const pendingNotes = pendingNotesFor(sessionName).slice(0, 10);
-        if (pendingNotes.length) {
-          let block = '[multicc 跨 agent 留言 — 来自同目录下的其他 agent]\n';
-          for (const n of pendingNotes) block += `- 来自「${n.fromLabel}」：${n.body}\n`;
-          block += '[留言结束]\n\n';
-          if (block.length > 4000) block = block.slice(0, 4000) + '\n…(截断)\n\n';
-          promptText = block + msg.text;
-          const now = Date.now();
-          for (const n of pendingNotes) { n.delivered = true; n.deliveredAt = now; }
-          saveNotes();
-          appendEvent(persisted.dirId, 'note_delivered', `${pendingNotes.length} 条留言已送达`, sessionName);
-          workspaceBroadcast(persisted.dirId, {
-            type: 'note_pending', sessionId: sessionName, count: pendingNotesFor(sessionName).length,
-          });
-          chatBroadcast(sessionName, {
-            type: 'system', subtype: 'agent_notes',
-            notes: pendingNotes.map(n => ({ from: n.fromLabel, body: n.body })),
-          });
-        }
-        if (persisted.type === 'gateway') {
-          promptText = buildGatewayPrompt(promptText);
-        }
-
-        const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn });
-        console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
-
-        const spawnChat = (spawnArgs, isRetry) => {
-          const proc = spawn(provider.cmd, spawnArgs, {
-            cwd: cs.cwd,
-            env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
-          cs.claudeProc = proc;
-
-          const spawnTs = Date.now();
-          console.log(`[multicc/chat] [${sessionName}] ${cs.cli} spawned pid=${proc.pid} turn=${cs.chatTurnCount} isRetry=${!!isRetry} clients=${cs.clients.size}`);
-          let stderrBuf = '';
-          const isActiveProc = () => cs.claudeProc === proc;
-
-          // Normalize a single JSONL line into the claude-shaped event stream the frontend
-          // already consumes. Returns an array of events to forward (may be empty), or null
-          // to forward the original event as-is (claude path).
-          const handleLine = (line) => {
-            let evt;
-            try { evt = JSON.parse(line); } catch { return; }
-
-            if (cs.cli === 'codex') {
-              // ── Codex → claude-shaped events ──
-              if (evt.type === 'thread.started') {
-                if (evt.thread_id && !persisted.cliSessionId) {
-                  persisted.cliSessionId = evt.thread_id;
-                  savePersistedSessions();
-                  console.log(`[multicc/chat] [${sessionName}] captured codex thread_id=${evt.thread_id}`);
-                }
-                return;  // don't forward
-              }
-              if (evt.type === 'turn.started') return;  // noise, drop
-              if (evt.type === 'item.started') {
-                const it = evt.item || {};
-                if (it.type === 'command_execution') {
-                  // Emit an assistant event with a tool_use block so a tool card appears
-                  const mapped = {
-                    type: 'assistant',
-                    message: { content: [{ type: 'tool_use', name: 'Bash', id: it.id, input: { command: it.command } }] },
-                  };
-                  forward(mapped);
-                  cs.currentToolCalls.push({ name: 'Bash', input: { command: it.command }, id: it.id });
-                  setSessionStatus(sessionName, { status: 'running', currentFile: null });
-                }
-                return;
-              }
-              if (evt.type === 'item.completed') {
-                const it = evt.item || {};
-                if (it.type === 'command_execution') {
-                  // Emit a tool_result event to fill in the existing tool card
-                  const resultText = it.aggregated_output || '';
-                  const mapped = {
-                    type: 'user',
-                    message: { content: [{ type: 'tool_result', tool_use_id: it.id, content: resultText, is_error: (it.exit_code && it.exit_code !== 0) || false }] },
-                  };
-                  forward(mapped);
-                  const tc = cs.currentToolCalls.find(t => t.id === it.id);
-                  if (tc) {
-                    tc.result = resultText.length > 1000 ? resultText.slice(0, 1000) + '...' : resultText;
-                    tc.is_error = (it.exit_code && it.exit_code !== 0) || false;
-                  }
-                  return;
-                }
-                if (it.type === 'agent_message') {
-                  const text = it.text || '';
-                  cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + text;
-                  forward({ type: 'assistant', message: { content: [{ type: 'text', text: text + '\n\n' }] } });
-                  setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-                  return;
-                }
-                if (it.type === 'reasoning') {
-                  // Emit as a collapsible thinking-style tool card so users can see but it
-                  // doesn't pollute the main assistant text stream.
-                  forward({
-                    type: 'assistant',
-                    message: { content: [{ type: 'tool_use', name: 'Thinking', id: it.id, input: { text: it.text || '' } }] },
-                  });
-                  cs.currentToolCalls.push({ name: 'Thinking', input: { text: it.text || '' }, id: it.id, result: it.text || '' });
-                  return;
-                }
-                return;
-              }
-              if (evt.type === 'turn.completed') {
-                cs.currentCost = null;  // codex doesn't report dollar cost
-                const usage = evt.usage || {};
-                if (cs.currentAssistantText || cs.currentToolCalls.length) {
-                  appendChatMessage(sessionName, {
-                    role: 'assistant', content: cs.currentAssistantText,
-                    tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-                    cost: null, usage, ts: Date.now(),
-                  });
-                  cs.chatTurnCount++;
-                  cs._resultSaved = true;
-                }
-                forward({ type: 'result', total_cost_usd: null, usage });
-                setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-                scheduleIntentClassify(cs, sessionName);
-                return;
-              }
-              return;  // unknown event type: drop
-            }
-
-            // ── Claude: unchanged path ──
-            if (evt.type === 'assistant' && evt.message?.content) {
-              for (const block of evt.message.content) {
-                if (block.type === 'text') {
-                  cs.currentAssistantText += block.text;
-                  setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-                }
-                if (block.type === 'tool_use') {
-                  cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
-                  const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
-                  if (editTools.includes(block.name)) {
-                    setSessionStatus(sessionName, { status: 'editing', currentFile: block.input?.file_path || null });
-                  } else if (block.name === 'Bash') {
-                    setSessionStatus(sessionName, { status: 'running', currentFile: null });
-                  } else {
-                    setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-                  }
-                }
-              }
-            }
-            if (evt.type === 'user' && evt.message?.content) {
-              for (const r of (Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content])) {
-                if (r.type === 'tool_result') {
-                  const tc = cs.currentToolCalls.find(t => t.id === r.tool_use_id);
-                  if (tc) {
-                    tc.result = typeof r.content === 'string' ? r.content :
-                      Array.isArray(r.content) ? r.content.map(c => c.text || '').join('') :
-                      JSON.stringify(r.content);
-                    tc.is_error = r.is_error || false;
-                    if (tc.result && tc.result.length > 1000) tc.result = tc.result.slice(0, 1000) + '...';
-                  }
-                }
-              }
-            }
-            if (evt.type === 'result') {
-              cs.currentCost = evt.total_cost_usd || null;
-              if (cs.currentAssistantText || cs.currentToolCalls.length) {
-                appendChatMessage(sessionName, {
-                  role: 'assistant', content: cs.currentAssistantText,
-                  tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-                  cost: cs.currentCost, ts: Date.now(),
-                });
-                cs.chatTurnCount++;
-                cs._resultSaved = true;
-              }
-              setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-              scheduleIntentClassify(cs, sessionName);
-            }
-            // Drop claude's `system init` — server already sent its own
-            if (evt.type === 'system' && evt.subtype === 'init') return;
-            forward(evt);
-          };
-
-          const forward = (evt) => {
-            cs.streamReplay.push(evt);
-            if (cs.streamReplay.length > 500) cs.streamReplay.shift();
-            chatBroadcast(sessionName, evt);
-          };
-
-          proc.stdout.on('data', (chunk) => {
-            if (!isActiveProc()) return;
-            cs.lineBuf += chunk.toString();
-            const lines = cs.lineBuf.split('\n');
-            cs.lineBuf = lines.pop();
-            for (const line of lines) {
-              if (!line.trim()) continue;
-              try { handleLine(line); } catch (_) {}
-            }
-          });
-
-          proc.stderr.on('data', (chunk) => {
-            if (!isActiveProc()) return;
-            stderrBuf += chunk.toString();
-            console.error(`[multicc/chat] stderr: ${chunk.toString().slice(0, 200)}`);
-          });
-
-          proc.on('error', (err) => {
-            if (!isActiveProc()) return;
-            console.error(`[multicc/chat] [${sessionName}] pid=${proc.pid} spawn error: ${err.message}`);
-          });
-
-          proc.on('close', (code, signal) => {
-            if (!isActiveProc()) {
-              console.log(`[multicc/chat] [${sessionName}] stale proc pid=${proc.pid} closed after replacement (code=${code}, signal=${signal || ''})`);
-              return;
-            }
-            const durMs = Date.now() - spawnTs;
-            const killReason = cs._killReason || null;
-            cs._killReason = null;
-            const diag = {
-              session: sessionName, cli: cs.cli, pid: proc.pid, code, signal, durMs, killReason,
-              resultSaved: !!cs._resultSaved,
-              gotText: (cs.currentAssistantText || '').length,
-              toolCalls: cs.currentToolCalls.length,
-              liveClients: cs.clients.size,
-              isRetry: !!isRetry,
-              stderrTail: stderrBuf.slice(-300).trim(),
-            };
-            let kind = 'normal';
-            if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
-            else if (code !== 0) kind = 'nonzero_exit';
-            else if (!cs._resultSaved && !cs.currentAssistantText) kind = 'empty_exit';
-            console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
-
-            if (cs.lineBuf.trim()) {
-              try { handleLine(cs.lineBuf); } catch (_) {}
-            }
-            cs.lineBuf = '';
-            cs.isStreaming = false;
-            cs.streamReplay = [];
-
-            // If spawn yielded no assistant text and it's not a user-initiated kill, retry
-            // once with a fresh session id (covers resume-failed / session-id conflict cases).
-            if (!isRetry && !cs.currentAssistantText && !killReason) {
-              const stderrTail = stderrBuf.slice(-300).trim();
-              const reason = stderrTail.includes('already in use') ? 'session-id conflict'
-                : stderrTail.includes('No conversation found') || stderrTail.includes('session not found') ? 'resume target missing'
-                : `exit ${code}${signal ? '/' + signal : ''}`;
-              console.warn(`[multicc/chat] [${sessionName}] ${cs.cli} yielded no output (${reason}), retrying fresh. stderr: ${stderrTail.slice(0, 200)}`);
-              // Reset session id so the retry starts a brand-new conversation
-              if (cs.cli === 'claude') persisted.cliSessionId = crypto.randomUUID();
-              else persisted.cliSessionId = null;  // codex will allocate on first turn
-              savePersistedSessions();
-              cs.chatTurnCount = 0;
-              cs.isStreaming = true;
-              cs.streamReplay = [];
-              const fallbackArgs = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn: true });
-              chatBroadcast(sessionName, {
-                type: 'system', subtype: 'warning',
-                message: `${cs.cli} 启动失败（${reason}），已用新会话重试`,
-              });
-              cs.claudeProc = spawnChat(fallbackArgs, true);
-              return;
-            }
-
-            if (isRetry && !cs.currentAssistantText) {
-              const stderrTail = stderrBuf.slice(-300).trim();
-              chatBroadcast(sessionName, {
-                type: 'error',
-                error: stderrTail ? `${cs.cli} 无响应：${stderrTail}` : `${cs.cli} 无响应（exit ${code}${signal ? '/' + signal : ''}）`,
-              });
-            }
-
-            cs.claudeProc = null;
-
-            if (!cs._resultSaved && (cs.currentAssistantText || cs.currentToolCalls.length)) {
-              appendChatMessage(sessionName, {
-                role: 'assistant', content: cs.currentAssistantText,
-                tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-                cost: cs.currentCost, ts: Date.now(),
-              });
-              cs.chatTurnCount++;
-            }
-            cs.currentAssistantText = '';
-            cs.currentToolCalls = [];
-            cs._resultSaved = false;
-
-            setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-            chatBroadcast(sessionName, { type: 'stream_end' });
-          });
-
-          return proc;
-        };
-
-        cs.claudeProc = spawnChat(args, false);
+        // Gateway: a bare 确认/取消 resolves a pending dispatch without running the LLM.
+        if (persisted.type === 'gateway' && handleGatewayControl(msg.text)) return;
+        runChatTurn(sessionName, msg.text);
+        return;
       }
     } catch (e) {
       console.error('[multicc/chat] Bad message:', e.message);

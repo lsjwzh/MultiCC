@@ -452,8 +452,16 @@ function _handleChatEvent(evt) {
   }
 }
 
+// Strip any gateway dispatch markers so the raw <<dispatch ...>> never reaches WeChat.
+function _stripDispatchMarkers(text) {
+  return String(text || '')
+    .replace(/<<dispatch\s+target="[^"]+"\s*>[\s\S]*?<\/dispatch>>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function _flushAssistantTurn() {
-  const text = _currentAssistantText.trim();
+  const text = _stripDispatchMarkers(_currentAssistantText);
   _currentAssistantText = '';
   _turnInProgress = false;
   if (!text) return;
