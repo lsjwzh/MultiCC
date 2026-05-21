@@ -9,6 +9,7 @@ import '../services/settings_service.dart';
 class ChatProvider extends ChangeNotifier {
   final SettingsService settings;
   final String sessionName;
+  String displayName;
   String sessionCwd;
 
   late ChatService _service;
@@ -52,10 +53,17 @@ class ChatProvider extends ChangeNotifier {
   ChatProvider({
     required this.settings,
     required this.sessionName,
+    String? displayName,
     required this.sessionCwd,
-  }) {
+  }) : displayName = displayName ?? sessionName {
     _cwd = sessionCwd;
     _initService();
+  }
+
+  void setDisplayName(String value) {
+    if (displayName == value) return;
+    displayName = value;
+    notifyListeners();
   }
 
   // ── Service init ───────────────────────────────────────────────────────────
@@ -98,11 +106,15 @@ class ChatProvider extends ChangeNotifier {
         if (sid != null && sid.isNotEmpty) _sessionId = sid;
         if (msg['cwd'] != null) _cwd = msg['cwd'].toString();
         if (msg['cli'] != null) {
-          _cli = msg['cli'].toString() == 'codex' ? SessionCli.codex : SessionCli.claude;
+          _cli = msg['cli'].toString() == 'codex'
+              ? SessionCli.codex
+              : SessionCli.claude;
         }
 
         final model = msg['model']?.toString();
-        _statusText = model != null ? 'Connected · $model' : 'Connected · ${_cli.name}';
+        _statusText = model != null
+            ? 'Connected · $model'
+            : 'Connected · ${_cli.name}';
 
         final serverStreaming = msg['is_streaming'] == true;
         if (serverStreaming && _currentMsg == null) {
@@ -219,10 +231,7 @@ class ChatProvider extends ChangeNotifier {
       if (turns != null) _costText += ' · $turns turn(s)';
     }
 
-    _maybeNotify(
-      '任务完成',
-      cost != null ? '\$${cost.toStringAsFixed(4)}' : '',
-    );
+    _maybeNotify('任务完成', cost != null ? '\$${cost.toStringAsFixed(4)}' : '');
 
     notifyListeners();
   }
@@ -250,14 +259,19 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _replayHistory(List history) {
-    final insertIdx = _currentMsg != null ? _messages.length - 1 : _messages.length;
-    final parsed = history.map((m) {
-      try {
-        return ChatMessage.fromHistory(m as Map<String, dynamic>);
-      } catch (_) {
-        return null;
-      }
-    }).whereType<ChatMessage>().toList();
+    final insertIdx = _currentMsg != null
+        ? _messages.length - 1
+        : _messages.length;
+    final parsed = history
+        .map((m) {
+          try {
+            return ChatMessage.fromHistory(m as Map<String, dynamic>);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<ChatMessage>()
+        .toList();
     _messages.insertAll(insertIdx, parsed);
     notifyListeners();
   }

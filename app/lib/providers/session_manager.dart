@@ -42,7 +42,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     _sessionService = SessionService(settings: settings);
     WidgetsBinding.instance.addObserver(this);
     loadDashboard();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => loadDashboard());
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => loadDashboard(),
+    );
   }
 
   // ── App lifecycle ──────────────────────────────────────────────────────────
@@ -57,7 +60,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
           p.reconnect();
         }
       }
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
       _isInBackground = true;
       for (final p in _providers.values) {
         p.isInBackground = true;
@@ -75,6 +79,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       ]);
       _directories = results[0] as List<Directory>;
       _sessions = results[1] as List<Session>;
+      for (final s in _sessions) {
+        _providers[s.id]?.setDisplayName(
+          s.label?.isNotEmpty == true ? s.label! : s.id,
+        );
+      }
       _loadingSessions = false;
       _sessionsError = null;
       notifyListeners();
@@ -120,13 +129,17 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// `kind == chat` sessions; terminals run in a separate TerminalService.
   ChatProvider openSession(Session session) {
     if (_providers.containsKey(session.id)) return _providers[session.id]!;
-    final provider = ChatProvider(
-      settings: settings,
-      sessionName: session.id,
-      sessionCwd: session.cwd,
-    )
-      ..isActive = false
-      ..isInBackground = _isInBackground;
+    final provider =
+        ChatProvider(
+            settings: settings,
+            sessionName: session.id,
+            displayName: session.label?.isNotEmpty == true
+                ? session.label!
+                : session.id,
+            sessionCwd: session.cwd,
+          )
+          ..isActive = false
+          ..isInBackground = _isInBackground;
     _providers[session.id] = provider;
     return provider;
   }
@@ -175,9 +188,17 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     loadDashboard();
   }
 
+  Future<void> renameSession(String id, String? label) async {
+    await _sessionService.updateSessionLabel(id, label);
+    await loadDashboard();
+  }
+
   // ── Directory + session creation ──────────────────────────────────────────
 
-  Future<Directory> createDirectory({required String name, required String path}) async {
+  Future<Directory> createDirectory({
+    required String name,
+    required String path,
+  }) async {
     final d = await _sessionService.createDirectory(name: name, path: path);
     await loadDashboard();
     return d;
@@ -186,7 +207,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> deleteDirectory(String id) async {
     await _sessionService.deleteDirectory(id, force: true);
     // Drop any chat providers whose session lived in this directory
-    final removed = _sessions.where((s) => s.dirId == id).map((s) => s.id).toList();
+    final removed = _sessions
+        .where((s) => s.dirId == id)
+        .map((s) => s.id)
+        .toList();
     for (final sid in removed) {
       final p = _providers.remove(sid);
       p?.dispose();
@@ -202,7 +226,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     String? label,
   }) async {
     final s = await _sessionService.createSessionInDir(
-      dirId: dirId, cli: cli, kind: kind, label: label,
+      dirId: dirId,
+      cli: cli,
+      kind: kind,
+      label: label,
     );
     await loadDashboard();
     return s;

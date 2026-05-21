@@ -975,6 +975,8 @@ String _eventLabel(Map<String, dynamic> e) {
   switch (e['type']) {
     case 'session_created':
       return '🆕 新建会话 $who（$detail）';
+    case 'session_renamed':
+      return '✏️ 会话改名为 ${detail.isNotEmpty ? detail : who}';
     case 'session_deleted':
       return '🗑 删除会话 ${detail.isNotEmpty ? detail : who}';
     case 'merged':
@@ -1258,6 +1260,20 @@ class _SessionCard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   IconButton(
+                    icon: const Icon(
+                      Icons.edit_outlined,
+                      size: 16,
+                      color: Color(0xFF8b949e),
+                    ),
+                    tooltip: 'Rename',
+                    onPressed: () => _rename(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 30,
+                      minHeight: 28,
+                    ),
+                  ),
+                  IconButton(
                     icon: Icon(
                       Icons.merge_type_rounded,
                       size: 16,
@@ -1334,6 +1350,62 @@ class _SessionCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _rename(BuildContext context) async {
+    final ctrl = TextEditingController(text: session.label ?? session.id);
+    final messenger = ScaffoldMessenger.of(context);
+    final next = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF161b22),
+        title: const Text(
+          'Rename Session',
+          style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+        ),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 80,
+          style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 13),
+          decoration: InputDecoration(
+            hintText: session.id,
+            hintStyle: const TextStyle(color: Color(0xFF484f58)),
+            filled: true,
+            fillColor: const Color(0xFF0d1117),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+            counterStyle: const TextStyle(color: Color(0xFF6e7681)),
+          ),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Color(0xFF8b949e)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, ctrl.text),
+            child: const Text(
+              'Save',
+              style: TextStyle(
+                color: Color(0xFF58a6ff),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (next == null) return;
+    try {
+      await mgr.renameSession(session.id, next.trim());
+      messenger.showSnackBar(const SnackBar(content: Text('Session renamed')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Rename failed: $e')));
+    }
   }
 
   Future<void> _leaveNote(BuildContext context) async {

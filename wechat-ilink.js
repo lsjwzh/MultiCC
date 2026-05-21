@@ -27,25 +27,14 @@ const CHANNEL_VERSION = '1.0.2';
 
 const GATEWAY_SESSION_ID = '__gateway__';
 const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'gateway');
-const DEFAULT_ROUTER_CONFIG = {
-  enabled: true,
-  appendFooter: true,
-  autoSwitchOnRoute: true,
-  confidenceThreshold: 0.62,
-  baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-  model: process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-001',
-  apiKey: process.env.OPENROUTER_API_KEY || '',
-};
 
 // ── Config ──
 
 function loadConfig() {
   try {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    cfg.router = { ...DEFAULT_ROUTER_CONFIG, ...(cfg.router || {}) };
-    return cfg;
+    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
   } catch (_) {
-    return { outputIdle: 5000, botToken: '', baseUrl: '', router: { ...DEFAULT_ROUTER_CONFIG } };
+    return { outputIdle: 5000, botToken: '', baseUrl: '' };
   }
 }
 function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
@@ -73,13 +62,9 @@ let _currentAssistantText = '';
 let _outputTimer = null;       // post-turn flush debounce
 let _turnInProgress = false;
 
-// Multi-session routing state. The dedicated __gateway__ chat remains the
-// fallback/misc agent; specific routed tasks go to their own chat sessions.
-let _currentSessionId = '';
+// Session context surfaced to the Gateway prompt. We do not auto-dispatch
+// WeChat messages to other sessions here; Gateway owns that decision in-chat.
 const _sessionMemory = new Map();
-const _lastRoutes = new Map();
-const _routedWs = new Map();      // sessionId -> WebSocket
-const _routedTurns = new Map();   // sessionId -> { text, inProgress }
 
 // Echo suppression
 const _sentHashes = new Map();
@@ -217,26 +202,7 @@ function _extractText(msg) {
   return '';
 }
 
-// ── Multi-session router memory ──
-
-function _routerConfig() {
-  _config.router = { ...DEFAULT_ROUTER_CONFIG, ...(_config.router || {}) };
-  return _config.router;
-}
-
-function _publicRouterConfig() {
-  const r = _routerConfig();
-  return {
-    enabled: !!r.enabled,
-    appendFooter: !!r.appendFooter,
-    autoSwitchOnRoute: !!r.autoSwitchOnRoute,
-    confidenceThreshold: Number(r.confidenceThreshold) || DEFAULT_ROUTER_CONFIG.confidenceThreshold,
-    baseUrl: r.baseUrl || DEFAULT_ROUTER_CONFIG.baseUrl,
-    model: r.model || DEFAULT_ROUTER_CONFIG.model,
-    apiKey: r.apiKey ? `${r.apiKey.slice(0, 8)}****${r.apiKey.slice(-4)}` : '',
-    hasKey: !!r.apiKey,
-  };
-}
+// ── Gateway prompt context ──
 
 function _sessionCwd(p) {
   return p?.worktreePath || p?.cwd || '';
@@ -304,132 +270,6 @@ function _sessionLabel(sessionId) {
   return `#${mem.id}${mem.label && mem.label !== mem.id ? ` ${mem.label}` : ''}`;
 }
 
-function _findSessionByAlias(raw) {
-  const key = String(raw || '').trim().replace(/^#/, '').toLowerCase();
-  if (!key) return null;
-  if (_persistedSessions?.has(key)) return key;
-  for (const mem of _memorySnapshot()) {
-    if (mem.id.toLowerCase() === key || mem.id.toLowerCase().startsWith(key)) return mem.id;
-    if ((mem.label || '').toLowerCase() === key) return mem.id;
-    if ((mem.aliases || []).some(a => a === key || a.startsWith(key))) return mem.id;
-  }
-  return null;
-}
-
-function _scoreSessionForText(mem, text) {
-  const lower = text.toLowerCase();
-  let score = 0;
-  if (lower.includes(mem.id.toLowerCase())) score += 5;
-  if (mem.label && lower.includes(mem.label.toLowerCase())) score += 4;
-  for (const a of mem.aliases || []) {
-    if (a.length >= 2 && lower.includes(a)) score += Math.min(3, Math.max(1, a.length / 4));
-  }
-  const recent = `${mem.lastInput || ''}\n${mem.lastOutput || ''}`.toLowerCase();
-  for (const token of lower.split(/[\s,，。！？!?:：;；#]+/).filter(t => t.length >= 2)) {
-    if (recent.includes(token)) score += 0.6;
-  }
-  if (mem.status === 'waiting' && /^(可以|好|行|确认|继续|按|不用|不要|是|否|yes|no)\b/i.test(text.trim())) score += 2.5;
-  return score;
-}
-
-function _heuristicRoute(text) {
-  const direct = text.match(/^#?([A-Za-z0-9][\w.-]{1,64})\s+(.+)/);
-  if (direct) {
-    const sid = _findSessionByAlias(direct[1]);
-    if (sid) return { action: 'route_to_session', sessionId: sid, confidence: 0.95, text: direct[2], reason: 'message prefix matched session alias' };
-  }
-  const scored = _memorySnapshot()
-    .filter(m => m.routable)
-    .map(mem => ({ mem, score: _scoreSessionForText(mem, text) }))
-    .sort((a, b) => b.score - a.score);
-  if (!scored.length || scored[0].score <= 0) return null;
-  const confidence = Math.min(0.9, scored[0].score / 6);
-  return { action: 'route_to_session', sessionId: scored[0].mem.id, confidence, reason: `matched memory tokens (${scored[0].score.toFixed(1)})` };
-}
-
-async function _llmRoute(text) {
-  const cfg = _routerConfig();
-  if (!cfg.enabled || !cfg.apiKey) return null;
-  const sessions = _memorySnapshot(20).map(m => ({
-    id: m.id, label: m.label, cli: m.cli, kind: m.kind, cwd: m.cwd,
-    routable: m.routable, status: m.status, aliases: m.aliases,
-    lastInput: (m.lastInput || '').slice(-300),
-    lastOutput: (m.lastOutput || '').slice(-500),
-  }));
-  const prompt = [
-    'You are a gateway router for a WeChat chat controlling multiple coding sessions.',
-    'Return only compact JSON. Choose one action: route_to_session, switch_default, gateway_answer, ask_clarify.',
-    'Only route_to_session to routable chat sessions. Use gateway_answer for meta/status/help/general gateway tasks.',
-    'Use ask_clarify when ambiguous. Never invent a session id.',
-    'Schema: {"action":"route_to_session","sessionId":"...","confidence":0.0,"reason":"...","answer":"optional","question":"optional"}',
-    '',
-    `Current session: ${_currentSessionId || ''}`,
-    `Sessions: ${JSON.stringify(sessions)}`,
-    `User message: ${JSON.stringify(text)}`,
-  ].join('\n');
-
-  try {
-    const res = await fetch(`${String(cfg.baseUrl || '').replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({ model: cfg.model, messages: [{ role: 'user', content: prompt }], temperature: 0 }),
-      signal: AbortSignal.timeout(12000),
-    });
-    if (!res.ok) throw new Error(`router LLM ${res.status}`);
-    const data = await res.json();
-    const content = data?.choices?.[0]?.message?.content || '';
-    const json = content.match(/\{[\s\S]*\}/)?.[0] || content;
-    const parsed = JSON.parse(json);
-    if (parsed.sessionId) {
-      const mem = _refreshSessionMemory(parsed.sessionId);
-      if (!mem || !mem.routable) parsed.action = 'ask_clarify';
-    }
-    return parsed;
-  } catch (e) {
-    _log('error', `Gateway router failed: ${e.message}`);
-    return null;
-  }
-}
-
-async function _decideRoute(text) {
-  const cfg = _routerConfig();
-  if (!cfg.enabled) return { action: 'gateway_answer', confidence: 1, reason: 'router disabled' };
-
-  const switchMatch = text.match(/^(?:\/use|\/bind|切到|切换到)\s+#?(.+)$/i);
-  if (switchMatch) {
-    const sid = _findSessionByAlias(switchMatch[1]);
-    if (sid) return { action: 'switch_default', sessionId: sid, confidence: 1, reason: 'manual switch' };
-  }
-
-  const heuristic = _heuristicRoute(text);
-  const llm = await _llmRoute(text);
-  const chosen = llm || heuristic;
-  if (chosen?.action === 'route_to_session' && chosen.confidence < cfg.confidenceThreshold) {
-    return { ...chosen, action: 'ask_clarify' };
-  }
-  if (chosen) return chosen;
-  if (_currentSessionId) return { action: 'route_to_session', sessionId: _currentSessionId, confidence: 0.25, reason: 'fallback to current session' };
-  return { action: 'gateway_answer', confidence: 0.4, reason: 'no matching session' };
-}
-
-function _rememberRoute(decision) {
-  _lastRoutes.set(_currentUserId || 'default', { ...decision, ts: Date.now() });
-  if (decision.sessionId) {
-    const mem = _refreshSessionMemory(decision.sessionId);
-    if (mem) {
-      mem.lastRouteReason = decision.reason || '';
-      mem.updatedAt = Date.now();
-    }
-  }
-}
-
-function _formatFooter(sessionId, handledByGateway = false) {
-  if (!_routerConfig().appendFooter) return '';
-  const target = sessionId ? _sessionLabel(sessionId) : (handledByGateway ? 'Gateway' : '(none)');
-  const cur = _currentSessionId ? _sessionLabel(_currentSessionId) : '(none)';
-  return `\n\n-- 本次: ${target}\n-- 当前: ${cur}`;
-}
-
 async function _sendWeChatText(text) {
   if (!_currentUserId || !_currentContextToken || !_client) {
     _log('system', `Reply ready but no WeChat user attached: ${String(text).slice(0, 80)}…`);
@@ -451,14 +291,6 @@ async function _sendWeChatText(text) {
     _log('out', body.length > 200 ? body.slice(0, 200) + '…' : body);
     if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
   }
-}
-
-async function _askClarify(decision) {
-  const sessions = _memorySnapshot(6).filter(m => m.routable);
-  const lines = [decision?.question || '这条消息不确定应该发给哪个 session。'];
-  sessions.forEach((m, idx) => lines.push(`${idx + 1}. ${m.id}${m.label && m.label !== m.id ? ` / ${m.label}` : ''} — ${m.status}`));
-  lines.push('请回复 /use <id> 切换，或用 #session 消息 直接发送。');
-  await _sendWeChatText(lines.join('\n') + _formatFooter(null, true));
 }
 
 // ── Gateway session management ──
@@ -583,14 +415,6 @@ function _disconnectChatWs() {
   clearTimeout(_outputTimer);
 }
 
-function _disconnectRoutedWs() {
-  for (const ws of _routedWs.values()) {
-    try { ws.close(); } catch (_) {}
-  }
-  _routedWs.clear();
-  _routedTurns.clear();
-}
-
 function _sendUserMessage(text) {
   if (!_chatWs || _chatWs.readyState !== WebSocket.OPEN) {
     _log('error', 'Gateway chat not connected — cannot deliver message');
@@ -600,87 +424,6 @@ function _sendUserMessage(text) {
   _turnInProgress = true;
   _chatWs.send(JSON.stringify({ type: 'user_message', text }));
   return true;
-}
-
-function _connectRoutedWs(sessionId) {
-  const existing = _routedWs.get(sessionId);
-  if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return existing;
-  const p = _persistedSessions?.get(sessionId);
-  if (!p || p.kind !== 'chat' || p.type === 'gateway') return null;
-  const url = `ws://127.0.0.1:${_port}/ws/chat?session=${encodeURIComponent(sessionId)}`;
-  const ws = new WebSocket(url);
-  _routedWs.set(sessionId, ws);
-  _routedTurns.set(sessionId, { text: '', inProgress: false });
-
-  ws.on('open', () => _log('system', `Connected to routed chat session ${sessionId}`));
-  ws.on('message', (raw) => {
-    let evt;
-    try { evt = JSON.parse(raw.toString()); } catch (_) { return; }
-    _handleRoutedChatEvent(sessionId, evt);
-  });
-  ws.on('close', () => {
-    if (_routedWs.get(sessionId) === ws) _routedWs.delete(sessionId);
-  });
-  ws.on('error', (e) => _log('error', `Routed chat WS ${sessionId}: ${e.message}`));
-  return ws;
-}
-
-async function _sendToRoutedSession(sessionId, text) {
-  let ws = _connectRoutedWs(sessionId);
-  if (!ws) return false;
-  if (ws.readyState === WebSocket.CONNECTING) {
-    await new Promise(r => {
-      const t = setTimeout(r, 2000);
-      ws.once('open', () => { clearTimeout(t); r(); });
-    });
-  }
-  if (ws.readyState !== WebSocket.OPEN) return false;
-  const turn = _routedTurns.get(sessionId) || { text: '', inProgress: false };
-  turn.text = '';
-  turn.inProgress = true;
-  _routedTurns.set(sessionId, turn);
-  ws.send(JSON.stringify({ type: 'user_message', text }));
-  const mem = _refreshSessionMemory(sessionId);
-  if (mem) {
-    mem.lastInput = text;
-    mem.status = 'thinking';
-    mem.updatedAt = Date.now();
-  }
-  return true;
-}
-
-function _handleRoutedChatEvent(sessionId, evt) {
-  const turn = _routedTurns.get(sessionId) || { text: '', inProgress: false };
-  if (evt.type === 'assistant' && evt.message?.content) {
-    for (const block of evt.message.content) {
-      if (block.type === 'text' && block.text) turn.text += block.text;
-    }
-    _routedTurns.set(sessionId, turn);
-    return;
-  }
-  if (evt.type === 'result') {
-    const text = (turn.text || '').trim();
-    turn.text = '';
-    turn.inProgress = false;
-    _routedTurns.set(sessionId, turn);
-    const mem = _refreshSessionMemory(sessionId);
-    if (mem && text) {
-      mem.lastOutput = `${mem.lastOutput || ''}\n${text}`.slice(-1600);
-      mem.status = /(\?|？|确认|是否|请选择|waiting|需要你|请回复)/i.test(text) ? 'waiting' : 'idle';
-      mem.updatedAt = Date.now();
-    }
-    if (text) {
-      _sendWeChatText(text + _formatFooter(sessionId)).catch(e => {
-        _log('error', `Send routed reply failed: ${e.message}`);
-      });
-    }
-    return;
-  }
-  if (evt.type === 'error') {
-    turn.inProgress = false;
-    _routedTurns.set(sessionId, turn);
-    _log('error', `Routed ${sessionId}: ${evt.error || 'unknown error'}`);
-  }
 }
 
 function _handleChatEvent(evt) {
@@ -714,7 +457,7 @@ async function _flushAssistantTurn() {
   _currentAssistantText = '';
   _turnInProgress = false;
   if (!text) return;
-  try { await _sendWeChatText(text + _formatFooter(null, true)); }
+  try { await _sendWeChatText(text); }
   catch (e) { _log('error', `Send to WeChat failed: ${e.message}`); }
 }
 
@@ -731,10 +474,7 @@ async function _handleCommand(text) {
       reply = [
         '📋 可用命令:',
         '/status — 网关状态',
-        '/sessions — 列出可路由 chat session',
-        '/use <id> — 手动切换当前 session',
-        '/where — 查看当前 session',
-        '/why — 查看上一条路由原因',
+        '/sessions — 列出 Gateway 可见的 chat session',
         '/reset — 清空当前对话历史',
         '/help — 显示此帮助',
       ].join('\n');
@@ -745,41 +485,16 @@ async function _handleCommand(text) {
         `🔗 桥接: ${_running ? '运行中' : '已停止'}`,
         `📱 登录: ${_client?.isLoggedIn ? '已登录' : '未登录'} (${uptime})`,
         `🤖 Gateway: ${rec ? `${rec.cli}` : '未创建'}`,
-        `📌 当前: ${_currentSessionId ? _sessionLabel(_currentSessionId) : '(none)'}`,
+        `📂 可见 chat sessions: ${_memorySnapshot().filter(m => m.routable).length}`,
       ].join('\n');
       break;
     }
     case '/sessions': {
-      const lines = ['📂 可路由 chat session:'];
+      const lines = ['📂 Gateway 可见 chat session:'];
       for (const mem of _memorySnapshot().filter(m => m.routable)) {
-        const mark = mem.id === _currentSessionId ? ' ← 当前' : '';
-        lines.push(`  ${mem.id}${mem.label && mem.label !== mem.id ? ` / ${mem.label}` : ''} — ${mem.status}${mark}`);
+        lines.push(`  ${mem.id}${mem.label && mem.label !== mem.id ? ` / ${mem.label}` : ''} — ${mem.status}`);
       }
-      reply = lines.length === 1 ? '没有可路由的 chat session' : lines.join('\n');
-      break;
-    }
-    case '/use':
-    case '/bind': {
-      const target = parts[1];
-      if (!target) { reply = '用法: /use <session-id-or-alias>'; break; }
-      const sid = _findSessionByAlias(target);
-      const mem = sid ? _refreshSessionMemory(sid) : null;
-      if (!mem || !mem.routable) {
-        reply = `会话 "${target}" 不存在或不是 chat session。使用 /sessions 查看可用会话。`;
-        break;
-      }
-      _currentSessionId = sid;
-      reply = `✅ 当前会话: ${_sessionLabel(sid)}`;
-      break;
-    }
-    case '/where':
-      reply = _currentSessionId ? `当前会话: ${_sessionLabel(_currentSessionId)}` : '当前没有绑定具体 session';
-      break;
-    case '/why': {
-      const last = _lastRoutes.get(_currentUserId || 'default');
-      reply = last
-        ? `上一条路由: ${last.action}${last.sessionId ? ` → ${_sessionLabel(last.sessionId)}` : ''}\n置信度: ${last.confidence ?? 'N/A'}\n原因: ${last.reason || '(none)'}`
-        : '还没有路由记录';
+      reply = lines.length === 1 ? '没有可见的 chat session' : lines.join('\n');
       break;
     }
     case '/reset':
@@ -790,7 +505,7 @@ async function _handleCommand(text) {
       reply = `未知命令: ${cmd}，输入 /help 查看帮助`;
   }
   if (reply && _currentUserId && _currentContextToken) {
-    try { await _sendWeChatText(reply + _formatFooter(null, true)); }
+    try { await _sendWeChatText(reply); }
     catch (e) { _log('error', `Reply send failed: ${e.message}`); }
   }
 }
@@ -831,37 +546,6 @@ async function _pollLoop() {
         }
 
         if (msg.context_token) _client.sendTyping(msg.context_token).catch(() => {});
-        const decision = await _decideRoute(text);
-        _rememberRoute(decision);
-
-        if (decision.action === 'ask_clarify') {
-          await _askClarify(decision);
-          continue;
-        }
-
-        if (decision.action === 'gateway_answer' && decision.answer) {
-          await _sendWeChatText(decision.answer + _formatFooter(null, true));
-          continue;
-        }
-
-        if (decision.action === 'switch_default') {
-          _currentSessionId = decision.sessionId;
-          await _sendWeChatText(`✅ 当前会话: ${_sessionLabel(decision.sessionId)}${_formatFooter(decision.sessionId)}`);
-          continue;
-        }
-
-        if (decision.action === 'route_to_session' && decision.sessionId) {
-          if (_routerConfig().autoSwitchOnRoute) _currentSessionId = decision.sessionId;
-          const routedText = decision.text || text;
-          const ok = await _sendToRoutedSession(decision.sessionId, routedText);
-          if (ok) {
-            await _sendWeChatText(`→ ${_sessionLabel(decision.sessionId)} 已发送${_formatFooter(decision.sessionId)}`);
-            continue;
-          }
-          await _sendWeChatText(`⚠ 无法发送到 ${_sessionLabel(decision.sessionId)}，已转交 Gateway。${_formatFooter(null, true)}`);
-        }
-
-        // Fallback/misc path: keep main's dedicated gateway chat behavior.
         if (!_chatWs || _chatWs.readyState !== WebSocket.OPEN) _connectChatWs();
         if (_chatWs && _chatWs.readyState === WebSocket.CONNECTING) {
           await new Promise(r => {
@@ -949,7 +633,6 @@ router.get('/status', (req, res) => {
     loggedIn: !!_config.botToken,
     loginTime: _loginTime ? new Date(_loginTime).toISOString() : null,
     gateway: rec ? { id: rec.id, cli: rec.cli, cliSessionId: rec.cliSessionId || null } : null,
-    router: { enabled: !!_routerConfig().enabled, currentSessionId: _currentSessionId || null, memoryCount: _memorySnapshot().length },
     chatConnected: !!(_chatWs && _chatWs.readyState === WebSocket.OPEN),
     currentUser: _currentUserId ? { hasToken: !!_currentContextToken } : null,
   });
@@ -960,53 +643,14 @@ router.get('/config', (req, res) => {
   res.json({
     outputIdle: _config.outputIdle || 5000,
     loggedIn: !!_config.botToken,
-    router: _publicRouterConfig(),
   });
 });
 
 router.post('/config', (req, res) => {
-  const { outputIdle, router: routerConfig } = req.body;
+  const { outputIdle } = req.body;
   if (outputIdle !== undefined) _config.outputIdle = Number(outputIdle) || 5000;
-  if (routerConfig && typeof routerConfig === 'object') {
-    const current = _routerConfig();
-    for (const key of ['enabled', 'appendFooter', 'autoSwitchOnRoute']) {
-      if (routerConfig[key] !== undefined) current[key] = !!routerConfig[key];
-    }
-    if (routerConfig.confidenceThreshold !== undefined) {
-      const n = Number(routerConfig.confidenceThreshold);
-      if (!Number.isNaN(n)) current.confidenceThreshold = Math.max(0.1, Math.min(0.95, n));
-    }
-    if (routerConfig.baseUrl !== undefined) current.baseUrl = String(routerConfig.baseUrl || '').trim();
-    if (routerConfig.model !== undefined) current.model = String(routerConfig.model || '').trim();
-    if (routerConfig.apiKey !== undefined && !String(routerConfig.apiKey).includes('****')) {
-      current.apiKey = String(routerConfig.apiKey || '').trim();
-    }
-    _config.router = current;
-  }
   saveConfig(_config);
   res.json({ ok: true });
-});
-
-router.get('/gateway/memory', (req, res) => {
-  res.json({
-    router: _publicRouterConfig(),
-    currentSessionId: _currentSessionId || null,
-    sessions: _memorySnapshot().map(m => ({
-      id: m.id,
-      label: m.label,
-      cli: m.cli,
-      kind: m.kind,
-      cwd: m.cwd,
-      active: m.active,
-      routable: m.routable,
-      status: m.status,
-      aliases: m.aliases,
-      lastInput: m.lastInput,
-      lastOutput: m.lastOutput,
-      lastRouteReason: m.lastRouteReason,
-      updatedAt: m.updatedAt,
-    })),
-  });
 });
 
 // Gateway lifecycle
@@ -1040,7 +684,6 @@ router.post('/start', async (req, res) => {
     if (req.body && req.body.outputIdle) {
       _config.outputIdle = Number(req.body.outputIdle) || 5000;
     }
-    if (req.body?.router && typeof req.body.router === 'object') _config.router = { ..._routerConfig(), ...req.body.router };
     saveConfig(_config);
     await startBridge();
     res.json({ ok: true });
@@ -1107,8 +750,6 @@ router.post('/logout', (req, res) => {
   saveConfig(_config);
   _currentUserId = null;
   _currentContextToken = null;
-  _currentSessionId = '';
-  _disconnectRoutedWs();
   _log('system', 'Logged out');
   res.json({ ok: true });
 });

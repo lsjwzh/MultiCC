@@ -106,7 +106,10 @@ class SessionService {
           body: jsonEncode({'label': label ?? ''}),
         )
         .timeout(const Duration(seconds: 10));
-    if (res.statusCode >= 400) throw Exception('${res.statusCode}');
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
   }
 
   // ── Directories ──────────────────────────────────────────────────────────

@@ -920,6 +920,35 @@ function cwdForSession(session) {
   return session.cwd || os.homedir();
 }
 
+function buildGatewayPrompt(userText) {
+  const sessionsForPrompt = [...persistedSessions.values()]
+    .filter(s => s.type !== 'aux' && s.type !== 'gateway')
+    .slice(0, 30)
+    .map(s => {
+      const activeChat = chatSessions.get(s.id);
+      return {
+        id: s.id,
+        label: s.label || '',
+        cli: s.cli || 'claude',
+        kind: s.kind || 'terminal',
+        cwd: cwdForSession(s),
+        active: !!activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming),
+      };
+    });
+  const context = JSON.stringify(sessionsForPrompt);
+  return [
+    '[MultiCC Gateway system prompt]',
+    '你是 MultiCC 的微信 Gateway 会话。所有微信消息都统一进入这个会话。',
+    '你负责基于用户消息和可用 session 上下文判断如何回应：可以直接回答、追问澄清，或建议用户把任务交给某个具体 session。',
+    '不要假装后台已经自动转发到其他 session；如果需要某个 session 处理，明确说明你建议使用的 session id 和原因。',
+    '当用户问 Gateway/Router/会话管理相关问题时，直接以 Gateway 身份回答。',
+    `当前可见 sessions: ${context}`,
+    '[Gateway system prompt end]',
+    '',
+    userText,
+  ].join('\n');
+}
+
 // ── Session management ──
 // { id, tmuxName, ttyPath, outputStream, fifoPath, buffer: string[], clients: Set<ws>, createdAt, lastActivity, cwd, exitCheckTimer }
 const sessions = new Map();
@@ -928,6 +957,41 @@ function generateId() {
   let id = '';
   while (id.length < 8) id += Math.random().toString(36).slice(2);
   return id.slice(0, 8);
+}
+
+function sessionIdPrefixForDirectory(dir) {
+  const raw = (dir?.name || path.basename(dir?.path || '') || 'dir').toString();
+  const safe = raw
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+    .replace(/-+$/g, '');
+  return safe || 'dir';
+}
+
+function allocateSessionId(dir, cli, kind) {
+  const prefix = sessionIdPrefixForDirectory(dir);
+  const cliPart = cli === 'codex' ? 'codex' : 'claude';
+  const kindPart = kind === 'chat' ? 'chat' : 'term';
+  const stem = `${prefix}-${cliPart}-${kindPart}`;
+  let maxSeq = 0;
+  for (const s of persistedSessions.values()) {
+    if (s.dirId !== dir.id) continue;
+    const m = String(s.id || '').match(new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)$`));
+    if (m) maxSeq = Math.max(maxSeq, Number(m[1]) || 0);
+  }
+  for (let seq = maxSeq + 1; seq < maxSeq + 1000; seq++) {
+    const id = `${stem}-${String(seq).padStart(2, '0')}`;
+    if (!persistedSessions.has(id)) return id;
+  }
+  // Extremely unlikely fallback: keep the readable prefix and add a short entropy tail.
+  let id;
+  do {
+    id = `${stem}-${generateId()}`;
+  } while (persistedSessions.has(id));
+  return id;
 }
 
 function resolveCwd(current, arg) {
@@ -1311,15 +1375,7 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   if (!['claude', 'codex'].includes(cli)) return res.status(400).json({ error: 'cli must be claude or codex' });
   if (!['terminal', 'chat'].includes(kind)) return res.status(400).json({ error: 'kind must be terminal or chat' });
 
-  // Generate a unique id. Use generateId() for short ids; append kind suffix for human readability.
-  let id;
-  let tries = 0;
-  do {
-    const base = generateId();
-    id = kind === 'chat' ? `${base}-chat` : base;
-    tries++;
-    if (tries > 10) return res.status(500).json({ error: 'could not allocate unique session id' });
-  } while (persistedSessions.has(id));
+  const id = allocateSessionId(d, cli, kind);
 
   // Every session is isolated — make sure the directory is a git repo, then give the
   // session its own worktree + branch.
@@ -1350,12 +1406,20 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   res.json(session);
 });
 
-// PATCH a session — currently supports label edits
+// PATCH a session — supports display-name edits via label.
 app.patch('/api/sessions/:id', (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  if (req.body.label !== undefined) s.label = (req.body.label || '').trim() || null;
+  if (s.type === 'aux' || s.type === 'gateway') {
+    return res.status(400).json({ error: 'system session cannot be renamed' });
+  }
+  if (req.body.label !== undefined) {
+    const label = (req.body.label || '').toString().trim();
+    if (label.length > 80) return res.status(400).json({ error: 'label too long (max 80)' });
+    s.label = label || null;
+  }
   savePersistedSessions();
+  appendEvent(s.dirId, 'session_renamed', s.label || s.id, s.id);
   res.json(s);
 });
 
@@ -3371,6 +3435,9 @@ function handleChatWs(ws, req, urlObj) {
             type: 'system', subtype: 'agent_notes',
             notes: pendingNotes.map(n => ({ from: n.fromLabel, body: n.body })),
           });
+        }
+        if (persisted.type === 'gateway') {
+          promptText = buildGatewayPrompt(promptText);
         }
 
         const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn });

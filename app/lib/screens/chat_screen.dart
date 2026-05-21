@@ -173,7 +173,7 @@ class _Header extends StatelessWidget {
           const SizedBox(width: 6),
           Flexible(
             child: Text(
-              provider.sessionName,
+              provider.displayName,
               style: const TextStyle(
                 color: Color(0xFF58a6ff),
                 fontSize: 13,

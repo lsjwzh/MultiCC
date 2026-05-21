@@ -871,7 +871,7 @@
               </div>
             </div>
             <div class="setting-row" style="font-size:11px;color:#6e7681;line-height:1.5;">
-              专用聊天会话作为 Gateway 兜底智能体；开启智能路由后，明确匹配的消息会直接转发到具体 chat session。
+              专用聊天会话作为微信入口；消息统一进入 Gateway，由 Gateway 会话根据上下文判断直接回答、追问或引导到具体 session。
             </div>
           </div>
           <div class="sc-footer">
@@ -880,48 +880,6 @@
             <button class="btn" id="wx-gw-reset" onclick="wechatGatewayReset()" style="display:none;">重置对话</button>
             <button class="btn btn-danger" id="wx-gw-destroy" onclick="wechatGatewayDestroy()" style="display:none;">销毁</button>
             <span class="status-text" id="wx-gw-status"></span>
-          </div>
-        </div>
-
-        <!-- Gateway Router -->
-        <div class="settings-card">
-          <div class="sc-header">Gateway Router</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>智能路由</label>
-              <input id="wx-router-enabled" type="checkbox" style="width:auto;flex:0;" />
-            </div>
-            <div class="setting-row">
-              <label>回执页脚</label>
-              <input id="wx-router-footer" type="checkbox" style="width:auto;flex:0;" />
-            </div>
-            <div class="setting-row">
-              <label>自动切换当前</label>
-              <input id="wx-router-autoswitch" type="checkbox" style="width:auto;flex:0;" />
-            </div>
-            <div class="setting-row">
-              <label>置信度阈值</label>
-              <input id="wx-router-threshold" type="number" min="0.1" max="0.95" step="0.05" value="0.62" />
-            </div>
-            <div class="setting-row">
-              <label>Base URL</label>
-              <input id="wx-router-base-url" type="text" placeholder="https://openrouter.ai/api/v1" />
-            </div>
-            <div class="setting-row">
-              <label>Model</label>
-              <input id="wx-router-model" type="text" placeholder="google/gemini-2.0-flash-001" />
-            </div>
-            <div class="setting-row">
-              <label>API Key</label>
-              <input id="wx-router-api-key" type="password" placeholder="sk-or-v1-..." />
-            </div>
-            <div class="setting-row">
-              <label>Memory</label>
-              <span id="wx-router-memory" style="font-size:12px;color:#8b949e;">—</span>
-            </div>
-          </div>
-          <div class="sc-footer">
-            <button class="btn" onclick="wechatRouterRefresh()">刷新 Memory</button>
           </div>
         </div>
 

@@ -425,6 +425,8 @@ function renderSessionRow(s) {
   const mergeTitle = mergeReady
     ? `可合并：${mergeState.dirty ? '有未提交改动' : ''}${mergeState.dirty && mergeState.ahead > 0 ? '，' : ''}${mergeState.ahead > 0 ? `${mergeState.ahead} 个提交领先` : ''}`
     : '把 worktree 合并回基分支';
+  const displayName = s.label || s.id;
+  const subtitle = s.label ? `#${s.id}` : (s.cwd || '');
 
   const openBtn = s.kind === 'chat'
     ? `<button class="btn" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')">Open</button>`
@@ -438,13 +440,14 @@ function renderSessionRow(s) {
         <span class="sess-status ${statusCls}" id="sess-status-${escapeHtml(s.id)}">${statusText}</span>
         <span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}" style="font-size:10px;color:#d29922;${pendingNotes > 0 ? '' : 'display:none'}">${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span>
       </div>
-      <div class="sess-id">#${escapeHtml(s.id)}</div>
-      <div class="sess-label">${escapeHtml(s.label || s.cwd || '')}</div>
+      <div class="sess-id" title="${escapeHtml(s.id)}">${escapeHtml(displayName)}</div>
+      <div class="sess-label">${escapeHtml(subtitle)}</div>
       <div class="sess-file" id="sess-file-${escapeHtml(s.id)}" style="font-size:11px;color:#d29922;font-family:monospace;${wb && wb.currentFile ? '' : 'display:none'}">${wb && wb.currentFile ? '✎ ' + escapeHtml(wb.currentFile.split('/').pop()) : ''}</div>
       <div class="sess-row-bottom">
         <span class="sess-label">${escapeHtml(formatRelative(s.lastActivity || s.createdAt))}</span>
         <span class="sess-actions">
           ${openBtn}
+          <button class="btn" onclick="event.stopPropagation(); renameSession('${escapeHtml(s.id)}')" title="Rename session">改名</button>
           <button class="btn" onclick="event.stopPropagation(); openNoteModal('${escapeHtml(s.id)}')" title="给同目录其他 agent 留言">留言</button>
           <button class="btn${mergeReady ? ' merge-ready' : ''}" id="merge-btn-${escapeHtml(s.id)}" onclick="event.stopPropagation(); mergeSession('${escapeHtml(s.id)}')" title="${escapeHtml(mergeTitle)}">合并</button>
           <button class="btn btn-danger" onclick="event.stopPropagation(); deleteSession('${escapeHtml(s.id)}')">Del</button>
@@ -565,6 +568,34 @@ async function newSessionInDir(dirId, cli, kind) {
     await loadDashboard();
     // Open it immediately
     openSessionInline(sess.id, sess.kind);
+  } catch (err) {
+    showToast(`Error: ${err.message}`, true);
+  }
+}
+
+async function renameSession(id) {
+  const sess = _cachedSessions.find(s => s.id === id);
+  if (!sess) return;
+  const next = prompt('Rename session', sess.label || sess.id);
+  if (next === null) return;
+  const label = next.trim();
+  if (label.length > 80) {
+    showToast('Name is too long (max 80 chars)', true);
+    return;
+  }
+  try {
+    const res = await fetch(`/api/sessions/${id}${tokenQS('?')}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(`Error: ${err.error || res.status}`, true);
+      return;
+    }
+    showToast(label ? `Renamed to ${label}` : 'Session name reset');
+    await loadDashboard();
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
   }
@@ -785,6 +816,7 @@ function eventLabel(evt) {
   const who = evt.sessionLabel || evt.sessionId || '';
   switch (evt.type) {
     case 'session_created': return `🆕 新建会话 ${who}（${evt.detail || ''}）`;
+    case 'session_renamed': return `✏️ 会话改名为 ${evt.detail || who}`;
     case 'session_deleted': return `🗑 删除会话 ${evt.detail || who}`;
     case 'merged':          return `🔀 ${who} 合并：${evt.detail || ''}`;
     case 'note':            return `📨 ${who} 留言 ${evt.detail || ''}`;
@@ -1163,7 +1195,6 @@ async function wechatLogout() {
 async function wechatStart() {
   const body = {
     outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
-    router: wechatReadRouterConfig(),
   };
   try {
     const res = await fetch('/api/wechat/start' + tokenQS('?'), {
@@ -1195,7 +1226,6 @@ async function wechatStop() {
 async function wechatSaveConfig() {
   const body = {
     outputIdle: Number(document.getElementById('wx-idle').value) || 5000,
-    router: wechatReadRouterConfig(),
   };
   try {
     const res = await fetch('/api/wechat/config' + tokenQS('?'), {
@@ -1347,62 +1377,12 @@ async function wechatGatewayDestroy() {
   } catch (e) { showToast(`销毁失败: ${e.message}`, true); }
 }
 
-/* ── Gateway router ── */
-function wechatReadRouterConfig() {
-  const enabled = document.getElementById('wx-router-enabled');
-  if (!enabled) return undefined;
-  const cfg = {
-    enabled: enabled.checked,
-    appendFooter: document.getElementById('wx-router-footer').checked,
-    autoSwitchOnRoute: document.getElementById('wx-router-autoswitch').checked,
-    confidenceThreshold: Number(document.getElementById('wx-router-threshold').value) || 0.62,
-    baseUrl: document.getElementById('wx-router-base-url').value.trim(),
-    model: document.getElementById('wx-router-model').value.trim(),
-  };
-  const apiKey = document.getElementById('wx-router-api-key').value.trim();
-  if (apiKey) cfg.apiKey = apiKey;
-  return cfg;
-}
-
-function wechatApplyRouterConfig(router) {
-  if (!router || !document.getElementById('wx-router-enabled')) return;
-  document.getElementById('wx-router-enabled').checked = !!router.enabled;
-  document.getElementById('wx-router-footer').checked = !!router.appendFooter;
-  document.getElementById('wx-router-autoswitch').checked = !!router.autoSwitchOnRoute;
-  document.getElementById('wx-router-threshold').value = router.confidenceThreshold || 0.62;
-  document.getElementById('wx-router-base-url').value = router.baseUrl || '';
-  document.getElementById('wx-router-model').value = router.model || '';
-  const keyEl = document.getElementById('wx-router-api-key');
-  keyEl.value = '';
-  keyEl.placeholder = router.apiKey || (router.hasKey ? 'configured' : 'sk-or-v1-...');
-}
-
-async function wechatRouterRefresh() {
-  const el = document.getElementById('wx-router-memory');
-  if (!el) return;
-  try {
-    const res = await fetch('/api/wechat/gateway/memory' + tokenQS('?'));
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    const sessions = data.sessions || [];
-    const routable = sessions.filter(s => s.routable).length;
-    const active = sessions.filter(s => s.active).length;
-    const waiting = sessions.filter(s => s.status === 'waiting').length;
-    const current = data.currentSessionId ? ` · current ${data.currentSessionId}` : '';
-    el.textContent = `${routable}/${sessions.length} routable · ${active} active · ${waiting} waiting${current}`;
-  } catch (e) {
-    el.textContent = `加载失败: ${e.message}`;
-  }
-}
-
 async function wechatLoadConfig() {
   try {
     const res = await fetch('/api/wechat/config' + tokenQS('?'));
     const cfg = await res.json();
     document.getElementById('wx-idle').value = cfg.outputIdle || 5000;
-    wechatApplyRouterConfig(cfg.router);
     wechatSetLoginUI(!!cfg.loggedIn);
-    wechatRouterRefresh();
   } catch (_) {}
 }
 
@@ -1412,10 +1392,6 @@ async function wechatCheckStatus() {
     const data = await res.json();
     wechatSetLoginUI(data.loggedIn);
     wechatRenderGateway(data.gateway);
-    const routerEl = document.getElementById('wx-router-memory');
-    if (routerEl && data.router) {
-      routerEl.textContent = `${data.router.memoryCount || 0} sessions · router ${data.router.enabled ? 'on' : 'off'}${data.router.currentSessionId ? ` · current ${data.router.currentSessionId}` : ''}`;
-    }
     if (data.running) {
       wechatSetRunning(true);
       wechatConnectSSE();
