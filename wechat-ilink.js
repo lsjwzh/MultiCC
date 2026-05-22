@@ -178,7 +178,15 @@ function _isEcho(t) {
   if (!h) return true;
   const now = Date.now();
   for (const [k, v] of _sentHashes) if (v < now) _sentHashes.delete(k);
-  for (const [k] of _sentHashes) if (k.includes(h) || h.includes(k)) return true;
+  for (const [k] of _sentHashes) {
+    if (k === h) return true;
+    // Substring match guards against WeChat re-echoing our (possibly chunked)
+    // outbound text. Require a long-enough overlap so short user replies like
+    // 确认/取消 aren't swallowed just because they appear inside a prompt we sent
+    // (e.g. the dispatch confirmation "回复「确认」执行…").
+    const shorter = h.length <= k.length ? h : k;
+    if (shorter.length >= 12 && (k.includes(h) || h.includes(k))) return true;
+  }
   return false;
 }
 
