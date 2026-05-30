@@ -599,7 +599,13 @@ function dirSuitability(dirPath) {
       if (e.name === '.git' || e.name === WORKTREE_SUBDIR) continue;
       if (e.isSymbolicLink()) continue;
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) { walk(full); continue; }
+      if (e.isDirectory()) {
+        // Skip nested git repos: `git add -A` records them as a single gitlink
+        // (their contents are never hashed), so they shouldn't count toward the
+        // working-tree weight we're estimating here.
+        if (fs.existsSync(path.join(full, '.git'))) continue;
+        walk(full); continue;
+      }
       if (e.isFile()) {
         files++;
         try { bytes += fs.statSync(full).size; } catch {}
