@@ -586,7 +586,48 @@ function findDirByPath(resolvedPath, excludeId) {
 const DIR_MAX_FILES = 50000;                       // > this many files → unsuitable
 const DIR_MAX_BYTES = 2 * 1024 * 1024 * 1024;      // > 2 GB of content → unsuitable
 const DIR_SCAN_TIME_MS = 3000;                     // hard ceiling on the scan itself
+
+function dirUnsuitableReason(exceeded) {
+  if (exceeded === 'too-many-files')
+    return { ok: false, reason: `该目录文件过多（超过 ${DIR_MAX_FILES} 个），不适合作为 session 目录，请选择具体的项目目录` };
+  if (exceeded === 'too-large')
+    return { ok: false, reason: `该目录体积过大（超过 ${Math.round(DIR_MAX_BYTES / (1024 ** 3))}GB），不适合作为 session 目录，请选择具体的项目目录` };
+  if (exceeded === 'scan-timeout')
+    return { ok: false, reason: '该目录过大（扫描超时），不适合作为 session 目录，请选择具体的项目目录' };
+  return { ok: true };
+}
+
+// Measure only what `git add -A` will actually hash: files git would stage, i.e.
+// untracked + modified, with .gitignore applied. This is the right weight for an
+// existing repo — huge gitignored logs/build output (and nested git repos, which
+// `ls-files` reports as a single dir entry, not their contents) must not count.
+// Returns null if the dir isn't a usable repo, so callers fall back to a raw walk.
+function dirSuitabilityViaGit(dirPath) {
+  if (!gitIsRepo(dirPath)) return null;
+  let out;
+  try { out = gitRun(dirPath, ['ls-files', '-o', '-m', '-z', '--exclude-standard']); }
+  catch { return null; }
+  let files = 0, bytes = 0;
+  const deadline = Date.now() + DIR_SCAN_TIME_MS;
+  for (const rel of out.split('\0')) {
+    if (!rel) continue;
+    if (Date.now() > deadline) return dirUnsuitableReason('scan-timeout');
+    let st;
+    try { st = fs.statSync(path.join(dirPath, rel)); } catch { continue; }
+    if (!st.isFile()) continue;            // nested-repo dir entries land here → skipped
+    files++;
+    bytes += st.size;
+    if (files > DIR_MAX_FILES) return dirUnsuitableReason('too-many-files');
+    if (bytes > DIR_MAX_BYTES) return dirUnsuitableReason('too-large');
+  }
+  return { ok: true };
+}
+
 function dirSuitability(dirPath) {
+  // Prefer git's own view when the dir is already a repo (respects .gitignore).
+  const viaGit = dirSuitabilityViaGit(dirPath);
+  if (viaGit) return viaGit;
+  // Fallback: raw filesystem walk for not-yet-initialised dirs (e.g. ~/Downloads).
   let files = 0, bytes = 0, exceeded = null;
   const deadline = Date.now() + DIR_SCAN_TIME_MS;
   const walk = (dir) => {
@@ -615,13 +656,7 @@ function dirSuitability(dirPath) {
     }
   };
   walk(dirPath);
-  if (exceeded === 'too-many-files')
-    return { ok: false, reason: `该目录文件过多（超过 ${DIR_MAX_FILES} 个），不适合作为 session 目录，请选择具体的项目目录` };
-  if (exceeded === 'too-large')
-    return { ok: false, reason: `该目录体积过大（超过 ${Math.round(DIR_MAX_BYTES / (1024 ** 3))}GB），不适合作为 session 目录，请选择具体的项目目录` };
-  if (exceeded === 'scan-timeout')
-    return { ok: false, reason: '该目录过大（扫描超时），不适合作为 session 目录，请选择具体的项目目录' };
-  return { ok: true };
+  return dirUnsuitableReason(exceeded);
 }
 
 // Turn an ensureDirGitReady reason code into a user-facing message.
