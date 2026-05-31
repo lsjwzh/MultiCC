@@ -1366,6 +1366,90 @@ async function saveVoiceSettings() {
   }
 }
 
+/* ── Streaming ASR Settings (modal) ── */
+function _asrBadge(el, ready) {
+  if (!el) return;
+  el.textContent = ready ? '● 就绪' : '○ 未配置';
+  el.style.color = ready ? '#3fb950' : '#6e7681';
+}
+
+async function loadAsrSettings() {
+  try {
+    const res = await fetch('/api/settings/voice' + tokenQS('?'));
+    const data = await res.json();
+    const a = data.asr || {};
+    const st = a.status || {};
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+    const ph = (id, has, hint) => { const el = document.getElementById(id); if (el) { el.value = ''; el.placeholder = has ? '已配置（留空不修改）' : hint; } };
+
+    if (document.getElementById('asr-provider')) document.getElementById('asr-provider').value = a.provider || 'openai';
+    ph('asr-openai-key', a.hasOpenaiKey, 'sk-...');
+    set('asr-openai-url', a.openaiUrl);
+    set('asr-openai-model', a.openaiModel);
+    ph('asr-volc-appid', a.hasVolcAppId, '火山 App ID');
+    ph('asr-volc-token', a.hasVolcToken, '火山 Access Token');
+    set('asr-volc-resource', a.volcResourceId);
+    set('asr-volc-url', a.volcUrl);
+    set('asr-funasr-url', a.funasrUrl);
+    set('asr-funasr-mode', a.funasrMode);
+
+    _asrBadge(document.getElementById('asr-openai-badge'), st.openai && st.openai.ready);
+    _asrBadge(document.getElementById('asr-volc-badge'), st.volcano && st.volcano.ready);
+    _asrBadge(document.getElementById('asr-funasr-badge'), st.funasr && st.funasr.ready);
+
+    // Summary line on the Voice Settings card
+    const sum = document.getElementById('asr-summary');
+    if (sum) {
+      const names = { openai: 'OpenAI Realtime', volcano: '火山引擎', funasr: 'FunASR' };
+      const ready = [];
+      if (st.openai && st.openai.ready) ready.push('OpenAI');
+      if (st.volcano && st.volcano.ready) ready.push('火山');
+      if (st.funasr && st.funasr.ready) ready.push('FunASR');
+      sum.textContent = `默认：${names[a.provider] || a.provider || '—'}` + (ready.length ? ` · 已配置：${ready.join('、')}` : ' · 尚未配置任何提供商');
+      sum.style.color = ready.length ? '#8b949e' : '#d29922';
+    }
+  } catch (_) {}
+}
+
+function openAsrModal() {
+  const m = document.getElementById('asr-modal');
+  if (m) { m.style.display = 'flex'; loadAsrSettings(); }
+}
+function closeAsrModal() {
+  const m = document.getElementById('asr-modal');
+  if (m) m.style.display = 'none';
+}
+
+async function saveAsrSettings() {
+  const status = document.getElementById('asr-status');
+  const val = (id) => (document.getElementById(id)?.value || '').trim();
+  const asr = { provider: val('asr-provider') };       // provider always sent
+  const opt = (k, id) => { const v = val(id); if (v) asr[k] = v; };  // only send non-empty
+  opt('openaiApiKey', 'asr-openai-key');
+  opt('openaiUrl', 'asr-openai-url');
+  opt('openaiModel', 'asr-openai-model');
+  opt('volcAppId', 'asr-volc-appid');
+  opt('volcAccessToken', 'asr-volc-token');
+  opt('volcResourceId', 'asr-volc-resource');
+  opt('volcUrl', 'asr-volc-url');
+  opt('funasrUrl', 'asr-funasr-url');
+  opt('funasrMode', 'asr-funasr-mode');
+
+  try {
+    const res = await fetch('/api/settings/voice' + tokenQS('?'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asr }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (status) { status.textContent = '已保存'; status.style.color = '#3fb950'; }
+    showToast('流式 ASR 设置已保存');
+    loadAsrSettings();
+  } catch (err) {
+    if (status) { status.textContent = `失败：${err.message}`; status.style.color = '#f85149'; }
+  }
+}
+
 /* ── QR Code ── */
 async function showQR() {
   const modal = document.getElementById('qr-modal');
@@ -2171,6 +2255,7 @@ focusSession = function(id) {
 /* ── Init ── */
 loadDashboard();
 loadVoiceSettings();
+loadAsrSettings();
 loadPushDiagnostics();
 loadNotifySettings();
 loadApkInfo();

@@ -994,16 +994,71 @@ async function uploadAudioForSTT(blob) {
   }
 }
 
-if (!_hasNativeBridge && (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices)) {
+/* ── Streaming voice (real-time ASR: 边说边出字) ── */
+let _asrCfg = null;          // d.asr from /api/settings/voice
+let _voiceLang = 'zh';
+let _voiceStream = null;
+let _streamingActive = false;
+
+fetch(withToken('/api/settings/voice'))
+  .then(r => r.json())
+  .then(d => { _asrCfg = d.asr || null; _voiceLang = d.whisperLanguage || 'zh'; })
+  .catch(() => {});
+
+function streamingAvailable() {
+  const s = _asrCfg && _asrCfg.status;
+  return !!(s && (s.openai?.ready || s.volcano?.ready || s.funasr?.ready));
+}
+
+function startStreamingVoice() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = withToken(`${proto}//${location.host}/ws/voice`);
+  showVoicePanel('');
+  vpRaw.placeholder = '聆听中…';
+  vpStatus.textContent = '● 聆听中';
+  micBtn.classList.add('active');
+  _streamingActive = true;
+  isRecording = true;
+  const reset = () => { _streamingActive = false; isRecording = false; micBtn.classList.remove('active'); };
+  _voiceStream = new VoiceStream({
+    wsUrl,
+    provider: 'auto',
+    lang: _voiceLang,
+    onText: (full) => { vpRaw.value = full; },
+    onDone: (finalText) => {
+      vpStatus.textContent = (finalText || vpRaw.value).trim() ? '✓ 识别完成' : '未识别到语音';
+      reset();
+    },
+    onError: (msg) => { vpStatus.textContent = '⚠ ' + msg; reset(); },
+  });
+  _voiceStream.start().catch(err => {
+    vpStatus.textContent = '⚠ ' + (err.message || '启动失败');
+    reset();
+  });
+}
+
+function stopStreamingVoice() {
+  vpStatus.textContent = '识别中…';
+  micBtn.classList.remove('active');
+  if (_voiceStream) _voiceStream.stop();
+}
+
+const _canLegacyRecord = _hasNativeBridge || (typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices);
+const _canStream = !!(navigator.mediaDevices && window.AudioWorkletNode && window.VoiceStream && !_hasNativeBridge);
+
+if (!_canLegacyRecord && !_canStream) {
   micBtn.disabled = true;
   micBtn.title = '此浏览器不支持录音（需要 HTTPS 或 localhost）';
 } else {
   micBtn.onclick = () => {
-    if (isRecording) {
-      stopRecording();
-    } else {
-      startRecording();
+    // Real-time streaming when a provider is configured; otherwise legacy upload.
+    if (_canStream && streamingAvailable()) {
+      if (_streamingActive) stopStreamingVoice();
+      else startStreamingVoice();
+      return;
     }
+    if (isRecording) stopRecording();
+    else startRecording();
   };
 }
 

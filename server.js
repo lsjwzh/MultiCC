@@ -22,6 +22,7 @@ const { execSync, execFileSync, spawn } = require('child_process');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const wechatBridge = require('./wechat-ilink');
+const voiceAsr = require('./voice-asr');
 const webpush = require('web-push');
 
 const crypto = require('crypto');
@@ -259,6 +260,18 @@ console.log(`[multicc] Using codex: ${CODEX_CMD}`);
 // Each provider knows how to (1) build the interactive terminal command line for tmux,
 // (2) build chat-mode spawn args, (3) parse one line of streamed JSON output.
 // Chat-mode parse output schema: { kind: 'text'|'tool'|'tool_result'|'result'|'system'|'thread', ... }
+// Injected into chat-mode system prompt so the agent knows it can SHOW images to
+// the user: the web chat renders Markdown and rewrites local-path <img> through
+// /api/download, so an absolute-path image link just works.
+const MULTICC_IMG_HINT = [
+  '你正在 multicc 的网页聊天框里与用户对话，你的回复会被渲染为 Markdown。',
+  '当你需要给用户「展示图片」（截图、生成的图表、参考图等本地图片文件）时，',
+  '直接用 Markdown 图片语法并写该文件的【绝对路径】即可，例如：',
+  '![说明](/绝对/路径/到/图片.png)',
+  '前端会自动把本地路径图片内联显示给用户（可点击放大），无需上传或转 base64。',
+  '仅在图片文件确实存在时这样写，不要编造路径。',
+].join('\n');
+
 const cliProviders = {
   claude: {
     name: 'claude',
@@ -274,6 +287,7 @@ const cliProviders = {
       const args = [
         '-p', '--output-format', 'stream-json', '--verbose',
         '--include-partial-messages', '--dangerously-skip-permissions',
+        '--append-system-prompt', MULTICC_IMG_HINT,
       ];
       if (CLAUDE_CHAT_DISALLOWED_TOOLS.length) {
         args.push('--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(','));
@@ -2606,6 +2620,20 @@ app.get('/api/settings/voice', (req, res) => {
     hasWhisperKey: !!wsKey,
     whisperLanguage: env.WHISPER_LANGUAGE || process.env.WHISPER_LANGUAGE || 'zh',
     whisperPrompt: env.WHISPER_PROMPT || process.env.WHISPER_PROMPT || '',
+    // ── Streaming ASR (real-time dictation) ──
+    asr: {
+      provider: env.ASR_PROVIDER || process.env.ASR_PROVIDER || 'openai',
+      status: voiceAsr.providerStatus(),
+      openaiUrl: env.OPENAI_REALTIME_URL || process.env.OPENAI_REALTIME_URL || 'wss://api.openai.com/v1/realtime',
+      openaiModel: env.OPENAI_REALTIME_MODEL || process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-transcribe',
+      hasOpenaiKey: !!(env.OPENAI_REALTIME_API_KEY || process.env.OPENAI_REALTIME_API_KEY),
+      volcUrl: env.VOLC_ASR_URL || process.env.VOLC_ASR_URL || '',
+      volcResourceId: env.VOLC_ASR_RESOURCE_ID || process.env.VOLC_ASR_RESOURCE_ID || 'volc.bigasr.sauc.duration',
+      hasVolcAppId: !!(env.VOLC_ASR_APP_ID || process.env.VOLC_ASR_APP_ID),
+      hasVolcToken: !!(env.VOLC_ASR_ACCESS_TOKEN || process.env.VOLC_ASR_ACCESS_TOKEN),
+      funasrUrl: env.FUNASR_WS_URL || process.env.FUNASR_WS_URL || '',
+      funasrMode: env.FUNASR_MODE || process.env.FUNASR_MODE || '2pass',
+    },
   });
 });
 
@@ -2620,7 +2648,21 @@ app.post('/api/settings/voice', (req, res) => {
   if (whisperModel !== undefined) updates.WHISPER_MODEL = whisperModel;
   if (whisperLanguage !== undefined) updates.WHISPER_LANGUAGE = whisperLanguage;
   if (whisperPrompt !== undefined) updates.WHISPER_PROMPT = whisperPrompt;
+  // ── Streaming ASR config (skip masked **** values) ──
+  const asr = req.body.asr || {};
+  const setAsr = (k, v) => { if (v !== undefined && !(typeof v === 'string' && v.includes('****'))) updates[k] = v; };
+  setAsr('ASR_PROVIDER', asr.provider);
+  setAsr('OPENAI_REALTIME_API_KEY', asr.openaiApiKey);
+  setAsr('OPENAI_REALTIME_URL', asr.openaiUrl);
+  setAsr('OPENAI_REALTIME_MODEL', asr.openaiModel);
+  setAsr('VOLC_ASR_APP_ID', asr.volcAppId);
+  setAsr('VOLC_ASR_ACCESS_TOKEN', asr.volcAccessToken);
+  setAsr('VOLC_ASR_RESOURCE_ID', asr.volcResourceId);
+  setAsr('VOLC_ASR_URL', asr.volcUrl);
+  setAsr('FUNASR_WS_URL', asr.funasrUrl);
+  setAsr('FUNASR_MODE', asr.funasrMode);
   writeEnvFile(updates);
+  voiceAsr.applyConfig(updates);
   // Update in-memory env + module-level constants
   for (const [k, v] of Object.entries(updates)) process.env[k] = v;
   if (updates.OPENROUTER_API_KEY) OPENROUTER_API_KEY = updates.OPENROUTER_API_KEY;
@@ -4210,6 +4252,11 @@ wss.on('connection', (ws, req) => {
   // Route to chat handler if path matches
   if (urlObj.pathname === '/ws/chat') {
     return handleChatWs(ws, req, urlObj);
+  }
+
+  // Route to streaming voice (ASR) proxy
+  if (urlObj.pathname === '/ws/voice') {
+    return voiceAsr.handleVoiceWs(ws, req, urlObj);
   }
 
   // Route to the per-directory workspace status board

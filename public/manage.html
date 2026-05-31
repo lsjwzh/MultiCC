@@ -761,6 +761,16 @@
       <details class="settings-section">
         <summary>Voice Settings</summary>
         <div class="settings-card">
+          <div class="sc-header">实时语音识别 — 流式 ASR（豆包式体验）</div>
+          <div class="sc-body">
+            <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:10px;">
+              边说边出字的低延迟听写。国内建议「火山引擎」，国外默认「OpenAI Realtime」，离线/数据不出机可用「FunASR」。每家独立配置 AppID/Key。
+            </div>
+            <button class="btn btn-green" onclick="openAsrModal()">⚙ 配置流式 ASR…</button>
+            <span class="status-text" id="asr-summary" style="margin-left:8px;"></span>
+          </div>
+        </div>
+        <div class="settings-card">
           <div class="sc-header">Voice Refinement — OpenRouter</div>
           <div class="sc-body">
             <div class="setting-row">
@@ -1041,6 +1051,55 @@
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button class="btn" onclick="closeNewDirectoryModal()">Cancel</button>
         <button class="btn btn-green" onclick="submitNewDirectory()">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Streaming ASR settings modal -->
+  <div id="asr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this)closeAsrModal()">
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;width:min(96vw,560px);max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;">
+      <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid #21262d;gap:8px;">
+        <div style="flex:1;color:#f0f6fc;font-size:15px;font-weight:600;">⚙ 实时语音识别（流式 ASR）</div>
+        <button class="btn" onclick="closeAsrModal()">关闭</button>
+      </div>
+      <div style="padding:16px 18px;">
+        <div class="setting-row" style="margin-bottom:14px;">
+          <label>默认提供商</label>
+          <select id="asr-provider" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none;">
+            <option value="openai">OpenAI Realtime（国外默认）</option>
+            <option value="volcano">火山引擎（国内 / 豆包同款）</option>
+            <option value="funasr">FunASR（自建 / 离线）</option>
+          </select>
+        </div>
+
+        <div style="border-top:1px solid #21262d;padding-top:12px;margin-bottom:6px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:13px;color:#f0f6fc;font-weight:600;">OpenAI Realtime</span>
+          <span id="asr-openai-badge" class="status-text"></span>
+        </div>
+        <div class="setting-row"><label>API Key</label><input id="asr-openai-key" type="password" autocomplete="off" placeholder="sk-..." /></div>
+        <div class="setting-row"><label>Endpoint</label><input id="asr-openai-url" type="text" placeholder="wss://api.openai.com/v1/realtime" /></div>
+        <div class="setting-row"><label>Model</label><input id="asr-openai-model" type="text" placeholder="gpt-4o-transcribe" /></div>
+
+        <div style="border-top:1px solid #21262d;padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:13px;color:#f0f6fc;font-weight:600;">火山引擎 流式 ASR</span>
+          <span id="asr-volc-badge" class="status-text"></span>
+        </div>
+        <div class="setting-row"><label>App ID</label><input id="asr-volc-appid" type="text" autocomplete="off" placeholder="火山 App ID" /></div>
+        <div class="setting-row"><label>Access Token</label><input id="asr-volc-token" type="password" autocomplete="off" placeholder="火山 Access Token" /></div>
+        <div class="setting-row"><label>Resource ID</label><input id="asr-volc-resource" type="text" placeholder="volc.bigasr.sauc.duration" /></div>
+        <div class="setting-row"><label>Endpoint</label><input id="asr-volc-url" type="text" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" /></div>
+
+        <div style="border-top:1px solid #21262d;padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:13px;color:#f0f6fc;font-weight:600;">FunASR（自建）</span>
+          <span id="asr-funasr-badge" class="status-text"></span>
+        </div>
+        <div class="setting-row"><label>WS URL</label><input id="asr-funasr-url" type="text" placeholder="ws://127.0.0.1:10095" /></div>
+        <div class="setting-row"><label>Mode</label><input id="asr-funasr-mode" type="text" placeholder="2pass" style="max-width:160px" /></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid #21262d;">
+        <span class="status-text" id="asr-status"></span>
+        <button class="btn" onclick="closeAsrModal()">取消</button>
+        <button class="btn btn-green" onclick="saveAsrSettings()">保存</button>
       </div>
     </div>
   </div>

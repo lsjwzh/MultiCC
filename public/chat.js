@@ -55,6 +55,36 @@ function renderMarkdown(text) {
   return (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : escHtml(text);
 }
 
+// Assistant markdown may reference local-filesystem images, e.g. ![](/tmp/x.png).
+// The browser can't load those directly, so rewrite such <img> to stream through
+// the existing /api/download?inline=1 route — this is how the agent shows images
+// to the user. Web URLs (http/https/data/blob//api/…) are left untouched.
+const _LOCAL_IMG_RE = /^(?:file:\/\/|\/(?:tmp|Users|home|var|private|opt|Volumes|mnt|root|data)\/|[A-Za-z]:[\\/])/;
+function fixupLocalImages(root) {
+  if (!root) return;
+  root.querySelectorAll('img').forEach(img => {
+    const raw = img.getAttribute('src') || '';
+    if (!_LOCAL_IMG_RE.test(raw)) return;
+    const p = raw.replace(/^file:\/\//, '');
+    const url = withToken('/api/download?path=' + encodeURIComponent(p) + '&inline=1');
+    const name = p.split(/[\\/]/).pop();
+    img.src = url;
+    img.style.maxWidth = '100%';
+    img.style.borderRadius = '8px';
+    img.style.cursor = 'zoom-in';
+    img.loading = 'lazy';
+    img.addEventListener('click', () => openLightbox(url, name));
+    img.addEventListener('error', () => {
+      if (img.dataset.failed) return;
+      img.dataset.failed = '1';
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:12px;color:#f85149;font-family:monospace';
+      note.textContent = '⚠ 无法加载图片: ' + p;
+      img.replaceWith(note);
+    });
+  });
+}
+
 /* ── DOM refs ── */
 const messagesEl  = document.getElementById('messages');
 const inputEl     = document.getElementById('input');
@@ -529,6 +559,7 @@ function renderCurrentText(final = false) {
   tmp.innerHTML = html;
   contentEl.innerHTML = '';
   while (tmp.firstChild) contentEl.appendChild(tmp.firstChild);
+  fixupLocalImages(contentEl);
   toolEls.forEach(el => contentEl.appendChild(el));
 
   if (!final && isStreaming) {
@@ -649,6 +680,7 @@ function replayHistory(messages) {
       // Render text as markdown
       if (m.content?.trim()) {
         contentEl.innerHTML = renderMarkdown(m.content);
+        fixupLocalImages(contentEl);
         highlightCodeBlocks(contentEl);
       }
 
