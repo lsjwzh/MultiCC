@@ -402,13 +402,17 @@ function showSessionMenu(ev, sessionId) {
   const mergeLabel = mergeReady
     ? `✓ 合并到 ${ms.baseBranch || 'main'}${ms.ahead ? `（${ms.ahead} 个提交）` : ''}`
     : `合并到 ${ms.baseBranch || 'main'}`;
-  showPopoverMenu(ev.currentTarget, [
+  const items = [
     { label: '改名', onclick: () => renameSession(sessionId) },
     { label: '留言', onclick: () => openNoteModal(sessionId) },
     { label: 'Diff', onclick: () => showDiff(sessionId) },
-    { sep: true },
-    { label: mergeLabel, ready: mergeReady, onclick: () => mergeSession(sessionId) },
-  ]);
+  ];
+  if ((s?.cli || 'claude') === 'claude') {
+    items.push({ label: `切换模型（${modelShortName(s?.model || '')}）`, onclick: () => changeSessionModel(sessionId) });
+  }
+  items.push({ sep: true });
+  items.push({ label: mergeLabel, ready: mergeReady, onclick: () => mergeSession(sessionId) });
+  showPopoverMenu(ev.currentTarget, items);
 }
 
 function renderDirectoryBlock(dir, dirSessions) {
@@ -509,6 +513,7 @@ function renderSessionRow(s) {
       <div class="sess-row-top">
         <span class="cli-chip ${s.cli || 'claude'}">${escapeHtml(s.cli || 'claude')}</span>
         <span class="kind-chip">${escapeHtml(s.kind || 'terminal')}</span>
+        ${s.model ? `<span class="kind-chip" title="模型：${escapeHtml(s.model)}">${escapeHtml(modelShortName(s.model))}</span>` : ''}
         <span class="sess-status ${statusCls}" id="sess-status-${escapeHtml(s.id)}">${statusText}</span>
         <span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}" style="font-size:10px;color:#d29922;${pendingNotes > 0 ? '' : 'display:none'}">${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span>
       </div>
@@ -824,12 +829,100 @@ async function deleteDirectory(id) {
   }
 }
 
+// Claude model choices for new sessions. value '' = follow the user's /model default.
+const CLAUDE_MODEL_OPTIONS = [
+  { value: '', label: '默认（跟随 Claude 设置）' },
+  { value: 'claude-fable-5', label: 'Fable 5' },
+  { value: 'claude-fable-5[1m]', label: 'Fable 5 (1M context)' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  { value: '__custom__', label: '自定义…' },
+];
+
+function modelShortName(model) {
+  const opt = CLAUDE_MODEL_OPTIONS.find(o => o.value === model);
+  return opt ? opt.label : model;
+}
+
+// WebView-safe model picker (same pattern as _dialog). Resolves to '' (default),
+// a model string, or null (cancelled).
+function showModelPicker({ title = '选择该会话使用的模型', okText = '创建', current = '' } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:380px;max-width:94vw;';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:12px;';
+    msg.textContent = title;
+    box.appendChild(msg);
+
+    const isKnown = CLAUDE_MODEL_OPTIONS.some(o => o.value === current);
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
+    for (const o of CLAUDE_MODEL_OPTIONS) {
+      const opt = document.createElement('option');
+      opt.value = o.value; opt.textContent = o.label;
+      select.appendChild(opt);
+    }
+    select.value = isKnown ? current : '__custom__';
+    box.appendChild(select);
+
+    const custom = document.createElement('input');
+    custom.type = 'text';
+    custom.placeholder = '模型 ID，如 claude-opus-4-8';
+    custom.value = isKnown ? '' : current;
+    custom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;';
+    box.appendChild(custom);
+    const syncCustom = () => {
+      custom.style.display = select.value === '__custom__' ? '' : 'none';
+    };
+    syncCustom();
+    select.onchange = () => { syncCustom(); if (select.value === '__custom__') custom.focus(); };
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const cancel = document.createElement('button');
+    cancel.className = 'btn'; cancel.textContent = '取消';
+    const ok = document.createElement('button');
+    ok.className = 'btn btn-green'; ok.textContent = okText;
+    row.appendChild(cancel); row.appendChild(ok);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = (result) => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(result);
+    };
+    const accept = () => close(select.value === '__custom__' ? custom.value.trim() : select.value);
+    const reject = () => close(null);
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); reject(); }
+      else if (e.key === 'Enter') { e.preventDefault(); accept(); }
+    }
+    ok.onclick = accept;
+    cancel.onclick = reject;
+    overlay.onclick = (e) => { if (e.target === overlay) reject(); };
+    document.addEventListener('keydown', onKey, true);
+    setTimeout(() => select.focus(), 0);
+  });
+}
+
 async function newSessionInDir(dirId, cli, kind) {
+  let model = null;
+  if (cli === 'claude') {
+    const picked = await showModelPicker();
+    if (picked === null) return; // cancelled
+    model = picked || null;
+  }
   try {
     const res = await fetch(`/api/directories/${dirId}/sessions${tokenQS('?')}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cli, kind }),
+      body: JSON.stringify({ cli, kind, model }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -842,6 +935,34 @@ async function newSessionInDir(dirId, cli, kind) {
     await loadDashboard();
     // Open it immediately
     openSessionInline(sess.id, sess.kind);
+  } catch (err) {
+    showToast(`Error: ${err.message}`, true);
+  }
+}
+
+async function changeSessionModel(id) {
+  const sess = _cachedSessions.find(s => s.id === id);
+  if (!sess) return;
+  const picked = await showModelPicker({
+    title: '切换该会话使用的模型',
+    okText: '保存',
+    current: sess.model || '',
+  });
+  if (picked === null) return; // cancelled
+  try {
+    const res = await fetch(`/api/sessions/${id}${tokenQS('?')}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: picked }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(`Error: ${err.error}`, true);
+      return;
+    }
+    const hint = sess.kind === 'terminal' ? '（重启会话后生效）' : '（下一轮对话生效）';
+    showToast(`模型已切换为 ${modelShortName(picked)} ${hint}`);
+    loadDashboard();
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
   }
@@ -1161,6 +1282,7 @@ function eventLabel(evt) {
   switch (evt.type) {
     case 'session_created': return `🆕 新建会话 ${who}（${evt.detail || ''}）`;
     case 'session_renamed': return `✏️ 会话改名为 ${evt.detail || who}`;
+    case 'session_model_changed': return `🧠 切换模型 ${evt.detail || who}`;
     case 'session_deleted': return `🗑 删除会话 ${evt.detail || who}`;
     case 'merged':          return `🔀 ${who} 合并：${evt.detail || ''}`;
     case 'note':            return `📨 ${who} 留言 ${evt.detail || ''}`;

@@ -98,6 +98,22 @@ class SessionService {
     }
   }
 
+  /// Switch the model of an existing claude session. Empty string = follow
+  /// the server-side /model default. Chat sessions pick it up next turn.
+  Future<void> updateSessionModel(String id, String model) async {
+    final res = await http
+        .patch(
+          Uri.parse(_url('/api/sessions/$id')),
+          headers: _headers,
+          body: jsonEncode({'model': model}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+  }
+
   Future<void> updateSessionLabel(String id, String? label) async {
     final res = await http
         .patch(
@@ -241,9 +257,11 @@ class SessionService {
     required SessionCli cli,
     required SessionKind kind,
     String? label,
+    String? model,
   }) async {
     final body = <String, dynamic>{'cli': cli.name, 'kind': kind.name};
     if (label != null && label.isNotEmpty) body['label'] = label;
+    if (model != null && model.isNotEmpty) body['model'] = model;
     final res = await http
         .post(
           Uri.parse(_url('/api/directories/$dirId/sessions')),

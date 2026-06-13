@@ -11,6 +11,7 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/model_picker.dart';
 import '../widgets/thinking_indicator.dart';
 import 'memo_screen.dart';
 import 'setup_screen.dart';
@@ -193,6 +194,11 @@ class _Header extends StatelessWidget {
             child: Icon(Icons.circle, size: 8, color: statusColor),
           ),
           const Spacer(),
+          // Model switch — claude sessions only (codex has no model concept here).
+          if (provider.cli == SessionCli.claude) ...[
+            _ModelChip(sessionId: provider.sessionName),
+            const SizedBox(width: 4),
+          ],
           // Memo button — project memo (multicc.memo.md) for the session's directory.
           _HeaderBtn(
             icon: Icons.sticky_note_2_outlined,
@@ -261,6 +267,92 @@ class _Header extends StatelessWidget {
     Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => SetupScreen(settings: settings)));
+  }
+}
+
+/// Compact model indicator + switcher for the chat header. Reads the current
+/// per-session model from SessionManager; tap to switch (next turn applies).
+class _ModelChip extends StatelessWidget {
+  final String sessionId;
+  const _ModelChip({required this.sessionId});
+
+  @override
+  Widget build(BuildContext context) {
+    final mgr = context.watch<SessionManager>();
+    Session? s;
+    for (final x in mgr.sessions) {
+      if (x.id == sessionId) { s = x; break; }
+    }
+    final label = claudeModelShortName(s?.model);
+    return Tooltip(
+      message: '切换该会话使用的模型（下一轮对话生效）',
+      child: GestureDetector(
+        onTap: () => _switchModel(context, mgr, s),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          decoration: BoxDecoration(
+            color: const Color(0xFF21262d),
+            border: Border.all(color: const Color(0xFF30363d)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.psychology_outlined,
+                size: 15,
+                color: Color(0xFFc9d1d9),
+              ),
+              const SizedBox(width: 4),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 86),
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFFc9d1d9),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _switchModel(
+    BuildContext context,
+    SessionManager mgr,
+    Session? s,
+  ) async {
+    if (s == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Session 信息未加载')),
+      );
+      return;
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    final picked = await showClaudeModelPicker(
+      context,
+      current: s.model ?? '',
+      title: '切换该会话使用的模型（下一轮对话生效）',
+    );
+    if (picked == null) return;
+    try {
+      await mgr.updateSessionModel(s.id, picked);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            '✓ 模型已切换为 ${picked.isEmpty ? '默认（跟随 Claude 设置）' : claudeModelShortName(picked)}，下一轮对话生效',
+          ),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('模型切换失败：$e')));
+    }
   }
 }
 

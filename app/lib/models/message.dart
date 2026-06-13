@@ -99,6 +99,25 @@ extension SessionKindX on SessionKind {
   String get name => this == SessionKind.chat ? 'chat' : 'terminal';
 }
 
+/// Claude model choices for new sessions / live switching.
+/// Empty value = follow the user's /model default on the server machine.
+const kClaudeModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 Claude 设置）'),
+  MapEntry('claude-fable-5', 'Fable 5'),
+  MapEntry('claude-fable-5[1m]', 'Fable 5 (1M context)'),
+  MapEntry('claude-opus-4-8', 'Opus 4.8'),
+  MapEntry('claude-sonnet-4-6', 'Sonnet 4.6'),
+  MapEntry('claude-haiku-4-5-20251001', 'Haiku 4.5'),
+];
+
+String claudeModelShortName(String? model) {
+  if (model == null || model.isEmpty) return '默认';
+  for (final e in kClaudeModelOptions) {
+    if (e.key == model) return e.value;
+  }
+  return model;
+}
+
 class Session {
   final String id;
   final String? dirId;
@@ -106,6 +125,7 @@ class Session {
   final SessionKind kind;
   final String? cliSessionId;
   final String? label;
+  final String? model;
   final String cwd;
   final DateTime createdAt;
   final bool active;
@@ -121,6 +141,7 @@ class Session {
     this.kind = SessionKind.terminal,
     this.cliSessionId,
     this.label,
+    this.model,
     this.cwd = '',
     required this.createdAt,
     this.active = false,
@@ -138,6 +159,7 @@ class Session {
       kind: _parseKind(json['kind']?.toString()),
       cliSessionId: json['cliSessionId']?.toString(),
       label: json['label']?.toString(),
+      model: json['model']?.toString(),
       cwd: (json['cwd'] ?? '').toString(),
       createdAt: json['createdAt'] != null
           ? DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()

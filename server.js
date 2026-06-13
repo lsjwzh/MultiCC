@@ -227,6 +227,18 @@ const CLAUDE_CHAT_DISALLOWED_TOOLS = (process.env.CLAUDE_CHAT_DISALLOWED_TOOLS ?
   .filter(Boolean);
 console.log(`[multicc] Using claude: ${CLAUDE_CMD}`);
 
+// Read the user's default model from ~/.claude/settings.json on every spawn so
+// chat-mode sessions (which `--resume` and would otherwise keep their original
+// model forever) follow the current /model choice without a server restart.
+function claudeDefaultModel() {
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8'));
+    return typeof settings.model === 'string' && settings.model ? settings.model : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ── Codex CLI binary resolution (mirrors claude lookup) ──
 function resolveCodex() {
   if (process.env.CODEX_CMD) return process.env.CODEX_CMD;
@@ -279,6 +291,7 @@ const cliProviders = {
     // Interactive terminal: `claude --session-id <uuid>`
     buildTerminalCmd(session) {
       let cmd = `${CLAUDE_CMD}${CLAUDE_ARGS.length ? ' ' + CLAUDE_ARGS.join(' ') : ''}`;
+      if (session.model) cmd += ` --model ${session.model}`;
       if (session.cliSessionId) cmd += ` --session-id ${session.cliSessionId}`;
       return cmd;
     },
@@ -289,6 +302,10 @@ const cliProviders = {
         '--include-partial-messages', '--dangerously-skip-permissions',
         '--append-system-prompt', MULTICC_IMG_HINT,
       ];
+      // Per-session model wins; otherwise follow the user's current /model default
+      // (passed explicitly because `--resume` would keep the session's original model).
+      const model = session.model || claudeDefaultModel();
+      if (model) args.push('--model', model);
       if (CLAUDE_CHAT_DISALLOWED_TOOLS.length) {
         args.push('--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(','));
       }
@@ -1459,6 +1476,7 @@ app.get('/api/sessions', (req, res) => {
         kind: p.kind || 'terminal',
         cliSessionId: p.cliSessionId || null,
         label: p.label || null,
+        model: p.model || null,
         cwd,
         createdAt: p.createdAt,
         mergeState: p.dirId ? gitWorktreeMergeState(directories.get(p.dirId), p) : null,
@@ -1734,10 +1752,14 @@ app.get('/api/directories/:id/workspace', (req, res) => {
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
 // to create/reuse a named session (e.g. ephemeral gateway chats). Returns
 // { ok:true, id, session, reused? } or { ok:false, error }.
-function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false }) {
+function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!['claude', 'codex'].includes(cli)) return { ok: false, error: 'cli must be claude or codex' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
+  // Model is claude-only and interpolated into a tmux shell command — keep the charset tight.
+  if (model && (cli !== 'claude' || !/^[A-Za-z0-9._\[\]-]{1,100}$/.test(model))) {
+    return { ok: false, error: 'invalid model' };
+  }
   const sid = id || allocateSessionId(dir, cli, kind);
   if (persistedSessions.has(sid)) return { ok: true, id: sid, session: persistedSessions.get(sid), reused: true };
 
@@ -1758,6 +1780,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     cli, kind,
     cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
     label,
+    model: model || null, // claude-only; null = follow the user's /model default
     createdAt: new Date().toISOString(),
     worktreePath,
     branch,
@@ -1775,7 +1798,8 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   const cli = (req.body.cli || '').trim();
   const kind = (req.body.kind || '').trim();
   const label = (req.body.label || '').trim() || null;
-  const r = createSessionRecord({ dir: d, cli, kind, label });
+  const model = (req.body.model || '').trim() || null;
+  const r = createSessionRecord({ dir: d, cli, kind, label, model });
   if (!r.ok) return res.status(400).json({ error: r.error });
   res.json(r.session);
 });
@@ -1791,9 +1815,20 @@ app.patch('/api/sessions/:id', (req, res) => {
     const label = (req.body.label || '').toString().trim();
     if (label.length > 80) return res.status(400).json({ error: 'label too long (max 80)' });
     s.label = label || null;
+    appendEvent(s.dirId, 'session_renamed', s.label || s.id, s.id);
+  }
+  if (req.body.model !== undefined) {
+    const model = (req.body.model || '').toString().trim();
+    if (s.cli !== 'claude') return res.status(400).json({ error: 'model is claude-only' });
+    if (model && !/^[A-Za-z0-9._\[\]-]{1,100}$/.test(model)) {
+      return res.status(400).json({ error: 'invalid model' });
+    }
+    s.model = model || null;
+    // Chat sessions pick this up on the next turn (fresh spawn per turn);
+    // terminal sessions need a session restart to relaunch claude with it.
+    appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
   }
   savePersistedSessions();
-  appendEvent(s.dirId, 'session_renamed', s.label || s.id, s.id);
   res.json(s);
 });
 
@@ -1804,10 +1839,12 @@ app.get('/api/sessions/:id', (req, res) => {
   if (!active && !persisted) return res.status(404).json({ error: 'Session not found' });
   const dir = persisted?.dirId ? directories.get(persisted.dirId) : null;
   const mergeState = persisted ? gitWorktreeMergeState(dir, persisted) : null;
+  const cli = persisted?.cli || 'claude';
+  const model = persisted?.model || null;
   if (active) {
-    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState });
+    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model });
   } else {
-    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState });
+    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model });
   }
 });
 

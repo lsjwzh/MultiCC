@@ -11,6 +11,7 @@ import '../services/chat_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/workspace_service.dart';
+import '../widgets/model_picker.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
 import 'setup_screen.dart';
@@ -882,11 +883,19 @@ class _DirectoryCardState extends State<_DirectoryCard> {
   Future<void> _createSession(SessionCli cli, SessionKind kind) async {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
+    String? model;
+    if (cli == SessionCli.claude) {
+      final picked = await showClaudeModelPicker(context);
+      if (picked == null) return; // cancelled
+      if (!mounted) return;
+      model = picked.isEmpty ? null : picked;
+    }
     try {
       final s = await widget.mgr.createSessionInDir(
         dirId: widget.directory.id,
         cli: cli,
         kind: kind,
+        model: model,
       );
       if (!mounted) return;
       // Auto-open the freshly created session

@@ -229,15 +229,22 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     required SessionCli cli,
     required SessionKind kind,
     String? label,
+    String? model,
   }) async {
     final s = await _sessionService.createSessionInDir(
       dirId: dirId,
       cli: cli,
       kind: kind,
       label: label,
+      model: model,
     );
     await loadDashboard();
     return s;
+  }
+
+  Future<void> updateSessionModel(String id, String model) async {
+    await _sessionService.updateSessionModel(id, model);
+    await loadDashboard();
   }
 
   // ── Cleanup ────────────────────────────────────────────────────────────────
