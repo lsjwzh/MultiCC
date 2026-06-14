@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 import '../models/message.dart';
-import '../services/chat_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import 'chat_provider.dart';
@@ -56,9 +55,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       _isInBackground = false;
       for (final p in _providers.values) {
         p.isInBackground = false;
-        if (p.connectionState == ChatConnectionState.disconnected) {
-          p.reconnect();
-        }
+        // Always rebuild on resume: after the OS froze the socket while
+        // backgrounded it often still reads `connected` but is actually dead
+        // (half-open). Gating on `disconnected` would skip exactly that case
+        // and leave the chat frozen until an app restart.
+        p.reconnect();
       }
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {

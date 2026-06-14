@@ -14,7 +14,7 @@ Future<void> showConflictDiffDialog(
   return showDialog<void>(
     context: context,
     builder: (_) => Dialog(
-      backgroundColor: const Color(0xFF0d1117),
+      backgroundColor: const Color(0xFF070809),
       insetPadding: const EdgeInsets.all(12),
       child: SizedBox(
         width: 1000,
@@ -33,7 +33,7 @@ Future<void> showConflictDiffDialog(
                         Text(
                           '合并冲突 · $sessionId',
                           style: const TextStyle(
-                            color: Color(0xFFf0f6fc),
+                            color: Color(0xFFf2f4f7),
                             fontSize: 15,
                             fontWeight: FontWeight.w600,
                           ),
@@ -44,7 +44,7 @@ Future<void> showConflictDiffDialog(
                           '${conflicts.length} 个冲突文件 · 合并已 abort，基分支未改动'
                           '${truncated ? ' · Diff 已截断' : ''}',
                           style: const TextStyle(
-                            color: Color(0xFF8b949e),
+                            color: Color(0xFF8a909b),
                             fontSize: 11,
                           ),
                         ),
@@ -53,7 +53,7 @@ Future<void> showConflictDiffDialog(
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close, color: Color(0xFF8b949e)),
+                    icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
                   ),
                 ],
               ),
@@ -62,16 +62,16 @@ Future<void> showConflictDiffDialog(
               constraints: const BoxConstraints(maxHeight: 110),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: const BoxDecoration(
-                color: Color(0xFF161b22),
+                color: Color(0xFF0f1115),
                 border: Border.symmetric(
-                  horizontal: BorderSide(color: Color(0xFF30363d)),
+                  horizontal: BorderSide(color: Color(0xFF20242b)),
                 ),
               ),
               child: SingleChildScrollView(
                 child: SelectableText(
                   conflicts.isEmpty ? '(未获取到冲突文件)' : conflicts.join('\n'),
                   style: const TextStyle(
-                    color: Color(0xFF8b949e),
+                    color: Color(0xFF8a909b),
                     fontFamily: 'monospace',
                     fontSize: 11,
                     height: 1.45,
@@ -84,7 +84,7 @@ Future<void> showConflictDiffDialog(
                   ? const Center(
                       child: Text(
                         '未获取到冲突 Diff',
-                        style: TextStyle(color: Color(0xFF6e7681)),
+                        style: TextStyle(color: Color(0xFF5b616c)),
                       ),
                     )
                   : SingleChildScrollView(
@@ -94,7 +94,7 @@ Future<void> showConflictDiffDialog(
                         child: SelectableText.rich(
                           TextSpan(children: _diffSpans(diff)),
                           style: const TextStyle(
-                            color: Color(0xFFc9d1d9),
+                            color: Color(0xFFe7eaee),
                             fontFamily: 'monospace',
                             fontSize: 11,
                             height: 1.5,
@@ -113,7 +113,7 @@ Future<void> showConflictDiffDialog(
 List<TextSpan> _diffSpans(String diff) {
   final conflictMarker = RegExp(r'^[+\- ]*(<<<<<<<|=======|>>>>>>>)');
   return diff.split('\n').map((line) {
-    Color color = const Color(0xFFc9d1d9);
+    Color color = const Color(0xFFe7eaee);
     Color? background;
     FontWeight? weight;
     if (conflictMarker.hasMatch(line)) {
@@ -123,12 +123,12 @@ List<TextSpan> _diffSpans(String diff) {
     } else if (line.startsWith('diff --') || line.startsWith('index ')) {
       color = const Color(0xFFd2a8ff);
     } else if (line.startsWith('@@')) {
-      color = const Color(0xFF79c0ff);
+      color = const Color(0xFF6aa3ff);
     } else if (line.startsWith('+')) {
       color = const Color(0xFF7ee787);
       background = const Color(0x332ea043);
     } else if (line.startsWith('-')) {
-      color = const Color(0xFFffa198);
+      color = const Color(0xFFffb3ae);
       background = const Color(0x33f85149);
     }
     return TextSpan(

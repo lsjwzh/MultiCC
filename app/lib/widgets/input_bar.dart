@@ -87,14 +87,14 @@ class _InputBarState extends State<InputBar> {
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Upload failed: ${res.statusCode}'), backgroundColor: const Color(0xFFf85149)),
+            SnackBar(content: Text('Upload failed: ${res.statusCode}'), backgroundColor: const Color(0xFFff6b63)),
           );
         }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Upload error: $e'), backgroundColor: const Color(0xFFf85149)),
+          SnackBar(content: Text('Upload error: $e'), backgroundColor: const Color(0xFFff6b63)),
         );
       }
     } finally {
@@ -159,14 +159,14 @@ class _InputBarState extends State<InputBar> {
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('STT failed: ${res.statusCode}'), backgroundColor: const Color(0xFFf85149)),
+            SnackBar(content: Text('STT failed: ${res.statusCode}'), backgroundColor: const Color(0xFFff6b63)),
           );
         }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('STT error: $e'), backgroundColor: const Color(0xFFf85149)),
+          SnackBar(content: Text('STT error: $e'), backgroundColor: const Color(0xFFff6b63)),
         );
       }
     } finally {
@@ -184,7 +184,7 @@ class _InputBarState extends State<InputBar> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF161b22),
+      backgroundColor: const Color(0xFF0f1115),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -196,34 +196,34 @@ class _InputBarState extends State<InputBar> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('🎤 语音识别', style: TextStyle(color: Color(0xFFf0f6fc), fontSize: 16, fontWeight: FontWeight.w600)),
+                const Text('🎤 语音识别', style: TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 12),
-                const Text('原始识别', style: TextStyle(color: Color(0xFF8b949e), fontSize: 12)),
+                const Text('原始识别', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                 const SizedBox(height: 4),
                 TextField(
                   controller: rawCtrl,
                   maxLines: 4,
-                  style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 14),
+                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
                   decoration: InputDecoration(
                     filled: true,
-                    fillColor: const Color(0xFF0d1117),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF30363d))),
-                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF30363d))),
-                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF388bfd))),
+                    fillColor: const Color(0xFF070809),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF20242b))),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF20242b))),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF6aa3ff))),
                   ),
                 ),
                 if (refinedText != null) ...[
                   const SizedBox(height: 12),
-                  const Text('AI 重排', style: TextStyle(color: Color(0xFF8b949e), fontSize: 12)),
+                  const Text('AI 重排', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                   const SizedBox(height: 4),
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0d1117),
-                      border: Border.all(color: const Color(0xFF238636)),
+                      color: const Color(0xFF070809),
+                      border: Border.all(color: const Color(0xFF22ab9c)),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Text(refinedText!, style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 14)),
+                    child: Text(refinedText!, style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14)),
                   ),
                 ],
                 const SizedBox(height: 16),
@@ -233,8 +233,8 @@ class _InputBarState extends State<InputBar> {
                       child: OutlinedButton(
                         onPressed: () => Navigator.pop(ctx),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF8b949e),
-                          side: const BorderSide(color: Color(0xFF30363d)),
+                          foregroundColor: const Color(0xFF8a909b),
+                          side: const BorderSide(color: Color(0xFF20242b)),
                         ),
                         child: const Text('取消'),
                       ),
@@ -257,11 +257,11 @@ class _InputBarState extends State<InputBar> {
                                 }
                               },
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF8b949e),
-                          side: const BorderSide(color: Color(0xFF30363d)),
+                          foregroundColor: const Color(0xFF8a909b),
+                          side: const BorderSide(color: Color(0xFF20242b)),
                         ),
                         child: isRefining
-                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8b949e)))
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8a909b)))
                             : const Text('AI 重排'),
                       ),
                     ),
@@ -278,7 +278,7 @@ class _InputBarState extends State<InputBar> {
                           _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
                         },
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF238636),
+                          backgroundColor: const Color(0xFF22ab9c),
                           foregroundColor: Colors.white,
                         ),
                         child: Text(refinedText != null ? '使用 AI' : '使用原文'),
@@ -356,8 +356,8 @@ class _InputBarState extends State<InputBar> {
       top: false,
       child: Container(
         decoration: const BoxDecoration(
-          color: Color(0xFF161b22),
-          border: Border(top: BorderSide(color: Color(0xFF30363d))),
+          color: Color(0xFF0f1115),
+          border: Border(top: BorderSide(color: Color(0xFF20242b))),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         child: Column(
@@ -377,27 +377,27 @@ class _InputBarState extends State<InputBar> {
                     return Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF21262d),
-                        border: Border.all(color: const Color(0xFF30363d)),
+                        color: const Color(0xFF14171c),
+                        border: Border.all(color: const Color(0xFF20242b)),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.attach_file, size: 12, color: Color(0xFF8b949e)),
+                          const Icon(Icons.attach_file, size: 12, color: Color(0xFF8a909b)),
                           const SizedBox(width: 4),
                           ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 150),
                             child: Text(
                               att['name']!,
-                              style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 12),
+                              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 12),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           const SizedBox(width: 4),
                           GestureDetector(
                             onTap: () => setState(() => _attachments.removeAt(idx)),
-                            child: const Icon(Icons.close, size: 12, color: Color(0xFF8b949e)),
+                            child: const Icon(Icons.close, size: 12, color: Color(0xFF8a909b)),
                           ),
                         ],
                       ),
@@ -416,7 +416,7 @@ class _InputBarState extends State<InputBar> {
                   icon: _uploading
                       ? Icons.hourglass_top_rounded
                       : Icons.attach_file_rounded,
-                  color: const Color(0xFF8b949e),
+                  color: const Color(0xFF8a909b),
                 ),
                 const SizedBox(width: 4),
 
@@ -428,7 +428,7 @@ class _InputBarState extends State<InputBar> {
                       : _isRecording
                           ? Icons.stop_circle_rounded
                           : Icons.mic_rounded,
-                  color: _isRecording ? const Color(0xFFf85149) : const Color(0xFF8b949e),
+                  color: _isRecording ? const Color(0xFFff6b63) : const Color(0xFF8a909b),
                 ),
                 const SizedBox(width: 4),
 
@@ -437,13 +437,13 @@ class _InputBarState extends State<InputBar> {
                   child: Container(
                     constraints: const BoxConstraints(maxHeight: 120),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0d1117),
+                      color: const Color(0xFF070809),
                       border: Border.all(
                         color: _isRecording
-                            ? const Color(0xFFf85149)
+                            ? const Color(0xFFff6b63)
                             : _focusNode.hasFocus
-                                ? const Color(0xFF388bfd)
-                                : const Color(0xFF30363d),
+                                ? const Color(0xFF6aa3ff)
+                                : const Color(0xFF20242b),
                       ),
                       borderRadius: BorderRadius.circular(10),
                     ),
@@ -454,14 +454,14 @@ class _InputBarState extends State<InputBar> {
                       textInputAction: TextInputAction.newline,
                       enabled: isConnected,
                       style: const TextStyle(
-                        color: Color(0xFFc9d1d9),
+                        color: Color(0xFFe7eaee),
                         fontSize: 14,
                         height: 1.4,
                       ),
                       decoration: InputDecoration(
                         hintText: _isRecording ? '录音中…' : _isTranscribing ? '识别中…' : 'Type a message…',
                         hintStyle: TextStyle(
-                          color: _isRecording ? const Color(0xFFf85149) : const Color(0xFF484f58),
+                          color: _isRecording ? const Color(0xFFff6b63) : const Color(0xFF454b54),
                         ),
                         border: InputBorder.none,
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -476,15 +476,15 @@ class _InputBarState extends State<InputBar> {
                 if (isStreaming)
                   _ActionButton(
                     onTap: provider.cancel,
-                    color: const Color(0xFFf85149),
+                    color: const Color(0xFFff6b63),
                     icon: Icons.stop_rounded,
                   )
                 else
                   _ActionButton(
                     onTap: canSend ? () => _send(provider) : null,
-                    color: canSend ? const Color(0xFF238636) : const Color(0xFF21262d),
+                    color: canSend ? const Color(0xFF22ab9c) : const Color(0xFF14171c),
                     icon: Icons.send_rounded,
-                    iconColor: canSend ? Colors.white : const Color(0xFF484f58),
+                    iconColor: canSend ? Colors.white : const Color(0xFF454b54),
                   ),
               ],
             ),
@@ -510,7 +510,7 @@ class _SmallButton extends StatelessWidget {
         width: 34,
         height: 40,
         alignment: Alignment.center,
-        child: Icon(icon, color: onTap != null ? color : const Color(0xFF484f58), size: 20),
+        child: Icon(icon, color: onTap != null ? color : const Color(0xFF454b54), size: 20),
       ),
     );
   }

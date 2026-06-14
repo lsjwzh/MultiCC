@@ -1673,6 +1673,7 @@ async function saveVoiceSettings() {
 /* ── macOS Power Settings ── */
 async function loadMacosPowerSettings() {
   const section = document.getElementById('macos-power-section');
+  const nav = document.getElementById('macos-power-nav');
   const toggle = document.getElementById('macos-lid-sleep-toggle');
   const status = document.getElementById('macos-power-status');
   if (!section || !toggle || !status) return;
@@ -1683,16 +1684,19 @@ async function loadMacosPowerSettings() {
     const data = await res.json();
     if (!data.available) {
       section.style.display = 'none';
+      if (nav) nav.style.display = 'none';
       return;
     }
     available = true;
     section.style.display = '';
+    if (nav) nav.style.display = '';
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
     toggle.checked = !!data.enabled;
     status.textContent = data.enabled ? '已开启' : '已关闭';
     status.className = `status-text ${data.enabled ? 'ok' : ''}`;
   } catch (error) {
     section.style.display = available ? '' : 'none';
+    if (nav) nav.style.display = available ? '' : 'none';
     if (available) {
       status.textContent = `读取失败：${error.message}`;
       status.className = 'status-text err';

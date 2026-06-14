@@ -238,6 +238,7 @@ class ChatProvider extends ChangeNotifier {
 
   /// Send a local notification if this session is not currently visible.
   void _maybeNotify(String title, String detail) {
+    if (SettingsService.current?.notificationsEnabled == false) return;
     if (isInBackground || !isActive) {
       NotificationService.show(
         title: 'MultiCC #$sessionName: $title',
@@ -284,9 +285,16 @@ class ChatProvider extends ChangeNotifier {
   // ── Public actions ─────────────────────────────────────────────────────────
 
   void sendMessage(String text) {
-    if (text.trim().isEmpty) return;
-    _messages.add(ChatMessage(role: MessageRole.user, content: text.trim()));
-    _service.send(text.trim());
+    final t = text.trim();
+    if (t.isEmpty) return;
+    final ok = _service.send(t);
+    if (!ok) {
+      // Half-open / dead socket — don't pretend the message was sent.
+      _addSystemMsg('⚠️ 连接已断开，正在重连…重连后请重试。');
+      notifyListeners();
+      return;
+    }
+    _messages.add(ChatMessage(role: MessageRole.user, content: t));
     notifyListeners();
   }
 

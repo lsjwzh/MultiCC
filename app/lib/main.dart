@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'providers/session_manager.dart';
+import 'theme.dart';
 import 'screens/main_shell.dart';
 import 'screens/setup_screen.dart';
 import 'services/notification_service.dart';
@@ -41,25 +42,12 @@ class MultiCCApp extends StatelessWidget {
     return MaterialApp(
       title: 'MultiCC',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0d1117),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF238636),
-          secondary: Color(0xFF58a6ff),
-          surface: Color(0xFF161b22),
-          error: Color(0xFFf85149),
-        ),
-        dialogTheme: const DialogThemeData(
-          backgroundColor: Color(0xFF161b22),
-          titleTextStyle: TextStyle(
-              color: Color(0xFFf0f6fc), fontSize: 16, fontWeight: FontWeight.w600),
-          contentTextStyle: TextStyle(color: Color(0xFF8b949e), fontSize: 14),
-        ),
-        textSelectionTheme: const TextSelectionThemeData(
-          cursorColor: Color(0xFF58a6ff),
-          selectionColor: Color(0x441f6feb),
-          selectionHandleColor: Color(0xFF58a6ff),
+      theme: buildAppTheme(),
+      builder: (context, child) => ValueListenableBuilder<double>(
+        valueListenable: settings.fontScale,
+        builder: (context, scale, _) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
+          child: child ?? const SizedBox.shrink(),
         ),
       ),
       home: _StartupWrapper(settings: settings, child: home),

@@ -48,22 +48,22 @@ class _TerminalScreenState extends State<TerminalScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF161b22),
+        backgroundColor: const Color(0xFF0f1115),
         title: const Text('合并 worktree',
-            style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc))),
+            style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7))),
         content: const Text(
           '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-          style: TextStyle(color: Color(0xFFc9d1d9)),
+          style: TextStyle(color: Color(0xFFe7eaee)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消', style: TextStyle(color: Color(0xFF8b949e))),
+            child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text('合并',
-                style: TextStyle(color: Color(0xFF58a6ff), fontWeight: FontWeight.w600)),
+                style: TextStyle(color: Color(0xFF6aa3ff), fontWeight: FontWeight.w600)),
           ),
         ],
       ),
@@ -104,7 +104,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0d1117),
+      backgroundColor: const Color(0xFF070809),
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(48),
         child: _TerminalAppBar(
@@ -161,23 +161,23 @@ class _TerminalAppBar extends StatelessWidget {
     String stateLabel;
     switch (connState) {
       case TerminalConnectionState.connected:
-        dotColor = const Color(0xFF3fb950);
+        dotColor = const Color(0xFF7fd49a);
         stateLabel = 'Connected';
         break;
       case TerminalConnectionState.connecting:
-        dotColor = const Color(0xFFd29922);
+        dotColor = const Color(0xFFe3b341);
         stateLabel = 'Connecting…';
         break;
       case TerminalConnectionState.disconnected:
-        dotColor = const Color(0xFF6e7681);
+        dotColor = const Color(0xFF5b616c);
         stateLabel = 'Disconnected';
         break;
     }
 
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xFF161b22),
-        border: Border(bottom: BorderSide(color: Color(0xFF30363d))),
+        color: Color(0xFF0f1115),
+        border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
       ),
       padding: EdgeInsets.fromLTRB(
         12, MediaQuery.of(context).padding.top + 4, 12, 4),
@@ -185,7 +185,7 @@ class _TerminalAppBar extends StatelessWidget {
         children: [
           GestureDetector(
             onTap: () => Navigator.of(context).pop(),
-            child: const Icon(Icons.arrow_back_rounded, color: Color(0xFFc9d1d9), size: 20),
+            child: const Icon(Icons.arrow_back_rounded, color: Color(0xFFe7eaee), size: 20),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -201,7 +201,7 @@ class _TerminalAppBar extends StatelessWidget {
                       child: Text(
                         session.label?.isNotEmpty == true ? session.label! : session.id,
                         style: const TextStyle(
-                          color: Color(0xFFf0f6fc),
+                          color: Color(0xFFf2f4f7),
                           fontWeight: FontWeight.w600,
                           fontSize: 14,
                           fontFamily: 'monospace',
@@ -218,11 +218,11 @@ class _TerminalAppBar extends StatelessWidget {
                       decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
                     ),
                     const SizedBox(width: 5),
-                    Text(stateLabel, style: const TextStyle(color: Color(0xFF8b949e), fontSize: 11)),
+                    Text(stateLabel, style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
                     const SizedBox(width: 8),
                     Text(
                       session.shortCwd,
-                      style: const TextStyle(color: Color(0xFF484f58), fontSize: 11, fontFamily: 'monospace'),
+                      style: const TextStyle(color: Color(0xFF454b54), fontSize: 11, fontFamily: 'monospace'),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
@@ -236,7 +236,7 @@ class _TerminalAppBar extends StatelessWidget {
               onTap: () => _openMemoFromTerminal(context, session.id),
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 6),
-                child: Icon(Icons.sticky_note_2_outlined, color: Color(0xFFc9d1d9), size: 20),
+                child: Icon(Icons.sticky_note_2_outlined, color: Color(0xFFe7eaee), size: 20),
               ),
             ),
           ),
@@ -246,14 +246,14 @@ class _TerminalAppBar extends StatelessWidget {
               onTap: onMerge,
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 6),
-                child: Icon(Icons.merge_type, color: Color(0xFFc9d1d9), size: 20),
+                child: Icon(Icons.merge_type, color: Color(0xFFe7eaee), size: 20),
               ),
             ),
           ),
           if (connState == TerminalConnectionState.disconnected)
             GestureDetector(
               onTap: onReconnect,
-              child: const Icon(Icons.refresh_rounded, color: Color(0xFF58a6ff), size: 20),
+              child: const Icon(Icons.refresh_rounded, color: Color(0xFF6aa3ff), size: 20),
             ),
         ],
       ),
@@ -293,7 +293,7 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
 }
 
 Widget _cliBadge(SessionCli cli) {
-  final color = cli == SessionCli.codex ? const Color(0xFF3fb950) : const Color(0xFFf78166);
+  final color = cli == SessionCli.codex ? const Color(0xFF7fd49a) : const Color(0xFFf0936b);
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
     decoration: BoxDecoration(
@@ -314,8 +314,8 @@ class _MobileKeyBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xFF161b22),
-        border: Border(top: BorderSide(color: Color(0xFF30363d))),
+        color: Color(0xFF0f1115),
+        border: Border(top: BorderSide(color: Color(0xFF20242b))),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
       child: SingleChildScrollView(
@@ -353,14 +353,14 @@ class _Key extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 3),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: const Color(0xFF21262d),
-          border: Border.all(color: const Color(0xFF30363d)),
+          color: const Color(0xFF14171c),
+          border: Border.all(color: const Color(0xFF20242b)),
           borderRadius: BorderRadius.circular(5),
         ),
         child: Text(
           label,
           style: const TextStyle(
-            color: Color(0xFFc9d1d9),
+            color: Color(0xFFe7eaee),
             fontSize: 12,
             fontFamily: 'monospace',
           ),
@@ -372,27 +372,27 @@ class _Key extends StatelessWidget {
 
 /// Terminal color theme matching web client
 const _kTerminalTheme = TerminalTheme(
-  cursor: Color(0xFFf78166),
+  cursor: Color(0xFFf0936b),
   selection: Color(0x44264f78),
-  foreground: Color(0xFFc9d1d9),
-  background: Color(0xFF0d1117),
-  black: Color(0xFF484f58),
-  red: Color(0xFFff7b72),
-  green: Color(0xFF3fb950),
-  yellow: Color(0xFFd29922),
-  blue: Color(0xFF58a6ff),
+  foreground: Color(0xFFe7eaee),
+  background: Color(0xFF070809),
+  black: Color(0xFF454b54),
+  red: Color(0xFFff8a83),
+  green: Color(0xFF7fd49a),
+  yellow: Color(0xFFe3b341),
+  blue: Color(0xFF6aa3ff),
   magenta: Color(0xFFbc8cff),
   cyan: Color(0xFF39c5cf),
-  white: Color(0xFFb1bac4),
-  brightBlack: Color(0xFF6e7681),
-  brightRed: Color(0xFFffa198),
+  white: Color(0xFFb6bcc6),
+  brightBlack: Color(0xFF5b616c),
+  brightRed: Color(0xFFffb3ae),
   brightGreen: Color(0xFF56d364),
   brightYellow: Color(0xFFe3b341),
-  brightBlue: Color(0xFF79c0ff),
+  brightBlue: Color(0xFF6aa3ff),
   brightMagenta: Color(0xFFd2a8ff),
   brightCyan: Color(0xFF56d4dd),
-  brightWhite: Color(0xFFf0f6fc),
-  searchHitBackground: Color(0xFFd29922),
-  searchHitBackgroundCurrent: Color(0xFF3fb950),
-  searchHitForeground: Color(0xFF0d1117),
+  brightWhite: Color(0xFFf2f4f7),
+  searchHitBackground: Color(0xFFe3b341),
+  searchHitBackgroundCurrent: Color(0xFF7fd49a),
+  searchHitForeground: Color(0xFF070809),
 );

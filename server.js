@@ -4592,6 +4592,13 @@ function handleChatWs(ws, req, urlObj) {
         return;
       }
 
+      // App-level heartbeat: lets the client detect a half-open socket (the OS
+      // froze the connection without a close frame) and reconnect.
+      if (msg.type === 'ping') {
+        try { ws.send(JSON.stringify({ type: 'pong' })); } catch (_) {}
+        return;
+      }
+
       if (msg.type === 'cancel') {
         cancelPendingClassify(cs);
         if (cs.claudeProc) {
