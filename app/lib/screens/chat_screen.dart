@@ -21,8 +21,8 @@ import 'setup_screen.dart';
 /// (provided by MainShell via ChangeNotifierProvider.value).
 class ChatView extends StatefulWidget {
   final SettingsService settings;
-  final VoidCallback? onOpenDrawer;
-  const ChatView({super.key, required this.settings, this.onOpenDrawer});
+  final VoidCallback? onCollapse;
+  const ChatView({super.key, required this.settings, this.onCollapse});
 
   @override
   State<ChatView> createState() => _ChatViewState();
@@ -83,7 +83,7 @@ class _ChatViewState extends State<ChatView> {
           children: [
             _Header(
               settings: widget.settings,
-              onOpenDrawer: widget.onOpenDrawer,
+              onCollapse: widget.onCollapse,
               mergeReady: mergeReady,
               mergeLabel: _mergeStatusText(_mergeStatus),
               onMerge: () => _mergeCurrent(context, provider.sessionName),
@@ -106,13 +106,13 @@ class _ChatViewState extends State<ChatView> {
 
 class _Header extends StatelessWidget {
   final SettingsService settings;
-  final VoidCallback? onOpenDrawer;
+  final VoidCallback? onCollapse;
   final bool mergeReady;
   final String mergeLabel;
   final VoidCallback onMerge;
   const _Header({
     required this.settings,
-    this.onOpenDrawer,
+    this.onCollapse,
     required this.mergeReady,
     required this.mergeLabel,
     required this.onMerge,
@@ -144,15 +144,15 @@ class _Header extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Drawer / Back button
+          // Collapse the chat sheet back down to the home dashboard.
           GestureDetector(
-            onTap: onOpenDrawer ?? () => Scaffold.of(context).openDrawer(),
+            onTap: onCollapse,
             child: Container(
               padding: const EdgeInsets.all(6),
               child: const Icon(
-                Icons.menu_rounded,
+                Icons.keyboard_arrow_down_rounded,
                 color: Color(0xFFc9d1d9),
-                size: 20,
+                size: 24,
               ),
             ),
           ),
