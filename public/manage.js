@@ -1035,6 +1035,18 @@ function closeDiffModal() {
   if (modal) modal.style.display = 'none';
 }
 
+function showMergeConflictDiff(sessionId, data) {
+  const modal = document.getElementById('diff-modal');
+  if (!modal) return;
+  const conflicts = data.conflicts || [];
+  document.getElementById('diff-title').textContent = `合并冲突 · ${sessionId}`;
+  document.getElementById('diff-subtitle').textContent =
+    `${conflicts.length} 个冲突文件 · 合并已 abort，基分支未改动${data.conflictDiffTruncated ? ' · Diff 已截断' : ''}`;
+  document.getElementById('diff-stat').textContent = conflicts.join('\n') || '(未获取到冲突文件)';
+  document.getElementById('diff-content').innerHTML = renderDiffLines(data.conflictDiff || '');
+  modal.style.display = 'flex';
+}
+
 function renderDiffLines(text) {
   if (!text || !text.trim()) {
     return '<div class="diff-line diff-meta" style="text-align:center;padding:24px;">（无变更）</div>';
@@ -1046,7 +1058,9 @@ function renderDiffLines(text) {
   const parts = [];
   for (const raw of arr) {
     let cls = 'diff-line';
-    if (raw.startsWith('diff --git') || raw.startsWith('index ') || raw.startsWith('+++ ') || raw.startsWith('--- ') || raw.startsWith('new file') || raw.startsWith('deleted file') || raw.startsWith('rename ') || raw.startsWith('similarity ')) {
+    if (/^[+\- ]*(<<<<<<<|=======|>>>>>>>)/.test(raw)) {
+      cls += ' diff-conflict';
+    } else if (raw.startsWith('diff --git') || raw.startsWith('diff --cc') || raw.startsWith('index ') || raw.startsWith('+++ ') || raw.startsWith('--- ') || raw.startsWith('new file') || raw.startsWith('deleted file') || raw.startsWith('rename ') || raw.startsWith('similarity ')) {
       cls += ' diff-head';
     } else if (raw.startsWith('@@')) cls += ' diff-hunk';
     else if (raw.startsWith('+')) cls += ' diff-add';
@@ -1072,6 +1086,7 @@ async function mergeSession(id) {
       updateSessionMergeDom(id);
     } else if (res.status === 409) {
       showToast(`合并冲突，已 abort：${(data.conflicts || []).join(', ')}`, true);
+      showMergeConflictDiff(id, data);
     } else {
       showToast(`合并失败：${data.error || res.status}`, true);
     }

@@ -758,11 +758,40 @@ function gitMergeBack(dir, session) {
     return { ok: true, merged: true, committed, commits: ahead };
   } catch (e) {
     let conflicts = [];
+    let conflictDiff = '';
+    let conflictDiffTruncated = false;
     try {
       conflicts = gitRun(dirPath, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean);
     } catch (_) {}
+    if (conflicts.length > 0) {
+      const maxDiff = 1024 * 1024;
+      try {
+        conflictDiff = execFileSync('git', ['diff', '--no-color', '--diff-filter=U'], {
+          cwd: dirPath, encoding: 'utf8', maxBuffer: maxDiff + 16 * 1024,
+        });
+        if (conflictDiff.length > maxDiff) {
+          conflictDiff = conflictDiff.slice(0, maxDiff);
+          conflictDiffTruncated = true;
+        }
+      } catch (diffErr) {
+        conflictDiffTruncated = diffErr.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        conflictDiff = conflictDiffTruncated
+          ? '(conflict diff exceeds 1MB cap — too large to display in browser)'
+          : '';
+      }
+    }
     try { gitRun(dirPath, ['merge', '--abort']); } catch (_) {}
-    return { ok: false, conflicts, error: '合并冲突 — 已 abort，基分支未改动' };
+    if (conflicts.length > 0) {
+      return {
+        ok: false,
+        conflicts,
+        conflictDiff,
+        conflictDiffTruncated,
+        error: '合并冲突 — 已 abort，基分支未改动',
+      };
+    }
+    const details = e.stderr ? String(e.stderr).trim() : e.message;
+    return { ok: false, error: details || 'merge failed' };
   }
 }
 
@@ -2180,7 +2209,7 @@ app.post('/api/sessions/:id/merge', (req, res) => {
   const result = gitMergeBack(dir, persisted);
   if (!result.ok) {
     // conflict → 409 with file list; other failures → 400
-    return res.status(result.conflicts ? 409 : 400).json(result);
+    return res.status(result.conflicts?.length ? 409 : 400).json(result);
   }
   console.log(`[multicc] merge ${persisted.branch} → ${dir.baseBranch}: ` +
     (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
