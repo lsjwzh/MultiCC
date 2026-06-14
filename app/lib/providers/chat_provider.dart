@@ -238,6 +238,7 @@ class ChatProvider extends ChangeNotifier {
 
   /// Send a local notification if this session is not currently visible.
   void _maybeNotify(String title, String detail) {
+    if (SettingsService.current?.notificationsEnabled == false) return;
     if (isInBackground || !isActive) {
       NotificationService.show(
         title: 'MultiCC #$sessionName: $title',

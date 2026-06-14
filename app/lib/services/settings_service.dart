@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SettingsService {
@@ -5,9 +6,19 @@ class SettingsService {
   static const _keyToken = 'multicc_token';
   static const _keySession = 'multicc_session';
   static const _keyCwd = 'multicc_cwd';
+  static const _keyDefaultModel = 'multicc_default_model';
+  static const _keyNotify = 'multicc_notifications_enabled';
+  static const _keyFontScale = 'multicc_font_scale';
 
   static SettingsService? _instance;
+
+  /// Already-initialised singleton, or null before startup completes.
+  static SettingsService? get current => _instance;
+
   late SharedPreferences _prefs;
+
+  /// Live font scale — MaterialApp listens so changes apply immediately.
+  final ValueNotifier<double> fontScale = ValueNotifier<double>(1.0);
 
   SettingsService._();
 
@@ -15,6 +26,7 @@ class SettingsService {
     if (_instance == null) {
       _instance = SettingsService._();
       _instance!._prefs = await SharedPreferences.getInstance();
+      _instance!.fontScale.value = _instance!._prefs.getDouble(_keyFontScale) ?? 1.0;
     }
     return _instance!;
   }
@@ -24,6 +36,12 @@ class SettingsService {
   String get session => _prefs.getString(_keySession) ?? '';
   String get cwd => _prefs.getString(_keyCwd) ?? '';
 
+  /// Default Claude model for newly created chats ('' = follow Claude default).
+  String get defaultModel => _prefs.getString(_keyDefaultModel) ?? '';
+
+  /// Whether local push notifications are shown on task completion.
+  bool get notificationsEnabled => _prefs.getBool(_keyNotify) ?? true;
+
   bool get isConfigured => host.isNotEmpty;
 
   Future<void> save({
@@ -31,11 +49,20 @@ class SettingsService {
     String? token,
     String? session,
     String? cwd,
+    String? defaultModel,
+    bool? notificationsEnabled,
+    double? fontScale,
   }) async {
     if (host != null) await _prefs.setString(_keyHost, host.trim());
     if (token != null) await _prefs.setString(_keyToken, token.trim());
     if (session != null) await _prefs.setString(_keySession, session);
     if (cwd != null) await _prefs.setString(_keyCwd, cwd);
+    if (defaultModel != null) await _prefs.setString(_keyDefaultModel, defaultModel);
+    if (notificationsEnabled != null) await _prefs.setBool(_keyNotify, notificationsEnabled);
+    if (fontScale != null) {
+      await _prefs.setDouble(_keyFontScale, fontScale);
+      this.fontScale.value = fontScale;
+    }
   }
 
   /// Build ws[s]:// URL for /ws/chat

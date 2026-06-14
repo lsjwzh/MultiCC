@@ -53,8 +53,8 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: const Color(0xFF161b22),
-          border: Border.all(color: const Color(0xFF30363d)),
+          color: const Color(0xFF0f1115),
+          border: Border.all(color: const Color(0xFF20242b)),
           borderRadius: const BorderRadius.only(
             topLeft: Radius.circular(12),
             topRight: Radius.circular(12),
@@ -65,7 +65,7 @@ class _ThinkingIndicatorState extends State<ThinkingIndicator>
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Thinking', style: TextStyle(color: Color(0xFF8b949e), fontSize: 13)),
+            const Text('Thinking', style: TextStyle(color: Color(0xFF8a909b), fontSize: 13)),
             const SizedBox(width: 10),
             ...List.generate(3, (i) {
               return AnimatedBuilder(

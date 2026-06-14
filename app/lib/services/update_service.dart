@@ -42,20 +42,20 @@ class UpdateService {
         final shouldUpdate = await showDialog<bool>(
           context: context,
           builder: (_) => AlertDialog(
-            backgroundColor: const Color(0xFF161b22),
-            title: const Text('发现新版本', style: TextStyle(color: Color(0xFFf0f6fc))),
+            backgroundColor: const Color(0xFF0f1115),
+            title: const Text('发现新版本', style: TextStyle(color: Color(0xFFf2f4f7))),
             content: const Text(
               '服务器上有新版本的 APK，是否下载更新？',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('稍后', style: TextStyle(color: Color(0xFF8b949e))),
+                child: const Text('稍后', style: TextStyle(color: Color(0xFF8a909b))),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context, true),
-                child: const Text('更新', style: TextStyle(color: Color(0xFF58a6ff), fontWeight: FontWeight.w600)),
+                child: const Text('更新', style: TextStyle(color: Color(0xFF6aa3ff), fontWeight: FontWeight.w600)),
               ),
             ],
           ),

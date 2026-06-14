@@ -62,7 +62,7 @@ class _SetupScreenState extends State<SetupScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0d1117),
+      backgroundColor: const Color(0xFF070809),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -76,7 +76,7 @@ class _SetupScreenState extends State<SetupScreen> {
                   'MultiCC',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: Color(0xFFf78166),
+                    color: Color(0xFF3ad6c5),
                     fontSize: 32,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1,
@@ -86,7 +86,7 @@ class _SetupScreenState extends State<SetupScreen> {
                 const Text(
                   'Claude Code Chat',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF8b949e), fontSize: 14),
+                  style: TextStyle(color: Color(0xFF8a909b), fontSize: 14),
                 ),
                 const SizedBox(height: 40),
 
@@ -94,8 +94,8 @@ class _SetupScreenState extends State<SetupScreen> {
                 Container(
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF161b22),
-                    border: Border.all(color: const Color(0xFF30363d)),
+                    color: const Color(0xFF0f1115),
+                    border: Border.all(color: const Color(0xFF20242b)),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Column(
@@ -104,7 +104,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       const Text(
                         'Server Configuration',
                         style: TextStyle(
-                          color: Color(0xFFf0f6fc),
+                          color: Color(0xFFf2f4f7),
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                         ),
@@ -140,7 +140,7 @@ class _SetupScreenState extends State<SetupScreen> {
                         const SizedBox(height: 12),
                         Text(
                           _error!,
-                          style: const TextStyle(color: Color(0xFFf85149), fontSize: 13),
+                          style: const TextStyle(color: Color(0xFFff6b63), fontSize: 13),
                         ),
                       ],
 
@@ -148,7 +148,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       ElevatedButton(
                         onPressed: _saving ? null : _save,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF238636),
+                          backgroundColor: const Color(0xFF22ab9c),
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
@@ -189,7 +189,7 @@ class _FieldLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(color: Color(0xFF8b949e), fontSize: 12, fontWeight: FontWeight.w500),
+      style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12, fontWeight: FontWeight.w500),
     );
   }
 }
@@ -214,23 +214,23 @@ class _Field extends StatelessWidget {
       obscureText: obscure,
       keyboardType: keyboardType,
       autocorrect: false,
-      style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 14),
+      style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF484f58)),
+        hintStyle: const TextStyle(color: Color(0xFF454b54)),
         filled: true,
-        fillColor: const Color(0xFF0d1117),
+        fillColor: const Color(0xFF070809),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFF30363d)),
+          borderSide: const BorderSide(color: Color(0xFF20242b)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFF30363d)),
+          borderSide: const BorderSide(color: Color(0xFF20242b)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFF388bfd)),
+          borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       ),

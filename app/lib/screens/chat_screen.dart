@@ -76,7 +76,7 @@ class _ChatViewState extends State<ChatView> {
     final provider = context.watch<ChatProvider>();
     final mergeReady = _mergeStatus?['mergeReady'] == true;
     return Scaffold(
-      backgroundColor: const Color(0xFF0d1117),
+      backgroundColor: const Color(0xFF070809),
       body: SafeArea(
         child: Column(
           children: [
@@ -125,21 +125,21 @@ class _Header extends StatelessWidget {
     Color statusColor;
     switch (state) {
       case ChatConnectionState.connected:
-        statusColor = const Color(0xFF3fb950);
+        statusColor = const Color(0xFF7fd49a);
         break;
       case ChatConnectionState.connecting:
-        statusColor = const Color(0xFFd29922);
+        statusColor = const Color(0xFFe3b341);
         break;
       case ChatConnectionState.disconnected:
-        statusColor = const Color(0xFF8b949e);
+        statusColor = const Color(0xFF8a909b);
         break;
     }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       decoration: const BoxDecoration(
-        color: Color(0xFF161b22),
-        border: Border(bottom: BorderSide(color: Color(0xFF30363d))),
+        color: Color(0xFF0f1115),
+        border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
       ),
       child: Row(
         children: [
@@ -150,7 +150,7 @@ class _Header extends StatelessWidget {
               padding: const EdgeInsets.all(6),
               child: const Icon(
                 Icons.menu_rounded,
-                color: Color(0xFFc9d1d9),
+                color: Color(0xFFe7eaee),
                 size: 20,
               ),
             ),
@@ -162,11 +162,11 @@ class _Header extends StatelessWidget {
               children: [
                 TextSpan(
                   text: 'Multi',
-                  style: TextStyle(color: Color(0xFFf78166)),
+                  style: TextStyle(color: Color(0xFF3ad6c5)),
                 ),
                 TextSpan(
                   text: 'CC',
-                  style: TextStyle(color: Color(0xFF79c0ff)),
+                  style: TextStyle(color: Color(0xFF6aa3ff)),
                 ),
               ],
             ),
@@ -178,7 +178,7 @@ class _Header extends StatelessWidget {
             child: Text(
               provider.displayName,
               style: const TextStyle(
-                color: Color(0xFF58a6ff),
+                color: Color(0xFF6aa3ff),
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 fontFamily: 'monospace',
@@ -245,7 +245,7 @@ class _Header extends StatelessWidget {
             onPressed: () => Navigator.pop(context),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
@@ -255,7 +255,7 @@ class _Header extends StatelessWidget {
             },
             child: const Text(
               'Clear',
-              style: TextStyle(color: Color(0xFFf85149)),
+              style: TextStyle(color: Color(0xFFff6b63)),
             ),
           ),
         ],
@@ -291,8 +291,8 @@ class _ModelChip extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           decoration: BoxDecoration(
-            color: const Color(0xFF21262d),
-            border: Border.all(color: const Color(0xFF30363d)),
+            color: const Color(0xFF14171c),
+            border: Border.all(color: const Color(0xFF20242b)),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Row(
@@ -301,7 +301,7 @@ class _ModelChip extends StatelessWidget {
               const Icon(
                 Icons.psychology_outlined,
                 size: 15,
-                color: Color(0xFFc9d1d9),
+                color: Color(0xFFe7eaee),
               ),
               const SizedBox(width: 4),
               ConstrainedBox(
@@ -309,7 +309,7 @@ class _ModelChip extends StatelessWidget {
                 child: Text(
                   label,
                   style: const TextStyle(
-                    color: Color(0xFFc9d1d9),
+                    color: Color(0xFFe7eaee),
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
@@ -396,26 +396,26 @@ Future<void> confirmMergeWorktree(
   final ok = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
-      backgroundColor: const Color(0xFF161b22),
+      backgroundColor: const Color(0xFF0f1115),
       title: const Text(
         '合并 worktree',
-        style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+        style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
       ),
       content: const Text(
         '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-        style: TextStyle(color: Color(0xFFc9d1d9)),
+        style: TextStyle(color: Color(0xFFe7eaee)),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, false),
-          child: const Text('取消', style: TextStyle(color: Color(0xFF8b949e))),
+          child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
         ),
         TextButton(
           onPressed: () => Navigator.pop(context, true),
           child: const Text(
             '合并',
             style: TextStyle(
-              color: Color(0xFF58a6ff),
+              color: Color(0xFF6aa3ff),
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -469,15 +469,15 @@ class _HeaderBtn extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
-            color: active ? const Color(0xFFd29922) : const Color(0xFF21262d),
+            color: active ? const Color(0xFFe3b341) : const Color(0xFF14171c),
             border: Border.all(
-              color: active ? const Color(0xFFe3b341) : const Color(0xFF30363d),
+              color: active ? const Color(0xFFe3b341) : const Color(0xFF20242b),
             ),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Icon(
             icon,
-            color: active ? const Color(0xFF0d1117) : const Color(0xFFc9d1d9),
+            color: active ? const Color(0xFF070809) : const Color(0xFFe7eaee),
             size: 18,
           ),
         ),
@@ -508,7 +508,7 @@ class _MergeReadyBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFF2d2108),
-        border: Border.all(color: const Color(0xFFd29922)),
+        border: Border.all(color: const Color(0xFFe3b341)),
         borderRadius: BorderRadius.circular(8),
         boxShadow: [
           BoxShadow(
@@ -535,8 +535,8 @@ class _MergeReadyBanner extends StatelessWidget {
           TextButton(
             onPressed: onMerge,
             style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFF0d1117),
-              backgroundColor: const Color(0xFFd29922),
+              foregroundColor: const Color(0xFF070809),
+              backgroundColor: const Color(0xFFe3b341),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               minimumSize: Size.zero,
             ),
@@ -558,12 +558,12 @@ class _CwdBar extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
-        color: Color(0xFF0d1117),
-        border: Border(bottom: BorderSide(color: Color(0xFF21262d))),
+        color: Color(0xFF070809),
+        border: Border(bottom: BorderSide(color: Color(0xFF14171c))),
       ),
       child: Row(
         children: [
-          const Icon(Icons.folder_outlined, size: 14, color: Color(0xFF6e7681)),
+          const Icon(Icons.folder_outlined, size: 14, color: Color(0xFF5b616c)),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
@@ -571,7 +571,7 @@ class _CwdBar extends StatelessWidget {
               style: const TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 12,
-                color: Color(0xFF58a6ff),
+                color: Color(0xFF6aa3ff),
               ),
               overflow: TextOverflow.ellipsis,
             ),
@@ -580,7 +580,7 @@ class _CwdBar extends StatelessWidget {
             onTap: () => _showCwdDialog(context, provider),
             child: const Text(
               'Change',
-              style: TextStyle(fontSize: 11, color: Color(0xFF8b949e)),
+              style: TextStyle(fontSize: 11, color: Color(0xFF8a909b)),
             ),
           ),
         ],
@@ -601,19 +601,19 @@ class _CwdBar extends StatelessWidget {
           controller: ctrl,
           autofocus: true,
           style: const TextStyle(
-            color: Color(0xFFc9d1d9),
+            color: Color(0xFFe7eaee),
             fontFamily: 'monospace',
             fontSize: 13,
           ),
           decoration: InputDecoration(
             hintText: '/path/to/project',
-            hintStyle: const TextStyle(color: Color(0xFF484f58)),
+            hintStyle: const TextStyle(color: Color(0xFF454b54)),
             filled: true,
-            fillColor: const Color(0xFF0d1117),
+            fillColor: const Color(0xFF070809),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(6),
-              borderSide: const BorderSide(color: Color(0xFF30363d)),
+              borderSide: const BorderSide(color: Color(0xFF20242b)),
             ),
           ),
         ),
@@ -622,7 +622,7 @@ class _CwdBar extends StatelessWidget {
             onPressed: () => Navigator.pop(context),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
@@ -636,7 +636,7 @@ class _CwdBar extends StatelessWidget {
             child: const Text(
               'Apply',
               style: TextStyle(
-                color: Color(0xFF58a6ff),
+                color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -723,7 +723,7 @@ class _MessageListState extends State<_MessageList> {
               child: Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF238636),
+                  color: const Color(0xFF22ab9c),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: const Icon(
@@ -745,12 +745,12 @@ class _CostBar extends StatelessWidget {
     final costText = context.watch<ChatProvider>().costText;
     if (costText.isEmpty) return const SizedBox.shrink();
     return Container(
-      color: const Color(0xFF0d1117),
+      color: const Color(0xFF070809),
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Text(
         costText,
         textAlign: TextAlign.center,
-        style: const TextStyle(color: Color(0xFF6e7681), fontSize: 11),
+        style: const TextStyle(color: Color(0xFF5b616c), fontSize: 11),
       ),
     );
   }
@@ -762,8 +762,8 @@ class _ChatCliBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = cli == SessionCli.codex
-        ? const Color(0xFF3fb950)
-        : const Color(0xFFf78166);
+        ? const Color(0xFF7fd49a)
+        : const Color(0xFFf0936b);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
       decoration: BoxDecoration(

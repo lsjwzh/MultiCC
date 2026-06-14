@@ -14,26 +14,26 @@ import '../services/workspace_service.dart';
 import '../widgets/model_picker.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
-import 'setup_screen.dart';
+import 'settings_screen.dart';
 import 'terminal_screen.dart';
 
 // Brand colors used to distinguish Claude vs Codex sessions.
-const _kClaudeColor = Color(0xFFf78166);
-const _kCodexColor = Color(0xFF3fb950);
+const _kClaudeColor = Color(0xFFf0936b);
+const _kCodexColor = Color(0xFF7fd49a);
 
 // Workspace status board: map a live agent status to a colour / label.
 Color _wbStatusColor(String? status) {
   switch (status) {
     case 'thinking':
-      return const Color(0xFF58a6ff);
+      return const Color(0xFF6aa3ff);
     case 'editing':
-      return const Color(0xFFd29922);
+      return const Color(0xFFe3b341);
     case 'running':
-      return const Color(0xFF3fb950);
+      return const Color(0xFF7fd49a);
     case 'waiting':
-      return const Color(0xFFf78166);
+      return const Color(0xFFf0936b);
     default:
-      return const Color(0xFF6e7681);
+      return const Color(0xFF5b616c);
   }
 }
 
@@ -80,7 +80,7 @@ class _MainShellState extends State<MainShell> {
 
     return Scaffold(
       key: _scaffoldKey,
-      backgroundColor: const Color(0xFF0d1117),
+      backgroundColor: const Color(0xFF070809),
       drawer: _DirectoryDrawer(settings: widget.settings),
       body: active == null
           ? _DirectoryListBody(
@@ -113,7 +113,7 @@ class _DirectoryDrawer extends StatelessWidget {
     final activeId = mgr.activeSessionId;
 
     return Drawer(
-      backgroundColor: const Color(0xFF161b22),
+      backgroundColor: const Color(0xFF0f1115),
       child: SafeArea(
         child: Column(
           children: [
@@ -121,7 +121,7 @@ class _DirectoryDrawer extends StatelessWidget {
             Container(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
               decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: Color(0xFF30363d))),
+                border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
               ),
               child: Row(
                 children: [
@@ -134,11 +134,11 @@ class _DirectoryDrawer extends StatelessWidget {
                       children: [
                         TextSpan(
                           text: 'Multi',
-                          style: TextStyle(color: Color(0xFFf78166)),
+                          style: TextStyle(color: Color(0xFF3ad6c5)),
                         ),
                         TextSpan(
                           text: 'CC',
-                          style: TextStyle(color: Color(0xFF79c0ff)),
+                          style: TextStyle(color: Color(0xFF6aa3ff)),
                         ),
                       ],
                     ),
@@ -147,7 +147,7 @@ class _DirectoryDrawer extends StatelessWidget {
                   Text(
                     '${dirs.length} dirs',
                     style: const TextStyle(
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF8a909b),
                       fontSize: 12,
                     ),
                   ),
@@ -159,7 +159,7 @@ class _DirectoryDrawer extends StatelessWidget {
                     },
                     child: const Icon(
                       Icons.list_rounded,
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF8a909b),
                       size: 20,
                     ),
                   ),
@@ -167,12 +167,12 @@ class _DirectoryDrawer extends StatelessWidget {
                   GestureDetector(
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => SetupScreen(settings: settings),
+                        builder: (_) => SettingsScreen(settings: settings),
                       ),
                     ),
                     child: const Icon(
                       Icons.settings_outlined,
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF8a909b),
                       size: 20,
                     ),
                   ),
@@ -186,7 +186,7 @@ class _DirectoryDrawer extends StatelessWidget {
                   ? const Center(
                       child: Text(
                         'No directories',
-                        style: TextStyle(color: Color(0xFF6e7681)),
+                        style: TextStyle(color: Color(0xFF5b616c)),
                       ),
                     )
                   : ListView(
@@ -248,7 +248,7 @@ class _DrawerDirectoryBlockState extends State<_DrawerDirectoryBlock> {
                   _open
                       ? Icons.keyboard_arrow_down_rounded
                       : Icons.keyboard_arrow_right_rounded,
-                  color: const Color(0xFF6e7681),
+                  color: const Color(0xFF5b616c),
                   size: 18,
                 ),
                 const SizedBox(width: 2),
@@ -256,7 +256,7 @@ class _DrawerDirectoryBlockState extends State<_DrawerDirectoryBlock> {
                   child: Text(
                     widget.directory.name,
                     style: const TextStyle(
-                      color: Color(0xFFf0f6fc),
+                      color: Color(0xFFf2f4f7),
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
                     ),
@@ -266,7 +266,7 @@ class _DrawerDirectoryBlockState extends State<_DrawerDirectoryBlock> {
                 Text(
                   '${widget.directory.totalSessions}',
                   style: const TextStyle(
-                    color: Color(0xFF6e7681),
+                    color: Color(0xFF5b616c),
                     fontSize: 11,
                   ),
                 ),
@@ -281,7 +281,7 @@ class _DrawerDirectoryBlockState extends State<_DrawerDirectoryBlock> {
               child: Text(
                 '(empty)',
                 style: TextStyle(
-                  color: Color(0xFF484f58),
+                  color: Color(0xFF454b54),
                   fontSize: 11,
                   fontStyle: FontStyle.italic,
                 ),
@@ -327,10 +327,10 @@ class _DrawerSessionTile extends StatelessWidget {
         margin: const EdgeInsets.fromLTRB(20, 2, 8, 2),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
-          color: isActive ? const Color(0xFF21262d) : Colors.transparent,
+          color: isActive ? const Color(0xFF14171c) : Colors.transparent,
           borderRadius: BorderRadius.circular(6),
           border: isActive
-              ? Border.all(color: const Color(0xFF388bfd), width: 1)
+              ? Border.all(color: const Color(0xFF6aa3ff), width: 1)
               : null,
         ),
         child: Row(
@@ -340,12 +340,12 @@ class _DrawerSessionTile extends StatelessWidget {
               height: 6,
               decoration: BoxDecoration(
                 color: session.active
-                    ? const Color(0xFF3fb950)
+                    ? const Color(0xFF7fd49a)
                     : (provider != null
                           ? (connected
-                                ? const Color(0xFF3fb950)
-                                : const Color(0xFFd29922))
-                          : const Color(0xFF6e7681)),
+                                ? const Color(0xFF7fd49a)
+                                : const Color(0xFFe3b341))
+                          : const Color(0xFF5b616c)),
                 shape: BoxShape.circle,
               ),
             ),
@@ -372,7 +372,7 @@ class _DrawerSessionTile extends StatelessWidget {
                   ? Icons.chat_bubble_outline_rounded
                   : Icons.terminal_rounded,
               size: 11,
-              color: const Color(0xFF8b949e),
+              color: const Color(0xFF8a909b),
             ),
             const SizedBox(width: 6),
             Expanded(
@@ -380,8 +380,8 @@ class _DrawerSessionTile extends StatelessWidget {
                 session.label?.isNotEmpty == true ? session.label! : session.id,
                 style: TextStyle(
                   color: isActive
-                      ? const Color(0xFF58a6ff)
-                      : const Color(0xFFc9d1d9),
+                      ? const Color(0xFF6aa3ff)
+                      : const Color(0xFFe7eaee),
                   fontSize: 12,
                   fontFamily: 'monospace',
                 ),
@@ -424,10 +424,10 @@ class _DirectoryListBody extends StatelessWidget {
     final mgr = context.watch<SessionManager>();
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0d1117),
+      backgroundColor: const Color(0xFF070809),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF161b22),
-        foregroundColor: const Color(0xFFc9d1d9),
+        backgroundColor: const Color(0xFF0f1115),
+        foregroundColor: const Color(0xFFe7eaee),
         elevation: 0,
         centerTitle: false,
         leading: IconButton(
@@ -442,11 +442,11 @@ class _DirectoryListBody extends StatelessWidget {
                 children: [
                   TextSpan(
                     text: 'Multi',
-                    style: TextStyle(color: Color(0xFFf78166)),
+                    style: TextStyle(color: Color(0xFF3ad6c5)),
                   ),
                   TextSpan(
                     text: 'CC',
-                    style: TextStyle(color: Color(0xFF79c0ff)),
+                    style: TextStyle(color: Color(0xFF6aa3ff)),
                   ),
                 ],
               ),
@@ -455,7 +455,7 @@ class _DirectoryListBody extends StatelessWidget {
             Text(
               '${mgr.directories.length} dirs · ${mgr.sessions.where((s) => !s.isAux).length} sessions',
               style: const TextStyle(
-                color: Color(0xFF8b949e),
+                color: Color(0xFF8a909b),
                 fontSize: 12,
                 fontWeight: FontWeight.normal,
               ),
@@ -476,14 +476,14 @@ class _DirectoryListBody extends StatelessWidget {
             icon: const Icon(Icons.settings_outlined, size: 20),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => SetupScreen(settings: settings),
+                builder: (_) => SettingsScreen(settings: settings),
               ),
             ),
           ),
         ],
         bottom: const PreferredSize(
           preferredSize: Size.fromHeight(1),
-          child: Divider(height: 1, color: Color(0xFF30363d)),
+          child: Divider(height: 1, color: Color(0xFF20242b)),
         ),
       ),
       body: _buildBody(context, mgr),
@@ -495,7 +495,7 @@ class _DirectoryListBody extends StatelessWidget {
         mgr.directories.isEmpty &&
         mgr.sessions.isEmpty) {
       return const Center(
-        child: CircularProgressIndicator(color: Color(0xFF58a6ff)),
+        child: CircularProgressIndicator(color: Color(0xFF6aa3ff)),
       );
     }
 
@@ -504,18 +504,18 @@ class _DirectoryListBody extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, color: Color(0xFFf85149), size: 48),
+            const Icon(Icons.error_outline, color: Color(0xFFff6b63), size: 48),
             const SizedBox(height: 12),
             Text(
               mgr.sessionsError!,
-              style: const TextStyle(color: Color(0xFF8b949e)),
+              style: const TextStyle(color: Color(0xFF8a909b)),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: mgr.loadDashboard,
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF21262d),
+                backgroundColor: const Color(0xFF14171c),
               ),
               child: const Text('Retry'),
             ),
@@ -531,13 +531,13 @@ class _DirectoryListBody extends StatelessWidget {
           children: [
             const Icon(
               Icons.folder_open_outlined,
-              color: Color(0xFF6e7681),
+              color: Color(0xFF5b616c),
               size: 48,
             ),
             const SizedBox(height: 12),
             const Text(
               'No directories yet',
-              style: TextStyle(color: Color(0xFF6e7681), fontSize: 15),
+              style: TextStyle(color: Color(0xFF5b616c), fontSize: 15),
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
@@ -545,7 +545,7 @@ class _DirectoryListBody extends StatelessWidget {
               icon: const Icon(Icons.add, size: 18),
               label: const Text('New directory'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF238636),
+                backgroundColor: const Color(0xFF22ab9c),
                 foregroundColor: Colors.white,
               ),
             ),
@@ -556,8 +556,8 @@ class _DirectoryListBody extends StatelessWidget {
 
     return RefreshIndicator(
       onRefresh: mgr.loadDashboard,
-      color: const Color(0xFF58a6ff),
-      backgroundColor: const Color(0xFF161b22),
+      color: const Color(0xFF6aa3ff),
+      backgroundColor: const Color(0xFF0f1115),
       child: ListView.builder(
         padding: const EdgeInsets.all(12),
         itemCount: mgr.directories.length,
@@ -632,8 +632,8 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFF161b22),
-        border: Border.all(color: const Color(0xFF30363d)),
+        color: const Color(0xFF0f1115),
+        border: Border.all(color: const Color(0xFF20242b)),
         borderRadius: BorderRadius.circular(8),
         boxShadow: [
           BoxShadow(
@@ -660,15 +660,15 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                         width: 34,
                         height: 34,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF0d1117),
-                          border: Border.all(color: const Color(0xFF30363d)),
+                          color: const Color(0xFF070809),
+                          border: Border.all(color: const Color(0xFF20242b)),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Icon(
                           _open
                               ? Icons.keyboard_arrow_down_rounded
                               : Icons.keyboard_arrow_right_rounded,
-                          color: const Color(0xFF8b949e),
+                          color: const Color(0xFF8a909b),
                           size: 22,
                         ),
                       ),
@@ -680,7 +680,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                             Text(
                               widget.directory.name,
                               style: const TextStyle(
-                                color: Color(0xFFf0f6fc),
+                                color: Color(0xFFf2f4f7),
                                 fontWeight: FontWeight.w700,
                                 fontSize: 16,
                               ),
@@ -690,7 +690,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                             Text(
                               widget.directory.path,
                               style: const TextStyle(
-                                color: Color(0xFF79c0ff),
+                                color: Color(0xFF6aa3ff),
                                 fontSize: 11,
                                 fontFamily: 'monospace',
                               ),
@@ -703,7 +703,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                         icon: const Icon(
                           Icons.sticky_note_2_outlined,
                           size: 19,
-                          color: Color(0xFF8b949e),
+                          color: Color(0xFF8a909b),
                         ),
                         tooltip: '项目备忘 (multicc.memo.md)',
                         onPressed: () => Navigator.push(
@@ -725,7 +725,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                         icon: const Icon(
                           Icons.drive_file_rename_outline_rounded,
                           size: 19,
-                          color: Color(0xFF8b949e),
+                          color: Color(0xFF8a909b),
                         ),
                         tooltip: 'Rename directory',
                         onPressed: () => _confirmRenameDirectory(context),
@@ -739,7 +739,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                         icon: const Icon(
                           Icons.delete_outline_rounded,
                           size: 19,
-                          color: Color(0xFFf85149),
+                          color: Color(0xFFff6b63),
                         ),
                         tooltip: 'Delete directory',
                         onPressed: () => _confirmDeleteDirectory(context),
@@ -781,7 +781,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
             ),
           ),
           if (_open) ...[
-            const Divider(height: 1, color: Color(0xFF21262d)),
+            const Divider(height: 1, color: Color(0xFF14171c)),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
               child: Wrap(
@@ -825,14 +825,14 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                   vertical: 16,
                 ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF0d1117).withValues(alpha: 0.65),
-                  border: Border.all(color: const Color(0xFF30363d)),
+                  color: const Color(0xFF070809).withValues(alpha: 0.65),
+                  border: Border.all(color: const Color(0xFF20242b)),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: const Text(
                   'No sessions yet',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF6e7681), fontSize: 12),
+                  style: TextStyle(color: Color(0xFF5b616c), fontSize: 12),
                 ),
               )
             else ...[
@@ -885,7 +885,8 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final messenger = ScaffoldMessenger.of(context);
     String? model;
     if (cli == SessionCli.claude) {
-      final picked = await showClaudeModelPicker(context);
+      final picked =
+          await showClaudeModelPicker(context, current: widget.settings.defaultModel);
       if (picked == null) return; // cancelled
       if (!mounted) return;
       model = picked.isEmpty ? null : picked;
@@ -915,7 +916,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       messenger.showSnackBar(
         SnackBar(
           content: Text('Failed: $e'),
-          backgroundColor: const Color(0xFFf85149),
+          backgroundColor: const Color(0xFFff6b63),
         ),
       );
     }
@@ -927,15 +928,15 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final next = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF161b22),
+        backgroundColor: const Color(0xFF0f1115),
         title: const Text(
           'Rename directory',
-          style: TextStyle(color: Color(0xFFf0f6fc)),
+          style: TextStyle(color: Color(0xFFf2f4f7)),
         ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 14),
+          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
           decoration: _inputDec(hint: 'Directory name'),
           onSubmitted: (v) => Navigator.pop(context, v),
         ),
@@ -944,14 +945,14 @@ class _DirectoryCardState extends State<_DirectoryCard> {
             onPressed: () => Navigator.pop(context, null),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, ctrl.text),
             child: const Text(
               'Rename',
-              style: TextStyle(color: Color(0xFF58a6ff)),
+              style: TextStyle(color: Color(0xFF6aa3ff)),
             ),
           ),
         ],
@@ -971,7 +972,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       messenger.showSnackBar(
         SnackBar(
           content: Text('Rename failed: $e'),
-          backgroundColor: const Color(0xFFf85149),
+          backgroundColor: const Color(0xFFff6b63),
         ),
       );
     }
@@ -983,30 +984,30 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF161b22),
+        backgroundColor: const Color(0xFF0f1115),
         title: Text(
           'Delete directory',
-          style: const TextStyle(color: Color(0xFFf0f6fc)),
+          style: const TextStyle(color: Color(0xFFf2f4f7)),
         ),
         content: Text(
           hasSessions
               ? 'Delete "${widget.directory.name}" and ALL ${widget.directory.totalSessions} session(s)? This cannot be undone.'
               : 'Delete empty directory "${widget.directory.name}"?',
-          style: const TextStyle(color: Color(0xFFc9d1d9)),
+          style: const TextStyle(color: Color(0xFFe7eaee)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text(
               'Delete',
-              style: TextStyle(color: Color(0xFFf85149)),
+              style: TextStyle(color: Color(0xFFff6b63)),
             ),
           ),
         ],
@@ -1020,7 +1021,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       messenger.showSnackBar(
         SnackBar(
           content: Text('Failed: $e'),
-          backgroundColor: const Color(0xFFf85149),
+          backgroundColor: const Color(0xFFff6b63),
         ),
       );
     }
@@ -1040,8 +1041,8 @@ class _EventTimeline extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF0d1117),
-        border: Border.all(color: const Color(0xFF21262d)),
+        color: const Color(0xFF070809),
+        border: Border.all(color: const Color(0xFF14171c)),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Column(
@@ -1050,7 +1051,7 @@ class _EventTimeline extends StatelessWidget {
           const Text(
             '活动',
             style: TextStyle(
-              color: Color(0xFF6e7681),
+              color: Color(0xFF5b616c),
               fontSize: 9,
               fontWeight: FontWeight.w700,
               letterSpacing: 0.6,
@@ -1062,7 +1063,7 @@ class _EventTimeline extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 1),
               child: Text(
                 _eventLabel(e),
-                style: const TextStyle(color: Color(0xFF8b949e), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -1106,14 +1107,14 @@ class _ProjectStatPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = color ?? const Color(0xFF8b949e);
+    final c = color ?? const Color(0xFF8a909b);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF0d1117),
+        color: const Color(0xFF070809),
         border: Border.all(
           color: color == null
-              ? const Color(0xFF30363d)
+              ? const Color(0xFF20242b)
               : c.withValues(alpha: 0.45),
         ),
         borderRadius: BorderRadius.circular(999),
@@ -1125,7 +1126,7 @@ class _ProjectStatPill extends StatelessWidget {
             TextSpan(
               text: value,
               style: const TextStyle(
-                color: Color(0xFFf0f6fc),
+                color: Color(0xFFf2f4f7),
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -1237,7 +1238,7 @@ class _SessionCard extends StatelessWidget {
     final live = liveStatus;
     final statusColor = live != null
         ? _wbStatusColor(live.status)
-        : (session.active ? const Color(0xFF3fb950) : const Color(0xFF6e7681));
+        : (session.active ? const Color(0xFF7fd49a) : const Color(0xFF5b616c));
     final mergeReady = live?.mergeReady == true;
     final title = session.label?.isNotEmpty == true
         ? session.label!
@@ -1248,8 +1249,8 @@ class _SessionCard extends StatelessWidget {
 
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0d1117),
-        border: Border.all(color: const Color(0xFF30363d)),
+        color: const Color(0xFF070809),
+        border: Border.all(color: const Color(0xFF20242b)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: InkWell(
@@ -1275,7 +1276,7 @@ class _SessionCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   _MiniBadge(
                     label: session.kind.name,
-                    color: const Color(0xFF8b949e),
+                    color: const Color(0xFF8a909b),
                     icon: session.isChat
                         ? Icons.chat_bubble_outline_rounded
                         : Icons.terminal_rounded,
@@ -1297,7 +1298,7 @@ class _SessionCard extends StatelessWidget {
                       '📨$pendingNotes',
                       style: const TextStyle(
                         fontSize: 10,
-                        color: Color(0xFFd29922),
+                        color: Color(0xFFe3b341),
                       ),
                     ),
                   ],
@@ -1305,7 +1306,7 @@ class _SessionCard extends StatelessWidget {
                   Text(
                     ago,
                     style: const TextStyle(
-                      color: Color(0xFF6e7681),
+                      color: Color(0xFF5b616c),
                       fontSize: 10,
                     ),
                   ),
@@ -1315,7 +1316,7 @@ class _SessionCard extends StatelessWidget {
               Text(
                 title,
                 style: const TextStyle(
-                  color: Color(0xFFc9d1d9),
+                  color: Color(0xFFe7eaee),
                   fontSize: 12,
                   fontFamily: 'monospace',
                   fontWeight: FontWeight.w600,
@@ -1327,7 +1328,7 @@ class _SessionCard extends StatelessWidget {
               Text(
                 subtitle,
                 style: const TextStyle(
-                  color: Color(0xFF6e7681),
+                  color: Color(0xFF5b616c),
                   fontSize: 11,
                   fontFamily: 'monospace',
                 ),
@@ -1341,14 +1342,14 @@ class _SessionCard extends StatelessWidget {
                     const Icon(
                       Icons.edit_outlined,
                       size: 11,
-                      color: Color(0xFFd29922),
+                      color: Color(0xFFe3b341),
                     ),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
                         live!.currentFile!.split('/').last,
                         style: const TextStyle(
-                          color: Color(0xFFd29922),
+                          color: Color(0xFFe3b341),
                           fontSize: 10,
                           fontFamily: 'monospace',
                         ),
@@ -1367,7 +1368,7 @@ class _SessionCard extends StatelessWidget {
                     icon: const Icon(
                       Icons.edit_outlined,
                       size: 16,
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF8a909b),
                     ),
                     tooltip: 'Rename',
                     onPressed: () => _rename(context),
@@ -1382,12 +1383,12 @@ class _SessionCard extends StatelessWidget {
                       Icons.merge_type_rounded,
                       size: 16,
                       color: mergeReady
-                          ? const Color(0xFF0d1117)
-                          : const Color(0xFF8b949e),
+                          ? const Color(0xFF070809)
+                          : const Color(0xFF8a909b),
                     ),
                     style: IconButton.styleFrom(
                       backgroundColor: mergeReady
-                          ? const Color(0xFFd29922)
+                          ? const Color(0xFFe3b341)
                           : Colors.transparent,
                       side: mergeReady
                           ? const BorderSide(color: Color(0xFFe3b341))
@@ -1407,7 +1408,7 @@ class _SessionCard extends StatelessWidget {
                     icon: const Icon(
                       Icons.mail_outline_rounded,
                       size: 16,
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF8a909b),
                     ),
                     tooltip: '给同目录 agent 留言',
                     onPressed: () => _leaveNote(context),
@@ -1421,7 +1422,7 @@ class _SessionCard extends StatelessWidget {
                     icon: const Icon(
                       Icons.restart_alt_rounded,
                       size: 16,
-                      color: Color(0xFF8b949e),
+                      color: Color(0xFF8a909b),
                     ),
                     tooltip: 'Restart',
                     onPressed: session.isTerminal
@@ -1437,7 +1438,7 @@ class _SessionCard extends StatelessWidget {
                     icon: const Icon(
                       Icons.delete_outline_rounded,
                       size: 16,
-                      color: Color(0xFFf85149),
+                      color: Color(0xFFff6b63),
                     ),
                     tooltip: 'Delete',
                     onPressed: () => _confirmDelete(context),
@@ -1462,23 +1463,23 @@ class _SessionCard extends StatelessWidget {
     final next = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF161b22),
+        backgroundColor: const Color(0xFF0f1115),
         title: const Text(
           'Rename Session',
-          style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+          style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
         ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
           maxLength: 80,
-          style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 13),
+          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
           decoration: InputDecoration(
             hintText: session.id,
-            hintStyle: const TextStyle(color: Color(0xFF484f58)),
+            hintStyle: const TextStyle(color: Color(0xFF454b54)),
             filled: true,
-            fillColor: const Color(0xFF0d1117),
+            fillColor: const Color(0xFF070809),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-            counterStyle: const TextStyle(color: Color(0xFF6e7681)),
+            counterStyle: const TextStyle(color: Color(0xFF5b616c)),
           ),
           onSubmitted: (v) => Navigator.pop(context, v),
         ),
@@ -1487,7 +1488,7 @@ class _SessionCard extends StatelessWidget {
             onPressed: () => Navigator.pop(context),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
@@ -1495,7 +1496,7 @@ class _SessionCard extends StatelessWidget {
             child: const Text(
               'Save',
               style: TextStyle(
-                color: Color(0xFF58a6ff),
+                color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -1529,10 +1530,10 @@ class _SessionCard extends StatelessWidget {
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
-          backgroundColor: const Color(0xFF161b22),
+          backgroundColor: const Color(0xFF0f1115),
           title: const Text(
             '留言',
-            style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+            style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1540,14 +1541,14 @@ class _SessionCard extends StatelessWidget {
             children: [
               const Text(
                 '留言会在对方下一轮对话开始时送达。',
-                style: TextStyle(color: Color(0xFF8b949e), fontSize: 11),
+                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
               ),
               const SizedBox(height: 10),
               DropdownButton<String>(
                 value: targetId,
                 isExpanded: true,
-                dropdownColor: const Color(0xFF161b22),
-                style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 13),
+                dropdownColor: const Color(0xFF0f1115),
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 items: [
                   for (final s in siblings)
                     DropdownMenuItem(
@@ -1565,12 +1566,12 @@ class _SessionCard extends StatelessWidget {
                 controller: bodyCtrl,
                 autofocus: true,
                 maxLines: 4,
-                style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 13),
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: InputDecoration(
                   hintText: '留言内容…',
-                  hintStyle: const TextStyle(color: Color(0xFF484f58)),
+                  hintStyle: const TextStyle(color: Color(0xFF454b54)),
                   filled: true,
-                  fillColor: const Color(0xFF0d1117),
+                  fillColor: const Color(0xFF070809),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(6),
                   ),
@@ -1583,7 +1584,7 @@ class _SessionCard extends StatelessWidget {
               onPressed: () => Navigator.pop(context, false),
               child: const Text(
                 '取消',
-                style: TextStyle(color: Color(0xFF8b949e)),
+                style: TextStyle(color: Color(0xFF8a909b)),
               ),
             ),
             TextButton(
@@ -1591,7 +1592,7 @@ class _SessionCard extends StatelessWidget {
               child: const Text(
                 '发送',
                 style: TextStyle(
-                  color: Color(0xFF58a6ff),
+                  color: Color(0xFF6aa3ff),
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1617,26 +1618,26 @@ class _SessionCard extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF161b22),
+        backgroundColor: const Color(0xFF0f1115),
         title: const Text(
           '合并 worktree',
-          style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+          style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
         ),
         content: const Text(
           '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-          style: TextStyle(color: Color(0xFFc9d1d9)),
+          style: TextStyle(color: Color(0xFFe7eaee)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消', style: TextStyle(color: Color(0xFF8b949e))),
+            child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text(
               '合并',
               style: TextStyle(
-                color: Color(0xFF58a6ff),
+                color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -1684,7 +1685,7 @@ class _SessionCard extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Session restarted'),
-            backgroundColor: Color(0xFF238636),
+            backgroundColor: Color(0xFF22ab9c),
           ),
         );
       }
@@ -1693,7 +1694,7 @@ class _SessionCard extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed: $e'),
-            backgroundColor: const Color(0xFFf85149),
+            backgroundColor: const Color(0xFFff6b63),
           ),
         );
       }
@@ -1704,28 +1705,28 @@ class _SessionCard extends StatelessWidget {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF161b22),
+        backgroundColor: const Color(0xFF0f1115),
         title: const Text(
           'Delete Session',
-          style: TextStyle(color: Color(0xFFf0f6fc)),
+          style: TextStyle(color: Color(0xFFf2f4f7)),
         ),
         content: Text(
           'Delete "${session.id}"?',
-          style: const TextStyle(color: Color(0xFFc9d1d9)),
+          style: const TextStyle(color: Color(0xFFe7eaee)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text(
               'Delete',
-              style: TextStyle(color: Color(0xFFf85149)),
+              style: TextStyle(color: Color(0xFFff6b63)),
             ),
           ),
         ],
@@ -1824,10 +1825,10 @@ Future<void> _showNewDirectoryDialog(
     context: context,
     builder: (dialogCtx) => StatefulBuilder(
       builder: (context, setState) => AlertDialog(
-        backgroundColor: const Color(0xFF161b22),
+        backgroundColor: const Color(0xFF0f1115),
         title: const Text(
           'New directory',
-          style: TextStyle(color: Color(0xFFf0f6fc)),
+          style: TextStyle(color: Color(0xFFf2f4f7)),
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1835,25 +1836,25 @@ Future<void> _showNewDirectoryDialog(
           children: [
             const Text(
               'Name',
-              style: TextStyle(color: Color(0xFF8b949e), fontSize: 11),
+              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
             ),
             const SizedBox(height: 4),
             TextField(
               controller: nameCtrl,
               autofocus: true,
-              style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 13),
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
               decoration: _inputDec(hint: 'My project'),
             ),
             const SizedBox(height: 10),
             const Text(
               'Path',
-              style: TextStyle(color: Color(0xFF8b949e), fontSize: 11),
+              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
             ),
             const SizedBox(height: 4),
             TextField(
               controller: pathCtrl,
               style: const TextStyle(
-                color: Color(0xFFc9d1d9),
+                color: Color(0xFFe7eaee),
                 fontSize: 13,
                 fontFamily: 'monospace',
               ),
@@ -1871,7 +1872,7 @@ Future<void> _showNewDirectoryDialog(
                 margin: const EdgeInsets.only(top: 6),
                 constraints: const BoxConstraints(maxHeight: 180),
                 decoration: BoxDecoration(
-                  border: Border.all(color: const Color(0xFF30363d)),
+                  border: Border.all(color: const Color(0xFF20242b)),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: ListView.builder(
@@ -1905,7 +1906,7 @@ Future<void> _showNewDirectoryDialog(
                         child: Text(
                           '📁 ${e['name']}',
                           style: const TextStyle(
-                            color: Color(0xFFc9d1d9),
+                            color: Color(0xFFe7eaee),
                             fontSize: 12,
                             fontFamily: 'monospace',
                           ),
@@ -1919,7 +1920,7 @@ Future<void> _showNewDirectoryDialog(
               const SizedBox(height: 10),
               Text(
                 error!,
-                style: const TextStyle(color: Color(0xFFf85149), fontSize: 12),
+                style: const TextStyle(color: Color(0xFFff6b63), fontSize: 12),
               ),
             ],
           ],
@@ -1929,12 +1930,12 @@ Future<void> _showNewDirectoryDialog(
             onPressed: () => Navigator.pop(dialogCtx),
             child: const Text(
               'Cancel',
-              style: TextStyle(color: Color(0xFF8b949e)),
+              style: TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF238636),
+              backgroundColor: const Color(0xFF22ab9c),
               foregroundColor: Colors.white,
             ),
             onPressed: () async {
@@ -1964,20 +1965,20 @@ Future<void> _showNewDirectoryDialog(
 InputDecoration _inputDec({String? hint}) => InputDecoration(
   isDense: true,
   filled: true,
-  fillColor: const Color(0xFF0d1117),
+  fillColor: const Color(0xFF070809),
   hintText: hint,
-  hintStyle: const TextStyle(color: Color(0xFF484f58), fontSize: 13),
+  hintStyle: const TextStyle(color: Color(0xFF454b54), fontSize: 13),
   contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
   border: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF30363d)),
+    borderSide: const BorderSide(color: Color(0xFF20242b)),
     borderRadius: BorderRadius.circular(6),
   ),
   enabledBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF30363d)),
+    borderSide: const BorderSide(color: Color(0xFF20242b)),
     borderRadius: BorderRadius.circular(6),
   ),
   focusedBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF58a6ff)),
+    borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
     borderRadius: BorderRadius.circular(6),
   ),
 );

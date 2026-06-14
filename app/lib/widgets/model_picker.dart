@@ -11,7 +11,7 @@ Future<String?> showClaudeModelPicker(
 }) {
   return showModalBottomSheet<String>(
     context: context,
-    backgroundColor: const Color(0xFF161b22),
+    backgroundColor: const Color(0xFF0f1115),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
     ),
@@ -27,7 +27,7 @@ Future<String?> showClaudeModelPicker(
               child: Text(
                 title,
                 style: const TextStyle(
-                  color: Color(0xFFf0f6fc),
+                  color: Color(0xFFf2f4f7),
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                 ),
@@ -39,7 +39,7 @@ Future<String?> showClaudeModelPicker(
                 title: Text(
                   e.value,
                   style: const TextStyle(
-                    color: Color(0xFFc9d1d9),
+                    color: Color(0xFFe7eaee),
                     fontSize: 14,
                   ),
                 ),
@@ -47,7 +47,7 @@ Future<String?> showClaudeModelPicker(
                     ? const Icon(
                         Icons.check_rounded,
                         size: 18,
-                        color: Color(0xFF3fb950),
+                        color: Color(0xFF7fd49a),
                       )
                     : null,
                 onTap: () => Navigator.pop(ctx, e.key),
@@ -56,13 +56,13 @@ Future<String?> showClaudeModelPicker(
               dense: true,
               title: Text(
                 !isKnown && current.isNotEmpty ? '自定义…（当前：$current）' : '自定义…',
-                style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 14),
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
               ),
               trailing: !isKnown && current.isNotEmpty
                   ? const Icon(
                       Icons.check_rounded,
                       size: 18,
-                      color: Color(0xFF3fb950),
+                      color: Color(0xFF7fd49a),
                     )
                   : null,
               onTap: () async {
@@ -90,42 +90,42 @@ Future<String?> _showCustomModelDialog(
   return showDialog<String>(
     context: context,
     builder: (ctx) => AlertDialog(
-      backgroundColor: const Color(0xFF161b22),
+      backgroundColor: const Color(0xFF0f1115),
       title: const Text(
         '自定义模型 ID',
-        style: TextStyle(fontSize: 15, color: Color(0xFFf0f6fc)),
+        style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
       ),
       content: TextField(
         controller: ctrl,
         autofocus: true,
         style: const TextStyle(
-          color: Color(0xFFc9d1d9),
+          color: Color(0xFFe7eaee),
           fontFamily: 'monospace',
           fontSize: 13,
         ),
         decoration: InputDecoration(
           hintText: 'claude-opus-4-8',
-          hintStyle: const TextStyle(color: Color(0xFF484f58)),
+          hintStyle: const TextStyle(color: Color(0xFF454b54)),
           filled: true,
-          fillColor: const Color(0xFF0d1117),
+          fillColor: const Color(0xFF070809),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(6),
-            borderSide: const BorderSide(color: Color(0xFF30363d)),
+            borderSide: const BorderSide(color: Color(0xFF20242b)),
           ),
         ),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(ctx),
-          child: const Text('取消', style: TextStyle(color: Color(0xFF8b949e))),
+          child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
         ),
         TextButton(
           onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
           child: const Text(
             '确定',
             style: TextStyle(
-              color: Color(0xFF58a6ff),
+              color: Color(0xFF6aa3ff),
               fontWeight: FontWeight.w600,
             ),
           ),

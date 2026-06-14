@@ -53,7 +53,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
     return Container(
       margin: const EdgeInsets.only(top: 8),
       decoration: BoxDecoration(
-        border: Border.all(color: const Color(0xFF30363d)),
+        border: Border.all(color: const Color(0xFF20242b)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -65,7 +65,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: const Color(0xFF21262d),
+                color: const Color(0xFF14171c),
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(7),
                   topRight: const Radius.circular(7),
@@ -80,7 +80,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                   Text(
                     widget.toolCall.name,
                     style: const TextStyle(
-                      color: Color(0xFF79c0ff),
+                      color: Color(0xFF6aa3ff),
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
                     ),
@@ -91,8 +91,8 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                       _description,
                       style: TextStyle(
                         color: isDone
-                            ? (isError ? const Color(0xFFf85149) : const Color(0xFF3fb950))
-                            : const Color(0xFF8b949e),
+                            ? (isError ? const Color(0xFFff6b63) : const Color(0xFF7fd49a))
+                            : const Color(0xFF8a909b),
                         fontSize: 12,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -105,12 +105,12 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                       height: 12,
                       child: CircularProgressIndicator(
                         strokeWidth: 1.5,
-                        color: Color(0xFF58a6ff),
+                        color: Color(0xFF6aa3ff),
                       ),
                     ),
                   Icon(
                     _expanded ? Icons.chevron_right_rounded : Icons.chevron_right_rounded,
-                    color: const Color(0xFF6e7681),
+                    color: const Color(0xFF5b616c),
                     size: 16,
                   ),
                 ],
@@ -123,8 +123,8 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: const BoxDecoration(
-                color: Color(0xFF0d1117),
-                border: Border(top: BorderSide(color: Color(0xFF21262d))),
+                color: Color(0xFF070809),
+                border: Border(top: BorderSide(color: Color(0xFF14171c))),
                 borderRadius: BorderRadius.only(
                   bottomLeft: Radius.circular(7),
                   bottomRight: Radius.circular(7),
@@ -136,7 +136,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                   if (widget.toolCall.inputJson.isNotEmpty) ...[
                     const Text(
                       'Input:',
-                      style: TextStyle(fontSize: 11, color: Color(0xFF6e7681), fontWeight: FontWeight.w600),
+                      style: TextStyle(fontSize: 11, color: Color(0xFF5b616c), fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 4),
                     SingleChildScrollView(
@@ -146,7 +146,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                         style: const TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 12,
-                          color: Color(0xFF8b949e),
+                          color: Color(0xFF8a909b),
                           height: 1.5,
                         ),
                       ),
@@ -158,7 +158,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                       isError ? 'Error:' : 'Result:',
                       style: TextStyle(
                         fontSize: 11,
-                        color: isError ? const Color(0xFFf85149) : const Color(0xFF3fb950),
+                        color: isError ? const Color(0xFFff6b63) : const Color(0xFF7fd49a),
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -171,7 +171,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                           style: const TextStyle(
                             fontFamily: 'monospace',
                             fontSize: 12,
-                            color: Color(0xFF8b949e),
+                            color: Color(0xFF8a909b),
                             height: 1.5,
                           ),
                         ),

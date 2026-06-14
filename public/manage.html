@@ -1,1126 +1,595 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="theme-color" content="#161b22" />
+  <meta name="theme-color" content="#070809" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon.svg" />
   <title>MultiCC — Dashboard</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root{
+      --bg:#070809; --bg-soft:#0b0d10; --panel:#0f1115; --panel-2:#14171c;
+      --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.12);
+      --text:#e7eaee; --muted:#8a909b; --faint:#5b616c;
+      --accent:#3ad6c5; --accent-dim:rgba(58,214,197,.14); --accent-line:rgba(58,214,197,.4);
+      --blue:#6aa3ff; --claude:#f0936b; --codex:#7fd49a; --amber:#e3b341; --danger:#ff6b63;
+      --radius:14px;
+      --mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
+      --sans:'Inter',-apple-system,system-ui,'Segoe UI',sans-serif;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%}
+    body{
+      background:var(--bg); color:var(--text);
+      font-family:var(--sans); font-size:14px;
+      display:flex; overflow:hidden; -webkit-font-smoothing:antialiased;
+    }
+    body::before{
+      content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+      background:
+        radial-gradient(680px 380px at 18% -8%, rgba(58,214,197,.10), transparent 60%),
+        radial-gradient(720px 420px at 100% 0%, rgba(106,163,255,.07), transparent 55%);
+    }
+    ::-webkit-scrollbar{width:8px;height:8px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.09);border-radius:8px}
+    ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.16)}
+    a{color:inherit}
 
-    body {
-      background: #0d1117;
-      color: #c9d1d9;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+    /* ── Left nav ── */
+    #nav{
+      position:relative;z-index:3;width:236px;flex-shrink:0;
+      background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 30%);
+      border-right:1px solid var(--line);
+      display:flex;flex-direction:column;padding:16px 12px;
     }
+    .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px;text-decoration:none}
+    .brand .mark{
+      width:30px;height:30px;border-radius:9px;flex-shrink:0;
+      background:linear-gradient(135deg,var(--accent),#1d8a7e);
+      display:grid;place-items:center;color:#04110f;font-weight:800;font-size:15px;
+      box-shadow:0 0 0 1px rgba(58,214,197,.3),0 6px 18px rgba(58,214,197,.25);
+    }
+    .brand .name{font-size:15px;font-weight:700;letter-spacing:.3px}
+    .brand .name b{color:var(--accent)}
+    .brand .ver{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:1px}
 
-    /* ── Header ── */
-    #header {
-      flex-shrink: 0;
-      background: #161b22;
-      border-bottom: 1px solid #30363d;
-      padding: 0 24px;
-      height: 48px;
-      display: flex;
-      align-items: center;
-      gap: 16px;
+    .nav-label{font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:var(--faint);padding:14px 10px 6px;font-weight:600}
+    .nav-item{
+      display:flex;align-items:center;gap:11px;width:100%;
+      padding:9px 10px;border-radius:10px;border:0;background:transparent;
+      color:var(--muted);font-size:13px;font-weight:500;font-family:var(--sans);
+      cursor:pointer;user-select:none;text-align:left;
+      transition:background .15s,color .15s;position:relative;
     }
+    .nav-item:hover{background:rgba(255,255,255,.04);color:var(--text)}
+    .nav-item.active{background:var(--accent-dim);color:var(--text)}
+    .nav-item.active::before{content:"";position:absolute;left:-12px;top:50%;transform:translateY(-50%);width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+    .nav-item .ic{width:17px;text-align:center;font-size:14px;opacity:.9}
+    .nav-item .badge{margin-left:auto;font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:20px;background:rgba(255,255,255,.07);color:var(--muted)}
+    .nav-item.active .badge{background:rgba(58,214,197,.22);color:var(--accent)}
 
-    #header .logo {
-      font-size: 15px;
-      font-weight: 700;
-      color: #f78166;
-      letter-spacing: 0.5px;
-      text-decoration: none;
-    }
-    #header .logo span { color: #79c0ff; }
-    #header .title { font-size: 13px; color: #8b949e; }
-    #header .spacer { flex: 1; }
+    .nav-foot{margin-top:auto;padding-top:14px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:6px}
+    .nav-foot .hdr-btn{flex:1 1 calc(50% - 3px)}
 
-    .hdr-btn {
-      padding: 5px 12px;
-      background: #21262d;
-      color: #c9d1d9;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 12px;
-      transition: background 0.15s, border-color 0.15s;
+    .hdr-btn{
+      padding:7px 10px;background:var(--panel);color:var(--muted);
+      border:1px solid var(--line);border-radius:9px;cursor:pointer;font-size:12px;
+      text-align:center;text-decoration:none;transition:.15s;font-family:var(--sans);
     }
-    .hdr-btn:hover { background: #30363d; border-color: #8b949e; }
-    .hdr-btn.active { background: #1f6feb; border-color: #58a6ff; color: #fff; }
+    .hdr-btn:hover{background:var(--panel-2);color:var(--text);border-color:var(--line-strong)}
+    .hdr-btn.active{background:var(--accent-dim);border-color:var(--accent-line);color:var(--accent)}
 
-    /* ── Content area ── */
-    #content {
-      flex: 1;
-      display: flex;
-      min-height: 0;
-      overflow: hidden;
+    /* ── Main + topbar ── */
+    #main{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+    #topbar{
+      flex-shrink:0;min-height:60px;display:flex;align-items:center;gap:12px;
+      padding:0 22px;border-bottom:1px solid var(--line);
     }
+    .crumb{font-size:18px;font-weight:700;letter-spacing:.2px;white-space:nowrap}
+    .crumb small{font-size:12px;font-weight:500;color:var(--muted);margin-left:10px}
+    .topspace{flex:1}
+    .search{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--faint);font-size:13px;width:220px;transition:.15s}
+    .search:focus-within{border-color:var(--accent-line);color:var(--text)}
+    .search input{background:none;border:0;outline:0;color:var(--text);font-size:13px;width:100%;font-family:var(--sans)}
 
-    /* ── Sidebar (card list) ── */
-    #sidebar {
-      flex-shrink: 0;
-      width: 100%;
-      overflow-y: auto;
-      padding: 20px 24px;
-      transition: width 0.25s;
+    /* ── Buttons ── */
+    .btn{
+      height:36px;padding:0 14px;border-radius:10px;border:1px solid var(--line);
+      background:var(--panel);color:var(--text);font-size:13px;font-weight:500;font-family:var(--sans);
+      cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.15s;white-space:nowrap;
     }
-    #sidebar::-webkit-scrollbar { width: 5px; }
-    #sidebar::-webkit-scrollbar-track { background: transparent; }
-    #sidebar::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    .btn:hover{border-color:var(--line-strong);background:var(--panel-2)}
+    .btn-green,.btn.primary{background:linear-gradient(135deg,var(--accent),#22ab9c);color:#04110f;border-color:transparent;font-weight:700;box-shadow:0 4px 16px rgba(58,214,197,.22)}
+    .btn-green:hover,.btn.primary:hover{filter:brightness(1.06)}
+    .btn-danger{background:transparent;border-color:rgba(255,107,99,.45);color:var(--danger)}
+    .btn-danger:hover{background:rgba(255,107,99,.12);border-color:var(--danger)}
+    .btn-sm{height:30px;padding:0 11px;font-size:12px;border-radius:8px}
+    .icon-btn{width:36px;height:36px;flex:0 0 36px;padding:0;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--muted);display:grid;place-items:center;cursor:pointer;transition:.15s;font-size:15px}
+    .icon-btn:hover{color:var(--text);border-color:var(--line-strong);background:var(--panel-2)}
 
-    /* When a session is focused, sidebar shrinks to a narrow list */
-    body.has-focus #sidebar {
-      width: 260px;
-      min-width: 260px;
-      border-right: 1px solid #30363d;
-      padding: 12px;
-    }
+    /* ── Content split ── */
+    #content{flex:1;display:flex;min-height:0;overflow:hidden}
+    #sidebar{flex:1;overflow-y:auto;padding:22px}
+    body.has-focus #sidebar{width:300px;min-width:300px;flex:none;border-right:1px solid var(--line);padding:14px}
 
-    .page-title {
-      font-size: 20px;
-      font-weight: 600;
-      color: #f0f6fc;
-      margin-bottom: 6px;
-    }
-    body.has-focus .page-title { font-size: 14px; margin-bottom: 4px; }
+    .view{display:none}
+    #sidebar > .view.active{display:block}
 
-    .page-subtitle {
-      font-size: 13px;
-      color: #8b949e;
-      margin-bottom: 20px;
-    }
-    body.has-focus .page-subtitle { display: none; }
+    /* ── KPI row ── */
+    #kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+    body.has-focus #kpi-row{display:none}
+    .kpi{position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.025),transparent);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
+    .kpi .k-top{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:500}
+    .kpi .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+    .kpi .k-num{font-size:28px;font-weight:750;letter-spacing:-.5px;margin-top:9px;line-height:1}
+    .kpi .k-sub{font-size:11px;color:var(--faint);margin-top:6px;font-family:var(--mono)}
+    .kpi .k-bar{position:absolute;left:0;bottom:0;height:3px;width:55%;background:linear-gradient(90deg,var(--accent),transparent)}
+    .kpi.alt .dot{background:var(--amber);box-shadow:0 0 8px var(--amber)} .kpi.alt .k-bar{background:linear-gradient(90deg,var(--amber),transparent)}
+    .kpi.blue .dot{background:var(--blue);box-shadow:0 0 8px var(--blue)} .kpi.blue .k-bar{background:linear-gradient(90deg,var(--blue),transparent)}
+    .kpi.grey .dot{background:var(--faint);box-shadow:none} .kpi.grey .k-bar{background:linear-gradient(90deg,var(--faint),transparent)}
 
-    /* ── Toolbar ── */
-    .toolbar {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 16px;
-    }
-    body.has-focus .toolbar { margin-bottom: 10px; }
+    .sec-head{display:flex;align-items:center;gap:10px;margin:2px 0 16px}
+    .sec-head h2{font-size:14px;font-weight:650;letter-spacing:.2px}
+    .sec-head .count{font-family:var(--mono);font-size:11px;color:var(--faint);background:rgba(255,255,255,.05);padding:2px 8px;border-radius:20px}
+    .sec-head .line{flex:1;height:1px;background:var(--line)}
+    .sec-desc{font-size:12.5px;color:var(--muted);line-height:1.6;margin:-6px 0 18px;max-width:760px}
 
-    .btn {
-      padding: 7px 16px;
-      border-radius: 6px;
-      border: 1px solid #30363d;
-      background: #21262d;
-      color: #c9d1d9;
-      font-size: 13px;
-      cursor: pointer;
-      transition: background 0.15s, border-color 0.15s;
-      white-space: nowrap;
-    }
-    .btn:hover { background: #30363d; border-color: #8b949e; }
+    /* ── Directory cards (generated by manage.js) ── */
+    #directory-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:18px;align-items:start}
+    body.has-focus #directory-list{display:flex;flex-direction:column;gap:10px}
 
-    .btn-green { background: #238636; border-color: #2ea043; color: #fff; font-weight: 600; }
-    .btn-green:hover { background: #2ea043; }
+    .dir-block{
+      position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+      overflow:hidden;min-width:0;transition:border-color .2s,transform .2s;
+    }
+    .dir-block:hover{border-color:var(--line-strong);transform:translateY(-2px)}
+    body.has-focus .dir-block{transform:none}
+    .dir-header{display:flex;align-items:flex-start;gap:11px;padding:15px 17px 12px}
+    body.has-focus .dir-header{padding:12px;gap:8px}
+    .dir-toggle{width:30px;height:30px;flex:0 0 30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft);color:var(--muted);cursor:pointer;transition:.15s}
+    .dir-toggle:hover{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
+    .dir-block:not(.open) .dir-toggle::before{content:'▶';font-size:10px}
+    .dir-block.open .dir-toggle::before{content:'▼';font-size:10px}
+    .dir-main{flex:1;min-width:0}
+    .dir-name{display:block;font-size:15.5px;font-weight:680;color:var(--text);cursor:pointer;user-select:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dir-name:hover{color:var(--accent)}
+    .dir-path{display:block;font-family:var(--mono);font-size:11px;color:var(--blue);opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:5px}
+    body.has-focus .dir-name{font-size:13px} body.has-focus .dir-path{font-size:10px}
+    .dir-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px;font-size:11px;color:var(--muted);font-family:var(--mono)}
+    body.has-focus .dir-meta{display:none}
+    .dir-meta strong{color:var(--text);font-weight:700}
+    .dir-meta .sep{color:var(--line-strong)}
+    .cli-mini{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;line-height:1.5;border:1px solid currentColor}
+    .cli-mini.claude{color:var(--claude)} .cli-mini.codex{color:var(--codex)}
 
-    .btn-danger { background: transparent; border-color: #f85149; color: #f85149; }
-    .btn-danger:hover { background: #f8514920; }
+    .dir-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;padding:12px 17px 0}
+    body.has-focus .dir-actions{padding:10px 12px 0}
+    .dir-actions .btn{height:34px;justify-content:center;font-size:11.5px;border-style:dashed}
+    .dir-actions .btn:hover{border-style:solid}
+    .dir-actions .btn.add-claude{color:var(--claude);border-color:var(--line)}
+    .dir-actions .btn.add-claude:hover{background:rgba(240,147,107,.08);border-color:var(--claude)}
+    .dir-actions .btn.add-codex{color:var(--codex);border-color:var(--line)}
+    .dir-actions .btn.add-codex:hover{background:rgba(127,212,154,.08);border-color:var(--codex)}
 
-    .btn-sm { padding: 5px 12px; font-size: 12px; }
+    .dir-body{display:none;padding:14px 17px 17px}
+    body.has-focus .dir-body{padding:10px 12px 12px}
+    .dir-block.open .dir-body{display:block}
+    .dir-empty{border:1px dashed var(--line);border-radius:10px;color:var(--faint);font-size:12px;padding:14px;text-align:center;background:var(--bg-soft)}
 
-    .refresh-info {
-      font-size: 12px;
-      color: #6e7681;
-      margin-left: auto;
-    }
-    body.has-focus .refresh-info { display: none; }
+    .sess-group{margin-top:14px} .sess-group:first-child{margin-top:0}
+    .sess-group-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;font-weight:600}
+    .sess-group.claude .sess-group-label{color:var(--claude)}
+    .sess-group.codex .sess-group-label{color:var(--codex)}
+    .sess-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+    body.has-focus .sess-card-grid{grid-template-columns:1fr;gap:6px}
 
-    #directory-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-      gap: 16px;
-      align-items: start;
-    }
-    body.has-focus #directory-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
+    .sess-row{display:flex;flex-direction:column;gap:7px;padding:10px 11px;border-radius:10px;cursor:pointer;font-size:12px;border:1px solid var(--line);background:var(--bg-soft);min-width:0;transition:.14s}
+    .sess-row:hover{border-color:var(--accent-line);background:rgba(58,214,197,.05);transform:translateY(-1px)}
+    .sess-row.focused{background:var(--accent-dim);border-color:var(--accent-line)}
+    .sess-row-top,.sess-row-meta,.sess-row-bottom{display:flex;align-items:center;gap:6px;min-width:0}
+    .sess-row-bottom{justify-content:space-between}
+    .cli-chip{flex-shrink:0;font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+    .cli-chip.claude{background:rgba(240,147,107,.16);color:var(--claude)}
+    .cli-chip.codex{background:rgba(127,212,154,.16);color:var(--codex)}
+    .kind-chip{flex-shrink:0;font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.06);color:var(--muted)}
+    .sess-id{font-family:var(--mono);font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .sess-label{color:var(--muted);font-size:11px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .sess-status{flex-shrink:0;font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.05);color:var(--faint)}
+    .sess-status.active{background:rgba(58,214,197,.13);color:var(--accent)}
+    .sess-status.waiting{background:rgba(227,179,65,.14);color:var(--amber)}
+    .sess-status.completed{background:rgba(58,214,197,.13);color:var(--accent)}
+    .sess-actions{display:flex;gap:4px;opacity:.75;flex-shrink:0}
+    .sess-row:hover .sess-actions{opacity:1}
+    .sess-actions .btn{height:26px;padding:0 9px;font-size:10px;border-radius:7px}
+    .sess-actions .btn-icon{width:26px;height:26px;flex:0 0 26px;font-size:13px;border-radius:7px}
+    .sess-actions .btn.merge-ready{background:var(--amber);border-color:var(--amber);color:#04110f;font-weight:700}
 
-    /* ── Project cards ── */
-    .dir-block {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      overflow: hidden;
-      min-width: 0;
-      box-shadow: 0 10px 28px #00000022;
-      transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s;
-    }
-    .dir-block:hover {
-      border-color: #58a6ff80;
-      transform: translateY(-1px);
-      box-shadow: 0 14px 34px #00000033;
-    }
-    body.has-focus .dir-block { box-shadow: none; transform: none; }
-    .dir-header {
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      padding: 16px;
-      border-bottom: 1px solid #21262d;
-    }
-    body.has-focus .dir-header { padding: 12px; gap: 8px; }
-    .dir-toggle {
-      width: 30px;
-      height: 30px;
-      flex: 0 0 30px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      background: #0d1117;
-      color: #8b949e;
-      cursor: pointer;
-      transition: color 0.15s, border-color 0.15s, background 0.15s;
-    }
-    .dir-toggle:hover { color: #58a6ff; border-color: #58a6ff; background: #1f6feb16; }
-    .dir-main { flex: 1; min-width: 0; }
-    .dir-name {
-      display: block;
-      font-size: 16px; font-weight: 700; color: #f0f6fc;
-      cursor: pointer; user-select: none;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .dir-name:hover { color: #58a6ff; }
-    .dir-path {
-      display: block;
-      font-family: monospace; font-size: 11px; color: #79c0ff;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      margin-top: 4px;
-    }
-    body.has-focus .dir-name { font-size: 13px; }
-    body.has-focus .dir-path { font-size: 10px; }
-    .dir-stats {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 10px;
-    }
-    body.has-focus .dir-stats { display: none; }
-    .stat-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 7px;
-      border: 1px solid #30363d;
-      border-radius: 999px;
-      color: #8b949e;
-      background: #0d1117;
-      font-size: 11px;
-      line-height: 1.2;
-    }
-    .stat-pill strong { color: #f0f6fc; font-weight: 700; }
-    .stat-pill.claude { border-color: #f7816644; color: #f78166; }
-    .stat-pill.codex { border-color: #2ea04355; color: #a5d6a7; }
-    .dir-actions {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      padding: 12px 16px 0;
-    }
-    body.has-focus .dir-actions { padding: 10px 12px 0; }
-    .dir-actions .btn { padding: 5px 9px; font-size: 11px; }
-    .dir-actions .btn.add-claude { color: #f78166; border-color: #f7816640; }
-    .dir-actions .btn.add-claude:hover { background: #f7816620; border-color: #f78166; }
-    .dir-actions .btn.add-codex { color: #a5d6a7; border-color: #2ea04340; }
-    .dir-actions .btn.add-codex:hover { background: #2ea04320; border-color: #2ea043; }
-    .dir-danger {
-      flex: 0 0 auto;
-      padding: 5px 9px;
-      font-size: 11px;
-    }
-    .dir-body {
-      display: none;
-      padding: 12px 16px 16px;
-    }
-    body.has-focus .dir-body { padding: 10px 12px 12px; }
-    .dir-block.open .dir-body { display: block; }
-    .dir-block:not(.open) .dir-toggle::before { content: '▶'; font-size: 11px; }
-    .dir-block.open .dir-toggle::before { content: '▼'; font-size: 11px; }
-    .dir-empty {
-      border: 1px dashed #30363d;
-      border-radius: 8px;
-      color: #6e7681;
-      font-size: 12px;
-      padding: 14px;
-      text-align: center;
-      background: #0d111766;
-    }
+    .btn-icon.merge-ready{color:var(--accent);border-color:var(--accent-line)}
+    .btn-icon.merge-ready:hover{background:var(--accent-dim)}
+    .btn-icon.danger{color:var(--danger);border-color:rgba(255,107,99,.35)}
+    .btn-icon.danger:hover{color:#fff;border-color:var(--danger);background:rgba(255,107,99,.18)}
 
-    .sess-group { margin-top: 8px; }
-    .sess-group:first-child { margin-top: 0; }
-    .sess-group-label {
-      font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px;
-      margin-bottom: 8px;
-    }
-    .sess-group.claude .sess-group-label { color: #f78166; }
-    .sess-group.codex  .sess-group-label { color: #a5d6a7; }
+    /* ── Aux / legacy session cards ── */
+    .session-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+    body.has-focus .session-grid{grid-template-columns:1fr;gap:8px}
+    .session-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;transition:.2s;cursor:pointer;position:relative}
+    .session-card:hover{border-color:var(--line-strong)}
+    .session-card.focused{border-color:var(--accent-line);background:var(--accent-dim)}
+    .card-top{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
+    .card-top .session-id{font-family:var(--mono);font-size:14px;color:var(--accent);font-weight:650}
+    .status-badge{font-family:var(--mono);font-size:11px;padding:2px 10px;border-radius:12px;font-weight:500}
+    .status-badge.active,.status-badge.completed{background:rgba(58,214,197,.13);color:var(--accent)}
+    .status-badge.running{background:rgba(106,163,255,.15);color:var(--blue)}
+    .status-badge.waiting{background:rgba(227,179,65,.14);color:var(--amber)}
+    .status-badge.inactive,.status-badge.idle{background:rgba(255,255,255,.05);color:var(--faint)}
+    .notify-badge{display:none;position:absolute;top:10px;right:12px;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;animation:pulse-badge 1.5s infinite;z-index:1}
+    .notify-badge.waiting{display:inline-block;background:var(--amber);color:#04110f}
+    .notify-badge.completed{display:inline-block;background:var(--accent);color:#04110f}
+    @keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.5}}
+    .card-body{padding:0 16px 14px;display:flex;flex-direction:column;gap:8px}
+    .card-field{display:flex;align-items:baseline;gap:8px;font-size:12px}
+    .card-field .field-label{color:var(--faint);flex-shrink:0;min-width:50px}
+    .card-field .field-value{color:var(--text);font-family:var(--mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .card-field .field-value.cwd-value{color:var(--blue)}
+    .card-footer{padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center}
+    .client-count{font-size:12px;color:var(--muted);margin-right:auto;display:flex;align-items:center;gap:4px}
+    .client-count .count-num{color:var(--accent);font-weight:600}
 
-    .sess-card-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 8px;
-    }
-    body.has-focus .sess-card-grid { grid-template-columns: 1fr; gap: 6px; }
-
-    /* Session card (inside a project) */
-    .sess-row {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 10px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 12px;
-      transition: background 0.12s, border-color 0.12s, transform 0.12s;
-      border: 1px solid #30363d;
-      background: #0d1117;
-      min-width: 0;
-    }
-    .sess-row:hover { background: #111821; border-color: #58a6ff80; transform: translateY(-1px); }
-    .sess-row.focused { background: #1f6feb15; border-color: #58a6ff; }
-    .sess-row-top,
-    .sess-row-meta,
-    .sess-row-bottom {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-    }
-    .sess-row-bottom { justify-content: space-between; }
-    .sess-row .cli-chip {
-      flex-shrink: 0;
-      font-size: 9px; padding: 1px 6px; border-radius: 8px;
-      font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
-    }
-    .sess-row .cli-chip.claude { background: #f7816620; color: #f78166; border: 1px solid #f7816640; }
-    .sess-row .cli-chip.codex  { background: #2ea04320; color: #a5d6a7; border: 1px solid #2ea04340; }
-    .sess-row .kind-chip {
-      flex-shrink: 0;
-      font-size: 9px; padding: 1px 6px; border-radius: 8px;
-      background: #30363d; color: #c9d1d9; border: 1px solid #484f58;
-    }
-    .sess-row .sess-id {
-      font-family: monospace; font-size: 11px; color: #c9d1d9;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      flex: 1;
-    }
-    .sess-row .sess-label {
-      color: #8b949e; font-size: 11px; line-height: 1.35;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      min-width: 0;
-    }
-    .sess-row .sess-status {
-      flex-shrink: 0;
-      font-size: 10px; padding: 1px 6px; border-radius: 8px;
-      background: #30363d40; color: #8b949e;
-    }
-    .sess-row .sess-status.active { background: #23863640; color: #3fb950; }
-    .sess-row .sess-status.waiting { background: #d2992240; color: #d29922; }
-    .sess-row .sess-status.completed { background: #23863640; color: #3fb950; }
-    .sess-row .sess-actions { display: flex; gap: 4px; opacity: 0.7; flex-shrink: 0; }
-    .sess-row:hover .sess-actions { opacity: 1; }
-    .sess-row .sess-actions .btn { padding: 2px 8px; font-size: 10px; }
-    .sess-row .sess-actions .btn.merge-ready {
-      background: #d29922;
-      border-color: #e3b341;
-      color: #0d1117;
-      font-weight: 700;
-      box-shadow: 0 0 0 2px #d2992230;
-    }
-    .sess-row .sess-actions .btn.merge-ready:hover {
-      background: #e3b341;
-      border-color: #f2cc60;
-    }
-
-    /* ── Session Cards Grid (legacy — still used by aux section) ── */
-    .session-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 16px;
-    }
-    body.has-focus .session-grid {
-      grid-template-columns: 1fr;
-      gap: 8px;
-    }
-
-    .session-card {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 10px;
-      overflow: hidden;
-      transition: border-color 0.2s, box-shadow 0.2s;
-      cursor: pointer;
-      position: relative;
-    }
-    .session-card:hover {
-      border-color: #58a6ff;
-      box-shadow: 0 4px 20px #00000044;
-    }
-    .session-card.focused {
-      border-color: #58a6ff;
-      background: #1f6feb15;
-    }
-
-    .card-top {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 16px 10px;
-    }
-    body.has-focus .card-top { padding: 10px 12px 6px; }
-
-    .card-top .session-id {
-      font-family: monospace;
-      font-size: 15px;
-      color: #58a6ff;
-      font-weight: 600;
-    }
-    body.has-focus .card-top .session-id { font-size: 13px; }
-
-    .status-badge {
-      font-size: 11px;
-      padding: 2px 10px;
-      border-radius: 12px;
-      font-weight: 500;
-    }
-    .status-badge.active { background: #23863640; color: #3fb950; border: 1px solid #23863660; }
-    .status-badge.inactive { background: #30363d40; color: #8b949e; border: 1px solid #30363d; }
-    .status-badge.running { background: #1f6feb40; color: #58a6ff; border: 1px solid #1f6feb60; }
-    .status-badge.waiting { background: #d2992240; color: #d29922; border: 1px solid #d2992260; }
-    .status-badge.completed { background: #23863640; color: #3fb950; border: 1px solid #23863660; }
-    .status-badge.idle { background: #30363d40; color: #8b949e; border: 1px solid #30363d; }
-
-    /* ── Notification badge on card ── */
-    .notify-badge {
-      display: none;
-      position: absolute;
-      top: 10px;
-      right: 12px;
-      font-size: 10px;
-      padding: 2px 8px;
-      border-radius: 10px;
-      font-weight: 600;
-      animation: pulse-badge 1.5s infinite;
-      z-index: 1;
-    }
-    .notify-badge.waiting {
-      display: inline-block;
-      background: #d29922;
-      color: #fff;
-    }
-    .notify-badge.completed {
-      display: inline-block;
-      background: #238636;
-      color: #fff;
-    }
-    @keyframes pulse-badge {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    .card-body {
-      padding: 0 16px 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    body.has-focus .card-body { padding: 0 12px 8px; gap: 4px; }
-
-    .card-field {
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-      font-size: 12px;
-    }
-    .card-field .field-label { color: #6e7681; flex-shrink: 0; min-width: 50px; }
-    .card-field .field-value {
-      color: #c9d1d9;
-      font-family: monospace;
-      font-size: 11px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .card-field .field-value.cwd-value { color: #79c0ff; }
-
-    .card-footer {
-      padding: 10px 16px;
-      border-top: 1px solid #21262d;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    body.has-focus .card-footer { padding: 8px 12px; }
-
-    .client-count {
-      font-size: 12px;
-      color: #8b949e;
-      margin-right: auto;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .client-count .count-num { color: #58a6ff; font-weight: 600; }
-
-    /* ── Focus panel (iframe terminal) ── */
-    #focus-panel {
-      display: none;
-      flex: 1;
-      flex-direction: column;
-      min-width: 0;
-      background: #0d1117;
-    }
-    body.has-focus #focus-panel { display: flex; }
-
-    #focus-toolbar {
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 16px;
-      background: #161b22;
-      border-bottom: 1px solid #30363d;
-    }
-    #focus-toolbar .focus-id {
-      font-family: monospace;
-      font-size: 14px;
-      color: #58a6ff;
-      font-weight: 600;
-    }
-    #focus-toolbar .focus-cwd {
-      font-family: monospace;
-      font-size: 11px;
-      color: #8b949e;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      flex: 1;
-      min-width: 0;
-    }
-
-    #focus-iframe {
-      flex: 1;
-      border: none;
-      width: 100%;
-      height: 100%;
-      background: #0d1117;
-    }
+    /* ── Focus panel ── */
+    #focus-panel{display:none;flex:1;flex-direction:column;min-width:0;background:var(--bg)}
+    body.has-focus #focus-panel{display:flex}
+    #focus-toolbar{flex-shrink:0;display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+    #focus-toolbar .focus-id{font-family:var(--mono);font-size:14px;color:var(--accent);font-weight:650}
+    #focus-toolbar .focus-cwd{font-family:var(--mono);font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+    #focus-iframe{flex:1;border:none;width:100%;height:100%;background:var(--bg)}
 
     /* ── Empty state ── */
-    .empty-state {
-      text-align: center;
-      padding: 56px 24px;
-      color: #8b949e;
-    }
-    .empty-state .empty-icon { font-size: 40px; margin-bottom: 12px; }
-    .empty-state p { font-size: 14px; margin-bottom: 20px; }
+    .empty-state{text-align:center;padding:56px 24px;color:var(--muted)}
+    .empty-state .empty-icon{font-size:40px;margin-bottom:12px}
+    .empty-state p{font-size:14px;margin-bottom:20px}
 
-    /* ── Settings section (collapsible) ── */
-    .settings-section { margin-top: 36px; }
-    body.has-focus .settings-section { display: none; }
+    /* ── Settings cards ── */
+    .settings-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:16px;max-width:780px}
+    .settings-card .sc-header{padding:14px 18px;border-bottom:1px solid var(--line);font-size:14px;font-weight:620;color:var(--text)}
+    .settings-card .sc-body{padding:18px;display:flex;flex-direction:column;gap:14px}
+    .setting-row{display:flex;align-items:center;gap:14px}
+    .setting-row label{flex:0 0 120px;font-size:13px;color:var(--muted);text-align:right}
+    .setting-row input,.setting-row select,.setting-row textarea{flex:1;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;padding:9px 12px;color:var(--text);font-size:13px;font-family:var(--mono)}
+    .setting-row input:focus,.setting-row select:focus,.setting-row textarea:focus{outline:none;border-color:var(--accent-line)}
+    .setting-row input::placeholder{color:var(--faint)}
+    .sc-footer{padding:13px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px}
+    .sc-footer .status-text{font-size:12px;color:var(--muted)}
+    .status-text.ok{color:var(--codex)} .status-text.err{color:var(--danger)}
 
-    .settings-section summary {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      padding: 12px 0;
-      font-size: 16px;
-      font-weight: 600;
-      color: #f0f6fc;
-      list-style: none;
-      user-select: none;
-    }
-    .settings-section summary::-webkit-details-marker { display: none; }
-    .settings-section summary::before {
-      content: '\25B6';
-      font-size: 10px;
-      color: #6e7681;
-      transition: transform 0.2s;
-    }
-    .settings-section[open] summary::before { transform: rotate(90deg); }
+    .resource-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)}
+    .resource-toolbar input,.resource-toolbar select{background:var(--bg-soft);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:7px 10px;font-size:12px}
+    .resource-toolbar input{flex:1;min-width:180px}
+    .resource-list{max-height:440px;overflow:auto}
+    .resource-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12px}
+    .resource-row:last-child{border-bottom:0}
+    .resource-main{flex:1;min-width:0}
+    .resource-title{color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .resource-meta{color:var(--faint);font-family:var(--mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}
+    .resource-desc{color:var(--muted);font-size:11px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .resource-badge{padding:2px 7px;border-radius:10px;font-size:10px;white-space:nowrap;background:rgba(255,255,255,.06);color:var(--muted)}
+    .resource-badge.claude{color:var(--claude);background:rgba(240,147,107,.12)}
+    .resource-badge.codex{color:var(--codex);background:rgba(127,212,154,.12)}
+    .resource-badge.protected{color:var(--blue);background:rgba(106,163,255,.12)}
+    .resource-empty{color:var(--faint);text-align:center;padding:24px 12px;font-size:12px}
 
-    .settings-card {
-      margin-top: 16px;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      overflow: hidden;
-    }
-    .settings-card .sc-header {
-      background: #161b22;
-      padding: 12px 16px;
-      border-bottom: 1px solid #30363d;
-      font-size: 14px;
-      font-weight: 600;
-      color: #f0f6fc;
-    }
-    .settings-card .sc-body {
-      padding: 18px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-    .setting-row { display: flex; align-items: center; gap: 12px; }
-    .setting-row label { flex: 0 0 110px; font-size: 13px; color: #8b949e; text-align: right; }
-    .setting-row input {
-      flex: 1;
-      background: #0d1117;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      padding: 7px 10px;
-      color: #c9d1d9;
-      font-size: 13px;
-      font-family: monospace;
-    }
-    .setting-row input:focus { outline: none; border-color: #58a6ff; }
-    .setting-row input::placeholder { color: #484f58; }
-    .sc-footer {
-      padding: 12px 16px;
-      border-top: 1px solid #21262d;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .sc-footer .status-text { font-size: 12px; color: #8b949e; }
-    .sc-footer .status-text.ok { color: #3fb950; }
-    .sc-footer .status-text.err { color: #f85149; }
+    /* ── Cron list rows ── */
+    #cron-list .cron-item{display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--line);border-radius:11px;background:var(--bg-soft)}
 
-    .resource-toolbar {
-      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-      padding: 10px 12px; border-bottom: 1px solid #21262d;
-    }
-    .resource-toolbar input, .resource-toolbar select {
-      background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
-      border-radius: 6px; padding: 6px 9px; font-size: 12px;
-    }
-    .resource-toolbar input { flex: 1; min-width: 180px; }
-    .resource-list { max-height: 440px; overflow: auto; }
-    .resource-row {
-      display: flex; align-items: center; gap: 10px; padding: 9px 12px;
-      border-bottom: 1px solid #21262d; font-size: 12px;
-    }
-    .resource-row:last-child { border-bottom: 0; }
-    .resource-main { flex: 1; min-width: 0; }
-    .resource-title { color: #f0f6fc; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .resource-meta { color: #6e7681; font-family: monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; }
-    .resource-desc { color: #8b949e; font-size: 11px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .resource-badge { padding: 2px 7px; border-radius: 10px; font-size: 10px; white-space: nowrap; background: #21262d; color: #8b949e; }
-    .resource-badge.claude { color: #f78166; background: #f7816618; }
-    .resource-badge.codex { color: #3fb950; background: #2ea04318; }
-    .resource-badge.protected { color: #58a6ff; background: #58a6ff18; }
-    .resource-empty { color: #6e7681; text-align: center; padding: 24px 12px; font-size: 12px; }
+    /* ── Toast / popover / modals share ── */
+    #toast{position:fixed;bottom:24px;right:24px;background:linear-gradient(135deg,var(--accent),#22ab9c);color:#04110f;font-weight:600;padding:11px 18px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20000;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+    #toast.show{opacity:1}
 
-    /* ── Toast ── */
-    #toast {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      background: #238636;
-      color: #fff;
-      padding: 10px 18px;
-      border-radius: 8px;
-      font-size: 13px;
-      opacity: 0;
-      transition: opacity 0.2s;
-      pointer-events: none;
-      z-index: 20000;
-    }
-    #toast.show { opacity: 1; }
+    .popover-menu{position:fixed;z-index:10001;background:var(--panel-2);border:1px solid var(--line-strong);border-radius:11px;box-shadow:0 14px 34px rgba(0,0,0,.6);display:flex;flex-direction:column;min-width:150px;padding:5px}
+    .popover-menu button{background:transparent;border:0;color:var(--text);text-align:left;padding:8px 11px;font-size:12px;cursor:pointer;border-radius:7px;font-family:var(--sans)}
+    .popover-menu button:hover{background:rgba(255,255,255,.06)}
+    .popover-menu button.danger{color:var(--danger)} .popover-menu button.danger:hover{background:rgba(255,107,99,.14)}
+    .popover-menu button.ready{color:var(--accent)}
+    .popover-menu .sep{height:1px;background:var(--line);margin:4px 2px}
 
-    /* ── QR Modal ── */
-    #qr-modal {
-      display: none; position: fixed; inset: 0;
-      background: rgba(0,0,0,0.7); z-index: 9999;
-      align-items: center; justify-content: center;
-    }
-    #qr-modal.visible { display: flex; }
-    #qr-modal .qr-box {
-      background: #fff; border-radius: 12px; padding: 24px;
-      text-align: center; max-width: 320px; width: 90%;
-    }
-    #qr-modal .qr-box canvas { display: block; margin: 0 auto 12px; }
-    #qr-modal .qr-url {
-      font-size: 12px; color: #555; word-break: break-all;
-      margin-bottom: 8px; user-select: all;
-    }
-    #qr-modal .qr-title {
-      font-size: 14px; font-weight: 600; color: #333; margin-bottom: 12px;
-    }
-    #qr-modal .qr-close {
-      background: #333; color: #fff; border: none; border-radius: 6px;
-      padding: 6px 20px; cursor: pointer; font-size: 13px;
-    }
+    .events-toggle{background:transparent;border:0;color:var(--accent);cursor:pointer;font-size:11px;padding:4px 2px;margin-top:2px}
+    .events-toggle:hover{text-decoration:underline}
+    .event-extra{display:none} .event-extra.open{display:block}
+
+    /* ── Diff modal lines ── */
+    .diff-line{display:block;padding:0 16px;white-space:pre}
+    .diff-add{background:rgba(58,214,197,.16);color:#7ff0e2}
+    .diff-del{background:rgba(255,107,99,.16);color:#ffb3ae}
+    .diff-hunk{color:var(--blue);background:var(--panel)}
+    .diff-head{color:#cdb4ff}
+    .diff-meta{color:var(--faint)}
+
+    .modal-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(3px);z-index:9999;align-items:center;justify-content:center}
+    .modal-backdrop.visible{display:flex}
+    .modal-card{background:var(--panel);border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 
     /* ── Responsive ── */
-    @media (max-width: 768px) {
-      body.has-focus #sidebar { display: none; }
-      body.has-focus #focus-panel { width: 100%; }
-      #sidebar { padding: 16px 14px; }
-      #directory-list { grid-template-columns: 1fr; }
-      .session-grid { grid-template-columns: 1fr; }
-      .dir-header { align-items: flex-start; }
-      .dir-actions { padding-top: 10px; }
-      .sess-card-grid { grid-template-columns: 1fr; }
-      .setting-row { flex-direction: column; align-items: stretch; gap: 4px; }
-      .setting-row label { text-align: left; flex: none; }
+    @media (max-width:1100px){#kpi-row{grid-template-columns:repeat(2,1fr)}}
+    @media (max-width:860px){
+      #nav{position:fixed;inset:0 auto 0 0;transform:translateX(-100%);transition:transform .25s;box-shadow:0 0 40px rgba(0,0,0,.6)}
+      body.nav-open #nav{transform:none}
+      #nav-toggle{display:grid !important}
+      #directory-list{grid-template-columns:1fr}
+      .search{display:none}
+      .setting-row{flex-direction:column;align-items:stretch;gap:5px}
+      .setting-row label{text-align:left;flex:none}
+      body.has-focus #sidebar{display:none}
+      body.has-focus #focus-panel{width:100%}
     }
-    .diff-line { display: block; padding: 0 16px; white-space: pre; }
-    .diff-add { background: rgba(46,160,67,.18); color: #7ee787; }
-    .diff-del { background: rgba(248,81,73,.18); color: #ffa198; }
-    .diff-hunk { color: #79c0ff; background: #161b22; }
-    .diff-head { color: #d2a8ff; }
-    .diff-meta { color: #6e7681; }
-    .dir-meta {
-      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-      margin-top: 6px; font-size: 11px; color: #8b949e;
-    }
-    body.has-focus .dir-meta { display: none; }
-    .dir-meta strong { color: #f0f6fc; font-weight: 600; }
-    .dir-meta .sep { color: #30363d; }
-    .cli-mini {
-      display: inline-flex; align-items: center; padding: 1px 6px;
-      border-radius: 999px; font-size: 10px; line-height: 1.5;
-      border: 1px solid currentColor;
-    }
-    .cli-mini.claude { color: #f78166; }
-    .cli-mini.codex { color: #a5d6a7; }
-
-    .btn-icon {
-      flex: 0 0 auto; width: 30px; height: 30px;
-      display: inline-flex; align-items: center; justify-content: center;
-      border: 1px solid #30363d; border-radius: 8px;
-      background: #0d1117; color: #8b949e;
-      cursor: pointer; font-size: 14px; padding: 0;
-      transition: color .15s, border-color .15s, background .15s;
-    }
-    .btn-icon:hover { color: #58a6ff; border-color: #58a6ff; background: #1f6feb16; }
-    .btn-icon.merge-ready { color: #3fb950; border-color: #3fb95066; }
-    .btn-icon.merge-ready:hover { color: #56d364; border-color: #3fb950; background: #2ea04318; }
-    .btn-icon.danger { color: #f85149; border-color: #f8514944; }
-    .btn-icon.danger:hover { color: #ff7b72; border-color: #ff7b72; background: #f8514920; }
-
-    /* Override flex layout: 2-col grid so the 4 add buttons line up cleanly. */
-    .dir-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px 16px 0; }
-    body.has-focus .dir-actions { padding: 10px 12px 0; grid-template-columns: 1fr 1fr; }
-    .dir-actions .btn { padding: 6px 10px; font-size: 11px; text-align: left; border-left-width: 2px; }
-    .dir-actions .btn.add-claude { color: #f78166; border-color: #30363d; border-left-color: #f78166; }
-    .dir-actions .btn.add-claude:hover { background: #f7816618; border-color: #f78166; border-left-color: #f78166; }
-    .dir-actions .btn.add-codex { color: #a5d6a7; border-color: #30363d; border-left-color: #2ea043; }
-    .dir-actions .btn.add-codex:hover { background: #2ea04318; border-color: #2ea043; border-left-color: #2ea043; }
-
-    .popover-menu {
-      position: fixed; z-index: 10001;
-      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-      box-shadow: 0 10px 24px rgba(0,0,0,.5);
-      display: flex; flex-direction: column; min-width: 140px; padding: 4px;
-    }
-    .popover-menu button {
-      background: transparent; border: 0; color: #c9d1d9;
-      text-align: left; padding: 7px 10px; font-size: 12px;
-      cursor: pointer; border-radius: 4px;
-    }
-    .popover-menu button:hover { background: #21262d; }
-    .popover-menu button.danger { color: #f85149; }
-    .popover-menu button.danger:hover { background: #f8514920; }
-    .popover-menu button.ready { color: #3fb950; }
-    .popover-menu .sep { height: 1px; background: #21262d; margin: 4px 2px; }
-
-    .events-toggle {
-      background: transparent; border: 0; color: #58a6ff;
-      cursor: pointer; font-size: 11px; padding: 4px 2px; margin-top: 2px;
-    }
-    .events-toggle:hover { text-decoration: underline; }
-    .event-extra { display: none; }
-    .event-extra.open { display: block; }
-
-    .sess-row .sess-actions .btn-icon { width: 26px; height: 26px; font-size: 13px; border-radius: 6px; }
+    #nav-toggle{display:none}
   </style>
-
-
 </head>
-<body>
-  <div id="header">
-    <a class="logo" href="/">Multi<span>CC</span></a>
-    <span class="title">/ Dashboard</span>
-    <span class="spacer"></span>
-    <a class="hdr-btn" href="/multicc.apk" id="apk-btn" title="Download Android App">APK</a>
-    <button class="hdr-btn" id="qr-btn" onclick="showQR()" title="Scan QR to open on mobile">QR</button>
-    <button class="hdr-btn" id="push-toggle" onclick="togglePush()" title="Enable push notifications">Push</button>
-    <a class="hdr-btn" href="/logout" title="退出登录">Logout</a>
-  </div>
-
-  <div id="content">
-    <!-- Sidebar: card grid / list -->
-    <div id="sidebar">
-      <div class="page-title">Dashboard</div>
-      <div class="page-subtitle">Directories hold multiple Claude and Codex terminals/chats. Click a session to open it inline.</div>
-
-      <div class="toolbar">
-        <button class="btn btn-green" onclick="openNewDirectoryModal()">+ New Directory</button>
-        <button class="btn" onclick="loadDashboard()">Refresh</button>
-        <span class="refresh-info" id="refresh-info">Auto-refresh 5s</span>
+<body data-view="overview">
+  <!-- ── Left navigation ── -->
+  <aside id="nav">
+    <a class="brand" href="/">
+      <div class="mark">M</div>
+      <div>
+        <div class="name">Multi<b>CC</b></div>
+        <div class="ver">dashboard</div>
       </div>
+    </a>
 
-      <div id="aux-section"></div>
-      <div id="directory-list"></div>
+    <div class="nav-label">Workspace</div>
+    <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> 概览 <span class="badge" id="nav-dir-count">0</span></button>
 
-      <!-- Scheduled Tasks (定时任务) -->
-      <details class="settings-section" id="cron-section">
-        <summary>定时任务 <span id="cron-count" style="color:#6e7681;font-weight:400;"></span></summary>
-        <div class="settings-card">
-          <div class="sc-header" style="display:flex;align-items:center;gap:8px;">
-            <span style="flex:1;">所有 agent / 你创建的定时任务（到点自动新建会话执行）</span>
+    <div class="nav-label">Settings</div>
+    <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> 定时任务 <span class="badge" id="nav-cron-count">0</span></button>
+    <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> 语音 Voice</button>
+    <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> 推送 Push</button>
+    <button class="nav-item" data-view="wechat" onclick="setView('wechat')"><span class="ic">💬</span> WeChat</button>
+    <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> Agent 资源</button>
+    <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> 临时上传</button>
+
+    <div class="nav-foot">
+      <a class="hdr-btn" href="/multicc.apk" id="apk-btn" title="Download Android App">APK</a>
+      <button class="hdr-btn" id="qr-btn" onclick="showQR()" title="Scan QR to open on mobile">QR</button>
+      <button class="hdr-btn" id="push-toggle" onclick="togglePush()" title="Enable push notifications">Push</button>
+      <a class="hdr-btn" href="/logout" title="退出登录">退出</a>
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <main id="main">
+    <header id="topbar">
+      <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" title="菜单">☰</button>
+      <div class="crumb" id="crumb">概览 <small id="crumb-sub"></small></div>
+      <div class="topspace"></div>
+      <div class="search"><span>⌕</span><input id="dir-search" placeholder="搜索目录 / 会话…" oninput="filterDirs(this.value)" /></div>
+      <button class="icon-btn" onclick="loadDashboard()" title="刷新">⟳</button>
+      <button class="btn primary" onclick="openNewDirectoryModal()">＋ 新建目录</button>
+    </header>
+
+    <div id="content">
+      <div id="sidebar">
+
+        <!-- ─── Overview view ─── -->
+        <section class="view active" data-view="overview">
+          <div id="kpi-row"></div>
+          <div class="sec-head"><h2>目录</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
+          <div id="aux-section"></div>
+          <div id="directory-list"></div>
+        </section>
+
+        <!-- ─── Scheduled Tasks ─── -->
+        <section class="view" data-view="cron">
+          <div class="sec-head"><h2>定时任务 <span id="cron-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
             <button class="btn btn-sm" onclick="loadCronTasks()">刷新</button>
-            <button class="btn btn-green btn-sm" onclick="openCronModal()">+ 新建</button>
+            <button class="btn btn-green btn-sm" onclick="openCronModal()">＋ 新建</button>
           </div>
-          <div class="sc-body" id="cron-list" style="display:flex;flex-direction:column;gap:8px;">
-            <div style="color:#6e7681;font-size:13px;">加载中…</div>
+          <p class="sec-desc">所有 agent / 你创建的定时任务，到点自动新建会话执行你写的 prompt。</p>
+          <div class="settings-card" style="max-width:none">
+            <div class="sc-body" id="cron-list" style="gap:10px;">
+              <div style="color:var(--faint);font-size:13px;">加载中…</div>
+            </div>
           </div>
-        </div>
-      </details>
+        </section>
 
-      <!-- Voice Settings (collapsible) -->
-      <details class="settings-section">
-        <summary>Voice Settings</summary>
-        <div class="settings-card">
-          <div class="sc-header">实时语音识别 — 流式 ASR（豆包式体验）</div>
-          <div class="sc-body">
-            <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:10px;">
-              边说边出字的低延迟听写。国内建议「火山引擎」，国外默认「OpenAI Realtime」，离线/数据不出机可用「FunASR」。每家独立配置 AppID/Key。
-            </div>
-            <button class="btn btn-green" onclick="openAsrModal()">⚙ 配置流式 ASR…</button>
-            <span class="status-text" id="asr-summary" style="margin-left:8px;"></span>
-          </div>
-        </div>
-        <div class="settings-card">
-          <div class="sc-header">Voice Refinement — OpenRouter</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>API Endpoint</label>
-              <input id="vs-base-url" type="text" placeholder="https://openrouter.ai/api/v1" />
-            </div>
-            <div class="setting-row">
-              <label>API Key</label>
-              <input id="vs-api-key" type="password" placeholder="sk-or-v1-..." autocomplete="off" />
-            </div>
-            <div class="setting-row">
-              <label>Model</label>
-              <input id="vs-model" type="text" placeholder="google/gemini-2.0-flash-001" />
+        <!-- ─── Voice ─── -->
+        <section class="view" data-view="voice">
+          <div class="sec-head"><h2>语音设置</h2><div class="line"></div></div>
+          <div class="settings-card">
+            <div class="sc-header">实时语音识别 — 流式 ASR（豆包式体验）</div>
+            <div class="sc-body">
+              <div class="sec-desc" style="margin:0">边说边出字的低延迟听写。国内建议「火山引擎」，国外默认「OpenAI Realtime」，离线/数据不出机可用「FunASR」。每家独立配置 AppID/Key。</div>
+              <div><button class="btn btn-green" onclick="openAsrModal()">⚙ 配置流式 ASR…</button>
+              <span class="status-text" id="asr-summary" style="margin-left:8px;"></span></div>
             </div>
           </div>
-          <div class="sc-footer">
-            <button class="btn btn-green" onclick="saveVoiceSettings()">Save</button>
-            <span class="status-text" id="vs-status"></span>
+          <div class="settings-card">
+            <div class="sc-header">Voice Refinement — OpenRouter</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>API Endpoint</label><input id="vs-base-url" type="text" placeholder="https://openrouter.ai/api/v1" /></div>
+              <div class="setting-row"><label>API Key</label><input id="vs-api-key" type="password" placeholder="sk-or-v1-..." autocomplete="off" /></div>
+              <div class="setting-row"><label>Model</label><input id="vs-model" type="text" placeholder="google/gemini-2.0-flash-001" /></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveVoiceSettings()">Save</button><span class="status-text" id="vs-status"></span></div>
           </div>
-        </div>
-        <div class="settings-card">
-          <div class="sc-header">Voice STT — Whisper</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>API Endpoint</label>
-              <input id="ws-base-url" type="text" placeholder="https://openrouter.ai/api/v1" />
+          <div class="settings-card">
+            <div class="sc-header">Voice STT — Whisper</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>API Endpoint</label><input id="ws-base-url" type="text" placeholder="https://openrouter.ai/api/v1" /></div>
+              <div class="setting-row"><label>API Key</label><input id="ws-api-key" type="password" placeholder="gsk_... (留空则复用 OpenRouter Key)" autocomplete="off" /></div>
+              <div class="setting-row"><label>Model</label><input id="ws-model" type="text" placeholder="whisper-large-v3-turbo" /></div>
+              <div class="setting-row"><label>Language</label><input id="ws-language" type="text" placeholder="zh" style="max-width:120px" /><span style="font-size:12px;color:var(--faint)">ISO-639-1 code (zh/en/ja/...)</span></div>
+              <div class="setting-row"><label>Prompt</label><input id="ws-prompt" type="text" placeholder="React, useState, TypeScript, Claude Code, MultiCC, SSE" /></div>
+              <div style="padding:0 0 0 134px;font-size:12px;color:var(--faint);line-height:1.5">Whisper prompt guides vocabulary recognition.<br>Terms from voice_examples.json are also auto-appended at runtime.</div>
             </div>
-            <div class="setting-row">
-              <label>API Key</label>
-              <input id="ws-api-key" type="password" placeholder="gsk_... (留空则复用 OpenRouter Key)" autocomplete="off" />
-            </div>
-            <div class="setting-row">
-              <label>Model</label>
-              <input id="ws-model" type="text" placeholder="whisper-large-v3-turbo" />
-            </div>
-            <div class="setting-row">
-              <label>Language</label>
-              <input id="ws-language" type="text" placeholder="zh" style="max-width:120px" />
-              <span style="font-size:12px;color:#6e7681">ISO-639-1 code (zh/en/ja/...)</span>
-            </div>
-            <div class="setting-row">
-              <label>Prompt</label>
-              <input id="ws-prompt" type="text" placeholder="React, useState, TypeScript, Claude Code, MultiCC, SSE" />
-            </div>
-            <div style="padding:0 0 0 122px;font-size:12px;color:#6e7681;line-height:1.5">
-              Whisper prompt guides vocabulary recognition.<br>
-              Terms from voice_examples.json are also auto-appended at runtime.
-            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveVoiceSettings()">Save</button><span class="status-text" id="ws-status"></span></div>
           </div>
-          <div class="sc-footer">
-            <button class="btn btn-green" onclick="saveVoiceSettings()">Save</button>
-            <span class="status-text" id="ws-status"></span>
-          </div>
-        </div>
-      </details>
+        </section>
 
-      <!-- Push Notifications (collapsible) -->
-      <details class="settings-section" id="push-section">
-        <summary>Push Notifications</summary>
+        <!-- ─── Push ─── -->
+        <section class="view" data-view="push">
+          <div class="sec-head"><h2>推送通知</h2><div class="line"></div></div>
+          <div class="settings-card">
+            <div class="sc-header">Subscription Status</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>Permission</label><span id="push-d-permission" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Subscription</label><span id="push-d-sub-status" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Endpoint</label><span id="push-d-endpoint" style="font-size:11px;color:var(--muted);word-break:break-all;font-family:var(--mono);">—</span></div>
+              <div class="setting-row"><label>Platform</label><span id="push-d-platform" style="font-size:13px;color:var(--text);">—</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn" id="push-d-toggle" onclick="togglePush().then(loadPushDiagnostics)">Push</button><button class="btn" onclick="sendTestPush()">Test Push</button><span class="status-text" id="push-d-test-status"></span></div>
+          </div>
+          <div class="settings-card">
+            <div class="sc-header">Push Health</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>Last Push</label><span id="push-d-last-push" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Success Rate</label><span id="push-d-rate" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Total Sent</label><span id="push-d-total" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Last Error</label><span id="push-d-last-error" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Subscriptions</label><span id="push-d-sub-count" style="font-size:13px;color:var(--text);">—</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn" onclick="loadPushDiagnostics()">Refresh</button></div>
+          </div>
+          <div class="settings-card">
+            <div class="sc-header">Backup Channels</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>Bark URL</label><input id="push-d-bark" type="text" placeholder="https://api.day.app/YOUR_KEY" /></div>
+              <div style="font-size:11px;color:var(--faint);line-height:1.5;padding-left:134px;margin-top:-8px;">iOS: Install <a href="https://apps.apple.com/app/bark-push/id1403753865" target="_blank" style="color:var(--blue);">Bark</a> app, copy URL from app settings.</div>
+              <div class="setting-row"><label>Webhook URL</label><input id="push-d-webhook" type="text" placeholder="https://your-webhook-endpoint/path" /></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveNotifySettings()">Save</button><button class="btn" onclick="testBark()">Test Bark</button><button class="btn" onclick="testWebhook()">Test Webhook</button><span class="status-text" id="push-d-backup-status"></span></div>
+          </div>
+        </section>
 
-        <!-- Subscription Status -->
-        <div class="settings-card">
-          <div class="sc-header">Subscription Status</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>Permission</label>
-              <span id="push-d-permission" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Subscription</label>
-              <span id="push-d-sub-status" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Endpoint</label>
-              <span id="push-d-endpoint" style="font-size:11px;color:#8b949e;word-break:break-all;font-family:monospace;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Platform</label>
-              <span id="push-d-platform" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-          </div>
-          <div class="sc-footer">
-            <button class="btn" id="push-d-toggle" onclick="togglePush().then(loadPushDiagnostics)">Push</button>
-            <button class="btn" onclick="sendTestPush()">Test Push</button>
-            <span class="status-text" id="push-d-test-status"></span>
-          </div>
-        </div>
-
-        <!-- Push Health -->
-        <div class="settings-card">
-          <div class="sc-header">Push Health</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>Last Push</label>
-              <span id="push-d-last-push" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Success Rate</label>
-              <span id="push-d-rate" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Total Sent</label>
-              <span id="push-d-total" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Last Error</label>
-              <span id="push-d-last-error" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Subscriptions</label>
-              <span id="push-d-sub-count" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-          </div>
-          <div class="sc-footer">
-            <button class="btn" onclick="loadPushDiagnostics()">Refresh</button>
-          </div>
-        </div>
-
-        <!-- Backup Channels -->
-        <div class="settings-card">
-          <div class="sc-header">Backup Channels</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>Bark URL</label>
-              <input id="push-d-bark" type="text" placeholder="https://api.day.app/YOUR_KEY" />
-            </div>
-            <div style="font-size:11px;color:#6e7681;line-height:1.5;padding-left:122px;margin-top:-8px;">
-              iOS: Install <a href="https://apps.apple.com/app/bark-push/id1403753865" target="_blank" style="color:#58a6ff;">Bark</a> app, copy URL from app settings.
-            </div>
-            <div class="setting-row">
-              <label>Webhook URL</label>
-              <input id="push-d-webhook" type="text" placeholder="https://your-webhook-endpoint/path" />
-            </div>
-          </div>
-          <div class="sc-footer">
-            <button class="btn btn-green" onclick="saveNotifySettings()">Save</button>
-            <button class="btn" onclick="testBark()">Test Bark</button>
-            <button class="btn" onclick="testWebhook()">Test Webhook</button>
-            <span class="status-text" id="push-d-backup-status"></span>
-          </div>
-        </div>
-      </details>
-
-      <!-- WeChat Bridge (collapsible) -->
-      <details class="settings-section" id="wechat-section">
-        <summary>WeChat Bridge (iLink)</summary>
-
-        <!-- Login -->
-        <div class="settings-card">
-          <div class="sc-header">微信登录</div>
-          <div class="sc-body" style="align-items:center;">
-            <img id="wx-qr-img" style="max-width:180px;border-radius:8px;border:2px solid #30363d;display:none;" alt="QR" />
-            <div id="wx-login-status" style="font-size:12px;margin:4px 0;"></div>
-            <div style="display:flex;gap:8px;">
-              <button class="btn" id="wx-btn-qr" onclick="wechatGetQR()">获取登录二维码</button>
-              <button class="btn btn-danger" id="wx-btn-logout" onclick="wechatLogout()" style="display:none;">退出登录</button>
-            </div>
-            <div style="font-size:11px;color:#6e7681;line-height:1.5;text-align:center;margin-top:4px;">
-              微信扫码绑定 ClawBot 插件。登录有效期 24 小时。
-            </div>
-          </div>
-        </div>
-
-        <!-- Gateway session -->
-        <div class="settings-card">
-          <div class="sc-header">
-            Gateway 会话
-            <span id="wx-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:#21262d;color:#8b949e;">未创建</span>
-          </div>
-          <div class="sc-body">
-            <div class="setting-row" id="wx-gw-cli-row">
-              <label>Agent</label>
-              <div style="display:flex;gap:12px;">
-                <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
-                  <input type="radio" name="wx-gw-cli" value="claude" checked /> Claude
-                </label>
-                <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
-                  <input type="radio" name="wx-gw-cli" value="codex" /> Codex
-                </label>
+        <!-- ─── WeChat ─── -->
+        <section class="view" data-view="wechat">
+          <div class="sec-head"><h2>WeChat Bridge (iLink)</h2><div class="line"></div></div>
+          <div class="settings-card">
+            <div class="sc-header">微信登录</div>
+            <div class="sc-body" style="align-items:center;">
+              <img id="wx-qr-img" style="max-width:180px;border-radius:8px;border:2px solid var(--line);display:none;" alt="QR" />
+              <div id="wx-login-status" style="font-size:12px;margin:4px 0;"></div>
+              <div style="display:flex;gap:8px;">
+                <button class="btn" id="wx-btn-qr" onclick="wechatGetQR()">获取登录二维码</button>
+                <button class="btn btn-danger" id="wx-btn-logout" onclick="wechatLogout()" style="display:none;">退出登录</button>
               </div>
-            </div>
-            <div class="setting-row" style="font-size:11px;color:#6e7681;line-height:1.5;">
-              专用聊天会话作为微信入口；消息统一进入 Gateway，由 Gateway 会话根据上下文判断直接回答、追问或引导到具体 session。
+              <div style="font-size:11px;color:var(--faint);line-height:1.5;text-align:center;margin-top:4px;">微信扫码绑定 ClawBot 插件。登录有效期 24 小时。</div>
             </div>
           </div>
-          <div class="sc-footer">
-            <button class="btn btn-green" id="wx-gw-create" onclick="wechatGatewayCreate()">创建 Gateway</button>
-            <button class="btn" id="wx-gw-open" onclick="wechatGatewayOpen()" style="display:none;">打开聊天</button>
-            <button class="btn" id="wx-gw-reset" onclick="wechatGatewayReset()" style="display:none;">重置对话</button>
-            <button class="btn btn-danger" id="wx-gw-destroy" onclick="wechatGatewayDestroy()" style="display:none;">销毁</button>
-            <span class="status-text" id="wx-gw-status"></span>
-          </div>
-        </div>
-
-        <!-- Bridge runtime -->
-        <div class="settings-card">
-          <div class="sc-header">桥接运行</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>输出缓冲 (ms)</label>
-              <input id="wx-idle" type="number" value="5000" min="2000" step="500" />
+          <div class="settings-card">
+            <div class="sc-header">Gateway 会话 <span id="wx-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+            <div class="sc-body">
+              <div class="setting-row" id="wx-gw-cli-row">
+                <label>Agent</label>
+                <div style="display:flex;gap:12px;">
+                  <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="claude" checked /> Claude</label>
+                  <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="codex" /> Codex</label>
+                </div>
+              </div>
+              <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用聊天会话作为微信入口；消息统一进入 Gateway，由 Gateway 会话根据上下文判断直接回答、追问或引导到具体 session。</span></div>
+            </div>
+            <div class="sc-footer">
+              <button class="btn btn-green" id="wx-gw-create" onclick="wechatGatewayCreate()">创建 Gateway</button>
+              <button class="btn" id="wx-gw-open" onclick="wechatGatewayOpen()" style="display:none;">打开聊天</button>
+              <button class="btn" id="wx-gw-reset" onclick="wechatGatewayReset()" style="display:none;">重置对话</button>
+              <button class="btn btn-danger" id="wx-gw-destroy" onclick="wechatGatewayDestroy()" style="display:none;">销毁</button>
+              <span class="status-text" id="wx-gw-status"></span>
             </div>
           </div>
-          <div class="sc-footer">
-            <button class="btn btn-green" id="wx-btn-start" onclick="wechatStart()">启动桥接</button>
-            <button class="btn btn-danger" id="wx-btn-stop" onclick="wechatStop()" disabled>停止</button>
-            <button class="btn" onclick="wechatSaveConfig()">保存</button>
-            <span class="status-text" id="wx-status"></span>
-          </div>
-        </div>
-
-        <!-- Log -->
-        <div class="settings-card">
-          <div class="sc-header">消息日志 <span id="wx-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:#23863640;color:#3fb950;">Running</span></div>
-          <div id="wx-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:monospace;background:#0d1117;display:flex;flex-direction:column;gap:2px;">
-            <div style="color:#484f58;text-align:center;padding:20px 0;">桥接未启动</div>
-          </div>
-        </div>
-      </details>
-
-      <!-- Agent resources (collapsible) -->
-      <details class="settings-section" id="agent-resources-section">
-        <summary>Agent Resources</summary>
-
-        <div class="settings-card">
-          <div class="sc-header">Installed Skills <span id="skills-summary" style="color:#8b949e;font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
-          <div class="resource-toolbar">
-            <input id="skills-filter" type="search" placeholder="Filter by name, description, or path" oninput="renderSkills()" />
-            <button class="btn" onclick="loadAgentSkills()">Refresh</button>
-          </div>
-          <div id="skills-list" class="resource-list"><div class="resource-empty">Loading…</div></div>
-        </div>
-
-        <div class="settings-card">
-          <div class="sc-header">Claude History Sessions <span id="claude-history-summary" style="color:#8b949e;font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
-          <div class="resource-toolbar">
-            <input id="claude-history-filter" type="search" placeholder="Filter by title, cwd, or session ID" oninput="renderClaudeHistory()" />
-            <select id="claude-history-age">
-              <option value="7">older than 7 days</option>
-              <option value="30" selected>older than 30 days</option>
-              <option value="90">older than 90 days</option>
-              <option value="180">older than 180 days</option>
-            </select>
-            <button class="btn" onclick="loadClaudeHistory()">Refresh</button>
-            <button class="btn btn-danger" onclick="cleanupClaudeHistory()">Clean Old</button>
-          </div>
-          <div id="claude-history-list" class="resource-list"><div class="resource-empty">Loading…</div></div>
-          <div class="sc-footer">
-            <span class="status-text" id="claude-history-status">Linked MultiCC sessions are protected from deletion.</span>
-          </div>
-        </div>
-      </details>
-
-      <!-- Temp Uploads Storage (collapsible) -->
-      <details class="settings-section" id="storage-section">
-        <summary>Temp Uploads</summary>
-        <div class="settings-card">
-          <div class="sc-header">Uploaded File Cache</div>
-          <div class="sc-body">
-            <div class="setting-row">
-              <label>Files</label>
-              <span id="st-count" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Total Size</label>
-              <span id="st-size" style="font-size:13px;color:#c9d1d9;">—</span>
-            </div>
-            <div class="setting-row">
-              <label>Location</label>
-              <span id="st-dir" style="font-size:11px;color:#8b949e;word-break:break-all;font-family:monospace;">—</span>
+          <div class="settings-card">
+            <div class="sc-header">桥接运行</div>
+            <div class="sc-body"><div class="setting-row"><label>输出缓冲 (ms)</label><input id="wx-idle" type="number" value="5000" min="2000" step="500" /></div></div>
+            <div class="sc-footer">
+              <button class="btn btn-green" id="wx-btn-start" onclick="wechatStart()">启动桥接</button>
+              <button class="btn btn-danger" id="wx-btn-stop" onclick="wechatStop()" disabled>停止</button>
+              <button class="btn" onclick="wechatSaveConfig()">保存</button>
+              <span class="status-text" id="wx-status"></span>
             </div>
           </div>
-          <div class="sc-footer">
-            <button class="btn" onclick="loadUploadStats()">Refresh</button>
-            <button class="btn btn-danger" id="st-cleanup-btn" onclick="cleanupUploads()">Clean Up</button>
-            <span class="status-text" id="st-status"></span>
+          <div class="settings-card">
+            <div class="sc-header">消息日志 <span id="wx-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+            <div id="wx-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
+              <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+            </div>
           </div>
-        </div>
-      </details>
-    </div>
+        </section>
 
-    <!-- Focus panel: embedded terminal -->
-    <div id="focus-panel">
-      <div id="focus-toolbar">
-        <span class="focus-id" id="focus-id"></span>
-        <span class="focus-cwd" id="focus-cwd"></span>
-        <button class="btn btn-sm" id="focus-newtab" title="Open in new tab">New Tab</button>
-        <button class="btn btn-sm" id="focus-close" title="Close panel">Close</button>
+        <!-- ─── Agent Resources ─── -->
+        <section class="view" data-view="resources">
+          <div class="sec-head"><h2>Agent Resources</h2><div class="line"></div></div>
+          <div class="settings-card">
+            <div class="sc-header">Installed Skills <span id="skills-summary" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
+            <div class="resource-toolbar">
+              <input id="skills-filter" type="search" placeholder="Filter by name, description, or path" oninput="renderSkills()" />
+              <button class="btn" onclick="loadAgentSkills()">Refresh</button>
+            </div>
+            <div id="skills-list" class="resource-list"><div class="resource-empty">Loading…</div></div>
+          </div>
+          <div class="settings-card">
+            <div class="sc-header">Claude History Sessions <span id="claude-history-summary" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
+            <div class="resource-toolbar">
+              <input id="claude-history-filter" type="search" placeholder="Filter by title, cwd, or session ID" oninput="renderClaudeHistory()" />
+              <select id="claude-history-age">
+                <option value="7">older than 7 days</option>
+                <option value="30" selected>older than 30 days</option>
+                <option value="90">older than 90 days</option>
+                <option value="180">older than 180 days</option>
+              </select>
+              <button class="btn" onclick="loadClaudeHistory()">Refresh</button>
+              <button class="btn btn-danger" onclick="cleanupClaudeHistory()">Clean Old</button>
+            </div>
+            <div id="claude-history-list" class="resource-list"><div class="resource-empty">Loading…</div></div>
+            <div class="sc-footer"><span class="status-text" id="claude-history-status">Linked MultiCC sessions are protected from deletion.</span></div>
+          </div>
+        </section>
+
+        <!-- ─── Temp Uploads ─── -->
+        <section class="view" data-view="storage">
+          <div class="sec-head"><h2>临时上传</h2><div class="line"></div></div>
+          <div class="settings-card">
+            <div class="sc-header">Uploaded File Cache</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>Files</label><span id="st-count" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Total Size</label><span id="st-size" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>Location</label><span id="st-dir" style="font-size:11px;color:var(--muted);word-break:break-all;font-family:var(--mono);">—</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn" onclick="loadUploadStats()">Refresh</button><button class="btn btn-danger" id="st-cleanup-btn" onclick="cleanupUploads()">Clean Up</button><span class="status-text" id="st-status"></span></div>
+          </div>
+        </section>
+
       </div>
-      <iframe id="focus-iframe" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" style="display:none"></iframe>
-    </div>
-  </div>
 
-  <!-- Notification bar removed: status shown on card badges only -->
+      <!-- Focus panel: embedded terminal -->
+      <div id="focus-panel">
+        <div id="focus-toolbar">
+          <span class="focus-id" id="focus-id"></span>
+          <span class="focus-cwd" id="focus-cwd"></span>
+          <button class="btn btn-sm" id="focus-newtab" title="Open in new tab">New Tab</button>
+          <button class="btn btn-sm" id="focus-close" title="Close panel">Close</button>
+        </div>
+        <iframe id="focus-iframe" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" style="display:none"></iframe>
+      </div>
+    </div>
+  </main>
 
   <div id="toast"></div>
 
   <!-- New Directory modal -->
-  <div id="newdir-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9998;align-items:center;justify-content:center;">
-    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:460px;max-width:94vw;">
-      <h3 style="font-size:15px;color:#f0f6fc;margin-bottom:12px;">New directory</h3>
-      <label style="display:block;font-size:11px;color:#8b949e;margin-bottom:4px;">Name</label>
-      <input id="newdir-name" type="text" placeholder="My project" autocomplete="off" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:10px;" />
-      <label style="display:block;font-size:11px;color:#8b949e;margin-bottom:4px;">Path</label>
-      <input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;font-family:monospace;padding:8px 10px;outline:none;margin-bottom:6px;" />
-      <div id="newdir-suggest" style="display:none;max-height:200px;overflow-y:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;margin-bottom:10px;"></div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b949e;margin-bottom:10px;cursor:pointer;user-select:none;">
+  <div id="newdir-modal" class="modal-backdrop">
+    <div class="modal-card" style="padding:20px;width:460px;max-width:94vw;">
+      <h3 style="font-size:15px;color:var(--text);margin-bottom:12px;">New directory</h3>
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Name</label>
+      <input id="newdir-name" type="text" placeholder="My project" autocomplete="off" style="width:100%;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:9px 12px;outline:none;margin-bottom:10px;" />
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Path</label>
+      <input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" style="width:100%;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:var(--mono);padding:9px 12px;outline:none;margin-bottom:6px;" />
+      <div id="newdir-suggest" style="display:none;max-height:200px;overflow-y:auto;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;margin-bottom:10px;"></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:10px;cursor:pointer;user-select:none;">
         <input id="newdir-create" type="checkbox" style="margin:0;" /> 目录不存在时自动创建
       </label>
-      <div id="newdir-error" style="font-size:12px;color:#f85149;margin-bottom:8px;display:none;"></div>
+      <div id="newdir-error" style="font-size:12px;color:var(--danger);margin-bottom:8px;display:none;"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button class="btn" onclick="closeNewDirectoryModal()">Cancel</button>
         <button class="btn btn-green" onclick="submitNewDirectory()">Create</button>
@@ -1129,47 +598,44 @@
   </div>
 
   <!-- Streaming ASR settings modal -->
-  <div id="asr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this)closeAsrModal()">
-    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;width:min(96vw,560px);max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;">
-      <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid #21262d;gap:8px;">
-        <div style="flex:1;color:#f0f6fc;font-size:15px;font-weight:600;">⚙ 实时语音识别（流式 ASR）</div>
+  <div id="asr-modal" class="modal-backdrop" onclick="if(event.target===this)closeAsrModal()">
+    <div class="modal-card" style="width:min(96vw,560px);max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;">
+      <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:8px;">
+        <div style="flex:1;color:var(--text);font-size:15px;font-weight:600;">⚙ 实时语音识别（流式 ASR）</div>
         <button class="btn" onclick="closeAsrModal()">关闭</button>
       </div>
       <div style="padding:16px 18px;">
         <div class="setting-row" style="margin-bottom:14px;">
           <label>默认提供商</label>
-          <select id="asr-provider" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none;">
+          <select id="asr-provider">
             <option value="openai">OpenAI Realtime（国外默认）</option>
             <option value="volcano">火山引擎（国内 / 豆包同款）</option>
             <option value="funasr">FunASR（自建 / 离线）</option>
           </select>
         </div>
-
-        <div style="border-top:1px solid #21262d;padding-top:12px;margin-bottom:6px;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:13px;color:#f0f6fc;font-weight:600;">OpenAI Realtime</span>
+        <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:6px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:13px;color:var(--text);font-weight:600;">OpenAI Realtime</span>
           <span id="asr-openai-badge" class="status-text"></span>
         </div>
         <div class="setting-row"><label>API Key</label><input id="asr-openai-key" type="password" autocomplete="off" placeholder="sk-..." /></div>
         <div class="setting-row"><label>Endpoint</label><input id="asr-openai-url" type="text" placeholder="wss://api.openai.com/v1/realtime" /></div>
         <div class="setting-row"><label>Model</label><input id="asr-openai-model" type="text" placeholder="gpt-4o-transcribe" /></div>
-
-        <div style="border-top:1px solid #21262d;padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:13px;color:#f0f6fc;font-weight:600;">火山引擎 流式 ASR</span>
+        <div style="border-top:1px solid var(--line);padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:13px;color:var(--text);font-weight:600;">火山引擎 流式 ASR</span>
           <span id="asr-volc-badge" class="status-text"></span>
         </div>
         <div class="setting-row"><label>App ID</label><input id="asr-volc-appid" type="text" autocomplete="off" placeholder="火山 App ID" /></div>
         <div class="setting-row"><label>Access Token</label><input id="asr-volc-token" type="password" autocomplete="off" placeholder="火山 Access Token" /></div>
         <div class="setting-row"><label>Resource ID</label><input id="asr-volc-resource" type="text" placeholder="volc.bigasr.sauc.duration" /></div>
         <div class="setting-row"><label>Endpoint</label><input id="asr-volc-url" type="text" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" /></div>
-
-        <div style="border-top:1px solid #21262d;padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:13px;color:#f0f6fc;font-weight:600;">FunASR（自建）</span>
+        <div style="border-top:1px solid var(--line);padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:13px;color:var(--text);font-weight:600;">FunASR（自建）</span>
           <span id="asr-funasr-badge" class="status-text"></span>
         </div>
         <div class="setting-row"><label>WS URL</label><input id="asr-funasr-url" type="text" placeholder="ws://127.0.0.1:10095" /></div>
         <div class="setting-row"><label>Mode</label><input id="asr-funasr-mode" type="text" placeholder="2pass" style="max-width:160px" /></div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid #21262d;">
+      <div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line);">
         <span class="status-text" id="asr-status"></span>
         <button class="btn" onclick="closeAsrModal()">取消</button>
         <button class="btn btn-green" onclick="saveAsrSettings()">保存</button>
@@ -1178,44 +644,35 @@
   </div>
 
   <!-- Scheduled task create/edit modal -->
-  <div id="cron-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this)closeCronModal()">
-    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;width:min(96vw,560px);max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;">
-      <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid #21262d;gap:8px;">
-        <div style="flex:1;color:#f0f6fc;font-size:15px;font-weight:600;" id="cron-modal-title">⏰ 新建定时任务</div>
+  <div id="cron-modal" class="modal-backdrop" onclick="if(event.target===this)closeCronModal()">
+    <div class="modal-card" style="width:min(96vw,560px);max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;">
+      <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:8px;">
+        <div style="flex:1;color:var(--text);font-size:15px;font-weight:600;" id="cron-modal-title">⏰ 新建定时任务</div>
         <button class="btn" onclick="closeCronModal()">关闭</button>
       </div>
       <div style="padding:16px 18px;">
         <input type="hidden" id="cron-edit-id" />
         <div class="setting-row"><label>任务名</label><input id="cron-f-name" type="text" placeholder="例如：每天早报" /></div>
-        <div class="setting-row">
-          <label>目标目录</label>
-          <select id="cron-f-dir" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none;flex:1;"></select>
-        </div>
-        <div class="setting-row">
-          <label>CLI</label>
-          <select id="cron-f-cli" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none;">
-            <option value="claude">claude</option>
-            <option value="codex">codex</option>
-          </select>
-        </div>
-        <div class="setting-row"><label>cron</label><input id="cron-f-cron" type="text" placeholder="分 时 日 月 周，如 0 9 * * *" style="font-family:monospace;" /></div>
-        <div style="padding:0 0 8px 122px;display:flex;flex-wrap:wrap;gap:6px;">
+        <div class="setting-row"><label>目标目录</label><select id="cron-f-dir" style="flex:1;"></select></div>
+        <div class="setting-row"><label>CLI</label><select id="cron-f-cli"><option value="claude">claude</option><option value="codex">codex</option></select></div>
+        <div class="setting-row"><label>cron</label><input id="cron-f-cron" type="text" placeholder="分 时 日 月 周，如 0 9 * * *" style="font-family:var(--mono);" /></div>
+        <div style="padding:0 0 8px 134px;display:flex;flex-wrap:wrap;gap:6px;">
           <button class="btn btn-sm" onclick="cronPreset('0 9 * * *')">每天9点</button>
           <button class="btn btn-sm" onclick="cronPreset('0 * * * *')">每小时</button>
           <button class="btn btn-sm" onclick="cronPreset('*/30 * * * *')">每30分</button>
           <button class="btn btn-sm" onclick="cronPreset('0 9 * * 1')">每周一9点</button>
           <button class="btn btn-sm" onclick="cronPreset('0 9 1 * *')">每月1号9点</button>
-          <span id="cron-next-hint" style="font-size:12px;color:#6e7681;align-self:center;"></span>
+          <span id="cron-next-hint" style="font-size:12px;color:var(--faint);align-self:center;"></span>
         </div>
         <div class="setting-row" style="align-items:flex-start;">
           <label style="padding-top:8px;">Prompt</label>
-          <textarea id="cron-f-prompt" placeholder="到点要执行的完整指令" style="flex:1;min-height:90px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;resize:vertical;font-family:inherit;"></textarea>
+          <textarea id="cron-f-prompt" placeholder="到点要执行的完整指令" style="min-height:90px;resize:vertical;font-family:inherit;"></textarea>
         </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#c9d1d9;cursor:pointer;user-select:none;margin-top:6px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);cursor:pointer;user-select:none;margin-top:6px;">
           <input id="cron-f-enabled" type="checkbox" checked style="margin:0;" /> 启用
         </label>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid #21262d;">
+      <div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line);">
         <span class="status-text" id="cron-modal-status"></span>
         <button class="btn" onclick="closeCronModal()">取消</button>
         <button class="btn btn-green" onclick="saveCronTask()">保存</button>
@@ -1223,56 +680,119 @@
     </div>
   </div>
 
-  <div id="qr-modal" onclick="hideQR(event)">
-    <div class="qr-box" onclick="event.stopPropagation()">
-      <div class="qr-title">Scan to open on mobile</div>
-      <canvas id="qr-canvas"></canvas>
-      <div class="qr-url" id="qr-url-text"></div>
-      <button class="qr-close" onclick="hideQR()">Close</button>
+  <!-- QR modal -->
+  <div id="qr-modal" class="modal-backdrop" onclick="hideQR(event)">
+    <div class="qr-box" onclick="event.stopPropagation()" style="background:#fff;border-radius:14px;padding:24px;text-align:center;max-width:320px;width:90%;">
+      <div class="qr-title" style="font-size:14px;font-weight:600;color:#333;margin-bottom:12px;">Scan to open on mobile</div>
+      <canvas id="qr-canvas" style="display:block;margin:0 auto 12px;"></canvas>
+      <div class="qr-url" id="qr-url-text" style="font-size:12px;color:#555;word-break:break-all;margin-bottom:8px;user-select:all;"></div>
+      <button class="qr-close" onclick="hideQR()" style="background:#333;color:#fff;border:none;border-radius:8px;padding:7px 20px;cursor:pointer;font-size:13px;">Close</button>
+    </div>
+  </div>
+
+  <!-- Diff modal -->
+  <div id="diff-modal" class="modal-backdrop">
+    <div class="modal-card" style="width:min(96vw,1100px);height:min(90vh,800px);display:flex;flex-direction:column;background:var(--bg);">
+      <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:12px;">
+        <div style="flex:1;min-width:0;">
+          <div id="diff-title" style="color:var(--text);font-size:14px;font-weight:600;">Diff</div>
+          <div id="diff-subtitle" style="color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+        </div>
+        <button class="btn" onclick="closeDiffModal()">关闭</button>
+      </div>
+      <div id="diff-stat" style="padding:8px 16px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);white-space:pre;overflow-x:auto;max-height:140px;overflow-y:auto;"></div>
+      <div id="diff-content" style="flex:1;overflow:auto;padding:8px 0;font-family:var(--mono);font-size:12px;line-height:1.45;color:var(--text);"></div>
+    </div>
+  </div>
+
+  <!-- Memo modal -->
+  <div id="memo-modal" class="modal-backdrop">
+    <div class="modal-card" style="width:min(96vw,1000px);height:min(92vh,800px);display:flex;flex-direction:column;background:var(--bg);">
+      <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;">
+        <div style="flex:1;min-width:0;">
+          <div id="memo-title" style="color:var(--text);font-size:14px;font-weight:600;">📝 备忘</div>
+          <div id="memo-subtitle" style="color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+        </div>
+        <button class="btn" onclick="memoSendCurrentLine()" title="把光标所在行发到该目录的某个 chat 会话">→ 发送当前行</button>
+        <button class="btn btn-green" onclick="memoSave()" title="保存（Ctrl/Cmd+S）">保存</button>
+        <button class="btn" onclick="closeMemoModal()">关闭</button>
+      </div>
+      <textarea id="memo-text" spellcheck="false" style="flex:1;background:var(--bg);color:var(--text);border:0;outline:0;padding:12px 16px;font-family:var(--mono);font-size:13px;line-height:1.6;resize:none;"></textarea>
+      <div id="memo-status" style="padding:6px 16px;font-size:11px;color:var(--faint);border-top:1px solid var(--line);font-family:var(--mono);"></div>
+    </div>
+  </div>
+
+  <div id="memo-picker" class="modal-backdrop" style="z-index:10000;">
+    <div class="modal-card" style="padding:14px 18px;width:min(90vw,440px);">
+      <div style="color:var(--text);font-size:13px;font-weight:600;margin-bottom:6px;">发送到 chat 会话</div>
+      <div id="memo-picker-preview" style="color:var(--muted);font-size:11px;margin-bottom:10px;font-family:var(--mono);word-break:break-word;background:var(--bg-soft);border:1px solid var(--line);border-radius:8px;padding:6px 8px;"></div>
+      <div id="memo-picker-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;max-height:280px;overflow:auto;"></div>
+      <div style="text-align:right;"><button class="btn" onclick="memoPickerClose()">取消</button></div>
     </div>
   </div>
 
   <script src="qrcode.min.js"></script>
   <script src="pwa.js"></script>
   <script src="manage.js"></script>
-  <div id="diff-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9999;align-items:center;justify-content:center;">
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;width:min(96vw,1100px);height:min(90vh,800px);display:flex;flex-direction:column;">
-      <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #21262d;gap:12px;">
-        <div style="flex:1;min-width:0;">
-          <div id="diff-title" style="color:#f0f6fc;font-size:14px;font-weight:600;">Diff</div>
-          <div id="diff-subtitle" style="color:#8b949e;font-size:11px;font-family:monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
-        </div>
-        <button class="btn" onclick="closeDiffModal()">关闭</button>
-      </div>
-      <div id="diff-stat" style="padding:8px 16px;border-bottom:1px solid #21262d;font-family:monospace;font-size:11px;color:#8b949e;white-space:pre;overflow-x:auto;max-height:140px;overflow-y:auto;"></div>
-      <div id="diff-content" style="flex:1;overflow:auto;padding:8px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.45;color:#c9d1d9;"></div>
-    </div>
-  </div>
-  <div id="memo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9999;align-items:center;justify-content:center;">
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;width:min(96vw,1000px);height:min(92vh,800px);display:flex;flex-direction:column;">
-      <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #21262d;gap:8px;">
-        <div style="flex:1;min-width:0;">
-          <div id="memo-title" style="color:#f0f6fc;font-size:14px;font-weight:600;">📝 备忘</div>
-          <div id="memo-subtitle" style="color:#8b949e;font-size:11px;font-family:monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
-        </div>
-        <button class="btn" onclick="memoSendCurrentLine()" title="把光标所在行发到该目录的某个 chat 会话">→ 发送当前行</button>
-        <button class="btn btn-green" onclick="memoSave()" title="保存（Ctrl/Cmd+S）">保存</button>
-        <button class="btn" onclick="closeMemoModal()">关闭</button>
-      </div>
-      <textarea id="memo-text" spellcheck="false" style="flex:1;background:#0d1117;color:#c9d1d9;border:0;outline:0;padding:12px 16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.6;resize:none;"></textarea>
-      <div id="memo-status" style="padding:6px 16px;font-size:11px;color:#6e7681;border-top:1px solid #21262d;font-family:monospace;"></div>
-    </div>
-  </div>
+  <script>
+    /* ── Redesign shell: nav view switching, KPI row, search ── */
+    (function () {
+      const TITLES = {
+        overview: ['概览', ''], cron: ['定时任务', '到点自动新建会话执行'],
+        voice: ['语音 Voice', '流式识别与转写'], push: ['推送通知', 'Web Push 与备用通道'],
+        wechat: ['WeChat Bridge', '微信入口桥接'], resources: ['Agent 资源', 'Skills 与历史会话'],
+        storage: ['临时上传', '上传文件缓存'],
+      };
+      window.setView = function (v) {
+        document.body.dataset.view = v;
+        document.querySelectorAll('#sidebar > .view').forEach(s => s.classList.toggle('active', s.dataset.view === v));
+        document.querySelectorAll('#nav .nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
+        const t = TITLES[v] || [v, ''];
+        const crumb = document.getElementById('crumb');
+        if (crumb) crumb.firstChild.textContent = t[0] + ' ';
+        const sub = document.getElementById('crumb-sub');
+        if (sub) sub.textContent = t[1];
+        document.body.classList.remove('nav-open');
+      };
 
-  <div id="memo-picker" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;align-items:center;justify-content:center;">
-    <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 18px;width:min(90vw,440px);">
-      <div style="color:#f0f6fc;font-size:13px;font-weight:600;margin-bottom:6px;">发送到 chat 会话</div>
-      <div id="memo-picker-preview" style="color:#8b949e;font-size:11px;margin-bottom:10px;font-family:monospace;word-break:break-word;background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:6px 8px;"></div>
-      <div id="memo-picker-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;max-height:280px;overflow:auto;"></div>
-      <div style="text-align:right;"><button class="btn" onclick="memoPickerClose()">取消</button></div>
-    </div>
-  </div>
+      // Build KPI tiles once
+      const kpiRow = document.getElementById('kpi-row');
+      if (kpiRow) kpiRow.innerHTML = `
+        <div class="kpi"><div class="k-top"><span class="dot"></span>活跃会话</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
+        <div class="kpi alt"><div class="k-top"><span class="dot"></span>等待输入</div><div class="k-num" id="kpi-wait">0</div><div class="k-sub">需要你回复</div><div class="k-bar"></div></div>
+        <div class="kpi blue"><div class="k-top"><span class="dot"></span>目录</div><div class="k-num" id="kpi-dirs">0</div><div class="k-sub" id="kpi-sess-sub">0 个会话</div><div class="k-bar"></div></div>
+        <div class="kpi grey"><div class="k-top"><span class="dot"></span>定时任务</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">已登记</div><div class="k-bar"></div></div>`;
+
+      function num(s) { const m = String(s || '').match(/\d+/); return m ? +m[0] : 0; }
+      function updateKpis() {
+        try {
+          const sess = (typeof _cachedSessions !== 'undefined' && _cachedSessions) ? _cachedSessions.filter(s => s.type !== 'aux') : [];
+          const dirs = (typeof _cachedDirectories !== 'undefined' && _cachedDirectories) ? _cachedDirectories : [];
+          const active = sess.filter(s => s.active).length;
+          const claude = sess.filter(s => (s.cli || 'claude') === 'claude').length;
+          const codex = sess.filter(s => s.cli === 'codex').length;
+          let wait = 0;
+          if (typeof _sessionStatus !== 'undefined' && _sessionStatus) for (const v of _sessionStatus.values()) if (v === 'waiting') wait++;
+          if (typeof _workspaceStatus !== 'undefined' && _workspaceStatus) for (const v of _workspaceStatus.values()) if (v && v.status === 'waiting') wait++;
+          const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+          set('kpi-active', active); set('kpi-active-sub', `claude ${claude} · codex ${codex}`);
+          set('kpi-wait', wait);
+          set('kpi-dirs', dirs.length); set('kpi-sess-sub', `${sess.length} 个会话`);
+          set('kpi-cron', num((document.getElementById('cron-count') || {}).textContent));
+          set('nav-dir-count', dirs.length); set('dir-count-pill', dirs.length);
+          set('nav-cron-count', num((document.getElementById('cron-count') || {}).textContent));
+        } catch (e) { /* globals may not be ready yet */ }
+      }
+      setInterval(updateKpis, 1000);
+      setTimeout(updateKpis, 300);
+
+      window.filterDirs = function (q) {
+        q = (q || '').trim().toLowerCase();
+        document.querySelectorAll('#directory-list .dir-block').forEach(b => {
+          b.style.display = (!q || b.textContent.toLowerCase().includes(q)) ? '' : 'none';
+        });
+      };
+    })();
+  </script>
 </body>
-
-
 </html>
