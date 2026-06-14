@@ -17,6 +17,8 @@ Battery Power:
 AC Power:
  disablesleep          1
 `), true);
+assert.strictEqual(parseLidSleepPrevention('System-wide power settings:\n SleepDisabled\t\t1\n'), true);
+assert.strictEqual(parseLidSleepPrevention('System-wide power settings:\n SleepDisabled\t\t0\n'), false);
 assert.strictEqual(parseLidSleepPrevention('Battery Power:\n sleep 1\n'), false);
 assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), false);
 
@@ -24,6 +26,16 @@ assert.deepStrictEqual(getLidSleepPrevention({ platform: 'linux' }), {
   available: false,
   enabled: false,
 });
+
+let readArgs;
+assert.deepStrictEqual(getLidSleepPrevention({
+  platform: 'darwin',
+  execFileSync(file, args) {
+    readArgs = { file, args };
+    return 'System-wide power settings:\n SleepDisabled 1\n';
+  },
+}), { available: true, enabled: true });
+assert.deepStrictEqual(readArgs, { file: '/usr/bin/pmset', args: ['-g'] });
 
 (async () => {
   let invocation;

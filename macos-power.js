@@ -7,6 +7,9 @@ function isAvailable(platform = process.platform) {
 }
 
 function parseLidSleepPrevention(output) {
+  const systemValue = String(output).match(/^\s*SleepDisabled\s+(\d+)\s*$/mi);
+  if (systemValue) return Number(systemValue[1]) === 1;
+
   const values = [...String(output).matchAll(/^\s*disablesleep\s+(\d+)\s*$/gm)]
     .map(match => Number(match[1]));
   return values.length > 0 && values.every(value => value === 1);
@@ -17,7 +20,7 @@ function getLidSleepPrevention(options = {}) {
   if (!isAvailable(platform)) return { available: false, enabled: false };
 
   const runSync = options.execFileSync || execFileSync;
-  const output = runSync('/usr/bin/pmset', ['-g', 'custom'], {
+  const output = runSync('/usr/bin/pmset', ['-g'], {
     encoding: 'utf8',
     timeout: 5000,
   });
