@@ -84,6 +84,10 @@ class _MainShellState extends State<MainShell> {
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF0d1117),
+        // Keep the Stack full-height; the inner ChatView Scaffold handles the
+        // keyboard inset (lifts the InputBar). If the outer Scaffold also
+        // resized, the absolutely-positioned sheet would be pushed off-screen.
+        resizeToAvoidBottomInset: false,
         body: Stack(
           children: [
             _DirectoryListBody(settings: widget.settings),
