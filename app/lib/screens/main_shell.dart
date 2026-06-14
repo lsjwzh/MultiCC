@@ -11,6 +11,7 @@ import '../services/chat_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/workspace_service.dart';
+import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/model_picker.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
@@ -1651,13 +1652,25 @@ class _SessionCard extends StatelessWidget {
       final result = await SessionService(
         settings: settings,
       ).mergeSession(session.id);
+      final hasConflict =
+          result['conflicts'] is List &&
+          (result['conflicts'] as List).isNotEmpty;
       final msg = result['ok'] == true
           ? (result['merged'] == true
                 ? '✓ 已合并 ${result['commits']} 个提交回基分支'
                 : '✓ ${result['message'] ?? '没有新提交需要合并'}')
+          : hasConflict
+          ? '⚠️ 合并冲突，已 abort：${(result['conflicts'] as List).join(', ')}'
           : '合并失败：${result['error'] ?? ''}';
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text(msg)));
+      if (hasConflict && context.mounted) {
+        await showConflictDiffDialog(
+          context,
+          sessionId: session.id,
+          result: result,
+        );
+      }
     } catch (e) {
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text('合并请求失败：$e')));
