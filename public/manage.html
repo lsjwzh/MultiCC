@@ -602,6 +602,9 @@
     .sc-footer .status-text { font-size: 12px; color: #8b949e; }
     .sc-footer .status-text.ok { color: #3fb950; }
     .sc-footer .status-text.err { color: #f85149; }
+    .toggle-label { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+    .toggle-label input { width: 18px; height: 18px; flex: none; accent-color: #238636; }
+    .toggle-label input:disabled { cursor: wait; opacity: .6; }
 
     .resource-toolbar {
       display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -864,6 +867,27 @@
           <div class="sc-footer">
             <button class="btn btn-green" onclick="saveVoiceSettings()">Save</button>
             <span class="status-text" id="ws-status"></span>
+          </div>
+        </div>
+      </details>
+
+      <!-- macOS Power Settings (hidden on other platforms) -->
+      <details class="settings-section" id="macos-power-section" style="display:none;">
+        <summary>macOS 电源设置</summary>
+        <div class="settings-card">
+          <div class="sc-header">关盖运行</div>
+          <div class="sc-body">
+            <label class="toggle-label">
+              <input id="macos-lid-sleep-toggle" type="checkbox" onchange="saveMacosPowerSettings()" />
+              <span>关盖时保持运行，不进入睡眠</span>
+            </label>
+            <div style="font-size:12px;color:#8b949e;line-height:1.6;">
+              开启后会阻止所有系统睡眠（包括关盖睡眠）。切换时需要在 Mac 上完成管理员授权，请注意散热和耗电。
+            </div>
+          </div>
+          <div class="sc-footer">
+            <button class="btn" onclick="loadMacosPowerSettings()">刷新状态</button>
+            <span class="status-text" id="macos-power-status"></span>
           </div>
         </div>
       </details>

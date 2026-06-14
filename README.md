@@ -337,6 +337,7 @@ user message
 | `GET` | `/api/voice/vocab` | Learned vocabulary terms |
 | `DELETE` | `/api/voice/vocab/:term` | Remove a term |
 | `GET` / `POST` | `/api/settings/voice` | Get / update voice configuration (hot-reload) |
+| `GET` / `POST` | `/api/settings/power` | Read / update macOS lid-sleep prevention (macOS only; administrator authorization required) |
 
 ### Push / Notifications
 

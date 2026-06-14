@@ -1670,6 +1670,65 @@ async function saveVoiceSettings() {
   }
 }
 
+/* ── macOS Power Settings ── */
+async function loadMacosPowerSettings() {
+  const section = document.getElementById('macos-power-section');
+  const toggle = document.getElementById('macos-lid-sleep-toggle');
+  const status = document.getElementById('macos-power-status');
+  if (!section || !toggle || !status) return;
+
+  let available = false;
+  try {
+    const res = await fetch('/api/settings/power' + tokenQS('?'));
+    const data = await res.json();
+    if (!data.available) {
+      section.style.display = 'none';
+      return;
+    }
+    available = true;
+    section.style.display = '';
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    toggle.checked = !!data.enabled;
+    status.textContent = data.enabled ? '已开启' : '已关闭';
+    status.className = `status-text ${data.enabled ? 'ok' : ''}`;
+  } catch (error) {
+    section.style.display = available ? '' : 'none';
+    if (available) {
+      status.textContent = `读取失败：${error.message}`;
+      status.className = 'status-text err';
+    }
+  }
+}
+
+async function saveMacosPowerSettings() {
+  const toggle = document.getElementById('macos-lid-sleep-toggle');
+  const status = document.getElementById('macos-power-status');
+  const requested = toggle.checked;
+  toggle.disabled = true;
+  status.textContent = '等待管理员授权…';
+  status.className = 'status-text';
+
+  try {
+    const res = await fetch('/api/settings/power' + tokenQS('?'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: requested }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    toggle.checked = !!data.enabled;
+    status.textContent = data.enabled ? '已开启' : '已关闭';
+    status.className = `status-text ${data.enabled ? 'ok' : ''}`;
+    showToast(data.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
+  } catch (error) {
+    toggle.checked = !requested;
+    status.textContent = `设置失败：${error.message}`;
+    status.className = 'status-text err';
+  } finally {
+    toggle.disabled = false;
+  }
+}
+
 /* ── Streaming ASR Settings (modal) ── */
 function _asrBadge(el, ready) {
   if (!el) return;
@@ -2832,6 +2891,7 @@ focusSession = function(id) {
 /* ── Init ── */
 loadDashboard();
 loadVoiceSettings();
+loadMacosPowerSettings();
 loadAsrSettings();
 loadCronTasks();
 loadPushDiagnostics();

@@ -27,6 +27,7 @@ const wechatBridge = require('./wechat-ilink');
 const voiceAsr = require('./voice-asr');
 const cronTasks = require('./cron-tasks');
 const webpush = require('web-push');
+const macosPower = require('./macos-power');
 
 const crypto = require('crypto');
 const app = express();
@@ -3247,6 +3248,33 @@ app.post('/api/settings/notify', (req, res) => {
   if (typeof webhookUrl === 'string') { WEBHOOK_URL = webhookUrl; updates.WEBHOOK_URL = webhookUrl; }
   if (Object.keys(updates).length > 0) writeEnvFile(updates);
   res.json({ ok: true });
+});
+
+// macOS system power settings
+app.get('/api/settings/power', (req, res) => {
+  if (!macosPower.isAvailable()) {
+    return res.json({ available: false, enabled: false });
+  }
+  try {
+    res.json(macosPower.getLidSleepPrevention());
+  } catch (error) {
+    res.status(500).json({ available: true, error: error.message });
+  }
+});
+
+app.post('/api/settings/power', async (req, res) => {
+  if (!macosPower.isAvailable()) {
+    return res.status(400).json({ error: 'This setting is only available on macOS' });
+  }
+  if (typeof req.body?.enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be a boolean' });
+  }
+  try {
+    const status = await macosPower.setLidSleepPrevention(req.body.enabled);
+    res.json({ ok: true, ...status });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Send push notification to all subscribers (async, properly handles stale cleanup)
