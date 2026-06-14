@@ -72,16 +72,27 @@ class ChatService {
 
     final url = _buildChatUrl(resumeId: _sessionId ?? initialSessionId);
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(url));
+      final channel = WebSocketChannel.connect(Uri.parse(url));
+      _channel = channel;
       _sub?.cancel();
-      _sub = _channel!.stream.listen(
+      _sub = channel.stream.listen(
         _onMessage,
         onError: (_) => _scheduleReconnect(),
         onDone: _scheduleReconnect,
       );
-      _state = ChatConnectionState.connected;
-      _reconnectAttempt = 0;
-      _emit('state_change', _state);
+      // Don't claim "connected" until the WebSocket handshake actually
+      // completes — connect() returns immediately and a failed handshake only
+      // surfaces asynchronously. Marking connected early would leave a dead
+      // socket showing a green dot with no way to manually reconnect.
+      channel.ready.then((_) {
+        if (_disposed || _channel != channel) return;
+        _state = ChatConnectionState.connected;
+        _reconnectAttempt = 0;
+        _emit('state_change', _state);
+      }).catchError((_) {
+        if (_disposed || _channel != channel) return;
+        _scheduleReconnect();
+      });
     } catch (_) {
       _scheduleReconnect();
     }
@@ -195,6 +206,9 @@ class ChatService {
 
   void _scheduleReconnect() {
     if (_disposed) return;
+    // Dedup: onError + onDone (or ready failure) can fire for the same dead
+    // socket — don't stack timers or double-bump the backoff counter.
+    if (_reconnectTimer?.isActive ?? false) return;
     _state = ChatConnectionState.disconnected;
     _emit('state_change', _state);
 

@@ -7,10 +7,10 @@ import 'package:timeago/timeago.dart' as timeago;
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
-import '../services/chat_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/workspace_service.dart';
+import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/model_picker.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
@@ -69,137 +69,34 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> {
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
-
-  void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
-
   @override
   Widget build(BuildContext context) {
     final mgr = context.watch<SessionManager>();
     final active = mgr.activeProvider;
 
-    return Scaffold(
-      key: _scaffoldKey,
-      backgroundColor: const Color(0xFF070809),
-      drawer: _DirectoryDrawer(settings: widget.settings),
-      body: active == null
-          ? _DirectoryListBody(
-              settings: widget.settings,
-              onOpenDrawer: _openDrawer,
-            )
-          : ChangeNotifierProvider<ChatProvider>.value(
-              value: active,
-              child: ChatView(
-                settings: widget.settings,
-                onOpenDrawer: _openDrawer,
-              ),
-            ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  DRAWER — compact directory + session tree
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class _DirectoryDrawer extends StatelessWidget {
-  final SettingsService settings;
-  const _DirectoryDrawer({required this.settings});
-
-  @override
-  Widget build(BuildContext context) {
-    final mgr = context.watch<SessionManager>();
-    final dirs = mgr.directories;
-    final activeId = mgr.activeSessionId;
-
-    return Drawer(
-      backgroundColor: const Color(0xFF0f1115),
-      child: SafeArea(
-        child: Column(
+    // Home (multi-session dashboard) is ALWAYS mounted underneath. Opening a
+    // session slides a draggable bottom sheet up over it (3/4 height, draggable
+    // to fullscreen, draggable down to collapse back home). No page swap.
+    return PopScope(
+      canPop: active == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && active != null) mgr.goToSessionList();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF070809),
+        // Keep the Stack full-height; the inner ChatView Scaffold handles the
+        // keyboard inset (lifts the InputBar). If the outer Scaffold also
+        // resized, the absolutely-positioned sheet would be pushed off-screen.
+        resizeToAvoidBottomInset: false,
+        body: Stack(
           children: [
-            // Header
-            Container(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
+            _DirectoryListBody(settings: widget.settings),
+            if (active != null)
+              _ChatSheet(
+                key: ValueKey(mgr.activeSessionId),
+                settings: widget.settings,
+                provider: active,
               ),
-              child: Row(
-                children: [
-                  RichText(
-                    text: const TextSpan(
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      children: [
-                        TextSpan(
-                          text: 'Multi',
-                          style: TextStyle(color: Color(0xFF3ad6c5)),
-                        ),
-                        TextSpan(
-                          text: 'CC',
-                          style: TextStyle(color: Color(0xFF6aa3ff)),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '${dirs.length} dirs',
-                    style: const TextStyle(
-                      color: Color(0xFF8a909b),
-                      fontSize: 12,
-                    ),
-                  ),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: () {
-                      mgr.goToSessionList();
-                      Navigator.pop(context);
-                    },
-                    child: const Icon(
-                      Icons.list_rounded,
-                      color: Color(0xFF8a909b),
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  GestureDetector(
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => SettingsScreen(settings: settings),
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.settings_outlined,
-                      color: Color(0xFF8a909b),
-                      size: 20,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // Directory + session tree
-            Expanded(
-              child: dirs.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'No directories',
-                        style: TextStyle(color: Color(0xFF5b616c)),
-                      ),
-                    )
-                  : ListView(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      children: [
-                        for (final d in dirs)
-                          _DrawerDirectoryBlock(
-                            directory: d,
-                            activeSessionId: activeId,
-                          ),
-                      ],
-                    ),
-            ),
           ],
         ),
       ),
@@ -207,206 +104,188 @@ class _DirectoryDrawer extends StatelessWidget {
   }
 }
 
-class _DrawerDirectoryBlock extends StatefulWidget {
-  final Directory directory;
-  final String? activeSessionId;
-  const _DrawerDirectoryBlock({
-    required this.directory,
-    required this.activeSessionId,
-  });
+// ═══════════════════════════════════════════════════════════════════════════════
+//  CHAT SHEET — a draggable bottom sheet hosting an open session over the home.
+//  Default height 3/4; drag the handle up to go fullscreen, down to collapse
+//  back to the dashboard. The chat's own message ListView keeps its scroll
+//  controller — only the handle drives the sheet, so the two never fight.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _ChatSheet extends StatefulWidget {
+  final SettingsService settings;
+  final ChatProvider provider;
+  const _ChatSheet({super.key, required this.settings, required this.provider});
 
   @override
-  State<_DrawerDirectoryBlock> createState() => _DrawerDirectoryBlockState();
+  State<_ChatSheet> createState() => _ChatSheetState();
 }
 
-class _DrawerDirectoryBlockState extends State<_DrawerDirectoryBlock> {
-  bool _open = true;
+class _ChatSheetState extends State<_ChatSheet>
+    with SingleTickerProviderStateMixin {
+  // _anim.value == visible fraction of the screen the sheet covers (0 → 1).
+  late final AnimationController _anim;
+  bool _collapsing = false;
+
+  static const double _snapHalf = 0.75; // default opened height
+  static const double _dismissBelow = 0.5; // drag below this → collapse home
+
+  @override
+  void initState() {
+    super.initState();
+    _anim = AnimationController(
+      vsync: this,
+      lowerBound: 0,
+      upperBound: 1,
+      duration: const Duration(milliseconds: 260),
+    );
+    // Entrance: slide up from the bottom to the 3/4 snap.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _anim.animateTo(_snapHalf, curve: Curves.easeOutCubic);
+    });
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  void _onDrag(double dy, double height) {
+    _anim.stop();
+    _anim.value = (_anim.value - dy / height).clamp(0.0, 1.0);
+  }
+
+  void _onDragEnd(double velocity, double height) {
+    final v = velocity / height; // fraction/sec; +down, -up
+    double target;
+    if (v > 1.3) {
+      target = _anim.value < _snapHalf ? 0.0 : _snapHalf;
+    } else if (v < -1.3) {
+      target = 1.0;
+    } else if (_anim.value < _dismissBelow) {
+      target = 0.0;
+    } else if (_anim.value < (_snapHalf + 1.0) / 2) {
+      target = _snapHalf;
+    } else {
+      target = 1.0;
+    }
+    if (target == 0.0) {
+      _collapse();
+    } else {
+      _anim.animateTo(target, curve: Curves.easeOutCubic);
+    }
+  }
+
+  // Animate the sheet down, then drop the active session → back to the home.
+  void _collapse() {
+    if (_collapsing) return;
+    _collapsing = true;
+    _anim.animateTo(0.0, curve: Curves.easeInCubic).then((_) {
+      if (mounted) context.read<SessionManager>().goToSessionList();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final mgr = context.watch<SessionManager>();
-    final groups = mgr.sessionsByCliKind(widget.directory.id);
-    final flat = [
-      ...groups['claude_terminal']!,
-      ...groups['claude_chat']!,
-      ...groups['codex_terminal']!,
-      ...groups['codex_chat']!,
-    ];
+    final mq = MediaQuery.of(context);
+    final h = mq.size.height;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Directory header
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => setState(() => _open = !_open),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-            child: Row(
-              children: [
-                Icon(
-                  _open
-                      ? Icons.keyboard_arrow_down_rounded
-                      : Icons.keyboard_arrow_right_rounded,
-                  color: const Color(0xFF5b616c),
-                  size: 18,
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (context, _) {
+        final frac = _anim.value;
+        final scrimOp = (frac.clamp(0.0, _snapHalf) / _snapHalf) * 0.5;
+        final fullProg = ((frac - _snapHalf) / (1 - _snapHalf)).clamp(0.0, 1.0);
+        final topInset = mq.padding.top * fullProg; // status-bar gap near full
+        final radius = (1 - fullProg) * 18;
+        final top = h * (1 - frac);
+
+        return Stack(
+          children: [
+            // Dim scrim over the home; tap to collapse.
+            Positioned.fill(
+              child: IgnorePointer(
+                ignoring: scrimOp < 0.02,
+                child: GestureDetector(
+                  onTap: _collapse,
+                  child: Container(color: Colors.black.withOpacity(scrimOp)),
                 ),
-                const SizedBox(width: 2),
-                Expanded(
-                  child: Text(
-                    widget.directory.name,
-                    style: const TextStyle(
-                      color: Color(0xFFf2f4f7),
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Text(
-                  '${widget.directory.totalSessions}',
-                  style: const TextStyle(
-                    color: Color(0xFF5b616c),
-                    fontSize: 11,
-                  ),
-                ),
-              ],
+              ),
             ),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: top,
+              height: h - top,
+              child: ClipRRect(
+                borderRadius:
+                    BorderRadius.vertical(top: Radius.circular(radius)),
+                child: Container(
+                  color: const Color(0xFF0f1115),
+                  child: Column(
+                    children: [
+                      SizedBox(height: topInset),
+                      _SheetHandle(
+                        onDrag: (dy) => _onDrag(dy, h),
+                        onDragEnd: (v) => _onDragEnd(v, h),
+                      ),
+                      Expanded(
+                        // Top inset is already handled by the handle above, so
+                        // neutralise ChatView's own SafeArea top (keep bottom
+                        // for the keyboard).
+                        child: MediaQuery(
+                          data: mq.copyWith(
+                            padding: mq.padding.copyWith(top: 0),
+                          ),
+                          child: ChangeNotifierProvider<ChatProvider>.value(
+                            value: widget.provider,
+                            child: ChatView(
+                              settings: widget.settings,
+                              onCollapse: _collapse,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// Grabber bar at the top of the chat sheet. Vertical drags resize/dismiss the
+// sheet; it never touches the message list's own scrolling.
+class _SheetHandle extends StatelessWidget {
+  final void Function(double dy) onDrag;
+  final void Function(double velocity) onDragEnd;
+  const _SheetHandle({required this.onDrag, required this.onDragEnd});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: (d) => onDrag(d.delta.dy),
+      onVerticalDragEnd: (d) => onDragEnd(d.velocity.pixelsPerSecond.dy),
+      child: Container(
+        width: double.infinity,
+        color: const Color(0xFF0f1115),
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        alignment: Alignment.center,
+        child: Container(
+          width: 42,
+          height: 4,
+          decoration: BoxDecoration(
+            color: const Color(0xFF454b54),
+            borderRadius: BorderRadius.circular(2),
           ),
         ),
-        if (_open) ...[
-          if (flat.isEmpty)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(32, 2, 12, 4),
-              child: Text(
-                '(empty)',
-                style: TextStyle(
-                  color: Color(0xFF454b54),
-                  fontSize: 11,
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-            ),
-          for (final s in flat)
-            _DrawerSessionTile(
-              session: s,
-              isActive: s.id == widget.activeSessionId,
-              mgr: mgr,
-            ),
-        ],
-      ],
-    );
-  }
-}
-
-class _DrawerSessionTile extends StatelessWidget {
-  final Session session;
-  final bool isActive;
-  final SessionManager mgr;
-
-  const _DrawerSessionTile({
-    required this.session,
-    required this.isActive,
-    required this.mgr,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final provider = mgr.allProviders[session.id];
-    final connected =
-        provider != null &&
-        provider.connectionState == ChatConnectionState.connected;
-    final cliColor = session.cli == SessionCli.codex
-        ? _kCodexColor
-        : _kClaudeColor;
-
-    return GestureDetector(
-      onTap: () => _openFromDrawer(context),
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(20, 2, 8, 2),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        decoration: BoxDecoration(
-          color: isActive ? const Color(0xFF14171c) : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-          border: isActive
-              ? Border.all(color: const Color(0xFF6aa3ff), width: 1)
-              : null,
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(
-                color: session.active
-                    ? const Color(0xFF7fd49a)
-                    : (provider != null
-                          ? (connected
-                                ? const Color(0xFF7fd49a)
-                                : const Color(0xFFe3b341))
-                          : const Color(0xFF5b616c)),
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-              decoration: BoxDecoration(
-                color: cliColor.withValues(alpha: 0.15),
-                border: Border.all(color: cliColor.withValues(alpha: 0.4)),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                session.cli.name,
-                style: TextStyle(
-                  color: cliColor,
-                  fontSize: 8,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Icon(
-              session.isChat
-                  ? Icons.chat_bubble_outline_rounded
-                  : Icons.terminal_rounded,
-              size: 11,
-              color: const Color(0xFF8a909b),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                session.label?.isNotEmpty == true ? session.label! : session.id,
-                style: TextStyle(
-                  color: isActive
-                      ? const Color(0xFF6aa3ff)
-                      : const Color(0xFFe7eaee),
-                  fontSize: 12,
-                  fontFamily: 'monospace',
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
       ),
     );
-  }
-
-  void _openFromDrawer(BuildContext context) {
-    Navigator.pop(context); // close drawer
-    if (session.isChat) {
-      mgr.openSession(session);
-      mgr.switchToSession(session.id);
-    } else {
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) =>
-              TerminalScreen(settings: mgr.settings, session: session),
-        ),
-      );
-    }
   }
 }
 
@@ -416,8 +295,7 @@ class _DrawerSessionTile extends StatelessWidget {
 
 class _DirectoryListBody extends StatelessWidget {
   final SettingsService settings;
-  final VoidCallback? onOpenDrawer;
-  const _DirectoryListBody({required this.settings, this.onOpenDrawer});
+  const _DirectoryListBody({required this.settings});
 
   @override
   Widget build(BuildContext context) {
@@ -430,10 +308,7 @@ class _DirectoryListBody extends StatelessWidget {
         foregroundColor: const Color(0xFFe7eaee),
         elevation: 0,
         centerTitle: false,
-        leading: IconButton(
-          icon: const Icon(Icons.menu_rounded, size: 22),
-          onPressed: onOpenDrawer,
-        ),
+        automaticallyImplyLeading: false,
         title: Row(
           children: [
             RichText(
@@ -885,8 +760,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final messenger = ScaffoldMessenger.of(context);
     String? model;
     if (cli == SessionCli.claude) {
-      final picked =
-          await showClaudeModelPicker(context, current: widget.settings.defaultModel);
+      final picked = await showClaudeModelPicker(context, current: widget.settings.defaultModel);
       if (picked == null) return; // cancelled
       if (!mounted) return;
       model = picked.isEmpty ? null : picked;
@@ -1652,13 +1526,25 @@ class _SessionCard extends StatelessWidget {
       final result = await SessionService(
         settings: settings,
       ).mergeSession(session.id);
+      final hasConflict =
+          result['conflicts'] is List &&
+          (result['conflicts'] as List).isNotEmpty;
       final msg = result['ok'] == true
           ? (result['merged'] == true
                 ? '✓ 已合并 ${result['commits']} 个提交回基分支'
                 : '✓ ${result['message'] ?? '没有新提交需要合并'}')
+          : hasConflict
+          ? '⚠️ 合并冲突，已 abort：${(result['conflicts'] as List).join(', ')}'
           : '合并失败：${result['error'] ?? ''}';
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text(msg)));
+      if (hasConflict && context.mounted) {
+        await showConflictDiffDialog(
+          context,
+          sessionId: session.id,
+          result: result,
+        );
+      }
     } catch (e) {
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text('合并请求失败：$e')));

@@ -9,19 +9,20 @@ import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/model_picker.dart';
 import '../widgets/thinking_indicator.dart';
 import 'memo_screen.dart';
-import 'setup_screen.dart';
+import 'settings_screen.dart';
 
 /// Reusable chat view — expects a ChatProvider in the widget tree
 /// (provided by MainShell via ChangeNotifierProvider.value).
 class ChatView extends StatefulWidget {
   final SettingsService settings;
-  final VoidCallback? onOpenDrawer;
-  const ChatView({super.key, required this.settings, this.onOpenDrawer});
+  final VoidCallback? onCollapse;
+  const ChatView({super.key, required this.settings, this.onCollapse});
 
   @override
   State<ChatView> createState() => _ChatViewState();
@@ -82,7 +83,7 @@ class _ChatViewState extends State<ChatView> {
           children: [
             _Header(
               settings: widget.settings,
-              onOpenDrawer: widget.onOpenDrawer,
+              onCollapse: widget.onCollapse,
               mergeReady: mergeReady,
               mergeLabel: _mergeStatusText(_mergeStatus),
               onMerge: () => _mergeCurrent(context, provider.sessionName),
@@ -105,13 +106,13 @@ class _ChatViewState extends State<ChatView> {
 
 class _Header extends StatelessWidget {
   final SettingsService settings;
-  final VoidCallback? onOpenDrawer;
+  final VoidCallback? onCollapse;
   final bool mergeReady;
   final String mergeLabel;
   final VoidCallback onMerge;
   const _Header({
     required this.settings,
-    this.onOpenDrawer,
+    this.onCollapse,
     required this.mergeReady,
     required this.mergeLabel,
     required this.onMerge,
@@ -143,15 +144,15 @@ class _Header extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Drawer / Back button
+          // Collapse the chat sheet back down to the home dashboard.
           GestureDetector(
-            onTap: onOpenDrawer ?? () => Scaffold.of(context).openDrawer(),
+            onTap: onCollapse,
             child: Container(
               padding: const EdgeInsets.all(6),
               child: const Icon(
-                Icons.menu_rounded,
+                Icons.keyboard_arrow_down_rounded,
                 color: Color(0xFFe7eaee),
-                size: 20,
+                size: 24,
               ),
             ),
           ),
@@ -187,13 +188,42 @@ class _Header extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
+          // Connection dot — tap to manually reconnect whenever not connected.
+          // A refresh glyph appears so the affordance is discoverable and gives
+          // a larger touch target than the bare 8px dot.
           GestureDetector(
-            onTap: state == ChatConnectionState.disconnected
-                ? provider.reconnect
-                : null,
-            child: Icon(Icons.circle, size: 8, color: statusColor),
+            behavior: HitTestBehavior.opaque,
+            onTap:
+                state == ChatConnectionState.connected ? null : provider.reconnect,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.circle, size: 8, color: statusColor),
+                  if (state != ChatConnectionState.connected) ...[
+                    const SizedBox(width: 4),
+                    const Icon(
+                      Icons.refresh_rounded,
+                      size: 15,
+                      color: Color(0xFF8a909b),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
           const Spacer(),
+          // Manual reconnect — always available, even when the status dot reads
+          // green. Rebuilds the WebSocket from scratch to recover a socket that
+          // looks connected but is actually dead (half-open, no onDone/onError),
+          // which otherwise only a full app restart could fix.
+          _HeaderBtn(
+            icon: Icons.sync_rounded,
+            tooltip: '重连（重建连接）',
+            onTap: () => _forceReconnect(context, provider),
+          ),
+          const SizedBox(width: 4),
           // Model switch — claude sessions only (codex has no model concept here).
           if (provider.cli == SessionCli.claude) ...[
             _ModelChip(sessionId: provider.sessionName),
@@ -232,6 +262,19 @@ class _Header extends StatelessWidget {
     );
   }
 
+  void _forceReconnect(BuildContext context, ChatProvider provider) {
+    provider.reconnect();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('正在重建连接…'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Color(0xFF14171c),
+        ),
+      );
+  }
+
   void _confirmClear(BuildContext context, ChatProvider provider) {
     showDialog(
       context: context,
@@ -266,7 +309,7 @@ class _Header extends StatelessWidget {
   void _openSettings(BuildContext context, SettingsService settings) {
     Navigator.of(
       context,
-    ).push(MaterialPageRoute(builder: (_) => SetupScreen(settings: settings)));
+    ).push(MaterialPageRoute(builder: (_) => SettingsScreen(settings: settings)));
   }
 }
 
@@ -430,6 +473,8 @@ Future<void> confirmMergeWorktree(
     final result = await SessionService(
       settings: settings,
     ).mergeSession(sessionId);
+    final hasConflict =
+        result['conflicts'] is List && (result['conflicts'] as List).isNotEmpty;
     String msg;
     if (result['ok'] == true) {
       msg = result['merged'] == true
@@ -442,6 +487,13 @@ Future<void> confirmMergeWorktree(
     }
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text(msg)));
+    if (hasConflict && context.mounted) {
+      await showConflictDiffDialog(
+        context,
+        sessionId: sessionId,
+        result: result,
+      );
+    }
   } catch (e) {
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text('合并请求失败：$e')));
