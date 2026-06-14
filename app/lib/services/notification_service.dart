@@ -11,8 +11,24 @@ class NotificationService {
     await _plugin.initialize(
       settings: const InitializationSettings(
         android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        // iOS was previously unconfigured, so notifications never surfaced on
+        // iPhone at all. Darwin settings request the permission prompt on first
+        // init and allow alerts/sound while the app is foregrounded.
+        iOS: DarwinInitializationSettings(
+          requestAlertPermission: true,
+          requestBadgePermission: true,
+          requestSoundPermission: true,
+        ),
       ),
     );
+
+    // Android 13+ requires an explicit runtime permission request; the Darwin
+    // settings above already cover iOS.
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.requestNotificationsPermission();
   }
 
   static Future<void> show({
@@ -28,11 +44,16 @@ class NotificationService {
       priority: Priority.high,
       playSound: true,
     );
+    const ios = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    );
     await _plugin.show(
       id: id,
       title: title,
       body: body,
-      notificationDetails: const NotificationDetails(android: android),
+      notificationDetails: const NotificationDetails(android: android, iOS: ios),
     );
   }
 }
