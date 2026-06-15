@@ -408,6 +408,12 @@
       font-weight: 700;
       cursor: pointer;
     }
+    #merge-hint button.ghost {
+      background: transparent;
+      border-color: #e3b341;
+      color: #f2cc60;
+    }
+    #merge-hint button.ghost:hover { background: #3a2c0a; }
 
     #send-btn {
       flex-shrink: 0;
@@ -572,6 +578,44 @@
       background: #238636; border-color: #2ea043; color: #fff; font-weight: 600;
     }
 
+    /* ── Diff modal ── */
+    #diff-modal {
+      display: none; position: fixed; inset: 0; background: #000000cc;
+      z-index: 15000; align-items: center; justify-content: center;
+    }
+    #diff-modal.open { display: flex; }
+    #diff-modal-inner {
+      background: #0d1117; border: 1px solid #30363d; border-radius: 12px;
+      width: min(96vw, 1100px); height: min(90vh, 800px);
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: 0 16px 48px #00000099;
+    }
+    #diff-modal-head {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px; border-bottom: 1px solid #30363d;
+    }
+    #diff-title { color: #f0f6fc; font-size: 14px; font-weight: 600; }
+    #diff-subtitle {
+      color: #8b949e; font-size: 11px; font-family: monospace; margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #diff-stat {
+      padding: 8px 16px; border-bottom: 1px solid #30363d;
+      font-family: monospace; font-size: 11px; color: #8b949e;
+      white-space: pre; overflow-x: auto; max-height: 140px; overflow-y: auto;
+    }
+    #diff-content {
+      flex: 1; overflow: auto; padding: 8px 0;
+      font-family: monospace; font-size: 12px; line-height: 1.45; color: #c9d1d9;
+    }
+    .diff-line { display: block; padding: 0 16px; white-space: pre; }
+    .diff-add { background: rgba(46,160,67,.18); color: #7ee787; }
+    .diff-del { background: rgba(248,81,73,.18); color: #ffa198; }
+    .diff-hunk { color: #58a6ff; background: #161b22; }
+    .diff-head { color: #cdb4ff; }
+    .diff-meta { color: #6e7681; }
+    .diff-conflict { color: #f2cc60; background: rgba(227,179,65,.18); font-weight: 600; }
+
     /* ── Debug panel ── */
     #debug-panel {
       position: fixed; top: 0; right: 0; bottom: 0;
@@ -666,7 +710,23 @@
 
   <div id="merge-hint">
     <span class="merge-hint-text">当前 worktree 有可合并内容。</span>
+    <button id="merge-hint-diff-btn" class="ghost">查看 Diff</button>
     <button id="merge-hint-btn">合并</button>
+  </div>
+
+  <!-- Diff modal -->
+  <div id="diff-modal">
+    <div id="diff-modal-inner">
+      <div id="diff-modal-head">
+        <div style="flex:1;min-width:0;">
+          <div id="diff-title">Diff</div>
+          <div id="diff-subtitle"></div>
+        </div>
+        <button class="ghost" style="border:1px solid #30363d;background:#21262d;color:#c9d1d9;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;" onclick="closeDiffModal()">关闭</button>
+      </div>
+      <div id="diff-stat"></div>
+      <div id="diff-content"></div>
+    </div>
   </div>
 
   <!-- Input bar -->

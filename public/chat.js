@@ -1015,6 +1015,90 @@ async function requestMerge() {
 
 mergeBtn?.addEventListener('click', requestMerge);
 mergeHintBtn?.addEventListener('click', requestMerge);
+
+/* ── Diff viewer ── */
+function escapeDiffHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderDiffLines(text) {
+  if (!text || !text.trim()) {
+    return '<div class="diff-line diff-meta" style="text-align:center;padding:24px;">（无变更）</div>';
+  }
+  const MAX_LINES = 5000;
+  const lines = text.split('\n');
+  const truncated = lines.length > MAX_LINES;
+  const arr = truncated ? lines.slice(0, MAX_LINES) : lines;
+  const parts = [];
+  for (const raw of arr) {
+    let cls = 'diff-line';
+    if (/^[+\- ]*(<<<<<<<|=======|>>>>>>>)/.test(raw)) {
+      cls += ' diff-conflict';
+    } else if (raw.startsWith('diff --git') || raw.startsWith('diff --cc') || raw.startsWith('index ') || raw.startsWith('+++ ') || raw.startsWith('--- ') || raw.startsWith('new file') || raw.startsWith('deleted file') || raw.startsWith('rename ') || raw.startsWith('similarity ')) {
+      cls += ' diff-head';
+    } else if (raw.startsWith('@@')) cls += ' diff-hunk';
+    else if (raw.startsWith('+')) cls += ' diff-add';
+    else if (raw.startsWith('-')) cls += ' diff-del';
+    const safe = escapeDiffHtml(raw);
+    parts.push(`<span class="${cls}">${safe || '&nbsp;'}</span>`);
+  }
+  if (truncated) {
+    parts.push(`<span class="diff-line diff-meta">… 行数过多已截断（${lines.length - MAX_LINES} 行省略）</span>`);
+  }
+  return parts.join('');
+}
+
+async function showDiff() {
+  if (!_sessionName) { addSystemMsg('无 session id，无法查看 diff'); return; }
+  const modal = document.getElementById('diff-modal');
+  const titleEl = document.getElementById('diff-title');
+  const subEl = document.getElementById('diff-subtitle');
+  const statEl = document.getElementById('diff-stat');
+  const contentEl = document.getElementById('diff-content');
+  if (!modal) return;
+  titleEl.textContent = `Diff · ${_sessionName}`;
+  subEl.textContent = '加载中…';
+  statEl.textContent = '';
+  contentEl.innerHTML = '';
+  modal.classList.add('open');
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/diff`));
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      subEl.textContent = `错误：${err.error || res.status}`;
+      return;
+    }
+    const data = await res.json();
+    const ms = data.mergeState || {};
+    const parts = [];
+    if (data.branch) parts.push(`${data.branch} → ${data.baseBranch || ''}`);
+    parts.push(`${ms.ahead || 0} 个提交领先`);
+    if (ms.dirty) parts.push('含未提交改动');
+    if (data.truncated) parts.push('已截断到 1MB');
+    subEl.textContent = parts.join(' · ');
+    statEl.textContent = (data.stat || '').trim() || '(无变更)';
+    contentEl.innerHTML = renderDiffLines(data.diff || '');
+    if (data.error) {
+      const errLine = document.createElement('div');
+      errLine.className = 'diff-line diff-del';
+      errLine.textContent = `错误：${data.error}`;
+      contentEl.appendChild(errLine);
+    }
+  } catch (e) {
+    subEl.textContent = `请求失败：${e.message}`;
+  }
+}
+
+function closeDiffModal() {
+  const modal = document.getElementById('diff-modal');
+  if (modal) modal.classList.remove('open');
+}
+
+document.getElementById('merge-hint-diff-btn')?.addEventListener('click', showDiff);
+document.getElementById('diff-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'diff-modal') closeDiffModal();
+});
+
 startMergeStatusPolling();
 
 /* ── Per-session model switch (claude only) ── */
