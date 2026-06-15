@@ -2195,10 +2195,12 @@ app.get('/api/sessions/:id', (req, res) => {
   const mergeState = persisted ? gitWorktreeMergeState(dir, persisted) : null;
   const cli = persisted?.cli || 'claude';
   const model = persisted?.model || null;
+  // The session's own role override (null = inherits the directory default).
+  const rolePrompt = persisted?.rolePrompt || null;
   if (active) {
-    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model });
+    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model, rolePrompt });
   } else {
-    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model });
+    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model, rolePrompt });
   }
 });
 

@@ -1095,11 +1095,14 @@ function showModelPicker(current) {
 }
 
 async function loadSessionModel() {
-  if (!_sessionName || !modelBtn) return;
+  if (!_sessionName) return;
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`));
     if (!res.ok) return;
     const info = await res.json();
+    // Role prompt applies to every cli; load it first, then the claude-only model.
+    _sessionRole = info.rolePrompt || '';
+    updateRoleBtn();
     if ((info.cli || 'claude') !== 'claude') return; // codex has no model switch
     _sessionModel = info.model || '';
     updateModelBtn();
@@ -1125,6 +1128,96 @@ modelBtn?.addEventListener('click', async () => {
   }
 });
 
+/* ── Per-session role prompt (all CLIs) ── */
+const roleBtn = document.getElementById('role-btn');
+let _sessionRole = '';
+
+function updateRoleBtn() {
+  if (!roleBtn) return;
+  const set = !!(_sessionRole && _sessionRole.trim());
+  roleBtn.textContent = set ? '🎭 角色✓' : '🎭 角色';
+  roleBtn.title = set
+    ? '该会话已设角色提示词，点击修改（下一轮对话生效）'
+    : '设置该会话的角色提示词（下一轮对话生效）';
+}
+
+// WebView-safe editor (native prompt/confirm are unreliable in Android WebViews).
+function showRolePromptEditor(current) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:94vw;';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:10px;';
+    msg.textContent = '该会话的角色提示词（下一轮对话生效）';
+    box.appendChild(msg);
+
+    const ta = document.createElement('textarea');
+    ta.value = current || '';
+    ta.placeholder = '例如：你是开发保姆，被触发时用 multicc-trigger skill 检查 git 改动并提醒提交和测试，不要擅自改代码。';
+    ta.rows = 8;
+    ta.style.cssText = 'width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;line-height:1.5;padding:10px;outline:none;resize:vertical;margin-bottom:6px;font-family:inherit;';
+    box.appendChild(ta);
+
+    const hint = document.createElement('div');
+    hint.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
+    hint.textContent = '留空＝清除（会话将继承目录默认角色）。Ctrl/⌘+Enter 保存。';
+    box.appendChild(hint);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
+    const ok = document.createElement('button');
+    ok.textContent = '保存';
+    ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
+    row.appendChild(cancel); row.appendChild(ok);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = (result) => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(result); };
+    const accept = () => {
+      if (ta.value.length > 8000) { addSystemMsg('角色提示词过长（上限 8000 字）'); return; }
+      close(ta.value);
+    };
+    const reject = () => close(null);
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); reject(); }
+      else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); accept(); }
+    }
+    ok.onclick = accept;
+    cancel.onclick = reject;
+    overlay.onclick = (e) => { if (e.target === overlay) reject(); };
+    document.addEventListener('keydown', onKey, true);
+    setTimeout(() => ta.focus(), 0);
+  });
+}
+
+roleBtn?.addEventListener('click', async () => {
+  const next = await showRolePromptEditor(_sessionRole);
+  if (next === null) return; // cancelled
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rolePrompt: next }),
+    });
+    const data = await res.json();
+    if (!res.ok) { addSystemMsg('角色保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
+    _sessionRole = data.rolePrompt || '';
+    updateRoleBtn();
+    addSystemMsg(_sessionRole
+      ? '✓ 角色提示词已更新，下一轮对话生效'
+      : '✓ 已清除会话角色（继承目录默认），下一轮对话生效');
+  } catch (e) {
+    addSystemMsg('角色保存失败：' + e.message);
+  }
+});
+
+updateRoleBtn();
 loadSessionModel();
 
 /* ── Clear context button ── */

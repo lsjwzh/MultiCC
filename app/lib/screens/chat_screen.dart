@@ -233,6 +233,7 @@ class _Header extends StatelessWidget {
           // trigger amber as a discoverable hint (the banner still surfaces it).
           _HeaderOverflowMenu(
             mergeReady: mergeReady,
+            onRole: () => _editRoleFromSession(context, provider.sessionName),
             onMemo: () => _openMemoFromSession(context, provider.sessionName),
             onMerge: onMerge,
             onClear: () => _confirmClear(context, provider),
@@ -380,6 +381,97 @@ class _ModelChip extends StatelessWidget {
   }
 }
 
+// Edit the per-session role prompt (system-prompt override) from the chat
+// header overflow menu. Empty = clear → inherits the directory default.
+Future<void> _editRoleFromSession(
+    BuildContext context, String sessionId) async {
+  final mgr = Provider.of<SessionManager>(context, listen: false);
+  final messenger = ScaffoldMessenger.of(context);
+  Session? s;
+  for (final x in mgr.sessions) {
+    if (x.id == sessionId) { s = x; break; }
+  }
+  if (s == null) {
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Session 信息未加载')),
+    );
+    return;
+  }
+  final picked =
+      await _showRolePromptEditor(context, current: s.rolePrompt ?? '');
+  if (picked == null) return; // cancelled
+  try {
+    await mgr.updateSessionRolePrompt(s.id, picked);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(picked.trim().isEmpty
+            ? '✓ 已清除会话角色（继承目录默认），下一轮对话生效'
+            : '✓ 角色提示词已更新，下一轮对话生效'),
+      ),
+    );
+  } catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text('角色保存失败：$e')));
+  }
+}
+
+// Multi-line role-prompt editor dialog. Returns the new text, or null on cancel.
+Future<String?> _showRolePromptEditor(BuildContext context,
+    {required String current}) {
+  final controller = TextEditingController(text: current);
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: const Color(0xFF14171c),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0xFF20242b)),
+      ),
+      title: const Text('角色提示词',
+          style: TextStyle(color: Color(0xFFe7eaee), fontSize: 16)),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: controller,
+              maxLines: 9,
+              minLines: 5,
+              maxLength: 8000,
+              autofocus: true,
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              decoration: const InputDecoration(
+                hintText:
+                    '例如：你是开发保姆，被触发时用 multicc-trigger skill 检查 git 改动并提醒提交和测试，不要擅自改代码。',
+                hintStyle: TextStyle(color: Color(0xFF6b7280), fontSize: 12),
+                enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: Color(0xFF20242b))),
+                focusedBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: Color(0xFF2ea043))),
+              ),
+            ),
+            const Text('留空＝清除（会话将继承目录默认角色）',
+                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child:
+              const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, controller.text),
+          child:
+              const Text('保存', style: TextStyle(color: Color(0xFF3fb950))),
+        ),
+      ],
+    ),
+  );
+}
+
 // Open the directory-memo screen for the given session's directory. Used by the
 // chat AppBar to expose the project memo without leaving the chat view.
 void _openMemoFromSession(BuildContext context, String sessionId) {
@@ -521,12 +613,14 @@ class _HeaderBtn extends StatelessWidget {
 /// icons never overflow the right edge on narrow screens.
 class _HeaderOverflowMenu extends StatelessWidget {
   final bool mergeReady;
+  final VoidCallback onRole;
   final VoidCallback onMemo;
   final VoidCallback onMerge;
   final VoidCallback onClear;
   final VoidCallback onSettings;
   const _HeaderOverflowMenu({
     required this.mergeReady,
+    required this.onRole,
     required this.onMemo,
     required this.onMerge,
     required this.onClear,
@@ -545,6 +639,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
       offset: const Offset(0, 40),
       onSelected: (value) {
         switch (value) {
+          case 'role':
+            onRole();
+            break;
           case 'memo':
             onMemo();
             break;
@@ -560,6 +657,8 @@ class _HeaderOverflowMenu extends StatelessWidget {
         }
       },
       itemBuilder: (_) => [
+        _item('role', Icons.theater_comedy_outlined, '角色提示词',
+            const Color(0xFFe7eaee)),
         _item('memo', Icons.sticky_note_2_outlined, '项目备忘',
             const Color(0xFFe7eaee)),
         _item(

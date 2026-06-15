@@ -114,6 +114,23 @@ class SessionService {
     }
   }
 
+  /// Set the per-session role prompt (system prompt override). Empty string
+  /// clears the override → the session inherits the directory default. Applies
+  /// on the next chat turn.
+  Future<void> updateSessionRolePrompt(String id, String rolePrompt) async {
+    final res = await http
+        .patch(
+          Uri.parse(_url('/api/sessions/$id')),
+          headers: _headers,
+          body: jsonEncode({'rolePrompt': rolePrompt}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+  }
+
   Future<void> updateSessionLabel(String id, String? label) async {
     final res = await http
         .patch(

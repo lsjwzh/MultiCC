@@ -126,6 +126,7 @@ class Session {
   final String? cliSessionId;
   final String? label;
   final String? model;
+  final String? rolePrompt;
   final String cwd;
   final DateTime createdAt;
   final bool active;
@@ -142,6 +143,7 @@ class Session {
     this.cliSessionId,
     this.label,
     this.model,
+    this.rolePrompt,
     this.cwd = '',
     required this.createdAt,
     this.active = false,
@@ -160,6 +162,7 @@ class Session {
       cliSessionId: json['cliSessionId']?.toString(),
       label: json['label']?.toString(),
       model: json['model']?.toString(),
+      rolePrompt: json['rolePrompt']?.toString(),
       cwd: (json['cwd'] ?? '').toString(),
       createdAt: json['createdAt'] != null
           ? DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()
