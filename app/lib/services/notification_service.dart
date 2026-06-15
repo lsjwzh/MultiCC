@@ -4,6 +4,11 @@ class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
 
+  /// Last time a notification fired for each id — used to de-dup the same
+  /// verdict arriving over both the chat socket and the workspace socket.
+  static final Map<int, DateTime> _recent = {};
+  static const _dedupWindow = Duration(seconds: 6);
+
   static Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
@@ -36,6 +41,11 @@ class NotificationService {
     required String body,
     int id = 0,
   }) async {
+    final now = DateTime.now();
+    final last = _recent[id];
+    if (last != null && now.difference(last) < _dedupWindow) return;
+    _recent[id] = now;
+
     const android = AndroidNotificationDetails(
       'multicc_tasks',
       'Task Notifications',
