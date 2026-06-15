@@ -85,7 +85,6 @@ class _ChatViewState extends State<ChatView> {
               settings: widget.settings,
               onCollapse: widget.onCollapse,
               mergeReady: mergeReady,
-              mergeLabel: _mergeStatusText(_mergeStatus),
               onMerge: () => _mergeCurrent(context, provider.sessionName),
             ),
             _CwdBar(),
@@ -108,13 +107,11 @@ class _Header extends StatelessWidget {
   final SettingsService settings;
   final VoidCallback? onCollapse;
   final bool mergeReady;
-  final String mergeLabel;
   final VoidCallback onMerge;
   const _Header({
     required this.settings,
     this.onCollapse,
     required this.mergeReady,
-    required this.mergeLabel,
     required this.onMerge,
   });
 
@@ -229,33 +226,17 @@ class _Header extends StatelessWidget {
             _ModelChip(sessionId: provider.sessionName),
             const SizedBox(width: 4),
           ],
-          // Memo button — project memo (multicc.memo.md) for the session's directory.
-          _HeaderBtn(
-            icon: Icons.sticky_note_2_outlined,
-            tooltip: '项目备忘 (multicc.memo.md)',
-            onTap: () => _openMemoFromSession(context, provider.sessionName),
-          ),
-          const SizedBox(width: 4),
-          // Merge worktree button
-          _HeaderBtn(
-            icon: Icons.merge_type,
-            tooltip: mergeReady ? mergeLabel : '合并 worktree',
-            active: mergeReady,
-            onTap: onMerge,
-          ),
-          const SizedBox(width: 4),
-          // Clear history button
-          _HeaderBtn(
-            icon: Icons.delete_sweep_outlined,
-            tooltip: 'Clear history',
-            onTap: () => _confirmClear(context, provider),
-          ),
-          const SizedBox(width: 4),
-          // Settings button
-          _HeaderBtn(
-            icon: Icons.settings_outlined,
-            tooltip: 'Settings',
-            onTap: () => _openSettings(context, settings),
+          // Overflow menu — collapses the occasional actions (memo / merge /
+          // clear history / settings) behind a single "⋮" trigger so the
+          // action cluster keeps a fixed, compact width and never pushes icons
+          // past the right edge on narrow screens. mergeReady tints the
+          // trigger amber as a discoverable hint (the banner still surfaces it).
+          _HeaderOverflowMenu(
+            mergeReady: mergeReady,
+            onMemo: () => _openMemoFromSession(context, provider.sessionName),
+            onMerge: onMerge,
+            onClear: () => _confirmClear(context, provider),
+            onSettings: () => _openSettings(context, settings),
           ),
         ],
       ),
@@ -504,12 +485,10 @@ class _HeaderBtn extends StatelessWidget {
   final IconData icon;
   final String tooltip;
   final VoidCallback onTap;
-  final bool active;
   const _HeaderBtn({
     required this.icon,
     required this.tooltip,
     required this.onTap,
-    this.active = false,
   });
 
   @override
@@ -521,18 +500,110 @@ class _HeaderBtn extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
-            color: active ? const Color(0xFFe3b341) : const Color(0xFF14171c),
-            border: Border.all(
-              color: active ? const Color(0xFFe3b341) : const Color(0xFF20242b),
-            ),
+            color: const Color(0xFF14171c),
+            border: Border.all(color: const Color(0xFF20242b)),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Icon(
             icon,
-            color: active ? const Color(0xFF070809) : const Color(0xFFe7eaee),
+            color: const Color(0xFFe7eaee),
             size: 18,
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Overflow menu for the chat header. Collapses the occasional actions
+/// (memo / merge worktree / clear history / settings) behind a single "⋮"
+/// trigger, keeping the header's action cluster a fixed, compact width so its
+/// icons never overflow the right edge on narrow screens.
+class _HeaderOverflowMenu extends StatelessWidget {
+  final bool mergeReady;
+  final VoidCallback onMemo;
+  final VoidCallback onMerge;
+  final VoidCallback onClear;
+  final VoidCallback onSettings;
+  const _HeaderOverflowMenu({
+    required this.mergeReady,
+    required this.onMemo,
+    required this.onMerge,
+    required this.onClear,
+    required this.onSettings,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: '更多',
+      color: const Color(0xFF14171c),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: const BorderSide(color: Color(0xFF20242b)),
+      ),
+      offset: const Offset(0, 40),
+      onSelected: (value) {
+        switch (value) {
+          case 'memo':
+            onMemo();
+            break;
+          case 'merge':
+            onMerge();
+            break;
+          case 'clear':
+            onClear();
+            break;
+          case 'settings':
+            onSettings();
+            break;
+        }
+      },
+      itemBuilder: (_) => [
+        _item('memo', Icons.sticky_note_2_outlined, '项目备忘',
+            const Color(0xFFe7eaee)),
+        _item(
+          'merge',
+          Icons.merge_type,
+          mergeReady ? '合并 worktree（可合并）' : '合并 worktree',
+          mergeReady ? const Color(0xFFe3b341) : const Color(0xFFe7eaee),
+        ),
+        _item('clear', Icons.delete_sweep_outlined, 'Clear history',
+            const Color(0xFFff6b63)),
+        const PopupMenuDivider(),
+        _item('settings', Icons.settings_outlined, 'Settings',
+            const Color(0xFFe7eaee)),
+      ],
+      child: Container(
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: mergeReady ? const Color(0xFFe3b341) : const Color(0xFF14171c),
+          border: Border.all(
+            color:
+                mergeReady ? const Color(0xFFe3b341) : const Color(0xFF20242b),
+          ),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Icon(
+          Icons.more_vert,
+          color: mergeReady ? const Color(0xFF070809) : const Color(0xFFe7eaee),
+          size: 18,
+        ),
+      ),
+    );
+  }
+
+  PopupMenuItem<String> _item(
+      String value, IconData icon, String label, Color color) {
+    return PopupMenuItem<String>(
+      value: value,
+      height: 44,
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 12),
+          Text(label, style: TextStyle(color: color, fontSize: 14)),
+        ],
       ),
     );
   }
