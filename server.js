@@ -27,6 +27,8 @@ const wechatBridge = require('./wechat-ilink');
 const voiceAsr = require('./voice-asr');
 const cronTasks = require('./cron-tasks');
 const webpush = require('web-push');
+const macosPower = require('./macos-power');
+const gitPush = require('./git-push');
 
 const crypto = require('crypto');
 const app = express();
@@ -1828,9 +1830,29 @@ app.get('/api/directories', (req, res) => {
       const k = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;
       if (counts[k] !== undefined) counts[k]++;
     }
-    return { ...d, counts };
+    let pushState;
+    try {
+      pushState = gitPush.directoryPushState(d.path, d.baseBranch || gitBaseBranch(d.path));
+    } catch (error) {
+      pushState = { available: false, hasRemote: false, ahead: 0, behind: 0, reason: error.message };
+    }
+    return { ...d, counts, pushState };
   });
   res.json(list);
+});
+
+app.post('/api/directories/:id/push', async (req, res) => {
+  const d = directories.get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'directory not found' });
+  try {
+    const result = await gitPush.pushDirectory(d.path, d.baseBranch || gitBaseBranch(d.path));
+    appendEvent(d.id, 'pushed', result.pushed
+      ? `${result.before.ahead} 个提交 → ${result.before.remote}/${result.before.remoteBranch}`
+      : '无待推送提交');
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post('/api/directories', (req, res) => {
@@ -3249,6 +3271,33 @@ app.post('/api/settings/notify', (req, res) => {
   res.json({ ok: true });
 });
 
+// macOS system power settings
+app.get('/api/settings/power', (req, res) => {
+  if (!macosPower.isAvailable()) {
+    return res.json({ available: false, enabled: false });
+  }
+  try {
+    res.json(macosPower.getLidSleepPrevention());
+  } catch (error) {
+    res.status(500).json({ available: true, error: error.message });
+  }
+});
+
+app.post('/api/settings/power', async (req, res) => {
+  if (!macosPower.isAvailable()) {
+    return res.status(400).json({ error: 'This setting is only available on macOS' });
+  }
+  if (typeof req.body?.enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be a boolean' });
+  }
+  try {
+    const status = await macosPower.setLidSleepPrevention(req.body.enabled);
+    res.json({ ok: true, ...status });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Send push notification to all subscribers (async, properly handles stale cleanup)
 async function sendPushToAll(payload) {
   if (pushSubscriptions.size === 0) return;
@@ -3335,14 +3384,6 @@ function sendWebhookNotification(payload) {
 
 // ── Server-side notification detection (for push notifications) ──
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
-// "等待操作" — 需要用户做选择或确认（选 1/2/3、Y/n、Allow/Deny）
-const PUSH_WAITING_PATTERNS = [
-  /\[Y\/n\]/, /\[y\/N\]/, /\(y\/n\)/i, /\(yes\/no\)/i,
-  /Yes\s*\/\s*No/i,
-  /Allow\s*(once|always)/i, /Approve\??/i, /Deny/i,
-  /Do you want to proceed/i, /Do you want to/i, /Press Enter/i,
-  /^\s*[1-9]\.\s+\S/m, /^\s*[1-9]\)\s+\S/m,
-];
 const PUSH_IDLE_MS = 6000;
 const PUSH_MIN_CHARS = 80;
 const PUSH_COOLDOWN = 8000;
@@ -3352,13 +3393,6 @@ const pushMonitors = new Map();
 
 function pushStripAnsi(str) {
   return str.replace(PUSH_ANSI_RE, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-}
-
-function pushMatchesWaiting(text) {
-  for (const pat of PUSH_WAITING_PATTERNS) {
-    if (pat.test(text)) return true;
-  }
-  return false;
 }
 
 function initPushMonitor(sessionId) {
@@ -3382,12 +3416,68 @@ function cleanupPushMonitor(sessionId) {
   }
 }
 
+// Is there anyone who could receive a terminal notification right now? Avoids
+// spending aux-AI calls when nothing is watching: a push channel, the
+// terminal's own WS clients, or the directory's workspace board.
+function hasNotifyConsumer(sessionId) {
+  if (pushSubscriptions.size > 0 || BARK_URL || WEBHOOK_URL) return true;
+  if ((sessions.get(sessionId)?.clients?.size || 0) > 0) return true;
+  const dirId = persistedSessions.get(sessionId)?.dirId;
+  if (dirId && (workspaceClients.get(dirId)?.size || 0) > 0) return true;
+  return false;
+}
+
+// Push a server-originated message to a terminal session's live WS clients.
+function terminalBroadcast(sessionId, payload) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  const json = JSON.stringify(payload);
+  for (const client of session.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      try { client.send(json); } catch (_) {}
+    }
+  }
+}
+
+// Output went idle on a terminal session — the terminal equivalent of an SSE
+// pause. Let the aux-AI judge done-vs-waiting from the output tail (single
+// source of truth, same as chat), then fan the verdict out to every surface:
+// push channels, the terminal's own WS clients, and the workspace board.
+function classifyTerminalIdle(sessionId, tail) {
+  const mon = pushMonitors.get(sessionId);
+  if (mon) {
+    if (mon.classifyPending) return; // one classification already in flight
+    mon.classifyPending = true;
+  }
+  auxQueue.enqueue({
+    type: 'intent_classify',
+    prompt: `你是一个意图分类器。下面是一个命令行 AI 编码助手(Claude Code / Codex)终端会话的最近输出。判断它当前状态，只回复一个字母：
+C — 任务已完成或回到空闲提示符，不需要用户操作
+W — 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
+
+终端输出（尾部）：
+${tail}`,
+    meta: { sessionId },
+  }).then(result => {
+    if (mon) mon.classifyPending = false;
+    if (result.cancelled) return;
+    const state = result.text.trim().toUpperCase().startsWith('W') ? 'waiting' : 'completed';
+    const msg = state === 'waiting' ? '等待操作' : '任务已完成';
+    triggerPush(sessionId, state, msg);
+    terminalBroadcast(sessionId, { type: 'notify', state, message: msg });
+    const dirId = persistedSessions.get(sessionId)?.dirId;
+    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state, message: msg });
+    console.log(`[multicc/aux] Terminal classify for ${sessionId}: ${state}`);
+  }).catch(() => { if (mon) mon.classifyPending = false; });
+}
+
 /**
- * Called from ptyProcess.onData to detect notification patterns server-side.
- * Triggers web push when a session completes or waits for user action.
+ * Called from ptyProcess.onData. Tracks output and, once a terminal goes idle,
+ * asks the aux-AI whether the task finished or is waiting for the user, then
+ * notifies all surfaces. No regex judging here — the AI is the single judge.
  */
 function pushOnOutput(sessionId, rawData) {
-  if (pushSubscriptions.size === 0 && !BARK_URL && !WEBHOOK_URL) return; // no channels configured
+  if (!hasNotifyConsumer(sessionId)) return; // nobody to notify
 
   const mon = initPushMonitor(sessionId);
   const text = pushStripAnsi(rawData);
@@ -3401,22 +3491,11 @@ function pushOnOutput(sessionId, rawData) {
     if (mon.state === 'idle') mon.state = 'active';
   }
 
-  // Immediate pattern check
-  if (mon.state === 'active' && pushMatchesWaiting(text)) {
-    mon.state = 'waiting';
-    triggerPush(sessionId, 'waiting', '等待操作');
-  }
-
-  // Idle timer
+  // Judge only after output stops for PUSH_IDLE_MS (the "stream paused" signal).
   if (mon.idleTimer) clearTimeout(mon.idleTimer);
   mon.idleTimer = setTimeout(() => {
     if (mon.state === 'active' && mon.chars >= PUSH_MIN_CHARS) {
-      const tail = mon.recentText.slice(-2000);
-      if (pushMatchesWaiting(tail)) {
-        triggerPush(sessionId, 'waiting', '等待操作');
-      } else {
-        triggerPush(sessionId, 'completed', '任务已完成');
-      }
+      classifyTerminalIdle(sessionId, mon.recentText.slice(-2000));
     }
     mon.state = 'idle';
     mon.chars = 0;
@@ -3753,7 +3832,15 @@ app.get('/api/apk-info', (req, res) => {
   const apkPath = path.join(__dirname, 'public', 'multicc.apk');
   try {
     const stat = fs.statSync(apkPath);
-    res.json({ exists: true, mtime: stat.mtime.toISOString(), size: stat.size });
+    const info = { exists: true, mtime: stat.mtime.toISOString(), size: stat.size };
+    // Optional version sidecar written by scripts/publish-apk.sh — lets the
+    // updater show the real version instead of a generic "new version".
+    try {
+      const meta = JSON.parse(fs.readFileSync(apkPath + '.json', 'utf8'));
+      if (meta.versionName) info.versionName = meta.versionName;
+      if (meta.versionCode) info.versionCode = meta.versionCode;
+    } catch (_) {}
+    res.json(info);
   } catch {
     res.json({ exists: false });
   }
@@ -4035,7 +4122,21 @@ ${tail}`,
       if (result.cancelled) return;
       const state = result.text.trim().toUpperCase().startsWith('W') ? 'waiting' : 'completed';
       const msg = state === 'waiting' ? '等待操作' : '任务已完成';
+      // This aux-AI verdict is the single source of truth for "is the turn done
+      // or waiting?". Fan it out to every channel from here so nothing re-judges:
+      //   1. web push / Bark / webhook (PWA + external)
       triggerPush(sessionId, state, `[Chat] ${msg}`);
+      //   2. the session's live chat clients (native app / web) — they raise
+      //      their local notification from THIS verdict instead of guessing on
+      //      `result`, so app and server never disagree or double-fire.
+      chatBroadcast(sessionName, { type: 'notify', state, message: msg });
+      //   3. the directory's workspace board — lets the dashboard notify even
+      //      for sessions the user never opened (which have no chat socket).
+      //      The app de-dups this against the chat notify above by session id.
+      const dirId = persistedSessions.get(sessionName)?.dirId;
+      if (dirId) {
+        workspaceBroadcast(dirId, { type: 'notify', sessionId, state, message: msg });
+      }
       // Reflect on the status board — but only if no new turn has started since.
       if (!cs.isStreaming) {
         setSessionStatus(sessionName, { status: state === 'waiting' ? 'waiting' : 'idle' });
@@ -4561,6 +4662,13 @@ function handleChatWs(ws, req, urlObj) {
       // Typing signal: user is composing → cancel pending intent classify
       if (msg.type === 'typing') {
         cancelPendingClassify(cs);
+        return;
+      }
+
+      // App-level heartbeat: lets the client detect a half-open socket (the OS
+      // froze the connection without a close frame) and reconnect.
+      if (msg.type === 'ping') {
+        try { ws.send(JSON.stringify({ type: 'pong' })); } catch (_) {}
         return;
       }
 

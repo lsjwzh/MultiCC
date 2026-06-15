@@ -132,50 +132,16 @@ if (sessionLabel) {
 const notifyBtn = document.getElementById('notify-btn');
 const notifyToast = document.getElementById('notify-toast');
 let _notifyEnabled = localStorage.getItem('multicc_notify') !== 'off';
-let _notifyState = 'idle';       // idle | active | waiting
-let _notifyOutputChars = 0;
-let _notifyIdleTimer = null;
 let _notifyLastCompleted = 0;
 let _notifyLastAction = 0;
 let _notifyConnectedAt = 0;
-let _notifyRecentText = '';
 let _notifyToastTimer = null;
 
 const NOTIFY_COOLDOWN = 8000;     // min ms between same-type notifications
-const NOTIFY_IDLE_MS = 6000;      // idle duration to trigger "completed"
-const NOTIFY_MIN_CHARS = 80;      // min output chars before idle = "completed"
 
-// "等待操作" — Claude 需要用户做选择或确认（选 1/2/3、Y/n、Allow/Deny）
-const NOTIFY_WAITING_PATTERNS = [
-  // Y/n confirmation
-  /\[Y\/n\]/,
-  /\[y\/N\]/,
-  /\(y\/n\)/i,
-  /\(yes\/no\)/i,
-  /Yes\s*\/\s*No/i,
-  // Claude Code tool approval
-  /Allow\s*(once|always)/i,
-  /Approve\??/i,
-  /Deny/i,
-  /Do you want to proceed/i,
-  /Do you want to/i,
-  /Press Enter/i,
-  // Numbered choices (e.g. "1. xxx  2. xxx" or "1) xxx")
-  /^\s*[1-9]\.\s+\S/m,
-  /^\s*[1-9]\)\s+\S/m,
-];
-
-// "任务已完成" — Claude 输出停止，回到空闲提示符
-const NOTIFY_COMPLETED_PATTERNS = [
-  /[❯>]\s*$/,        // idle prompt
-  /\$\s*$/,           // shell prompt
-];
-
-const NOTIFY_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
-
-function notifyStripAnsi(str) {
-  return str.replace(NOTIFY_ANSI_RE, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-}
+// Completion / waiting is no longer judged here from raw terminal output.
+// The server runs the aux-AI on idle and pushes a `notify` verdict (single
+// source of truth, consistent with chat). See the WS `notify` handler below.
 
 function updateNotifyBtn() {
   if (!notifyBtn) return;
@@ -265,68 +231,10 @@ function speakNotify(text, type) {
   }
 }
 
-function notifyOnOutput(rawData) {
-  if (!_notifyEnabled) return;
-
-  const text = notifyStripAnsi(rawData);
-  const printable = text.replace(/\s+/g, '');
-
-  // Accumulate stripped text for final idle check
-  _notifyRecentText += text;
-  if (_notifyRecentText.length > 3000) {
-    _notifyRecentText = _notifyRecentText.slice(-2000);
-  }
-
-  if (printable.length > 0) {
-    _notifyOutputChars += printable.length;
-    if (_notifyState === 'idle') _notifyState = 'active';
-  }
-
-  // Check for waiting-for-action patterns (needs user selection mid-task)
-  if (_notifyState === 'active') {
-    for (const pat of NOTIFY_WAITING_PATTERNS) {
-      if (pat.test(text)) {
-        _notifyState = 'waiting';
-        speakNotify('正在等待您的操作', 'action');
-        break;
-      }
-    }
-  }
-
-  // Reset idle timer — if output stops for NOTIFY_IDLE_MS, classify the notification
-  if (_notifyIdleTimer) clearTimeout(_notifyIdleTimer);
-  _notifyIdleTimer = setTimeout(() => {
-    if (_notifyState === 'active' && _notifyOutputChars >= NOTIFY_MIN_CHARS) {
-      const tail = _notifyRecentText.slice(-2000);
-      // Check if it's a waiting-for-action (selection/confirmation prompt)
-      let isWaiting = false;
-      for (const pat of NOTIFY_WAITING_PATTERNS) {
-        if (pat.test(tail)) { isWaiting = true; break; }
-      }
-      if (isWaiting) {
-        speakNotify('正在等待您的操作', 'action');
-      } else {
-        // Output stopped — task completed (idle prompt or just no more output)
-        speakNotify('任务已完成', 'completed');
-      }
-    }
-    _notifyState = 'idle';
-    _notifyOutputChars = 0;
-    _notifyRecentText = '';
-  }, NOTIFY_IDLE_MS);
-}
-
 function notifyOnInput(data) {
-  // Reset on Enter key (user submitting input/response)
+  // User submitted input/response (Enter) → hide any pending notify toast.
   if (data.includes('\r') || data.includes('\n')) {
-    _notifyState = 'idle';
-    _notifyOutputChars = 0;
-    _notifyRecentText = '';
     dismissNotifyToast();
-    if (_notifyIdleTimer) {
-      clearTimeout(_notifyIdleTimer);
-      _notifyIdleTimer = null;
-    }
   }
 }
 
@@ -486,7 +394,10 @@ function connect() {
             term.write(chunk, () => { if (wasAtBottom) term.scrollToBottom(); });
           });
         }
-        notifyOnOutput(msg.data);
+      } else if (msg.type === 'notify') {
+        // Server-side aux-AI verdict (single judge): turn finished / waiting.
+        const waiting = msg.state === 'waiting';
+        speakNotify(waiting ? '正在等待您的操作' : '任务已完成', waiting ? 'action' : 'completed');
       } else if (msg.type === 'exit') {
         term.write(msg.data);
         _sessionExited = true;

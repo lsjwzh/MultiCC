@@ -36,6 +36,7 @@ app/.flutter-plugins-dependencies
 
 # Build artifacts
 public/*.apk
+public/multicc.apk.json
 app/node_modules/
 app/android/app/build/
 app/android/build/
@@ -52,3 +53,7 @@ app/ios/App/App/config.xml
 app/ios/App/Pods/
 app/ios/App/build/
 app/ios/DerivedData/
+
+# multicc per-directory scratch memo (tool-generated, keep local)
+multicc.memo.md
+**/multicc.memo.md

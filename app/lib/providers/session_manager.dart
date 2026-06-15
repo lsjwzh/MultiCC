@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 import '../models/message.dart';
-import '../services/chat_service.dart';
+import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import 'chat_provider.dart';
@@ -56,9 +56,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       _isInBackground = false;
       for (final p in _providers.values) {
         p.isInBackground = false;
-        if (p.connectionState == ChatConnectionState.disconnected) {
-          p.reconnect();
-        }
+        // Always rebuild on resume: after the OS froze the socket while
+        // backgrounded it often still reads `connected` but is actually dead
+        // (half-open). Gating on `disconnected` would skip exactly that case
+        // and leave the chat frozen until an app restart.
+        p.reconnect();
       }
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
@@ -121,6 +123,33 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       if (s.isAux) return s;
     }
     return null;
+  }
+
+  // ── Notifications ──────────────────────────────────────────────────────────
+
+  /// Raise a local notification for a workspace-level aux-AI verdict. This is
+  /// how sessions the user never opened (no chat socket) still ping the
+  /// dashboard. Skipped when the user is actively viewing that very session —
+  /// no point pinging about what's already on screen. The same verdict can also
+  /// arrive over an open session's chat socket; NotificationService de-dups the
+  /// two by id, so this and ChatProvider._maybeNotify never double-fire.
+  void handleWorkspaceNotify(String sessionId, String state, String message) {
+    if (!_isInBackground && sessionId == _activeSessionId) return;
+    final label = _labelFor(sessionId);
+    NotificationService.show(
+      title: 'MultiCC #$label: ${state == 'waiting' ? '等待操作' : '任务完成'}',
+      body: message.isNotEmpty ? message : label,
+      id: sessionId.hashCode,
+    );
+  }
+
+  String _labelFor(String id) {
+    for (final s in _sessions) {
+      if (s.id == id) {
+        return (s.label?.isNotEmpty == true) ? s.label! : s.id;
+      }
+    }
+    return id;
   }
 
   // ── Multi-session management ───────────────────────────────────────────────

@@ -320,12 +320,13 @@ function handleEvent(msg) {
           startTitleAnimation();
           updateUI();
         } else if (!msg.is_streaming && isStreaming) {
-          // Task finished while we were disconnected
+          // Task finished while we were disconnected. No notification here: the
+          // aux-AI `notify` verdict (single judge) fired live at completion
+          // time, and reconnecting means the tab is in front of the user again.
           isStreaming = false;
           hideThinking();
           finishStreaming();
           stopTitleAnimation();
-          speakNotify('任务已完成', 'completed');
           addSystemMsg('⚠️ Response completed while disconnected. Check history above.');
           updateUI();
         }
@@ -356,7 +357,10 @@ function handleEvent(msg) {
       isStreaming = false;
       finishStreaming();
       stopTitleAnimation();
-      speakNotify('任务已完成', 'completed');
+      // No notification here: a `result` only means the stream paused, which
+      // happens between turns of a multi-step agent run too. The server's
+      // aux-AI debounces the pause and sends a `notify` verdict — that's the
+      // single judge (see 'notify' case).
       if (msg.total_cost_usd) {
         _costText = `$${msg.total_cost_usd.toFixed(4)} | ${msg.duration_ms}ms | ${msg.num_turns} turn(s)`;
       }
@@ -375,15 +379,24 @@ function handleEvent(msg) {
       break;
 
     case 'stream_end':
-      // Safety net: server confirms process exited — ensure cancel button is hidden
+      // Safety net: server confirms process exited — ensure cancel button is
+      // hidden. No notification here; the aux-AI `notify` verdict is the judge.
       if (isStreaming) {
         isStreaming = false;
         finishStreaming();
         stopTitleAnimation();
-        speakNotify('任务已完成', 'completed');
         updateUI();
       }
       break;
+
+    case 'notify': {
+      // Server-side aux-AI verdict that the turn finished / is waiting. This is
+      // the single source of truth for completion notifications — we no longer
+      // guess from `result` (which also fires between turns of an agent run).
+      const waiting = msg.state === 'waiting';
+      speakNotify(waiting ? '等待操作' : '任务已完成', waiting ? 'waiting' : 'completed');
+      break;
+    }
 
     case 'error':
       addSystemMsg(`Error: ${msg.error || JSON.stringify(msg)}`);

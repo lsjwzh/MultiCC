@@ -32,6 +32,17 @@ class ChatService {
   bool _disposed = false;
   bool isStreaming = false;
 
+  // ── Heartbeat: detect "half-open" sockets ──
+  // When the phone sleeps / network switches, the OS can freeze the socket
+  // without ever firing onDone/onError, leaving a dead connection that still
+  // looks `connected`. We ping periodically and, if no traffic arrives for a
+  // while, treat the socket as dead and reconnect — instead of the user being
+  // stuck with a frozen chat that only an app restart could fix.
+  Timer? _heartbeatTimer;
+  DateTime _lastActivity = DateTime.now();
+  static const _pingInterval = Duration(seconds: 15);
+  static const _staleThreshold = Duration(seconds: 35);
+
   Stream<ChatEvent> get events => _controller.stream;
 
   String? initialSessionId;
@@ -66,6 +77,8 @@ class ChatService {
     if (_disposed) return;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
 
     _state = ChatConnectionState.connecting;
     _emit('state_change', _state);
@@ -88,6 +101,8 @@ class ChatService {
         if (_disposed || _channel != channel) return;
         _state = ChatConnectionState.connected;
         _reconnectAttempt = 0;
+        _lastActivity = DateTime.now();
+        _startHeartbeat();
         _emit('state_change', _state);
       }).catchError((_) {
         if (_disposed || _channel != channel) return;
@@ -99,10 +114,30 @@ class ChatService {
   }
 
   void _onMessage(dynamic raw) {
+    // Any inbound frame (including `pong`) proves the socket is alive.
+    _lastActivity = DateTime.now();
     try {
       final msg = jsonDecode(raw as String) as Map<String, dynamic>;
+      if (msg['type'] == 'pong') return;
       _handleMessage(msg);
     } catch (_) {}
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_pingInterval, (_) {
+      if (_disposed || _state != ChatConnectionState.connected) return;
+      // No traffic since the last ping cycle → the socket is half-open/dead.
+      if (DateTime.now().difference(_lastActivity) > _staleThreshold) {
+        _scheduleReconnect();
+        return;
+      }
+      try {
+        _channel?.sink.add(jsonEncode({'type': 'ping'}));
+      } catch (_) {
+        _scheduleReconnect();
+      }
+    });
   }
 
   void _handleMessage(Map<String, dynamic> msg) {
@@ -155,6 +190,15 @@ class ChatService {
         _emit('error', msg['error']?.toString() ?? 'Unknown error');
         break;
 
+      case 'notify':
+        // Server-side aux-AI verdict that a turn finished / is waiting. The
+        // client never judges this itself — it just renders the verdict.
+        _emit('notify', {
+          'state': (msg['state'] ?? 'completed').toString(),
+          'message': (msg['message'] ?? '').toString(),
+        });
+        break;
+
       default:
         break;
     }
@@ -184,12 +228,21 @@ class ChatService {
     }
   }
 
-  void send(String text) {
-    if (_channel == null) return;
+  /// Returns false if the socket isn't healthy — the caller should not show the
+  /// message as sent. Also kicks off a reconnect so the next attempt can work.
+  bool send(String text) {
+    if (_channel == null || _state != ChatConnectionState.connected) {
+      connect();
+      return false;
+    }
     try {
       _channel!.sink.add(jsonEncode({'type': 'user_message', 'text': text}));
       isStreaming = true;
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      _scheduleReconnect();
+      return false;
+    }
   }
 
   void cancel() {
@@ -206,6 +259,8 @@ class ChatService {
 
   void _scheduleReconnect() {
     if (_disposed) return;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     // Dedup: onError + onDone (or ready failure) can fire for the same dead
     // socket — don't stack timers or double-bump the backoff counter.
     if (_reconnectTimer?.isActive ?? false) return;
@@ -232,6 +287,7 @@ class ChatService {
   void dispose() {
     _disposed = true;
     _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
     _controller.close();

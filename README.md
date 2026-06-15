@@ -306,6 +306,13 @@ user message
 
 ## API Reference
 
+### Directories
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/directories` | List directories with session counts and Git push status |
+| `POST` | `/api/directories/:id/push` | Push the directory base branch to its configured remote |
+
 ### Sessions
 
 | Method | Endpoint | Description |
@@ -337,6 +344,7 @@ user message
 | `GET` | `/api/voice/vocab` | Learned vocabulary terms |
 | `DELETE` | `/api/voice/vocab/:term` | Remove a term |
 | `GET` / `POST` | `/api/settings/voice` | Get / update voice configuration (hot-reload) |
+| `GET` / `POST` | `/api/settings/power` | Read / update macOS lid-sleep prevention (macOS only; administrator authorization required) |
 
 ### Push / Notifications
 

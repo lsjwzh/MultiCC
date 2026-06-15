@@ -167,6 +167,11 @@
     .dir-meta .sep{color:var(--line-strong)}
     .cli-mini{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;line-height:1.5;border:1px solid currentColor}
     .cli-mini.claude{color:var(--claude)} .cli-mini.codex{color:var(--codex)}
+    .dir-push{display:inline-flex;align-items:center;padding:2px 7px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--muted);font-family:var(--mono);font-size:10px;line-height:1.5;cursor:pointer}
+    .dir-push:hover{border-color:var(--accent-line);color:var(--accent)}
+    .dir-push.pending{border-color:rgba(227,179,65,.45);color:var(--amber);background:rgba(227,179,65,.08)}
+    .dir-push.synced{color:var(--codex)}
+    .dir-push.no-remote{color:var(--faint)}
 
     .dir-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;padding:12px 17px 0}
     body.has-focus .dir-actions{padding:10px 12px 0}
@@ -266,6 +271,9 @@
     .sc-footer{padding:13px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px}
     .sc-footer .status-text{font-size:12px;color:var(--muted)}
     .status-text.ok{color:var(--codex)} .status-text.err{color:var(--danger)}
+    .toggle-label{display:inline-flex;align-items:center;gap:10px;cursor:pointer}
+    .toggle-label input{width:18px;height:18px;flex:none;accent-color:var(--accent)}
+    .toggle-label input:disabled{cursor:wait;opacity:.6}
 
     .resource-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)}
     .resource-toolbar input,.resource-toolbar select{background:var(--bg-soft);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:7px 10px;font-size:12px}
@@ -347,6 +355,7 @@
     <div class="nav-label">Settings</div>
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> 定时任务 <span class="badge" id="nav-cron-count">0</span></button>
     <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> 语音 Voice</button>
+    <button class="nav-item" id="macos-power-nav" data-view="power" onclick="setView('power')" style="display:none;"><span class="ic">⌁</span> macOS 电源</button>
     <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> 推送 Push</button>
     <button class="nav-item" data-view="wechat" onclick="setView('wechat')"><span class="ic">💬</span> WeChat</button>
     <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> Agent 资源</button>
@@ -427,6 +436,25 @@
               <div style="padding:0 0 0 134px;font-size:12px;color:var(--faint);line-height:1.5">Whisper prompt guides vocabulary recognition.<br>Terms from voice_examples.json are also auto-appended at runtime.</div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveVoiceSettings()">Save</button><span class="status-text" id="ws-status"></span></div>
+          </div>
+        </section>
+
+        <!-- ─── macOS Power (hidden on other platforms) ─── -->
+        <section class="view" id="macos-power-section" data-view="power" style="display:none;">
+          <div class="sec-head"><h2>macOS 电源设置</h2><div class="line"></div></div>
+          <div class="settings-card">
+            <div class="sc-header">关盖运行</div>
+            <div class="sc-body">
+              <label class="toggle-label">
+                <input id="macos-lid-sleep-toggle" type="checkbox" onchange="saveMacosPowerSettings()" />
+                <span>关盖时保持运行，不进入睡眠</span>
+              </label>
+              <div class="sec-desc" style="margin:0">开启后会阻止所有系统睡眠（包括关盖睡眠）。切换时需要在 Mac 上完成管理员授权，请注意散热和耗电。</div>
+            </div>
+            <div class="sc-footer">
+              <button class="btn" onclick="loadMacosPowerSettings()">刷新状态</button>
+              <span class="status-text" id="macos-power-status"></span>
+            </div>
           </div>
         </section>
 
@@ -740,7 +768,8 @@
     (function () {
       const TITLES = {
         overview: ['概览', ''], cron: ['定时任务', '到点自动新建会话执行'],
-        voice: ['语音 Voice', '流式识别与转写'], push: ['推送通知', 'Web Push 与备用通道'],
+        voice: ['语音 Voice', '流式识别与转写'], power: ['macOS 电源', '关盖与系统睡眠设置'],
+        push: ['推送通知', 'Web Push 与备用通道'],
         wechat: ['WeChat Bridge', '微信入口桥接'], resources: ['Agent 资源', 'Skills 与历史会话'],
         storage: ['临时上传', '上传文件缓存'],
       };

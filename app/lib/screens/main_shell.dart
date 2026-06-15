@@ -476,6 +476,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       settings: widget.settings,
       dirId: widget.directory.id,
     );
+    _workspace.onNotify = widget.mgr.handleWorkspaceNotify;
     _workspace.addListener(_onStatusChange);
     _workspace.connect();
   }

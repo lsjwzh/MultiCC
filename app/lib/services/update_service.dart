@@ -28,6 +28,8 @@ class UpdateService {
 
       final serverMtime = json['mtime'] as String? ?? '';
       if (serverMtime.isEmpty) return;
+      // Optional — present when the server has a version sidecar for the APK.
+      final serverVersion = (json['versionName'] as String?)?.trim() ?? '';
 
       final prefs = await SharedPreferences.getInstance();
       final lastMtime = prefs.getString(_keyLastMtime) ?? '';
@@ -43,7 +45,10 @@ class UpdateService {
           context: context,
           builder: (_) => AlertDialog(
             backgroundColor: const Color(0xFF0f1115),
-            title: const Text('发现新版本', style: TextStyle(color: Color(0xFFf2f4f7))),
+            title: Text(
+              serverVersion.isNotEmpty ? '发现新版本 $serverVersion' : '发现新版本',
+              style: const TextStyle(color: Color(0xFFf2f4f7)),
+            ),
             content: const Text(
               '服务器上有新版本的 APK，是否下载更新？',
               style: TextStyle(color: Color(0xFF8a909b)),

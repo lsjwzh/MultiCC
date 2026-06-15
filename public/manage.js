@@ -115,46 +115,27 @@ function startMonitor(sessionId) {
   ws.onmessage = ({ data }) => {
     try {
       const msg = JSON.parse(data);
-      if (msg.type !== 'output') return;
-      // Skip replay buffer (first 5s after connect)
-      if (Date.now() - mon.connectedAt < 5000) return;
-
-      const text = stripAnsi(msg.data);
-      const printable = text.replace(/\s+/g, '');
-
-      mon.recentText += text;
-      if (mon.recentText.length > 3000) mon.recentText = mon.recentText.slice(-2000);
-
-      if (printable.length > 0) {
-        mon.chars += printable.length;
-        if (mon.state === 'idle') {
-          mon.state = 'active';
-          // New activity: clear old status and reset alert so next event can fire
+      // Completion/waiting is no longer judged from raw output here. The server
+      // runs the aux-AI on idle and pushes a `notify` verdict (single judge,
+      // consistent with chat). We just render it.
+      if (msg.type === 'notify') {
+        const waiting = msg.state === 'waiting';
+        alertSession(
+          sessionId,
+          waiting ? 'waiting' : 'completed',
+          msg.message || (waiting ? '等待操作' : '任务已完成'),
+        );
+        return;
+      }
+      // New output → release the alert latch so the next verdict can fire again.
+      if (msg.type === 'output') {
+        if (Date.now() - mon.connectedAt < 5000) return; // skip replay buffer
+        const printable = stripAnsi(msg.data).replace(/\s+/g, '');
+        if (printable.length > 0 && _alertedSessions.has(sessionId)) {
           clearSessionStatus(sessionId);
           _alertedSessions.delete(sessionId);
         }
       }
-
-      // Only judge status AFTER output stops for NOTIFY_IDLE_MS
-      if (mon.idleTimer) clearTimeout(mon.idleTimer);
-      mon.idleTimer = setTimeout(() => {
-        if (mon.state === 'active' && mon.chars >= NOTIFY_MIN_CHARS) {
-          const tail = mon.recentText.slice(-2000);
-          // Still working (spinner/thinking) — don't judge yet, wait longer
-          if (isInProgress(tail)) {
-            mon.idleTimer = setTimeout(() => mon.idleTimer && (mon.state = 'idle', mon.chars = 0, mon.recentText = ''), NOTIFY_IDLE_MS);
-            return;
-          }
-          if (matchesWaiting(tail)) {
-            alertSession(sessionId, 'waiting', '等待操作');
-          } else {
-            alertSession(sessionId, 'completed', '任务已完成');
-          }
-        }
-        mon.state = 'idle';
-        mon.chars = 0;
-        mon.recentText = '';
-      }, NOTIFY_IDLE_MS);
     } catch (_) {}
   };
 
@@ -441,6 +422,21 @@ function renderDirectoryBlock(dir, dirSessions) {
   const active = dirSessions.filter(s => s.active).length;
   const claudeCount = groups.claude_terminal.length + groups.claude_chat.length;
   const codexCount = groups.codex_terminal.length + groups.codex_chat.length;
+  const ps = dir.pushState || {};
+  let pushClass = 'no-remote';
+  let pushText = ps.available === false ? 'Git 状态未知' : '未设置 remote';
+  let pushTitle = ps.available === false ? (ps.reason || '无法读取 Git 状态') : '该目录没有设置 Git remote';
+  if (ps.available !== false && ps.hasRemote && ps.ahead > 0) {
+    pushClass = 'pending';
+    pushText = `↑ ${ps.ahead} 待 push`;
+    pushTitle = `点击推送 ${ps.branch || ''} 到 ${ps.remote || ''}/${ps.remoteBranch || ''}`;
+  } else if (ps.available !== false && ps.hasRemote) {
+    pushClass = 'synced';
+    pushText = ps.behind > 0 ? `↓ 落后 ${ps.behind}` : '✓ 已同步';
+    pushTitle = ps.behind > 0
+      ? `本地分支落后 ${ps.remote || ''}/${ps.remoteBranch || ''} ${ps.behind} 个提交`
+      : `已同步到 ${ps.remote || ''}/${ps.remoteBranch || ''}`;
+  }
 
   const renderGroup = (cli, kind, label) => {
     const ss = groups[`${cli}_${kind}`];
@@ -472,6 +468,7 @@ function renderDirectoryBlock(dir, dirSessions) {
             ${active > 0 ? `<span class="sep">·</span><span><strong>${active}</strong> active</span>` : ''}
             ${claudeCount > 0 ? `<span class="cli-mini claude">${claudeCount} Claude</span>` : ''}
             ${codexCount > 0 ? `<span class="cli-mini codex">${codexCount} Codex</span>` : ''}
+            <button class="dir-push ${pushClass}" title="${escapeHtml(pushTitle)}" onclick="event.stopPropagation(); pushDirectory('${escapeHtml(id)}')">${escapeHtml(pushText)}</button>
           </div>
         </div>
         <button class="btn-icon" title="项目备忘 (multicc.memo.md)" onclick="event.stopPropagation(); openMemo('${escapeHtml(id)}')">📝</button>
@@ -488,6 +485,37 @@ function renderDirectoryBlock(dir, dirSessions) {
         ${bodyHtml}
       </div>
     </div>`;
+}
+
+async function pushDirectory(id) {
+  const dir = (_cachedDirectories || []).find(d => d.id === id);
+  if (!dir) return;
+  const state = dir.pushState || {};
+  if (state.available === false) {
+    showToast(`无法读取 Git 状态：${state.reason || '未知错误'}`, true);
+    return;
+  }
+  if (!state.hasRemote) {
+    showToast('该目录未设置 Git remote', true);
+    return;
+  }
+  if (!state.ahead) {
+    showToast(state.behind > 0 ? `本地落后远端 ${state.behind} 个提交，请先 pull` : '没有待 push 的提交');
+    return;
+  }
+  if (!(await showConfirm(
+    `将 ${state.ahead} 个提交推送到 ${state.remote}/${state.remoteBranch}？`,
+    { okText: 'Push' }
+  ))) return;
+  try {
+    const res = await fetch(`/api/directories/${id}/push${tokenQS('?')}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    showToast(data.pushed ? `已推送 ${data.before.ahead} 个提交` : '没有待 push 的提交');
+    await loadDashboard();
+  } catch (error) {
+    showToast(`Push 失败：${error.message}`, true);
+  }
 }
 
 function renderSessionRow(s) {
@@ -1313,6 +1341,7 @@ async function mergeSession(id) {
       const prev = _workspaceStatus.get(id) || {};
       _workspaceStatus.set(id, { ...prev, mergeState: { ...(prev.mergeState || {}), mergeReady: false, dirty: false, ahead: 0 } });
       updateSessionMergeDom(id);
+      await loadDashboard();
     } else if (res.status === 409) {
       showToast(`合并冲突，已 abort：${(data.conflicts || []).join(', ')}`, true);
       showMergeConflictDiff(id, data);
@@ -1667,6 +1696,69 @@ async function saveVoiceSettings() {
     vsStatus.className = 'status-text err';
     wsStatus.textContent = `Failed: ${err.message}`;
     wsStatus.className = 'status-text err';
+  }
+}
+
+/* ── macOS Power Settings ── */
+async function loadMacosPowerSettings() {
+  const section = document.getElementById('macos-power-section');
+  const nav = document.getElementById('macos-power-nav');
+  const toggle = document.getElementById('macos-lid-sleep-toggle');
+  const status = document.getElementById('macos-power-status');
+  if (!section || !toggle || !status) return;
+
+  let available = false;
+  try {
+    const res = await fetch('/api/settings/power' + tokenQS('?'));
+    const data = await res.json();
+    if (!data.available) {
+      section.style.display = 'none';
+      if (nav) nav.style.display = 'none';
+      return;
+    }
+    available = true;
+    section.style.display = '';
+    if (nav) nav.style.display = '';
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    toggle.checked = !!data.enabled;
+    status.textContent = data.enabled ? '已开启' : '已关闭';
+    status.className = `status-text ${data.enabled ? 'ok' : ''}`;
+  } catch (error) {
+    section.style.display = available ? '' : 'none';
+    if (nav) nav.style.display = available ? '' : 'none';
+    if (available) {
+      status.textContent = `读取失败：${error.message}`;
+      status.className = 'status-text err';
+    }
+  }
+}
+
+async function saveMacosPowerSettings() {
+  const toggle = document.getElementById('macos-lid-sleep-toggle');
+  const status = document.getElementById('macos-power-status');
+  const requested = toggle.checked;
+  toggle.disabled = true;
+  status.textContent = '等待管理员授权…';
+  status.className = 'status-text';
+
+  try {
+    const res = await fetch('/api/settings/power' + tokenQS('?'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: requested }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    toggle.checked = !!data.enabled;
+    status.textContent = data.enabled ? '已开启' : '已关闭';
+    status.className = `status-text ${data.enabled ? 'ok' : ''}`;
+    showToast(data.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
+  } catch (error) {
+    toggle.checked = !requested;
+    status.textContent = `设置失败：${error.message}`;
+    status.className = 'status-text err';
+  } finally {
+    toggle.disabled = false;
   }
 }
 
@@ -2832,6 +2924,7 @@ focusSession = function(id) {
 /* ── Init ── */
 loadDashboard();
 loadVoiceSettings();
+loadMacosPowerSettings();
 loadAsrSettings();
 loadCronTasks();
 loadPushDiagnostics();

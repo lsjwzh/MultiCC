@@ -43,6 +43,12 @@ class WorkspaceService extends ChangeNotifier {
   final Map<String, int> pendingNotes = {}; // sessionId → pending note count
   final List<Map<String, dynamic>> events = []; // newest last, capped at 200
 
+  /// Fired when the server's aux-AI decides a session's turn finished / is
+  /// waiting. Lets the dashboard raise a local notification for sessions the
+  /// user never opened (which have no chat socket of their own). Whether to
+  /// actually notify is decided by [SessionManager].
+  void Function(String sessionId, String state, String message)? onNotify;
+
   WorkspaceService({required this.settings, required this.dirId});
 
   void connect() {
@@ -171,6 +177,15 @@ class WorkspaceService extends ChangeNotifier {
       if (id is String) {
         pendingNotes[id] = (msg['count'] ?? 0) as int;
         notifyListeners();
+      }
+    } else if (type == 'notify') {
+      final id = msg['sessionId'];
+      if (id is String) {
+        onNotify?.call(
+          id,
+          (msg['state'] ?? 'completed').toString(),
+          (msg['message'] ?? '').toString(),
+        );
       }
     }
   }
