@@ -5178,7 +5178,7 @@ function installBundledSkill() {
 // Complements the per-session triggers above — this one fires by creating a
 // fresh chat session in a target directory (directory-level recurring tasks).
 cronTasks.mount(app);
-cronTasks.init({ directories, createSessionRecord, runChatTurn });
+cronTasks.init({ directories, createSessionRecord, runChatTurn, sessionExists: (id) => persistedSessions.has(id) });
 
 server.listen(PORT, () => {
   console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);

@@ -1,12 +1,15 @@
 // ── Scheduled tasks (定时任务) ──
 //
-// multicc-native recurring tasks. When a task fires it creates a fresh chat
-// session in the target directory and sends the task's prompt — i.e. "到点派一个
-// 新 agent 干这件事". Tasks are created by the user (in /manage) or by an agent
-// (POST /api/cron from localhost). All managed centrally in the /manage panel.
+// multicc-native recurring tasks. When a task fires it sends the task's prompt
+// to its dedicated chat session in the target directory, reusing that session
+// across cycles so context carries over — i.e. "到点叫醒同一个 agent 继续干". A
+// fresh session is created only on the first run or if the session was deleted.
+// Tasks are created by the user (in /manage) or by an agent (POST /api/cron from
+// localhost). All managed centrally in the /manage panel.
 //
 // Decoupled from server.js via init(deps): the host injects { directories,
-// createSessionRecord, runChatTurn } so this module never requires server.js back.
+// createSessionRecord, runChatTurn, sessionExists } so this module never
+// requires server.js back.
 
 const fs = require('fs');
 const path = require('path');
@@ -14,7 +17,7 @@ const path = require('path');
 const STORE = path.join(__dirname, 'scheduled_tasks.json');
 
 let tasks = [];
-let deps = null;       // { directories, createSessionRecord, runChatTurn }
+let deps = null;       // { directories, createSessionRecord, runChatTurn, sessionExists }
 let timer = null;
 
 function load() {
@@ -99,25 +102,36 @@ function fireTask(task, reason) {
     console.warn(`[multicc/cron] task ${task.id} (${task.name}): directory ${task.dirId} missing`);
     return { ok: false, error: '目标目录不存在' };
   }
-  let r;
-  try {
-    r = deps.createSessionRecord({ dir, cli: task.cli || 'claude', kind: 'chat', label: `⏰ ${task.name}` });
-  } catch (e) { r = { ok: false, error: e.message }; }
-  if (!r || !r.ok) {
-    task.lastRunAt = Date.now(); task.lastStatus = 'error';
-    task.lastError = (r && r.error) || '创建会话失败'; save();
-    return { ok: false, error: task.lastError };
+  // Reuse the task's session across cycles so the conversation context (and
+  // for claude, the cliSessionId) carries over from run to run. Only spin up a
+  // fresh session when the task has never run, or its session was deleted.
+  let sessionId = null;
+  let reused = false;
+  if (task.lastSessionId && deps.sessionExists && deps.sessionExists(task.lastSessionId)) {
+    sessionId = task.lastSessionId;
+    reused = true;
+  } else {
+    let r;
+    try {
+      r = deps.createSessionRecord({ dir, cli: task.cli || 'claude', kind: 'chat', label: `⏰ ${task.name}` });
+    } catch (e) { r = { ok: false, error: e.message }; }
+    if (!r || !r.ok) {
+      task.lastRunAt = Date.now(); task.lastStatus = 'error';
+      task.lastError = (r && r.error) || '创建会话失败'; save();
+      return { ok: false, error: task.lastError };
+    }
+    sessionId = r.id;
   }
   let started = false;
-  try { started = deps.runChatTurn(r.id, task.prompt, {}); } catch (e) { task.lastError = e.message; }
+  try { started = deps.runChatTurn(sessionId, task.prompt, {}); } catch (e) { task.lastError = e.message; }
   task.lastRunAt = Date.now();
-  task.lastSessionId = r.id;
+  task.lastSessionId = sessionId;
   task.runCount = (task.runCount || 0) + 1;
   task.lastStatus = started ? 'ok' : 'spawn-failed';
   if (started) task.lastError = '';
   save();
-  console.log(`[multicc/cron] fired task ${task.id} (${task.name}) [${reason}] → session ${r.id}, started=${started}`);
-  return { ok: started, sessionId: r.id };
+  console.log(`[multicc/cron] fired task ${task.id} (${task.name}) [${reason}] → session ${sessionId} (${reused ? 'reused' : 'new'}), started=${started}`);
+  return { ok: started, sessionId };
 }
 
 function tick() {
