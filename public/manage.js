@@ -441,6 +441,21 @@ function renderDirectoryBlock(dir, dirSessions) {
   const active = dirSessions.filter(s => s.active).length;
   const claudeCount = groups.claude_terminal.length + groups.claude_chat.length;
   const codexCount = groups.codex_terminal.length + groups.codex_chat.length;
+  const ps = dir.pushState || {};
+  let pushClass = 'no-remote';
+  let pushText = ps.available === false ? 'Git 状态未知' : '未设置 remote';
+  let pushTitle = ps.available === false ? (ps.reason || '无法读取 Git 状态') : '该目录没有设置 Git remote';
+  if (ps.available !== false && ps.hasRemote && ps.ahead > 0) {
+    pushClass = 'pending';
+    pushText = `↑ ${ps.ahead} 待 push`;
+    pushTitle = `点击推送 ${ps.branch || ''} 到 ${ps.remote || ''}/${ps.remoteBranch || ''}`;
+  } else if (ps.available !== false && ps.hasRemote) {
+    pushClass = 'synced';
+    pushText = ps.behind > 0 ? `↓ 落后 ${ps.behind}` : '✓ 已同步';
+    pushTitle = ps.behind > 0
+      ? `本地分支落后 ${ps.remote || ''}/${ps.remoteBranch || ''} ${ps.behind} 个提交`
+      : `已同步到 ${ps.remote || ''}/${ps.remoteBranch || ''}`;
+  }
 
   const renderGroup = (cli, kind, label) => {
     const ss = groups[`${cli}_${kind}`];
@@ -472,6 +487,7 @@ function renderDirectoryBlock(dir, dirSessions) {
             ${active > 0 ? `<span class="sep">·</span><span><strong>${active}</strong> active</span>` : ''}
             ${claudeCount > 0 ? `<span class="cli-mini claude">${claudeCount} Claude</span>` : ''}
             ${codexCount > 0 ? `<span class="cli-mini codex">${codexCount} Codex</span>` : ''}
+            <button class="dir-push ${pushClass}" title="${escapeHtml(pushTitle)}" onclick="event.stopPropagation(); pushDirectory('${escapeHtml(id)}')">${escapeHtml(pushText)}</button>
           </div>
         </div>
         <button class="btn-icon" title="项目备忘 (multicc.memo.md)" onclick="event.stopPropagation(); openMemo('${escapeHtml(id)}')">📝</button>
@@ -488,6 +504,37 @@ function renderDirectoryBlock(dir, dirSessions) {
         ${bodyHtml}
       </div>
     </div>`;
+}
+
+async function pushDirectory(id) {
+  const dir = (_cachedDirectories || []).find(d => d.id === id);
+  if (!dir) return;
+  const state = dir.pushState || {};
+  if (state.available === false) {
+    showToast(`无法读取 Git 状态：${state.reason || '未知错误'}`, true);
+    return;
+  }
+  if (!state.hasRemote) {
+    showToast('该目录未设置 Git remote', true);
+    return;
+  }
+  if (!state.ahead) {
+    showToast(state.behind > 0 ? `本地落后远端 ${state.behind} 个提交，请先 pull` : '没有待 push 的提交');
+    return;
+  }
+  if (!(await showConfirm(
+    `将 ${state.ahead} 个提交推送到 ${state.remote}/${state.remoteBranch}？`,
+    { okText: 'Push' }
+  ))) return;
+  try {
+    const res = await fetch(`/api/directories/${id}/push${tokenQS('?')}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    showToast(data.pushed ? `已推送 ${data.before.ahead} 个提交` : '没有待 push 的提交');
+    await loadDashboard();
+  } catch (error) {
+    showToast(`Push 失败：${error.message}`, true);
+  }
 }
 
 function renderSessionRow(s) {
@@ -1313,6 +1360,7 @@ async function mergeSession(id) {
       const prev = _workspaceStatus.get(id) || {};
       _workspaceStatus.set(id, { ...prev, mergeState: { ...(prev.mergeState || {}), mergeReady: false, dirty: false, ahead: 0 } });
       updateSessionMergeDom(id);
+      await loadDashboard();
     } else if (res.status === 409) {
       showToast(`合并冲突，已 abort：${(data.conflicts || []).join(', ')}`, true);
       showMergeConflictDiff(id, data);

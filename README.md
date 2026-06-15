@@ -306,6 +306,13 @@ user message
 
 ## API Reference
 
+### Directories
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/directories` | List directories with session counts and Git push status |
+| `POST` | `/api/directories/:id/push` | Push the directory base branch to its configured remote |
+
 ### Sessions
 
 | Method | Endpoint | Description |

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test.js",
+    "test:git-push": "node test-git-push.js",
     "test:power": "node test-macos-power.js",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true"
   },

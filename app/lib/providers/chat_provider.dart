@@ -323,7 +323,13 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void reconnect() => _reconnect(preserveHistory: true);
+  // Reconnect behaves like reopening the session: drop stale local state and
+  // reload the authoritative transcript from the server. Preserving history
+  // here was the bug — after a socket died mid/post-response, `_historyApplied`
+  // stayed true so the server's fresh chat_history (containing the answer that
+  // completed while disconnected) was ignored, leaving a stuck chat that only
+  // an app restart could fix.
+  void reconnect() => _reconnect(preserveHistory: false);
 
   void _reconnect({required bool preserveHistory}) {
     if (!preserveHistory) {

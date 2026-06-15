@@ -28,6 +28,7 @@ const voiceAsr = require('./voice-asr');
 const cronTasks = require('./cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./macos-power');
+const gitPush = require('./git-push');
 
 const crypto = require('crypto');
 const app = express();
@@ -1829,9 +1830,29 @@ app.get('/api/directories', (req, res) => {
       const k = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;
       if (counts[k] !== undefined) counts[k]++;
     }
-    return { ...d, counts };
+    let pushState;
+    try {
+      pushState = gitPush.directoryPushState(d.path, d.baseBranch || gitBaseBranch(d.path));
+    } catch (error) {
+      pushState = { available: false, hasRemote: false, ahead: 0, behind: 0, reason: error.message };
+    }
+    return { ...d, counts, pushState };
   });
   res.json(list);
+});
+
+app.post('/api/directories/:id/push', async (req, res) => {
+  const d = directories.get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'directory not found' });
+  try {
+    const result = await gitPush.pushDirectory(d.path, d.baseBranch || gitBaseBranch(d.path));
+    appendEvent(d.id, 'pushed', result.pushed
+      ? `${result.before.ahead} 个提交 → ${result.before.remote}/${result.before.remoteBranch}`
+      : '无待推送提交');
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post('/api/directories', (req, res) => {
