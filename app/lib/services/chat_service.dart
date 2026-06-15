@@ -190,6 +190,15 @@ class ChatService {
         _emit('error', msg['error']?.toString() ?? 'Unknown error');
         break;
 
+      case 'notify':
+        // Server-side aux-AI verdict that a turn finished / is waiting. The
+        // client never judges this itself — it just renders the verdict.
+        _emit('notify', {
+          'state': (msg['state'] ?? 'completed').toString(),
+          'message': (msg['message'] ?? '').toString(),
+        });
+        break;
+
       default:
         break;
     }

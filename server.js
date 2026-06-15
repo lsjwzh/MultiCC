@@ -4084,7 +4084,21 @@ ${tail}`,
       if (result.cancelled) return;
       const state = result.text.trim().toUpperCase().startsWith('W') ? 'waiting' : 'completed';
       const msg = state === 'waiting' ? '等待操作' : '任务已完成';
+      // This aux-AI verdict is the single source of truth for "is the turn done
+      // or waiting?". Fan it out to every channel from here so nothing re-judges:
+      //   1. web push / Bark / webhook (PWA + external)
       triggerPush(sessionId, state, `[Chat] ${msg}`);
+      //   2. the session's live chat clients (native app / web) — they raise
+      //      their local notification from THIS verdict instead of guessing on
+      //      `result`, so app and server never disagree or double-fire.
+      chatBroadcast(sessionName, { type: 'notify', state, message: msg });
+      //   3. the directory's workspace board — lets the dashboard notify even
+      //      for sessions the user never opened (which have no chat socket).
+      //      The app de-dups this against the chat notify above by session id.
+      const dirId = persistedSessions.get(sessionName)?.dirId;
+      if (dirId) {
+        workspaceBroadcast(dirId, { type: 'notify', sessionId, state, message: msg });
+      }
       // Reflect on the status board — but only if no new turn has started since.
       if (!cs.isStreaming) {
         setSessionStatus(sessionName, { status: state === 'waiting' ? 'waiting' : 'idle' });

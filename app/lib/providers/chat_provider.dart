@@ -159,6 +159,18 @@ class ChatProvider extends ChangeNotifier {
         _onResult(evt.payload as Map<String, dynamic>);
         break;
 
+      case 'notify':
+        // The server's aux-AI decided this turn is done / waiting. This is the
+        // single source of truth for completion notifications — the client does
+        // not judge completion itself from `result`.
+        final p = evt.payload as Map<String, dynamic>;
+        final waiting = p['state'] == 'waiting';
+        _maybeNotify(
+          waiting ? '等待操作' : '任务完成',
+          (p['message'] ?? '').toString(),
+        );
+        break;
+
       case 'error':
         _addSystemMsg('Error: ${evt.payload}');
         _finishStreaming();
@@ -231,8 +243,10 @@ class ChatProvider extends ChangeNotifier {
       if (turns != null) _costText += ' · $turns turn(s)';
     }
 
-    _maybeNotify('任务完成', cost != null ? '\$${cost.toStringAsFixed(4)}' : '');
-
+    // Completion notification is NOT fired here: a `result` only means the
+    // stream stopped, which during a multi-step agent run happens between
+    // turns too. The server's aux-AI debounces the pause and decides
+    // done-vs-waiting, then sends a `notify` event — that is the single judge.
     notifyListeners();
   }
 
@@ -309,7 +323,13 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void reconnect() => _reconnect(preserveHistory: true);
+  // Reconnect behaves like reopening the session: drop stale local state and
+  // reload the authoritative transcript from the server. Preserving history
+  // here was the bug — after a socket died mid/post-response, `_historyApplied`
+  // stayed true so the server's fresh chat_history (containing the answer that
+  // completed while disconnected) was ignored, leaving a stuck chat that only
+  // an app restart could fix.
+  void reconnect() => _reconnect(preserveHistory: false);
 
   void _reconnect({required bool preserveHistory}) {
     if (!preserveHistory) {
