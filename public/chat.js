@@ -131,6 +131,9 @@ let activeContentIndex = -1;
 let currentCli = 'claude';
 let _mergeReady = false;
 let _mergePollTimer = null;
+// Track last-warned behind count so we surface a notice when the worktree first
+// falls behind its base branch (or falls further), not on every 5s poll.
+let _lastWarnedBehind = 0;
 
 /* ── Debug panel ──
    Records every WS event and every thinking/streaming state transition so the
@@ -969,6 +972,33 @@ function applyMergeStatus(st) {
     const text = mergeHint.querySelector('.merge-hint-text');
     if (text) text.textContent = mergeStatusText(st);
   }
+  applyBehindStatus(st);
+}
+
+// Show the current worktree branch + a "behind base" warning at the top of the
+// chat. Mirrors the Flutter app: a persistent banner while behind, plus a
+// one-time system notice when it first goes (or falls further) behind.
+function applyBehindStatus(st) {
+  const behind = (st && Number(st.behind)) || 0;
+  const branch = (st && st.branch) || '';
+  const base = (st && st.baseBranch) || 'main';
+  const bar = document.getElementById('worktree-bar');
+  if (bar) {
+    if (branch) {
+      bar.classList.add('show');
+      bar.classList.toggle('behind', behind > 0);
+      bar.textContent = behind > 0
+        ? `⎇ ${branch} · 落后 ${base} ${behind} 个提交，建议同步`
+        : `⎇ ${branch}`;
+    } else {
+      bar.classList.remove('show', 'behind');
+      bar.textContent = '';
+    }
+  }
+  if (behind > _lastWarnedBehind) {
+    addSystemMsg(`⚠ 当前 worktree（${branch}）已落后 ${base} ${behind} 个提交，建议同步后再继续。`);
+  }
+  _lastWarnedBehind = behind;
 }
 
 async function refreshMergeStatus() {

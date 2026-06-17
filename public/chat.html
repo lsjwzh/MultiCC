@@ -397,6 +397,22 @@
     }
     #merge-hint.show { display: flex; }
     #merge-hint .merge-hint-text { flex: 1; min-width: 0; }
+    /* Worktree branch / behind-base indicator */
+    #worktree-bar {
+      display: none;
+      padding: 4px 12px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #8a909b;
+      background: #0a0c0f;
+      border-bottom: 1px solid #14171c;
+    }
+    #worktree-bar.show { display: block; }
+    #worktree-bar.behind {
+      color: #f2cc60;
+      background: #2d2108;
+      border-bottom-color: #e3b341;
+    }
     #merge-hint button {
       flex-shrink: 0;
       border: 1px solid #e3b341;
@@ -696,6 +712,9 @@
     <span id="cwd-path">-</span>
     <button id="cwd-change" style="display:none">Change</button>
   </div>
+
+  <!-- Worktree branch + behind-base indicator (populated by applyBehindStatus) -->
+  <div id="worktree-bar"></div>
 
   <!-- Messages -->
   <div id="messages">

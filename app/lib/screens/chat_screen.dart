@@ -33,6 +33,12 @@ class _ChatViewState extends State<ChatView> {
   Timer? _mergeTimer;
   String? _polledSession;
   Map<String, dynamic>? _mergeStatus;
+  // Track the last-warned behind count per session so the SnackBar fires when a
+  // worktree first falls behind main (or falls further), not on every 5s poll.
+  int _lastWarnedBehind = 0;
+
+  int _behindCount() => (_mergeStatus?['behind'] as num?)?.toInt() ?? 0;
+  String _baseBranchName() => _mergeStatus?['baseBranch']?.toString() ?? 'main';
 
   @override
   void dispose() {
@@ -48,6 +54,7 @@ class _ChatViewState extends State<ChatView> {
     final session = provider.sessionName;
     if (session == _polledSession) return;
     _polledSession = session;
+    _lastWarnedBehind = 0; // reset warning state when switching sessions
     _mergeTimer?.cancel();
     _refreshMergeStatus(session);
     _mergeTimer = Timer.periodic(
@@ -64,7 +71,31 @@ class _ChatViewState extends State<ChatView> {
       ).fetchMergeStatus(sessionId);
       if (!mounted || _polledSession != sessionId) return;
       setState(() => _mergeStatus = status);
+      _maybeWarnBehind();
     } catch (_) {}
+  }
+
+  // Fire a SnackBar the moment this worktree is detected as behind its base
+  // branch (and again only if it falls further behind), so the user sees it
+  // without having to scan the header.
+  void _maybeWarnBehind() {
+    final behind = _behindCount();
+    if (behind > _lastWarnedBehind) {
+      final base = _baseBranchName();
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFF2d2108),
+            content: Text(
+              '⚠ 当前 worktree 已落后 $base $behind 个提交，建议同步',
+              style: const TextStyle(color: Color(0xFFf2cc60)),
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+    }
+    _lastWarnedBehind = behind;
   }
 
   Future<void> _mergeCurrent(BuildContext context, String sessionId) async {
@@ -87,7 +118,8 @@ class _ChatViewState extends State<ChatView> {
               mergeReady: mergeReady,
               onMerge: () => _mergeCurrent(context, provider.sessionName),
             ),
-            _CwdBar(),
+            _CwdBar(mergeStatus: _mergeStatus),
+            if (_behindCount() > 0) _BehindMainBanner(behind: _behindCount(), baseBranch: _baseBranchName()),
             Expanded(child: _MessageList(scrollCtrl: _scrollCtrl)),
             _CostBar(),
             if (mergeReady)
@@ -773,10 +805,48 @@ class _MergeReadyBanner extends StatelessWidget {
   }
 }
 
+// Persistent top banner shown while the session's worktree is behind its base
+// branch — complements the transient SnackBar with an always-visible reminder.
+class _BehindMainBanner extends StatelessWidget {
+  final int behind;
+  final String baseBranch;
+  const _BehindMainBanner({required this.behind, required this.baseBranch});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2d2108),
+        border: Border.all(color: const Color(0xFFe3b341)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.history_rounded, size: 16, color: Color(0xFFf2cc60)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '当前 worktree 落后 $baseBranch $behind 个提交',
+              style: const TextStyle(color: Color(0xFFf2cc60), fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _CwdBar extends StatelessWidget {
+  final Map<String, dynamic>? mergeStatus;
+  const _CwdBar({this.mergeStatus});
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
+    final branch = mergeStatus?['branch']?.toString();
+    final behind = (mergeStatus?['behind'] as num?)?.toInt() ?? 0;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
@@ -798,6 +868,48 @@ class _CwdBar extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (branch != null && branch.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            // Worktree branch chip — makes each session's isolated worktree explicit.
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: behind > 0
+                    ? const Color(0xFF2d2108)
+                    : const Color(0xFF12161c),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: behind > 0
+                      ? const Color(0xFFe3b341)
+                      : const Color(0xFF24303f),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.account_tree_outlined,
+                    size: 11,
+                    color: behind > 0
+                        ? const Color(0xFFf2cc60)
+                        : const Color(0xFF6aa3ff),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    branch,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      color: behind > 0
+                          ? const Color(0xFFf2cc60)
+                          : const Color(0xFF8a909b),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(width: 8),
           GestureDetector(
             onTap: () => _showCwdDialog(context, provider),
             child: const Text(

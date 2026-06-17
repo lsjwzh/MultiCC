@@ -101,13 +101,19 @@ function gitWorktreeMergeState(dir, session) {
   const baseBranch = dir.baseBranch || gitBaseBranch(dir.path);
   let dirty = false;
   let ahead = 0;
+  let behind = 0;
   let baseCheckedOut = true;
 
   try {
     dirty = fs.existsSync(wtPath) && gitRun(wtPath, ['status', '--porcelain']).length > 0;
   } catch (_) {}
   try {
-    ahead = parseInt(gitRun(dir.path, ['rev-list', '--count', `${baseBranch}..${session.branch}`]) || '0', 10);
+    // ahead = commits on the worktree branch not yet in base; behind = commits on
+    // base not yet in the worktree branch (i.e. how stale this worktree is vs main).
+    const counts = gitRun(dir.path, ['rev-list', '--left-right', '--count', `${baseBranch}...${session.branch}`]);
+    const m = counts.split(/\s+/);
+    behind = parseInt(m[0] || '0', 10);   // base has, branch lacks
+    ahead = parseInt(m[1] || '0', 10);    // branch has, base lacks
   } catch (_) {}
   try {
     baseCheckedOut = gitBaseBranch(dir.path) === baseBranch;
@@ -117,6 +123,7 @@ function gitWorktreeMergeState(dir, session) {
     mergeReady: dirty || ahead > 0,
     dirty,
     ahead,
+    behind,
     baseBranch,
     branch: session.branch,
     baseCheckedOut,
