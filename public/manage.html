@@ -360,6 +360,7 @@
     <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> 语音 Voice</button>
     <button class="nav-item" id="macos-power-nav" data-view="power" onclick="setView('power')" style="display:none;"><span class="ic">⌁</span> macOS 电源</button>
     <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> 推送 Push</button>
+    <button class="nav-item" data-view="tunnel" onclick="setView('tunnel')"><span class="ic">🌐</span> 外网穿透</button>
     <button class="nav-item" data-view="wechat" onclick="setView('wechat')"><span class="ic">💬</span> WeChat</button>
     <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> Agent 资源</button>
     <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> 临时上传</button>
@@ -493,6 +494,48 @@
               <div class="setting-row"><label>Webhook URL</label><input id="push-d-webhook" type="text" placeholder="https://your-webhook-endpoint/path" /></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveNotifySettings()">Save</button><button class="btn" onclick="testBark()">Test Bark</button><button class="btn" onclick="testWebhook()">Test Webhook</button><span class="status-text" id="push-d-backup-status"></span></div>
+          </div>
+        </section>
+
+        <!-- ─── 外网穿透 Tunnel ─── -->
+        <section class="view" data-view="tunnel">
+          <div class="sec-head"><h2>外网穿透监控</h2><div class="line"></div></div>
+          <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:14px;">
+            勾选并配置后，服务会每隔一段时间探活对应的外网 URL；连续失败达阈值时自动重启对应穿透服务。监控运行在服务进程内，不会出现多份看门狗互相打架。
+          </div>
+
+          <!-- 花生壳 -->
+          <div class="settings-card">
+            <div class="sc-header">花生壳 (PhDDNS) <span id="tnl-ph-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-body">
+              <div class="setting-row"><label>启用监控</label><input id="tnl-ph-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label>探活 URL</label><input id="tnl-ph-url" type="text" placeholder="https://xxxx.vicp.fun/manage" /></div>
+              <div class="setting-row"><label>状态</label><span id="tnl-ph-status" style="font-size:13px;color:var(--text);">—</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="restartTunnel('phddns')">立即重启</button><span class="status-text" id="tnl-ph-msg"></span></div>
+          </div>
+
+          <!-- Tailscale -->
+          <div class="settings-card">
+            <div class="sc-header">Tailscale <span id="tnl-ts-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-body">
+              <div class="setting-row"><label>启用监控</label><input id="tnl-ts-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label>探活 URL</label><input id="tnl-ts-url" type="text" placeholder="https://your-host.ts.net/manage" /></div>
+              <div class="setting-row"><label>状态</label><span id="tnl-ts-status" style="font-size:13px;color:var(--text);">—</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="restartTunnel('tailscale')">立即重启</button><span class="status-text" id="tnl-ts-msg"></span></div>
+          </div>
+
+          <!-- 高级参数 -->
+          <div class="settings-card">
+            <div class="sc-header">监控参数</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>探活间隔(秒)</label><input id="tnl-interval" type="number" min="10" placeholder="30" /></div>
+              <div class="setting-row"><label>失败阈值(次)</label><input id="tnl-failthreshold" type="number" min="1" placeholder="2" /></div>
+              <div class="setting-row"><label>重启冷却(秒)</label><input id="tnl-cooldown" type="number" min="0" placeholder="120" /></div>
+              <div class="setting-row"><label>每小时上限</label><input id="tnl-maxrestarts" type="number" min="1" placeholder="5" /></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="loadTunnelSettings()">刷新状态</button><span class="status-text" id="tnl-adv-msg"></span></div>
           </div>
         </section>
 
@@ -773,6 +816,7 @@
         overview: ['概览', ''], cron: ['定时任务', '到点自动新建会话执行'],
         voice: ['语音 Voice', '流式识别与转写'], power: ['macOS 电源', '关盖与系统睡眠设置'],
         push: ['推送通知', 'Web Push 与备用通道'],
+        tunnel: ['外网穿透', '花生壳 / Tailscale 自动监控'],
         wechat: ['WeChat Bridge', '微信入口桥接'], resources: ['Agent 资源', 'Skills 与历史会话'],
         storage: ['临时上传', '上传文件缓存'],
       };

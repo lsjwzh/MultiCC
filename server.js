@@ -2342,6 +2342,7 @@ webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.
 // to src/push.js. VAPID init above stays here; web-push is a shared singleton so
 // push.js sends through the instance configured by setVapidDetails() above.
 const push = require('./src/push');
+const tunnel = require('./src/tunnel');
 
 // ── Server Info (LAN IP for QR code) ──
 app.get('/api/server-info', (req, res) => {
@@ -2455,6 +2456,40 @@ app.post('/api/settings/notify', (req, res) => {
   if (typeof webhookUrl === 'string') updates.WEBHOOK_URL = webhookUrl;
   if (Object.keys(updates).length > 0) { writeEnvFile(updates); push.applyEnvUpdates(updates); }
   res.json({ ok: true });
+});
+
+// ── External tunnel monitor (花生壳 / Tailscale) ──
+app.get('/api/settings/tunnel', (req, res) => {
+  res.json(tunnel.getStatus());
+});
+
+app.post('/api/settings/tunnel', (req, res) => {
+  const b = req.body || {};
+  const update = {};
+  if (b.phddns && typeof b.phddns === 'object') {
+    update.phddns = {};
+    if (typeof b.phddns.enabled === 'boolean') update.phddns.enabled = b.phddns.enabled;
+    if (typeof b.phddns.url === 'string') update.phddns.url = b.phddns.url.trim();
+  }
+  if (b.tailscale && typeof b.tailscale === 'object') {
+    update.tailscale = {};
+    if (typeof b.tailscale.enabled === 'boolean') update.tailscale.enabled = b.tailscale.enabled;
+    if (typeof b.tailscale.url === 'string') update.tailscale.url = b.tailscale.url.trim();
+  }
+  for (const k of ['intervalSec', 'failThreshold', 'restartCooldownSec', 'maxRestartsPerHour']) {
+    if (Number.isFinite(b[k]) && b[k] > 0) update[k] = Math.floor(b[k]);
+  }
+  const cfg = tunnel.applyConfig(update);
+  res.json({ ok: true, config: cfg });
+});
+
+app.post('/api/tunnel/restart/:provider', async (req, res) => {
+  try {
+    const result = await tunnel.restartNow(req.params.provider);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // macOS system power settings
@@ -4289,6 +4324,8 @@ function installBundledSkill() {
 // fresh chat session in a target directory (directory-level recurring tasks).
 cronTasks.mount(app);
 cronTasks.init({ directories, createSessionRecord, runChatTurn, sessionExists: (id) => persistedSessions.has(id) });
+// In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
+tunnel.init();
 
 server.listen(PORT, () => {
   console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);

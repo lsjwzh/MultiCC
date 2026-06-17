@@ -2602,6 +2602,93 @@ async function testWebhook() {
   }
 }
 
+/* ── 外网穿透监控 Tunnel ── */
+function tnlFmtStatus(p, prov) {
+  // p = runtime provider state; prov = config provider {enabled,url}
+  if (!prov.enabled) return '未启用';
+  if (!prov.url) return '未配置 URL';
+  if (p.healthy === null || !p.lastCheckAt) return '等待首次探活…';
+  const when = new Date(p.lastCheckAt).toLocaleTimeString();
+  let s = p.healthy ? `正常 (HTTP ${p.lastHttpCode})` : `异常 (HTTP ${p.lastHttpCode}，连续失败 ${p.consecutiveFails})`;
+  s += ` · ${when}`;
+  if (p.restartTimes && p.restartTimes.length) s += ` · 近1h重启 ${p.restartTimes.length} 次`;
+  if (p.lastAction) s += ` · ${p.lastAction}`;
+  return s;
+}
+
+async function loadTunnelSettings() {
+  try {
+    const res = await fetch('/api/settings/tunnel' + tokenQS('?'));
+    const st = await res.json();
+    const c = st.config, av = st.availability || {}, pr = st.providers || {};
+    // availability hints
+    const phAvail = document.getElementById('tnl-ph-avail');
+    if (phAvail) phAvail.textContent = av.phddns ? '· 已安装' : '· 未检测到 PhDDNS.app';
+    const tsAvail = document.getElementById('tnl-ts-avail');
+    if (tsAvail) tsAvail.textContent = av.tailscale ? '· CLI 可用' : '· 未检测到 tailscale CLI';
+    // phddns
+    document.getElementById('tnl-ph-enabled').checked = !!c.phddns.enabled;
+    document.getElementById('tnl-ph-url').value = c.phddns.url || '';
+    document.getElementById('tnl-ph-status').textContent = tnlFmtStatus(pr.phddns || {}, c.phddns);
+    // tailscale
+    document.getElementById('tnl-ts-enabled').checked = !!c.tailscale.enabled;
+    document.getElementById('tnl-ts-url').value = c.tailscale.url || '';
+    document.getElementById('tnl-ts-status').textContent = tnlFmtStatus(pr.tailscale || {}, c.tailscale);
+    // advanced
+    document.getElementById('tnl-interval').value = c.intervalSec;
+    document.getElementById('tnl-failthreshold').value = c.failThreshold;
+    document.getElementById('tnl-cooldown').value = c.restartCooldownSec;
+    document.getElementById('tnl-maxrestarts').value = c.maxRestartsPerHour;
+  } catch (_) {}
+}
+
+async function saveTunnelSettings() {
+  const msg = document.getElementById('tnl-adv-msg');
+  const numOr = (id) => { const v = parseInt(document.getElementById(id).value, 10); return Number.isFinite(v) ? v : undefined; };
+  const body = {
+    phddns: {
+      enabled: document.getElementById('tnl-ph-enabled').checked,
+      url: document.getElementById('tnl-ph-url').value.trim(),
+    },
+    tailscale: {
+      enabled: document.getElementById('tnl-ts-enabled').checked,
+      url: document.getElementById('tnl-ts-url').value.trim(),
+    },
+  };
+  const iv = numOr('tnl-interval'); if (iv) body.intervalSec = iv;
+  const ft = numOr('tnl-failthreshold'); if (ft) body.failThreshold = ft;
+  const cd = numOr('tnl-cooldown'); if (cd !== undefined) body.restartCooldownSec = cd;
+  const mr = numOr('tnl-maxrestarts'); if (mr) body.maxRestartsPerHour = mr;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (_urlToken) headers['X-Access-Token'] = _urlToken;
+    const res = await fetch('/api/settings/tunnel', { method: 'POST', headers, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (msg) { msg.textContent = '已保存'; msg.className = 'status-text ok'; }
+    showToast('外网穿透设置已保存');
+    loadTunnelSettings();
+  } catch (e) {
+    if (msg) { msg.textContent = '错误: ' + e.message; msg.className = 'status-text err'; }
+  }
+}
+
+async function restartTunnel(provider) {
+  const msgId = provider === 'phddns' ? 'tnl-ph-msg' : 'tnl-ts-msg';
+  const msg = document.getElementById(msgId);
+  if (msg) { msg.textContent = '正在重启…'; msg.className = 'status-text'; }
+  try {
+    const headers = {};
+    if (_urlToken) headers['X-Access-Token'] = _urlToken;
+    const res = await fetch('/api/tunnel/restart/' + provider, { method: 'POST', headers });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+    if (msg) { msg.textContent = data.message || '已触发重启'; msg.className = 'status-text ok'; }
+    setTimeout(loadTunnelSettings, 1500);
+  } catch (e) {
+    if (msg) { msg.textContent = '失败: ' + e.message; msg.className = 'status-text err'; }
+  }
+}
+
 /* ── APK info ── */
 async function loadApkInfo() {
   const btn = document.getElementById('apk-btn');
@@ -2946,6 +3033,7 @@ loadAsrSettings();
 loadCronTasks();
 loadPushDiagnostics();
 loadNotifySettings();
+loadTunnelSettings();
 loadApkInfo();
 loadAgentSkills();
 loadClaudeHistory();

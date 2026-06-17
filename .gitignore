@@ -58,3 +58,4 @@ app/ios/DerivedData/
 # multicc per-directory scratch memo (tool-generated, keep local)
 multicc.memo.md
 **/multicc.memo.md
+tunnel-config.json
