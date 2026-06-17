@@ -2701,8 +2701,6 @@ app.get('/api/voice/test-sse', (req, res) => {
 });
 
 // ── Web Push (PWA notifications) ──
-const PUSH_SUBS_FILE = path.join(__dirname, 'push_subscriptions.json');
-
 // VAPID key management: auto-generate and persist in .env
 function ensureVapidKeys() {
   let pubKey = process.env.VAPID_PUBLIC_KEY;
@@ -2726,45 +2724,10 @@ function ensureVapidKeys() {
 const vapidKeys = ensureVapidKeys();
 webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.privKey);
 
-// Push subscription store
-let pushSubscriptions = new Map(); // endpoint -> PushSubscription JSON
-
-// Push health tracking
-const pushHealthStats = new Map(); // endpoint -> { successCount, failCount, lastSuccessTime, lastFailTime, lastFailReason, consecutiveFails }
-const pushGlobalStats = { totalSent: 0, totalSuccess: 0, totalFail: 0, lastPushTime: 0, lastPushType: '', lastPushSessionId: '' };
-
-function getPushHealthEntry(endpoint) {
-  if (!pushHealthStats.has(endpoint)) {
-    pushHealthStats.set(endpoint, { successCount: 0, failCount: 0, lastSuccessTime: 0, lastFailTime: 0, lastFailReason: '', consecutiveFails: 0 });
-  }
-  return pushHealthStats.get(endpoint);
-}
-
-// Bark / Webhook backup notification channels
-let BARK_URL = process.env.BARK_URL || '';
-let WEBHOOK_URL = process.env.WEBHOOK_URL || '';
-const barkHealth = { lastSendTime: 0, lastSuccess: true, lastError: '' };
-const webhookHealth = { lastSendTime: 0, lastSuccess: true, lastError: '' };
-
-function loadPushSubscriptions() {
-  try {
-    if (fs.existsSync(PUSH_SUBS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(PUSH_SUBS_FILE, 'utf8'));
-      pushSubscriptions = new Map(data.map(s => [s.endpoint, s]));
-      console.log(`[multicc/push] Loaded ${pushSubscriptions.size} push subscription(s)`);
-    }
-  } catch (_) {}
-}
-
-function savePushSubscriptions() {
-  try {
-    fs.writeFileSync(PUSH_SUBS_FILE, JSON.stringify([...pushSubscriptions.values()], null, 2));
-  } catch (e) {
-    console.error('[multicc/push] Failed to save subscriptions:', e.message);
-  }
-}
-
-loadPushSubscriptions();
+// Notification delivery layer (subscriptions, senders, channel config) extracted
+// to src/push.js. VAPID init above stays here; web-push is a shared singleton so
+// push.js sends through the instance configured by setVapidDetails() above.
+const push = require('./src/push');
 
 // ── Server Info (LAN IP for QR code) ──
 app.get('/api/server-info', (req, res) => {
@@ -2791,17 +2754,17 @@ app.get('/api/push/vapid-key', (req, res) => {
 app.post('/api/push/subscribe', (req, res) => {
   const sub = req.body;
   if (!sub || !sub.endpoint) return res.status(400).json({ error: 'Invalid subscription' });
-  pushSubscriptions.set(sub.endpoint, sub);
-  savePushSubscriptions();
-  console.log(`[multicc/push] New subscription (${pushSubscriptions.size} total)`);
+  push.subscriptions.set(sub.endpoint, sub);
+  push.saveSubscriptions();
+  console.log(`[multicc/push] New subscription (${push.subscriptions.size} total)`);
   res.json({ ok: true });
 });
 
 app.delete('/api/push/subscribe', (req, res) => {
   const { endpoint } = req.body || {};
-  if (endpoint && pushSubscriptions.has(endpoint)) {
-    pushSubscriptions.delete(endpoint);
-    savePushSubscriptions();
+  if (endpoint && push.subscriptions.has(endpoint)) {
+    push.subscriptions.delete(endpoint);
+    push.saveSubscriptions();
   }
   res.json({ ok: true });
 });
@@ -2810,14 +2773,14 @@ app.delete('/api/push/subscribe', (req, res) => {
 app.post('/api/push/validate', (req, res) => {
   const { endpoint } = req.body || {};
   if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' });
-  res.json({ known: pushSubscriptions.has(endpoint) });
+  res.json({ known: push.subscriptions.has(endpoint) });
 });
 
 // Push health status
 app.get('/api/push/health', (req, res) => {
   const subs = [];
-  for (const [endpoint] of pushSubscriptions) {
-    const h = pushHealthStats.get(endpoint) || { successCount: 0, failCount: 0, lastSuccessTime: 0, lastFailTime: 0, lastFailReason: '', consecutiveFails: 0 };
+  for (const [endpoint] of push.subscriptions) {
+    const h = push.healthStats.get(endpoint) || { successCount: 0, failCount: 0, lastSuccessTime: 0, lastFailTime: 0, lastFailReason: '', consecutiveFails: 0 };
     subs.push({
       endpointShort: endpoint.length > 50 ? endpoint.slice(0, 35) + '...' + endpoint.slice(-12) : endpoint,
       ...h,
@@ -2825,10 +2788,10 @@ app.get('/api/push/health', (req, res) => {
   }
   res.json({
     subscriptions: subs,
-    subscriptionCount: pushSubscriptions.size,
-    global: pushGlobalStats,
-    bark: { configured: !!BARK_URL, ...barkHealth },
-    webhook: { configured: !!WEBHOOK_URL, ...webhookHealth },
+    subscriptionCount: push.subscriptions.size,
+    global: push.globalStats,
+    bark: { configured: !!push.cfg.BARK_URL, ...push.barkHealth },
+    webhook: { configured: !!push.cfg.WEBHOOK_URL, ...push.webhookHealth },
   });
 });
 
@@ -2841,42 +2804,42 @@ app.post('/api/push/test', async (req, res) => {
     tag: 'multicc-test',
     url: '/manage',
   };
-  await sendPushToAll(payload);
-  sendBarkNotification(payload.title, payload.body, payload.url);
-  sendWebhookNotification(payload);
-  res.json({ ok: true, subscribers: pushSubscriptions.size });
+  await push.sendPushToAll(payload);
+  push.sendBarkNotification(payload.title, payload.body, payload.url);
+  push.sendWebhookNotification(payload);
+  res.json({ ok: true, subscribers: push.subscriptions.size });
 });
 
 // Test Bark only
 app.post('/api/push/test-bark', (req, res) => {
-  if (!BARK_URL) return res.status(400).json({ error: 'Bark URL not configured' });
-  sendBarkNotification('MultiCC Test', `Bark test at ${new Date().toLocaleTimeString()}`, '/manage');
+  if (!push.cfg.BARK_URL) return res.status(400).json({ error: 'Bark URL not configured' });
+  push.sendBarkNotification('MultiCC Test', `Bark test at ${new Date().toLocaleTimeString()}`, '/manage');
   res.json({ ok: true });
 });
 
 // Test Webhook only
 app.post('/api/push/test-webhook', (req, res) => {
-  if (!WEBHOOK_URL) return res.status(400).json({ error: 'Webhook URL not configured' });
-  sendWebhookNotification({ title: 'MultiCC Test', body: `Webhook test at ${new Date().toLocaleTimeString()}`, type: 'test' });
+  if (!push.cfg.WEBHOOK_URL) return res.status(400).json({ error: 'Webhook URL not configured' });
+  push.sendWebhookNotification({ title: 'MultiCC Test', body: `Webhook test at ${new Date().toLocaleTimeString()}`, type: 'test' });
   res.json({ ok: true });
 });
 
 // Notification settings (Bark / Webhook)
 app.get('/api/settings/notify', (req, res) => {
   res.json({
-    barkUrl: BARK_URL ? BARK_URL.replace(/\/[^/]{8,}$/, '/****') : '',
-    hasBark: !!BARK_URL,
-    webhookUrl: WEBHOOK_URL || '',
-    hasWebhook: !!WEBHOOK_URL,
+    barkUrl: push.cfg.BARK_URL ? push.cfg.BARK_URL.replace(/\/[^/]{8,}$/, '/****') : '',
+    hasBark: !!push.cfg.BARK_URL,
+    webhookUrl: push.cfg.WEBHOOK_URL || '',
+    hasWebhook: !!push.cfg.WEBHOOK_URL,
   });
 });
 
 app.post('/api/settings/notify', (req, res) => {
   const { barkUrl, webhookUrl } = req.body || {};
   const updates = {};
-  if (typeof barkUrl === 'string') { BARK_URL = barkUrl; updates.BARK_URL = barkUrl; }
-  if (typeof webhookUrl === 'string') { WEBHOOK_URL = webhookUrl; updates.WEBHOOK_URL = webhookUrl; }
-  if (Object.keys(updates).length > 0) writeEnvFile(updates);
+  if (typeof barkUrl === 'string') updates.BARK_URL = barkUrl;
+  if (typeof webhookUrl === 'string') updates.WEBHOOK_URL = webhookUrl;
+  if (Object.keys(updates).length > 0) { writeEnvFile(updates); push.applyEnvUpdates(updates); }
   res.json({ ok: true });
 });
 
@@ -2906,90 +2869,6 @@ app.post('/api/settings/power', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Send push notification to all subscribers (async, properly handles stale cleanup)
-async function sendPushToAll(payload) {
-  if (pushSubscriptions.size === 0) return;
-  const payloadStr = JSON.stringify(payload);
-  const entries = [...pushSubscriptions.entries()];
-  const results = await Promise.allSettled(
-    entries.map(([endpoint, sub]) =>
-      webpush.sendNotification(sub, payloadStr).then(
-        () => ({ endpoint, ok: true }),
-        err => ({ endpoint, ok: false, statusCode: err.statusCode, message: err.message })
-      )
-    )
-  );
-
-  const stale = [];
-  for (const r of results) {
-    const v = r.status === 'fulfilled' ? r.value : { endpoint: '', ok: false, message: 'settled-rejected' };
-    const h = getPushHealthEntry(v.endpoint);
-    pushGlobalStats.totalSent++;
-    if (v.ok) {
-      h.successCount++;
-      h.lastSuccessTime = Date.now();
-      h.consecutiveFails = 0;
-      pushGlobalStats.totalSuccess++;
-    } else {
-      h.failCount++;
-      h.lastFailTime = Date.now();
-      h.lastFailReason = v.message || `HTTP ${v.statusCode}`;
-      h.consecutiveFails++;
-      pushGlobalStats.totalFail++;
-      if (v.statusCode === 404 || v.statusCode === 410) stale.push(v.endpoint);
-      console.error(`[multicc/push] Send failed for ${v.endpoint.slice(0, 40)}... (${v.statusCode || v.message})`);
-    }
-  }
-
-  if (stale.length > 0) {
-    for (const ep of stale) {
-      pushSubscriptions.delete(ep);
-      pushHealthStats.delete(ep);
-    }
-    savePushSubscriptions();
-    console.log(`[multicc/push] Cleaned ${stale.length} expired subscription(s)`);
-  }
-}
-
-// Bark push notification (iOS backup)
-function sendBarkNotification(title, body, url) {
-  if (!BARK_URL) return;
-  const barkUrl = `${BARK_URL.replace(/\/$/, '')}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?url=${encodeURIComponent(url || '')}&group=multicc`;
-  barkHealth.lastSendTime = Date.now();
-  const mod = barkUrl.startsWith('https') ? https : http;
-  mod.get(barkUrl, res => {
-    barkHealth.lastSuccess = res.statusCode >= 200 && res.statusCode < 300;
-    if (!barkHealth.lastSuccess) barkHealth.lastError = `HTTP ${res.statusCode}`;
-    else barkHealth.lastError = '';
-    res.resume();
-  }).on('error', err => {
-    barkHealth.lastSuccess = false;
-    barkHealth.lastError = err.message;
-    console.error('[multicc/push] Bark send failed:', err.message);
-  });
-}
-
-// Generic webhook notification
-function sendWebhookNotification(payload) {
-  if (!WEBHOOK_URL) return;
-  webhookHealth.lastSendTime = Date.now();
-  const data = JSON.stringify(payload);
-  const parsed = new URL(WEBHOOK_URL);
-  const mod = parsed.protocol === 'https:' ? https : http;
-  const req = mod.request(parsed, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, res => {
-    webhookHealth.lastSuccess = res.statusCode >= 200 && res.statusCode < 300;
-    if (!webhookHealth.lastSuccess) webhookHealth.lastError = `HTTP ${res.statusCode}`;
-    else webhookHealth.lastError = '';
-    res.resume();
-  });
-  req.on('error', err => {
-    webhookHealth.lastSuccess = false;
-    webhookHealth.lastError = err.message;
-    console.error('[multicc/push] Webhook send failed:', err.message);
-  });
-  req.end(data);
-}
 
 // ── Server-side notification detection (for push notifications) ──
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
@@ -3029,7 +2908,7 @@ function cleanupPushMonitor(sessionId) {
 // spending aux-AI calls when nothing is watching: a push channel, the
 // terminal's own WS clients, or the directory's workspace board.
 function hasNotifyConsumer(sessionId) {
-  if (pushSubscriptions.size > 0 || BARK_URL || WEBHOOK_URL) return true;
+  if (push.subscriptions.size > 0 || push.cfg.BARK_URL || push.cfg.WEBHOOK_URL) return true;
   if ((sessions.get(sessionId)?.clients?.size || 0) > 0) return true;
   const dirId = persistedSessions.get(sessionId)?.dirId;
   if (dirId && (workspaceClients.get(dirId)?.size || 0) > 0) return true;
@@ -3148,14 +3027,14 @@ function triggerPush(sessionId, type, message) {
     url: `/manage`,
   };
 
-  pushGlobalStats.lastPushTime = now;
-  pushGlobalStats.lastPushType = type;
-  pushGlobalStats.lastPushSessionId = sessionId;
+  push.globalStats.lastPushTime = now;
+  push.globalStats.lastPushType = type;
+  push.globalStats.lastPushSessionId = sessionId;
 
   // Send to all channels in parallel
-  sendPushToAll(payload);
-  sendBarkNotification(payload.title, `${message} ${shortCwd}`, payload.url);
-  sendWebhookNotification(payload);
+  push.sendPushToAll(payload);
+  push.sendBarkNotification(payload.title, `${message} ${shortCwd}`, payload.url);
+  push.sendWebhookNotification(payload);
 
   console.log(`[multicc/push] Sent ${type} notification for session ${sessionId}`);
 }
