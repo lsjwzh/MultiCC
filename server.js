@@ -2804,36 +2804,19 @@ const auxQueue = {
       const existing = persistedSessions.get(AUX_SESSION_ID);
       if (existing.type !== 'aux') { existing.type = 'aux'; existing.label = 'AI Assistant'; savePersistedSessions(); }
     }
-    // Pre-warm a claude process so first task has no cold-start
-    this.prespawn();
-    console.log('[multicc/aux] AuxQueue initialized (with process pre-warming)');
+    console.log('[multicc/aux] AuxQueue initialized (cold-spawn per task)');
   },
 
-  /** Spawn a warm claude -p process that blocks on stdin, ready for instant use */
-  prespawn() {
-    if (this._warmProc) return; // already warming
-    try {
-      // AuxQueue runs single-turn, stateless tasks (intent classify, voice refine) —
-      // Haiku is plenty and ~30× cheaper than the user's default Opus.
-      const proc = spawn(CLAUDE_CMD, ['-p', '--model', 'haiku', '--output-format', 'stream-json', '--max-turns', '1', '--verbose'], {
-        cwd: __dirname,
-        env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-        stdio: ['pipe', 'pipe', 'pipe'],  // stdin open — process blocks waiting for input
-      });
-      proc.on('error', () => { this._warmProc = null; this._warmReady = false; });
-      proc.on('exit', () => {
-        // If it exits before we used it (crash during init), clear it
-        if (this._warmProc === proc) { this._warmProc = null; this._warmReady = false; }
-      });
-      this._warmProc = proc;
-      this._warmReady = true;
-      console.log(`[multicc/aux] Pre-warmed claude process (pid ${proc.pid})`);
-    } catch (err) {
-      console.error('[multicc/aux] Failed to pre-warm:', err.message);
-      this._warmProc = null;
-      this._warmReady = false;
-    }
-  },
+  // NOTE: process pre-warming was removed. It spawned `claude -p` with stdin held
+  // open, intending to feed the prompt later — but the CLI aborts with
+  //   "no stdin data received in 3s, proceeding without it" → exit 1
+  // if stdin stays empty for 3s, which it always did (tasks arrive seconds after
+  // prewarm). That silently killed EVERY aux task → no completion/waiting push
+  // notifications. We now cold-spawn per task with the prompt as a CLI argument
+  // (no stdin dependency, no race). Kept as a no-op so existing call sites are
+  // safe; if low latency is ever needed, use `--input-format stream-json` (a
+  // genuinely persistent process) rather than an idle one-shot `-p`.
+  prespawn() { /* intentionally a no-op — see note above */ },
 
   enqueue(task) {
     return new Promise((resolve, reject) => {
@@ -2922,28 +2905,15 @@ const auxQueue = {
 
   execute(task) {
     return new Promise((resolve, reject) => {
-      let proc;
-      let usedWarm = false;
-
-      // Try to use pre-warmed process (stdin still open, waiting for input)
-      if (this._warmProc && this._warmReady) {
-        proc = this._warmProc;
-        usedWarm = true;
-        this._warmProc = null;
-        this._warmReady = false;
-        console.log(`[multicc/aux] Using pre-warmed process (pid ${proc.pid})`);
-        // Feed the prompt via stdin and close it to trigger processing
-        proc.stdin.write(task.prompt);
-        proc.stdin.end();
-      } else {
-        // Fallback: cold spawn with prompt as CLI argument
-        console.log('[multicc/aux] No warm process available, cold spawning');
-        proc = spawn(CLAUDE_CMD, ['-p', '--model', 'haiku', '--output-format', 'stream-json', '--max-turns', '1', '--verbose', task.prompt], {
-          cwd: __dirname,
-          env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-      }
+      // Cold-spawn per task: prompt passed as a CLI argument, stdin ignored
+      // (/dev/null → immediate EOF). No prewarm, no stdin race. Single-turn,
+      // stateless tasks (intent classify, voice refine) — Haiku is plenty and
+      // ~30× cheaper than the user's default Opus.
+      const proc = spawn(CLAUDE_CMD, ['-p', '--model', 'haiku', '--output-format', 'stream-json', '--max-turns', '1', '--verbose', task.prompt], {
+        cwd: __dirname,
+        env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
 
       let assistantText = '';
       let lineBuf = '';
