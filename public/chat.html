@@ -400,6 +400,8 @@
     /* Worktree branch / behind-base indicator */
     #worktree-bar {
       display: none;
+      align-items: center;
+      gap: 8px;
       padding: 4px 12px;
       font-family: monospace;
       font-size: 11px;
@@ -407,12 +409,26 @@
       background: #0a0c0f;
       border-bottom: 1px solid #14171c;
     }
-    #worktree-bar.show { display: block; }
+    #worktree-bar.show { display: flex; }
+    #worktree-bar .worktree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #worktree-bar.behind {
       color: #f2cc60;
       background: #2d2108;
       border-bottom-color: #e3b341;
     }
+    #worktree-sync-btn {
+      flex: none;
+      padding: 2px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #070809;
+      background: #e3b341;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    #worktree-sync-btn:hover { background: #f2cc60; }
+    #worktree-sync-btn:disabled { opacity: 0.6; cursor: default; }
     #merge-hint button {
       flex-shrink: 0;
       border: 1px solid #e3b341;

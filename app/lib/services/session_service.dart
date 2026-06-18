@@ -62,6 +62,22 @@ class SessionService {
     return map;
   }
 
+  /// Sync: pull the base branch INTO this session's worktree (catch a stale
+  /// worktree up to main). Inverse of mergeSession. On conflict (409) the
+  /// result map contains `ok: false` and a `conflicts` list.
+  Future<Map<String, dynamic>> syncSession(String id) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/sessions/$id/sync')), headers: _headers)
+        .timeout(const Duration(seconds: 30));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
   Future<Map<String, dynamic>> fetchMergeStatus(String id) async {
     final res = await http
         .get(

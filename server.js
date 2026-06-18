@@ -464,6 +464,7 @@ function recoverTmuxSessions() {
 const {
   WORKTREE_SUBDIR, gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
   gitWorktreeAdd, gitWorktreeRemove, gitWorktreeCommitAll, gitWorktreeMergeState, gitMergeBack,
+  gitSyncFromBase,
 } = require('./src/git');
 const gitReadyDirs = new Set();          // dir.id once its repo is verified/initialised
 const invalidSessions = new Map();       // sessionId → reason; recovery is skipped for these
@@ -1897,6 +1898,30 @@ app.post('/api/sessions/:id/merge', (req, res) => {
     (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
   appendEvent(dir.id, 'merged',
     result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', id);
+  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: gitWorktreeMergeState(dir, persisted) });
+  res.json(result);
+});
+
+// Sync: pull the base branch INTO this session's worktree (catch a stale
+// worktree up to main). Inverse direction of /merge.
+app.post('/api/sessions/:id/sync', (req, res) => {
+  const id = req.params.id;
+  const persisted = persistedSessions.get(id);
+  if (!persisted) return res.status(404).json({ error: 'session not found' });
+  if (!persisted.worktreePath || !persisted.branch) {
+    return res.status(400).json({ error: '该会话没有 worktree，无需同步' });
+  }
+  const dir = directories.get(persisted.dirId);
+  if (!dir) return res.status(404).json({ error: 'directory not found' });
+
+  const result = gitSyncFromBase(dir, persisted);
+  if (!result.ok) {
+    return res.status(result.conflicts?.length ? 409 : 400).json(result);
+  }
+  console.log(`[multicc] sync ${dir.baseBranch} → ${persisted.branch}: ` +
+    (result.merged ? `${result.commits} commit(s)` : 'already up to date'));
+  appendEvent(dir.id, 'synced',
+    result.merged ? `从 ${result.baseBranch} 同步 ${result.commits} 个提交` : '已是最新', id);
   workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: gitWorktreeMergeState(dir, persisted) });
   res.json(result);
 });

@@ -987,18 +987,55 @@ function applyBehindStatus(st) {
     if (branch) {
       bar.classList.add('show');
       bar.classList.toggle('behind', behind > 0);
-      bar.textContent = behind > 0
-        ? `⎇ ${branch} · 落后 ${base} ${behind} 个提交，建议同步`
+      const label = behind > 0
+        ? `⎇ ${branch} · 落后 ${base} ${behind} 个提交`
         : `⎇ ${branch}`;
+      bar.innerHTML = '';
+      const span = document.createElement('span');
+      span.className = 'worktree-label';
+      span.textContent = label;
+      bar.appendChild(span);
+      if (behind > 0) {
+        const btn = document.createElement('button');
+        btn.id = 'worktree-sync-btn';
+        btn.textContent = '同步';
+        btn.onclick = syncWorktree;
+        bar.appendChild(btn);
+      }
     } else {
       bar.classList.remove('show', 'behind');
-      bar.textContent = '';
+      bar.innerHTML = '';
     }
   }
   if (behind > _lastWarnedBehind) {
-    addSystemMsg(`⚠ 当前 worktree（${branch}）已落后 ${base} ${behind} 个提交，建议同步后再继续。`);
+    addSystemMsg(`⚠ 当前 worktree（${branch}）已落后 ${base} ${behind} 个提交，点顶部「同步」按钮可直接合并。`);
   }
   _lastWarnedBehind = behind;
+}
+
+// One-click sync: pull the base branch into this session's worktree.
+async function syncWorktree() {
+  if (!_sessionName) { addSystemMsg('无 session id，无法同步'); return; }
+  const btn = document.getElementById('worktree-sync-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/sync`), { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      addSystemMsg(data.merged
+        ? `✓ 已从 ${data.baseBranch || 'base'} 同步 ${data.commits} 个提交${data.committed ? '（已自动提交未保存改动）' : ''}`
+        : (data.message || '已是最新'));
+      refreshMergeStatus();
+    } else if (res.status === 409 && data.conflicts) {
+      addSystemMsg(`✗ 同步存在冲突，已自动 abort，worktree 未改动：\n${data.conflicts.join(', ')}\n请在终端手动合并。`);
+    } else {
+      addSystemMsg(`✗ 同步失败：${data.error || res.status}`);
+    }
+  } catch (e) {
+    addSystemMsg(`✗ 同步请求失败：${e.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '同步'; }
+  }
 }
 
 async function refreshMergeStatus() {

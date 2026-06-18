@@ -201,6 +201,57 @@ function gitMergeBack(dir, session) {
   }
 }
 
+// Pull the base branch INTO the session's worktree branch (the inverse of
+// gitMergeBack): brings a stale worktree up to date with main. Runs entirely
+// inside the worktree, so it does NOT require base to be checked out in the main
+// dir. Auto-commits dirty changes first so nothing is lost and a dirty tree
+// doesn't block the merge. On conflict it aborts and leaves the worktree clean.
+function gitSyncFromBase(dir, session) {
+  const dirPath = dir.path;
+  const branch = session.branch;
+  const baseBranch = dir.baseBranch || gitBaseBranch(dirPath);
+  const wtPath = session.worktreePath;
+  if (!branch || !wtPath || !fs.existsSync(wtPath)) {
+    return { ok: false, error: 'session has no worktree' };
+  }
+
+  // Stash-free safety: commit any uncommitted work first.
+  let committed = false;
+  try {
+    committed = gitWorktreeCommitAll(wtPath,
+      `multicc: auto-commit before sync @ ${new Date().toISOString()}`);
+  } catch (e) {
+    return { ok: false, error: `commit failed: ${e.message}` };
+  }
+
+  // How many commits is the worktree behind base?
+  let behind = 0;
+  try { behind = parseInt(gitRun(dirPath, ['rev-list', '--count', `${branch}..${baseBranch}`]) || '0', 10); }
+  catch (_) {}
+  if (behind === 0) return { ok: true, merged: false, committed, message: '已是最新，无需同步' };
+
+  try {
+    gitRun(wtPath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
+      'merge', '--no-edit', baseBranch]);
+    return { ok: true, merged: true, committed, commits: behind, baseBranch };
+  } catch (e) {
+    let conflicts = [];
+    try {
+      conflicts = gitRun(wtPath, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean);
+    } catch (_) {}
+    try { gitRun(wtPath, ['merge', '--abort']); } catch (_) {}
+    if (conflicts.length > 0) {
+      return {
+        ok: false,
+        conflicts,
+        error: `与 ${baseBranch} 存在冲突（${conflicts.length} 个文件）— 已 abort，worktree 未改动，请手动同步`,
+      };
+    }
+    const details = e.stderr ? String(e.stderr).trim() : e.message;
+    return { ok: false, error: details || 'sync failed' };
+  }
+}
+
 module.exports = {
   WORKTREE_SUBDIR,
   gitRun,
@@ -213,4 +264,5 @@ module.exports = {
   gitWorktreeCommitAll,
   gitWorktreeMergeState,
   gitMergeBack,
+  gitSyncFromBase,
 };

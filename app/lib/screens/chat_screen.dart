@@ -36,9 +36,56 @@ class _ChatViewState extends State<ChatView> {
   // Track the last-warned behind count per session so the SnackBar fires when a
   // worktree first falls behind main (or falls further), not on every 5s poll.
   int _lastWarnedBehind = 0;
+  bool _syncing = false;
 
   int _behindCount() => (_mergeStatus?['behind'] as num?)?.toInt() ?? 0;
   String _baseBranchName() => _mergeStatus?['baseBranch']?.toString() ?? 'main';
+
+  // One-click sync: pull the base branch into this session's worktree.
+  Future<void> _syncWorktree(String sessionId) async {
+    if (sessionId.isEmpty || _syncing) return;
+    setState(() => _syncing = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await SessionService(
+        settings: widget.settings,
+      ).syncSession(sessionId);
+      messenger.hideCurrentSnackBar();
+      if (res['ok'] == true) {
+        final merged = res['merged'] == true;
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              merged
+                  ? '✓ 已从 ${res['baseBranch'] ?? 'base'} 同步 ${res['commits']} 个提交'
+                  : (res['message']?.toString() ?? '已是最新'),
+            ),
+          ),
+        );
+      } else if ((res['conflicts'] as List?)?.isNotEmpty == true) {
+        messenger.showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFF3a1414),
+            content: Text(
+              '✗ 同步冲突已 abort，worktree 未改动：${(res['conflicts'] as List).join(', ')}',
+              style: const TextStyle(color: Color(0xFFff9b9b)),
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          SnackBar(content: Text('✗ 同步失败：${res['error'] ?? '未知错误'}')),
+        );
+      }
+      _lastWarnedBehind = 0; // allow a fresh warning if it falls behind again
+      await _refreshMergeStatus(sessionId);
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('✗ 同步请求失败：$e')));
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -119,7 +166,13 @@ class _ChatViewState extends State<ChatView> {
               onMerge: () => _mergeCurrent(context, provider.sessionName),
             ),
             _CwdBar(mergeStatus: _mergeStatus),
-            if (_behindCount() > 0) _BehindMainBanner(behind: _behindCount(), baseBranch: _baseBranchName()),
+            if (_behindCount() > 0)
+              _BehindMainBanner(
+                behind: _behindCount(),
+                baseBranch: _baseBranchName(),
+                syncing: _syncing,
+                onSync: () => _syncWorktree(provider.sessionName),
+              ),
             Expanded(child: _MessageList(scrollCtrl: _scrollCtrl)),
             _CostBar(),
             if (mergeReady)
@@ -810,7 +863,14 @@ class _MergeReadyBanner extends StatelessWidget {
 class _BehindMainBanner extends StatelessWidget {
   final int behind;
   final String baseBranch;
-  const _BehindMainBanner({required this.behind, required this.baseBranch});
+  final VoidCallback onSync;
+  final bool syncing;
+  const _BehindMainBanner({
+    required this.behind,
+    required this.baseBranch,
+    required this.onSync,
+    this.syncing = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -830,6 +890,19 @@ class _BehindMainBanner extends StatelessWidget {
             child: Text(
               '当前 worktree 落后 $baseBranch $behind 个提交',
               style: const TextStyle(color: Color(0xFFf2cc60), fontSize: 12),
+            ),
+          ),
+          TextButton(
+            onPressed: syncing ? null : onSync,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF070809),
+              backgroundColor: const Color(0xFFe3b341),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              minimumSize: Size.zero,
+            ),
+            child: Text(
+              syncing ? '同步中…' : '同步',
+              style: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ),
         ],
