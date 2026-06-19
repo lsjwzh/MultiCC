@@ -38,6 +38,16 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _refreshTimer;
   bool _isInBackground = false;
 
+  /// A notification tap arrived for a session not yet in [_sessions] (e.g. cold
+  /// start). Consumed once the dashboard finishes loading.
+  String? _pendingNotificationSessionId;
+
+  /// A tapped notification resolved to a terminal session — it can't be shown
+  /// inline like a chat, so MainShell pushes the TerminalScreen for it.
+  Session? _pendingTerminalSession;
+  Session? get pendingTerminalSession => _pendingTerminalSession;
+  void clearPendingTerminal() => _pendingTerminalSession = null;
+
   SessionManager({required this.settings}) {
     _sessionService = SessionService(settings: settings);
     WidgetsBinding.instance.addObserver(this);
@@ -46,6 +56,41 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       const Duration(seconds: 5),
       (_) => loadDashboard(),
     );
+    // Route notification taps to the matching session (chat opens inline,
+    // terminal gets pushed by MainShell). Flushes any cold-start payload now.
+    NotificationService.setSelectHandler(openSessionFromNotification);
+  }
+
+  // ── Notification tap routing ───────────────────────────────────────────────
+
+  /// Open the session a tapped notification points at. If it isn't loaded yet
+  /// (cold start before the dashboard fetch returns), remember it and let
+  /// [loadDashboard] open it once the list arrives.
+  void openSessionFromNotification(String sessionId) {
+    Session? match;
+    for (final s in _sessions) {
+      if (s.id == sessionId) {
+        match = s;
+        break;
+      }
+    }
+    if (match == null) {
+      _pendingNotificationSessionId = sessionId;
+      loadDashboard();
+      return;
+    }
+    _activateSession(match);
+  }
+
+  void _activateSession(Session session) {
+    if (session.isChat) {
+      openSession(session);
+      switchToSession(session.id);
+    } else {
+      // Terminals live in a pushed route; hand it to MainShell to navigate.
+      _pendingTerminalSession = session;
+      notifyListeners();
+    }
   }
 
   // ── App lifecycle ──────────────────────────────────────────────────────────
@@ -89,6 +134,18 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       _loadingSessions = false;
       _sessionsError = null;
       notifyListeners();
+      // A notification tap may have arrived before the list was ready — open
+      // its session now that it (hopefully) exists.
+      final pendingId = _pendingNotificationSessionId;
+      if (pendingId != null) {
+        for (final s in _sessions) {
+          if (s.id == pendingId) {
+            _pendingNotificationSessionId = null;
+            _activateSession(s);
+            break;
+          }
+        }
+      }
     } catch (e) {
       _loadingSessions = false;
       _sessionsError = e.toString();
@@ -140,6 +197,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       title: 'MultiCC #$label: ${state == 'waiting' ? '等待操作' : '任务完成'}',
       body: message.isNotEmpty ? message : label,
       id: sessionId.hashCode,
+      payload: sessionId,
     );
   }
 

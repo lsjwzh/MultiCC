@@ -75,6 +75,22 @@ class _MainShellState extends State<MainShell> {
     final mgr = context.watch<SessionManager>();
     final active = mgr.activeProvider;
 
+    // A notification tap resolved to a terminal session — push its screen once
+    // this frame is done (can't navigate during build).
+    final pendingTerm = mgr.pendingTerminalSession;
+    if (pendingTerm != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || mgr.pendingTerminalSession != pendingTerm) return;
+        mgr.clearPendingTerminal();
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) =>
+                TerminalScreen(settings: widget.settings, session: pendingTerm),
+          ),
+        );
+      });
+    }
+
     // Home (multi-session dashboard) is ALWAYS mounted underneath. Opening a
     // session slides a draggable bottom sheet up over it (3/4 height, draggable
     // to fullscreen, draggable down to collapse back home). No page swap.

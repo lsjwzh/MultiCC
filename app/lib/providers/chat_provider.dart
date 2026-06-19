@@ -258,6 +258,7 @@ class ChatProvider extends ChangeNotifier {
         title: 'MultiCC #$sessionName: $title',
         body: detail.isNotEmpty ? detail : sessionName,
         id: sessionName.hashCode,
+        payload: sessionName,
       );
     }
   }
