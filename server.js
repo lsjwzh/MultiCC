@@ -3860,15 +3860,9 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
     },
   });
 
-  // A new user message interrupts any in-flight turn (matches the per-turn
-  // path's "kill previous turn"). The killed turn's promise rejects → its
-  // finalize is a no-op because _streamTurnSeq has advanced (guard below).
-  const st = chatStream.status(sessionName);
-  if (st && st.busy) {
-    console.log(`[multicc/chat] [${sessionName}] (streaming) new message mid-turn → interrupting previous`);
-    cs._killReason = 'new_user_message';
-    chatStream.cancel(sessionName);
-  }
+  // An in-flight turn (if any) was already interrupted at the top of
+  // runChatTurn. Claim this turn's sequence number so a late finalize from a
+  // superseded turn can't clobber us.
   const mySeq = cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1;
 
   const forward = (evt) => {
