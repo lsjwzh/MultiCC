@@ -1420,6 +1420,7 @@ app.delete('/api/directories/:id', (req, res) => {
     const chat = chatSessions.get(s.id);
     if (chat) {
       if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
+      chatStream.close(s.id);
       chatSessions.delete(s.id);
     }
     if (s.worktreePath && s.branch) gitWorktreeRemove(d.path, s.worktreePath, s.branch);
@@ -1754,6 +1755,7 @@ app.delete('/api/sessions/:id', (req, res) => {
   }
   if (chat) {
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
+    chatStream.close(id);
     if (chat.pendingClassifyTimer) clearTimeout(chat.pendingClassifyTimer);
     chatSessions.delete(id);
   }
@@ -4031,6 +4033,15 @@ function handleChatWs(ws, req, urlObj) {
 
       if (msg.type === 'cancel') {
         cancelPendingClassify(cs);
+        if (persisted.streaming && cs.cli === 'claude' && chatStream.isAlive(sessionName)) {
+          console.log(`[multicc/chat] [${sessionName}] (streaming) cancel requested by user`);
+          cs._killReason = 'user_cancel';
+          // proc death → finalizeStreamingTurn fires (stream_end + idle). Don't
+          // bump the seq here so that finalize is NOT superseded.
+          chatStream.cancel(sessionName);
+          cs.isStreaming = false;
+          cs.streamReplay = [];
+        }
         if (cs.claudeProc) {
           console.log(`[multicc/chat] [${sessionName}] Cancel requested by user, killing claude pid=${cs.claudeProc.pid}`);
           cs._killReason = 'user_cancel';
