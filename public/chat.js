@@ -1254,9 +1254,12 @@ async function loadSessionModel() {
     // Role prompt applies to every cli; load it first, then the claude-only model.
     _sessionRole = info.rolePrompt || '';
     updateRoleBtn();
-    if ((info.cli || 'claude') !== 'claude') return; // codex has no model switch
+    if ((info.cli || 'claude') !== 'claude') return; // codex has no model switch / streaming
     _sessionModel = info.model || '';
     updateModelBtn();
+    _sessionStreaming = !!info.streaming;
+    _sessionAutoContinue = !!info.autoContinue;
+    updateStreamBtn();
   } catch (_) {}
 }
 
@@ -1365,6 +1368,70 @@ roleBtn?.addEventListener('click', async () => {
       : '✓ 已清除会话角色（继承目录默认），下一轮对话生效');
   } catch (e) {
     addSystemMsg('角色保存失败：' + e.message);
+  }
+});
+
+/* ── Per-session streaming + auto-continue (claude only) ── */
+const streamBtn = document.getElementById('stream-btn');
+let _sessionStreaming = false;
+let _sessionAutoContinue = false;
+
+function updateStreamBtn() {
+  if (!streamBtn) return;
+  streamBtn.style.display = '';
+  const on = _sessionStreaming;
+  streamBtn.textContent = on ? (_sessionAutoContinue ? '⚡ 流式+接力' : '⚡ 流式') : '⚡ 流式✕';
+  streamBtn.style.opacity = on ? '1' : '0.6';
+  streamBtn.title = '流式常驻：保持 claude 进程不退出、保住上下文（适合「等数据返回再继续」的任务）。\n自动接力：一轮只是在等后台结果时，自动续上（带护栏）。\n下一轮对话生效。';
+}
+
+// Two-toggle picker (WebView-safe; native confirm is unreliable in Android WebViews).
+function showStreamSettings(streaming, autoContinue) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:460px;max-width:94vw;color:#c9d1d9;';
+    box.innerHTML = `
+      <div style="font-size:15px;font-weight:600;margin-bottom:12px;">流式 / 自动接力（下一轮生效）</div>
+      <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;cursor:pointer;">
+        <input type="checkbox" id="ss-stream" ${streaming ? 'checked' : ''} style="margin-top:3px;">
+        <span><b>流式常驻</b><br><span style="font-size:12px;color:#8b949e;">保持 claude 进程不退出、上下文常驻。turn 结束（哪怕模型说"等数据"）进程也活着待命，续接更快、更稳。</span></span>
+      </label>
+      <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:16px;cursor:pointer;">
+        <input type="checkbox" id="ss-auto" ${autoContinue ? 'checked' : ''} style="margin-top:3px;">
+        <span><b>自动接力（兜底）</b><br><span style="font-size:12px;color:#8b949e;">当一轮只是在"等后台任务/外部数据"且无需你操作时，自动发"继续"。带护栏：最多连续 5 次、你一发言就重置、已用 /wait 登记则不重复。</span></span>
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button id="ss-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">取消</button>
+        <button id="ss-ok" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">保存</button>
+      </div>`;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = (r) => { overlay.remove(); resolve(r); };
+    box.querySelector('#ss-ok').onclick = () => close({ streaming: box.querySelector('#ss-stream').checked, autoContinue: box.querySelector('#ss-auto').checked });
+    box.querySelector('#ss-cancel').onclick = () => close(null);
+    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+  });
+}
+
+streamBtn?.addEventListener('click', async () => {
+  const picked = await showStreamSettings(_sessionStreaming, _sessionAutoContinue);
+  if (picked === null) return;
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streaming: picked.streaming, autoContinue: picked.autoContinue }),
+    });
+    const data = await res.json();
+    if (!res.ok) { addSystemMsg('保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
+    _sessionStreaming = !!data.streaming;
+    _sessionAutoContinue = !!data.autoContinue;
+    updateStreamBtn();
+    addSystemMsg(`✓ 流式常驻=${_sessionStreaming ? '开' : '关'}，自动接力=${_sessionAutoContinue ? '开' : '关'}，下一轮对话生效`);
+  } catch (e) {
+    addSystemMsg('保存失败：' + e.message);
   }
 });
 
