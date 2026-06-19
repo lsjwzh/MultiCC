@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/message.dart';
@@ -329,6 +330,7 @@ class _Header extends StatelessWidget {
             onMerge: onMerge,
             onClear: () => _confirmClear(context, provider),
             onSettings: () => _openSettings(context, settings),
+            onShare: () => _shareFromSession(context, provider.sessionName, settings),
           ),
         ],
       ),
@@ -503,6 +505,112 @@ Future<void> _editRoleFromSession(
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('角色保存失败：$e')));
   }
+}
+
+// Share a session externally. Recipient always opens a web page; this only
+// creates the link and lets the user copy it. 'operate' requires a password.
+Future<void> _shareFromSession(
+    BuildContext context, String sessionId, SettingsService settings) async {
+  final svc = SessionService(settings: settings);
+  String access = 'view';
+  final pwCtrl = TextEditingController();
+  String? url;
+  String? error;
+  bool busy = false;
+
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setState) => AlertDialog(
+        backgroundColor: const Color(0xFF14171c),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: Color(0xFF20242b)),
+        ),
+        title: const Text('分享会话',
+            style: TextStyle(color: Color(0xFFe7eaee), fontSize: 16)),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('接收方在浏览器打开链接即可。',
+                  style: TextStyle(color: Color(0xFF8b949e), fontSize: 12)),
+              const SizedBox(height: 4),
+              const Text('「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码。',
+                  style: TextStyle(color: Color(0xFFe3853f), fontSize: 12)),
+              const SizedBox(height: 12),
+              DropdownButton<String>(
+                value: access,
+                dropdownColor: const Color(0xFF14171c),
+                isExpanded: true,
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+                items: const [
+                  DropdownMenuItem(value: 'view', child: Text('只读查看')),
+                  DropdownMenuItem(value: 'operate', child: Text('可对话（需密码）')),
+                ],
+                onChanged: busy ? null : (v) => setState(() => access = v ?? 'view'),
+              ),
+              TextField(
+                controller: pwCtrl,
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+                decoration: const InputDecoration(
+                  hintText: '密码（只读可留空；可对话必填）',
+                  hintStyle: TextStyle(color: Color(0xFF6e7681), fontSize: 13),
+                ),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 8),
+                Text(error!, style: const TextStyle(color: Color(0xFFff6b63), fontSize: 12)),
+              ],
+              if (url != null) ...[
+                const SizedBox(height: 12),
+                SelectableText(url!,
+                    style: const TextStyle(color: Color(0xFF79c0ff), fontSize: 12)),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('关闭', style: TextStyle(color: Color(0xFF8b949e))),
+          ),
+          if (url != null)
+            TextButton(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: url!));
+                ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('链接已复制')));
+              },
+              child: const Text('复制链接', style: TextStyle(color: Color(0xFF58a6ff))),
+            ),
+          TextButton(
+            onPressed: busy
+                ? null
+                : () async {
+                    final pw = pwCtrl.text.trim();
+                    if (access == 'operate' && pw.isEmpty) {
+                      setState(() => error = '「可对话」必须设置密码');
+                      return;
+                    }
+                    setState(() { busy = true; error = null; });
+                    try {
+                      final r = await svc.createShare(sessionId,
+                          access: access, password: pw.isEmpty ? null : pw);
+                      setState(() { url = r['url'] as String?; busy = false; });
+                    } catch (e) {
+                      setState(() { error = '$e'; busy = false; });
+                    }
+                  },
+            child: Text(url == null ? '生成链接' : '重新生成',
+                style: const TextStyle(color: Color(0xFF3fb950))),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 // Multi-line role-prompt editor dialog. Returns the new text, or null on cancel.
@@ -709,6 +817,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onMerge;
   final VoidCallback onClear;
   final VoidCallback onSettings;
+  final VoidCallback onShare;
   const _HeaderOverflowMenu({
     required this.mergeReady,
     required this.onRole,
@@ -716,6 +825,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onMerge,
     required this.onClear,
     required this.onSettings,
+    required this.onShare,
   });
 
   @override
@@ -742,6 +852,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
           case 'clear':
             onClear();
             break;
+          case 'share':
+            onShare();
+            break;
           case 'settings':
             onSettings();
             break;
@@ -751,6 +864,8 @@ class _HeaderOverflowMenu extends StatelessWidget {
         _item('role', Icons.theater_comedy_outlined, '角色提示词',
             const Color(0xFFe7eaee)),
         _item('memo', Icons.sticky_note_2_outlined, '项目备忘',
+            const Color(0xFFe7eaee)),
+        _item('share', Icons.share_outlined, '分享会话',
             const Color(0xFFe7eaee)),
         _item(
           'merge',

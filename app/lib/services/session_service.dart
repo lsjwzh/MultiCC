@@ -163,6 +163,33 @@ class SessionService {
     }
   }
 
+  /// Create an external share link for a session. access: 'view' | 'operate'
+  /// ('operate' requires a non-empty password). Returns the share record incl.
+  /// `url` (built server-side from the request host, so it matches the base URL
+  /// the app is configured with). The recipient always opens a web page.
+  Future<Map<String, dynamic>> createShare(
+    String id, {
+    required String access,
+    String? password,
+    int? expiresAt,
+  }) async {
+    final body = <String, dynamic>{'access': access};
+    if (password != null && password.isNotEmpty) body['password'] = password;
+    if (expiresAt != null) body['expiresAt'] = expiresAt;
+    final res = await http
+        .post(
+          Uri.parse(_url('/api/sessions/$id/share')),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   Future<void> updateSessionLabel(String id, String? label) async {
     final res = await http
         .patch(

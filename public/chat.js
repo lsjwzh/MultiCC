@@ -1435,6 +1435,86 @@ streamBtn?.addEventListener('click', async () => {
   }
 });
 
+/* ── Session sharing (external web links) ── */
+const shareBtn = document.getElementById('share-btn');
+
+async function shareApi(method, p, body) {
+  const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}${p}`), {
+    method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function shareRow(s) {
+  const lvl = s.access === 'operate' ? '可对话' : (s.hasPassword ? '密码查看' : '公开查看');
+  const exp = s.expiresAt ? `，到期 ${new Date(s.expiresAt).toLocaleString()}` : '';
+  return `<div class="share-row" data-token="${s.token}" style="border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;"><b style="color:#79c0ff;">${lvl}</b><span style="color:#8b949e;">${exp}</span></div>
+    <div style="display:flex;gap:6px;align-items:center;"><input readonly value="${s.url}" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;padding:5px 7px;font-family:var(--mono,monospace);"><button data-copy="${s.url}" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;">复制</button><button data-del="${s.token}" style="background:#2d1418;border:1px solid #5c2228;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;">撤销</button></div>
+  </div>`;
+}
+
+async function openShareDialog() {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:94vw;max-height:90vh;overflow:auto;color:#c9d1d9;';
+  box.innerHTML = `
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">分享此会话（外部网页链接）</div>
+    <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:14px;">接收方在浏览器打开链接即可。<b style="color:#f0883e;">「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码、谨慎分享。</b></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      <select id="sh-access" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+        <option value="view">只读查看</option>
+        <option value="operate">可对话（需密码）</option>
+      </select>
+      <input id="sh-pw" placeholder="密码（可读可留空；可对话必填）" style="flex:1;min-width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <select id="sh-exp" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+        <option value="0">永不过期</option><option value="1">1 小时</option><option value="24">1 天</option><option value="168">7 天</option>
+      </select>
+      <button id="sh-create" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 14px;cursor:pointer;">生成链接</button>
+    </div>
+    <div id="sh-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">已有分享：</div>
+    <div id="sh-list"><div style="color:#8b949e;font-size:12px;">加载中…</div></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="sh-close" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">关闭</button></div>`;
+  overlay.appendChild(box); document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  box.querySelector('#sh-close').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  const msg = box.querySelector('#sh-msg');
+  const listEl = box.querySelector('#sh-list');
+
+  async function refresh() {
+    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : '<div style="color:#8b949e;font-size:12px;">暂无</div>'; bind(); }
+    catch (e) { listEl.innerHTML = `<div style="color:#f85149;font-size:12px;">${e.message}</div>`; }
+  }
+  function bind() {
+    listEl.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); b.textContent = '已复制'; setTimeout(() => b.textContent = '复制', 1200); });
+    listEl.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('撤销这个分享链接？')) return; try { await shareApi('DELETE', '/share/' + encodeURIComponent(b.dataset.del)); refresh(); } catch (e) { alert(e.message); } });
+  }
+  box.querySelector('#sh-create').onclick = async () => {
+    const access = box.querySelector('#sh-access').value;
+    const password = box.querySelector('#sh-pw').value.trim();
+    const hrs = parseInt(box.querySelector('#sh-exp').value, 10);
+    if (access === 'operate' && !password) { msg.textContent = '「可对话」必须设置密码'; msg.style.color = '#f85149'; return; }
+    const body = { access };
+    if (password) body.password = password;
+    if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
+    try {
+      const d = await shareApi('POST', '/share', body);
+      msg.style.color = '#3fb950'; msg.textContent = '已生成：' + d.url;
+      navigator.clipboard?.writeText(d.url);
+      box.querySelector('#sh-pw').value = '';
+      refresh();
+    } catch (e) { msg.style.color = '#f85149'; msg.textContent = e.message; }
+  };
+  refresh();
+}
+
+shareBtn?.addEventListener('click', openShareDialog);
+
 updateRoleBtn();
 loadSessionModel();
 
