@@ -9,6 +9,7 @@ node_modules/
 sessions.json
 directories.json
 scheduled_tasks.json
+shares.json
 chat_history/
 events/
 logs/
