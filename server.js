@@ -1611,6 +1611,13 @@ app.patch('/api/sessions/:id', (req, res) => {
     s.rolePrompt = rp.trim() || null;
     appendEvent(s.dirId, 'session_role_changed', s.rolePrompt ? (s.label || s.id) : `${s.label || s.id}（清除，继承目录）`, s.id);
   }
+  if (req.body.streaming !== undefined) {
+    // Experimental: keep a persistent streaming claude process across turns.
+    if ((s.cli || 'claude') !== 'claude') return res.status(400).json({ error: 'streaming is claude-only' });
+    s.streaming = !!req.body.streaming;
+    if (!s.streaming) chatStream.close(s.id); // tear down any warm process
+    appendEvent(s.dirId, 'session_streaming_changed', `${s.label || s.id} → ${s.streaming ? '流式常驻' : '逐轮'}`, s.id);
+  }
   savePersistedSessions();
   res.json(s);
 });
