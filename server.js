@@ -3501,6 +3501,24 @@ function runChatTurn(sessionName, text, opts = {}) {
       });
       cs.chatTurnCount++;
     }
+  } else if (persisted.streaming && (persisted.cli || 'claude') === 'claude' && chatStream.status(sessionName)?.busy) {
+    // Streaming: no per-turn child proc, but a turn may be in flight on the
+    // persistent process. Interrupt it (its finalize becomes a no-op via the
+    // _streamTurnSeq bump) and preserve its partial output before resetting.
+    console.log(`[multicc/chat] [${sessionName}] (streaming) new message while turn busy → interrupting previous`);
+    cs._killReason = 'new_user_message';
+    cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1; // supersede the in-flight turn's finalize
+    chatStream.cancel(sessionName);
+    cs.isStreaming = false;
+    cs.streamReplay = [];
+    if (cs.currentAssistantText || cs.currentToolCalls.length) {
+      appendChatMessage(sessionName, {
+        role: 'assistant', content: cs.currentAssistantText,
+        tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+        ts: Date.now(), cancelled: true,
+      });
+      cs.chatTurnCount++;
+    }
   }
 
   // Save user message to history
