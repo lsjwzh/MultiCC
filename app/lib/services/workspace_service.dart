@@ -14,7 +14,12 @@ class SessionStatus {
   final bool mergeReady;
   final bool dirty;
   final int ahead;
+  final int behind;
   final String? baseBranch;
+
+  /// aux-AI one-line summary of what the session last worked on ("最近任务").
+  final String? summary;
+  final int summaryTs;
 
   const SessionStatus({
     required this.status,
@@ -23,8 +28,37 @@ class SessionStatus {
     this.mergeReady = false,
     this.dirty = false,
     this.ahead = 0,
+    this.behind = 0,
     this.baseBranch,
+    this.summary,
+    this.summaryTs = 0,
   });
+
+  SessionStatus copyWith({
+    String? status,
+    String? currentFile,
+    int? lastActivity,
+    bool? mergeReady,
+    bool? dirty,
+    int? ahead,
+    int? behind,
+    String? baseBranch,
+    String? summary,
+    int? summaryTs,
+  }) {
+    return SessionStatus(
+      status: status ?? this.status,
+      currentFile: currentFile ?? this.currentFile,
+      lastActivity: lastActivity ?? this.lastActivity,
+      mergeReady: mergeReady ?? this.mergeReady,
+      dirty: dirty ?? this.dirty,
+      ahead: ahead ?? this.ahead,
+      behind: behind ?? this.behind,
+      baseBranch: baseBranch ?? this.baseBranch,
+      summary: summary ?? this.summary,
+      summaryTs: summaryTs ?? this.summaryTs,
+    );
+  }
 }
 
 /// Subscribes to the server's per-directory `/ws/workspace` socket and exposes
@@ -92,9 +126,10 @@ class WorkspaceService extends ChangeNotifier {
     return '$wsScheme://$bare/ws/workspace?$query';
   }
 
-  SessionStatus _parse(Map m) {
+  SessionStatus _parse(Map m, {SessionStatus? prev}) {
     final merge = m['mergeState'];
     final mergeMap = merge is Map ? merge : const {};
+    final rawSummary = m['summary']?.toString();
     return SessionStatus(
       status: (m['status'] ?? 'idle') as String,
       currentFile: m['currentFile'] as String?,
@@ -102,7 +137,14 @@ class WorkspaceService extends ChangeNotifier {
       mergeReady: mergeMap['mergeReady'] == true,
       dirty: mergeMap['dirty'] == true,
       ahead: (mergeMap['ahead'] as num?)?.toInt() ?? 0,
+      behind: (mergeMap['behind'] as num?)?.toInt() ?? 0,
       baseBranch: mergeMap['baseBranch']?.toString(),
+      // Status/snapshot payloads don't always re-send the summary — keep the
+      // last one we had so it doesn't blink off the card on a status tick.
+      summary: (rawSummary != null && rawSummary.isNotEmpty)
+          ? rawSummary
+          : prev?.summary,
+      summaryTs: (m['summaryTs'] as num?)?.toInt() ?? prev?.summaryTs ?? 0,
     );
   }
 
@@ -145,7 +187,7 @@ class WorkspaceService extends ChangeNotifier {
     } else if (type == 'status') {
       final id = msg['sessionId'];
       if (id is String) {
-        statuses[id] = _parse(msg);
+        statuses[id] = _parse(msg, prev: statuses[id]);
         notifyListeners();
       }
     } else if (type == 'merge_status') {
@@ -154,14 +196,23 @@ class WorkspaceService extends ChangeNotifier {
         final prev = statuses[id] ?? const SessionStatus(status: 'idle');
         final merge = msg['mergeState'];
         final mergeMap = merge is Map ? merge : const {};
-        statuses[id] = SessionStatus(
-          status: prev.status,
-          currentFile: prev.currentFile,
-          lastActivity: prev.lastActivity,
+        statuses[id] = prev.copyWith(
           mergeReady: mergeMap['mergeReady'] == true,
           dirty: mergeMap['dirty'] == true,
           ahead: (mergeMap['ahead'] as num?)?.toInt() ?? 0,
+          behind: (mergeMap['behind'] as num?)?.toInt() ?? 0,
           baseBranch: mergeMap['baseBranch']?.toString(),
+        );
+        notifyListeners();
+      }
+    } else if (type == 'summary') {
+      final id = msg['sessionId'];
+      final summary = msg['summary']?.toString();
+      if (id is String && summary != null && summary.isNotEmpty) {
+        final prev = statuses[id] ?? const SessionStatus(status: 'idle');
+        statuses[id] = prev.copyWith(
+          summary: summary,
+          summaryTs: (msg['ts'] as num?)?.toInt() ?? prev.summaryTs,
         );
         notifyListeners();
       }

@@ -11,6 +11,7 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/workspace_service.dart';
 import '../widgets/conflict_diff_dialog.dart';
+import '../widgets/session_diff_dialog.dart';
 import '../widgets/model_picker.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
@@ -1235,6 +1236,49 @@ class _SessionCard extends StatelessWidget {
                   ],
                 ),
               ],
+              if (live?.summary?.isNotEmpty == true) ...[
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0x243ad6c5),
+                    border: Border.all(color: const Color(0x663ad6c5)),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '🗒 ${live!.summary}',
+                    style: const TextStyle(
+                      color: Color(0xFF7fe6da),
+                      fontSize: 10.5,
+                      height: 1.35,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+              if ((live?.behind ?? 0) > 0) ...[
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.history_rounded,
+                      size: 11,
+                      color: Color(0xFFf2cc60),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '落后 ${live!.baseBranch ?? 'base'} ${live.behind} 个提交',
+                      style: const TextStyle(
+                        color: Color(0xFFf2cc60),
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
@@ -1273,6 +1317,24 @@ class _SessionCard extends StatelessWidget {
                         ? _mergeReadyLabel(live!)
                         : '合并 worktree',
                     onPressed: () => _mergeSession(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 30,
+                      minHeight: 28,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.difference_outlined,
+                      size: 16,
+                      color: Color(0xFF8a909b),
+                    ),
+                    tooltip: '查看 Diff',
+                    onPressed: () => showSessionDiffDialog(
+                      context,
+                      settings: settings,
+                      sessionId: session.id,
+                    ),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(
                       minWidth: 30,

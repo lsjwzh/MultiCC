@@ -78,6 +78,22 @@ class SessionService {
     return map;
   }
 
+  /// Fetch the worktree diff against the directory's base branch. Returns the
+  /// parsed server response: `{branch, baseBranch, stat, diff, truncated,
+  /// mergeState, error}`. On HTTP error sets `ok: false` + `error`.
+  Future<Map<String, dynamic>> fetchDiff(String id) async {
+    final res = await http
+        .get(Uri.parse(_url('/api/sessions/$id/diff')), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
   Future<Map<String, dynamic>> fetchMergeStatus(String id) async {
     final res = await http
         .get(

@@ -10,6 +10,7 @@ import '../services/chat_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/conflict_diff_dialog.dart';
+import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/model_picker.dart';
@@ -179,6 +180,11 @@ class _ChatViewState extends State<ChatView> {
               _MergeReadyBanner(
                 text: _mergeStatusText(_mergeStatus),
                 onMerge: () => _mergeCurrent(context, provider.sessionName),
+                onDiff: () => showSessionDiffDialog(
+                  context,
+                  settings: widget.settings,
+                  sessionId: provider.sessionName,
+                ),
               ),
             const InputBar(),
           ],
@@ -806,7 +812,12 @@ String _mergeStatusText(Map<String, dynamic>? status) {
 class _MergeReadyBanner extends StatelessWidget {
   final String text;
   final VoidCallback onMerge;
-  const _MergeReadyBanner({required this.text, required this.onMerge});
+  final VoidCallback onDiff;
+  const _MergeReadyBanner({
+    required this.text,
+    required this.onMerge,
+    required this.onDiff,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -839,6 +850,20 @@ class _MergeReadyBanner extends StatelessWidget {
               style: const TextStyle(color: Color(0xFFf2cc60), fontSize: 12),
             ),
           ),
+          TextButton(
+            onPressed: onDiff,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFf2cc60),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              minimumSize: Size.zero,
+              side: const BorderSide(color: Color(0xFFe3b341)),
+            ),
+            child: const Text(
+              '查看 Diff',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(width: 6),
           TextButton(
             onPressed: onMerge,
             style: TextButton.styleFrom(
