@@ -36,7 +36,8 @@ function mount(app) {
   }, express.static(ARTIFACTS_DIR, {
     index: 'index.html',
     dotfiles: 'ignore',
-    fallthrough: false,        // unknown artifact → 404, don't leak to other routes
+    // fallthrough defaults to true: a missing artifact drops through to Express's
+    // default 404 (quiet), matching how the rest of the app handles unknown paths.
     setHeaders: (res) => {
       // Temp content gets regenerated; never let a browser cache a stale copy.
       res.setHeader('Cache-Control', 'no-store, must-revalidate');

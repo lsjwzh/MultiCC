@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+'use strict';
+// multicc-artifact — publish a throwaway web page or file and print a link the
+// user can open from the multicc chat (works locally and over the tunnel).
+//
+// The file is written under ~/.multicc/artifacts/<id>/<name> and served by the
+// multicc server at /artifacts/<id>/<name>. The relative URL is what you paste
+// into the chat: it resolves against whatever origin the user is on.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+
+const ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');
+const BASE = (process.env.MULTICC_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+const IMG_RE = /\.(png|jpe?g|gif|svg|webp|avif|bmp|ico)$/i;
+
+function die(msg) { process.stderr.write(`artifact: ${msg}\n`); process.exit(1); }
+
+function usage() {
+  process.stdout.write(`multicc-artifact — 发布临时网页 / 临时文件，返回可点击链接
+
+用法:
+  artifact page [--name index.html] [--from FILE] [--id ID] [--title T] [--quiet]
+  artifact file  --name NAME      [--from FILE] [--id ID] [--download] [--quiet]
+  artifact list
+  artifact rm <id>
+
+内容来源:
+  --from FILE   从文件读取内容；省略则从 stdin 读取（用管道传入）。
+
+要点:
+  • page  发布网页(.html)，浏览器里直接渲染；默认文件名 index.html。
+  • file  发布任意文件(.csv/.json/.pdf/.zip/.png…)，浏览器内联预览；
+          加 --download 则点链接直接下载。
+  • 命令会打印「素材目录」，可往里再放 css/js/图片，HTML 用相对路径引用即可。
+  • 把打印出来的「相对URL / Markdown」贴进聊天回复，用户点击即可打开。
+
+示例:
+  echo '<h1>Hello</h1>' | artifact page --title 报告
+  artifact page --from /tmp/report.html
+  artifact file --from /tmp/data.csv --name data.csv --download
+`);
+}
+
+function parseFlags(args) {
+  const o = { _: [] };
+  const bool = new Set(['download', 'dl', 'quiet', 'help', 'h']);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-h' || a === '--help') { o.help = true; continue; }
+    if (a.startsWith('--')) {
+      const k = a.slice(2);
+      if (bool.has(k)) o[k] = true;
+      else o[k] = args[++i];
+    } else o._.push(a);
+  }
+  return o;
+}
+
+function readContent(from) {
+  if (from) {
+    if (!fs.existsSync(from)) die(`--from 文件不存在: ${from}`);
+    return fs.readFileSync(from);
+  }
+  if (process.stdin.isTTY) die('缺少内容：用 --from <文件> 或通过 stdin 管道传入');
+  try { return fs.readFileSync(0); } catch (e) { die(`读取 stdin 失败: ${e.message}`); }
+}
+
+function safeName(name, fallback) {
+  const base = path.basename(String(name || fallback)).replace(/[^A-Za-z0-9._-]/g, '_');
+  return base || fallback;
+}
+
+// Minimal HTML shell so raw fragments still render as a real page (UTF-8, mobile
+// viewport, readable defaults). Skipped when content already looks like a doc.
+function wrapHtml(body, title) {
+  const t = String(title || '临时网页');
+  return `<!DOCTYPE html>
+<html lang="zh"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${t.replace(/[<>&]/g, '')}</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.65;max-width:860px;margin:0 auto;padding:24px;color:#1f2328;background:#fff}
+  @media(prefers-color-scheme:dark){body{background:#0d1117;color:#c9d1d9}a{color:#58a6ff}
+    table,th,td{border-color:#30363d}code,pre{background:#161b22}}
+  img{max-width:100%}table{border-collapse:collapse}th,td{border:1px solid #d0d7de;padding:6px 10px}
+  code,pre{background:#f6f8fa;border-radius:6px}pre{padding:12px;overflow:auto}code{padding:2px 5px}
+</style></head>
+<body>
+${body}
+</body></html>`;
+}
+
+function newId() { return crypto.randomBytes(8).toString('hex'); }
+
+function emit(kind, id, name, dir, dest, quiet) {
+  const rel = `/artifacts/${id}/${name}`;
+  if (quiet) { process.stdout.write(rel + '\n'); return; }
+  const isImg = IMG_RE.test(name);
+  const md = kind === 'page'
+    ? `[👉 打开网页](${rel})`
+    : isImg ? `![${name}](${dest})  ·  [⬇️ 下载](${rel}?download=1)`
+            : `[⬇️ 下载 ${name}](${rel}?download=1)`;
+  process.stdout.write(
+`✅ 已发布临时${kind === 'page' ? '网页' : '文件'}
+相对URL（贴进聊天用这个）: ${rel}
+完整URL: ${BASE}${rel}
+本地路径: ${dest}
+素材目录: ${dir}    ← 再放 css/js/图片到这里，HTML 里用相对路径引用即可
+
+可直接粘贴到聊天回复里:
+${md}
+`);
+}
+
+function cmdList() {
+  let dirs = [];
+  try { dirs = fs.readdirSync(ARTIFACTS_DIR); } catch (_) {}
+  if (!dirs.length) { process.stdout.write('（暂无临时产物）\n'); return; }
+  for (const id of dirs) {
+    const p = path.join(ARTIFACTS_DIR, id);
+    let files = [];
+    try { files = fs.readdirSync(p); } catch (_) {}
+    let mtime = '';
+    try { mtime = fs.statSync(p).mtime.toISOString().slice(0, 16).replace('T', ' '); } catch (_) {}
+    process.stdout.write(`${id}  [${mtime}]  ${files.join(', ')}\n`);
+  }
+}
+
+function cmdRm(id) {
+  if (!id) die('用法: artifact rm <id>');
+  const p = path.join(ARTIFACTS_DIR, path.basename(id));
+  if (!fs.existsSync(p)) die(`未找到: ${id}`);
+  fs.rmSync(p, { recursive: true, force: true });
+  process.stdout.write(`已删除 ${id}\n`);
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  const cmd = argv[0];
+  if (!cmd || cmd === '-h' || cmd === '--help' || cmd === 'help') { usage(); return; }
+  if (cmd === 'list') return cmdList();
+  if (cmd === 'rm') return cmdRm(argv[1]);
+  if (cmd !== 'page' && cmd !== 'file') die(`未知命令 "${cmd}"，见 artifact --help`);
+
+  const f = parseFlags(argv.slice(1));
+  if (f.help) { usage(); return; }
+
+  const id = safeName(f.id, '') || newId();
+  const dir = path.join(ARTIFACTS_DIR, id);
+  fs.mkdirSync(dir, { recursive: true });
+
+  let name, buf;
+  if (cmd === 'page') {
+    name = safeName(f.name, 'index.html');
+    if (!/\.html?$/i.test(name)) name += '.html';
+    let html = readContent(f.from).toString('utf8');
+    if (!/<html[\s>]|<!doctype/i.test(html)) html = wrapHtml(html, f.title);
+    buf = Buffer.from(html, 'utf8');
+  } else {
+    if (!f.name && !f.from) die('file 模式需要 --name（或 --from 以推断文件名）');
+    name = safeName(f.name || path.basename(f.from), 'artifact.bin');
+    buf = readContent(f.from);
+  }
+
+  const dest = path.join(dir, name);
+  fs.writeFileSync(dest, buf);
+  emit(cmd, id, name, dir, dest, f.quiet);
+}
+
+main();
