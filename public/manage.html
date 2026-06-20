@@ -358,6 +358,7 @@
     <div class="nav-label">Settings</div>
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> 定时任务 <span class="badge" id="nav-cron-count">0</span></button>
     <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> 语音 Voice</button>
+    <button class="nav-item" data-view="goal" onclick="setView('goal')"><span class="ic">🎯</span> Goal 预检</button>
     <button class="nav-item" id="macos-power-nav" data-view="power" onclick="setView('power')" style="display:none;"><span class="ic">⌁</span> macOS 电源</button>
     <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> 推送 Push</button>
     <button class="nav-item" data-view="tunnel" onclick="setView('tunnel')"><span class="ic">🌐</span> 外网穿透</button>
@@ -440,6 +441,31 @@
               <div style="padding:0 0 0 134px;font-size:12px;color:var(--faint);line-height:1.5">Whisper prompt guides vocabulary recognition.<br>Terms from voice_examples.json are also auto-appended at runtime.</div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveVoiceSettings()">Save</button><span class="status-text" id="ws-status"></span></div>
+          </div>
+        </section>
+
+        <!-- ─── Goal precheck ─── -->
+        <section class="view" data-view="goal">
+          <div class="sec-head"><h2>Goal 预检设置</h2><div class="line"></div></div>
+          <p class="sec-desc">以 Goal 模式发送任务前，辅助 AI 会按下面启用的维度检查任务是否合格；不合格会给出改写建议。可在聊天的 🎯 弹窗里临时调整本次检查的维度。</p>
+          <div class="settings-card">
+            <div class="sc-header">检查维度（限制项）</div>
+            <div class="sc-body">
+              <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
+                <input type="checkbox" id="goal-dim-objective" style="margin:0" />
+                <b style="min-width:96px">目标明确</b><span style="color:var(--faint);font-size:12px">清楚要达成什么结果，而非含糊方向</span></label>
+              <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
+                <input type="checkbox" id="goal-dim-criteria" style="margin:0" />
+                <b style="min-width:96px">完成标准明确</b><span style="color:var(--faint);font-size:12px">有可判断「做完了」的验收标准或可观察产出</span></label>
+              <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
+                <input type="checkbox" id="goal-dim-scope" style="margin:0" />
+                <b style="min-width:96px">范围清晰</b><span style="color:var(--faint);font-size:12px">边界明确，不至于无限发散</span></label>
+              <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
+                <input type="checkbox" id="goal-dim-executable" style="margin:0" />
+                <b style="min-width:96px">可独立执行</b><span style="color:var(--faint);font-size:12px">无需追问关键信息即可开工，或缺失能合理默认</span></label>
+              <div class="setting-row"><label>通过分数阈值</label><input id="goal-min-score" type="number" min="0" max="100" style="max-width:100px" /><span style="font-size:12px;color:var(--faint)">符合度低于此分判为「建议完善」；0 = 不强制</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveGoalSettings()">Save</button><span class="status-text" id="goal-status"></span></div>
           </div>
         </section>
 
