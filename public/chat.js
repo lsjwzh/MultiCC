@@ -2119,7 +2119,7 @@ if (goalPrecheckBtn) goalPrecheckBtn.onclick = async () => {
   try {
     const resp = await fetch(withToken('/api/goal/precheck'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task }),
+      body: JSON.stringify({ task, dimensions: collectGoalDims() }),
     });
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || '预检失败');
