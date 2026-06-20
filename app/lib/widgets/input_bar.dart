@@ -636,6 +636,14 @@ class _InputBarState extends State<InputBar> {
                 ),
                 const SizedBox(width: 4),
 
+                // Goal-mode button — precheck the task with the aux-AI, then send
+                _SmallButton(
+                  onTap: (isConnected && !isStreaming) ? () => _showGoalSheet(provider) : null,
+                  icon: Icons.track_changes_rounded,
+                  color: const Color(0xFF8a909b),
+                ),
+                const SizedBox(width: 4),
+
                 // Input textarea
                 Expanded(
                   child: Container(
