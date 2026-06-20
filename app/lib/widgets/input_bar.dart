@@ -12,6 +12,14 @@ import '../providers/chat_provider.dart';
 import '../services/chat_service.dart';
 import '../services/settings_service.dart';
 
+// Goal precheck dimension keys → short chip labels (web/app kept in sync).
+const Map<String, String> _goalDimShort = {
+  'objective': '目标明确',
+  'criteria': '完成标准',
+  'scope': '范围清晰',
+  'executable': '可独立执行',
+};
+
 class InputBar extends StatefulWidget {
   const InputBar({super.key});
 
@@ -359,20 +367,38 @@ class _InputBarState extends State<InputBar> {
   List<String> _strList(dynamic v) =>
       (v is List) ? v.map((e) => e.toString()).where((s) => s.trim().isNotEmpty).toList() : <String>[];
 
-  Future<Map<String, dynamic>> _fetchGoalPrecheck(String task) async {
+  Future<Map<String, dynamic>> _fetchGoalPrecheck(String task, Map<String, bool> dims) async {
     try {
       final settings = context.read<ChatProvider>().settings;
       final uri = Uri.parse(settings.buildHttpUrl('/api/goal/precheck'));
       final headers = <String, String>{'Content-Type': 'application/json'};
       if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
       final res = await http
-          .post(uri, headers: headers, body: jsonEncode({'task': task}))
+          .post(uri, headers: headers, body: jsonEncode({'task': task, 'dimensions': dims}))
           .timeout(const Duration(seconds: 45));
       if (res.statusCode != 200) return {'ok': false, 'error': 'HTTP ${res.statusCode}'};
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     } catch (e) {
       return {'ok': false, 'error': '$e'};
     }
+  }
+
+  // Load the global goal-config dimension defaults into [dims].
+  Future<void> _loadGoalDimsInto(Map<String, bool> dims) async {
+    try {
+      final settings = context.read<ChatProvider>().settings;
+      final headers = <String, String>{};
+      if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
+      final res = await http
+          .get(Uri.parse(settings.buildHttpUrl('/api/settings/goal')), headers: headers)
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) return;
+      final d = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final g = (d['dimensions'] as Map?) ?? {};
+      for (final k in const ['objective', 'criteria', 'scope', 'executable']) {
+        dims[k] = g[k] != false;
+      }
+    } catch (_) {}
   }
 
   Widget _goalField(TextEditingController ctrl, int maxLines, String hint) {
@@ -406,9 +432,12 @@ class _InputBarState extends State<InputBar> {
     );
   }
 
-  void _showGoalSheet(ChatProvider provider) {
+  Future<void> _showGoalSheet(ChatProvider provider) async {
     final taskCtrl = TextEditingController(text: _ctrl.text.trim());
     final revisedCtrl = TextEditingController();
+    final Map<String, bool> dims = {'objective': true, 'criteria': true, 'scope': true, 'executable': true};
+    await _loadGoalDimsInto(dims); // default checkboxes to the global config
+    if (!mounted) return;
     bool checking = false;
     Map<String, dynamic>? verdict; // null until prechecked
     String? error;
@@ -450,6 +479,28 @@ class _InputBarState extends State<InputBar> {
                   const Text('任务', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                   const SizedBox(height: 4),
                   _goalField(taskCtrl, 4, '描述你要达成的目标…'),
+                  const SizedBox(height: 10),
+                  const Text('检查维度（本次预检，默认取设置里的全局配置）', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: _goalDimShort.entries.map((e) {
+                      final on = dims[e.key] ?? true;
+                      return FilterChip(
+                        label: Text(e.value, style: const TextStyle(fontSize: 12)),
+                        selected: on,
+                        onSelected: (v) => setSheetState(() => dims[e.key] = v),
+                        backgroundColor: const Color(0xFF14171c),
+                        selectedColor: const Color(0xFF22ab9c),
+                        checkmarkColor: Colors.white,
+                        labelStyle: TextStyle(color: on ? Colors.white : const Color(0xFF8a909b), fontSize: 12),
+                        side: const BorderSide(color: Color(0xFF20242b)),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      );
+                    }).toList(),
+                  ),
                   if (verdict != null) ...[
                     const SizedBox(height: 12),
                     Container(
@@ -500,7 +551,7 @@ class _InputBarState extends State<InputBar> {
                                   checking = true;
                                   error = null;
                                 });
-                                final data = await _fetchGoalPrecheck(task);
+                                final data = await _fetchGoalPrecheck(task, dims);
                                 setSheetState(() {
                                   checking = false;
                                   if (data['ok'] == true) {
