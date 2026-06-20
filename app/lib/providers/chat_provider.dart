@@ -44,6 +44,11 @@ class ChatProvider extends ChangeNotifier {
   int _reconnectAttempt = 0;
   bool _historyApplied = false;
 
+  /// When a resume/half-open reconnect is in flight, the next `chat_history`
+  /// is a refresh that should REPLACE the on-screen transcript atomically
+  /// (rather than the insert used on the very first load).
+  bool _replaceHistoryOnReconnect = false;
+
   /// Whether this session is the one currently viewed by the user.
   bool isActive = true;
 
@@ -133,7 +138,13 @@ class ChatProvider extends ChangeNotifier {
       case 'chat_history':
         if (!_historyApplied) {
           _historyApplied = true;
-          _replayHistory(evt.payload as List);
+          final history = evt.payload as List;
+          if (_replaceHistoryOnReconnect) {
+            _replaceHistoryOnReconnect = false;
+            _replaceHistory(history);
+          } else {
+            _replayHistory(history);
+          }
         }
         break;
 
@@ -292,6 +303,29 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Resume / half-open reconnect refresh: swap the visible transcript for the
+  /// server's authoritative history in a SINGLE rebuild. The old messages stay
+  /// on screen until the new list is built, so there's no blank "clear then
+  /// refill" flash — the chat reconciles in place, the way the web client does.
+  void _replaceHistory(List history) {
+    final parsed = history
+        .map((m) {
+          try {
+            return ChatMessage.fromHistory(m as Map<String, dynamic>);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<ChatMessage>()
+        .toList();
+    _messages
+      ..clear()
+      ..addAll(parsed);
+    _currentMsg = null;
+    _activeTools.clear();
+    notifyListeners();
+  }
+
   void _addSystemMsg(String text) {
     _messages.add(ChatMessage(role: MessageRole.system, content: text));
     notifyListeners();
@@ -324,20 +358,40 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Reconnect behaves like reopening the session: drop stale local state and
-  // reload the authoritative transcript from the server. Preserving history
-  // here was the bug — after a socket died mid/post-response, `_historyApplied`
-  // stayed true so the server's fresh chat_history (containing the answer that
-  // completed while disconnected) was ignored, leaving a stuck chat that only
-  // an app restart could fix.
-  void reconnect() => _reconnect(preserveHistory: false);
+  // Reconnect (app resume / half-open socket recovery). We still reload the
+  // authoritative transcript from the server — that's required so an answer
+  // that completed while we were disconnected isn't missed (preserving local
+  // history was the original bug: after a socket died mid/post-response,
+  // `_historyApplied` stayed true and the server's fresh chat_history was
+  // ignored, leaving a stuck chat only an app restart could fix). But unlike
+  // the old code we no longer wipe `_messages` up front. Clearing first made
+  // the chat flash blank and "fully reload" on every resume, because
+  // state_change / system_init fire a rebuild before the new history arrives.
+  // Now the current transcript stays on screen and is swapped in atomically
+  // when chat_history lands (see `_replaceHistory`) — matching the web client.
+  void reconnect() => _reconnect();
 
-  void _reconnect({required bool preserveHistory}) {
-    if (!preserveHistory) {
+  /// Resume after a SHORT background: probe the existing socket instead of
+  /// tearing it down. Keeps the live connection (and the on-screen transcript)
+  /// untouched when it's healthy — no reconnect, no reload. See
+  /// [ChatService.ensureAlive].
+  void ensureAlive() => _service.ensureAlive();
+
+  void _reconnect({bool hardReset = false}) {
+    if (hardReset) {
+      // Genuine context switch (e.g. changing the working directory): drop the
+      // old transcript immediately and reload from scratch.
       _messages.clear();
       _currentMsg = null;
       _activeTools.clear();
       _historyApplied = false;
+      notifyListeners();
+    } else {
+      // Seamless resume: stop feeding a stale streaming bubble, then let the
+      // next chat_history replace the transcript in place — no blank flash.
+      _finishStreaming();
+      _historyApplied = false;
+      _replaceHistoryOnReconnect = true;
     }
     _service.dispose();
     _initService();
@@ -346,7 +400,7 @@ class ChatProvider extends ChangeNotifier {
   void changeCwd(String newCwd) {
     _cwd = newCwd;
     sessionCwd = newCwd;
-    _reconnect(preserveHistory: false);
+    _reconnect(hardReset: true);
   }
 
   @override

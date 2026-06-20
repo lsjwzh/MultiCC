@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../models/message.dart';
 import '../providers/session_manager.dart';
+import '../services/background_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import '../widgets/model_picker.dart';
@@ -27,6 +28,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   late String _defaultModel;
   late bool _notify;
+  late bool _keepAlive;
   late double _fontScale;
   bool _savingServer = false;
   String? _serverStatus;
@@ -40,6 +42,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _sessionCtrl = TextEditingController(text: s.session);
     _defaultModel = s.defaultModel;
     _notify = s.notificationsEnabled;
+    _keepAlive = s.keepAliveEnabled;
     _fontScale = s.fontScale.value;
   }
 
@@ -165,6 +168,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   await widget.settings.save(notificationsEnabled: v);
                 },
               ),
+              if (BackgroundKeepAlive.isSupported)
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('后台保持连接', style: TextStyle(color: AppColors.text, fontSize: 14)),
+                  subtitle: const Text(
+                    '退到后台时用前台服务保持会话连接在线，回到应用即时可用、不重新加载。'
+                    '会有一条常驻通知并增加耗电。',
+                    style: TextStyle(color: AppColors.muted, fontSize: 12),
+                  ),
+                  value: _keepAlive,
+                  activeColor: const Color(0xFF04110f),
+                  activeTrackColor: AppColors.accent,
+                  onChanged: (v) async {
+                    setState(() => _keepAlive = v);
+                    await widget.settings.save(keepAliveEnabled: v);
+                  },
+                ),
             ],
           ),
           _Section(

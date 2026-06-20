@@ -140,6 +140,41 @@ class ChatService {
     });
   }
 
+  /// Lightweight "is this socket still good?" probe, used when the app comes
+  /// back from a SHORT background (lock-screen glance, app switch). Unlike
+  /// [connect]/reconnect it does NOT tear down a healthy socket — so the user
+  /// sees no "Connecting…" flash or history reload on every unlock.
+  ///
+  ///  • Not connected (already dropped / mid-backoff) → reconnect immediately,
+  ///    skipping the backoff wait.
+  ///  • Connected but silent past the stale window (socket likely frozen across
+  ///    the background) → treat as dead and reconnect now.
+  ///  • Connected and recently active → just ping and restart the heartbeat
+  ///    cadence. A truly-dead socket yields no pong and the heartbeat reconnects
+  ///    within one cycle; a live one keeps serving with zero interruption.
+  void ensureAlive() {
+    if (_disposed) return;
+    // Already mid-handshake — let it finish rather than restarting it.
+    if (_state == ChatConnectionState.connecting) return;
+    if (_state == ChatConnectionState.disconnected) {
+      _reconnectAttempt = 0;
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      connect();
+      return;
+    }
+    if (DateTime.now().difference(_lastActivity) > _staleThreshold) {
+      _scheduleReconnect();
+      return;
+    }
+    try {
+      _channel?.sink.add(jsonEncode({'type': 'ping'}));
+      _startHeartbeat();
+    } catch (_) {
+      _scheduleReconnect();
+    }
+  }
+
   void _handleMessage(Map<String, dynamic> msg) {
     final type = msg['type'] as String? ?? '';
     switch (type) {

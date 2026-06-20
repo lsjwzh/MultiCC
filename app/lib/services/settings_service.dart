@@ -8,6 +8,7 @@ class SettingsService {
   static const _keyCwd = 'multicc_cwd';
   static const _keyDefaultModel = 'multicc_default_model';
   static const _keyNotify = 'multicc_notifications_enabled';
+  static const _keyKeepAlive = 'multicc_keepalive_enabled';
   static const _keyFontScale = 'multicc_font_scale';
 
   static SettingsService? _instance;
@@ -42,6 +43,11 @@ class SettingsService {
   /// Whether local push notifications are shown on task completion.
   bool get notificationsEnabled => _prefs.getBool(_keyNotify) ?? true;
 
+  /// Whether the Android foreground keep-alive service runs while backgrounded,
+  /// holding the chat sockets open (Android only; off by default — it costs an
+  /// ongoing notification + battery).
+  bool get keepAliveEnabled => _prefs.getBool(_keyKeepAlive) ?? false;
+
   bool get isConfigured => host.isNotEmpty;
 
   Future<void> save({
@@ -51,6 +57,7 @@ class SettingsService {
     String? cwd,
     String? defaultModel,
     bool? notificationsEnabled,
+    bool? keepAliveEnabled,
     double? fontScale,
   }) async {
     if (host != null) await _prefs.setString(_keyHost, host.trim());
@@ -59,6 +66,7 @@ class SettingsService {
     if (cwd != null) await _prefs.setString(_keyCwd, cwd);
     if (defaultModel != null) await _prefs.setString(_keyDefaultModel, defaultModel);
     if (notificationsEnabled != null) await _prefs.setBool(_keyNotify, notificationsEnabled);
+    if (keepAliveEnabled != null) await _prefs.setBool(_keyKeepAlive, keepAliveEnabled);
     if (fontScale != null) {
       await _prefs.setDouble(_keyFontScale, fontScale);
       this.fontScale.value = fontScale;

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 import '../models/message.dart';
+import '../services/background_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -37,6 +38,17 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   Timer? _refreshTimer;
   bool _isInBackground = false;
+
+  /// When the app last went to the background, used to decide on resume whether
+  /// the live sockets are worth keeping (short absence) or should be rebuilt
+  /// (long absence — the OS has very likely frozen them).
+  DateTime? _backgroundedAt;
+
+  /// A background shorter than this is treated as a glance (lock-screen peek,
+  /// app switch): keep the live sockets and just probe them, so unlocking
+  /// doesn't reconnect/reload every session. Longer absences force a (seamless)
+  /// reconnect. Mirrors the web client's hidden-duration gate.
+  static const _kKeepSocketBelow = Duration(seconds: 30);
 
   /// A notification tap arrived for a session not yet in [_sessions] (e.g. cold
   /// start). Consumed once the dashboard finishes loading.
@@ -98,18 +110,46 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Back in the foreground — the keep-alive foreground service (if it was
+      // running) is no longer needed; drop its ongoing notification + wake lock.
+      BackgroundKeepAlive.stop();
+      final away = _backgroundedAt != null
+          ? DateTime.now().difference(_backgroundedAt!)
+          : Duration.zero;
+      _backgroundedAt = null;
       _isInBackground = false;
+      // A short absence (lock-screen glance, quick app switch) almost never
+      // kills the socket — tearing it down and reloading history on every
+      // unlock is exactly the "re-initialize every time" jank users hit. So
+      // only probe it (ensureAlive keeps a healthy socket, revives a dead one).
+      // After a long absence the OS has likely frozen the socket half-open, so
+      // force a reconnect — which is now seamless (the transcript is swapped in
+      // place, no blank flash). Mirrors the web client's hidden-duration gate.
+      //
+      // When keep-alive is on, the process (and its sockets) stayed alive in the
+      // background regardless of how long we were away, so we always just probe
+      // — ensureAlive still reconnects if a deep-doze actually killed the socket.
+      final forceReconnect =
+          !settings.keepAliveEnabled && away > _kKeepSocketBelow;
       for (final p in _providers.values) {
         p.isInBackground = false;
-        // Always rebuild on resume: after the OS froze the socket while
-        // backgrounded it often still reads `connected` but is actually dead
-        // (half-open). Gating on `disconnected` would skip exactly that case
-        // and leave the chat frozen until an app restart.
-        p.reconnect();
+        if (forceReconnect) {
+          p.reconnect();
+        } else {
+          p.ensureAlive();
+        }
       }
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
+      _backgroundedAt ??= DateTime.now();
       _isInBackground = true;
+      // Going to the background with an open chat: keep the process (and its
+      // live sockets) alive via the Android foreground service, so streaming
+      // continues instead of freezing. Opt-in + Android-only (see
+      // BackgroundKeepAlive); a no-op otherwise.
+      if (settings.keepAliveEnabled && _providers.isNotEmpty) {
+        BackgroundKeepAlive.start();
+      }
       for (final p in _providers.values) {
         p.isInBackground = true;
       }
