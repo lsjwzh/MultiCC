@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -33,6 +36,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _savingServer = false;
   String? _serverStatus;
 
+  // Goal precheck config (server-side, read/written via /api/settings/goal)
+  static const List<String> _goalDimKeys = ['objective', 'criteria', 'scope', 'executable'];
+  final Map<String, bool> _goalDims = {'objective': true, 'criteria': true, 'scope': true, 'executable': true};
+  late final TextEditingController _goalMinCtrl;
+  bool _goalSaving = false;
+  String? _goalStatus;
+
   @override
   void initState() {
     super.initState();
@@ -44,6 +54,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _notify = s.notificationsEnabled;
     _keepAlive = s.keepAliveEnabled;
     _fontScale = s.fontScale.value;
+    _goalMinCtrl = TextEditingController(text: '60');
+    _loadGoalConfig();
   }
 
   @override
@@ -51,7 +63,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _hostCtrl.dispose();
     _tokenCtrl.dispose();
     _sessionCtrl.dispose();
+    _goalMinCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadGoalConfig() async {
+    try {
+      final s = widget.settings;
+      final headers = <String, String>{};
+      if (s.token.isNotEmpty) headers['X-Access-Token'] = s.token;
+      final res = await http
+          .get(Uri.parse(s.buildHttpUrl('/api/settings/goal')), headers: headers)
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200 || !mounted) return;
+      final d = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final dims = (d['dimensions'] as Map?) ?? {};
+      setState(() {
+        for (final k in _goalDimKeys) {
+          _goalDims[k] = dims[k] != false;
+        }
+        _goalMinCtrl.text = (d['minScore'] ?? 60).toString();
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveGoalConfig() async {
+    setState(() {
+      _goalSaving = true;
+      _goalStatus = null;
+    });
+    try {
+      final s = widget.settings;
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      if (s.token.isNotEmpty) headers['X-Access-Token'] = s.token;
+      final minScore = int.tryParse(_goalMinCtrl.text.trim()) ?? 60;
+      final res = await http
+          .post(Uri.parse(s.buildHttpUrl('/api/settings/goal')),
+              headers: headers, body: jsonEncode({'dimensions': _goalDims, 'minScore': minScore}))
+          .timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+      setState(() => _goalStatus = res.statusCode == 200 ? '已保存' : '保存失败：HTTP ${res.statusCode}');
+    } catch (e) {
+      if (mounted) setState(() => _goalStatus = '保存失败：$e');
+    } finally {
+      if (mounted) setState(() => _goalSaving = false);
+    }
   }
 
   Future<void> _saveServer() async {
@@ -188,6 +244,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           _Section(
+            title: 'Goal 预检',
+            children: [
+              const _Hint('以 Goal 模式发送任务前，辅助 AI 按下面启用的维度检查任务是否合格；不合格会给改写建议。聊天的 🎯 弹窗可临时调整本次维度。'),
+              ..._goalDimKeys.map((k) => SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(_goalDimLabels[k]![0], style: const TextStyle(color: AppColors.text, fontSize: 14)),
+                    subtitle: Text(_goalDimLabels[k]![1], style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+                    value: _goalDims[k] ?? true,
+                    activeColor: const Color(0xFF04110f),
+                    activeTrackColor: AppColors.accent,
+                    onChanged: (v) => setState(() => _goalDims[k] = v),
+                  )),
+              const SizedBox(height: 10),
+              _Label('通过分数阈值（0-100，0 = 不强制）'),
+              _Input(controller: _goalMinCtrl, hint: '60', keyboardType: TextInputType.number),
+              if (_goalStatus != null) ...[
+                const SizedBox(height: 10),
+                Text(_goalStatus!, style: const TextStyle(color: AppColors.accent, fontSize: 13)),
+              ],
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _goalSaving ? null : _saveGoalConfig,
+                  child: _goalSaving
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF04110f)))
+                      : const Text('保存 Goal 预检设置', style: TextStyle(fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ],
+          ),
+          _Section(
             title: '外观',
             children: [
               Row(
@@ -239,6 +327,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 }
+
+// Goal precheck dimension labels: key → [title, subtitle].
+const Map<String, List<String>> _goalDimLabels = {
+  'objective': ['目标明确', '清楚要达成什么结果，而非含糊方向'],
+  'criteria': ['完成标准明确', '有可判断「做完了」的验收标准或可观察产出'],
+  'scope': ['范围清晰', '边界明确，不至于无限发散'],
+  'executable': ['可独立执行', '无需追问关键信息即可开工，或缺失能合理默认'],
+};
 
 // ── Small building blocks ──
 
