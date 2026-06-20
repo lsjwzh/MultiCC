@@ -2008,6 +2008,113 @@ cwdConfirm.onclick = () => {
   connect();
 };
 
+/* ── Goal mode: AI precheck before sending ──
+   The 🎯 button opens a modal; "预检" asks the aux-AI whether the task is
+   goal-ready (clear objective, clear done-criteria, bounded, executable). The
+   user accepts/edits the rewritten version, then it's wrapped in a short
+   goal-mode instruction and sent through the normal send() path. */
+const goalModal       = document.getElementById('goal-modal');
+const goalBtn         = document.getElementById('goal-btn');
+const goalTaskEl      = document.getElementById('goal-task');
+const goalResultEl    = document.getElementById('goal-result');
+const goalVerdictEl   = document.getElementById('goal-verdict');
+const goalDetailEl    = document.getElementById('goal-detail');
+const goalRevisedEl   = document.getElementById('goal-revised');
+const goalErrorEl     = document.getElementById('goal-error');
+const goalPrecheckBtn = document.getElementById('goal-precheck');
+const goalSendBtn     = document.getElementById('goal-send');
+const goalSendRawBtn  = document.getElementById('goal-send-raw');
+const goalCancelBtn   = document.getElementById('goal-cancel');
+
+function openGoalModal() {
+  goalTaskEl.value = inputEl.value.trim();
+  goalResultEl.style.display = 'none';
+  goalErrorEl.style.display = 'none';
+  goalVerdictEl.className = '';
+  goalDetailEl.innerHTML = '';
+  goalRevisedEl.value = '';
+  goalSendBtn.style.display = 'none';
+  goalSendRawBtn.style.display = 'none';
+  goalPrecheckBtn.style.display = '';
+  goalPrecheckBtn.disabled = false;
+  goalPrecheckBtn.textContent = '预检';
+  goalModal.classList.add('open');
+  goalTaskEl.focus();
+}
+function closeGoalModal() { goalModal.classList.remove('open'); }
+
+function goalList(title, items) {
+  if (!items || !items.length) return '';
+  return '<div class="goal-sec-title">' + title + '</div><ul class="goal-list">' +
+    items.map(x => '<li>' + escHtml(x) + '</li>').join('') + '</ul>';
+}
+
+function renderGoalVerdict(d) {
+  const ok = d.verdict === 'ok';
+  goalVerdictEl.className = ok ? 'ok' : 'warn';
+  goalVerdictEl.textContent = (ok ? '✅ 符合 Goal 模式' : '⚠️ 建议先完善') +
+    '（符合度 ' + (d.score != null ? d.score : '-') + '/100）';
+  let html = '';
+  html += goalList('待完善', d.issues);
+  html += goalList('需澄清', d.questions);
+  html += goalList('建议完成标准', d.criteria);
+  if (d.raw) html += '<div class="goal-sec-title">辅助 AI 原始输出</div>' +
+    '<div style="font-size:11px;color:#8b949e;white-space:pre-wrap">' + escHtml(String(d.raw).slice(0, 800)) + '</div>';
+  goalDetailEl.innerHTML = html;
+  goalRevisedEl.value = d.revised || goalTaskEl.value.trim();
+  goalResultEl.style.display = 'block';
+  goalSendBtn.textContent = ok ? '以 Goal 模式发送' : '确认并以 Goal 模式发送';
+  goalSendBtn.style.display = '';
+  goalSendRawBtn.style.display = '';
+}
+
+// Wrap the final task in a short goal-mode framing, then reuse send().
+function goalWrap(task) {
+  return '请以 Goal 模式执行以下任务：目标驱动、自主规划并一步步执行到完成；' +
+    '遇到不明确处用合理默认推进并说明假设；完成后自检并验证结果是否达到完成标准。\n\n' + task;
+}
+function sendGoal(task) {
+  const t = (task || '').trim();
+  if (!t) return;
+  closeGoalModal();
+  inputEl.value = goalWrap(t);
+  inputEl.style.height = 'auto';
+  send();
+}
+
+goalBtn?.addEventListener('click', openGoalModal);
+if (goalCancelBtn) goalCancelBtn.onclick = closeGoalModal;
+if (goalModal) goalModal.onclick = (e) => { if (e.target === goalModal) closeGoalModal(); };
+if (goalSendBtn) goalSendBtn.onclick = () => sendGoal(goalRevisedEl.value || goalTaskEl.value);
+if (goalSendRawBtn) goalSendRawBtn.onclick = () => sendGoal(goalTaskEl.value);
+if (goalTaskEl) goalTaskEl.onkeydown = (e) => {
+  if (e.key === 'Escape') closeGoalModal();
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); goalPrecheckBtn.click(); }
+};
+if (goalPrecheckBtn) goalPrecheckBtn.onclick = async () => {
+  const task = goalTaskEl.value.trim();
+  if (!task) { goalErrorEl.textContent = '请先填写任务'; goalErrorEl.style.display = 'block'; return; }
+  goalErrorEl.style.display = 'none';
+  goalPrecheckBtn.disabled = true;
+  goalPrecheckBtn.textContent = '预检中…';
+  try {
+    const resp = await fetch(withToken('/api/goal/precheck'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task }),
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || '预检失败');
+    renderGoalVerdict(data);
+  } catch (e) {
+    goalErrorEl.textContent = '预检失败：' + e.message + '（可直接「用原文发送」）';
+    goalErrorEl.style.display = 'block';
+    goalSendRawBtn.style.display = '';   // let the user skip precheck and send anyway
+  } finally {
+    goalPrecheckBtn.disabled = false;
+    goalPrecheckBtn.textContent = '重新预检';
+  }
+};
+
 /* ── visualViewport fix ── */
 if (_isMobile && window.visualViewport) {
   const fixH = () => { document.body.style.height = window.visualViewport.height + 'px'; };

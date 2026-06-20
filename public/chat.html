@@ -609,6 +609,36 @@
     .modal-actions button.primary {
       background: #238636; border-color: #2ea043; color: #fff; font-weight: 600;
     }
+    .modal-actions button:disabled { opacity: 0.5; cursor: default; }
+
+    /* ── Goal mode modal ── */
+    #goal-modal {
+      display: none; position: fixed; inset: 0; background: #000000cc;
+      z-index: 15000; align-items: center; justify-content: center;
+    }
+    #goal-modal.open { display: flex; }
+    #goal-modal-inner {
+      background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+      padding: 20px; width: 560px; max-width: 94vw; max-height: 88vh; overflow: auto;
+      box-shadow: 0 16px 48px #00000099;
+    }
+    #goal-modal-inner h3 { font-size: 15px; color: #f0f6fc; margin-bottom: 8px; }
+    .goal-hint { font-size: 12px; color: #8b949e; margin-bottom: 12px; line-height: 1.5; }
+    .goal-label { display: block; font-size: 12px; color: #8b949e; margin: 10px 0 6px; }
+    #goal-modal-inner textarea {
+      width: 100%; background: #0d1117; border: 1px solid #30363d;
+      border-radius: 6px; color: #c9d1d9; font-size: 13px; line-height: 1.6;
+      padding: 10px 12px; outline: none; resize: vertical; min-height: 80px;
+      font-family: inherit;
+    }
+    #goal-modal-inner textarea:focus { border-color: #388bfd; }
+    #goal-verdict { font-size: 13px; font-weight: 600; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; }
+    #goal-verdict.ok { background: #12261a; color: #3fb950; border: 1px solid #2ea04355; }
+    #goal-verdict.warn { background: #2b2410; color: #d29922; border: 1px solid #bb800955; }
+    .goal-sec-title { font-size: 11px; color: #8b949e; margin: 10px 0 2px; text-transform: uppercase; letter-spacing: .04em; }
+    .goal-list { font-size: 12px; color: #c9d1d9; margin: 0; padding-left: 18px; }
+    .goal-list li { margin: 3px 0; line-height: 1.5; }
+    .goal-err { font-size: 12px; color: #f85149; margin-top: 8px; }
 
     /* ── Diff modal ── */
     #diff-modal {
@@ -770,6 +800,7 @@
   <div id="input-bar">
     <button id="mic-btn" class="input-action-btn" title="Voice input">&#127908;</button>
     <button id="attach-btn" class="input-action-btn" title="Attach file">&#128206;</button>
+    <button id="goal-btn" class="input-action-btn" title="以 Goal 模式发送任务（先用 AI 预检目标与完成标准）">&#127919;</button>
     <input id="file-input" type="file" style="display:none" multiple />
     <textarea id="input" rows="1" placeholder="Type a message… or paste files here" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
     <button id="send-btn" title="Send">&#10148;</button>
@@ -807,6 +838,29 @@
       <div class="modal-actions">
         <button id="cwd-modal-cancel">Cancel</button>
         <button id="cwd-modal-confirm" class="primary">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Goal mode modal -->
+  <div id="goal-modal">
+    <div id="goal-modal-inner">
+      <h3>&#127919; Goal 模式发送</h3>
+      <div class="goal-hint">发送前先用辅助 AI 预检：目标是否明确、完成标准是否清晰、能否独立执行。不符合会给出改写建议，你确认或修改后再真正执行。</div>
+      <label class="goal-label">任务</label>
+      <textarea id="goal-task" placeholder="描述你要达成的目标…"></textarea>
+      <div id="goal-result" style="display:none">
+        <div id="goal-verdict"></div>
+        <div id="goal-detail"></div>
+        <label class="goal-label">改写版（可编辑，将作为实际执行的任务）</label>
+        <textarea id="goal-revised" placeholder="预检后这里给出可直接执行的版本"></textarea>
+      </div>
+      <div id="goal-error" class="goal-err" style="display:none"></div>
+      <div class="modal-actions">
+        <button id="goal-cancel">取消</button>
+        <button id="goal-precheck" class="primary">预检</button>
+        <button id="goal-send" style="display:none" class="primary">以 Goal 模式发送</button>
+        <button id="goal-send-raw" style="display:none" title="跳过改写，用原任务直接以 Goal 模式执行">用原文发送</button>
       </div>
     </div>
   </div>

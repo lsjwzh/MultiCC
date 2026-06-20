@@ -3176,6 +3176,70 @@ app.post('/api/aux/enqueue', (req, res) => {
     .catch(err => res.json({ ok: false, error: err?.message || 'cancelled' }));
 });
 
+// ── Goal-mode precheck ──
+// Before a task is sent in "Goal 模式" (target-driven, run autonomously to
+// completion, self-verify), the aux-AI judges whether it's well-formed enough:
+// clear objective, clear done-criteria, bounded scope, independently executable.
+// Returns a verdict + a rewritten "goal-ready" version the user can accept/edit.
+function buildGoalPrecheckPrompt(task) {
+  return `你是「任务质量审查助手」。下面是用户想交给一个自主 AI 编程代理、以「Goal 模式」（目标驱动、自主规划并执行到完成、最后自检验证）执行的任务。
+
+请判断它是否满足 Goal 模式的要求，标准：
+1. 目标明确：清楚要达成什么结果，而非含糊方向。
+2. 完成标准明确：有可判断「做完了」的验收标准或可观察的产出。
+3. 范围清晰：边界明确，不至于无限发散。
+4. 可独立执行：代理无需再追问关键信息即可开工，或缺失信息能用合理默认补足。
+
+只输出一个 JSON 对象，不要任何额外文字、不要 markdown 代码块，字段如下：
+{
+  "verdict": "ok" | "needs_work",
+  "score": 0,
+  "issues": ["不满足之处，没有则空数组"],
+  "questions": ["仍需向用户澄清的问题，没有则空数组"],
+  "criteria": ["建议的完成/验收标准"],
+  "revised": "改写后可直接执行的 Goal-ready 任务描述，含目标与完成标准；若原任务已经很好可与原文基本一致"
+}
+
+score 为 0-100 的整数符合度评分。所有文本字段用与用户任务相同的语言填写。
+
+用户任务：
+<<<
+${task}
+>>>`;
+}
+
+function parseGoalVerdict(text) {
+  const raw = String(text || '');
+  let obj = null;
+  try { obj = JSON.parse(raw.trim()); } catch (_) {}
+  if (!obj) {
+    const s = raw.indexOf('{'), e = raw.lastIndexOf('}');
+    if (s !== -1 && e > s) { try { obj = JSON.parse(raw.slice(s, e + 1)); } catch (_) {} }
+  }
+  if (!obj || typeof obj !== 'object') {
+    return { verdict: 'needs_work', score: 0, issues: ['辅助 AI 未能给出可解析的结果，请人工确认或直接发送'], questions: [], criteria: [], revised: '', raw };
+  }
+  const arr = (v) => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()) : [];
+  const verdict = obj.verdict === 'ok' ? 'ok' : 'needs_work';
+  let score = parseInt(obj.score, 10); if (!Number.isFinite(score)) score = verdict === 'ok' ? 80 : 40;
+  score = Math.max(0, Math.min(100, score));
+  return {
+    verdict, score,
+    issues: arr(obj.issues),
+    questions: arr(obj.questions),
+    criteria: arr(obj.criteria),
+    revised: typeof obj.revised === 'string' ? obj.revised.trim() : '',
+  };
+}
+
+app.post('/api/goal/precheck', (req, res) => {
+  const task = (req.body?.task || '').trim();
+  if (!task) return res.status(400).json({ error: 'task required' });
+  auxQueue.enqueue({ type: 'goal_check', prompt: buildGoalPrecheckPrompt(task), meta: { taskLen: task.length } })
+    .then(result => res.json({ ok: true, ...parseGoalVerdict(result.text) }))
+    .catch(err => res.json({ ok: false, error: err?.message || 'aux failed' }));
+});
+
 // Root → manage page (unless ?id= is specified, which means a terminal session)
 app.get('/', (req, res, next) => {
   if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
