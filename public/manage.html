@@ -464,6 +464,8 @@
                 <input type="checkbox" id="goal-dim-executable" style="margin:0" />
                 <b style="min-width:96px">可独立执行</b><span style="color:var(--faint);font-size:12px">无需追问关键信息即可开工，或缺失能合理默认</span></label>
               <div class="setting-row"><label>通过分数阈值</label><input id="goal-min-score" type="number" min="0" max="100" style="max-width:100px" /><span style="font-size:12px;color:var(--faint)">符合度低于此分判为「建议完善」；0 = 不强制</span></div>
+              <div class="setting-row"><label>轮次限制</label><input id="goal-max-rounds" type="number" min="0" max="200" style="max-width:100px" /><span style="font-size:12px;color:var(--faint)">Goal 任务自主执行的轮次（agent turns）上限，映射到 claude --max-turns；0 = 不限制</span></div>
+              <div class="setting-row"><label>预算限制</label><input id="goal-max-budget" type="number" min="0" step="1000" style="max-width:120px" /><span style="font-size:12px;color:var(--faint)">Goal 任务的输出 token 预算上限（注入提示，接近时收敛总结）；0 = 不限制</span></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveGoalSettings()">Save</button><span class="status-text" id="goal-status"></span></div>
           </div>
