@@ -1716,6 +1716,48 @@ async function saveVoiceSettings() {
   }
 }
 
+/* ── Goal precheck settings ── */
+const GOAL_DIM_KEYS = ['objective', 'criteria', 'scope', 'executable'];
+async function loadGoalSettings() {
+  try {
+    const res = await fetch('/api/settings/goal' + tokenQS('?'));
+    const d = await res.json();
+    const dims = d.dimensions || {};
+    for (const k of GOAL_DIM_KEYS) {
+      const el = document.getElementById('goal-dim-' + k);
+      if (el) el.checked = dims[k] !== false;
+    }
+    const ms = document.getElementById('goal-min-score');
+    if (ms) ms.value = (d.minScore != null ? d.minScore : 60);
+  } catch (_) {}
+}
+
+async function saveGoalSettings() {
+  const status = document.getElementById('goal-status');
+  const dimensions = {};
+  for (const k of GOAL_DIM_KEYS) {
+    const el = document.getElementById('goal-dim-' + k);
+    dimensions[k] = el ? el.checked : true;
+  }
+  let minScore = parseInt(document.getElementById('goal-min-score').value, 10);
+  if (!Number.isFinite(minScore)) minScore = 60;
+  try {
+    const res = await fetch('/api/settings/goal' + tokenQS('?'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dimensions, minScore }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    status.textContent = 'Saved';
+    status.className = 'status-text ok';
+    showToast('Goal 预检设置已保存');
+    loadGoalSettings();
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.className = 'status-text err';
+  }
+}
+
 /* ── macOS Power Settings ── */
 async function loadMacosPowerSettings() {
   const section = document.getElementById('macos-power-section');
@@ -3156,6 +3198,7 @@ focusSession = function(id) {
 /* ── Init ── */
 loadDashboard();
 loadVoiceSettings();
+loadGoalSettings();
 loadMacosPowerSettings();
 loadAsrSettings();
 loadCronTasks();
