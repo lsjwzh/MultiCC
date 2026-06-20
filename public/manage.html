@@ -538,8 +538,12 @@
               <div class="setting-row"><label>公网 Funnel</label><input id="tnl-ts-funnel" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">勾选并点「应用 Funnel」= 执行 tailscale funnel --bg &lt;端口&gt;，把服务暴露到公网</span></div>
               <div class="setting-row"><label>Funnel 端口</label><input id="tnl-ts-funnelport" type="number" min="1" placeholder="3000" /></div>
               <div class="setting-row"><label>Funnel 状态</label><span id="tnl-ts-funnelstatus" style="font-size:12px;color:var(--text);font-family:var(--mono);white-space:pre-wrap;">—</span></div>
+              <div style="border-top:1px solid var(--border);margin:6px 0;"></div>
+              <div class="setting-row"><label>IPv6 直连</label><span id="tnl-ipv6-status" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>本机全局 IPv6</label><span id="tnl-ipv6-addr" style="font-size:12px;color:var(--faint);font-family:var(--mono);white-space:pre-wrap;word-break:break-all;">—</span></div>
+              <div class="setting-row" style="font-size:11px;color:var(--faint);">有全局 IPv6 + Tailscale 认到 → 远程（如手机流量）可走 IPv6 直连，绕开 DERP 中继，更快、不限流量。</div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="applyFunnel()">应用 Funnel</button><button class="btn" onclick="restartTunnel('tailscale')">立即重启</button><span class="status-text" id="tnl-ts-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="applyFunnel()">应用 Funnel</button><button class="btn" onclick="loadIpv6Status(true)">检测 IPv6</button><button class="btn" onclick="restartTunnel('tailscale')">立即重启</button><span class="status-text" id="tnl-ts-msg"></span></div>
           </div>
 
           <!-- 高级参数 -->

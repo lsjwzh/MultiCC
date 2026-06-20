@@ -2693,6 +2693,17 @@ app.get('/api/tunnel/funnel', async (req, res) => {
   }
 });
 
+// Read-only IPv6 reachability detection (host global IPv6 + tailscale netcheck).
+// Lets the UI show whether remote clients can reach this host via a direct IPv6
+// path instead of a DERP relay.
+app.get('/api/tunnel/ipv6', async (req, res) => {
+  try {
+    res.json(await tunnel.ipv6Status());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Access token (external-access login password) ──
 // Readable anywhere (masked); editable ONLY from localhost. Persisted to .env
 // and hot-reloaded so changes apply without a server restart.

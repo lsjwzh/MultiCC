@@ -2689,6 +2689,7 @@ async function loadTunnelSettings() {
     document.getElementById('tnl-ts-funnel').checked = !!c.tailscale.funnel;
     document.getElementById('tnl-ts-funnelport').value = c.tailscale.funnelPort || 3000;
     loadFunnelStatus();
+    loadIpv6Status();
     // advanced
     document.getElementById('tnl-interval').value = c.intervalSec;
     document.getElementById('tnl-failthreshold').value = c.failThreshold;
@@ -2756,6 +2757,42 @@ async function loadFunnelStatus() {
     const data = await res.json();
     el.textContent = (data.status && data.status.trim()) || '未开启 (No serve config)';
   } catch (_) { el.textContent = '—'; }
+}
+
+// Detect whether remote clients can reach this host via direct IPv6 (vs DERP relay).
+// `manual` = triggered by the 检测 button → show a transient "检测中…" hint.
+async function loadIpv6Status(manual) {
+  const sEl = document.getElementById('tnl-ipv6-status');
+  const aEl = document.getElementById('tnl-ipv6-addr');
+  if (!sEl) return;
+  if (manual) sEl.textContent = '检测中…';
+  try {
+    const res = await fetch('/api/tunnel/ipv6' + tokenQS('?'));
+    const d = await res.json();
+    if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
+    const ts = d.tailscale || {};
+    if (d.directReady) {
+      sEl.textContent = '✅ 就绪 — 远程可走 IPv6 直连';
+      sEl.style.color = 'var(--green, #16a34a)';
+    } else if (!d.host || !d.host.hasGlobalV6) {
+      sEl.textContent = '❌ 本机无全局 IPv6（路由器/ISP 未下发）';
+      sEl.style.color = 'var(--err, #dc2626)';
+    } else if (ts.available && ts.ipv6 === false) {
+      sEl.textContent = '⚠️ 有本机地址但 Tailscale 测不通 IPv6（可能被运营商拦入站）';
+      sEl.style.color = 'var(--warn, #d97706)';
+    } else {
+      sEl.textContent = '✅ 本机有全局 IPv6' + (ts.available ? '' : '（无 tailscale CLI，未二次验证）');
+      sEl.style.color = 'var(--green, #16a34a)';
+    }
+    const addrs = (d.host && d.host.addresses || []).map(x => `${x.address} (${x.iface})`);
+    let line = addrs.length ? addrs.join('\n') : '无';
+    if (ts.detail) line += `\nTailscale netcheck → IPv6: ${ts.detail}`;
+    if (ts.nearestDerp) line += `\n最近 DERP 中继: ${ts.nearestDerp}`;
+    if (aEl) aEl.textContent = line;
+  } catch (e) {
+    sEl.textContent = '检测失败: ' + e.message;
+    sEl.style.color = 'var(--err, #dc2626)';
+  }
 }
 
 // Apply the Funnel checkbox: open/close public-internet exposure on the port.

@@ -10,6 +10,7 @@
 //   • restartCooldownSec  — min seconds between two restarts of one provider
 //   • maxRestartsPerHour  — hard cap; over it the provider is parked
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -131,6 +132,53 @@ async function funnelStatus() {
   return (r.stdout || r.stderr || '').trim();
 }
 
+// This machine's globally-routable IPv6 address(es), read from the OS
+// interfaces. Only global-unicast (2000::/3) counts — link-local (fe80::/10)
+// and unique-local (fc00::/7) can't be reached by a remote peer, so they don't
+// enable a direct path.
+function hostGlobalV6() {
+  const out = [];
+  for (const [iface, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      const isV6 = a.family === 'IPv6' || a.family === 6;
+      if (!isV6 || a.internal) continue;
+      const ip = (a.address || '').toLowerCase();
+      if (!ip || ip === '::1') continue;
+      if (ip.startsWith('fe80') || ip.startsWith('fc') || ip.startsWith('fd')) continue; // link-local / ULA
+      out.push({ iface, address: a.address });
+    }
+  }
+  return out;
+}
+
+// IPv6 reachability for the "外网穿透" panel. When the host has a global IPv6
+// AND tailscale netcheck confirms IPv6, remote clients (e.g. phone on cellular)
+// can ride a direct IPv6 path instead of falling back to a far DERP relay.
+async function ipv6Status() {
+  const host = hostGlobalV6();
+  const out = {
+    host: { hasGlobalV6: host.length > 0, addresses: host },
+    tailscale: { available: fs.existsSync(TAILSCALE_BIN), ipv6: null, detail: '', nearestDerp: '' },
+    directReady: false,
+  };
+  if (out.tailscale.available) {
+    const r = await execShell(TAILSCALE_BIN, ['netcheck']);
+    const text = `${r.stdout || ''}\n${r.stderr || ''}`;
+    const m = text.match(/IPv6:\s*(yes|no)([^\n]*)/i);
+    if (m) {
+      out.tailscale.ipv6 = /yes/i.test(m[1]);
+      out.tailscale.detail = `${m[1]}${m[2] || ''}`.trim();
+    }
+    const d = text.match(/Nearest DERP:\s*([^\n]+)/i);
+    if (d) out.tailscale.nearestDerp = d[1].trim();
+  }
+  // Direct IPv6 is ready when we have a global address and, if tailscale is
+  // present, it agrees the address is actually reachable over IPv6.
+  out.directReady = out.host.hasGlobalV6 &&
+    (out.tailscale.available ? out.tailscale.ipv6 === true : true);
+  return out;
+}
+
 const RESTARTERS = { phddns: restartPhddns, tailscale: restartTailscale };
 
 // Decide+act for one provider. Returns nothing; mutates runtime[name].
@@ -244,4 +292,4 @@ async function restartNow(name) {
   }
 }
 
-module.exports = { init, applyConfig, getStatus, restartNow, loadConfig, availability, setFunnel, funnelStatus };
+module.exports = { init, applyConfig, getStatus, restartNow, loadConfig, availability, setFunnel, funnelStatus, ipv6Status };
