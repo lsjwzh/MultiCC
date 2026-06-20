@@ -366,6 +366,8 @@ const cliProviders = {
       if (CLAUDE_CHAT_DISALLOWED_TOOLS.length) {
         args.push('--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(','));
       }
+      // Goal mode round limit: cap the autonomous agent-turn loop for this spawn.
+      if (opts.maxTurns > 0) args.push('--max-turns', String(opts.maxTurns));
       if (opts.isFirstTurn) args.push('--session-id', session.cliSessionId);
       else args.push('--resume', session.cliSessionId);
       args.push(prompt);
@@ -3192,8 +3194,26 @@ const GOAL_DIMENSIONS = {
   scope:      '范围清晰：边界明确，不至于无限发散。',
   executable: '可独立执行：代理无需再追问关键信息即可开工，或缺失信息能用合理默认补足。',
 };
-const GOAL_CONFIG_DEFAULT = { dimensions: { objective: true, criteria: true, scope: true, executable: true }, minScore: 60 };
+// maxRounds → caps the agent's autonomous turns for one goal task (claude
+//   `--max-turns N`, a hard CLI-level limit). 0 = 不限制.
+// maxBudget → an advisory output-token budget injected into the goal prompt so
+//   the agent self-stops near the cap (the CLI has no hard token-budget flag).
+//   0 = 不限制.
+const GOAL_CONFIG_DEFAULT = {
+  dimensions: { objective: true, criteria: true, scope: true, executable: true },
+  minScore: 60,
+  maxRounds: 40,
+  maxBudget: 0,
+};
+const GOAL_ROUNDS_MAX = 200;       // sanity ceiling for --max-turns
+const GOAL_BUDGET_MAX = 5000000;   // sanity ceiling for the advisory token budget
 const GOAL_CONFIG_FILE = path.join(__dirname, 'goal-config.json');
+
+function clampInt(v, lo, hi, dflt) {
+  let n = parseInt(v, 10);
+  if (!Number.isFinite(n)) n = dflt;
+  return Math.max(lo, Math.min(hi, n));
+}
 
 function normalizeGoalConfig(c) {
   c = c || {};
@@ -3201,10 +3221,30 @@ function normalizeGoalConfig(c) {
   for (const k of Object.keys(GOAL_DIMENSIONS)) {
     dims[k] = (c.dimensions && typeof c.dimensions[k] === 'boolean') ? c.dimensions[k] : GOAL_CONFIG_DEFAULT.dimensions[k];
   }
-  let minScore = parseInt(c.minScore, 10);
-  if (!Number.isFinite(minScore)) minScore = GOAL_CONFIG_DEFAULT.minScore;
-  minScore = Math.max(0, Math.min(100, minScore));
-  return { dimensions: dims, minScore };
+  const minScore = clampInt(c.minScore, 0, 100, GOAL_CONFIG_DEFAULT.minScore);
+  const maxRounds = clampInt(c.maxRounds, 0, GOAL_ROUNDS_MAX, GOAL_CONFIG_DEFAULT.maxRounds);
+  const maxBudget = clampInt(c.maxBudget, 0, GOAL_BUDGET_MAX, GOAL_CONFIG_DEFAULT.maxBudget);
+  return { dimensions: dims, minScore, maxRounds, maxBudget };
+}
+
+// Effective limits for one goal send: per-send override (from the client) wins
+// over the saved global config; anything missing/invalid falls back to config.
+function resolveGoalLimits(override) {
+  const o = override && typeof override === 'object' ? override : {};
+  const maxRounds = (o.maxRounds != null && o.maxRounds !== '')
+    ? clampInt(o.maxRounds, 0, GOAL_ROUNDS_MAX, goalConfig.maxRounds) : goalConfig.maxRounds;
+  const maxBudget = (o.maxBudget != null && o.maxBudget !== '')
+    ? clampInt(o.maxBudget, 0, GOAL_BUDGET_MAX, goalConfig.maxBudget) : goalConfig.maxBudget;
+  return { maxRounds, maxBudget };
+}
+
+// Server-side goal framing: appends the configured limits as explicit
+// constraints so execution is bounded regardless of what the client embedded.
+function buildGoalLimitNote(limits) {
+  const parts = [];
+  if (limits.maxRounds > 0) parts.push(`本次为 Goal 模式自主任务，自主执行的轮次（agent turns）上限为 ${limits.maxRounds} 轮，请在该轮次内完成；接近上限时先收敛、给出当前结论与未尽事项，不要无限发散。`);
+  if (limits.maxBudget > 0) parts.push(`本次输出 token 预算上限约为 ${limits.maxBudget}，请在预算内完成；接近上限时停止并总结已完成的部分与剩余工作。`);
+  return parts.length ? `[Goal 模式限制]\n${parts.join('\n')}\n[限制结束]\n\n` : '';
 }
 
 let goalConfig;
@@ -3755,7 +3795,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
 }
 
 function runChatTurn(sessionName, text, opts = {}) {
-  const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue } = opts;
+  const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits } = opts;
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
@@ -3879,6 +3919,14 @@ function runChatTurn(sessionName, text, opts = {}) {
     promptText = buildGatewayPrompt(promptText);
   }
 
+  // Goal mode: prepend the configured limit constraints (round/budget) so the
+  // autonomous agent is bounded. maxTurns additionally becomes a hard CLI cap.
+  const goalMaxTurns = goalLimits ? (goalLimits.maxRounds || 0) : 0;
+  if (goalLimits) {
+    const note = buildGoalLimitNote(goalLimits);
+    if (note) promptText = note + promptText;
+  }
+
   const rolePrompt = resolveRolePrompt(persisted);
 
   // ── Streaming path (flag-gated, claude only) ──
@@ -3891,7 +3939,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     return runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt);
   }
 
-  const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn, rolePrompt });
+  const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn, rolePrompt, maxTurns: goalMaxTurns });
   console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
 
   const spawnChat = (spawnArgs, isRetry) => {
@@ -4452,7 +4500,10 @@ function handleChatWs(ws, req, urlObj) {
       if (msg.type === 'user_message' && msg.text) {
         // Gateway: a bare 确认/取消 resolves a pending dispatch without running the LLM.
         if (persisted.type === 'gateway' && handleGatewayControl(msg.text)) return;
-        runChatTurn(sessionName, msg.text);
+        // Goal mode: client flags the message; server applies the configured
+        // round/budget limits (per-send override merged over the global config).
+        const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};
+        runChatTurn(sessionName, msg.text, turnOpts);
         return;
       }
     } catch (e) {

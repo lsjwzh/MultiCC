@@ -642,6 +642,10 @@
     .goal-dims { display: flex; flex-wrap: wrap; gap: 8px 16px; }
     .goal-dims label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #c9d1d9; cursor: pointer; }
     .goal-dims input { margin: 0; }
+    .goal-limits { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+    .goal-limits label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c9d1d9; }
+    .goal-limits input { width: 90px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; padding: 4px 6px; font-size: 12px; }
+    .goal-limits input:focus { border-color: #388bfd; outline: none; }
 
     /* ── Diff modal ── */
     #diff-modal {
@@ -858,6 +862,11 @@
         <label><input type="checkbox" data-dim="criteria" /> 完成标准</label>
         <label><input type="checkbox" data-dim="scope" /> 范围清晰</label>
         <label><input type="checkbox" data-dim="executable" /> 可独立执行</label>
+      </div>
+      <label class="goal-label">执行限制（本次任务，默认取设置里的全局配置；0 = 不限制）</label>
+      <div class="goal-limits">
+        <label>轮次上限<input id="goal-max-rounds" type="number" min="0" max="200" placeholder="轮" /></label>
+        <label>预算上限<input id="goal-max-budget" type="number" min="0" step="1000" placeholder="token" /></label>
       </div>
       <div id="goal-result" style="display:none">
         <div id="goal-verdict"></div>

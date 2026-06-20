@@ -768,7 +768,10 @@ function hideThinking() {
 }
 
 /* ── Send ── */
-function send() {
+function send(opts = {}) {
+  // opts may be a DOM Event (when bound directly as a handler) — only a plain
+  // object with goal:true marks this as a Goal-mode send.
+  const goalOpts = (opts && opts.goal === true) ? opts : null;
   let text = inputEl.value.trim();
   if (!text) return;
 
@@ -797,9 +800,25 @@ function send() {
       return;
     }
     if (cmd === '/help') {
-      addSystemMsg('Commands: /clear — clear chat history | /compact — ask Claude to compact context | /cost — show cost summary');
+      addSystemMsg('Commands: /clear — clear chat history | /compact — ask Claude to compact context | /cost — show cost summary | /goal &lt;任务&gt; — 以 Goal 模式执行（受设置里的轮次/预算限制约束）');
       inputEl.value = '';
       inputEl.style.height = 'auto';
+      return;
+    }
+    if (cmd === '/goal') {
+      // Client-initiated Goal mode: wrap the task and re-send with the goal flag
+      // so the server applies the configured round/budget limits.
+      const sp = text.indexOf(' ');
+      const task = sp === -1 ? '' : text.slice(sp + 1).trim();
+      if (!task) {
+        addSystemMsg('用法：/goal &lt;任务描述&gt; — 以 Goal 模式（目标驱动、自主执行到完成）发送，受设置里的轮次/预算限制约束。也可点输入框右侧 🎯 先做目标预检。');
+        inputEl.value = '';
+        inputEl.style.height = 'auto';
+        return;
+      }
+      inputEl.value = goalWrap(task);
+      inputEl.style.height = 'auto';
+      send({ goal: true });   // limits omitted → server falls back to global config
       return;
     }
     // Other slash commands (like /compact, /cost) — pass through to Claude
@@ -825,9 +844,11 @@ function send() {
   inputEl.style.height = 'auto';
 
   if (ws?.readyState === WebSocket.OPEN) {
-    dbg('state', `send() — WS ▶ user_message (${text.length} chars)`);
+    dbg('state', `send() — WS ▶ user_message (${text.length} chars)${goalOpts ? ' [goal]' : ''}`);
     try {
-      ws.send(JSON.stringify({ type: 'user_message', text }));
+      const payload = { type: 'user_message', text };
+      if (goalOpts) { payload.goal = true; payload.goalLimits = goalOpts.goalLimits || {}; }
+      ws.send(JSON.stringify(payload));
       _pendingCancel = false;
       isStreaming = true;
       showThinking();
@@ -2025,6 +2046,8 @@ const goalPrecheckBtn = document.getElementById('goal-precheck');
 const goalSendBtn     = document.getElementById('goal-send');
 const goalSendRawBtn  = document.getElementById('goal-send-raw');
 const goalCancelBtn   = document.getElementById('goal-cancel');
+const goalMaxRoundsEl = document.getElementById('goal-max-rounds');
+const goalMaxBudgetEl = document.getElementById('goal-max-budget');
 
 function openGoalModal() {
   goalTaskEl.value = inputEl.value.trim();
@@ -2052,6 +2075,9 @@ async function loadGoalDims() {
     const d = await res.json();
     const dims = d.dimensions || {};
     boxes.forEach(cb => { cb.checked = dims[cb.dataset.dim] !== false; });
+    // Limits default to the global config too (blank input → use server config).
+    if (goalMaxRoundsEl) goalMaxRoundsEl.value = (d.maxRounds != null ? d.maxRounds : '');
+    if (goalMaxBudgetEl) goalMaxBudgetEl.value = (d.maxBudget != null ? d.maxBudget : '');
   } catch (_) {
     boxes.forEach(cb => { cb.checked = true; });
   }
@@ -2060,6 +2086,13 @@ function collectGoalDims() {
   const dims = {};
   document.querySelectorAll('#goal-dims input[data-dim]').forEach(cb => { dims[cb.dataset.dim] = cb.checked; });
   return dims;
+}
+// Per-send limit overrides; blank → server falls back to the global config.
+function collectGoalLimits() {
+  const limits = {};
+  if (goalMaxRoundsEl && goalMaxRoundsEl.value.trim() !== '') limits.maxRounds = parseInt(goalMaxRoundsEl.value, 10);
+  if (goalMaxBudgetEl && goalMaxBudgetEl.value.trim() !== '') limits.maxBudget = parseInt(goalMaxBudgetEl.value, 10);
+  return limits;
 }
 
 function goalList(title, items) {
@@ -2095,10 +2128,11 @@ function goalWrap(task) {
 function sendGoal(task) {
   const t = (task || '').trim();
   if (!t) return;
+  const limits = collectGoalLimits();
   closeGoalModal();
   inputEl.value = goalWrap(t);
   inputEl.style.height = 'auto';
-  send();
+  send({ goal: true, goalLimits: limits });
 }
 
 goalBtn?.addEventListener('click', openGoalModal);
