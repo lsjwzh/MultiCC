@@ -345,6 +345,210 @@ class _InputBarState extends State<InputBar> {
     });
   }
 
+  // ── Goal mode: AI precheck before sending ──
+  // Mirrors the web chat's 🎯 flow: the aux-AI judges whether the task is
+  // goal-ready (clear objective, clear done-criteria, bounded, executable),
+  // proposes a rewrite, then we wrap the accepted task in a short goal-mode
+  // instruction and send it through the normal sendMessage() path.
+
+  String _goalWrap(String task) {
+    return '请以 Goal 模式执行以下任务：目标驱动、自主规划并一步步执行到完成；'
+        '遇到不明确处用合理默认推进并说明假设；完成后自检并验证结果是否达到完成标准。\n\n$task';
+  }
+
+  List<String> _strList(dynamic v) =>
+      (v is List) ? v.map((e) => e.toString()).where((s) => s.trim().isNotEmpty).toList() : <String>[];
+
+  Future<Map<String, dynamic>> _fetchGoalPrecheck(String task) async {
+    try {
+      final settings = context.read<ChatProvider>().settings;
+      final uri = Uri.parse(settings.buildHttpUrl('/api/goal/precheck'));
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
+      final res = await http
+          .post(uri, headers: headers, body: jsonEncode({'task': task}))
+          .timeout(const Duration(seconds: 45));
+      if (res.statusCode != 200) return {'ok': false, 'error': 'HTTP ${res.statusCode}'};
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } catch (e) {
+      return {'ok': false, 'error': '$e'};
+    }
+  }
+
+  Widget _goalField(TextEditingController ctrl, int maxLines, String hint) {
+    return TextField(
+      controller: ctrl,
+      maxLines: maxLines,
+      style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14, height: 1.4),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Color(0xFF454b54)),
+        filled: true,
+        fillColor: const Color(0xFF070809),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF20242b))),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF20242b))),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF6aa3ff))),
+      ),
+    );
+  }
+
+  Widget _goalSection(String title, List<String> items) {
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(padding: const EdgeInsets.only(top: 8, bottom: 2), child: Text(title, style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11))),
+        ...items.map((x) => Padding(
+              padding: const EdgeInsets.only(left: 4, top: 2),
+              child: Text('• $x', style: const TextStyle(color: Color(0xFFc9d1d9), fontSize: 12, height: 1.4)),
+            )),
+      ],
+    );
+  }
+
+  void _showGoalSheet(ChatProvider provider) {
+    final taskCtrl = TextEditingController(text: _ctrl.text.trim());
+    final revisedCtrl = TextEditingController();
+    bool checking = false;
+    Map<String, dynamic>? verdict; // null until prechecked
+    String? error;
+
+    void sendGoal(String task) {
+      final t = task.trim();
+      if (t.isEmpty) return;
+      Navigator.pop(context);
+      provider.sendMessage(_goalWrap(t));
+      _ctrl.clear();
+      setState(() {
+        _hasText = false;
+        _attachments.clear();
+      });
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0f1115),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx, setSheetState) {
+          final ok = verdict != null && verdict!['verdict'] == 'ok';
+          return Padding(
+            padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('🎯 Goal 模式发送', style: TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '发送前先用辅助 AI 预检：目标是否明确、完成标准是否清晰、能否独立执行。不符合会给改写建议，确认或修改后再真正执行。',
+                    style: TextStyle(color: Color(0xFF8a909b), fontSize: 12, height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('任务', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                  const SizedBox(height: 4),
+                  _goalField(taskCtrl, 4, '描述你要达成的目标…'),
+                  if (verdict != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: ok ? const Color(0xFF12261a) : const Color(0xFF2b2410),
+                        border: Border.all(color: ok ? const Color(0xFF2ea043) : const Color(0xFFbb8009)),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${ok ? '✅ 符合 Goal 模式' : '⚠️ 建议先完善'}（符合度 ${verdict!['score'] ?? '-'}/100）',
+                        style: TextStyle(color: ok ? const Color(0xFF3fb950) : const Color(0xFFd29922), fontSize: 13, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    _goalSection('待完善', _strList(verdict!['issues'])),
+                    _goalSection('需澄清', _strList(verdict!['questions'])),
+                    _goalSection('建议完成标准', _strList(verdict!['criteria'])),
+                    const SizedBox(height: 10),
+                    const Text('改写版（可编辑，将作为实际执行的任务）', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                    const SizedBox(height: 4),
+                    _goalField(revisedCtrl, 5, '预检后这里给出可直接执行的版本'),
+                  ],
+                  if (error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(error!, style: const TextStyle(color: Color(0xFFff6b63), fontSize: 12)),
+                  ],
+                  const SizedBox(height: 16),
+                  Row(children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF8a909b), side: const BorderSide(color: Color(0xFF20242b))),
+                        child: const Text('取消'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: checking
+                            ? null
+                            : () async {
+                                final task = taskCtrl.text.trim();
+                                if (task.isEmpty) {
+                                  setSheetState(() => error = '请先填写任务');
+                                  return;
+                                }
+                                setSheetState(() {
+                                  checking = true;
+                                  error = null;
+                                });
+                                final data = await _fetchGoalPrecheck(task);
+                                setSheetState(() {
+                                  checking = false;
+                                  if (data['ok'] == true) {
+                                    verdict = data;
+                                    final r = (data['revised'] as String?)?.trim();
+                                    revisedCtrl.text = (r != null && r.isNotEmpty) ? r : task;
+                                  } else {
+                                    error = '预检失败：${data['error'] ?? '未知错误'}（可直接用原文发送）';
+                                  }
+                                });
+                              },
+                        style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF8a909b), side: const BorderSide(color: Color(0xFF20242b))),
+                        child: checking
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8a909b)))
+                            : Text(verdict == null ? '预检' : '重新预检'),
+                      ),
+                    ),
+                  ]),
+                  if (verdict != null || error != null) ...[
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                        child: TextButton(
+                          onPressed: () => sendGoal(taskCtrl.text),
+                          style: TextButton.styleFrom(foregroundColor: const Color(0xFF8a909b)),
+                          child: const Text('用原文发送'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 2,
+                        child: ElevatedButton(
+                          onPressed: () => sendGoal(verdict != null ? (revisedCtrl.text.isNotEmpty ? revisedCtrl.text : taskCtrl.text) : taskCtrl.text),
+                          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF22ab9c), foregroundColor: Colors.white),
+                          child: Text(ok ? '以 Goal 模式发送' : '确认并发送'),
+                        ),
+                      ),
+                    ]),
+                  ],
+                ],
+              ),
+            ),
+          );
+        });
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
