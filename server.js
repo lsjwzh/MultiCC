@@ -4751,21 +4751,32 @@ function reconcileAllTriggers() {
   if (n) console.log(`[multicc/trigger] armed triggers for ${n} session(s)`);
 }
 
-// Copy the bundled multicc-trigger skill into ~/.claude/skills so every claude
-// session multicc spawns can discover it. Re-copies when the version differs.
-function installBundledSkill() {
-  try {
-    const src = path.join(__dirname, 'skills', 'multicc-trigger');
-    if (!fs.existsSync(src)) return;
-    const dest = path.join(os.homedir(), '.claude', 'skills', 'multicc-trigger');
-    const readVer = (dir) => { try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); } catch (_) { return null; } };
-    if (fs.existsSync(dest) && readVer(dest) === readVer(src)) return;
-    fs.rmSync(dest, { recursive: true, force: true });
-    fs.cpSync(src, dest, { recursive: true });
-    try { fs.chmodSync(path.join(dest, 'bin', 'mtrigger'), 0o755); } catch (_) {}
-    console.log('[multicc/trigger] installed multicc-trigger skill → ~/.claude/skills/');
-  } catch (e) {
-    console.warn(`[multicc/trigger] skill install failed: ${e.message}`);
+// Copy every bundled skill under ./skills into ~/.claude/skills so every claude
+// session multicc spawns can discover them. Re-copies a skill when its
+// .skill-version differs (or is missing). Drop a new skill dir in ./skills and it
+// installs itself on the next startup — no code change needed here.
+function installBundledSkills() {
+  const srcRoot = path.join(__dirname, 'skills');
+  const destRoot = path.join(os.homedir(), '.claude', 'skills');
+  const readVer = (dir) => { try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); } catch (_) { return null; } };
+  let names;
+  try { names = fs.readdirSync(srcRoot); } catch (_) { return; }
+  for (const name of names) {
+    try {
+      const src = path.join(srcRoot, name);
+      if (!fs.statSync(src).isDirectory()) continue;
+      if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;   // not a skill dir
+      const dest = path.join(destRoot, name);
+      if (fs.existsSync(dest) && readVer(dest) === readVer(src)) continue;
+      fs.mkdirSync(destRoot, { recursive: true });
+      fs.rmSync(dest, { recursive: true, force: true });
+      fs.cpSync(src, dest, { recursive: true });
+      // Make every helper under bin/ executable (mtrigger, artifact, …).
+      try { for (const f of fs.readdirSync(path.join(dest, 'bin'))) fs.chmodSync(path.join(dest, 'bin', f), 0o755); } catch (_) {}
+      console.log(`[multicc/skills] installed skill → ~/.claude/skills/${name}`);
+    } catch (e) {
+      console.warn(`[multicc/skills] install ${name} failed: ${e.message}`);
+    }
   }
 }
 
@@ -4781,6 +4792,9 @@ server.listen(PORT, () => {
   console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);
   console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
   console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
-  installBundledSkill();
+  installBundledSkills();
   reconcileAllTriggers();
+  // Prune expired temp artifacts now and every 6h.
+  artifacts.cleanup();
+  setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
 });

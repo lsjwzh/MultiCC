@@ -101,16 +101,20 @@ do_log() {
 }
 
 do_install() {
-  # Lay down the bundled multicc-trigger skill so claude sessions can discover
-  # it immediately (the server also re-syncs this on every startup).
-  SKILL_SRC="$SCRIPT_DIR/skills/multicc-trigger"
-  SKILL_DEST="$HOME/.claude/skills/multicc-trigger"
-  if [ -d "$SKILL_SRC" ]; then
+  # Lay down every bundled skill so claude sessions can discover them immediately
+  # (the server also re-syncs these on every startup). Any dir under skills/ that
+  # contains a SKILL.md is installed — no need to list them here.
+  if [ -d "$SCRIPT_DIR/skills" ]; then
     mkdir -p "$HOME/.claude/skills"
-    rm -rf "$SKILL_DEST"
-    cp -R "$SKILL_SRC" "$SKILL_DEST"
-    chmod +x "$SKILL_DEST/bin/mtrigger" 2>/dev/null || true
-    echo "Installed multicc-trigger skill → $SKILL_DEST"
+    for SKILL_SRC in "$SCRIPT_DIR"/skills/*/; do
+      [ -f "$SKILL_SRC/SKILL.md" ] || continue
+      SKILL_NAME="$(basename "$SKILL_SRC")"
+      SKILL_DEST="$HOME/.claude/skills/$SKILL_NAME"
+      rm -rf "$SKILL_DEST"
+      cp -R "$SKILL_SRC" "$SKILL_DEST"
+      chmod +x "$SKILL_DEST"/bin/* 2>/dev/null || true
+      echo "Installed skill → $SKILL_DEST"
+    done
   fi
 
   # Create launchd plist for auto-start on login
