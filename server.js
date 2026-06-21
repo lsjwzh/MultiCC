@@ -24,6 +24,7 @@ const chokidar = require('chokidar');
 const cron = require('node-cron');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const wechatBridge = require('./wechat-ilink');
+const feishuBridge = require('./feishu-bridge');
 const voiceAsr = require('./voice-asr');
 const cronTasks = require('./cron-tasks');
 const webpush = require('web-push');
@@ -3459,6 +3460,18 @@ wechatBridge.init({
   port: PORT,
 });
 app.use('/api/wechat', wechatBridge.router);
+
+// ── Feishu Bridge ──
+// Same gateway-process architecture as WeChat, but speaks the Feishu open
+// platform via @larksuiteoapi/node-sdk WebSocket long connection.
+feishuBridge.init({
+  persistedSessions,
+  chatSessions,
+  savePersistedSessions,
+  chatBroadcast,
+  port: PORT,
+});
+app.use('/api/feishu', feishuBridge.router);
 
 // ── Workspace status board ──
 // Per-session live status (runtime only, never persisted). Broadcast to /ws/workspace
