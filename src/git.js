@@ -161,7 +161,17 @@ function gitMergeBack(dir, session) {
 
   try {
     gitRun(dirPath, ['merge', '--no-ff', '-m', `multicc: merge ${branch}`, branch]);
-    return { ok: true, merged: true, committed, commits: ahead };
+    // Merge succeeded. The base now has a merge commit the worktree branch lacks,
+    // so the session would immediately show as "behind base" and require a manual
+    // sync click. Auto-pull it back so the worktree stays in lock-step with base.
+    // The worktree branch is a strict ancestor of the new merge commit, so this is
+    // always a conflict-free fast-forward; treat any failure as non-fatal.
+    let syncedBack = false;
+    try {
+      const s = gitSyncFromBase(dir, session);
+      syncedBack = !!(s && s.ok && s.merged);
+    } catch (_) {}
+    return { ok: true, merged: true, committed, commits: ahead, syncedBack };
   } catch (e) {
     let conflicts = [];
     let conflictDiff = '';

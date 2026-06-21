@@ -1087,9 +1087,11 @@ async function requestMerge() {
     const data = await res.json();
     if (res.ok) {
       addSystemMsg(data.merged
-        ? `✓ 已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}`
+        ? `✓ 已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}${data.syncedBack ? '，并已自动把基分支同步回本 worktree' : ''}`
         : `✓ ${data.message || '没有新提交需要合并'}`);
       applyMergeStatus({ mergeReady: false, dirty: false, ahead: 0 });
+      // Auto-sync may have changed the behind count — re-fetch real state.
+      refreshMergeStatus();
     } else if (res.status === 409) {
       addSystemMsg('⚠️ 合并冲突，已 abort，基分支未改动。冲突文件：' + (data.conflicts || []).join(', '));
       addSystemMsg('请打开一个该目录的终端会话手动解决冲突。');
