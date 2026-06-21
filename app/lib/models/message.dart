@@ -61,7 +61,7 @@ class ChatMessage {
         content = (json['content'] ?? '').toString(),
         toolCalls = _parseHistoryTools(json['tools']),
         timestamp = json['ts'] != null
-            ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt() * 1000)
+            ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt())
             : DateTime.now(),
         isStreaming = false,
         cost = (json['cost'] as num?)?.toDouble();
