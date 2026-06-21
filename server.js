@@ -3406,18 +3406,26 @@ function validProviderId(cli, id) {
 }
 
 // List providers (optionally ?appType=claude|codex). Secrets are masked.
+// multicc owns this store; cc-switch is only an import source.
 app.get('/api/providers', (req, res) => {
-  if (!providers.available()) return res.json({ available: false, providers: [], defaults: providerDefaults });
   const appType = (req.query.appType || '').trim();
   res.json({
     available: true,
+    ccSwitchAvailable: providers.ccSwitchAvailable(),
     providers: providers.listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined),
     defaults: providerDefaults,
   });
 });
 
+// Import / sync providers from cc-switch into multicc's own store (idempotent).
+app.post('/api/providers/import', (req, res) => {
+  try {
+    const r = providers.importFromCcSwitch();
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.post('/api/providers', (req, res) => {
-  if (!providers.available()) return res.status(503).json({ error: 'cc-switch 不可用' });
   try {
     const r = providers.createProvider({
       appType: (req.body.appType || '').trim(),
@@ -3432,7 +3440,6 @@ app.post('/api/providers', (req, res) => {
 });
 
 app.patch('/api/providers/:appType/:id', (req, res) => {
-  if (!providers.available()) return res.status(503).json({ error: 'cc-switch 不可用' });
   try {
     providers.updateProvider(req.params.appType, req.params.id, {
       name: req.body.name,
@@ -3446,7 +3453,6 @@ app.patch('/api/providers/:appType/:id', (req, res) => {
 });
 
 app.delete('/api/providers/:appType/:id', (req, res) => {
-  if (!providers.available()) return res.status(503).json({ error: 'cc-switch 不可用' });
   try {
     const removed = providers.deleteProvider(req.params.appType, req.params.id);
     // Clear any default that pointed at the deleted provider.

@@ -474,9 +474,15 @@
         <!-- ─── Provider (cc-switch) ─── -->
         <section class="view" data-view="provider">
           <div class="sec-head"><h2>Provider 配置</h2><div class="line"></div></div>
-          <p class="sec-desc">由 <b>cc-switch</b> 统一管理（读写 ~/.cc-switch）。每个会话可单独选用一个 provider，spawn 时只给该会话的进程注入对应配置（claude 注入 ANTHROPIC_*，codex 用独立 CODEX_HOME），会话间互相独立。下方设置「全局默认」——新建会话自动套用；「默认登录」= 走本机订阅 / OAuth。</p>
-          <div id="provider-unavailable" class="settings-card" style="display:none;">
-            <div class="sc-body"><span class="status-text err">未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db）。安装并配置 cc-switch 后刷新本页。</span></div>
+          <p class="sec-desc">由 <b>multicc 自己管理</b>（存于项目内 providers.json），可在此自由增删改。<b>cc-switch</b> 仅作为导入来源——点下方「从 cc-switch 导入」把它的 provider 同步进来（可重复同步，不重复）。每个会话可单独选用一个 provider，spawn 时只给该会话的进程注入对应配置（claude 注入 ANTHROPIC_*，codex 用独立 CODEX_HOME），会话间互相独立。「全局默认」= 新建会话自动套用；「默认登录」= 走本机订阅 / OAuth。</p>
+
+          <div class="settings-card">
+            <div class="sc-header">从 cc-switch 导入 / 同步</div>
+            <div class="sc-body">
+              <p style="font-size:12px;color:var(--faint);margin:0">读取 ~/.cc-switch/cc-switch.db，把其中的 provider 同步进 multicc 自己的存储（按来源去重，已存在的会刷新）。导入后即可在下方自由编辑或删除，不会改动 cc-switch。</p>
+              <div id="provider-ccswitch-unavailable" style="display:none;margin-top:8px;"><span class="status-text err">未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" id="prov-import-btn" onclick="importProviders()">从 cc-switch 导入</button><span class="status-text" id="prov-import-status"></span></div>
           </div>
 
           <div class="settings-card">

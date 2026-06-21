@@ -3443,12 +3443,29 @@ async function loadProviders() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _providerData = await res.json();
   } catch (_) {
-    _providerData = { available: false, providers: [], defaults: { claude: null, codex: null } };
+    _providerData = { available: true, ccSwitchAvailable: false, providers: [], defaults: { claude: null, codex: null } };
   }
-  const unavail = document.getElementById('provider-unavailable');
-  if (unavail) unavail.style.display = _providerData.available ? 'none' : '';
+  // cc-switch only gates the import button, not the store itself.
+  const ccUnavail = document.getElementById('provider-ccswitch-unavailable');
+  if (ccUnavail) ccUnavail.style.display = _providerData.ccSwitchAvailable ? 'none' : '';
+  const importBtn = document.getElementById('prov-import-btn');
+  if (importBtn) importBtn.disabled = !_providerData.ccSwitchAvailable;
   renderProviderDefaults();
   renderProviderList();
+}
+
+async function importProviders() {
+  const status = document.getElementById('prov-import-status');
+  try {
+    const res = await fetch('/api/providers/import' + tokenQS('?'), { method: 'POST' });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    if (status) { status.textContent = `已导入 ${d.imported} 个、刷新 ${d.updated} 个`; status.className = 'status-text ok'; }
+    showToast(`从 cc-switch 同步：新增 ${d.imported}、刷新 ${d.updated}（共 ${d.total}）`);
+    loadProviders();
+  } catch (err) {
+    if (status) { status.textContent = `Failed: ${err.message}`; status.className = 'status-text err'; }
+  }
 }
 
 function providerLabel(p) {
@@ -3483,7 +3500,7 @@ function renderProviderList() {
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
       <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-soft);color:var(--faint)">${escapeHtml(p.appType)}</span>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)}${p.isCurrent ? ' <span style="color:var(--green);font-weight:400;font-size:11px">(cc-switch 当前)</span>' : ''}</div>
+        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span></div>
         <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${p.model ? ' · ' + escapeHtml(p.model) : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
