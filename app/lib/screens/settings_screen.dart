@@ -9,6 +9,7 @@ import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../services/background_service.dart';
 import '../services/settings_service.dart';
+import '../services/update_service.dart';
 import '../theme.dart';
 import '../widgets/model_picker.dart';
 import 'agent_resources_screen.dart';
@@ -45,6 +46,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _goalSaving = false;
   String? _goalStatus;
 
+  bool _checkingUpdate = false;
+  String _appVersion = '…';
+
   @override
   void initState() {
     super.initState();
@@ -58,6 +62,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _fontScale = s.fontScale.value;
     _goalMinCtrl = TextEditingController(text: '60');
     _loadGoalConfig();
+    _loadVersion();
   }
 
   @override
@@ -163,6 +168,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _snack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _loadVersion() async {
+    final v = await UpdateService.currentVersion();
+    if (mounted) setState(() => _appVersion = v);
+  }
+
+  Future<void> _checkUpdate() async {
+    setState(() => _checkingUpdate = true);
+    try {
+      await UpdateService.checkUpdateManually(context, widget.settings);
+    } finally {
+      if (mounted) setState(() => _checkingUpdate = false);
+    }
   }
 
   @override
@@ -343,6 +362,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onPressed: _openWebDashboard,
                   icon: const Icon(Icons.open_in_new, size: 18, color: AppColors.accent),
                   label: const Text('在浏览器打开网页管理台', style: TextStyle(color: AppColors.accent)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.lineStrong),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          _Section(
+            title: '关于',
+            children: [
+              Row(
+                children: [
+                  const Text('当前版本', style: TextStyle(color: AppColors.text, fontSize: 14)),
+                  const Spacer(),
+                  Text(
+                    _appVersion,
+                    style: const TextStyle(
+                        color: AppColors.accent, fontSize: 13, fontFamily: 'monospace'),
+                  ),
+                ],
+              ),
+              const _Hint('版本号格式为「版本名 (构建号)」，更新时按构建号判断是否有新版。'),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _checkingUpdate ? null : _checkUpdate,
+                  icon: _checkingUpdate
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent),
+                        )
+                      : const Icon(Icons.system_update_alt, size: 18, color: AppColors.accent),
+                  label: Text(_checkingUpdate ? '检查中…' : '检查更新',
+                      style: const TextStyle(color: AppColors.accent)),
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(color: AppColors.lineStrong),
                     padding: const EdgeInsets.symmetric(vertical: 14),
