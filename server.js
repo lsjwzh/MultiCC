@@ -46,6 +46,7 @@ const bus = require('./src/bus');
 const services = require('./src/services');
 const state = require('./src/state');
 const artifacts = require('./src/artifacts');
+const providers = require('./src/providers');
 const app = express();
 
 // ── Access token authentication (cookie-based login) ──
@@ -372,7 +373,9 @@ const cliProviders = {
       ];
       // Per-session model wins; otherwise follow the user's current /model default
       // (passed explicitly because `--resume` would keep the session's original model).
-      const model = session.model || claudeDefaultModel();
+      // When a provider override routes to a non-Anthropic base URL, skip the global
+      // default so the provider's own ANTHROPIC_MODEL env decides the model.
+      const model = session.model || (opts.skipDefaultModel ? null : claudeDefaultModel());
       if (model) args.push('--model', model);
       if (CLAUDE_CHAT_DISALLOWED_TOOLS.length) {
         args.push('--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(','));
@@ -1569,13 +1572,24 @@ app.get('/api/directories/:id/workspace', (req, res) => {
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
 // to create/reuse a named session (e.g. ephemeral gateway chats). Returns
 // { ok:true, id, session, reused? } or { ok:false, error }.
-function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null }) {
+function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!['claude', 'codex'].includes(cli)) return { ok: false, error: 'cli must be claude or codex' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
   // Model is claude-only and interpolated into a tmux shell command — keep the charset tight.
   if (model && (cli !== 'claude' || !/^[A-Za-z0-9._\[\]-]{1,100}$/.test(model))) {
     return { ok: false, error: 'invalid model' };
+  }
+  // Provider override (cc-switch). An explicit value is validated; when omitted
+  // the session inherits the global default for this CLI. null = use the default
+  // login / OAuth subscription.
+  let providerId;
+  if (provider === undefined) {
+    providerId = providerDefaults[cli] || null;
+  } else {
+    const v = validProviderId(cli, provider);
+    if (!v.ok) return { ok: false, error: 'invalid provider' };
+    providerId = v.value;
   }
   const sid = id || allocateSessionId(dir, cli, kind);
   if (persistedSessions.has(sid)) return { ok: true, id: sid, session: persistedSessions.get(sid), reused: true };
@@ -1598,6 +1612,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
     label,
     model: model || null, // claude-only; null = follow the user's /model default
+    provider: providerId,  // cc-switch provider id; null = default login/subscription
     createdAt: new Date().toISOString(),
     worktreePath,
     branch,
@@ -1616,7 +1631,9 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   const kind = (req.body.kind || '').trim();
   const label = (req.body.label || '').trim() || null;
   const model = (req.body.model || '').trim() || null;
-  const r = createSessionRecord({ dir: d, cli, kind, label, model });
+  // provider: omit → inherit global default; '' → explicit no-override; id → that provider.
+  const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
+  const r = createSessionRecord({ dir: d, cli, kind, label, model, provider });
   if (!r.ok) return res.status(400).json({ error: r.error });
   res.json(r.session);
 });
@@ -1665,6 +1682,17 @@ app.patch('/api/sessions/:id', (req, res) => {
     s.autoContinue = !!req.body.autoContinue;
     if (!s.autoContinue) waitInjector.resetAuto(s.id);
     appendEvent(s.dirId, 'session_autocontinue_changed', `${s.label || s.id} → ${s.autoContinue ? '自动接力' : '关闭'}`, s.id);
+  }
+  if (req.body.provider !== undefined) {
+    // Per-session cc-switch provider. '' / null clears the override → default login.
+    const v = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
+    if (!v.ok) return res.status(400).json({ error: 'invalid provider' });
+    s.provider = v.value;
+    // Chat sessions pick it up on the next per-turn spawn; a warm streaming
+    // process must be torn down so it relaunches with the new env.
+    if (s.streaming) chatStream.close(s.id);
+    const pname = v.value ? (providers.getProviderSummary(s.cli === 'codex' ? 'codex' : 'claude', v.value)?.name || v.value) : '默认登录';
+    appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
   }
   savePersistedSessions();
   res.json(s);
@@ -3356,6 +3384,95 @@ app.post('/api/goal/precheck', (req, res) => {
     .catch(err => res.json({ ok: false, error: err?.message || 'aux failed' }));
 });
 
+// ── Per-session providers (backed by cc-switch) ──────────────────────────────
+// Global default provider per CLI; new sessions inherit it. Stored separately
+// from cc-switch's own "current" selection so multicc stays independent.
+const PROVIDER_DEFAULTS_FILE = path.join(__dirname, 'provider-defaults.json');
+let providerDefaults = { claude: null, codex: null };
+try {
+  const d = JSON.parse(fs.readFileSync(PROVIDER_DEFAULTS_FILE, 'utf8'));
+  providerDefaults = { claude: d.claude || null, codex: d.codex || null };
+} catch (_) { /* none yet */ }
+function saveProviderDefaults() {
+  try { fs.writeFileSync(PROVIDER_DEFAULTS_FILE, JSON.stringify(providerDefaults, null, 2)); }
+  catch (e) { console.error('[multicc] save provider-defaults failed:', e.message); }
+}
+// Validate a provider id exists for the given cli; '' / null clears the override.
+function validProviderId(cli, id) {
+  if (id == null || id === '') return { ok: true, value: null };
+  const appType = cli === 'codex' ? 'codex' : 'claude';
+  if (!providers.getProviderSummary(appType, String(id))) return { ok: false };
+  return { ok: true, value: String(id) };
+}
+
+// List providers (optionally ?appType=claude|codex). Secrets are masked.
+app.get('/api/providers', (req, res) => {
+  if (!providers.available()) return res.json({ available: false, providers: [], defaults: providerDefaults });
+  const appType = (req.query.appType || '').trim();
+  res.json({
+    available: true,
+    providers: providers.listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined),
+    defaults: providerDefaults,
+  });
+});
+
+app.post('/api/providers', (req, res) => {
+  if (!providers.available()) return res.status(503).json({ error: 'cc-switch 不可用' });
+  try {
+    const r = providers.createProvider({
+      appType: (req.body.appType || '').trim(),
+      name: req.body.name,
+      baseUrl: (req.body.baseUrl || '').trim(),
+      authToken: (req.body.authToken || '').trim(),
+      model: (req.body.model || '').trim(),
+      settingsConfig: req.body.settingsConfig,
+    });
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.patch('/api/providers/:appType/:id', (req, res) => {
+  if (!providers.available()) return res.status(503).json({ error: 'cc-switch 不可用' });
+  try {
+    providers.updateProvider(req.params.appType, req.params.id, {
+      name: req.body.name,
+      baseUrl: req.body.baseUrl,
+      authToken: req.body.authToken,
+      model: req.body.model,
+      settingsConfig: req.body.settingsConfig,
+    });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/providers/:appType/:id', (req, res) => {
+  if (!providers.available()) return res.status(503).json({ error: 'cc-switch 不可用' });
+  try {
+    const removed = providers.deleteProvider(req.params.appType, req.params.id);
+    // Clear any default that pointed at the deleted provider.
+    let changed = false;
+    for (const cli of ['claude', 'codex']) {
+      if (providerDefaults[cli] === req.params.id) { providerDefaults[cli] = null; changed = true; }
+    }
+    if (changed) saveProviderDefaults();
+    res.json({ ok: removed });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Get / set the global default provider per CLI.
+app.get('/api/provider-defaults', (req, res) => res.json(providerDefaults));
+app.put('/api/provider-defaults', (req, res) => {
+  for (const cli of ['claude', 'codex']) {
+    if (req.body[cli] !== undefined) {
+      const v = validProviderId(cli, req.body[cli]);
+      if (!v.ok) return res.status(400).json({ error: `invalid ${cli} provider id` });
+      providerDefaults[cli] = v.value;
+    }
+  }
+  saveProviderDefaults();
+  res.json({ ok: true, defaults: providerDefaults });
+});
+
 // Root → manage page (unless ?id= is specified, which means a terminal session)
 app.get('/', (req, res, next) => {
   if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
@@ -3965,8 +4082,11 @@ function runChatTurn(sessionName, text, opts = {}) {
     return runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt);
   }
 
-  const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn, rolePrompt, maxTurns: goalMaxTurns });
-  console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
+  // Per-session provider (cc-switch): env injected into THIS child only, so
+  // sibling sessions routing to other providers stay fully independent.
+  const provEnv = providers.resolveSpawnEnv(persisted);
+  const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn, rolePrompt, maxTurns: goalMaxTurns, skipDefaultModel: provEnv.skipDefaultModel });
+  console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
 
   const spawnChat = (spawnArgs, isRetry) => {
     const proc = spawn(provider.cmd, spawnArgs, {
@@ -3978,6 +4098,8 @@ function runChatTurn(sessionName, text, opts = {}) {
         MULTICC_SESSION_ID: sessionName,
         MULTICC_DIR_ID: persisted.dirId || '',
         MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
+        // Provider override env (ANTHROPIC_* for claude, CODEX_HOME for codex).
+        ...provEnv.env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -4283,7 +4405,9 @@ app.delete('/api/wait/:wid', (req, res) => {
 // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
 function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt) {
   const sysPrompt = rolePrompt ? `${MULTICC_IMG_HINT}\n\n${rolePrompt}` : MULTICC_IMG_HINT;
-  const model = persisted.model || claudeDefaultModel();
+  // Per-session provider env, injected into the warm streaming child.
+  const provEnv = providers.resolveSpawnEnv(persisted);
+  const model = persisted.model || (provEnv.skipDefaultModel ? null : claudeDefaultModel());
   const extraArgs = CLAUDE_CHAT_DISALLOWED_TOOLS.length
     ? ['--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(',')] : [];
 
@@ -4296,6 +4420,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
       MULTICC_SESSION_ID: sessionName,
       MULTICC_DIR_ID: persisted.dirId || '',
       MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
+      ...provEnv.env,
     },
   });
 

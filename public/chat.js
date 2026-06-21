@@ -1277,6 +1277,10 @@ async function loadSessionModel() {
     // Role prompt applies to every cli; load it first, then the claude-only model.
     _sessionRole = info.rolePrompt || '';
     updateRoleBtn();
+    // Provider switch applies to every cli (claude & codex both have providers).
+    _sessionCli = info.cli || 'claude';
+    _sessionProvider = info.provider || '';
+    updateProviderBtn();
     if ((info.cli || 'claude') !== 'claude') return; // codex has no model switch / streaming
     _sessionModel = info.model || '';
     updateModelBtn();
@@ -1302,6 +1306,105 @@ modelBtn?.addEventListener('click', async () => {
     addSystemMsg(`✓ 模型已切换为 ${_sessionModel ? modelShortName(_sessionModel) : '默认（跟随 Claude 设置）'}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('模型切换失败：' + e.message);
+  }
+});
+
+/* ── Per-session provider switch (cc-switch) ── */
+const providerBtn = document.getElementById('provider-btn');
+let _sessionProvider = '';       // provider id ('' = default login)
+let _sessionCli = 'claude';
+let _providerList = [];           // cached [{id,appType,name,baseUrl,model,isOfficial}]
+
+function providerShortName(id) {
+  if (!id) return '默认';
+  const p = _providerList.find(o => o.id === id);
+  return p ? p.name : id.slice(0, 8);
+}
+
+function updateProviderBtn() {
+  if (!providerBtn) return;
+  providerBtn.textContent = `⇄ ${providerShortName(_sessionProvider)}`;
+  providerBtn.style.display = '';
+}
+
+async function ensureProviderList(appType) {
+  try {
+    const res = await fetch(withToken(`/api/providers?appType=${encodeURIComponent(appType)}`));
+    if (!res.ok) return [];
+    const d = await res.json();
+    _providerList = d.providers || [];
+    return _providerList;
+  } catch (_) { return []; }
+}
+
+function showProviderPicker(current, list) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:400px;max-width:94vw;';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:12px;';
+    msg.textContent = '切换该会话使用的 Provider（下一轮对话生效）';
+    box.appendChild(msg);
+
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
+    const optDef = document.createElement('option');
+    optDef.value = ''; optDef.textContent = '默认登录 / 订阅（不覆盖）';
+    select.appendChild(optDef);
+    for (const p of list) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name + (p.isOfficial ? ' · 订阅' : (p.baseUrl ? ' · ' + p.baseUrl.replace(/^https?:\/\//, '') : '')) + (p.model ? ' · ' + p.model : '');
+      select.appendChild(opt);
+    }
+    select.value = current || '';
+    box.appendChild(select);
+    if (!list.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
+      empty.textContent = '还没有可用 provider。请到管理台「Provider」页配置。';
+      box.appendChild(empty);
+    }
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
+    const ok = document.createElement('button');
+    ok.textContent = '保存';
+    ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
+    row.appendChild(cancel); row.appendChild(ok);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = (result) => { overlay.remove(); resolve(result); };
+    ok.onclick = () => close({ value: select.value });
+    cancel.onclick = () => close(null);
+    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+  });
+}
+
+providerBtn?.addEventListener('click', async () => {
+  const list = await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
+  const picked = await showProviderPicker(_sessionProvider, list);
+  if (picked === null) return;
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: picked.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) { addSystemMsg('Provider 切换失败：' + (data.error || `HTTP ${res.status}`)); return; }
+    _sessionProvider = data.provider || '';
+    updateProviderBtn();
+    addSystemMsg(`✓ Provider 已切换为 ${providerShortName(_sessionProvider)}，下一轮对话生效`);
+  } catch (e) {
+    addSystemMsg('Provider 切换失败：' + e.message);
   }
 });
 
