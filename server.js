@@ -429,9 +429,10 @@ function providerFor(session) {
 
 // ── Codex session-id capture: scans ~/.codex/sessions for a JSONL with matching cwd whose
 // session_meta.timestamp is newer than `sinceMs`. Returns the session id or null. ──
-function findCodexSessionId(cwd, sinceMs) {
+function findCodexSessionId(cwd, sinceMs, sessionsDir) {
   try {
-    if (!fs.existsSync(CODEX_SESSIONS_DIR)) return null;
+    const rootDir = sessionsDir || CODEX_SESSIONS_DIR;
+    if (!fs.existsSync(rootDir)) return null;
     const candidates = [];
     const walk = (dir) => {
       let entries;
@@ -447,7 +448,7 @@ function findCodexSessionId(cwd, sinceMs) {
         }
       }
     };
-    walk(CODEX_SESSIONS_DIR);
+    walk(rootDir);
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
     for (const c of candidates) {
       try {
@@ -1024,6 +1025,11 @@ function createSession(id) {
   }
 
   const provider = providerFor(persisted);
+  // Per-session provider override (cc-switch). Injected into the tmux pane (see
+  // tmuxCreateSession) so terminal sessions honor their provider too — without
+  // this they silently fell back to the default login. The codex session-id
+  // capture below also uses this provider's CODEX_HOME.
+  const provEnv = providers.resolveSpawnEnv(persisted);
 
   // For Claude: pre-allocate a stable session UUID so chat-mode `--resume` works.
   // For Codex: leave cliSessionId null on first launch and capture it asynchronously
@@ -1038,7 +1044,7 @@ function createSession(id) {
   const launchTime = Date.now();
   if (!tmuxHasSession(id)) {
     console.log(`[multicc] Creating tmux session: ${tmuxSessionName(id)} in ${cwd} (${provider.name} session: ${persisted.cliSessionId || '<pending>'})`);
-    tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(persisted || {}));
+    tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(persisted || {}), provEnv.env);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
     isRecovery = true;
@@ -1086,7 +1092,8 @@ function createSession(id) {
     let attempts = 0;
     const captureTimer = setInterval(() => {
       attempts++;
-      const captured = findCodexSessionId(cwd, launchTime - 2000);
+      const codexSessionsDir = provEnv.codexHome ? path.join(provEnv.codexHome, 'sessions') : null;
+      const captured = findCodexSessionId(cwd, launchTime - 2000, codexSessionsDir);
       if (captured) {
         clearInterval(captureTimer);
         persisted.cliSessionId = captured;

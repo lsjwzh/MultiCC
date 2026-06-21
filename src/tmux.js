@@ -23,11 +23,24 @@ function tmuxHasSession(id) {
 
 // `cmd` is the provider's terminal command, resolved by the caller (keeps this
 // module free of the provider/core domain).
-function tmuxCreateSession(id, cwd, cols, rows, cmd) {
+function tmuxCreateSession(id, cwd, cols, rows, cmd, envExtra) {
   const name = tmuxSessionName(id);
+  // Per-session env (cc-switch provider override: ANTHROPIC_* / CODEX_HOME) is
+  // injected via `-e` so it lands in the pane's process. tmux panes otherwise
+  // inherit the tmux *server's* global env (captured when the server first
+  // started), NOT the env of this new-session call — so the {env:...} below
+  // can't carry it. Values are single-quoted (tokens/paths may contain spaces).
+  let eArgs = '';
+  if (envExtra && typeof envExtra === 'object') {
+    for (const [k, v] of Object.entries(envExtra)) {
+      if (v == null) continue;
+      const safeV = String(v).replace(/'/g, `'\\''`);
+      eArgs += ` -e ${k}='${safeV}'`;
+    }
+  }
   // set-option remain-on-exit off so the session disappears when CLI exits
   execSync(
-    `tmux new-session -d -s "${name}" -x ${cols} -y ${rows} -c "${cwd}" "${cmd}"`,
+    `tmux new-session -d -s "${name}"${eArgs} -x ${cols} -y ${rows} -c "${cwd}" "${cmd}"`,
     { env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } }
   );
 }
