@@ -127,6 +127,7 @@ class Session {
   final String? label;
   final String? model;
   final String? rolePrompt;
+  final String? provider;   // cc-switch provider id; null = default login
   final String cwd;
   final DateTime createdAt;
   final bool active;
@@ -144,6 +145,7 @@ class Session {
     this.label,
     this.model,
     this.rolePrompt,
+    this.provider,
     this.cwd = '',
     required this.createdAt,
     this.active = false,
@@ -163,6 +165,7 @@ class Session {
       label: json['label']?.toString(),
       model: json['model']?.toString(),
       rolePrompt: json['rolePrompt']?.toString(),
+      provider: json['provider']?.toString(),
       cwd: (json['cwd'] ?? '').toString(),
       createdAt: json['createdAt'] != null
           ? DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()

@@ -3503,6 +3503,7 @@ function renderProviderList() {
         <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span></div>
         <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${p.model ? ' · ' + escapeHtml(p.model) : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
     </div>`).join('');
 }
@@ -3553,6 +3554,51 @@ async function createProvider() {
   } catch (err) {
     if (status) { status.textContent = `Failed: ${err.message}`; status.className = 'status-text err'; }
   }
+}
+
+function editProvider(appType, id) {
+  const p = _providerData.providers.find(x => x.appType === appType && x.id === id);
+  if (!p) return;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const field = (label, val, ph, type = 'text') =>
+    `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">${label}</div>
+     <input data-k="${label}" type="${type}" value="${escapeHtml(val || '')}" placeholder="${escapeHtml(ph)}" autocomplete="off"
+       style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>`;
+  overlay.innerHTML = `
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:92vw;">
+      <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:14px">编辑 Provider · ${escapeHtml(p.appType)}</div>
+      ${field('名称', p.name, '名称')}
+      ${field('Base URL', p.baseUrl, 'https://…（留空=官方/订阅）')}
+      ${field('Model', p.model, '可选')}
+      ${field('API Key', '', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置', 'password')}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+        <button class="btn" id="ep-cancel" style="font-size:13px">取消</button>
+        <button class="btn btn-green" id="ep-save" style="font-size:13px">保存</button>
+      </div>
+      <div id="ep-status" class="status-text" style="margin-top:8px"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const val = (k) => overlay.querySelector(`input[data-k="${k}"]`).value.trim();
+  const close = () => overlay.remove();
+  overlay.querySelector('#ep-cancel').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  overlay.querySelector('#ep-save').onclick = async () => {
+    const body = { name: val('名称'), baseUrl: val('Base URL'), model: val('Model') };
+    const tok = val('API Key');
+    if (tok) body.authToken = tok;  // blank = keep existing
+    const st = overlay.querySelector('#ep-status');
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}` + tokenQS('?'), {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+      showToast('Provider 已更新');
+      close();
+      loadProviders();
+    } catch (err) { st.textContent = 'Failed: ' + err.message; st.className = 'status-text err'; }
+  };
 }
 
 async function deleteProvider(appType, id, name) {
