@@ -2465,6 +2465,245 @@ document.addEventListener('change', (e) => {
   }
 });
 
+/* ───────────────────────── Feishu Bridge ───────────────────────── */
+let _fsEvtSource = null;
+let _fsRunning = false;
+
+function feishuSetConfigured(configured) {
+  const el = document.getElementById('fs-cfg-state');
+  if (!el) return;
+  el.textContent = configured ? '已配置' : '未配置';
+  el.style.background = configured ? '#23863640' : '#21262d';
+  el.style.color = configured ? '#3fb950' : '#8b949e';
+}
+
+function feishuSetRunning(running) {
+  _fsRunning = running;
+  const btnStart = document.getElementById('fs-btn-start');
+  const btnStop = document.getElementById('fs-btn-stop');
+  const badge = document.getElementById('fs-running-badge');
+  const wsBadge = document.getElementById('fs-ws-badge');
+  if (btnStart) btnStart.disabled = running;
+  if (btnStop) btnStop.disabled = !running;
+  if (badge) badge.style.display = running ? '' : 'none';
+  if (wsBadge) wsBadge.style.display = running ? '' : 'none';
+}
+
+async function feishuSaveConfig() {
+  const body = {
+    appId: document.getElementById('fs-appid').value.trim(),
+    domain: document.getElementById('fs-domain').value,
+  };
+  const secret = document.getElementById('fs-appsecret').value;
+  if (secret) body.appSecret = secret;       // empty = keep existing
+  const statusEl = document.getElementById('fs-cfg-status');
+  try {
+    const res = await fetch('/api/feishu/config' + tokenQS('?'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    document.getElementById('fs-appsecret').value = '';
+    if (statusEl) statusEl.textContent = '已保存';
+    showToast('飞书凭证已保存');
+    feishuLoadConfig();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `保存失败: ${e.message}`;
+    showToast(`保存失败: ${e.message}`, true);
+  }
+}
+
+async function feishuStart() {
+  try {
+    const res = await fetch('/api/feishu/start' + tokenQS('?'), { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    feishuSetRunning(true);
+    feishuConnectSSE();
+    showToast('飞书桥接已启动');
+  } catch (e) {
+    showToast(`启动失败: ${e.message}`, true);
+  }
+}
+
+async function feishuStop() {
+  try {
+    await fetch('/api/feishu/stop' + tokenQS('?'), { method: 'POST' });
+    feishuSetRunning(false);
+    feishuDisconnectSSE();
+    showToast('飞书桥接已停止');
+  } catch (e) {
+    showToast(`停止失败: ${e.message}`, true);
+  }
+}
+
+function feishuConnectSSE() {
+  feishuDisconnectSSE();
+  _fsEvtSource = new EventSource('/api/feishu/events' + tokenQS('?'));
+  _fsEvtSource.onmessage = (e) => { try { feishuAppendLog(JSON.parse(e.data)); } catch (_) {} };
+  _fsEvtSource.onerror = () => {
+    feishuDisconnectSSE();
+    if (_fsRunning) setTimeout(feishuConnectSSE, 3000);
+  };
+}
+
+function feishuDisconnectSSE() {
+  if (_fsEvtSource) { _fsEvtSource.close(); _fsEvtSource = null; }
+}
+
+const _fsPrefixes = { in: '← 飞书', out: '→ Claude', system: 'SYS', error: 'ERR' };
+const _fsColors = { in: '#58a6ff', out: '#3fb950', system: '#d29922', error: '#f85149' };
+
+function feishuAppendLog(entry) {
+  const log = document.getElementById('fs-log');
+  if (!log) return;
+  const ph = log.querySelector('div[style*="text-align:center"]');
+  if (ph) ph.remove();
+  const div = document.createElement('div');
+  div.style.cssText = `border-left:2px solid ${_fsColors[entry.type] || '#484f58'};padding:2px 6px;line-height:1.4;word-break:break-word;`;
+  const d = new Date(entry.ts);
+  const time = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
+  const prefix = _fsPrefixes[entry.type] || entry.type;
+  div.innerHTML = `<span style="color:#484f58;font-size:10px;margin-right:4px;">${time}</span><span style="color:${_fsColors[entry.type]};font-weight:600;">${escapeHtml(prefix)}</span> ${escapeHtml(entry.text || '')}`;
+  log.appendChild(div);
+  while (log.children.length > 100) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+/* ── Feishu Gateway session ── */
+function _fsSelectedCli() {
+  const checked = document.querySelector('input[name="fs-gw-cli"]:checked');
+  return checked ? checked.value : 'claude';
+}
+
+function feishuRenderGateway(gw) {
+  const stateEl = document.getElementById('fs-gw-state');
+  const createBtn = document.getElementById('fs-gw-create');
+  const openBtn = document.getElementById('fs-gw-open');
+  const resetBtn = document.getElementById('fs-gw-reset');
+  const destroyBtn = document.getElementById('fs-gw-destroy');
+  if (!stateEl) return;
+  if (gw) {
+    stateEl.textContent = `${gw.cli}`;
+    stateEl.style.background = '#23863640';
+    stateEl.style.color = '#3fb950';
+    createBtn.style.display = 'none';
+    openBtn.style.display = '';
+    resetBtn.style.display = '';
+    destroyBtn.style.display = '';
+    const radio = document.querySelector(`input[name="fs-gw-cli"][value="${gw.cli}"]`);
+    if (radio) radio.checked = true;
+  } else {
+    stateEl.textContent = '未创建';
+    stateEl.style.background = '#21262d';
+    stateEl.style.color = '#8b949e';
+    createBtn.style.display = '';
+    openBtn.style.display = 'none';
+    resetBtn.style.display = 'none';
+    destroyBtn.style.display = 'none';
+  }
+}
+
+async function feishuGatewayRefresh() {
+  try {
+    const res = await fetch('/api/feishu/gateway' + tokenQS('?'));
+    const gw = await res.json();
+    feishuRenderGateway(gw);
+    return gw;
+  } catch (_) { return null; }
+}
+
+async function feishuGatewayCreate() {
+  const cli = _fsSelectedCli();
+  try {
+    const res = await fetch('/api/feishu/gateway' + tokenQS('?'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cli }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    feishuRenderGateway(data);
+    showToast(`飞书 Gateway 已创建 (${cli})`);
+  } catch (e) { showToast(`创建失败: ${e.message}`, true); }
+}
+
+async function feishuGatewaySwitchCli() {
+  const cli = _fsSelectedCli();
+  try {
+    const res = await fetch('/api/feishu/gateway' + tokenQS('?'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cli }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    feishuRenderGateway(data);
+    showToast(`已切换到 ${cli}`);
+  } catch (e) {
+    showToast(`切换失败: ${e.message}`, true);
+    feishuGatewayRefresh();
+  }
+}
+
+function feishuGatewayOpen() {
+  const url = '/chat?session=__feishu_gateway__' + tokenQS('&');
+  window.open(url, '_blank');
+}
+
+async function feishuGatewayReset() {
+  if (!(await showConfirm('清空飞书 Gateway 对话历史？', { danger: true, okText: '清空' }))) return;
+  try {
+    const res = await fetch('/api/feishu/gateway/reset' + tokenQS('?'), { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    showToast('已清空对话历史');
+  } catch (e) { showToast(`重置失败: ${e.message}`, true); }
+}
+
+async function feishuGatewayDestroy() {
+  if (!(await showConfirm('销毁飞书 Gateway 会话？历史会保留在 chat_history。', { danger: true, okText: '销毁' }))) return;
+  try {
+    const res = await fetch('/api/feishu/gateway' + tokenQS('?'), { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    feishuRenderGateway(null);
+    showToast('飞书 Gateway 已销毁');
+  } catch (e) { showToast(`销毁失败: ${e.message}`, true); }
+}
+
+async function feishuLoadConfig() {
+  try {
+    const res = await fetch('/api/feishu/config' + tokenQS('?'));
+    const cfg = await res.json();
+    if (document.getElementById('fs-appid')) document.getElementById('fs-appid').value = cfg.appId || '';
+    if (document.getElementById('fs-domain')) document.getElementById('fs-domain').value = cfg.domain || 'feishu';
+    feishuSetConfigured(!!cfg.configured);
+  } catch (_) {}
+}
+
+async function feishuCheckStatus() {
+  try {
+    const res = await fetch('/api/feishu/status' + tokenQS('?'));
+    const data = await res.json();
+    feishuSetConfigured(!!data.configured);
+    feishuRenderGateway(data.gateway);
+    if (data.running) {
+      feishuSetRunning(true);
+      feishuConnectSSE();
+      try {
+        const logRes = await fetch('/api/feishu/log' + tokenQS('?'));
+        const entries = await logRes.json();
+        for (const e of entries.slice(-50)) feishuAppendLog(e);
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+// Hook up radio change → switch cli (only when feishu gateway already exists)
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.name === 'fs-gw-cli') {
+    const stateEl = document.getElementById('fs-gw-state');
+    if (stateEl && stateEl.textContent !== '未创建') feishuGatewaySwitchCli();
+  }
+});
+
 /* ── Push Notification Diagnostics ── */
 
 function formatTimestamp(ts) {
@@ -3211,6 +3450,8 @@ loadClaudeHistory();
 loadUploadStats();
 wechatLoadConfig();
 wechatCheckStatus();
+feishuLoadConfig();
+feishuCheckStatus();
 auxConnect();
 autoRefreshTimer = setInterval(loadDashboard, 5000);
 // Refresh push diagnostics periodically and on visibility change
