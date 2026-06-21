@@ -1287,6 +1287,15 @@ function loadAgentPresets() {
   return _agentPresetsCache;
 }
 
+// Prompt of the bundled "Agent Commander" preset — used to seed a default
+// commander session in every newly-created directory. Returns null if missing.
+const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
+function agentCommanderPrompt() {
+  const data = loadAgentPresets();
+  const p = data && (data.presets || []).find(x => x.id === AGENT_COMMANDER_PRESET_ID);
+  return (p && p.prompt) ? p.prompt : null;
+}
+
 app.get('/api/agent-presets', (req, res) => {
   const data = loadAgentPresets();
   if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
@@ -1461,6 +1470,27 @@ app.post('/api/directories', (req, res) => {
     return res.status(400).json({ error: friendlyDirReason(ready.reason) });
   }
   saveDirectories();
+  // Seed every newly-created directory with a default Agent Commander chat
+  // session, so a fleet conductor is ready out of the box. Runs only here at
+  // creation → existing directories are untouched. Best-effort: any failure is
+  // logged but never blocks directory creation.
+  try {
+    const commander = agentCommanderPrompt();
+    if (commander) {
+      const r = createSessionRecord({ dir, cli: 'claude', kind: 'chat', label: '🫡 Agent Commander' });
+      if (r.ok) {
+        r.session.rolePrompt = commander;
+        savePersistedSessions();
+        appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
+      } else {
+        console.warn(`[multicc] seed commander session failed for dir ${dir.id}: ${r.error}`);
+      }
+    } else {
+      console.warn('[multicc] Agent Commander preset not found; skipping seed session for new dir');
+    }
+  } catch (e) {
+    console.warn(`[multicc] seed commander session error for dir ${dir.id}: ${e.message}`);
+  }
   res.json(dir);
 });
 
