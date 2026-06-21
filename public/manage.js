@@ -3434,8 +3434,126 @@ focusSession = function(id) {
   _origFocusSession(id);
 };
 
+/* ── Provider config (cc-switch) ── */
+let _providerData = { available: false, providers: [], defaults: { claude: null, codex: null } };
+
+async function loadProviders() {
+  try {
+    const res = await fetch('/api/providers' + tokenQS('?'));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _providerData = await res.json();
+  } catch (_) {
+    _providerData = { available: false, providers: [], defaults: { claude: null, codex: null } };
+  }
+  const unavail = document.getElementById('provider-unavailable');
+  if (unavail) unavail.style.display = _providerData.available ? 'none' : '';
+  renderProviderDefaults();
+  renderProviderList();
+}
+
+function providerLabel(p) {
+  const bits = [p.name];
+  if (p.isOfficial) bits.push('· 默认登录/订阅');
+  else if (p.baseUrl) bits.push('· ' + p.baseUrl.replace(/^https?:\/\//, ''));
+  if (p.model) bits.push('· ' + p.model);
+  return bits.join(' ');
+}
+
+function renderProviderDefaults() {
+  for (const cli of ['claude', 'codex']) {
+    const sel = document.getElementById('prov-default-' + cli);
+    if (!sel) continue;
+    const list = _providerData.providers.filter(p => p.appType === cli);
+    const cur = _providerData.defaults[cli] || '';
+    sel.innerHTML = '<option value="">默认登录 / 订阅（不覆盖）</option>' +
+      list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(providerLabel(p))}</option>`).join('');
+    sel.value = cur;
+  }
+}
+
+function renderProviderList() {
+  const box = document.getElementById('provider-list');
+  if (!box) return;
+  if (!_providerData.providers.length) {
+    box.innerHTML = '<span style="color:var(--faint);font-size:13px">还没有 provider。' +
+      (_providerData.available ? '在下方新增。' : 'cc-switch 不可用。') + '</span>';
+    return;
+  }
+  box.innerHTML = _providerData.providers.map(p => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
+      <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-soft);color:var(--faint)">${escapeHtml(p.appType)}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)}${p.isCurrent ? ' <span style="color:var(--green);font-weight:400;font-size:11px">(cc-switch 当前)</span>' : ''}</div>
+        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${p.model ? ' · ' + escapeHtml(p.model) : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
+      </div>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
+    </div>`).join('');
+}
+
+async function saveProviderDefaults() {
+  const status = document.getElementById('prov-default-status');
+  const body = {
+    claude: document.getElementById('prov-default-claude').value || '',
+    codex: document.getElementById('prov-default-codex').value || '',
+  };
+  try {
+    const res = await fetch('/api/provider-defaults' + tokenQS('?'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    _providerData.defaults = d.defaults;
+    if (status) { status.textContent = 'Saved'; status.className = 'status-text ok'; }
+    showToast('全局默认 provider 已保存');
+  } catch (err) {
+    if (status) { status.textContent = `Failed: ${err.message}`; status.className = 'status-text err'; }
+  }
+}
+
+async function createProvider() {
+  const status = document.getElementById('prov-new-status');
+  const body = {
+    appType: document.getElementById('prov-new-apptype').value,
+    name: document.getElementById('prov-new-name').value.trim(),
+    baseUrl: document.getElementById('prov-new-baseurl').value.trim(),
+    authToken: document.getElementById('prov-new-token').value.trim(),
+    model: document.getElementById('prov-new-model').value.trim(),
+  };
+  if (!body.name) { if (status) { status.textContent = '名称必填'; status.className = 'status-text err'; } return; }
+  try {
+    const res = await fetch('/api/providers' + tokenQS('?'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    if (status) { status.textContent = 'Created'; status.className = 'status-text ok'; }
+    showToast('Provider 已创建：' + body.name);
+    document.getElementById('prov-new-name').value = '';
+    document.getElementById('prov-new-baseurl').value = '';
+    document.getElementById('prov-new-token').value = '';
+    document.getElementById('prov-new-model').value = '';
+    loadProviders();
+  } catch (err) {
+    if (status) { status.textContent = `Failed: ${err.message}`; status.className = 'status-text err'; }
+  }
+}
+
+async function deleteProvider(appType, id, name) {
+  if (!confirm(`删除 provider「${name}」？（会从 cc-switch 移除）`)) return;
+  try {
+    const res = await fetch(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    showToast('已删除：' + name);
+    loadProviders();
+  } catch (err) {
+    showToast('删除失败：' + err.message);
+  }
+}
+
 /* ── Init ── */
 loadDashboard();
+loadProviders();
 loadVoiceSettings();
 loadGoalSettings();
 loadMacosPowerSettings();

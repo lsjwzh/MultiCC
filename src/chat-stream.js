@@ -224,9 +224,10 @@ function ensure(name, cfg) {
     };
     sessions.set(name, s);
   } else {
-    // Allow per-turn overrides (model/system prompt can change between turns).
+    // Allow per-turn overrides (model/system prompt/provider env can change between turns).
     if (cfg.model !== undefined) s.model = cfg.model;
     if (cfg.sysPrompt !== undefined) s.sysPrompt = cfg.sysPrompt;
+    if (cfg.env !== undefined) s.env = cfg.env;
   }
   return s;
 }

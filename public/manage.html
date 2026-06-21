@@ -359,6 +359,7 @@
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> 定时任务 <span class="badge" id="nav-cron-count">0</span></button>
     <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> 语音 Voice</button>
     <button class="nav-item" data-view="goal" onclick="setView('goal')"><span class="ic">🎯</span> Goal 预检</button>
+    <button class="nav-item" data-view="provider" onclick="setView('provider')"><span class="ic">⇄</span> Provider</button>
     <button class="nav-item" id="macos-power-nav" data-view="power" onclick="setView('power')" style="display:none;"><span class="ic">⌁</span> macOS 电源</button>
     <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> 推送 Push</button>
     <button class="nav-item" data-view="tunnel" onclick="setView('tunnel')"><span class="ic">🌐</span> 外网穿透</button>
@@ -467,6 +468,42 @@
               <div class="setting-row"><label>通过分数阈值</label><input id="goal-min-score" type="number" min="0" max="100" style="max-width:100px" /><span style="font-size:12px;color:var(--faint)">符合度低于此分判为「建议完善」；0 = 不强制</span></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveGoalSettings()">Save</button><span class="status-text" id="goal-status"></span></div>
+          </div>
+        </section>
+
+        <!-- ─── Provider (cc-switch) ─── -->
+        <section class="view" data-view="provider">
+          <div class="sec-head"><h2>Provider 配置</h2><div class="line"></div></div>
+          <p class="sec-desc">由 <b>cc-switch</b> 统一管理（读写 ~/.cc-switch）。每个会话可单独选用一个 provider，spawn 时只给该会话的进程注入对应配置（claude 注入 ANTHROPIC_*，codex 用独立 CODEX_HOME），会话间互相独立。下方设置「全局默认」——新建会话自动套用；「默认登录」= 走本机订阅 / OAuth。</p>
+          <div id="provider-unavailable" class="settings-card" style="display:none;">
+            <div class="sc-body"><span class="status-text err">未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db）。安装并配置 cc-switch 后刷新本页。</span></div>
+          </div>
+
+          <div class="settings-card">
+            <div class="sc-header">全局默认 Provider</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>Claude 默认</label><select id="prov-default-claude" style="min-width:240px"></select></div>
+              <div class="setting-row"><label>Codex 默认</label><select id="prov-default-codex" style="min-width:240px"></select></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveProviderDefaults()">Save</button><span class="status-text" id="prov-default-status"></span></div>
+          </div>
+
+          <div class="settings-card">
+            <div class="sc-header">已配置的 Provider</div>
+            <div class="sc-body" id="provider-list" style="gap:8px;"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+          </div>
+
+          <div class="settings-card">
+            <div class="sc-header">新增 Provider</div>
+            <div class="sc-body">
+              <div class="setting-row"><label>类型</label>
+                <select id="prov-new-apptype" style="max-width:140px"><option value="claude">claude</option><option value="codex">codex</option></select></div>
+              <div class="setting-row"><label>名称</label><input id="prov-new-name" type="text" placeholder="如 DeepSeek / OpenRouter" /></div>
+              <div class="setting-row"><label>Base URL</label><input id="prov-new-baseurl" type="text" placeholder="https://api.deepseek.com/anthropic（留空=官方/订阅）" /></div>
+              <div class="setting-row"><label>API Key</label><input id="prov-new-token" type="password" placeholder="sk-..." autocomplete="off" /></div>
+              <div class="setting-row"><label>Model</label><input id="prov-new-model" type="text" placeholder="如 deepseek-chat（可选）" /></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="createProvider()">Create</button><span class="status-text" id="prov-new-status"></span></div>
           </div>
         </section>
 
