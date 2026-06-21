@@ -1,9 +1,47 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/message.dart';
+import '../services/settings_service.dart';
 import 'tool_card.dart';
+
+/// Resolve a markdown link href and open it externally.
+///
+/// Handles three forms:
+///  - absolute `http(s)://…` links → opened as-is
+///  - root-relative links like `/artifacts/<id>/index.html` (multicc artifacts,
+///    file downloads) → resolved against the configured server base URL
+///  - `mailto:` / other schemes → handed to the OS as-is
+Future<void> _handleLinkTap(BuildContext context, String? href) async {
+  if (href == null || href.trim().isEmpty) return;
+  var target = href.trim();
+
+  // Root-relative path: resolve against the multicc server we're talking to.
+  if (target.startsWith('/')) {
+    final base = SettingsService.current?.buildHttpUrl(target);
+    if (base != null) target = base;
+  } else if (!target.contains('://') && !target.startsWith('mailto:')) {
+    // Bare host or path without a scheme — assume http for the current server.
+    final base = SettingsService.current?.buildHttpUrl('/$target');
+    if (base != null) target = base;
+  }
+
+  final uri = Uri.tryParse(target);
+  if (uri == null) return;
+
+  final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('无法打开链接：$target'),
+        duration: const Duration(milliseconds: 1600),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+}
 
 /// Copy a message's text to the clipboard with a brief confirmation.
 void _copyMessage(BuildContext context, String text) {
@@ -157,6 +195,7 @@ class _MarkdownContent extends StatelessWidget {
             tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           ),
           selectable: true,
+          onTapLink: (text, href, title) => _handleLinkTap(context, href),
         ),
         if (isStreaming) const _StreamingDot(),
       ],

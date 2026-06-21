@@ -343,7 +343,13 @@ const MULTICC_IMG_HINT = [
   '     返回里的 callbackUrl 交给外部系统，让它在完成时 POST 结果到该 URL（body 放 {"data":"..."}）。',
   '  登记成功后，正常结束本轮即可——条件满足/回调到达时 multicc 会自动续接，无需用户手动催。',
   '',
-  '【长任务边做边报进度】（multicc 统一体验约定）当某件事要跑较久（构建/打包/部署/批处理/长等待）时，默认采用「边等边报」：把它放后台跑，运行期间每隔约 25–30 秒主动向用户冒一句简短进度（在做什么、已约 Ns、最新一行关键输出），任务完成后再给最终结果。做法：主任务后台启动后，用一个会在约 25 秒后自行退出的后台计时命令把自己周期性唤醒，每次被唤醒就 tail 一下主任务的输出、报一句进度，直到主任务完成为止。',
+  '【后台长任务，丢了别管】当你要跑一个持续较久、且必须「跑完再继续」的命令（构建/打包/部署/批处理/长测试）时，不要用裸 `&`/nohup 自己丢后台——chat 会话里你起的后台进程会在本轮结束时被环境回收杀掉，任务半路夭折、你也收不到结果（看起来就像卡住、说好等通知却没动静）。请改用 multicc 的 run-detached 接口：它由 multicc 服务以 setsid 方式启动该命令，进程独立于本轮、甚至独立于服务重启，跑完后自动把「退出码 + 输出尾巴」作为下一条消息发回给你续接。',
+  `     curl -s $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/run-detached -H 'Content-Type: application/json' \\`,
+  `       -d '{"command":"<要后台跑的完整shell命令>","label":"<简短任务名>"}'`,
+  '     可选字段：cwd（默认你的工作目录）、intervalSec（轮询间隔秒，默认 10）、maxChecks（最多检查次数，默认 360≈1 小时）。返回里有 taskId 与 logPath；用 GET $MULTICC_BASE_URL/api/detached/<taskId> 可随时查实时状态与日志尾巴。',
+  '  登记后正常结束本轮即可，任务完成时 multicc 会自动续接。若需中途向用户报进度，配合下面「边做边报」用 GET /api/detached/<taskId> tail 日志即可，不要前台死等。',
+  '',
+  '【长任务边做边报进度】（multicc 统一体验约定）当某件事要跑较久（构建/打包/部署/批处理/长等待）时，默认采用「边等边报」：优先用上面的 run-detached 把它放后台（这样不会被回收），运行期间每隔约 25–30 秒主动向用户冒一句简短进度（在做什么、已约 Ns、最新一行关键输出），任务完成后再给最终结果。进度做法：用一个会在约 25 秒后自行退出的后台计时命令把自己周期性唤醒，每次被唤醒就 tail 一下任务输出（或 GET /api/detached/<taskId>）、报一句进度，直到任务完成为止。',
   '不要一启动就长时间静默、让对话框看起来像卡住；也不要只说「我等一下」就停下不续接。这是面向所有 multicc 用户的统一约定，请默认遵循。',
 ].join('\n');
 
@@ -2649,6 +2655,7 @@ const push = require('./src/push');
 const tunnel = require('./src/tunnel');
 const chatStream = require('./src/chat-stream');
 const waitInjector = require('./src/wait-injector');
+const detached = require('./src/detached');
 const share = require('./src/share');
 
 // ── Server Info (LAN IP for QR code) ──
@@ -4497,6 +4504,49 @@ app.get('/api/sessions/:id/waits', (req, res) => {
 
 app.delete('/api/wait/:wid', (req, res) => {
   res.json(waitInjector.cancel(req.params.wid));
+});
+
+// ── Detached tasks ──
+// Run a long-running command (build / batch / deploy) that must OUTLIVE the
+// current chat turn. A bare `&`/nohup started from an agent's bash is a child of
+// that transient shell and gets reaped when the turn ends — the job dies and the
+// session never resumes (looks like a hang). This launches the command from the
+// server with setsid (detached), so it survives the turn AND a server restart,
+// then auto-registers a poll that injects the exit code + output tail back into
+// the session on completion. Body: { command, cwd?, label?, intervalSec?,
+// maxChecks?, injectPrefix? }.
+app.post('/api/sessions/:id/run-detached', (req, res) => {
+  const s = persistedSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const b = req.body || {};
+  const command = (b.command || b.cmd || '').toString();
+  if (!command.trim()) return res.status(400).json({ error: 'command required' });
+  try {
+    const baseCwd = cwdForSession(s);
+    const cwd = b.cwd ? resolveCwd(baseCwd, String(b.cwd)) : baseCwd;
+    const job = detached.launch({ command, cwd, label: b.label });
+    // 10s interval × 360 checks ≈ 1h ceiling before the poll gives up; tune via body.
+    const intervalSec = Math.max(3, Number(b.intervalSec) || 10);
+    const maxChecks = Math.max(1, Number(b.maxChecks) || 360);
+    const label = (b.label || command.replace(/\s+/g, ' ').slice(0, 60)).trim();
+    const reg = waitInjector.register({
+      session: s.id, mode: 'poll', cwd,
+      pollCmd: job.pollCmd, untilContains: job.doneMarker,
+      intervalSec, maxChecks,
+      injectPrefix: b.injectPrefix || `[后台任务完成] ${label}`,
+    });
+    res.json({ ok: true, taskId: job.id, waitId: reg.id, pid: job.pid, logPath: job.logPath, intervalSec, maxChecks });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Inspect detached tasks (survives restart — read from disk).
+app.get('/api/sessions/:id/detached', (req, res) => {
+  res.json({ tasks: detached.list() });
+});
+app.get('/api/detached/:taskId', (req, res) => {
+  const st = detached.status(req.params.taskId);
+  if (!st) return res.status(404).json({ error: 'task not found' });
+  res.json(st);
 });
 
 // ── Streaming chat turn (persistent process; see runChatTurn's streaming branch) ──
