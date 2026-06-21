@@ -1263,6 +1263,45 @@ app.get('/api/agent-resources/skills', (req, res) => {
   });
 });
 
+// ── Agent presets (role prompt library, generated from agency-agents) ──
+// Lazily read public/agent-presets.json once and cache in memory.
+let _agentPresetsCache = null;
+let _agentPresetsErr = null;
+function loadAgentPresets() {
+  if (_agentPresetsCache || _agentPresetsErr) return _agentPresetsCache;
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, 'public', 'agent-presets.json'), 'utf8');
+    _agentPresetsCache = JSON.parse(raw);
+  } catch (e) {
+    _agentPresetsErr = e;
+    _agentPresetsCache = null;
+  }
+  return _agentPresetsCache;
+}
+
+app.get('/api/agent-presets', (req, res) => {
+  const data = loadAgentPresets();
+  if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
+  // Strip the prompt field from the list to keep the payload small.
+  const presets = (data.presets || []).map(({ prompt, ...meta }) => meta);
+  res.json({
+    source: data.source,
+    version: data.version,
+    generatedAt: data.generatedAt,
+    categories: data.categories || [],
+    featured: data.featured || [],
+    presets,
+  });
+});
+
+app.get('/api/agent-presets/:id', (req, res) => {
+  const data = loadAgentPresets();
+  if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
+  const preset = (data.presets || []).find(p => p.id === req.params.id);
+  if (!preset) return res.status(404).json({ error: 'not found' });
+  res.json(preset);
+});
+
 app.get('/api/agent-resources/claude-sessions', (req, res) => {
   const sessions = listClaudeHistory();
   res.json({
@@ -1439,7 +1478,7 @@ app.patch('/api/directories/:id', (req, res) => {
   }
   if (req.body.rolePrompt !== undefined) {
     const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
-    if (rp.length > 8000) return res.status(400).json({ error: 'rolePrompt too long (max 8000)' });
+    if (rp.length > 40000) return res.status(400).json({ error: 'rolePrompt too long (max 40000)' });
     // Directory-level default role; sessions without their own role inherit it.
     d.rolePrompt = rp.trim() || null;
   }
@@ -1664,7 +1703,7 @@ app.patch('/api/sessions/:id', (req, res) => {
   }
   if (req.body.rolePrompt !== undefined) {
     const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
-    if (rp.length > 8000) return res.status(400).json({ error: 'rolePrompt too long (max 8000)' });
+    if (rp.length > 40000) return res.status(400).json({ error: 'rolePrompt too long (max 40000)' });
     // null clears the session override → it falls back to the directory default.
     s.rolePrompt = rp.trim() || null;
     appendEvent(s.dirId, 'session_role_changed', s.rolePrompt ? (s.label || s.id) : `${s.label || s.id}（清除，继承目录）`, s.id);
