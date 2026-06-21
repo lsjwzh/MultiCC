@@ -9,6 +9,16 @@ try {
   });
 } catch (_) { /* .env not found, skip */ }
 
+// Force all spawned `claude` children to use the local OAuth subscription login
+// in ~/.claude rather than a third-party API relay. If ANTHROPIC_AUTH_TOKEN /
+// ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL are present in the inherited env (e.g.
+// leaked in from the shell that ran `pm2 start`), the claude CLI bills against
+// that token/base_url instead of the subscription. We don't use them anywhere in
+// this server, so strip them here so every child inherits a clean env.
+for (const k of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']) {
+  if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
+}
+
 const express = require('express');
 const http = require('http');
 const https = require('https');
