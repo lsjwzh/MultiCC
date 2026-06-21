@@ -8,8 +8,10 @@ import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
+import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../theme.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
@@ -319,6 +321,13 @@ class _Header extends StatelessWidget {
             _ModelChip(sessionId: provider.sessionName),
             const SizedBox(width: 4),
           ],
+          // Provider switch — both claude & codex have providers.
+          _ProviderChip(
+            sessionId: provider.sessionName,
+            cli: provider.cli,
+            settings: settings,
+          ),
+          const SizedBox(width: 4),
           // Overflow menu — collapses the occasional actions (memo / merge /
           // clear history / settings) behind a single "⋮" trigger so the
           // action cluster keeps a fixed, compact width and never pushes icons
@@ -481,6 +490,186 @@ class _ModelChip extends StatelessWidget {
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('模型切换失败：$e')));
     }
+  }
+}
+
+/// Compact per-session provider indicator + switcher for the chat header.
+/// Works for both claude & codex; tap to pick a provider (next turn applies).
+class _ProviderChip extends StatefulWidget {
+  final String sessionId;
+  final SessionCli cli;
+  final SettingsService settings;
+  const _ProviderChip({required this.sessionId, required this.cli, required this.settings});
+
+  @override
+  State<_ProviderChip> createState() => _ProviderChipState();
+}
+
+class _ProviderChipState extends State<_ProviderChip> {
+  List<Map<String, dynamic>> _providers = [];
+  bool _loaded = false;
+
+  String get _appType => widget.cli == SessionCli.codex ? 'codex' : 'claude';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final d = await ManageService(settings: widget.settings).fetchProviders(_appType);
+      if (!mounted) return;
+      setState(() {
+        _providers = (d['providers'] as List? ?? [])
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList();
+        _loaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loaded = true);
+    }
+  }
+
+  String _nameOf(String? id) {
+    if (id == null || id.isEmpty) return '默认';
+    final p = _providers.where((x) => x['id'] == id);
+    return p.isNotEmpty ? (p.first['name'] as String? ?? id) : '自定义';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mgr = context.watch<SessionManager>();
+    Session? s;
+    for (final x in mgr.sessions) {
+      if (x.id == widget.sessionId) { s = x; break; }
+    }
+    final label = _nameOf(s?.provider);
+    return Tooltip(
+      message: '切换该会话使用的 Provider（下一轮对话生效）',
+      child: GestureDetector(
+        onTap: () => _switchProvider(context, mgr, s),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          decoration: BoxDecoration(
+            color: const Color(0xFF14171c),
+            border: Border.all(color: const Color(0xFF20242b)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.swap_horiz_rounded, size: 15, color: Color(0xFFe7eaee)),
+              const SizedBox(width: 4),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 86),
+                child: Text(label,
+                    style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 11, fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _switchProvider(BuildContext context, SessionManager mgr, Session? s) async {
+    if (s == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Session 信息未加载')));
+      return;
+    }
+    if (!_loaded) await _load();
+    if (!context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final picked = await showModalBottomSheet<_PickResult>(
+      context: context,
+      backgroundColor: AppColors.panel,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (_) => _ProviderPickerSheet(
+        providers: _providers,
+        current: s.provider ?? '',
+        appType: _appType,
+      ),
+    );
+    if (picked == null) return;
+    try {
+      await mgr.updateSessionProvider(s.id, picked.id);
+      messenger.showSnackBar(
+        SnackBar(content: Text('✓ Provider 已切换为 ${picked.id.isEmpty ? '默认登录' : picked.name}，下一轮对话生效')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Provider 切换失败：$e')));
+    }
+  }
+}
+
+class _PickResult {
+  final String id;
+  final String name;
+  _PickResult(this.id, this.name);
+}
+
+class _ProviderPickerSheet extends StatelessWidget {
+  final List<Map<String, dynamic>> providers;
+  final String current;
+  final String appType;
+  const _ProviderPickerSheet({required this.providers, required this.current, required this.appType});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget tile(String id, String name, String? sub) {
+      final sel = current == id;
+      return ListTile(
+        onTap: () => Navigator.pop(context, _PickResult(id, name)),
+        leading: Icon(sel ? Icons.radio_button_checked : Icons.radio_button_off,
+            color: sel ? AppColors.accent : AppColors.faint, size: 20),
+        title: Text(name, style: const TextStyle(color: AppColors.text, fontSize: 14)),
+        subtitle: sub != null && sub.isNotEmpty
+            ? Text(sub, style: const TextStyle(color: AppColors.faint, fontSize: 12), overflow: TextOverflow.ellipsis)
+            : null,
+        dense: true,
+      );
+    }
+
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 38, height: 4,
+            margin: const EdgeInsets.symmetric(vertical: 12),
+            decoration: BoxDecoration(color: AppColors.line, borderRadius: BorderRadius.circular(2)),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(bottom: 6),
+            child: Text('切换该会话的 Provider（下一轮生效）',
+                style: TextStyle(color: AppColors.textBright, fontSize: 14, fontWeight: FontWeight.w600)),
+          ),
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                tile('', '默认登录 / 订阅', '不覆盖，走本机登录'),
+                ...providers.map((p) => tile(
+                      p['id'] as String,
+                      p['name'] as String? ?? '',
+                      p['isOfficial'] == true ? '订阅' : (p['baseUrl'] as String? ?? ''),
+                    )),
+                if (providers.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('暂无可用 provider，请到「设置 → Provider 配置」导入或新建。',
+                        textAlign: TextAlign.center, style: TextStyle(color: AppColors.faint, fontSize: 13)),
+                  ),
+                const SizedBox(height: 12),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

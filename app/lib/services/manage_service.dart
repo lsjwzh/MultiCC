@@ -151,6 +151,86 @@ class ManageService {
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
   }
 
+  // ── Providers (cc-switch import + multicc-owned store) ─────────────────────
+
+  /// Returns `{available, ccSwitchAvailable, providers: [...], defaults: {...}}`.
+  Future<Map<String, dynamic>> fetchProviders([String? appType]) async {
+    final q = (appType == 'claude' || appType == 'codex') ? '?appType=$appType' : '';
+    final res = await http
+        .get(Uri.parse(_url('/api/providers$q')), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  /// Import / sync from cc-switch. Returns `{ok, imported, updated, total}`.
+  Future<Map<String, dynamic>> importProviders() async {
+    final res = await http
+        .post(Uri.parse(_url('/api/providers/import')), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  Future<void> createProvider({
+    required String appType,
+    required String name,
+    String baseUrl = '',
+    String authToken = '',
+    String model = '',
+  }) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/providers')),
+            headers: _headers,
+            body: jsonEncode({
+              'appType': appType,
+              'name': name,
+              'baseUrl': baseUrl,
+              'authToken': authToken,
+              'model': model,
+            }))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  Future<void> updateProvider(
+    String appType,
+    String id, {
+    String? name,
+    String? baseUrl,
+    String? authToken,
+    String? model,
+  }) async {
+    final body = <String, dynamic>{};
+    if (name != null) body['name'] = name;
+    if (baseUrl != null) body['baseUrl'] = baseUrl;
+    if (authToken != null && authToken.isNotEmpty) body['authToken'] = authToken;
+    if (model != null) body['model'] = model;
+    final res = await http
+        .patch(Uri.parse(_url('/api/providers/$appType/$id')),
+            headers: _headers, body: jsonEncode(body))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  Future<void> deleteProvider(String appType, String id) async {
+    final res = await http
+        .delete(Uri.parse(_url('/api/providers/$appType/$id')), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  Future<void> setProviderDefaults({String? claude, String? codex}) async {
+    final body = <String, dynamic>{};
+    if (claude != null) body['claude'] = claude;
+    if (codex != null) body['codex'] = codex;
+    final res = await http
+        .put(Uri.parse(_url('/api/provider-defaults')),
+            headers: _headers, body: jsonEncode(body))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
   // ── Temp uploads cache ─────────────────────────────────────────────────────
 
   /// Returns `{count, totalSize, dir, files: [...]}`.

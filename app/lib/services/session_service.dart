@@ -146,6 +146,23 @@ class SessionService {
     }
   }
 
+  /// Switch the per-session provider (cc-switch). Empty string clears the
+  /// override → the session falls back to the default login / subscription.
+  /// Applies on the next chat turn.
+  Future<void> updateSessionProvider(String id, String provider) async {
+    final res = await http
+        .patch(
+          Uri.parse(_url('/api/sessions/$id')),
+          headers: _headers,
+          body: jsonEncode({'provider': provider}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+  }
+
   /// Set the per-session role prompt (system prompt override). Empty string
   /// clears the override → the session inherits the directory default. Applies
   /// on the next chat turn.

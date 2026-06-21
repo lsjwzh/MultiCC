@@ -374,6 +374,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     await loadDashboard();
   }
 
+  Future<void> updateSessionProvider(String id, String provider) async {
+    await _sessionService.updateSessionProvider(id, provider);
+    await loadDashboard();
+  }
+
   Future<void> updateSessionRolePrompt(String id, String rolePrompt) async {
     await _sessionService.updateSessionRolePrompt(id, rolePrompt);
     await loadDashboard();
