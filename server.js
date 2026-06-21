@@ -5218,6 +5218,50 @@ cronTasks.init({ directories, createSessionRecord, runChatTurn, sessionExists: (
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
 
+// ── Graceful shutdown: persist in-flight chat turns before exiting ──
+// Chat assistant messages are only written to disk when a turn COMPLETES (the
+// `result` event, or the child process closing). A plain SIGTERM — e.g. a
+// service restart — would otherwise drop whatever the agent had already
+// streamed in an unfinished turn, so that text vanishes from history after the
+// restart. On SIGTERM/SIGINT we flush each session's partial assistant text
+// first (appendChatMessage is synchronous), then exit.
+let _shuttingDown = false;
+function flushInFlightChats() {
+  let n = 0;
+  for (const [name, cs] of chatSessions) {
+    if (!cs || cs._resultSaved) continue;
+    const hasText = !!(cs.currentAssistantText && cs.currentAssistantText.length);
+    const hasTools = !!(cs.currentToolCalls && cs.currentToolCalls.length);
+    if (!hasText && !hasTools) continue;
+    try {
+      appendChatMessage(name, {
+        role: 'assistant',
+        content: cs.currentAssistantText || '',
+        tools: hasTools ? cs.currentToolCalls : undefined,
+        cost: cs.currentCost,
+        ts: Date.now(),
+        partial: true,   // saved mid-turn on shutdown; may be incomplete
+      });
+      cs._resultSaved = true;
+      n++;
+    } catch (_) {}
+  }
+  return n;
+}
+function gracefulShutdown(sig) {
+  if (_shuttingDown) return;
+  _shuttingDown = true;
+  try {
+    const n = flushInFlightChats();
+    console.log(`[multicc] ${sig} → flushed ${n} in-flight chat message(s), exiting`);
+  } catch (e) {
+    console.error(`[multicc] shutdown flush error: ${e.message}`);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 server.listen(PORT, () => {
   console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);
   console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
