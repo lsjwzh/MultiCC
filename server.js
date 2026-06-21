@@ -3246,7 +3246,7 @@ const GOAL_CONFIG_DEFAULT = {
 //   CLI-level limit). 0 = 不限制.
 // maxBudget → advisory output-token budget injected into the goal prompt so the
 //   agent self-stops near the cap (no hard CLI flag). 0 = 不限制.
-const GOAL_ROUNDS_DEFAULT = 40;    // fallback round cap when a send omits it
+const GOAL_ROUNDS_DEFAULT = 200;   // fallback round cap when a send omits it
 const GOAL_BUDGET_DEFAULT = 0;     // fallback budget (0 = unlimited)
 const GOAL_ROUNDS_MAX = 200;       // sanity ceiling for --max-turns
 const GOAL_BUDGET_MAX = 5000000;   // sanity ceiling for the advisory token budget
