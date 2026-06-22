@@ -878,7 +878,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                 ],
               ),
             ),
-            _EventTimeline(events: _workspace.events),
+            EventTimeline(events: _workspace.events),
             if (!hasSessions)
               Container(
                 width: double.infinity,
@@ -1193,15 +1193,15 @@ class _DirectoryCardState extends State<_DirectoryCard> {
 // Compact per-directory event timeline for the status board.
 // Collapsed by default (a "🕔 活动 (N) ▾" bar); tap to expand the recent events.
 // Keeps the project card compact — the timeline used to always show 8 rows.
-class _EventTimeline extends StatefulWidget {
+class EventTimeline extends StatefulWidget {
   final List<Map<String, dynamic>> events;
-  const _EventTimeline({required this.events});
+  const EventTimeline({super.key, required this.events});
 
   @override
-  State<_EventTimeline> createState() => _EventTimelineState();
+  State<EventTimeline> createState() => _EventTimelineState();
 }
 
-class _EventTimelineState extends State<_EventTimeline> {
+class _EventTimelineState extends State<EventTimeline> {
   bool _open = false;
 
   @override
@@ -1378,7 +1378,7 @@ class _SessionGroup extends StatelessWidget {
                   for (final s in sessions)
                     SizedBox(
                       width: cardWidth,
-                      child: _SessionCard(
+                      child: SessionCard(
                         session: s,
                         mgr: mgr,
                         settings: settings,
@@ -1396,13 +1396,14 @@ class _SessionGroup extends StatelessWidget {
   }
 }
 
-class _SessionCard extends StatelessWidget {
+class SessionCard extends StatelessWidget {
   final Session session;
   final SessionManager mgr;
   final SettingsService settings;
   final SessionStatus? liveStatus;
   final int pendingNotes;
-  const _SessionCard({
+  const SessionCard({
+    super.key,
     required this.session,
     required this.mgr,
     required this.settings,
