@@ -1270,6 +1270,12 @@ String _eventLabel(Map<String, dynamic> e) {
       return '🗑 删除会话 ${detail.isNotEmpty ? detail : who}';
     case 'merged':
       return '🔀 $who 合并：$detail';
+    case 'synced':
+      return '🔄 $who 同步：$detail';
+    case 'sync_conflict':
+      return '⚠️ $who ${detail.isNotEmpty ? detail : '同步冲突'}';
+    case 'dispatch':
+      return '📤 $who 分发 $detail';
     case 'note':
       return '📨 $who 留言 $detail';
     case 'note_delivered':

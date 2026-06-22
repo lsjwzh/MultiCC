@@ -348,9 +348,16 @@ const MULTICC_IMG_HINT = [
   `       -d '{"command":"<要后台跑的完整shell命令>","label":"<简短任务名>"}'`,
   '     可选字段：cwd（默认你的工作目录）、intervalSec（轮询间隔秒，默认 10）、maxChecks（最多检查次数，默认 360≈1 小时）。返回里有 taskId 与 logPath；用 GET $MULTICC_BASE_URL/api/detached/<taskId> 可随时查实时状态与日志尾巴。',
   '  登记后正常结束本轮即可，任务完成时 multicc 会自动续接。若需中途向用户报进度，配合下面「边做边报」用 GET /api/detached/<taskId> tail 日志即可，不要前台死等。',
+  '  ⚠️ 反例（务必避免）：不要用 run_in_background / Monitor / `tail -f|grep` 之类「等一个单次完成信号」的方式守长任务——这些后台进程和监听器在本轮结束/上下文重置时会被环境连同任务一起回收，进程一旦被静默杀掉（如 OOM、退出码 137，不写日志），你的监听只 grep「成功标记」就会永远等不到、一直空挂，直到用户来催。要么用上面的 run-detached（任务归 multicc 服务、跨轮存活、自动回灌），要么前台同步跑（命令本身够快时，给足 timeout 一次跑完拿结果）。若坚持要自己轮询，过滤条件必须同时覆盖成功与失败/异常态（如 `done|FAIL|error|Killed|Traceback|退出码`），否则崩溃=静默=误判仍在运行。',
   '',
   '【长任务边做边报进度】（multicc 统一体验约定）当某件事要跑较久（构建/打包/部署/批处理/长等待）时，默认采用「边等边报」：优先用上面的 run-detached 把它放后台（这样不会被回收），运行期间每隔约 25–30 秒主动向用户冒一句简短进度（在做什么、已约 Ns、最新一行关键输出），任务完成后再给最终结果。进度做法：用一个会在约 25 秒后自行退出的后台计时命令把自己周期性唤醒，每次被唤醒就 tail 一下任务输出（或 GET /api/detached/<taskId>）、报一句进度，直到任务完成为止。',
   '不要一启动就长时间静默、让对话框看起来像卡住；也不要只说「我等一下」就停下不续接。这是面向所有 multicc 用户的统一约定，请默认遵循。',
+  '',
+  '【跨会话协作时的 worktree 同步纪律】每个 chat 会话在自己独立的 git worktree + 分支（multicc/<sessionId>）里干活，基分支通常是 main。多个会话并行改代码时，worktree 之间不会自动一致，必须按下面纪律同步，否则会基于过时代码工作、产生冲突或覆盖别人的改动：',
+  '  · 派活方（把任务用 <<dispatch>> 或留言交给兄弟会话前）：在交给对方的指令里，明确要求对方「① 动手前先把自己的 worktree 同步到最新基分支：curl -s -X POST $MULTICC_BASE_URL/api/sessions/<目标会话id>/sync ；② 干完后 commit 全部改动，并合并回基分支：curl -s -X POST $MULTICC_BASE_URL/api/sessions/<目标会话id>/merge ；③ 回复里报告改了哪些文件、是否已合并、有无冲突」。',
+  '  · 被派方（你收到一个自包含任务时）：先 sync 再干活，干完 commit + merge 回基分支，并在回复里如实说明改动文件与合并结果；若 sync 或 merge 返回冲突（HTTP 409），不要硬来，把冲突文件清单报回派活方让其裁决。',
+  '  · 收回成果后（派活方拿到对方「已合并」的回复时）：自己也 sync 一下把对方的成果拉进本会话 worktree（curl -s -X POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/sync），再继续后续工作，避免你手上还是旧代码。',
+  '  · multicc 会在任一会话 merge 回基分支后，自动把同目录其它会话的 worktree 同步到新基分支（冲突的会跳过并提示）；但「你自己这个会话」和「正在进行中的对话」仍以你主动 sync 为准，涉及共享文件的关键节点请主动同步一次再动手。',
 ].join('\n');
 
 const cliProviders = {
@@ -2235,8 +2242,48 @@ app.post('/api/sessions/:id/merge', (req, res) => {
   appendEvent(dir.id, 'merged',
     result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', id);
   workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: gitWorktreeMergeState(dir, persisted) });
+
+  // When this merge actually advanced the base branch, every OTHER worktree in
+  // the same directory is now behind base. Auto-sync them so siblings don't have
+  // to be manually caught up one by one (the #1 friction in multi-session work).
+  // Best-effort & non-blocking: each sync is independent; conflicts are skipped
+  // and surfaced via the workspace event log rather than failing this response.
+  if (result.merged) {
+    const synced = autoSyncSiblingWorktrees(dir, id);
+    if (synced.length) result.siblingsSynced = synced;
+  }
   res.json(result);
 });
+
+// Pull the (just-advanced) base branch into every sibling worktree in `dir`
+// except `exceptId`. Returns a summary array; broadcasts per-session merge state
+// and a directory event. Conflicts are reported, not merged.
+function autoSyncSiblingWorktrees(dir, exceptId) {
+  const out = [];
+  for (const s of persistedSessions.values()) {
+    if (s.id === exceptId) continue;
+    if (s.dirId !== dir.id) continue;
+    if (!s.worktreePath || !s.branch) continue;
+    try {
+      const r = gitSyncFromBase(dir, s);
+      if (r.ok && r.merged) {
+        out.push({ id: s.id, commits: r.commits });
+        appendEvent(dir.id, 'synced', `自动同步 ${r.commits} 个提交（${dir.baseBranch} 合并后）`, s.id);
+        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: gitWorktreeMergeState(dir, s) });
+      } else if (!r.ok && r.conflicts?.length) {
+        out.push({ id: s.id, conflict: true, files: r.conflicts });
+        appendEvent(dir.id, 'sync_conflict', `自动同步遇冲突，需手动处理：${r.conflicts.slice(0, 5).join(', ')}`, s.id);
+        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: gitWorktreeMergeState(dir, s) });
+      }
+    } catch (e) {
+      console.warn(`[multicc] auto-sync sibling ${s.id} failed: ${e.message}`);
+    }
+  }
+  if (out.length) {
+    console.log(`[multicc] auto-synced ${out.length} sibling worktree(s) after merge into ${dir.baseBranch}`);
+  }
+  return out;
+}
 
 // Sync: pull the base branch INTO this session's worktree (catch a stale
 // worktree up to main). Inverse direction of /merge.
