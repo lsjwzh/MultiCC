@@ -60,7 +60,11 @@ async function loadSessionIdentity() {
       const d = dArr.find(x => x.id === s.dirId);
       if (d && d.name) dir = d.name;
     }
-    updateTabIdentity(dir ? `${dir} / ${alias}` : alias, alias);
+    const identity = dir ? `${dir} / ${alias}` : alias;
+    updateTabIdentity(identity, alias);
+    // Also surface it in the header bar (the visible session title).
+    const titleEl = document.getElementById('session-title');
+    if (titleEl) { titleEl.textContent = identity; titleEl.title = identity; }
   } catch (e) { /* keep the id-based title */ }
 }
 loadSessionIdentity();

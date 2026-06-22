@@ -62,6 +62,19 @@
       box-shadow: 0 0 0 2px #d2992230;
     }
 
+    /* Session identity (directory / alias) shown in the header */
+    #session-title {
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: #6aa3ff;
+      margin-left: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 38vw;
+    }
+
     /* ── CWD bar ── */
     #cwd-bar {
       flex-shrink: 0;
@@ -746,6 +759,7 @@
     <span class="logo">Multi<span>CC</span></span>
     <span class="badge">Chat</span>
     <span id="status">Connecting...</span>
+    <span id="session-title" title="会话身份：目录 / 别名"></span>
     <button id="reconnect-btn" class="hdr-btn" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
     <span class="hdr-spacer"></span>
     <button id="notify-btn" class="hdr-btn" title="语音通知 (点击开启/关闭)">&#128276;</button>
