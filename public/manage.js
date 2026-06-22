@@ -453,20 +453,30 @@ function jumpToSession(s) {
   else openSessionNewTab(s.id);
 }
 
-// Popup from the "等待输入" KPI tile: list every waiting session as "dir / alias"
-// and jump straight to it on click.
-function showWaitingSessions(ev) {
+// Render a popover from a KPI tile: each session shown as "dir / alias", click
+// jumps straight to it. Shared by the 等待输入 and 活跃会话 tiles.
+function showSessionListPopup(ev, sessions, prefix, emptyText) {
   ev.stopPropagation();
-  const items = [];
-  for (const id of waitingSessionIds()) {
-    const s = (_cachedSessions || []).find(x => x.id === id);
-    if (!s) continue;
+  const items = sessions.map(s => {
     const alias = s.label || s.id;
     const dir = _dirNameById(s.dirId);
-    items.push({ label: '⏳ ' + (dir ? `${dir} / ${alias}` : alias), onclick: () => jumpToSession(s) });
-  }
-  if (!items.length) items.push({ label: '没有等待输入的会话', onclick: () => {} });
+    return { label: `${prefix} ${dir ? `${dir} / ${alias}` : alias}`, onclick: () => jumpToSession(s) };
+  });
+  if (!items.length) items.push({ label: emptyText, onclick: () => {} });
   showPopoverMenu(ev.currentTarget, items);
+}
+
+// Popup from the "等待输入" KPI tile.
+function showWaitingSessions(ev) {
+  const ids = waitingSessionIds();
+  const list = (_cachedSessions || []).filter(s => ids.has(s.id));
+  showSessionListPopup(ev, list, '⏳', '没有等待输入的会话');
+}
+
+// Popup from the "活跃会话" KPI tile.
+function showActiveSessions(ev) {
+  const list = (_cachedSessions || []).filter(s => s.active && s.type !== 'aux');
+  showSessionListPopup(ev, list, '🟢', '没有活跃的会话');
 }
 
 function renderDirectoryBlock(dir, dirSessions) {

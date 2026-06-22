@@ -1023,7 +1023,7 @@
       // Build KPI tiles once
       const kpiRow = document.getElementById('kpi-row');
       if (kpiRow) kpiRow.innerHTML = `
-        <div class="kpi"><div class="k-top"><span class="dot"></span>活跃会话</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
+        <div class="kpi clickable" title="点击查看并跳转到活跃的会话" onclick="showActiveSessions(event)"><div class="k-top"><span class="dot"></span>活跃会话</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
         <div class="kpi alt clickable" title="点击查看并跳转到等待中的会话" onclick="showWaitingSessions(event)"><div class="k-top"><span class="dot"></span>等待输入</div><div class="k-num" id="kpi-wait">0</div><div class="k-sub">需要你回复 ›</div><div class="k-bar"></div></div>
         <div class="kpi blue"><div class="k-top"><span class="dot"></span>目录</div><div class="k-num" id="kpi-dirs">0</div><div class="k-sub" id="kpi-sess-sub">0 个会话</div><div class="k-bar"></div></div>
         <div class="kpi grey"><div class="k-top"><span class="dot"></span>定时任务</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">已登记</div><div class="k-bar"></div></div>`;
