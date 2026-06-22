@@ -661,6 +661,19 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     super.dispose();
   }
 
+  PopupMenuItem<String> _dirMenuItem(String value, IconData icon, String label, {bool danger = false}) {
+    final color = danger ? const Color(0xFFff6b63) : const Color(0xFFe7eaee);
+    return PopupMenuItem<String>(
+      value: value,
+      height: 40,
+      child: Row(children: [
+        Icon(icon, size: 16, color: color),
+        const SizedBox(width: 10),
+        Text(label, style: TextStyle(color: color, fontSize: 14)),
+      ]),
+    );
+  }
+
   void _onStatusChange() {
     // Report this directory's waiting sessions up to the manager so the global
     // "等待输入" KPI reflects every directory, then repaint the card.
@@ -777,47 +790,27 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                           minHeight: 36,
                         ),
                       ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.cloud_upload_outlined,
-                          size: 19,
-                          color: Color(0xFF8a909b),
-                        ),
-                        tooltip: 'Push to remote (git push)',
-                        onPressed: () => _pushDirectory(context),
+                      // push / rename / delete collapsed into a ⋯ menu (header
+                      // kept to memo + overflow so it stays uncluttered).
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_horiz_rounded, size: 19, color: Color(0xFF8a909b)),
+                        tooltip: '更多操作',
+                        color: const Color(0xFF161b22),
                         padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(
-                          minWidth: 36,
-                          minHeight: 36,
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.drive_file_rename_outline_rounded,
-                          size: 19,
-                          color: Color(0xFF8a909b),
-                        ),
-                        tooltip: 'Rename directory',
-                        onPressed: () => _confirmRenameDirectory(context),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(
-                          minWidth: 36,
-                          minHeight: 36,
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.delete_outline_rounded,
-                          size: 19,
-                          color: Color(0xFFff6b63),
-                        ),
-                        tooltip: 'Delete directory',
-                        onPressed: () => _confirmDeleteDirectory(context),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(
-                          minWidth: 36,
-                          minHeight: 36,
-                        ),
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        onSelected: (v) {
+                          switch (v) {
+                            case 'push': _pushDirectory(context); break;
+                            case 'rename': _confirmRenameDirectory(context); break;
+                            case 'delete': _confirmDeleteDirectory(context); break;
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          _dirMenuItem('push', Icons.cloud_upload_outlined, 'Git 推送'),
+                          _dirMenuItem('rename', Icons.drive_file_rename_outline_rounded, '改名'),
+                          const PopupMenuDivider(),
+                          _dirMenuItem('delete', Icons.delete_outline_rounded, '删除目录', danger: true),
+                        ],
                       ),
                     ],
                   ),
@@ -1198,17 +1191,25 @@ class _DirectoryCardState extends State<_DirectoryCard> {
 }
 
 // Compact per-directory event timeline for the status board.
-class _EventTimeline extends StatelessWidget {
+// Collapsed by default (a "🕔 活动 (N) ▾" bar); tap to expand the recent events.
+// Keeps the project card compact — the timeline used to always show 8 rows.
+class _EventTimeline extends StatefulWidget {
   final List<Map<String, dynamic>> events;
   const _EventTimeline({required this.events});
 
   @override
+  State<_EventTimeline> createState() => _EventTimelineState();
+}
+
+class _EventTimelineState extends State<_EventTimeline> {
+  bool _open = false;
+
+  @override
   Widget build(BuildContext context) {
-    if (events.isEmpty) return const SizedBox.shrink();
-    final recent = events.reversed.take(8).toList();
+    if (widget.events.isEmpty) return const SizedBox.shrink();
+    final recent = widget.events.reversed.take(8).toList();
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFF070809),
         border: Border.all(color: const Color(0xFF14171c)),
@@ -1217,24 +1218,38 @@ class _EventTimeline extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            '活动',
-            style: TextStyle(
-              color: Color(0xFF5b616c),
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.6,
+          InkWell(
+            onTap: () => setState(() => _open = !_open),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(children: [
+                const Text('🕔 ', style: TextStyle(fontSize: 11)),
+                Text('活动 (${widget.events.length})',
+                  style: const TextStyle(
+                    color: Color(0xFF5b616c), fontSize: 11, fontWeight: FontWeight.w600)),
+                const Spacer(),
+                Icon(_open ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                  size: 16, color: const Color(0xFF5b616c)),
+              ]),
             ),
           ),
-          const SizedBox(height: 4),
-          for (final e in recent)
+          if (_open)
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 1),
-              child: Text(
-                _eventLabel(e),
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final e in recent)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 1),
+                      child: Text(
+                        _eventLabel(e),
+                        style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
               ),
             ),
         ],
@@ -1572,111 +1587,53 @@ class _SessionCard extends StatelessWidget {
                   ],
                 ),
               ],
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
+              // Lean action row: the actionable "merge" stays inline only when a
+              // merge is ready; everything else lives in a ⋯ menu so the card
+              // stays compact (was a row of 6 always-visible icon buttons).
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  IconButton(
-                    icon: const Icon(
-                      Icons.edit_outlined,
-                      size: 16,
-                      color: Color(0xFF8a909b),
+                  if (mergeReady)
+                    TextButton.icon(
+                      icon: const Icon(Icons.merge_type_rounded, size: 15, color: Color(0xFF070809)),
+                      label: Text(_mergeReadyLabel(live!),
+                        style: const TextStyle(color: Color(0xFF070809), fontSize: 12, fontWeight: FontWeight.w600)),
+                      style: TextButton.styleFrom(
+                        backgroundColor: const Color(0xFFe3b341),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        minimumSize: const Size(0, 28),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: () => _mergeSession(context),
                     ),
-                    tooltip: 'Rename',
-                    onPressed: () => _rename(context),
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_horiz_rounded, size: 18, color: Color(0xFF8a909b)),
+                    tooltip: '更多操作',
+                    color: const Color(0xFF161b22),
                     padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 30,
-                      minHeight: 28,
-                    ),
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      Icons.merge_type_rounded,
-                      size: 16,
-                      color: mergeReady
-                          ? const Color(0xFF070809)
-                          : const Color(0xFF8a909b),
-                    ),
-                    style: IconButton.styleFrom(
-                      backgroundColor: mergeReady
-                          ? const Color(0xFFe3b341)
-                          : Colors.transparent,
-                      side: mergeReady
-                          ? const BorderSide(color: Color(0xFFe3b341))
-                          : BorderSide.none,
-                    ),
-                    tooltip: mergeReady
-                        ? _mergeReadyLabel(live!)
-                        : '合并 worktree',
-                    onPressed: () => _mergeSession(context),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 30,
-                      minHeight: 28,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.difference_outlined,
-                      size: 16,
-                      color: Color(0xFF8a909b),
-                    ),
-                    tooltip: '查看 Diff',
-                    onPressed: () => showSessionDiffDialog(
-                      context,
-                      settings: settings,
-                      sessionId: session.id,
-                    ),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 30,
-                      minHeight: 28,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.mail_outline_rounded,
-                      size: 16,
-                      color: Color(0xFF8a909b),
-                    ),
-                    tooltip: '给同目录 agent 留言',
-                    onPressed: () => _leaveNote(context),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 30,
-                      minHeight: 28,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.restart_alt_rounded,
-                      size: 16,
-                      color: Color(0xFF8a909b),
-                    ),
-                    tooltip: 'Restart',
-                    onPressed: session.isTerminal
-                        ? () => _restart(context)
-                        : null,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 30,
-                      minHeight: 28,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.delete_outline_rounded,
-                      size: 16,
-                      color: Color(0xFFff6b63),
-                    ),
-                    tooltip: 'Delete',
-                    onPressed: () => _confirmDelete(context),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 30,
-                      minHeight: 28,
-                    ),
+                    constraints: const BoxConstraints(minWidth: 160),
+                    onSelected: (v) {
+                      switch (v) {
+                        case 'rename': _rename(context); break;
+                        case 'merge': _mergeSession(context); break;
+                        case 'diff':
+                          showSessionDiffDialog(context, settings: settings, sessionId: session.id);
+                          break;
+                        case 'note': _leaveNote(context); break;
+                        case 'restart': _restart(context); break;
+                        case 'delete': _confirmDelete(context); break;
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      _menuItem('rename', Icons.edit_outlined, '改名'),
+                      if (!mergeReady) _menuItem('merge', Icons.merge_type_rounded, '合并 worktree'),
+                      _menuItem('diff', Icons.difference_outlined, '查看 Diff'),
+                      _menuItem('note', Icons.mail_outline_rounded, '留言'),
+                      if (session.isTerminal) _menuItem('restart', Icons.restart_alt_rounded, 'Restart'),
+                      const PopupMenuDivider(),
+                      _menuItem('delete', Icons.delete_outline_rounded, '删除', danger: true),
+                    ],
                   ),
                 ],
               ),
@@ -1684,6 +1641,19 @@ class _SessionCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  PopupMenuItem<String> _menuItem(String value, IconData icon, String label, {bool danger = false}) {
+    final color = danger ? const Color(0xFFff6b63) : const Color(0xFFe7eaee);
+    return PopupMenuItem<String>(
+      value: value,
+      height: 40,
+      child: Row(children: [
+        Icon(icon, size: 16, color: color),
+        const SizedBox(width: 10),
+        Text(label, style: TextStyle(color: color, fontSize: 14)),
+      ]),
     );
   }
 
