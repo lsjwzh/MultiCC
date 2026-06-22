@@ -334,12 +334,32 @@ function renderDashboard(directories, sessions) {
 
 // ── Popover menu (kebab ⋯ buttons) ──
 let _openPopover = null;
+let _popoverOpenedAt = 0;
+let _popoverScrollY = 0;
+// On touch devices a tap often emits a tiny scroll/bounce and a burst of
+// synthesized mouse events right after the menu opens; closing on the very first
+// of those made the menu look "unclickable" (it opened then vanished instantly).
+// Guard: ignore any outside-close trigger for a short window after opening, and
+// only treat a *meaningful* scroll delta as intent to dismiss.
+const _POPOVER_GUARD_MS = 350;
 function _closePopover() {
   if (_openPopover) { _openPopover.remove(); _openPopover = null; }
-  document.removeEventListener('mousedown', _closePopover, true);
+  document.removeEventListener('mousedown', _onOutsideDown, true);
+  document.removeEventListener('touchstart', _onOutsideDown, true);
   document.removeEventListener('keydown', _popoverKeydown, true);
   window.removeEventListener('resize', _closePopover);
-  window.removeEventListener('scroll', _closePopover, true);
+  window.removeEventListener('scroll', _onPopoverScroll, true);
+}
+function _guardActive() { return (Date.now() - _popoverOpenedAt) < _POPOVER_GUARD_MS; }
+function _onOutsideDown(e) {
+  if (_guardActive()) return;                      // ignore the opening tap's own burst
+  if (_openPopover && _openPopover.contains(e.target)) return; // taps inside handled by item onclick
+  _closePopover();
+}
+function _onPopoverScroll() {
+  if (_guardActive()) return;                      // ignore tap-jitter / rubber-band right after open
+  if (Math.abs(window.scrollY - _popoverScrollY) < 24) return; // tolerate tiny scrolls
+  _closePopover();
 }
 function _popoverKeydown(e) { if (e.key === 'Escape') _closePopover(); }
 function showPopoverMenu(triggerEl, items) {
@@ -368,11 +388,14 @@ function showPopoverMenu(triggerEl, items) {
   menu.style.top = top + 'px';
   menu.style.left = left + 'px';
   _openPopover = menu;
+  _popoverOpenedAt = Date.now();
+  _popoverScrollY = window.scrollY;
   setTimeout(() => {
-    document.addEventListener('mousedown', _closePopover, true);
+    document.addEventListener('mousedown', _onOutsideDown, true);
+    document.addEventListener('touchstart', _onOutsideDown, true);
     document.addEventListener('keydown', _popoverKeydown, true);
     window.addEventListener('resize', _closePopover);
-    window.addEventListener('scroll', _closePopover, true);
+    window.addEventListener('scroll', _onPopoverScroll, true);
   }, 0);
 }
 
