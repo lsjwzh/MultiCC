@@ -10,7 +10,15 @@ class ChatProvider extends ChangeNotifier {
   final SettingsService settings;
   final String sessionName;
   String displayName;
+  String dirName;
   String sessionCwd;
+
+  /// Human-facing identity in the form `directory / alias` (falls back to just
+  /// the alias, and the alias falls back to the session id). Used in the chat
+  /// header and notifications so the user sees the project + session name
+  /// instead of a raw id.
+  String get titleLabel =>
+      dirName.isNotEmpty ? '$dirName / $displayName' : displayName;
 
   late ChatService _service;
   StreamSubscription? _eventSub;
@@ -59,8 +67,10 @@ class ChatProvider extends ChangeNotifier {
     required this.settings,
     required this.sessionName,
     String? displayName,
+    String? dirName,
     required this.sessionCwd,
-  }) : displayName = displayName ?? sessionName {
+  })  : displayName = displayName ?? sessionName,
+        dirName = dirName ?? '' {
     _cwd = sessionCwd;
     _initService();
   }
@@ -265,9 +275,10 @@ class ChatProvider extends ChangeNotifier {
   void _maybeNotify(String title, String detail) {
     if (SettingsService.current?.notificationsEnabled == false) return;
     if (isInBackground || !isActive) {
+      final who = titleLabel;
       NotificationService.show(
-        title: 'MultiCC #$sessionName: $title',
-        body: detail.isNotEmpty ? detail : sessionName,
+        title: 'MultiCC · $who: $title',
+        body: detail.isNotEmpty ? detail : who,
         id: sessionName.hashCode,
         payload: sessionName,
       );

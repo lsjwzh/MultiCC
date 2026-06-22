@@ -232,19 +232,32 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// two by id, so this and ChatProvider._maybeNotify never double-fire.
   void handleWorkspaceNotify(String sessionId, String state, String message) {
     if (!_isInBackground && sessionId == _activeSessionId) return;
-    final label = _labelFor(sessionId);
+    final who = _displayTitleFor(sessionId);
     NotificationService.show(
-      title: 'MultiCC #$label: ${state == 'waiting' ? '等待操作' : '任务完成'}',
-      body: message.isNotEmpty ? message : label,
+      title: 'MultiCC · $who: ${state == 'waiting' ? '等待操作' : '任务完成'}',
+      body: message.isNotEmpty ? message : who,
       id: sessionId.hashCode,
       payload: sessionId,
     );
   }
 
-  String _labelFor(String id) {
+  /// Resolve a directory id to its display name (empty if unknown / not loaded).
+  String _dirNameFor(String? dirId) {
+    if (dirId == null || dirId.isEmpty) return '';
+    for (final d in _directories) {
+      if (d.id == dirId) return d.name;
+    }
+    return '';
+  }
+
+  /// Human-facing session identity in the form `directory / alias` (alias falls
+  /// back to the id; directory is omitted when unknown).
+  String _displayTitleFor(String id) {
     for (final s in _sessions) {
       if (s.id == id) {
-        return (s.label?.isNotEmpty == true) ? s.label! : s.id;
+        final label = (s.label?.isNotEmpty == true) ? s.label! : s.id;
+        final dir = _dirNameFor(s.dirId);
+        return dir.isNotEmpty ? '$dir / $label' : label;
       }
     }
     return id;
@@ -263,6 +276,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
             displayName: session.label?.isNotEmpty == true
                 ? session.label!
                 : session.id,
+            dirName: _dirNameFor(session.dirId),
             sessionCwd: session.cwd,
           )
           ..isActive = false

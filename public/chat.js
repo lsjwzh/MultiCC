@@ -22,12 +22,16 @@ function _hashColor(s) {
   return _TAB_COLORS[Math.abs(h) % _TAB_COLORS.length];
 }
 let _baseTitle = _sessionName ? `${_sessionName} — MultiCC Chat` : 'MultiCC Chat';
-function updateTabIdentity(id) {
-  if (!id) return;
-  _baseTitle = `${id} — MultiCC Chat`;
+// `text` is what shows in the tab title (e.g. "dir / alias"); `letterSrc` seeds
+// the favicon letter/colour (defaults to text). Passing only an id keeps the
+// old behaviour as a fallback until the friendly identity loads.
+function updateTabIdentity(text, letterSrc) {
+  if (!text) return;
+  _baseTitle = `${text} — MultiCC Chat`;
   document.title = _baseTitle;
-  const letter = id.charAt(0).toUpperCase();
-  const color = _hashColor(id);
+  const src = (letterSrc || text).toString();
+  const letter = (src.charAt(0) || '?').toUpperCase();
+  const color = _hashColor(src);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#161b22"/><text x="32" y="45" text-anchor="middle" font-family="system-ui,sans-serif" font-size="38" font-weight="700" fill="${color}">${letter}</text></svg>`;
   let link = document.querySelector('link[rel="icon"]');
   if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
@@ -35,6 +39,31 @@ function updateTabIdentity(id) {
   link.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
 }
 if (_sessionName) updateTabIdentity(_sessionName);
+
+// Resolve the friendly "directory / alias" identity from the API and upgrade the
+// tab title (the URL only carries the session id). Best-effort: on any failure
+// the id-based title above stays.
+async function loadSessionIdentity() {
+  if (!_sessionName) return;
+  try {
+    const [sessions, dirs] = await Promise.all([
+      fetch(withToken('/api/sessions')).then(r => r.json()).catch(() => null),
+      fetch(withToken('/api/directories')).then(r => r.json()).catch(() => null),
+    ]);
+    const sArr = Array.isArray(sessions) ? sessions : (sessions && sessions.sessions) || [];
+    const s = sArr.find(x => x.id === _sessionName);
+    if (!s) return;
+    const alias = (s.label && s.label.trim()) ? s.label.trim() : s.id;
+    let dir = '';
+    if (s.dirId) {
+      const dArr = Array.isArray(dirs) ? dirs : (dirs && dirs.directories) || [];
+      const d = dArr.find(x => x.id === s.dirId);
+      if (d && d.name) dir = d.name;
+    }
+    updateTabIdentity(dir ? `${dir} / ${alias}` : alias, alias);
+  } catch (e) { /* keep the id-based title */ }
+}
+loadSessionIdentity();
 
 /* ── Markdown setup ── */
 if (typeof marked !== 'undefined' && marked.setOptions) {

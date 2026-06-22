@@ -271,7 +271,7 @@ class _Header extends StatelessWidget {
           const SizedBox(width: 6),
           Flexible(
             child: Text(
-              provider.displayName,
+              provider.titleLabel,
               style: const TextStyle(
                 color: Color(0xFF6aa3ff),
                 fontSize: 13,
