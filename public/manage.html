@@ -375,8 +375,12 @@
     .lean .sess-notes{font-size:10px;color:#e3b341;font-weight:600;flex:0 0 auto}
     .lean .sess-file{font-size:11px;color:#e3b341;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
     .lean .sess-summary{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-    .lean-actions{flex:0 0 auto;display:flex;align-items:center;gap:3px}
+    .lean-actions{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:3px;flex-wrap:wrap;max-width:100%}
     .lean-actions .btn-icon.merge-ready{color:var(--codex)}
+    @media (max-width:640px){
+      .lean{align-items:flex-start;flex-wrap:wrap}
+      .lean-actions{width:100%;padding-left:18px;justify-content:flex-start}
+    }
   </style>
 </head>
 <body data-view="overview">
@@ -420,9 +424,10 @@
       <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" title="菜单">☰</button>
       <div class="crumb" id="crumb">概览 <small id="crumb-sub"></small></div>
       <div class="topspace"></div>
-      <div class="search"><span>⌕</span><input id="dir-search" placeholder="搜索目录 / 会话…" oninput="filterDirs(this.value)" /></div>
-      <button class="icon-btn" onclick="loadDashboard()" title="刷新">⟳</button>
-      <button class="btn primary" onclick="openNewDirectoryModal()">＋ 新建目录</button>
+      <div class="search"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索目录 / 会话…" oninput="filterDirs(this.value)" /></div>
+      <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
+      <button class="icon-btn" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
+      <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建目录</button>
     </header>
 
     <div id="content">
@@ -992,6 +997,7 @@
     </div>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="qrcode.min.js"></script>
   <script src="pwa.js"></script>
   <script src="manage.js"></script>
@@ -1022,10 +1028,10 @@
       // Build KPI tiles once
       const kpiRow = document.getElementById('kpi-row');
       if (kpiRow) kpiRow.innerHTML = `
-        <div class="kpi clickable" title="点击查看并跳转到活跃的会话" onclick="showActiveSessions(event)"><div class="k-top"><span class="dot"></span>活跃会话</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
-        <div class="kpi alt clickable" title="点击查看并跳转到等待中的会话" onclick="showWaitingSessions(event)"><div class="k-top"><span class="dot"></span>等待输入</div><div class="k-num" id="kpi-wait">0</div><div class="k-sub">需要你回复 ›</div><div class="k-bar"></div></div>
-        <div class="kpi blue"><div class="k-top"><span class="dot"></span>目录</div><div class="k-num" id="kpi-dirs">0</div><div class="k-sub" id="kpi-sess-sub">0 个会话</div><div class="k-bar"></div></div>
-        <div class="kpi grey clickable" title="点击查看定时任务，点条目可编辑/运行" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>定时任务</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">已登记 ›</div><div class="k-bar"></div></div>`;
+        <div class="kpi clickable" title="${t('activeSessions')}" onclick="showActiveSessions(event)"><div class="k-top"><span class="dot"></span>${t('activeSessions')}</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
+        <div class="kpi alt clickable" title="${t('waitingInput')}" onclick="showWaitingSessions(event)"><div class="k-top"><span class="dot"></span>${t('waitingInput')}</div><div class="k-num" id="kpi-wait">0</div><div class="k-sub">${t('replyNeeded')}</div><div class="k-bar"></div></div>
+        <div class="kpi blue"><div class="k-top"><span class="dot"></span>${t('directories')}</div><div class="k-num" id="kpi-dirs">0</div><div class="k-sub" id="kpi-sess-sub">${t('sessionCount', { n: 0 })}</div><div class="k-bar"></div></div>
+        <div class="kpi grey clickable" title="${t('scheduledTasks') || '定时任务'}" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>${t('scheduledTasks') || '定时任务'}</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">${t('registered')}</div><div class="k-bar"></div></div>`;
 
       function num(s) { const m = String(s || '').match(/\d+/); return m ? +m[0] : 0; }
       function updateKpis() {
@@ -1045,7 +1051,7 @@
           const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
           set('kpi-active', active); set('kpi-active-sub', `claude ${claude} · codex ${codex}`);
           set('kpi-wait', wait);
-          set('kpi-dirs', dirs.length); set('kpi-sess-sub', `${sess.length} 个会话`);
+          set('kpi-dirs', dirs.length); set('kpi-sess-sub', t('sessionCount', { n: sess.length }));
           set('kpi-cron', num((document.getElementById('cron-count') || {}).textContent));
           set('nav-dir-count', dirs.length); set('dir-count-pill', dirs.length);
           set('nav-cron-count', num((document.getElementById('cron-count') || {}).textContent));

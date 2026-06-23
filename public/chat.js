@@ -9,6 +9,7 @@ const _token = _params.get('token') || '';
 let _cwd = _params.get('cwd') || '';
 const _sessionName = _params.get('session') || '';  // dashboard session name
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
+function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 
 function withToken(url) {
   if (!_token) return url;
@@ -134,6 +135,42 @@ const cancelBtn   = document.getElementById('cancel-btn');
 const mergeBtn    = document.getElementById('merge-btn');
 const mergeHint   = document.getElementById('merge-hint');
 const mergeHintBtn = document.getElementById('merge-hint-btn');
+const headerMoreBtn = document.getElementById('header-more-btn');
+const headerMoreMenu = document.getElementById('header-more-menu');
+const headerMoreWrap = document.getElementById('header-more-wrap');
+const HEADER_MORE_IDS = ['model-btn', 'provider-btn', 'role-btn', 'memory-btn', 'stream-btn', 'share-btn'];
+
+function syncHeaderMoreMenu() {
+  if (!headerMoreMenu || !headerMoreWrap) return;
+  const compact = window.innerWidth <= 760;
+  const header = document.getElementById('header');
+  if (!header) return;
+  if (compact) {
+    for (const id of HEADER_MORE_IDS) {
+      const el = document.getElementById(id);
+      if (el && el.parentElement !== headerMoreMenu) headerMoreMenu.appendChild(el);
+    }
+  } else {
+    for (const id of HEADER_MORE_IDS) {
+      const el = document.getElementById(id);
+      if (el && el.parentElement !== header) header.insertBefore(el, headerMoreWrap);
+    }
+    headerMoreMenu.classList.remove('open');
+  }
+}
+
+headerMoreBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  headerMoreMenu?.classList.toggle('open');
+});
+headerMoreMenu?.addEventListener('click', (e) => {
+  if (e.target.closest('.hdr-btn')) headerMoreMenu.classList.remove('open');
+});
+document.addEventListener('click', (e) => {
+  if (headerMoreWrap && !headerMoreWrap.contains(e.target)) headerMoreMenu?.classList.remove('open');
+});
+window.addEventListener('resize', syncHeaderMoreMenu);
+setTimeout(syncHeaderMoreMenu, 0);
 
 /* ── State ── */
 let ws = null;
@@ -1008,18 +1045,18 @@ cancelBtn.addEventListener('click', cancelStreaming);
 cancelBtn.addEventListener('touchend', (e) => { e.preventDefault(); cancelStreaming(); });
 
 function mergeStatusText(st) {
-  if (!st || !st.mergeReady) return '当前 worktree 没有需要合并的内容。';
+  if (!st || !st.mergeReady) return tt('worktreeClean');
   const bits = [];
-  if (st.dirty) bits.push('有未提交改动');
-  if ((st.ahead || 0) > 0) bits.push(`${st.ahead} 个提交领先`);
-  return `当前 worktree ${bits.join('，')}，可以合并回 ${st.baseBranch || '基分支'}。`;
+  if (st.dirty) bits.push(tt('dirtyChanges'));
+  if ((st.ahead || 0) > 0) bits.push(tt('aheadCommits', { n: st.ahead }));
+  return tt('worktreeMergeable', { detail: bits.join('，'), base: st.baseBranch || tt('defaultBase') });
 }
 
 function applyMergeStatus(st) {
   _mergeReady = !!(st && st.mergeReady);
   if (mergeBtn) {
     mergeBtn.classList.toggle('merge-ready', _mergeReady);
-    mergeBtn.title = _mergeReady ? mergeStatusText(st) : '把此会话 worktree 合并回基分支';
+    mergeBtn.title = _mergeReady ? mergeStatusText(st) : tt('mergeWorktreeTitle');
   }
   if (mergeHint) {
     mergeHint.classList.toggle('show', _mergeReady);
@@ -1042,7 +1079,7 @@ function applyBehindStatus(st) {
       bar.classList.add('show');
       bar.classList.toggle('behind', behind > 0);
       const label = behind > 0
-        ? `⎇ ${branch} · 落后 ${base} ${behind} 个提交`
+        ? tt('behindLabel', { branch, base, n: behind })
         : `⎇ ${branch}`;
       bar.innerHTML = '';
       const span = document.createElement('span');
@@ -1052,7 +1089,7 @@ function applyBehindStatus(st) {
       if (behind > 0) {
         const btn = document.createElement('button');
         btn.id = 'worktree-sync-btn';
-        btn.textContent = '同步';
+        btn.textContent = tt('sync');
         btn.onclick = syncWorktree;
         bar.appendChild(btn);
       }
@@ -1062,7 +1099,7 @@ function applyBehindStatus(st) {
     }
   }
   if (behind > _lastWarnedBehind) {
-    addSystemMsg(`⚠ 当前 worktree（${branch}）已落后 ${base} ${behind} 个提交，点顶部「同步」按钮可直接合并。`);
+    addSystemMsg(tt('behindBanner', { branch, base, n: behind }));
   }
   _lastWarnedBehind = behind;
 }
@@ -1071,7 +1108,7 @@ function applyBehindStatus(st) {
 async function syncWorktree() {
   if (!_sessionName) { addSystemMsg('无 session id，无法同步'); return; }
   const btn = document.getElementById('worktree-sync-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = tt('syncing'); }
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/sync`), { method: 'POST' });
     const data = await res.json().catch(() => ({}));
@@ -1088,7 +1125,7 @@ async function syncWorktree() {
   } catch (e) {
     addSystemMsg(`✗ 同步请求失败：${e.message}`);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '同步'; }
+    if (btn) { btn.disabled = false; btn.textContent = tt('sync'); }
   }
 }
 
@@ -1111,8 +1148,8 @@ function startMergeStatusPolling() {
 async function requestMerge() {
   if (!_sessionName) { addSystemMsg('无 session id，无法合并 worktree'); return; }
   const prompt = _mergeReady
-    ? '当前 worktree 有可合并内容。\n合并前会自动提交未提交改动，是否继续？'
-    : '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。';
+    ? tt('mergeWorktreeConfirmReady')
+    : tt('mergeWorktreeConfirm');
   if (!confirm(prompt)) return;
   addSystemMsg('正在合并 worktree...');
   try {
@@ -1227,24 +1264,24 @@ startMergeStatusPolling();
 /* ── Per-session model switch (claude only) ── */
 const modelBtn = document.getElementById('model-btn');
 const CLAUDE_MODEL_OPTIONS = [
-  { value: '', label: '默认（跟随 Claude 设置）' },
+  { value: '', labelKey: 'defaultClaudeSetting' },
   { value: 'claude-fable-5', label: 'Fable 5' },
   { value: 'claude-fable-5[1m]', label: 'Fable 5 (1M context)' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-  { value: '__custom__', label: '自定义…' },
+  { value: '__custom__', labelKey: 'custom' },
 ];
 let _sessionModel = '';
 
 function modelShortName(model) {
   const opt = CLAUDE_MODEL_OPTIONS.find(o => o.value === model);
-  return opt ? opt.label : model;
+  return opt ? (opt.labelKey ? tt(opt.labelKey) : opt.label) : model;
 }
 
 function updateModelBtn() {
   if (!modelBtn) return;
-  modelBtn.textContent = `🧠 ${_sessionModel ? modelShortName(_sessionModel) : '默认'}`;
+  modelBtn.textContent = `🧠 ${_sessionModel ? modelShortName(_sessionModel) : tt('default')}`;
   modelBtn.style.display = '';
 }
 
@@ -1257,7 +1294,7 @@ function showModelPicker(current) {
     box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:380px;max-width:94vw;';
     const msg = document.createElement('div');
     msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:12px;';
-    msg.textContent = '切换该会话使用的模型（下一轮对话生效）';
+    msg.textContent = tt('modelTitle');
     box.appendChild(msg);
 
     const isKnown = CLAUDE_MODEL_OPTIONS.some(o => o.value === current);
@@ -1265,7 +1302,7 @@ function showModelPicker(current) {
     select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
     for (const o of CLAUDE_MODEL_OPTIONS) {
       const opt = document.createElement('option');
-      opt.value = o.value; opt.textContent = o.label;
+      opt.value = o.value; opt.textContent = o.labelKey ? tt(o.labelKey) : o.label;
       select.appendChild(opt);
     }
     select.value = isKnown ? current : '__custom__';
@@ -1284,10 +1321,10 @@ function showModelPicker(current) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
-    cancel.textContent = '取消';
+    cancel.textContent = tt('cancel');
     cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
     const ok = document.createElement('button');
-    ok.textContent = '保存';
+    ok.textContent = tt('save');
     ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
     row.appendChild(cancel); row.appendChild(ok);
     box.appendChild(row);
@@ -1338,7 +1375,7 @@ modelBtn?.addEventListener('click', async () => {
     if (!res.ok) { addSystemMsg('模型切换失败：' + (data.error || `HTTP ${res.status}`)); return; }
     _sessionModel = data.model || '';
     updateModelBtn();
-    addSystemMsg(`✓ 模型已切换为 ${_sessionModel ? modelShortName(_sessionModel) : '默认（跟随 Claude 设置）'}，下一轮对话生效`);
+    addSystemMsg(`✓ 模型已切换为 ${_sessionModel ? modelShortName(_sessionModel) : tt('defaultClaudeSetting')}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('模型切换失败：' + e.message);
   }
@@ -1351,7 +1388,7 @@ let _sessionCli = 'claude';
 let _providerList = [];           // cached [{id,appType,name,baseUrl,model,isOfficial}]
 
 function providerShortName(id) {
-  if (!id) return '默认';
+  if (!id) return tt('default');
   const p = _providerList.find(o => o.id === id);
   return p ? p.name : id.slice(0, 8);
 }
@@ -1380,13 +1417,13 @@ function showProviderPicker(current, list) {
     box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:400px;max-width:94vw;';
     const msg = document.createElement('div');
     msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:12px;';
-    msg.textContent = '切换该会话使用的 Provider（下一轮对话生效）';
+    msg.textContent = tt('providerTitle');
     box.appendChild(msg);
 
     const select = document.createElement('select');
     select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
     const optDef = document.createElement('option');
-    optDef.value = ''; optDef.textContent = '默认登录 / 订阅（不覆盖）';
+    optDef.value = ''; optDef.textContent = tt('providerDefault');
     select.appendChild(optDef);
     for (const p of list) {
       const opt = document.createElement('option');
@@ -1399,17 +1436,17 @@ function showProviderPicker(current, list) {
     if (!list.length) {
       const empty = document.createElement('div');
       empty.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
-      empty.textContent = '还没有可用 provider。请到管理台「Provider」页配置。';
+      empty.textContent = tt('providerEmpty');
       box.appendChild(empty);
     }
 
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
-    cancel.textContent = '取消';
+    cancel.textContent = tt('cancel');
     cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
     const ok = document.createElement('button');
-    ok.textContent = '保存';
+    ok.textContent = tt('save');
     ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
     row.appendChild(cancel); row.appendChild(ok);
     box.appendChild(row);
@@ -1450,7 +1487,7 @@ let _sessionRole = '';
 function updateRoleBtn() {
   if (!roleBtn) return;
   const set = !!(_sessionRole && _sessionRole.trim());
-  roleBtn.textContent = set ? '🎭 角色✓' : '🎭 角色';
+  roleBtn.textContent = set ? tt('roleSet') : tt('role');
   roleBtn.title = set
     ? '该会话已设角色提示词，点击修改（下一轮对话生效）'
     : '设置该会话的角色提示词（下一轮对话生效）';
@@ -1614,7 +1651,7 @@ let _sessionMemory = '';
 function updateMemoryBtn() {
   if (!memoryBtn) return;
   const set = !!(_sessionMemory && _sessionMemory.trim());
-  memoryBtn.textContent = set ? '🧠 记忆✓' : '🧠 记忆';
+  memoryBtn.textContent = set ? tt('memorySet') : tt('memory');
   memoryBtn.title = set
     ? '该会话已积累记忆（清理历史时辅助 AI 自动提炼的关键问题与解决方式），点击查看/编辑'
     : '会话记忆：清理历史时辅助 AI 会自动提炼关键问题与解决方式存到这里，可手动查看/编辑';
@@ -1643,10 +1680,10 @@ function showMemoryEditor(current) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
-    cancel.textContent = '取消';
+    cancel.textContent = tt('cancel');
     cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
     const ok = document.createElement('button');
-    ok.textContent = '保存';
+    ok.textContent = tt('save');
     ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
     row.appendChild(cancel); row.appendChild(ok);
     box.appendChild(title); box.appendChild(msg); box.appendChild(ta); box.appendChild(hint); box.appendChild(row);
@@ -1700,7 +1737,7 @@ function updateStreamBtn() {
   if (!streamBtn) return;
   streamBtn.style.display = '';
   const on = _sessionStreaming;
-  streamBtn.textContent = on ? (_sessionAutoContinue ? '⚡ 流式+接力' : '⚡ 流式') : '⚡ 流式✕';
+  streamBtn.textContent = on ? (_sessionAutoContinue ? tt('streamAuto') : tt('stream')) : tt('streamOff');
   streamBtn.style.opacity = on ? '1' : '0.6';
   streamBtn.title = '流式常驻：保持 claude 进程不退出、保住上下文（适合「等数据返回再继续」的任务）。\n自动接力：一轮只是在等后台结果时，自动续上（带护栏）。\n下一轮对话生效。';
 }
