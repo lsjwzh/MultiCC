@@ -88,12 +88,18 @@ OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
   ok "macOS detected"
   IS_MACOS=true
+  IS_LINUX=false
 elif [ "$OS" = "Linux" ]; then
   ok "Linux detected"
   IS_MACOS=false
+  IS_LINUX=true
+  if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+    info "WSL detected — Linux install path is used; browser/audio/service behavior may differ from native Linux"
+  fi
 else
   warn "Unsupported OS: $OS — may still work but is untested"
   IS_MACOS=false
+  IS_LINUX=false
 fi
 
 # ── Detect Node.js ────────────────────────────────────────────────────────
@@ -163,6 +169,83 @@ else
   fi
 fi
 
+# ── Detect OpenSSL (recommended, not required at install time) ─────────────
+if command -v openssl >/dev/null 2>&1; then
+  ok "$(openssl version 2>/dev/null | head -1)"
+else
+  warn "openssl not found — HTTPS certificate generation may fail when the server starts"
+  if [ "$IS_MACOS" = true ]; then
+    echo "       Install: brew install openssl"
+  elif [ "$IS_LINUX" = true ]; then
+    echo "       Install: sudo apt-get install -y openssl"
+  else
+    echo "       Install OpenSSL using your OS package manager."
+  fi
+fi
+
+# ── Detect AI coding CLIs (recommended, not required for install) ──────────
+detect_cli() {
+  local cmd="$1"
+  local label="$2"
+  local login_hint="$3"
+  local found version
+
+  if found="$(command -v "$cmd" 2>/dev/null)"; then
+    version="$("$cmd" --version 2>/dev/null | head -1 || true)"
+    if [ -n "$version" ]; then
+      ok "$label CLI found: $found ($version)"
+    else
+      ok "$label CLI found: $found"
+    fi
+  else
+    warn "$label CLI not found — sessions using $cmd will fail until it is installed and logged in"
+    echo "       $login_hint"
+  fi
+}
+
+detect_cli "claude" "Claude Code" "Install/login first, then verify with: claude --version"
+detect_cli "codex" "Codex" "Optional unless you create Codex sessions; verify with: codex --version"
+
+if command -v flutter >/dev/null 2>&1; then
+  FLUTTER_VERSION="$(flutter --version 2>/dev/null | head -1 | sed 's/^Flutter //' || true)"
+  ok "Flutter ${FLUTTER_VERSION:-found}"
+else
+  info "Flutter not found — only needed if you build the Android/iOS app yourself; server install is unaffected"
+fi
+
+# ── Detect native npm build toolchain ─────────────────────────────────────
+missing_build_tools=()
+
+if ! command -v make >/dev/null 2>&1; then
+  missing_build_tools+=("make")
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  missing_build_tools+=("python3")
+fi
+if ! command -v g++ >/dev/null 2>&1 && ! command -v c++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
+  missing_build_tools+=("C++ compiler")
+fi
+
+if [ "$IS_MACOS" = true ] && ! xcode-select -p >/dev/null 2>&1; then
+  missing_build_tools+=("Xcode Command Line Tools")
+elif [ "$IS_MACOS" = true ] && ! command -v clang >/dev/null 2>&1; then
+  missing_build_tools+=("clang")
+fi
+
+if [ "${#missing_build_tools[@]}" -eq 0 ]; then
+  ok "Native npm build tools detected"
+else
+  warn "Native npm build tools may be incomplete: ${missing_build_tools[*]}"
+  echo "       better-sqlite3 and node-pty include native bindings and may need compilation."
+  if [ "$IS_MACOS" = true ]; then
+    echo "       Install: xcode-select --install"
+  elif [ "$IS_LINUX" = true ]; then
+    echo "       Install: sudo apt-get update && sudo apt-get install -y build-essential python3 make g++"
+  else
+    echo "       Install make, Python 3, and a C++ compiler using your OS package manager."
+  fi
+fi
+
 # ── Determine install directory ───────────────────────────────────────────
 if [ "$NO_CLONE" = true ]; then
   INSTALL_DIR="${INSTALL_DIR:-$PWD}"
@@ -200,10 +283,31 @@ cd "$INSTALL_DIR"
 
 # ── Install dependencies ──────────────────────────────────────────────────
 step "Installing npm dependencies"
-if npm install --omit=dev 2>&1; then
+info "Running npm install (full package.json; no devDependencies are required today, but this avoids omitting future runtime install hooks)"
+if npm install 2>&1; then
   ok "Dependencies installed"
 else
-  err "npm install failed. Check your network and try again."
+  err "npm install failed."
+  echo ""
+  echo "  Common causes:"
+  echo "    - Native module compilation failed for better-sqlite3 or node-pty"
+  echo "    - Missing Xcode Command Line Tools / build-essential / Python 3"
+  echo "    - Network or npm registry connectivity issues"
+  echo ""
+  echo "  Recommended fix:"
+  if [ "$IS_MACOS" = true ]; then
+    echo "    xcode-select --install"
+  elif [ "$IS_LINUX" = true ]; then
+    echo "    sudo apt-get update && sudo apt-get install -y build-essential python3 make g++"
+  else
+    echo "    Install make, Python 3, and a C++ compiler for your OS."
+  fi
+  echo "    npm install"
+  echo ""
+  echo "  Last-resort diagnostic workaround:"
+  echo "    npm install --ignore-scripts"
+  echo "  This may leave native bindings unavailable, so provider import (better-sqlite3)"
+  echo "  or terminal/PTY recovery paths (node-pty) may not work until a normal install succeeds."
   exit 1
 fi
 
