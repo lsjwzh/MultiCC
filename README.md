@@ -695,7 +695,6 @@ ws                      ^8.16.0        WebSocket server
 multer                  ^1.4.5-lts.1   Multipart file upload handling
 web-push                ^3.6.7         VAPID push notifications
 node-pty                ^1.0.0         PTY fallback (terminal recovery path)
-better-sqlite3          ^12.6.2        Read-only `cc-switch` provider import
 node-cron               ^4.2.1         Per-session schedule triggers
 chokidar                ^5.0.0         File-change triggers
 @larksuiteoapi/node-sdk ^1.67.0        Feishu/Lark long-connection bridge

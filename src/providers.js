@@ -17,9 +17,34 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
+
+const PROJECT_DIR = path.join(__dirname, '..');
 
 let Database;
 try { Database = require('better-sqlite3'); } catch (_) { Database = null; }
+
+// On-demand install of better-sqlite3 — only when the user triggers the
+// cc-switch import. Most users never touch this feature, so paying the
+// native-compilation cost upfront wastes time and breaks on machines
+// without build toolchains.
+function ensureDatabase() {
+  if (Database) return true;
+  console.log('[multicc] better-sqlite3 not installed — installing on demand (cc-switch import)…');
+  try {
+    execSync('npm install better-sqlite3@^12.6.2 --no-save', {
+      cwd: PROJECT_DIR,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 120000,
+    });
+    Database = require('better-sqlite3');
+    console.log('[multicc] better-sqlite3 installed and loaded');
+    return true;
+  } catch (e) {
+    console.error('[multicc] Failed to install better-sqlite3:', e.message);
+    return false;
+  }
+}
 
 const CC_DB = path.join(os.homedir(), '.cc-switch', 'cc-switch.db');
 // multicc's own store, in the project root (one level up from src/).
@@ -48,7 +73,7 @@ function saveStore(list) {
 
 // The store is always usable (it's a local file). Distinct from cc-switch.
 function available() { return true; }
-function ccSwitchAvailable() { return !!Database && fs.existsSync(CC_DB); }
+function ccSwitchAvailable() { return fs.existsSync(CC_DB); }
 
 function parseConfig(s) {
   if (s && typeof s === 'object') return s;
@@ -193,7 +218,17 @@ function deleteProvider(appType, id) {
 // cc-switch id (kept as the provider id with source='ccswitch'), so re-import
 // refreshes existing entries instead of duplicating. Local providers untouched.
 function importFromCcSwitch() {
-  if (!ccSwitchAvailable()) throw new Error('cc-switch database not found');
+  if (!fs.existsSync(CC_DB)) throw new Error('cc-switch database not found at ' + CC_DB);
+  if (!ensureDatabase()) {
+    const hint = process.platform === 'darwin'
+      ? '  xcode-select --install'
+      : '  sudo apt-get install -y build-essential python3 make g++';
+    throw new Error(
+      'Failed to install better-sqlite3 (native compilation).\n' +
+      'Install build tools and retry:\n' + hint + '\n' +
+      'Or manually: cd ' + PROJECT_DIR + ' && npm install better-sqlite3'
+    );
+  }
   const db = new Database(CC_DB, { readonly: true, fileMustExist: true, timeout: 4000 });
   let rows;
   try {

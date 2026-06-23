@@ -213,39 +213,6 @@ else
   info "Flutter not found — only needed if you build the Android/iOS app yourself; server install is unaffected"
 fi
 
-# ── Detect native npm build toolchain ─────────────────────────────────────
-missing_build_tools=()
-
-if ! command -v make >/dev/null 2>&1; then
-  missing_build_tools+=("make")
-fi
-if ! command -v python3 >/dev/null 2>&1; then
-  missing_build_tools+=("python3")
-fi
-if ! command -v g++ >/dev/null 2>&1 && ! command -v c++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
-  missing_build_tools+=("C++ compiler")
-fi
-
-if [ "$IS_MACOS" = true ] && ! xcode-select -p >/dev/null 2>&1; then
-  missing_build_tools+=("Xcode Command Line Tools")
-elif [ "$IS_MACOS" = true ] && ! command -v clang >/dev/null 2>&1; then
-  missing_build_tools+=("clang")
-fi
-
-if [ "${#missing_build_tools[@]}" -eq 0 ]; then
-  ok "Native npm build tools detected"
-else
-  warn "Native npm build tools may be incomplete: ${missing_build_tools[*]}"
-  echo "       better-sqlite3 and node-pty include native bindings and may need compilation."
-  if [ "$IS_MACOS" = true ]; then
-    echo "       Install: xcode-select --install"
-  elif [ "$IS_LINUX" = true ]; then
-    echo "       Install: sudo apt-get update && sudo apt-get install -y build-essential python3 make g++"
-  else
-    echo "       Install make, Python 3, and a C++ compiler using your OS package manager."
-  fi
-fi
-
 # ── Determine install directory ───────────────────────────────────────────
 if [ "$NO_CLONE" = true ]; then
   INSTALL_DIR="${INSTALL_DIR:-$PWD}"
@@ -290,24 +257,21 @@ else
   err "npm install failed."
   echo ""
   echo "  Common causes:"
-  echo "    - Native module compilation failed for better-sqlite3 or node-pty"
-  echo "    - Missing Xcode Command Line Tools / build-essential / Python 3"
   echo "    - Network or npm registry connectivity issues"
+  echo "    - Disk space or permission problems"
+  echo "    - node-pty prebuild not available for your platform (rare; falls back to compilation)"
   echo ""
-  echo "  Recommended fix:"
   if [ "$IS_MACOS" = true ]; then
+    echo "  If it's a native compilation error, install build tools:"
     echo "    xcode-select --install"
   elif [ "$IS_LINUX" = true ]; then
+    echo "  If it's a native compilation error, install build tools:"
     echo "    sudo apt-get update && sudo apt-get install -y build-essential python3 make g++"
-  else
-    echo "    Install make, Python 3, and a C++ compiler for your OS."
   fi
-  echo "    npm install"
   echo ""
-  echo "  Last-resort diagnostic workaround:"
+  echo "  Diagnostic workaround:"
   echo "    npm install --ignore-scripts"
-  echo "  This may leave native bindings unavailable, so provider import (better-sqlite3)"
-  echo "  or terminal/PTY recovery paths (node-pty) may not work until a normal install succeeds."
+  echo "  better-sqlite3 is installed on-demand when you use the cc-switch import)"
   exit 1
 fi
 
