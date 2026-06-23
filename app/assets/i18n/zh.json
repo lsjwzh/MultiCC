@@ -36,7 +36,9 @@
 
   "renameSession": "改名",
   "mergeWorktree": "合并 worktree",
+  "mergeWorktreeReady": "合并 worktree（有未提交改动，可合并回 {base}）",
   "viewDiff": "查看 Diff",
+  "baseBranch": "基分支",
   "leaveNote": "留言",
   "restartSession": "重启",
   "deleteSession": "删除会话",
@@ -54,8 +56,8 @@
   "renameDirTitle": "改名",
   "renameDirHint": "目录名",
   "deleteDirConfirm": "删除目录",
-  "deleteDirBody": "删除 "{name}" 及其中全部 {n} 个会话？不可撤销。",
-  "deleteDirBodyEmpty": "删除空目录 "{name}"？",
+  "deleteDirBody": "删除「{name}」及其中全部 {n} 个会话？不可撤销。",
+  "deleteDirBodyEmpty": "删除空目录「{name}」？",
 
   "pushing": "正在推送到远程…",
   "pushed": "已推送 {n} 个提交 → {remote}/{branch}",
@@ -68,7 +70,7 @@
   "renameSessionFailed": "改名失败：{error}",
 
   "deleteSessionConfirm": "删除会话",
-  "deleteSessionBody": "删除 "{id}"？",
+  "deleteSessionBody": "删除「{id}」？",
 
   "mergeTitle": "合并 worktree",
   "mergeBody": "把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。",
