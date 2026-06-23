@@ -5,6 +5,7 @@ let _cachedSessions = [];
 let _focusedSessionId = null;
 const _urlToken = new URLSearchParams(location.search).get('token');
 function tokenQS(prefix) { return _urlToken ? `${prefix}token=${_urlToken}` : ''; }
+function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 
 /* ── Helpers ── */
 function escapeHtml(str) {
@@ -423,10 +424,10 @@ function showDirMenu(ev, dirId) {
     items.push({ label, onclick: () => pushDirectory(dirId) });
     items.push({ sep: true });
   }
-  items.push({ label: '改名', onclick: () => renameDirectory(dirId) });
-  items.push({ label: `默认角色提示词${dir?.rolePrompt ? '（已设）' : ''}`, onclick: () => changeDirectoryRole(dirId) });
+  items.push({ label: tt('rename'), onclick: () => renameDirectory(dirId) });
+  items.push({ label: dir?.rolePrompt ? tt('rolePromptSet') : tt('rolePrompt'), onclick: () => changeDirectoryRole(dirId) });
   items.push({ sep: true });
-  items.push({ label: '删除目录', danger: true, onclick: () => deleteDirectory(dirId) });
+  items.push({ label: tt('deleteDirectory'), danger: true, onclick: () => deleteDirectory(dirId) });
   showPopoverMenu(ev.currentTarget, items);
 }
 
@@ -437,21 +438,21 @@ function showSessionMenu(ev, sessionId) {
   const ms = st?.mergeState || s?.mergeState || {};
   const mergeReady = !!ms.mergeReady;
   const mergeLabel = mergeReady
-    ? `✓ 合并到 ${ms.baseBranch || 'main'}${ms.ahead ? `（${ms.ahead} 个提交）` : ''}`
-    : `合并到 ${ms.baseBranch || 'main'}`;
+    ? tt('mergeToAhead', { base: ms.baseBranch || 'main', n: ms.ahead || 0 })
+    : tt('mergeTo', { base: ms.baseBranch || 'main' });
   const items = [
-    { label: '改名', onclick: () => renameSession(sessionId) },
-    { label: '留言', onclick: () => openNoteModal(sessionId) },
+    { label: tt('rename'), onclick: () => renameSession(sessionId) },
+    { label: tt('note'), onclick: () => openNoteModal(sessionId) },
     { label: 'Diff', onclick: () => showDiff(sessionId) },
   ];
   if ((s?.cli || 'claude') === 'claude') {
-    items.push({ label: `切换模型（${modelShortName(s?.model || '')}）`, onclick: () => changeSessionModel(sessionId) });
+    items.push({ label: tt('changeModel', { model: modelShortName(s?.model || '') }), onclick: () => changeSessionModel(sessionId) });
   }
-  items.push({ label: `角色提示词${s?.rolePrompt ? '（已设）' : ''}`, onclick: () => changeSessionRole(sessionId) });
+  items.push({ label: s?.rolePrompt ? tt('rolePromptSet') : tt('rolePrompt'), onclick: () => changeSessionRole(sessionId) });
   items.push({ sep: true });
   items.push({ label: mergeLabel, ready: mergeReady, onclick: () => mergeSession(sessionId) });
   items.push({ sep: true });
-  items.push({ label: '删除会话', danger: true, onclick: () => deleteSession(sessionId) });
+  items.push({ label: tt('deleteSession'), danger: true, onclick: () => deleteSession(sessionId) });
   showPopoverMenu(ev.currentTarget, items);
 }
 
@@ -567,7 +568,7 @@ function renderDirectoryBlock(dir, dirSessions) {
     renderGroup('claude', 'chat', 'Claude Chats'),
     renderGroup('codex',  'terminal', 'Codex Terminals'),
     renderGroup('codex',  'chat', 'Codex Chats'),
-  ].filter(Boolean).join('') || '<div class="dir-empty">No sessions yet</div>';
+  ].filter(Boolean).join('') || `<div class="dir-empty">${escapeHtml(tt('noSessions'))}</div>`;
 
   return `
     <div class="dir-block${openClass}" data-dir-id="${escapeHtml(id)}">
@@ -577,11 +578,11 @@ function renderDirectoryBlock(dir, dirSessions) {
           <span class="dir-name" onclick="toggleDirectory('${escapeHtml(id)}')">${escapeHtml(dir.name)}</span>
           <span class="dir-path" title="${escapeHtml(dir.path)}">${escapeHtml(shortenPath(dir.path, maxPath))}</span>
           <div class="dir-meta">
-            <span><strong>${total}</strong> sessions</span>
-            ${active > 0 ? `<span class="sep">·</span><span class="active-count"><strong>${active}</strong> active</span>` : ''}
+            <span><strong>${total}</strong> ${escapeHtml(tt('sessions'))}</span>
+            ${active > 0 ? `<span class="sep">·</span><span class="active-count"><strong>${active}</strong> ${escapeHtml(tt('active'))}</span>` : ''}
           </div>
         </div>
-        <button class="btn add-new btn-sm" title="新建会话" onclick="event.stopPropagation(); showNewSessionMenu(event, '${escapeHtml(id)}')">+ 新建 ▾</button>
+        <button class="btn add-new btn-sm" title="${escapeHtml(tt('createSession'))}" onclick="event.stopPropagation(); showNewSessionMenu(event, '${escapeHtml(id)}')">${escapeHtml(tt('createSession'))}</button>
         <button class="btn-icon" title="项目备忘 (multicc.memo.md)" onclick="event.stopPropagation(); openMemo('${escapeHtml(id)}')">📝</button>
         <button class="btn-icon${pushPending ? ' has-pending' : ''}" title="更多操作${pushPending ? `（有 ${ps.ahead} 个提交待 push）` : ''}" onclick="event.stopPropagation(); showDirMenu(event, '${escapeHtml(id)}')">⋯</button>
       </div>
@@ -627,20 +628,24 @@ function renderSessionRow(s) {
   const focusedClass = s.id === _focusedSessionId ? ' focused' : '';
   const monStatus = _sessionStatus.get(s.id);
   const mon = monitors.get(s.id);
-  let statusText = 'idle', statusCls = '';
-  if (s.active) { statusCls = 'active'; statusText = 'active'; }
-  if (monStatus === 'waiting') { statusCls = 'waiting'; statusText = '等待'; }
-  else if (monStatus === 'completed') { statusCls = 'completed'; statusText = '完成'; }
-  else if (mon && mon.state === 'active') { statusCls = 'active'; statusText = '运行中'; }
+  let statusText = tt('idle'), statusCls = '';
+  if (s.active) { statusCls = 'active'; statusText = tt('active'); }
+  if (monStatus === 'waiting') { statusCls = 'waiting'; statusText = tt('waiting'); }
+  else if (monStatus === 'completed') { statusCls = 'completed'; statusText = tt('completed'); }
+  else if (mon && mon.state === 'active') { statusCls = 'active'; statusText = tt('running'); }
   // Live workspace status (from /ws/workspace) takes precedence when available.
   const wb = _workspaceStatus.get(s.id);
   if (wb) { const info = wbStatusInfo(wb.status); statusText = info.text; statusCls = info.cls; }
   const pendingNotes = _workspaceNotes.get(s.id) || 0;
   const mergeState = wb?.mergeState || s.mergeState || {};
   const mergeReady = !!mergeState.mergeReady;
+  const mergeDetail = [
+    mergeState.dirty ? tt('dirtyChanges') : '',
+    mergeState.ahead > 0 ? tt('aheadCommits', { n: mergeState.ahead }) : '',
+  ].filter(Boolean).join('，');
   const mergeTitle = mergeReady
-    ? `可合并：${mergeState.dirty ? '有未提交改动' : ''}${mergeState.dirty && mergeState.ahead > 0 ? '，' : ''}${mergeState.ahead > 0 ? `${mergeState.ahead} 个提交领先` : ''}`
-    : '把 worktree 合并回基分支';
+    ? tt('mergeReadyTitle', { detail: mergeDetail })
+    : tt('mergeWorktreeTitle');
   const displayName = s.label || s.id;
   const model = s.model ? modelShortName(s.model) : '';
   const wbFile = (wb && wb.currentFile) ? wb.currentFile.split('/').pop() : '';
@@ -648,8 +653,8 @@ function renderSessionRow(s) {
   const summary = sm && sm.summary ? sm.summary : '';
 
   const openBtn = s.kind === 'chat'
-    ? `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')">Open</button>`
-    : `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionNewTab('${escapeHtml(s.id)}')">Open</button>`;
+    ? `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')">${escapeHtml(tt('open'))}</button>`
+    : `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionNewTab('${escapeHtml(s.id)}')">${escapeHtml(tt('open'))}</button>`;
 
   // Lean 2-line card: status is a colour dot (hover for text), the alias is the
   // headline, and time/model sit in one muted line. cli/kind chips are dropped
@@ -669,7 +674,7 @@ function renderSessionRow(s) {
       </div>
       <span class="lean-actions">
         ${openBtn}
-        <button class="btn-icon${mergeReady ? ' merge-ready' : ''}" id="sess-menu-${escapeHtml(s.id)}" title="${escapeHtml(mergeReady ? mergeTitle + '（点击展开更多）' : '更多操作（改名/留言/Diff/合并/删除）')}" onclick="event.stopPropagation(); showSessionMenu(event, '${escapeHtml(s.id)}')">⋯</button>
+        <button class="btn-icon${mergeReady ? ' merge-ready' : ''}" id="sess-menu-${escapeHtml(s.id)}" title="${escapeHtml(mergeReady ? tt('moreSessionActionsReady', { detail: mergeTitle }) : tt('moreSessionActions'))}" onclick="event.stopPropagation(); showSessionMenu(event, '${escapeHtml(s.id)}')">⋯</button>
       </span>
     </div>`;
 }
@@ -974,23 +979,23 @@ async function deleteDirectory(id) {
 
 // Claude model choices for new sessions. value '' = follow the user's /model default.
 const CLAUDE_MODEL_OPTIONS = [
-  { value: '', label: '默认（跟随 Claude 设置）' },
+  { value: '', labelKey: 'defaultClaudeSetting' },
   { value: 'claude-fable-5', label: 'Fable 5' },
   { value: 'claude-fable-5[1m]', label: 'Fable 5 (1M context)' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-  { value: '__custom__', label: '自定义…' },
+  { value: '__custom__', labelKey: 'custom' },
 ];
 
 function modelShortName(model) {
   const opt = CLAUDE_MODEL_OPTIONS.find(o => o.value === model);
-  return opt ? opt.label : model;
+  return opt ? (opt.labelKey ? tt(opt.labelKey) : opt.label) : model;
 }
 
 // WebView-safe model picker (same pattern as _dialog). Resolves to '' (default),
 // a model string, or null (cancelled).
-function showModelPicker({ title = '选择该会话使用的模型', okText = '创建', current = '' } = {}) {
+function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), current = '' } = {}) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -1006,7 +1011,7 @@ function showModelPicker({ title = '选择该会话使用的模型', okText = '�
     select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
     for (const o of CLAUDE_MODEL_OPTIONS) {
       const opt = document.createElement('option');
-      opt.value = o.value; opt.textContent = o.label;
+      opt.value = o.value; opt.textContent = o.labelKey ? tt(o.labelKey) : o.label;
       select.appendChild(opt);
     }
     select.value = isKnown ? current : '__custom__';
@@ -1027,7 +1032,7 @@ function showModelPicker({ title = '选择该会话使用的模型', okText = '�
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
-    cancel.className = 'btn'; cancel.textContent = '取消';
+    cancel.className = 'btn'; cancel.textContent = tt('cancel');
     const ok = document.createElement('button');
     ok.className = 'btn btn-green'; ok.textContent = okText;
     row.appendChild(cancel); row.appendChild(ok);
@@ -1087,8 +1092,8 @@ async function changeSessionModel(id) {
   const sess = _cachedSessions.find(s => s.id === id);
   if (!sess) return;
   const picked = await showModelPicker({
-    title: '切换该会话使用的模型',
-    okText: '保存',
+    title: tt('modelTitle'),
+    okText: tt('save'),
     current: sess.model || '',
   });
   if (picked === null) return; // cancelled
@@ -1470,11 +1475,11 @@ const _workspaceSummaries = new Map(); // sessionId → { summary, ts } — 最�
 
 function wbStatusInfo(status) {
   switch (status) {
-    case 'thinking': return { text: '思考中', cls: 'active' };
-    case 'editing':  return { text: '编辑中', cls: 'active' };
-    case 'running':  return { text: '运行中', cls: 'active' };
-    case 'waiting':  return { text: '等待',   cls: 'waiting' };
-    default:         return { text: 'idle',  cls: '' };
+    case 'thinking': return { text: tt('thinking'), cls: 'active' };
+    case 'editing':  return { text: tt('editing'), cls: 'active' };
+    case 'running':  return { text: tt('running'), cls: 'active' };
+    case 'waiting':  return { text: tt('waiting'), cls: 'waiting' };
+    default:         return { text: tt('idle'), cls: '' };
   }
 }
 
@@ -1711,9 +1716,9 @@ function _dialog({ message, value, danger, okText, cancelText, withInput }) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
-    cancel.className = 'btn'; cancel.textContent = cancelText || '取消';
+    cancel.className = 'btn'; cancel.textContent = cancelText || tt('cancel');
     const ok = document.createElement('button');
-    ok.className = 'btn ' + (danger ? 'btn-danger' : 'btn-green'); ok.textContent = okText || '确定';
+    ok.className = 'btn ' + (danger ? 'btn-danger' : 'btn-green'); ok.textContent = okText || tt('confirm');
     row.appendChild(cancel); row.appendChild(ok);
     box.appendChild(row);
     overlay.appendChild(box);

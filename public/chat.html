@@ -28,6 +28,7 @@
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
+      position: relative;
     }
     .logo { font-size: 15px; font-weight: 700; color: #f78166; white-space: nowrap; }
     .logo span { color: #79c0ff; }
@@ -60,6 +61,28 @@
       color: #0d1117;
       font-weight: 700;
       box-shadow: 0 0 0 2px #d2992230;
+    }
+    #header-more-wrap { position: relative; display: none; }
+    #header-more-menu {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      z-index: 50;
+      min-width: 190px;
+      padding: 6px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      box-shadow: 0 12px 30px rgba(0,0,0,.35);
+    }
+    #header-more-menu.open { display: flex; flex-direction: column; gap: 6px; }
+    #header-more-menu .hdr-btn { width: 100%; text-align: left; }
+    @media (max-width: 760px) {
+      #header { gap: 6px; }
+      #header-more-wrap { display: inline-flex; }
+      #session-title { max-width: 34vw; }
+      #model-btn, #provider-btn, #role-btn, #memory-btn, #stream-btn, #share-btn { max-width: 100%; }
     }
 
     /* Session identity (directory / alias) shown in the header */
@@ -762,26 +785,31 @@
     <span id="session-title" title="会话身份：目录 / 别名"></span>
     <button id="reconnect-btn" class="hdr-btn" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
     <span class="hdr-spacer"></span>
+    <button class="hdr-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
     <button id="notify-btn" class="hdr-btn" title="语音通知 (点击开启/关闭)">&#128276;</button>
     <button id="dbg-btn" class="hdr-btn" title="Debug 面板">&#128027;</button>
-    <a href="/" class="hdr-btn" title="Terminal mode">Terminal</a>
+    <a href="/" class="hdr-btn" title="Terminal mode" data-i18n="terminal">Terminal</a>
     <button class="hdr-btn" id="model-btn" title="切换该会话使用的模型（下一轮对话生效）" style="display:none"></button>
     <button class="hdr-btn" id="provider-btn" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn" id="role-btn" title="设置该会话的角色提示词（下一轮对话生效）">🎭 角色</button>
-    <button class="hdr-btn" id="memory-btn" title="会话记忆：清理历史时辅助 AI 自动提炼的关键问题与解决方式，可查看/编辑">🧠 记忆</button>
-    <button class="hdr-btn" id="stream-btn" title="流式常驻 / 自动接力（claude 会话）" style="display:none">⚡ 流式</button>
-    <button class="hdr-btn" id="share-btn" title="把此会话分享到外部（网页链接：只读 / 密码 / 可对话）">🔗 分享</button>
-    <button class="hdr-btn" id="merge-btn" title="把此会话 worktree 合并回基分支">合并</button>
-    <button class="hdr-btn" id="clear-ctx-btn" title="Clear context">Clear</button>
+    <button class="hdr-btn" id="role-btn" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
+    <button class="hdr-btn" id="memory-btn" title="会话记忆：清理历史时辅助 AI 自动提炼的关键问题与解决方式，可查看/编辑" data-i18n="memory">🧠 记忆</button>
+    <button class="hdr-btn" id="stream-btn" title="流式常驻 / 自动接力（claude 会话）" style="display:none" data-i18n="stream">⚡ 流式</button>
+    <button class="hdr-btn" id="share-btn" title="把此会话分享到外部（网页链接：只读 / 密码 / 可对话）" data-i18n="share">🔗 分享</button>
+    <span id="header-more-wrap">
+      <button class="hdr-btn" id="header-more-btn" data-i18n="more">更多</button>
+      <span id="header-more-menu"></span>
+    </span>
+    <button class="hdr-btn" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
+    <button class="hdr-btn" id="clear-ctx-btn" title="Clear context" data-i18n="clear">Clear</button>
     <button class="hdr-btn" id="memo-btn" title="项目备忘 (multicc.memo.md)" onclick="openMemo()">📝</button>
-    <button id="manage-btn" class="hdr-btn" onclick="location.href='/manage'">Manage</button>
+    <button id="manage-btn" class="hdr-btn" onclick="location.href='/manage'" data-i18n="manage">Manage</button>
   </div>
 
   <!-- CWD bar -->
   <div id="cwd-bar">
     <span id="cwd-icon">&#128193;</span>
     <span id="cwd-path">-</span>
-    <button id="cwd-change" style="display:none">Change</button>
+    <button id="cwd-change" style="display:none" data-i18n="changeDir">Change</button>
   </div>
 
   <!-- Worktree branch + behind-base indicator (populated by applyBehindStatus) -->
@@ -912,6 +940,7 @@
     <div id="dbg-log"></div>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.1/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/core.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
