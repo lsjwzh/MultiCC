@@ -32,8 +32,10 @@
   "moreActions": "More",
 
   "renameSession": "Rename",
-  "mergeWorktree": "Merge",
+  "mergeWorktree": "Merge Worktree",
+  "mergeWorktreeReady": "Merge Worktree（uncommitted changes, ready to merge into {base}）",
   "viewDiff": "View Diff",
+  "baseBranch": "base branch",
   "leaveNote": "Note",
   "restartSession": "Restart",
   "deleteSession": "Delete Session",

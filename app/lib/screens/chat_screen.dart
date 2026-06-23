@@ -1515,7 +1515,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
         _item(
           'merge',
           Icons.merge_type,
-          mergeReady ? t('mergeWorktree') : t('mergeWorktree'),
+          mergeReady ? t('mergeWorktreeReady', {'base': ''}) : t('mergeWorktree'),
           mergeReady ? const Color(0xFFe3b341) : const Color(0xFFe7eaee),
         ),
         _item('clear', Icons.delete_sweep_outlined, t('clearHistory'),
