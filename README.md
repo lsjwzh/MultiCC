@@ -140,43 +140,86 @@ Features (both):
 
 ## Quick Start
 
+### One-Click Install
+
+```bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
+```
+
+This auto-detects your OS, checks prerequisites, clones the repo, installs dependencies, configures an access token, and optionally installs as a background service.
+
+Options:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- \
+  --port 8080 --token mysecrettoken --no-service
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dir <path>` | Install into this directory (default: `./MultiCC`) |
+| `--token <xxx>` | Pre-set ACCESS_TOKEN (default: auto-generate) |
+| `--port <port>` | Server port (default: `3000`) |
+| `--no-service` | Skip launchd/systemd service install |
+| `--no-clone` | Use current directory; don't clone |
+| `--branch <name>` | Git branch to clone (default: `main`) |
+
+After install:
+
+```bash
+cd MultiCC && ./multicc start     # start server
+cd MultiCC && ./multicc install   # install as background service (macOS)
+```
+
 ### Prerequisites
 
 - **Node.js** >= 18
 - **tmux** (for terminal mode; chat mode does not need it)
 - **Claude Code CLI** — `claude` on your PATH, already logged in
-- **openssl** (HTTPS cert generation)
 - **Flutter** 3.8+ (only if you want to build the native app yourself)
 
-### Run the server
+### Manual Install (alternative)
 
 ```bash
 git clone https://github.com/lsjwzh/MultiCC.git
 cd MultiCC
 npm install
-npm start
+node server.js
 ```
 
-```
-  MultiCC is running at https://localhost:3443
+The server prints its access URL on startup — open `http://localhost:3000/chat` to begin. Other devices on the same network append `?token=<ACCESS_TOKEN>` (find it in your `.env` file).
 
-  Other devices:
-    https://192.168.1.100:3443?token=<ACCESS_TOKEN>
-```
-
-First visit will show a cert warning — accept it once per device.
-
-### Run as a background service (macOS)
+### Service management
 
 ```bash
-./multicc install    # installs a launchd agent — auto-start on login, auto-restart on crash
-./multicc status
-./multicc log
-./multicc restart
-./multicc uninstall  # removes the launchd agent
+./multicc start       # start server
+./multicc stop        # stop server
+./multicc restart     # restart server
+./multicc status      # check if running
+./multicc log         # tail live logs
+./multicc install     # install launchd agent (macOS auto-start)
+./multicc uninstall   # remove launchd agent
 ```
 
-The service writes logs to `logs/multicc.log` and `logs/multicc-error.log`.
+On Linux, set up a systemd user service:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/multicc.service <<'UNIT'
+[Unit]
+Description=MultiCC Server
+After=network.target
+[Service]
+ExecStart=$(which node) $PWD/server.js
+WorkingDirectory=$PWD
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now multicc
+```
 
 ### Build the Flutter app
 
@@ -187,7 +230,7 @@ flutter build apk --release           # Android
 flutter build ios --release --no-codesign   # iOS (needs Xcode + signing to install)
 ```
 
-The release APK is copied to `public/multicc.apk` by the build; the `/manage` page serves it from there.
+The release APK is at `app/build/app/outputs/flutter-apk/app-release.apk`; the `/manage` page serves `public/multicc.apk`.
 
 ---
 
