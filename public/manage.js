@@ -3559,10 +3559,11 @@ const PROVIDER_PRESETS = [
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
   { key: 'codex-official', label: 'Codex 官方', appType: 'codex', baseUrl: '', model: '', note: '走 ChatGPT 登录' },
-  { key: 'codex-openrouter', label: 'OpenRouter', appType: 'codex', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat', note: '✅ 支持 responses 协议，可中转 DeepSeek/GLM 等' },
-  // codex CLI 只支持 wire_api="responses"（chat 协议已移除）。DeepSeek/GLM/Qwen/
-  // MiniMax 官方仅提供 /chat/completions，codex 直连会启动失败或 404（已实测）。
-  // 要在 codex 用这些国产模型，请走 OpenRouter 中转，或用 claude 类模板（Anthropic 兼容）。
+  { key: 'codex-deepseek', label: 'DeepSeek', appType: 'codex', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', note: '✅ 经本地代理自动转换协议（实测可用）' },
+  { key: 'codex-glm', label: '智谱 GLM', appType: 'codex', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6', note: '✅ 经本地代理自动转换协议（实测可用）' },
+  { key: 'codex-qwen', label: 'Qwen 通义千问', appType: 'codex', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus', note: '✅ 经本地代理自动转换协议（实测可用）' },
+  { key: 'codex-minimax', label: 'MiniMax', appType: 'codex', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2', note: '✅ 经本地代理自动转换协议（实测可用）' },
+  { key: 'codex-openrouter', label: 'OpenRouter', appType: 'codex', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat', note: '✅ 直连 responses 协议（原生支持）' },
 ];
 
 function applyProviderPreset() {
