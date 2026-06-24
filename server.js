@@ -3924,35 +3924,24 @@ function chatHistoryPath(sessionName) {
   return path.join(CHAT_HISTORY_DIR, `${safe}.json`);
 }
 
-// Sanitize empty thinking blocks from assistant messages. Models like GLM may
-// return thinking blocks with only whitespace; Claude API rejects these with
-// "each thinking block must contain non-whitespace thinking" (HTTP 400).
-function sanitizeThinking(messages) {
-  if (!Array.isArray(messages)) return;
-  let cleaned = 0;
-  for (const msg of messages) {
-    if (!msg || !Array.isArray(msg.content)) continue;
-    const before = msg.content.length;
-    msg.content = msg.content.filter((block) => {
-      if (block && block.type === 'thinking') {
-        if (!block.thinking || !/\S/.test(block.thinking)) {
-          cleaned++;
-          return false;
-        }
-      }
-      return true;
-    });
-    // If we removed all content blocks, ensure content is still an array
-    if (msg.content.length === 0) msg.content = [];
-  }
-  if (cleaned > 0) console.log(`[multicc] sanitized ${cleaned} empty thinking block(s) from ${messages.length} messages`);
-}
-
 function loadChatHistory(sessionName) {
   if (chatHistories.has(sessionName)) return chatHistories.get(sessionName);
   try {
     const data = JSON.parse(fs.readFileSync(chatHistoryPath(sessionName), 'utf8'));
-    sanitizeThinking(data);
+    // Sanitize empty thinking blocks from models like GLM that return
+    // thinking blocks with only whitespace; Claude API rejects these with
+    // HTTP 400 "each thinking block must contain non-whitespace thinking".
+    if (Array.isArray(data)) {
+      let cleaned = 0;
+      for (const msg of data) {
+        if (!msg || !Array.isArray(msg.content)) continue;
+        msg.content = msg.content.filter((block) => {
+          if (block && block.type === 'thinking' && (!block.thinking || !/\S/.test(block.thinking))) { cleaned++; return false; }
+          return true;
+        });
+      }
+      if (cleaned > 0) console.log(`[multicc] sanitized ${cleaned} empty thinking block(s) from ${data.length} messages`);
+    }
     chatHistories.set(sessionName, data);
     return data;
   } catch (_) {
@@ -5776,13 +5765,6 @@ function gracefulShutdown(sig) {
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 (async () => {
-  try {
-  installBundledSkills();
-  reconcileAllTriggers();
-  // Prune expired temp artifacts now and every 6h.
-  artifacts.cleanup();
-  setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
-setImmediate(async () => {
   try {
     PORT = await findAvailablePort(PORT);
   } catch (err) {
