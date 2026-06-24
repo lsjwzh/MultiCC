@@ -4595,7 +4595,55 @@ function runChatTurn(sessionName, text, opts = {}) {
   const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn, rolePrompt, maxTurns: goalMaxTurns, skipDefaultModel: provEnv.skipDefaultModel });
   console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
 
+  // Sanitize empty thinking blocks from the Claude CLI JSONL session file.
+  // Third-party providers (GLM, DeepSeek, etc.) may return thinking blocks
+  // with only whitespace content. When switching back to Claude official API,
+  // the API rejects these with HTTP 400 "each thinking block must contain
+  // non-whitespace thinking". Clean them proactively before each spawn.
+  const sanitizeCliSessionJSONL = () => {
+    if (!cs.cliSessionId || !cs.cwd) return;
+    try {
+      const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
+      if (!fs.existsSync(claudeProjects)) return;
+      // Walk all project subdirectories looking for the session JSONL.
+      let cleaned = 0;
+      const dirs = fs.readdirSync(claudeProjects, { withFileTypes: true });
+      for (const d of dirs) {
+        if (!d.isDirectory()) continue;
+        const jl = path.join(claudeProjects, d.name, `${cs.cliSessionId}.jsonl`);
+        if (!fs.existsSync(jl)) continue;
+        let content = fs.readFileSync(jl, 'utf8');
+        const lines = content.split('\n');
+        const out = [];
+        for (const line of lines) {
+          if (!line.trim()) { out.push(line); continue; }
+          try {
+            const j = JSON.parse(line);
+            if (j.message && Array.isArray(j.message.content)) {
+              const before = j.message.content.length;
+              j.message.content = j.message.content.filter(b => {
+                if (b.type === 'thinking' && (!b.thinking || !/\S/.test(b.thinking))) {
+                  cleaned++; return false;
+                }
+                return true;
+              });
+            }
+            out.push(JSON.stringify(j));
+          } catch (_) { out.push(line); }
+        }
+        if (cleaned > 0) {
+          fs.writeFileSync(jl, out.join('\n'));
+          // Also clean multicc's own chat_history cache so it stays fresh.
+          chatHistories.delete(sessionName);
+          console.log(`[multicc/chat] [${sessionName}] sanitized ${cleaned} empty thinking block(s) from session JSONL`);
+        }
+        break; // Found the session, stop searching
+      }
+    } catch (_) {}
+  };
+
   const spawnChat = (spawnArgs, isRetry) => {
+    sanitizeCliSessionJSONL();  // Clean before every claude exec resume
     // buildChildEnv strips inherited ANTHROPIC_* routing vars (which may have
     // leaked into the multicc server's own env) before applying the session's
     // provider env, so the per-session provider choice is always authoritative.
