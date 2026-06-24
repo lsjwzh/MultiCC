@@ -304,15 +304,22 @@ if [ -f .env ]; then
   else
     echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> .env
   fi
+  if grep -q '^PORT=' .env 2>/dev/null; then
+    sed -i.bak "s/^PORT=.*/PORT=$PORT/" .env
+    rm -f .env.bak
+  else
+    echo "PORT=$PORT" >> .env
+  fi
 else
   cat > .env << EOF
 # MultiCC configuration
 ACCESS_TOKEN=$ACCESS_TOKEN
-# Optional: set a custom port
-# PORT=3000
+# Server port
+PORT=$PORT
 EOF
 fi
 ok "ACCESS_TOKEN configured"
+ok "PORT set to $PORT"
 
 # ── Make manager script executable ────────────────────────────────────────
 chmod +x multicc 2>/dev/null || true
