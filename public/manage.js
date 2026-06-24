@@ -3559,11 +3559,11 @@ const PROVIDER_PRESETS = [
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
   { key: 'codex-official', label: 'Codex 官方', appType: 'codex', baseUrl: '', model: '', note: '走 ChatGPT 登录' },
-  { key: 'codex-deepseek', label: 'DeepSeek', appType: 'codex', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-  { key: 'codex-glm', label: '智谱 GLM', appType: 'codex', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6' },
-  { key: 'codex-qwen', label: 'Qwen 通义千问', appType: 'codex', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus' },
-  { key: 'codex-minimax', label: 'MiniMax', appType: 'codex', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2' },
-  { key: 'codex-openrouter', label: 'OpenRouter', appType: 'codex', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat' },
+  { key: 'codex-deepseek', label: 'DeepSeek', appType: 'codex', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', note: 'multicc 自动转成 chat/completions（无需手动配置）' },
+  { key: 'codex-glm', label: '智谱 GLM', appType: 'codex', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6', note: 'multicc 自动转成 chat/completions（无需手动配置）' },
+  { key: 'codex-qwen', label: 'Qwen 通义千问', appType: 'codex', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus', note: 'multicc 自动转成 chat/completions（无需手动配置）' },
+  { key: 'codex-minimax', label: 'MiniMax', appType: 'codex', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2', note: 'multicc 自动转成 chat/completions（无需手动配置）' },
+  { key: 'codex-openrouter', label: 'OpenRouter', appType: 'codex', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat', note: '✅ 支持 responses（原始服务）' },
 ];
 
 function applyProviderPreset() {
