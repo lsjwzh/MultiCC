@@ -244,6 +244,7 @@ The server prints its access URL on startup — open `http://localhost:3000/chat
 ./multicc restart     # restart server
 ./multicc status      # check if running
 ./multicc log         # tail live logs
+./multicc update      # pull latest code, reinstall deps if changed, restart
 ./multicc install     # install launchd agent (macOS auto-start)
 ./multicc uninstall   # remove launchd agent
 ```
