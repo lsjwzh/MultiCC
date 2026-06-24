@@ -9,7 +9,25 @@ LOG_DIR="$SCRIPT_DIR/logs"
 OUT_LOG="$LOG_DIR/multicc.log"
 ERR_LOG="$LOG_DIR/multicc-error.log"
 PID_FILE="$SCRIPT_DIR/.multicc.pid"
-NODE="/opt/homebrew/bin/node"
+
+# Resolve the node binary. Auto-detect from PATH (covers Homebrew on both
+# Apple Silicon and Intel, nvm/fnm, system installs); fall back to the common
+# install locations. Override with MULTICC_NODE=/path/to/node if needed.
+if [ -n "${MULTICC_NODE:-}" ] && [ -x "${MULTICC_NODE:-}" ]; then
+  NODE="$MULTICC_NODE"
+elif command -v node >/dev/null 2>&1; then
+  NODE="$(command -v node)"
+else
+  NODE=""
+  for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    [ -x "$_n" ] && NODE="$_n" && break
+  done
+fi
+if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
+  echo "Error: could not find a 'node' binary. Install Node.js >= 18," >&2
+  echo "       or set MULTICC_NODE=/full/path/to/node and retry." >&2
+  exit 1
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -196,7 +214,7 @@ do_install() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>$(dirname "$NODE"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict>
 </plist>
