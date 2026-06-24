@@ -71,7 +71,28 @@ while [ $# -gt 0 ]; do
     --no-clone)  NO_CLONE=true; shift ;;
     --branch)    BRANCH="$2"; shift 2 ;;
     --help|-h)
-      head -40 "$0" | sed -n '/^# =/,/^# =/p' | grep -v '^#!/' | sed 's/^# //; s/^#$//'
+      cat << 'HELP'
+MultiCC — One-Click Install Script
+
+Usage:
+  curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
+
+Or download and run locally:
+  chmod +x install.sh && ./install.sh
+
+Options:
+  --dir <path>       Install into this directory (default: ./MultiCC)
+  --token <xxx>      Pre-set ACCESS_TOKEN (default: auto-generate)
+  --port <port>      Server port (default: 3000)
+  --no-service       Skip launchd/systemd service installation
+  --no-clone         Use current directory; don't git clone
+  --branch <name>    Git branch to clone (default: main)
+  --help             Show this help
+
+After install:
+  cd MultiCC && ./multicc start     # start server
+  cd MultiCC && ./multicc install   # install as background service (macOS)
+HELP
       exit 0
       ;;
     *) err "Unknown option: $1 (use --help)"; exit 1 ;;
