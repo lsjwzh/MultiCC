@@ -70,9 +70,17 @@ function spawnProc(name, cfg) {
     ...sessionArgs,
   ];
 
+  // s.env is the FULL child env the caller already computed (process.env with
+  // ANTHROPIC_* routing keys stripped + the session's provider env applied), so
+  // use it verbatim — re-merging process.env here would re-introduce routing
+  // vars that leaked into the server's own environment and break provider
+  // selection. Fall back to a plain process.env merge if no env was supplied.
+  const childEnv = s.env
+    ? s.env
+    : { ...process.env, TERM: 'dumb', NO_COLOR: '1' };
   const proc = spawn(s.cmd, args, {
     cwd: s.cwd,
-    env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', ...(s.env || {}) },
+    env: childEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   s.proc = proc;

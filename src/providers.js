@@ -256,6 +256,52 @@ function importFromCcSwitch() {
   return { imported, updated, total: rows.length };
 }
 
+// Env vars that select the model and route the endpoint for a claude session.
+// multicc must own these COMPLETELY: a value leaked into the multicc server's
+// OWN environment (e.g. pm2 / launchd started from a shell where cc-switch had
+// exported ANTHROPIC_DEFAULT_OPUS_MODEL=… + ANTHROPIC_BASE_URL=… for DeepSeek)
+// would otherwise be inherited by every spawned `claude` child and silently
+// override the per-session provider choice — so switching a session back to
+// "default login" or "Claude Official" would have no effect.  We strip all of
+// these from the inherited env first, then re-apply only what the chosen
+// provider supplies.
+const CLAUDE_ROUTING_KEYS = [
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'CLAUDE_CODE_SIMPLE',
+];
+
+// Build the full child environment for spawning a session's CLI.
+//   base   — the inherited env to start from (normally process.env)
+//   extra  — extra vars to layer on (MULTICC_*, TERM, etc.)
+// For claude sessions, every routing key is stripped from `base` BEFORE the
+// provider env is applied, so the chosen provider is authoritative:
+//   - default login (provider=null) → none set → real OAuth login from ~/.claude
+//   - a custom provider             → exactly its own ANTHROPIC_* values
+// codex sessions don't use ANTHROPIC_* (they route via CODEX_HOME), so their
+// inherited env is left untouched aside from the provider's CODEX_HOME.
+function buildChildEnv(base, session, extra = {}) {
+  const env = { ...base };
+  const appType = (session && session.cli === 'codex') ? 'codex' : 'claude';
+  if (appType === 'claude') {
+    for (const k of CLAUDE_ROUTING_KEYS) delete env[k];
+  }
+  const spawn = resolveSpawnEnv(session);
+  Object.assign(env, extra, spawn.env);
+  return {
+    env,
+    skipDefaultModel: spawn.skipDefaultModel,
+    providerName: spawn.providerName,
+    codexHome: spawn.codexHome,
+  };
+}
+
 // Compute env overrides + flags to apply when spawning a child for `session`.
 //   - env: object merged into the child's process env (only this child).
 //   - skipDefaultModel: claude routes elsewhere → don't force the global --model.
@@ -313,5 +359,7 @@ module.exports = {
   deleteProvider,
   importFromCcSwitch,
   resolveSpawnEnv,
+  buildChildEnv,
+  CLAUDE_ROUTING_KEYS,
   CODEX_HOMES_DIR,
 };
