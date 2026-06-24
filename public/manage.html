@@ -426,6 +426,7 @@
       <div class="topspace"></div>
       <div class="search"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索目录 / 会话…" oninput="filterDirs(this.value)" /></div>
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
+      <button class="icon-btn" onclick="startOnboarding()" title="引导">❓</button>
       <button class="icon-btn" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
       <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建目录</button>
     </header>
@@ -1068,5 +1069,6 @@
       };
     })();
   </script>
+  <script src="tour.js"></script>
 </body>
 </html>
