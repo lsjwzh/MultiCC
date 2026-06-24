@@ -47,6 +47,7 @@ const services = require('./src/services');
 const state = require('./src/state');
 const artifacts = require('./src/artifacts');
 const providers = require('./src/providers');
+const { mountCodexProxy } = require('./src/codex-proxy');
 const app = express();
 
 // ── Access token authentication (cookie-based login) ──
@@ -1455,6 +1456,10 @@ function createSession(id) {
 
 // ── REST API ──
 app.use(express.json());
+
+// Codex Responses↔Chat 协议转换代理（国产服务商 DeepSeek/GLM/Qwen/MiniMax）。
+// 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
+mountCodexProxy(app, { getProvider: providers.getProvider, getPort: () => PORT });
 
 app.get('/api/sessions', (req, res) => {
   const list = [...persistedSessions.values()]

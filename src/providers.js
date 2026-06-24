@@ -91,8 +91,33 @@ function tomlValue(toml, key) {
   return m ? m[1] : '';
 }
 
+// Domestic providers that only expose /chat/completions (no /responses).
+// When a codex provider's baseUrl hits one of these, we rewrite config.toml's
+// base_url to the local codex-proxy endpoint and stash the real chat/completions
+// URL + apiKey in settingsConfig.proxyTarget for the proxy to read at request
+// time. See docs/codex-proxy-contract.md (模块 C).
+const DOMESTIC_PROXY_MAP = [
+  { host: 'api.deepseek.com', target: 'https://api.deepseek.com/chat/completions' },
+  { host: 'open.bigmodel.cn', target: 'https://open.bigmodel.cn/api/paas/v4/chat/completions' },
+  { host: 'dashscope.aliyuncs.com', target: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' },
+  { hostRe: /^api\.minimax/i, target: 'https://api.minimaxi.com/v1/chat/completions' },
+];
+
+// If baseUrl points at a domestic chat-only service, return the real
+// /chat/completions URL the proxy should fetch. Otherwise null (直连).
+function detectDomesticTarget(baseUrl) {
+  if (!baseUrl) return null;
+  let host;
+  try { host = new URL(baseUrl).host; } catch (_) { return null; }
+  for (const m of DOMESTIC_PROXY_MAP) {
+    if (m.host && host === m.host) return m.target;
+    if (m.hostRe && m.hostRe.test(host)) return m.target;
+  }
+  return null;
+}
+
 // Build a cc-switch-shaped settingsConfig from simple fields.
-function buildSettingsConfig(appType, { baseUrl, authToken, model }) {
+function buildSettingsConfig(appType, { baseUrl, authToken, model, providerId }) {
   if (appType === 'claude') {
     const env = {};
     if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
@@ -110,16 +135,29 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model }) {
   // bridge codex to those is a local responses↔chat proxy (what cc-switch
   // does). We therefore always emit wire_api="responses" and surface the
   // limitation in the UI rather than generating a config that fails to start.
+  //
+  // For domestic services, config.toml's base_url is rewritten to the local
+  // proxy; the real /chat/completions URL + apiKey are stored in
+  // settingsConfig.proxyTarget for src/codex-proxy.js to read.
+  const realTarget = detectDomesticTarget(baseUrl);
+  const port = process.env.PORT || 3000;
+  const proxyBaseUrl = (realTarget && providerId)
+    ? `http://127.0.0.1:${port}/codex-proxy/${providerId}`
+    : baseUrl;
   const lines = [
     `model_provider = "${provName}"`,
     model ? `model = "${model}"` : '',
     '',
     `[model_providers.${provName}]`,
     `name = "${provName}"`,
-    baseUrl ? `base_url = "${baseUrl}"` : '',
+    proxyBaseUrl ? `base_url = "${proxyBaseUrl}"` : '',
     'wire_api = "responses"',
   ].filter(Boolean);
-  return { auth: { OPENAI_API_KEY: authToken || null }, config: lines.join('\n') + '\n' };
+  const cfg = { auth: { OPENAI_API_KEY: authToken || null }, config: lines.join('\n') + '\n' };
+  if (realTarget) {
+    cfg.proxyTarget = { baseUrl: realTarget, apiKey: authToken || '' };
+  }
+  return cfg;
 }
 
 // Public-safe summary — never leaks a full token (only masked).
@@ -170,11 +208,13 @@ const getProviderRow = getProvider;
 function createProvider({ appType, name, baseUrl, authToken, model, settingsConfig }) {
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
+  // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
+  const id = crypto.randomUUID();
   const cfg = (settingsConfig && typeof settingsConfig === 'object')
     ? settingsConfig
-    : buildSettingsConfig(appType, { baseUrl, authToken, model });
+    : buildSettingsConfig(appType, { baseUrl, authToken, model, providerId: id });
   const p = {
-    id: crypto.randomUUID(),
+    id,
     appType,
     name: String(name).trim(),
     source: 'local',
@@ -200,14 +240,15 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, settings
     if (authToken !== undefined && authToken) cfg.env.ANTHROPIC_AUTH_TOKEN = authToken;
     if (model !== undefined) { if (model) cfg.env.ANTHROPIC_MODEL = model; else delete cfg.env.ANTHROPIC_MODEL; }
   } else {
-    cfg = {
-      ...cfg,
-      ...buildSettingsConfig('codex', {
-        baseUrl: baseUrl !== undefined ? baseUrl : tomlValue(cfg.config, 'base_url'),
-        authToken: authToken || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
-        model: model !== undefined ? model : tomlValue(cfg.config, 'model'),
-      }),
-    };
+    const rebuilt = buildSettingsConfig('codex', {
+      baseUrl: baseUrl !== undefined ? baseUrl : tomlValue(cfg.config, 'base_url'),
+      authToken: authToken || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
+      model: model !== undefined ? model : tomlValue(cfg.config, 'model'),
+      providerId: id,
+    });
+    // Drop a stale proxyTarget if the user switched to a non-domestic baseUrl.
+    cfg = { ...cfg, ...rebuilt };
+    if (!rebuilt.proxyTarget) delete cfg.proxyTarget;
   }
   if (name) p.name = String(name).trim();
   p.settingsConfig = cfg;
