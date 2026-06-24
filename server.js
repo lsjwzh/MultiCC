@@ -5708,7 +5708,8 @@ function gracefulShutdown(sig) {
     else if (Date.now() - t0 > SHUTDOWN_GRACE_MS) { clearInterval(timer); finish('grace timeout'); }
   }, 300);
 }
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+// Ignore SIGTERM (kill) to prevent accidental shutdowns. Use SIGINT (Ctrl+C) to exit.
+process.on('SIGTERM', () => console.log('[multicc] SIGTERM ignored. Use ./multicc stop to stop.'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 server.listen(PORT, () => {
