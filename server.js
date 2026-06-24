@@ -5752,14 +5752,6 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 (async () => {
   try {
-  installBundledSkills();
-  reconcileAllTriggers();
-  // Prune expired temp artifacts now and every 6h.
-  artifacts.cleanup();
-  setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
-})();
-setImmediate(async () => {
-  try {
     PORT = await findAvailablePort(PORT);
   } catch (err) {
     console.error(`[multicc] ${err.message}`);
