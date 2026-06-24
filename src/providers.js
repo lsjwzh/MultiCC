@@ -101,14 +101,31 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model }) {
     return { env };
   }
   const provName = 'custom';
+  let wireApi = 'responses';
+  let effectiveBaseUrl = baseUrl;
+  // DeepSeek/GLM/Qwen/MiniMax only support chat/completions, not responses.
+  // remap to wire_api="chat" and the appropriate chat endpoint.
+  if (baseUrl && baseUrl.includes('api.deepseek.com')) {
+    wireApi = 'chat';
+    effectiveBaseUrl = 'https://api.deepseek.com/chat/completions';
+  } else if (baseUrl && baseUrl.includes('open.bigmodel.cn')) {
+    wireApi = 'chat';
+    effectiveBaseUrl = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+  } else if (baseUrl && baseUrl.includes('dashscope.aliyuncs.com')) {
+    wireApi = 'chat';
+    effectiveBaseUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+  } else if (baseUrl && baseUrl.includes('api.minimax')) {
+    wireApi = 'chat';
+    effectiveBaseUrl = effectiveBaseUrl.replace(/\/v1$/, '/v1/chat/completions');
+  }
   const lines = [
     `model_provider = "${provName}"`,
     model ? `model = "${model}"` : '',
     '',
     `[model_providers.${provName}]`,
     `name = "${provName}"`,
-    baseUrl ? `base_url = "${baseUrl}"` : '',
-    'wire_api = "responses"',
+    effectiveBaseUrl ? `base_url = "${effectiveBaseUrl}"` : '',
+    `wire_api = "${wireApi}"`,
   ].filter(Boolean);
   return { auth: { OPENAI_API_KEY: authToken || null }, config: lines.join('\n') + '\n' };
 }
