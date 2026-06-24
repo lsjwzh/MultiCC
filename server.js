@@ -5714,6 +5714,11 @@ function flushInFlightChats() {
 const SHUTDOWN_GRACE_MS = 60000;   // max time to let in-flight turns finish
 function gracefulShutdown(sig) {
   if (_shuttingDown) return;
+  // Ignore SIGTERM (kill) to prevent accidental shutdowns. Use SIGINT (Ctrl+C) to exit.
+  if (sig === 'SIGTERM') {
+    console.log('[multicc] SIGTERM ignored. Use ./multicc stop to stop.');
+    return;
+  }
   _shuttingDown = true;
   // Exit cleanly, flushing anything still unsaved as a safety net (covers turns
   // that didn't reach `result` in time, or new turns started during drain).
@@ -5747,19 +5752,13 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 (async () => {
   try {
-    PORT = await findAvailablePort(PORT);
-  } catch (err) {
-    console.error(`[multicc] ${err.message}`);
-    process.exit(1);
-  }
-(async () => {
-  try {
-    PORT = await findAvailablePort(PORT);
-  } catch (err) {
-    console.error(`[multicc] ${err.message}`);
-    process.exit(1);
-  }
-(async () => {
+  installBundledSkills();
+  reconcileAllTriggers();
+  // Prune expired temp artifacts now and every 6h.
+  artifacts.cleanup();
+  setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
+})();
+setImmediate(async () => {
   try {
     PORT = await findAvailablePort(PORT);
   } catch (err) {
@@ -5767,13 +5766,12 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.exit(1);
   }
   server.listen(PORT, () => {
-  console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);
-  console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
-  console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
-  installBundledSkills();
-  reconcileAllTriggers();
-  // Prune expired temp artifacts now and every 6h.
-  artifacts.cleanup();
-  setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
-})();
+    console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);
+    console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
+    console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
+    installBundledSkills();
+    reconcileAllTriggers();
+    artifacts.cleanup();
+    setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
+  });
 });
