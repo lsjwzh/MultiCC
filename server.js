@@ -1096,6 +1096,18 @@ function createSession(id) {
   // this they silently fell back to the default login. The codex session-id
   // capture below also uses this provider's CODEX_HOME.
   const provEnv = providers.resolveSpawnEnv(persisted);
+  // tmux panes inherit the tmux *server's* global env (captured at its first
+  // launch), which may carry ANTHROPIC_* routing vars leaked from the shell that
+  // started multicc. For claude sessions, explicitly blank every routing key the
+  // chosen provider does NOT set, so an inherited value can't override the
+  // provider choice (same intent as buildChildEnv for chat). Real values from
+  // the provider override these blanks since they're applied in the same map.
+  const termEnv = { ...provEnv.env };
+  if ((persisted.cli || 'claude') !== 'codex') {
+    for (const k of providers.CLAUDE_ROUTING_KEYS) {
+      if (!(k in termEnv)) termEnv[k] = '';
+    }
+  }
 
   // For Claude: pre-allocate a stable session UUID so chat-mode `--resume` works.
   // For Codex: leave cliSessionId null on first launch and capture it asynchronously
@@ -1110,7 +1122,7 @@ function createSession(id) {
   const launchTime = Date.now();
   if (!tmuxHasSession(id)) {
     console.log(`[multicc] Creating tmux session: ${tmuxSessionName(id)} in ${cwd} (${provider.name} session: ${persisted.cliSessionId || '<pending>'})`);
-    tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(persisted || {}), provEnv.env);
+    tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(persisted || {}), termEnv);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
     isRecovery = true;
@@ -4395,18 +4407,20 @@ function runChatTurn(sessionName, text, opts = {}) {
   console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
 
   const spawnChat = (spawnArgs, isRetry) => {
+    // buildChildEnv strips inherited ANTHROPIC_* routing vars (which may have
+    // leaked into the multicc server's own env) before applying the session's
+    // provider env, so the per-session provider choice is always authoritative.
+    const { env: childEnv } = providers.buildChildEnv(process.env, persisted, {
+      TERM: 'dumb', NO_COLOR: '1',
+      // Let the bundled multicc-trigger skill know who it is and where the
+      // localhost API lives, so it can register/manage triggers for us.
+      MULTICC_SESSION_ID: sessionName,
+      MULTICC_DIR_ID: persisted.dirId || '',
+      MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
+    });
     const proc = spawn(provider.cmd, spawnArgs, {
       cwd: cs.cwd,
-      env: {
-        ...process.env, TERM: 'dumb', NO_COLOR: '1',
-        // Let the bundled multicc-trigger skill know who it is and where the
-        // localhost API lives, so it can register/manage triggers for us.
-        MULTICC_SESSION_ID: sessionName,
-        MULTICC_DIR_ID: persisted.dirId || '',
-        MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
-        // Provider override env (ANTHROPIC_* for claude, CODEX_HOME for codex).
-        ...provEnv.env,
-      },
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     cs.claudeProc = proc;
@@ -4773,9 +4787,17 @@ app.get('/api/detached/:taskId', (req, res) => {
 // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
 function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt) {
   const sysPrompt = rolePrompt ? `${MULTICC_IMG_HINT}\n\n${rolePrompt}` : MULTICC_IMG_HINT;
-  // Per-session provider env, injected into the warm streaming child.
-  const provEnv = providers.resolveSpawnEnv(persisted);
-  const model = persisted.model || (provEnv.skipDefaultModel ? null : claudeDefaultModel());
+  // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
+  // vars before applying the provider env, so the provider choice is always
+  // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
+  // passed through; chat-stream uses it verbatim (no second process.env merge).
+  const { env: childEnv, skipDefaultModel } = providers.buildChildEnv(process.env, persisted, {
+    TERM: 'dumb', NO_COLOR: '1',
+    MULTICC_SESSION_ID: sessionName,
+    MULTICC_DIR_ID: persisted.dirId || '',
+    MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
+  });
+  const model = persisted.model || (skipDefaultModel ? null : claudeDefaultModel());
   const extraArgs = CLAUDE_CHAT_DISALLOWED_TOOLS.length
     ? ['--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(',')] : [];
 
@@ -4784,12 +4806,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
     cwd: cs.cwd,
     sessionId: persisted.cliSessionId,
     model, sysPrompt, extraArgs,
-    env: {
-      MULTICC_SESSION_ID: sessionName,
-      MULTICC_DIR_ID: persisted.dirId || '',
-      MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
-      ...provEnv.env,
-    },
+    env: childEnv,
   });
 
   // An in-flight turn (if any) was already interrupted at the top of
