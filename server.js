@@ -3928,6 +3928,20 @@ function loadChatHistory(sessionName) {
   if (chatHistories.has(sessionName)) return chatHistories.get(sessionName);
   try {
     const data = JSON.parse(fs.readFileSync(chatHistoryPath(sessionName), 'utf8'));
+    // Sanitize empty thinking blocks from models like GLM that return
+    // thinking blocks with only whitespace; Claude API rejects these with
+    // HTTP 400 "each thinking block must contain non-whitespace thinking".
+    if (Array.isArray(data)) {
+      let cleaned = 0;
+      for (const msg of data) {
+        if (!msg || !Array.isArray(msg.content)) continue;
+        msg.content = msg.content.filter((block) => {
+          if (block && block.type === 'thinking' && (!block.thinking || !/\S/.test(block.thinking))) { cleaned++; return false; }
+          return true;
+        });
+      }
+      if (cleaned > 0) console.log(`[multicc] sanitized ${cleaned} empty thinking block(s) from ${data.length} messages`);
+    }
     chatHistories.set(sessionName, data);
     return data;
   } catch (_) {
