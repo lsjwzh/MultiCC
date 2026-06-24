@@ -44,6 +44,21 @@ warn()    { echo "${C_YELLOW}[!]${C_RESET} $*"; }
 err()     { echo "${C_RED}[ERROR]${C_RESET} $*"; }
 step()    { echo ""; echo "${C_BOLD}${C_CYAN}>> $*${C_RESET}"; }
 
+# Generate a random 20-char alphanumeric token. Must be SIGPIPE-safe: under
+# `set -euo pipefail`, a `... | head -c 20` pipeline makes the upstream command
+# exit 141 (SIGPIPE) once head closes the pipe, which would otherwise abort the
+# whole script. Prefer openssl; the trailing `|| true` neutralizes that exit.
+gen_token() {
+  local t=""
+  if command -v openssl >/dev/null 2>&1; then
+    t="$(openssl rand -base64 32 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 20)" || true
+  fi
+  if [ -z "$t" ]; then
+    t="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 20)" || true
+  fi
+  printf '%s' "$t"
+}
+
 banner() {
   echo ""
   echo "${C_BOLD}${C_MAGENTA}╔══════════════════════════════════════════════════════╗${C_RESET}"
@@ -305,12 +320,12 @@ if [ -n "$ACCESS_TOKEN" ]; then
 elif [ -f .env ] && grep -q '^ACCESS_TOKEN=' .env 2>/dev/null; then
   ACCESS_TOKEN="$(grep '^ACCESS_TOKEN=' .env | head -1 | cut -d= -f2-)"
   if [ -z "$ACCESS_TOKEN" ]; then
-    ACCESS_TOKEN="$(cat /dev/urandom 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 20)"
+    ACCESS_TOKEN="$(gen_token)"
   else
     info "Reusing existing ACCESS_TOKEN from .env"
   fi
 else
-  ACCESS_TOKEN="$(cat /dev/urandom 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 20)"
+  ACCESS_TOKEN="$(gen_token)"
 fi
 
 if [ -z "$ACCESS_TOKEN" ]; then
