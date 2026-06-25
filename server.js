@@ -35,6 +35,9 @@ const cron = require('node-cron');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const wechatBridge = require('./wechat-ilink');
 const feishuBridge = require('./feishu-bridge');
+const telegramBridge = require('./telegram-bridge');
+const discordBridge = require('./discord-bridge');
+const slackBridge = require('./slack-bridge');
 const voiceAsr = require('./voice-asr');
 const cronTasks = require('./cron-tasks');
 const webpush = require('web-push');
@@ -4194,6 +4197,20 @@ feishuBridge.init({
   port: PORT,
 });
 app.use('/api/feishu', feishuBridge.router);
+
+// ── Telegram / Discord / Slack Bridges ──
+// Same gateway-process architecture as WeChat/Feishu; each speaks its platform
+// over a NAT-friendly long connection (Telegram long-polling, Discord Gateway
+// WS, Slack Socket Mode) and drives its own __<platform>_gateway__ chat session.
+// SDKs are lazy-loaded inside each bridge, so MultiCC boots fine without them.
+for (const [mount, bridge] of [
+  ['/api/telegram', telegramBridge],
+  ['/api/discord', discordBridge],
+  ['/api/slack', slackBridge],
+]) {
+  bridge.init({ persistedSessions, chatSessions, savePersistedSessions, chatBroadcast, port: PORT });
+  app.use(mount, bridge.router);
+}
 
 // ── Workspace status board ──
 // Per-session live status (runtime only, never persisted). Broadcast to /ws/workspace
