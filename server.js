@@ -5303,7 +5303,7 @@ function handleChatWs(ws, req, urlObj) {
   cs.clients.add(ws);
 
   // Resolve provider info for this session (for token-window display).
-  const persisted = persistedSessions.get(sessionName);
+  // (`persisted` is already declared+validated at the top of handleChatWs.)
   const provId = (persisted && persisted.provider) || null;
   let provName = null;
   if (provId) {
