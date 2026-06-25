@@ -4032,43 +4032,6 @@ function seedTokenUsageFromHistory() {
   }
 }
 
-// On first boot after adding daily aggregation, backfill token_daily.json
-// from token_usage.json + session→provider mapping so the time-window
-// stats (today/week/month) show data immediately.
-function seedTokenDailyFromUsage() {
-  if (fs.existsSync(TOKEN_DAILY_FILE)) return;
-  try {
-    const usage = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8'));
-    let sessions = [];
-    try { sessions = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')); } catch (_) {}
-    const provMap = new Map();
-    for (const s of (Array.isArray(sessions) ? sessions : [])) {
-      if (s.provider) provMap.set(s.id, s.provider);
-    }
-    const today = new Date();
-    const dateKey = today.getFullYear() + '-' +
-      String(today.getMonth() + 1).padStart(2, '0') + '-' +
-      String(today.getDate()).padStart(2, '0');
-    const daily = { [dateKey]: {} };
-    for (const [sid, entry] of Object.entries(usage)) {
-      const inp = entry.inputTokens || 0;
-      const out = entry.outputTokens || 0;
-      const tc = entry.turnCount || 0;
-      if (inp + out === 0) continue;
-      const pid = provMap.get(sid) || '_default_';
-      const prov = daily[dateKey][pid] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
-      prov.inputTokens += inp;
-      prov.outputTokens += out;
-      prov.turnCount += tc;
-      daily[dateKey][pid] = prov;
-    }
-    fs.writeFileSync(TOKEN_DAILY_FILE, JSON.stringify(daily, null, 2));
-    console.log(`[multicc] Seeded token_daily.json from token_usage.json`);
-  } catch (e) {
-    console.error(`[multicc] Failed to seed token_daily.json: ${e.message}`);
-  }
-}
-
 // In-memory cache: sessionName → [ { role, content, ts, cost?, tools? } ]
 const chatHistories = new Map();
 
@@ -6062,7 +6025,6 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
     seedTokenUsageFromHistory();
-    seedTokenDailyFromUsage();
     installBundledSkills();
     reconcileAllTriggers();
     artifacts.cleanup();
