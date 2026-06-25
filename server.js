@@ -3949,9 +3949,47 @@ function accumulateTokenUsage(sessionName, usage) {
   try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(data, null, 2)); } catch (e) {
     console.error(`[multicc] Failed to save token usage: ${e.message}`);
   }
+  // ── Also write to per-day aggregation for time-window queries ──
+  accumulateTokenDaily(sessionName, usage);
 }
 function getTokenUsage() {
   try { return JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) { return {}; }
+}
+
+// ── Per-provider daily token aggregation ──
+// token_daily.json: { "YYYY-MM-DD": { "<providerId>": { inputTokens, outputTokens, turnCount }, ... } }
+// Enables "today / this week / this month" queries per provider.
+const TOKEN_DAILY_FILE = path.join(__dirname, 'token_daily.json');
+
+function accumulateTokenDaily(sessionName, usage) {
+  const inp = usage.input_tokens || 0;
+  const out = usage.output_tokens || 0;
+  if (inp + out === 0) return;
+
+  // Resolve provider from persisted session.
+  const persisted = persistedSessions.get(sessionName);
+  const providerId = (persisted && persisted.provider) || '_default_';
+
+  const today = new Date();
+  const dateKey = today.getFullYear() + '-' +
+    String(today.getMonth() + 1).padStart(2, '0') + '-' +
+    String(today.getDate()).padStart(2, '0');
+
+  let daily = {};
+  try { daily = JSON.parse(fs.readFileSync(TOKEN_DAILY_FILE, 'utf8')); } catch (_) {}
+  if (typeof daily !== 'object' || Array.isArray(daily)) daily = {};
+
+  const dayEntry = daily[dateKey] || {};
+  const prov = dayEntry[providerId] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
+  prov.inputTokens += inp;
+  prov.outputTokens += out;
+  prov.turnCount += 1;
+  dayEntry[providerId] = prov;
+  daily[dateKey] = dayEntry;
+
+  try { fs.writeFileSync(TOKEN_DAILY_FILE, JSON.stringify(daily, null, 2)); } catch (e) {
+    console.error(`[multicc] Failed to save daily token usage: ${e.message}`);
+  }
 }
 
 // One-time migration: seed token_usage.json from existing chat_history/*.json
@@ -4081,6 +4119,20 @@ function chatBroadcast(sessionName, payload) {
       try { client.send(json); } catch (_) {}
     }
   }
+}
+
+// Push updated provider time-window stats to the chat frontend after a turn.
+function broadcastProviderTokenStats(sessionName) {
+  const persisted = persistedSessions.get(sessionName);
+  const provId = (persisted && persisted.provider) || null;
+  const dailyWindows = providers.readDailyWindows();
+  const provWindows = provId ? {
+    today: (dailyWindows.today && dailyWindows.today[provId]) || null,
+    week: (dailyWindows.week && dailyWindows.week[provId]) || null,
+    month: (dailyWindows.month && dailyWindows.month[provId]) || null,
+    all: (dailyWindows.all && dailyWindows.all[provId]) || null,
+  } : null;
+  chatBroadcast(sessionName, { type: 'provider_token_stats', windows: provWindows });
 }
 
 // ── WeChat Bridge ──
@@ -4498,6 +4550,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
         cost: cs.currentCost, usage: Object.keys(usage).length ? usage : undefined, ts: Date.now(),
       });
       accumulateTokenUsage(sessionName, usage);
+      broadcastProviderTokenStats(sessionName);
       cs.chatTurnCount++;
       cs._resultSaved = true;
     }
@@ -4825,6 +4878,7 @@ function runChatTurn(sessionName, text, opts = {}) {
               cost: null, usage, ts: Date.now(),
             });
             accumulateTokenUsage(sessionName, usage);
+            broadcastProviderTokenStats(sessionName);
             cs.chatTurnCount++;
             cs._resultSaved = true;
           }
@@ -5248,11 +5302,30 @@ function handleChatWs(ws, req, urlObj) {
 
   cs.clients.add(ws);
 
+  // Resolve provider info for this session (for token-window display).
+  const persisted = persistedSessions.get(sessionName);
+  const provId = (persisted && persisted.provider) || null;
+  let provName = null;
+  if (provId) {
+    try { provName = providers.getProvider(undefined, provId)?.name || null; } catch (_) {}
+  }
+  // Time-window token stats for the session's provider.
+  const dailyWindows = providers.readDailyWindows();
+  const provWindows = provId ? {
+    today: (dailyWindows.today && dailyWindows.today[provId]) || null,
+    week: (dailyWindows.week && dailyWindows.week[provId]) || null,
+    month: (dailyWindows.month && dailyWindows.month[provId]) || null,
+    all: (dailyWindows.all && dailyWindows.all[provId]) || null,
+  } : null;
+
   ws.send(JSON.stringify({
     type: 'system', subtype: 'init',
     cwd: cs.cwd, session: sessionName, session_id: sessionName,
     cli: cs.cli,
     is_streaming: cs.isStreaming,
+    providerId: provId,
+    providerName: provName,
+    providerTokenWindows: provWindows,
   }));
 
   // Replay saved history + in-progress assistant response (if any)
