@@ -398,14 +398,15 @@ function resolveSpawnEnv(session) {
 }
 
 // ── Provider token usage stats ────────────────────────────────────────────
-// Scans chat_history/*.json to aggregate usage (input_tokens / output_tokens)
-// per provider.  Returns { stats: [...], total: {...} } sorted by totalTokens
-// descending.  Sessions without a provider are grouped into "_default_".
-const CHAT_HISTORY_DIR = path.join(__dirname, '..', 'chat_history');
+// Reads token_usage.json (a persistent per-session accumulator that never gets
+// trimmed, unlike chat_history's rolling window). Falls back to scanning
+// chat_history/*.json for any sessions not yet represented in the accumulator.
+// Sessions without a provider are grouped into "_default_".
 const SESSIONS_FILE = path.join(__dirname, '..', 'sessions.json');
+const TOKEN_USAGE_FILE = path.join(__dirname, '..', 'token_usage.json');
 
 function getProviderUsageStats() {
-  const providerMap = new Map();  // providerId → { inputTokens, outputTokens, turnCount, sessionSet }
+  const providerMap = new Map();  // providerId → { inputTokens, outputTokens, turnCount, sessionCount }
   const total = { inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
 
   // Load persisted sessions to map session id → provider.
@@ -418,55 +419,39 @@ function getProviderUsageStats() {
         sessionProviderMap.set(s.id, pid || null);
       }
     }
-  } catch (_) { /* ignore unreadable sessions.json */ }
+  } catch (_) {}
 
   // Load provider metadata for names & appType.
   const providers = loadStore();
-  const providerMeta = new Map();  // id → { name, appType }
+  const providerMeta = new Map();
   for (const p of providers) {
     providerMeta.set(p.id, { name: p.name, appType: p.appType });
   }
 
-  let files;
-  try {
-    files = fs.readdirSync(CHAT_HISTORY_DIR);
-  } catch (_) { return { stats: [], total }; }
+  // Primary source: persistent token_usage.json (never trimmed)
+  let accum = {};
+  try { accum = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
+  if (typeof accum !== 'object' || Array.isArray(accum)) accum = {};
 
-  for (const fname of files) {
-    if (!fname.endsWith('.json')) continue;
-    // Skip system sessions.
-    if (fname === '__aux__.json' || fname === '__gateway__.json') continue;
-
-    const sessionId = fname.replace(/\.json$/, '');
+  for (const [sessionId, entry] of Object.entries(accum)) {
     const providerId = sessionProviderMap.get(sessionId) || null;
     const key = (providerId === null || providerId === '') ? '_default_' : providerId;
+    const inp = entry.inputTokens || 0;
+    const out = entry.outputTokens || 0;
+    const tc = entry.turnCount || 1;
 
-    try {
-      const raw = fs.readFileSync(path.join(CHAT_HISTORY_DIR, fname), 'utf8');
-      const messages = JSON.parse(raw);
-      if (!Array.isArray(messages)) continue;
+    if (!providerMap.has(key)) {
+      providerMap.set(key, { inputTokens: 0, outputTokens: 0, turnCount: 0, sessions: new Set() });
+    }
+    const agg = providerMap.get(key);
+    agg.inputTokens += inp;
+    agg.outputTokens += out;
+    agg.turnCount += tc;
+    agg.sessions.add(sessionId);
 
-      for (const msg of messages) {
-        const usage = msg.usage;
-        if (!usage || (typeof usage.input_tokens !== 'number' && typeof usage.output_tokens !== 'number')) continue;
-
-        const input = usage.input_tokens || 0;
-        const output = usage.output_tokens || 0;
-
-        if (!providerMap.has(key)) {
-          providerMap.set(key, { inputTokens: 0, outputTokens: 0, turnCount: 0, sessions: new Set() });
-        }
-        const agg = providerMap.get(key);
-        agg.inputTokens += input;
-        agg.outputTokens += output;
-        agg.turnCount += 1;
-        agg.sessions.add(sessionId);
-
-        total.inputTokens += input;
-        total.outputTokens += output;
-        total.turnCount += 1;
-      }
-    } catch (_) { /* skip corrupted / unreadable files */ }
+    total.inputTokens += inp;
+    total.outputTokens += out;
+    total.turnCount += tc;
   }
 
   total.totalTokens = total.inputTokens + total.outputTokens;

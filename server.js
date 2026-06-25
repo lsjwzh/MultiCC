@@ -3932,6 +3932,68 @@ const CHAT_HISTORY_DIR = path.join(__dirname, 'chat_history');
 try { fs.mkdirSync(CHAT_HISTORY_DIR, { recursive: true }); } catch (_) {}
 const MAX_CHAT_MESSAGES = 50;  // keep last N messages per session
 
+// ── Per-session token usage accumulator ──
+// chat_history has a rolling window (50 messages), so older usage data gets
+// trimmed. This file stores the CUMULATIVE total per session and never shrinks.
+const TOKEN_USAGE_FILE = path.join(__dirname, 'token_usage.json');
+function accumulateTokenUsage(sessionName, usage) {
+  if (!usage || (!usage.input_tokens && !usage.output_tokens)) return;
+  let data = {};
+  try { data = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
+  if (typeof data !== 'object' || Array.isArray(data)) data = {};
+  const cur = data[sessionName] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
+  cur.inputTokens += usage.input_tokens || 0;
+  cur.outputTokens += usage.output_tokens || 0;
+  cur.turnCount += 1;
+  data[sessionName] = cur;
+  try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(data, null, 2)); } catch (e) {
+    console.error(`[multicc] Failed to save token usage: ${e.message}`);
+  }
+}
+function getTokenUsage() {
+  try { return JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) { return {}; }
+}
+
+// One-time migration: seed token_usage.json from existing chat_history/*.json
+// so historical usage (mostly codex) isn't lost on first boot after upgrade.
+function seedTokenUsageFromHistory() {
+  let accum = {};
+  try { accum = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
+  if (typeof accum !== 'object' || Array.isArray(accum)) accum = {};
+  let seeded = 0;
+
+  let files;
+  try { files = fs.readdirSync(CHAT_HISTORY_DIR); } catch (_) { return; }
+  for (const fname of files) {
+    if (!fname.endsWith('.json')) continue;
+    if (fname === '__aux__.json' || fname === '__gateway__.json') continue;
+    const sessionId = fname.replace(/\.json$/, '');
+    if (accum[sessionId]) continue;  // already tracked
+
+    try {
+      const msgs = JSON.parse(fs.readFileSync(path.join(CHAT_HISTORY_DIR, fname), 'utf8'));
+      if (!Array.isArray(msgs)) continue;
+      let inp = 0, out = 0, turns = 0;
+      for (const m of msgs) {
+        const u = m.usage;
+        if (!u || (typeof u.input_tokens !== 'number' && typeof u.output_tokens !== 'number')) continue;
+        inp += u.input_tokens || 0;
+        out += u.output_tokens || 0;
+        turns += 1;
+      }
+      if (turns > 0) {
+        accum[sessionId] = { inputTokens: inp, outputTokens: out, turnCount: turns };
+        seeded++;
+      }
+    } catch (_) {}
+  }
+
+  if (seeded > 0) {
+    try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(accum, null, 2)); } catch (_) {}
+    console.log(`[multicc] Seeded token_usage.json from chat_history: ${seeded} session(s)`);
+  }
+}
+
 // In-memory cache: sessionName → [ { role, content, ts, cost?, tools? } ]
 const chatHistories = new Map();
 
@@ -4429,11 +4491,13 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
   if (evt.type === 'result') {
     cs.currentCost = evt.total_cost_usd || null;
     if (cs.currentAssistantText || cs.currentToolCalls.length) {
+      const usage = evt.usage || {};
       appendChatMessage(sessionName, {
         role: 'assistant', content: cs.currentAssistantText,
         tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-        cost: cs.currentCost, ts: Date.now(),
+        cost: cs.currentCost, usage: Object.keys(usage).length ? usage : undefined, ts: Date.now(),
       });
+      accumulateTokenUsage(sessionName, usage);
       cs.chatTurnCount++;
       cs._resultSaved = true;
     }
@@ -4760,6 +4824,7 @@ function runChatTurn(sessionName, text, opts = {}) {
               tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
               cost: null, usage, ts: Date.now(),
             });
+            accumulateTokenUsage(sessionName, usage);
             cs.chatTurnCount++;
             cs._resultSaved = true;
           }
@@ -5846,6 +5911,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);
     console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
+    seedTokenUsageFromHistory();
     installBundledSkills();
     reconcileAllTriggers();
     artifacts.cleanup();
