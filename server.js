@@ -5851,4 +5851,4 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     artifacts.cleanup();
     setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
   });
-});
+})();
