@@ -5946,32 +5946,119 @@ function reconcileAllTriggers() {
   if (n) console.log(`[multicc/trigger] armed triggers for ${n} session(s)`);
 }
 
-// Copy every bundled skill under ./skills into ~/.claude/skills so every claude
-// session multicc spawns can discover them. Re-copies a skill when its
-// .skill-version differs (or is missing). Drop a new skill dir in ./skills and it
-// installs itself on the next startup — no code change needed here.
+// ── Skill sync: keep Claude & Codex skills consistent ──
+// Two-tier: (1) bundled multicc skills from ./skills copied to both providers;
+// (2) shared skills from ~/.agents/skills symlinked to both providers.
+// Runs on startup + every 5 min + on chokidar changes to ~/.agents/skills.
+
+const SKILL_PROVIDERS = [
+  { name: 'claude', dir: path.join(os.homedir(), '.claude', 'skills'), protectedSubdirs: [] },
+  { name: 'codex', dir: path.join(os.homedir(), '.codex', 'skills'), protectedSubdirs: ['.system'] },
+];
+const AGENTS_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
+
+function _readSkillVer(dir) {
+  try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); } catch (_) { return null; }
+}
+
+function _isSkillDir(dir) {
+  try { return fs.statSync(dir).isDirectory() && fs.existsSync(path.join(dir, 'SKILL.md')); } catch (_) { return false; }
+}
+
+// (1) Copy bundled multicc skills (./skills/) into each provider's skill dir.
+// Re-copies when .skill-version differs or is missing.
 function installBundledSkills() {
   const srcRoot = path.join(__dirname, 'skills');
-  const destRoot = path.join(os.homedir(), '.claude', 'skills');
-  const readVer = (dir) => { try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); } catch (_) { return null; } };
   let names;
   try { names = fs.readdirSync(srcRoot); } catch (_) { return; }
   for (const name of names) {
     try {
       const src = path.join(srcRoot, name);
-      if (!fs.statSync(src).isDirectory()) continue;
-      if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;   // not a skill dir
-      const dest = path.join(destRoot, name);
-      if (fs.existsSync(dest) && readVer(dest) === readVer(src)) continue;
-      fs.mkdirSync(destRoot, { recursive: true });
-      fs.rmSync(dest, { recursive: true, force: true });
-      fs.cpSync(src, dest, { recursive: true });
-      // Make every helper under bin/ executable (mtrigger, artifact, …).
-      try { for (const f of fs.readdirSync(path.join(dest, 'bin'))) fs.chmodSync(path.join(dest, 'bin', f), 0o755); } catch (_) {}
-      console.log(`[multicc/skills] installed skill → ~/.claude/skills/${name}`);
+      if (!_isSkillDir(src)) continue;
+      for (const prov of SKILL_PROVIDERS) {
+        const dest = path.join(prov.dir, name);
+        if (fs.existsSync(dest) && _readSkillVer(dest) === _readSkillVer(src)) continue;
+        fs.mkdirSync(prov.dir, { recursive: true });
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.cpSync(src, dest, { recursive: true });
+        try { for (const f of fs.readdirSync(path.join(dest, 'bin'))) fs.chmodSync(path.join(dest, 'bin', f), 0o755); } catch (_) {}
+        console.log(`[multicc/skills] installed bundled → ~/.${prov.name}/skills/${name}`);
+      }
     } catch (e) {
-      console.warn(`[multicc/skills] install ${name} failed: ${e.message}`);
+      console.warn(`[multicc/skills] install bundled ${name} failed: ${e.message}`);
     }
+  }
+}
+
+// (2) Symlink ~/.agents/skills/* into each provider's skill dir.
+// If a target path already exists as a non-symlink real dir (user put their own
+// version there), leave it alone and log. Protected subdirs (e.g. .system for
+// Codex) are never touched.
+function syncSharedSkills() {
+  let linkCount = 0;
+  let skipCount = 0;
+
+  let agentNames;
+  try { agentNames = fs.readdirSync(AGENTS_SKILLS_DIR); } catch (_) { return { linkCount: 0, skipCount: 0 }; }
+
+  for (const prov of SKILL_PROVIDERS) {
+    fs.mkdirSync(prov.dir, { recursive: true });
+    const protectedSet = new Set(prov.protectedSubdirs || []);
+
+    for (const name of agentNames) {
+      if (protectedSet.has(name)) continue;  // never touch provider-protected dirs
+
+      const src = path.join(AGENTS_SKILLS_DIR, name);
+      if (!_isSkillDir(src)) continue;
+
+      const dest = path.join(prov.dir, name);
+
+      // Already a correct symlink? Resolve to compare (existing links may be
+      // relative like ../../.agents/skills/foo, while src is absolute).
+      try {
+        const lstat = fs.lstatSync(dest);
+        if (lstat.isSymbolicLink()) {
+          try { if (fs.realpathSync(dest) === fs.realpathSync(src)) continue; } catch (_) {}
+        }
+      } catch (_) { /* dest doesn't exist yet */ }
+
+      // Real directory exists (user's own version)? Don't overwrite — skip.
+      if (fs.existsSync(dest) && !fs.lstatSync(dest).isSymbolicLink()) {
+        continue;
+      }
+
+      // Remove broken/wrong symlink and create correct one.
+      try { fs.unlinkSync(dest); } catch (_) {}
+      try {
+        fs.symlinkSync(src, dest);
+        linkCount++;
+      } catch (e) {
+        console.warn(`[multicc/skills] symlink ${prov.name} ← ${name}: ${e.message}`);
+        skipCount++;
+      }
+    }
+  }
+  if (linkCount > 0 || skipCount > 0) {
+    console.log(`[multicc/skills] shared sync: ${linkCount} linked, ${skipCount} skipped`);
+  }
+  return { linkCount, skipCount };
+}
+
+let _skillsSyncWatcher = null;
+function watchSharedSkills() {
+  if (_skillsSyncWatcher) return;
+  try {
+    if (!fs.existsSync(AGENTS_SKILLS_DIR)) return;
+    _skillsSyncWatcher = chokidar.watch(AGENTS_SKILLS_DIR, {
+      ignoreInitial: true,
+      depth: 0,
+      awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 500 },
+    });
+    _skillsSyncWatcher.on('addDir', () => syncSharedSkills());
+    _skillsSyncWatcher.on('unlinkDir', () => syncSharedSkills());
+    console.log(`[multicc/skills] watching ~/.agents/skills for changes`);
+  } catch (e) {
+    // non-fatal — periodic polling is the fallback
   }
 }
 
@@ -6064,7 +6151,10 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
     seedTokenUsageFromHistory();
-    installBundledSkills();
+    installBundledSkills();                         // bundled multicc skills → both Claude & Codex
+    syncSharedSkills();                             // ~/.agents/skills symlinks → both Claude & Codex
+    watchSharedSkills();                            // real-time chokidar watch on ~/.agents/skills
+    setInterval(syncSharedSkills, 5 * 60 * 1000).unref();  // periodic fallback every 5 min
     reconcileAllTriggers();
     artifacts.cleanup();
     setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
