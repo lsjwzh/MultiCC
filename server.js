@@ -5268,8 +5268,13 @@ function handleChatWs(ws, req, urlObj) {
       streaming: cs.isStreaming || false,
     });
   }
-  if (replayMessages.length > 0) {
-    ws.send(JSON.stringify({ type: 'chat_history', messages: replayMessages }));
+  // Include authoritative cumulative token usage from the persistent
+  // accumulator so the frontend doesn't need to reconstruct it from the
+  // rolling chat_history window (which trims old messages).
+  const tokenUsage = getTokenUsage();
+  const sessionTokenUsage = tokenUsage[sessionName] || null;
+  if (replayMessages.length > 0 || sessionTokenUsage) {
+    ws.send(JSON.stringify({ type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage }));
   }
 
   // If a stream is in progress, replay buffered events so reconnected client catches up
