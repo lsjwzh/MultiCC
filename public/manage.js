@@ -3613,6 +3613,90 @@ async function loadProviders() {
   if (importBtn) importBtn.disabled = !_providerData.ccSwitchAvailable;
   renderProviderDefaults();
   renderProviderList();
+  loadGlobalUsage();
+}
+
+// ── Global Claude Code token usage (from ~/.claude/projects transcripts) ──
+let _globalUsage = null;
+let _guWindow = 'month';
+
+async function loadGlobalUsage(force) {
+  const body = document.getElementById('global-usage-body');
+  if (body && force) body.innerHTML = '<span style="color:var(--faint);font-size:13px">重新扫描中…</span>';
+  try {
+    const base = '/api/token-usage/global';
+    const qs = tokenQS('?');
+    const url = base + qs + (force ? (qs ? '&refresh=1' : '?refresh=1') : '');
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _globalUsage = await res.json();
+  } catch (e) {
+    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(e.message)}</span>`;
+    return;
+  }
+  renderGlobalUsage();
+}
+
+function setGuWindow(w) { _guWindow = w; renderGlobalUsage(); }
+
+function renderGuTrend() {
+  const byDay = (_globalUsage && _globalUsage.byDay) || {};
+  const days = Object.keys(byDay).sort().slice(-14);
+  if (!days.length) return '';
+  const totals = days.map(d => Object.values(byDay[d]).reduce((a, b) => a + b, 0));
+  const max = Math.max(...totals, 1);
+  const bars = days.map((d, i) => {
+    const pct = Math.max(2, Math.round(totals[i] / max * 100));
+    return `<div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--faint);margin-bottom:2px">
+      <span style="width:48px">${d.slice(5)}</span>
+      <div style="flex:1;background:var(--bg-soft);border-radius:3px;overflow:hidden;height:11px"><div style="width:${pct}%;height:100%;background:var(--amber);opacity:.55"></div></div>
+      <span style="width:56px;text-align:right">${formatTokens(totals[i])}</span>
+    </div>`;
+  }).join('');
+  return `<div style="margin-top:12px"><div style="font-size:11px;color:var(--faint);margin-bottom:6px">近 ${days.length} 个有活动的日子（含缓存总 token/天）</div>${bars}</div>`;
+}
+
+function renderGlobalUsage() {
+  const body = document.getElementById('global-usage-body');
+  if (!body || !_globalUsage) return;
+  document.querySelectorAll('#gu-tabs .gu-tab').forEach(b => {
+    b.classList.toggle('btn-green', b.dataset.w === _guWindow);
+  });
+  const w = _globalUsage.windows[_guWindow] || {};
+  const rows = Object.entries(w).map(([model, b]) => ({
+    model, ...b, total: b.inputTokens + b.outputTokens + b.cacheWrite + b.cacheRead,
+  })).sort((a, b) => b.total - a.total);
+  if (!rows.length) { body.innerHTML = '<span style="color:var(--faint);font-size:13px">该时段暂无数据</span>'; return; }
+  const ft = formatTokens;
+  let tin = 0, tout = 0, tcw = 0, tcr = 0, tmsg = 0;
+  const trh = rows.map(r => {
+    tin += r.inputTokens; tout += r.outputTokens; tcw += r.cacheWrite; tcr += r.cacheRead; tmsg += r.msgs;
+    const isClaude = /claude|opus|haiku|sonnet|fable/i.test(r.model);
+    return `<tr>
+      <td style="padding:4px 8px;font-size:11px;color:${isClaude ? 'var(--amber)' : 'var(--faint)'}">${escapeHtml(r.model)}</td>
+      <td style="padding:4px 8px;text-align:right">${ft(r.inputTokens)}</td>
+      <td style="padding:4px 8px;text-align:right">${ft(r.outputTokens)}</td>
+      <td style="padding:4px 8px;text-align:right;color:var(--faint)">${ft(r.cacheWrite)}</td>
+      <td style="padding:4px 8px;text-align:right;color:var(--faint)">${ft(r.cacheRead)}</td>
+      <td style="padding:4px 8px;text-align:right;font-weight:600">${ft(r.total)}</td>
+    </tr>`;
+  }).join('');
+  const fresh = tin + tout, grand = tin + tout + tcw + tcr;
+  const gen = _globalUsage.generatedAt ? new Date(_globalUsage.generatedAt).toLocaleTimeString() : '';
+  body.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:var(--faint);font-size:11px">
+        <th style="text-align:left;padding:4px 8px">模型</th><th style="text-align:right;padding:4px 8px">输入</th><th style="text-align:right;padding:4px 8px">输出</th><th style="text-align:right;padding:4px 8px">缓存写</th><th style="text-align:right;padding:4px 8px">缓存读</th><th style="text-align:right;padding:4px 8px">总计</th>
+      </tr></thead>
+      <tbody>${trh}</tbody>
+      <tfoot><tr style="border-top:1px solid var(--line);font-weight:600">
+        <td style="text-align:left;padding:6px 8px">合计</td><td style="text-align:right;padding:6px 8px">${ft(tin)}</td><td style="text-align:right;padding:6px 8px">${ft(tout)}</td><td style="text-align:right;padding:6px 8px">${ft(tcw)}</td><td style="text-align:right;padding:6px 8px">${ft(tcr)}</td><td style="text-align:right;padding:6px 8px">${ft(grand)}</td>
+      </tr></tfoot>
+    </table>
+    <div style="margin-top:8px;font-size:12px;color:var(--muted)">
+      新鲜 token（输入+输出，反映真实工作量）：<b style="color:var(--text)">${ft(fresh)}</b> · 含缓存总量：${ft(grand)} · ${tmsg} 次响应${gen ? ` · 扫描于 ${gen}` : ''}
+    </div>
+    ${renderGuTrend()}`;
 }
 
 async function importProviders() {

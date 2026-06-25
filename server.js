@@ -47,6 +47,7 @@ const services = require('./src/services');
 const state = require('./src/state');
 const artifacts = require('./src/artifacts');
 const providers = require('./src/providers');
+const tokenGlobal = require('./src/token-global');
 const { mountCodexProxy } = require('./src/codex-proxy');
 const app = express();
 
@@ -3817,6 +3818,19 @@ app.get('/api/providers/stats', (req, res) => {
   try {
     const stats = providers.getProviderUsageStats();
     res.json(stats);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Global Claude Code token usage, read from the claude CLI transcripts under
+// ~/.claude/projects (ground truth, covers ALL usage — not just multicc turns).
+// Independent of the per-provider stats above; grouped by model + day. Cached
+// (~120s); pass ?refresh=1 to force a re-scan.
+app.get('/api/token-usage/global', async (req, res) => {
+  try {
+    const data = await tokenGlobal.getGlobalUsage({ force: req.query.refresh === '1' });
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

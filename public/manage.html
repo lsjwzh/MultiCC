@@ -544,6 +544,23 @@
           </div>
 
           <div class="settings-card">
+            <div class="sc-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <span>全部 Claude Code 用量（按模型 · 最准）</span>
+              <button class="btn" style="padding:4px 10px;font-size:12px" onclick="loadGlobalUsage(true)">重新扫描</button>
+            </div>
+            <div class="sc-body">
+              <p style="font-size:12px;color:var(--faint);margin:0 0 8px">直接读取 <code>~/.claude/projects</code> 会话转录，覆盖<b>本机全部 Claude Code 用量</b>（含你在终端里直接跑的、与 multicc 无关的），按 requestId 去重。与上方「per-provider 统计」口径不同，此处为全局只读参考。<span style="color:var(--amber)">琥珀色</span> = Claude 官方模型。</p>
+              <div id="gu-tabs" style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+                <button class="btn gu-tab" data-w="today" onclick="setGuWindow('today')">今天</button>
+                <button class="btn gu-tab" data-w="week" onclick="setGuWindow('week')">本周</button>
+                <button class="btn gu-tab" data-w="month" onclick="setGuWindow('month')">本月</button>
+                <button class="btn gu-tab" data-w="all" onclick="setGuWindow('all')">全部</button>
+              </div>
+              <div id="global-usage-body"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+            </div>
+          </div>
+
+          <div class="settings-card">
             <div class="sc-header">新增 Provider</div>
             <div class="sc-body">
               <div class="setting-row"><label>模板</label>
