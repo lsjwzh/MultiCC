@@ -3673,8 +3673,8 @@ function renderProviderList() {
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
       <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-soft);color:var(--faint)">${escapeHtml(p.appType)}</span>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span></div>
-        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${p.model ? ' · ' + escapeHtml(p.model) : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}${statHtml}</div>
+        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span>${statHtml ? `<span style="font-weight:400;font-size:11px;color:var(--amber);margin-left:4px">${statHtml}</span>` : ''}</div>
+        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${p.model ? ' · ' + escapeHtml(p.model) : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>

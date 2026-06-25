@@ -192,6 +192,7 @@ let _pendingCancel = false; // cancel requested while WS was disconnected
 let _contextWindow = 1000000;
 let _usedTokens = 0;
 let _costText = '';  // latest cost summary string, kept separate from the context readout
+let _sessionTokens = { input: 0, output: 0 };  // per-session cumulative token usage
 
 let currentMsgEl = null;
 let currentTextContent = '';
@@ -436,6 +437,11 @@ function handleEvent(msg) {
       // single judge (see 'notify' case).
       if (msg.total_cost_usd) {
         _costText = `$${msg.total_cost_usd.toFixed(4)} | ${msg.duration_ms}ms | ${msg.num_turns} turn(s)`;
+      }
+      // Accumulate per-session token totals.
+      if (msg.usage) {
+        _sessionTokens.input += msg.usage.input_tokens || 0;
+        _sessionTokens.output += msg.usage.output_tokens || 0;
       }
       updateContextBar(msg.usage, msg.modelUsage);
       updateUI();
@@ -812,6 +818,19 @@ function replayHistory(messages) {
       console.warn('[multicc] replayHistory: skipped message', mi, err.message);
     }
   }
+  // Compute cumulative session token usage from all assistant messages.
+  _sessionTokens = { input: 0, output: 0 };
+  for (const m of messages) {
+    if (m.usage && m.role === 'assistant') {
+      _sessionTokens.input += m.usage.input_tokens || 0;
+      _sessionTokens.output += m.usage.output_tokens || 0;
+    }
+  }
+  // Rebuild context bar with latest session totals (cost data may have been in history too).
+  if (_sessionTokens.input + _sessionTokens.output > 0) {
+    _usedTokens = _sessionTokens.input + _sessionTokens.output;
+    updateContextBar();
+  }
   scrollToBottom();
   setTimeout(scrollToBottom, 300);
 }
@@ -975,7 +994,7 @@ function updateContextBar(usage, modelUsage) {
       if (modelUsage[key].contextWindow) _contextWindow = modelUsage[key].contextWindow;
     }
   }
-  // Calculate used tokens
+  // Calculate used tokens for the current turn
   if (usage) {
     const input = usage.input_tokens || 0;
     const output = usage.output_tokens || 0;
@@ -983,20 +1002,22 @@ function updateContextBar(usage, modelUsage) {
     const cacheCreate = usage.cache_creation_input_tokens || 0;
     _usedTokens = input + output + cacheRead + cacheCreate;
   }
+  const total = _sessionTokens.input + _sessionTokens.output;
+  const parts = [];
+  if (_costText) parts.push(`<span style="margin-right:8px">${escHtml(_costText)}</span>`);
+  if (total > 0) {
+    const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1).replace(/\.0$/,'')+'M' : n >= 1e3 ? (n/1e3).toFixed(1).replace(/\.0$/,'')+'K' : String(n);
+    parts.push(`<span style="margin-right:8px;color:var(--faint)">累计 ${fmt(total)} tokens（in ${fmt(_sessionTokens.input)} / out ${fmt(_sessionTokens.output)}）</span>`);
+  }
   if (_usedTokens > 0) {
     const pct = Math.min(100, (_usedTokens / _contextWindow) * 100);
     const color = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#3fb950';
     const usedK = (_usedTokens / 1000).toFixed(1);
     const totalK = (_contextWindow / 1000).toFixed(0);
-    // Rebuild from scratch each time — never read back costBar's own rendered
-    // content, or the "Context: ..." readout concatenates onto itself forever.
-    costBar.innerHTML =
-      (_costText ? `<span style="margin-right:12px">${escHtml(_costText)}</span>` : '') +
-      `<span style="color:${color}">Context: ${usedK}k / ${totalK}k (${pct.toFixed(1)}%)</span>` +
-      `<span style="display:inline-block;width:80px;height:6px;background:#21262d;border-radius:3px;margin-left:6px;vertical-align:middle;">` +
-        `<span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span>` +
-      `</span>`;
+    parts.push(`<span style="color:${color}">Context: ${usedK}k / ${totalK}k (${pct.toFixed(1)}%)</span>`);
+    parts.push(`<span style="display:inline-block;width:80px;height:6px;background:#21262d;border-radius:3px;margin-left:6px;vertical-align:middle;"><span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span></span>`);
   }
+  if (parts.length) costBar.innerHTML = parts.join('');
 }
 
 function scrollToBottom() {
