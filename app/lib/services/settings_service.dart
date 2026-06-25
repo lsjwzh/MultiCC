@@ -10,6 +10,7 @@ class SettingsService {
   static const _keyNotify = 'multicc_notifications_enabled';
   static const _keyKeepAlive = 'multicc_keepalive_enabled';
   static const _keyFontScale = 'multicc_font_scale';
+  static const _keyLang = 'multicc_lang';
 
   static SettingsService? _instance;
 
@@ -27,7 +28,8 @@ class SettingsService {
     if (_instance == null) {
       _instance = SettingsService._();
       _instance!._prefs = await SharedPreferences.getInstance();
-      _instance!.fontScale.value = _instance!._prefs.getDouble(_keyFontScale) ?? 1.0;
+      _instance!.fontScale.value =
+          _instance!._prefs.getDouble(_keyFontScale) ?? 1.0;
     }
     return _instance!;
   }
@@ -36,6 +38,7 @@ class SettingsService {
   String get token => _prefs.getString(_keyToken) ?? '';
   String get session => _prefs.getString(_keySession) ?? '';
   String get cwd => _prefs.getString(_keyCwd) ?? '';
+  String get lang => _prefs.getString(_keyLang) ?? 'zh';
 
   /// Default Claude model for newly created chats ('' = follow Claude default).
   String get defaultModel => _prefs.getString(_keyDefaultModel) ?? '';
@@ -64,9 +67,15 @@ class SettingsService {
     if (token != null) await _prefs.setString(_keyToken, token.trim());
     if (session != null) await _prefs.setString(_keySession, session);
     if (cwd != null) await _prefs.setString(_keyCwd, cwd);
-    if (defaultModel != null) await _prefs.setString(_keyDefaultModel, defaultModel);
-    if (notificationsEnabled != null) await _prefs.setBool(_keyNotify, notificationsEnabled);
-    if (keepAliveEnabled != null) await _prefs.setBool(_keyKeepAlive, keepAliveEnabled);
+    if (defaultModel != null) {
+      await _prefs.setString(_keyDefaultModel, defaultModel);
+    }
+    if (notificationsEnabled != null) {
+      await _prefs.setBool(_keyNotify, notificationsEnabled);
+    }
+    if (keepAliveEnabled != null) {
+      await _prefs.setBool(_keyKeepAlive, keepAliveEnabled);
+    }
     if (fontScale != null) {
       await _prefs.setDouble(_keyFontScale, fontScale);
       this.fontScale.value = fontScale;
@@ -88,8 +97,12 @@ class SettingsService {
     if (session.isNotEmpty) params['session'] = session;
     if (resumeId != null && resumeId.isNotEmpty) params['resume'] = resumeId;
 
-    final query = params.entries.map((e) =>
-        '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}').join('&');
+    final query = params.entries
+        .map(
+          (e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
+        )
+        .join('&');
 
     return '$wsScheme://$bare/ws/chat${query.isNotEmpty ? '?$query' : ''}';
   }

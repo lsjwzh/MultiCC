@@ -234,7 +234,9 @@ class _ChatSheetState extends State<_ChatSheet>
                 ignoring: scrimOp < 0.02,
                 child: GestureDetector(
                   onTap: _collapse,
-                  child: Container(color: Colors.black.withOpacity(scrimOp)),
+                  child: Container(
+                    color: Colors.black.withValues(alpha: scrimOp),
+                  ),
                 ),
               ),
             ),
@@ -1014,188 +1016,185 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       builder: (sheetCtx) => SafeArea(
         child: SizedBox(
           height: MediaQuery.of(sheetCtx).size.height * 0.88,
-          child: Consumer<SessionManager>(
-            builder: (context, mgr, _) {
+          child: AnimatedBuilder(
+            animation: Listenable.merge([_workspace, widget.mgr]),
+            builder: (context, _) {
               Directory dir = widget.directory;
-              for (final d in mgr.directories) {
+              for (final d in widget.mgr.directories) {
                 if (d.id == widget.directory.id) {
                   dir = d;
                   break;
                 }
               }
-              return AnimatedBuilder(
-                animation: _workspace,
-                builder: (context, _) {
-                  final groups = mgr.sessionsByCliKind(dir.id);
-                  final hasSessions = dir.totalSessions > 0;
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(18, 14, 8, 12),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    dir.name,
-                                    style: const TextStyle(
-                                      color: AppColors.textBright,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 3),
-                                  Text(
-                                    dir.path,
-                                    style: const TextStyle(
-                                      color: AppColors.blue,
-                                      fontSize: 11,
-                                      fontFamily: 'monospace',
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
+              final groups = widget.mgr.sessionsByCliKind(dir.id);
+              final hasSessions = dir.totalSessions > 0;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 14, 8, 12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                dir.name,
+                                style: const TextStyle(
+                                  color: AppColors.textBright,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                            _DirectoryPushButton(
-                              directory: dir,
-                              onPressed: () => _pushDirectory(context),
-                            ),
-                            IconButton(
-                              tooltip: t('close'),
-                              onPressed: () => Navigator.of(sheetCtx).pop(),
-                              icon: const Icon(
-                                Icons.close_rounded,
-                                color: AppColors.muted,
-                              ),
-                              constraints: const BoxConstraints(
-                                minWidth: 44,
-                                minHeight: 44,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Divider(height: 1, color: AppColors.line),
-                      Expanded(
-                        child: ListView(
-                          padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
-                          children: [
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 6,
-                              children: [
-                                _AddSessionChip(
-                                  label: '+ Claude Term',
-                                  color: _kClaudeColor,
-                                  onTap: () => _createSession(
-                                    SessionCli.claude,
-                                    SessionKind.terminal,
-                                  ),
+                              const SizedBox(height: 3),
+                              Text(
+                                dir.path,
+                                style: const TextStyle(
+                                  color: AppColors.blue,
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
                                 ),
-                                _AddSessionChip(
-                                  label: '+ Claude Chat',
-                                  color: _kClaudeColor,
-                                  onTap: () => _createSession(
-                                    SessionCli.claude,
-                                    SessionKind.chat,
-                                  ),
-                                ),
-                                _AddSessionChip(
-                                  label: '+ Codex Term',
-                                  color: _kCodexColor,
-                                  onTap: () => _createSession(
-                                    SessionCli.codex,
-                                    SessionKind.terminal,
-                                  ),
-                                ),
-                                _AddSessionChip(
-                                  label: '+ Codex Chat',
-                                  color: _kCodexColor,
-                                  onTap: () => _createSession(
-                                    SessionCli.codex,
-                                    SessionKind.chat,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            EventTimeline(
-                              events: _workspace.events,
-                              initiallyOpen: true,
-                              maxEvents: null,
-                            ),
-                            if (!hasSessions)
-                              Container(
-                                width: double.infinity,
-                                margin: const EdgeInsets.fromLTRB(0, 12, 0, 14),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 16,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: AppColors.bg.withValues(alpha: 0.65),
-                                  border: Border.all(color: AppColors.line),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  t('noSessions'),
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                    color: AppColors.faint,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              )
-                            else ...[
-                              _SessionGroup(
-                                title: t('claudeTerminals'),
-                                color: _kClaudeColor,
-                                sessions: groups['claude_terminal']!,
-                                mgr: mgr,
-                                settings: widget.settings,
-                                statuses: _workspace.statuses,
-                                pendingNotes: _workspace.pendingNotes,
-                              ),
-                              _SessionGroup(
-                                title: t('claudeChats'),
-                                color: _kClaudeColor,
-                                sessions: groups['claude_chat']!,
-                                mgr: mgr,
-                                settings: widget.settings,
-                                statuses: _workspace.statuses,
-                                pendingNotes: _workspace.pendingNotes,
-                              ),
-                              _SessionGroup(
-                                title: t('codexTerminals'),
-                                color: _kCodexColor,
-                                sessions: groups['codex_terminal']!,
-                                mgr: mgr,
-                                settings: widget.settings,
-                                statuses: _workspace.statuses,
-                                pendingNotes: _workspace.pendingNotes,
-                              ),
-                              _SessionGroup(
-                                title: t('codexChats'),
-                                color: _kCodexColor,
-                                sessions: groups['codex_chat']!,
-                                mgr: mgr,
-                                settings: widget.settings,
-                                statuses: _workspace.statuses,
-                                pendingNotes: _workspace.pendingNotes,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ],
+                          ),
+                        ),
+                        _DirectoryPushButton(
+                          directory: dir,
+                          onPressed: () => _pushDirectory(context),
+                        ),
+                        IconButton(
+                          tooltip: t('close'),
+                          onPressed: () => Navigator.of(sheetCtx).pop(),
+                          icon: const Icon(
+                            Icons.close_rounded,
+                            color: AppColors.muted,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 44,
+                            minHeight: 44,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1, color: AppColors.line),
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
+                      children: [
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            _AddSessionChip(
+                              label: '+ Claude Term',
+                              color: _kClaudeColor,
+                              onTap: () => _createSession(
+                                SessionCli.claude,
+                                SessionKind.terminal,
+                              ),
+                            ),
+                            _AddSessionChip(
+                              label: '+ Claude Chat',
+                              color: _kClaudeColor,
+                              onTap: () => _createSession(
+                                SessionCli.claude,
+                                SessionKind.chat,
+                              ),
+                            ),
+                            _AddSessionChip(
+                              label: '+ Codex Term',
+                              color: _kCodexColor,
+                              onTap: () => _createSession(
+                                SessionCli.codex,
+                                SessionKind.terminal,
+                              ),
+                            ),
+                            _AddSessionChip(
+                              label: '+ Codex Chat',
+                              color: _kCodexColor,
+                              onTap: () => _createSession(
+                                SessionCli.codex,
+                                SessionKind.chat,
+                              ),
+                            ),
                           ],
                         ),
-                      ),
-                    ],
-                  );
-                },
+                        EventTimeline(
+                          events: _workspace.events,
+                          initiallyOpen: true,
+                          maxEvents: null,
+                          maxExpandedHeight: 280,
+                        ),
+                        if (!hasSessions)
+                          Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.fromLTRB(0, 12, 0, 14),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 16,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.bg.withValues(alpha: 0.65),
+                              border: Border.all(color: AppColors.line),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              t('noSessions'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: AppColors.faint,
+                                fontSize: 12,
+                              ),
+                            ),
+                          )
+                        else ...[
+                          _SessionGroup(
+                            title: t('claudeTerminals'),
+                            color: _kClaudeColor,
+                            sessions: groups['claude_terminal']!,
+                            mgr: widget.mgr,
+                            settings: widget.settings,
+                            statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes,
+                          ),
+                          _SessionGroup(
+                            title: t('claudeChats'),
+                            color: _kClaudeColor,
+                            sessions: groups['claude_chat']!,
+                            mgr: widget.mgr,
+                            settings: widget.settings,
+                            statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes,
+                          ),
+                          _SessionGroup(
+                            title: t('codexTerminals'),
+                            color: _kCodexColor,
+                            sessions: groups['codex_terminal']!,
+                            mgr: widget.mgr,
+                            settings: widget.settings,
+                            statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes,
+                          ),
+                          _SessionGroup(
+                            title: t('codexChats'),
+                            color: _kCodexColor,
+                            sessions: groups['codex_chat']!,
+                            mgr: widget.mgr,
+                            settings: widget.settings,
+                            statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
               );
             },
           ),
@@ -1662,11 +1661,13 @@ class EventTimeline extends StatefulWidget {
   final List<Map<String, dynamic>> events;
   final bool initiallyOpen;
   final int? maxEvents;
+  final double? maxExpandedHeight;
   const EventTimeline({
     super.key,
     required this.events,
     this.initiallyOpen = false,
     this.maxEvents = 8,
+    this.maxExpandedHeight,
   });
 
   @override
@@ -1720,30 +1721,36 @@ class _EventTimelineState extends State<EventTimeline> {
               ),
             ),
           ),
-          if (_open)
+          if (_open) _buildOpenEvents(recent),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOpenEvents(List<Map<String, dynamic>> recent) {
+    final content = Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final e in recent)
             Padding(
-              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final e in recent)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 1),
-                      child: Text(
-                        _eventLabel(e),
-                        style: const TextStyle(
-                          color: Color(0xFF8a909b),
-                          fontSize: 11,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                ],
+              padding: const EdgeInsets.symmetric(vertical: 1),
+              child: Text(
+                _eventLabel(e),
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
         ],
       ),
+    );
+    final maxHeight = widget.maxExpandedHeight;
+    if (maxHeight == null) return content;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: SingleChildScrollView(child: content),
     );
   }
 }

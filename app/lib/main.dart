@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'providers/session_manager.dart';
+import 'i18n.dart';
 import 'theme.dart';
 import 'screens/main_shell.dart';
 import 'screens/setup_screen.dart';
@@ -13,13 +14,16 @@ import 'services/update_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-  ));
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+    ),
+  );
 
   await NotificationService.init();
   final settings = await SettingsService.getInstance();
+  await I18n.init(settings.lang);
   runApp(MultiCCApp(settings: settings));
 }
 
@@ -46,7 +50,9 @@ class MultiCCApp extends StatelessWidget {
       builder: (context, child) => ValueListenableBuilder<double>(
         valueListenable: settings.fontScale,
         builder: (context, scale, _) => MediaQuery(
-          data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(scale)),
           child: child ?? const SizedBox.shrink(),
         ),
       ),
