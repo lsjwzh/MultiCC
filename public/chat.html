@@ -298,6 +298,22 @@
     .tool-result-label { font-size: 11px; color: #3fb950; margin-top: 8px; margin-bottom: 4px; font-weight: 600; }
     .tool-result-label.error { color: #f85149; }
 
+    /* ── Per-message token usage line ── */
+    .msg-usage {
+      margin-top: 6px;
+      padding-top: 4px;
+      border-top: 1px solid #21262d;
+      font-size: 11px;
+      color: #8b949e;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      user-select: none;
+    }
+    .msg-usage .u-in { color: #79c0ff; }
+    .msg-usage .u-out { color: #3fb950; }
+    .msg-usage .u-cache { color: #d29922; }
+
     /* ── Thinking indicator ── */
     .thinking-bubble {
       align-self: flex-start;
