@@ -332,7 +332,7 @@ function renderDashboard(directories, sessions) {
   for (const d of directories) connectWorkspace(d.id);
 
   // If the detail modal is open, keep its content in sync with reloads.
-  if (_detailModalOpen()) renderDirectoryDetailBody(_detailDirId);
+  if (_detailModalOpen()) { renderDirectoryDetailBody(_detailDirId); updateDirDetailPush(_detailDirId); }
 }
 
 // ── Popover menu (kebab ⋯ buttons) ──
@@ -663,9 +663,34 @@ function openDirectoryDetail(dirId) {
   if (sub) { sub.textContent = dir.path; sub.title = dir.path; }
   const addBtn = document.getElementById('dir-detail-add');
   if (addBtn) addBtn.onclick = (e) => { e.stopPropagation(); showNewSessionMenu(e, dirId); };
+  updateDirDetailPush(dirId);
   renderDirectoryDetailBody(dirId);
   const m = document.getElementById('dir-detail-modal');
   if (m) m.classList.add('visible');
+}
+// Git-push button inside the detail modal — mirrors the action in the dir ⋯ menu.
+// Hidden when there's no remote; otherwise reflects ahead/behind/synced state.
+function updateDirDetailPush(dirId) {
+  const btn = document.getElementById('dir-detail-push');
+  if (!btn) return;
+  const dir = (_cachedDirectories || []).find(d => d.id === dirId);
+  const ps = (dir && dir.pushState) || {};
+  if (ps.available === false || !ps.hasRemote) { btn.style.display = 'none'; return; }
+  btn.style.display = '';
+  let label, color, title;
+  if (ps.ahead > 0) {
+    label = `↑ 推送 ${ps.ahead}`; color = 'var(--amber)';
+    title = `推送 ${ps.ahead} 个提交到 ${ps.remote || 'remote'}/${ps.remoteBranch || ''}`;
+  } else if (ps.behind > 0) {
+    label = `↓ 落后 ${ps.behind}`; color = 'var(--muted)';
+    title = `本地落后远端 ${ps.behind} 个提交，需先 pull`;
+  } else {
+    label = '✓ 已同步'; color = 'var(--codex)'; title = 'Git 已同步';
+  }
+  btn.textContent = label;
+  btn.style.color = color;
+  btn.title = title;
+  btn.onclick = (e) => { e.stopPropagation(); pushDirectory(dirId); };
 }
 function renderDirectoryDetailBody(dirId) {
   const body = document.getElementById('dir-detail-body');
