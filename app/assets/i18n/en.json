@@ -9,6 +9,11 @@
   "waitingSessions": "Waiting",
   "cronTasks": "Cron",
   "noMatches": "No matching sessions",
+  "sessions": "sessions",
+  "active": "active",
+  "tapForDetails": "Tap for details",
+  "noRecentActivity": "No recent activity",
+  "noRecentTask": "No recent task",
 
   "thinking": "Thinking",
   "editing": "Editing",
@@ -54,6 +59,9 @@
   "renameDirHint": "Directory name",
 
   "pushing": "Pushing to remote...",
+  "pushAhead": "↑ Push {n}",
+  "pushBehind": "↓ Behind {n}",
+  "pushSynced": "✓ Synced",
   "pushed": "Pushed {n} commits → {remote}/{branch}",
   "nothingToPush": "Nothing to push",
   "pushFailed": "Push failed: {error}",

@@ -12,6 +12,7 @@ import '../services/settings_service.dart';
 import '../services/manage_service.dart';
 import '../services/workspace_service.dart';
 import '../i18n.dart';
+import '../theme.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/model_picker.dart';
@@ -243,8 +244,9 @@ class _ChatSheetState extends State<_ChatSheet>
               top: top,
               height: h - top,
               child: ClipRRect(
-                borderRadius:
-                    BorderRadius.vertical(top: Radius.circular(radius)),
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(radius),
+                ),
                 child: Container(
                   color: const Color(0xFF0f1115),
                   child: Column(
@@ -500,19 +502,38 @@ class _KpiRow extends StatelessWidget {
       child: Row(
         children: [
           _KpiTile(
-            label: t('activeSessions'), value: '$active', color: const Color(0xFF3ad6c5),
-            onTap: () => _showSessionSheet(context, mgr, t('activeSessions'), mgr.activeSessions, '🟢'),
+            label: t('activeSessions'),
+            value: '$active',
+            color: const Color(0xFF3ad6c5),
+            onTap: () => _showSessionSheet(
+              context,
+              mgr,
+              t('activeSessions'),
+              mgr.activeSessions,
+              '🟢',
+            ),
           ),
           const SizedBox(width: 8),
           _KpiTile(
-            label: t('waitingSessions'), value: '$waiting', color: const Color(0xFFe3b341),
-            onTap: () => _showSessionSheet(context, mgr, t('waitingSessions'), mgr.waitingSessions, '⏳'),
+            label: t('waitingSessions'),
+            value: '$waiting',
+            color: const Color(0xFFe3b341),
+            onTap: () => _showSessionSheet(
+              context,
+              mgr,
+              t('waitingSessions'),
+              mgr.waitingSessions,
+              '⏳',
+            ),
           ),
           const SizedBox(width: 8),
           _KpiTile(
-            label: t('cronTasks'), value: null, color: const Color(0xFF6aa3ff),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => CronScreen(settings: settings))),
+            label: t('cronTasks'),
+            value: null,
+            color: const Color(0xFF6aa3ff),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => CronScreen(settings: settings)),
+            ),
           ),
         ],
       ),
@@ -525,7 +546,12 @@ class _KpiTile extends StatelessWidget {
   final String? value;
   final Color color;
   final VoidCallback onTap;
-  const _KpiTile({required this.label, required this.value, required this.color, required this.onTap});
+  const _KpiTile({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -542,18 +568,38 @@ class _KpiTile extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Container(width: 7, height: 7, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
               const SizedBox(width: 7),
               Expanded(
-                child: Text(label,
-                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12),
-                  overflow: TextOverflow.ellipsis),
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFF8a909b),
+                    fontSize: 12,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
               if (value != null) ...[
                 const SizedBox(width: 4),
-                Text(value!, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w700)),
+                Text(
+                  value!,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ] else
-                const Icon(Icons.chevron_right, size: 16, color: Color(0xFF5b616c)),
+                const Icon(
+                  Icons.chevron_right,
+                  size: 16,
+                  color: Color(0xFF5b616c),
+                ),
             ],
           ),
         ),
@@ -563,8 +609,13 @@ class _KpiTile extends StatelessWidget {
 }
 
 // Bottom-sheet list of sessions ("dir / alias"); tap an entry to jump to it.
-void _showSessionSheet(BuildContext context, SessionManager mgr, String title,
-    List<Session> sessions, String prefix) {
+void _showSessionSheet(
+  BuildContext context,
+  SessionManager mgr,
+  String title,
+  List<Session> sessions,
+  String prefix,
+) {
   String dirName(String? dirId) {
     for (final d in mgr.directories) {
       if (d.id == dirId) return d.name;
@@ -576,26 +627,45 @@ void _showSessionSheet(BuildContext context, SessionManager mgr, String title,
     context: context,
     backgroundColor: const Color(0xFF0f1115),
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
     builder: (sheetCtx) => SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
-            child: Row(children: [
-              Text('$prefix $title',
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 15, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              Text('${sessions.length}',
-                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 13)),
-            ]),
+            child: Row(
+              children: [
+                Text(
+                  '$prefix $title',
+                  style: const TextStyle(
+                    color: Color(0xFFe7eaee),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${sessions.length}',
+                  style: const TextStyle(
+                    color: Color(0xFF8a909b),
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
           ),
           if (sessions.isEmpty)
             const Padding(
               padding: EdgeInsets.fromLTRB(18, 8, 18, 24),
-              child: Align(alignment: Alignment.centerLeft,
-                child: Text('没有符合的会话', style: TextStyle(color: Color(0xFF5b616c), fontSize: 13))),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '没有符合的会话',
+                  style: TextStyle(color: Color(0xFF5b616c), fontSize: 13),
+                ),
+              ),
             )
           else
             Flexible(
@@ -609,10 +679,19 @@ void _showSessionSheet(BuildContext context, SessionManager mgr, String title,
                   return ListTile(
                     dense: true,
                     leading: Text(prefix, style: const TextStyle(fontSize: 16)),
-                    title: Text(dir.isNotEmpty ? '$dir / $alias' : alias,
-                      style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
-                      overflow: TextOverflow.ellipsis),
-                    trailing: const Icon(Icons.arrow_forward_ios, size: 13, color: Color(0xFF5b616c)),
+                    title: Text(
+                      dir.isNotEmpty ? '$dir / $alias' : alias,
+                      style: const TextStyle(
+                        color: Color(0xFFe7eaee),
+                        fontSize: 14,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: const Icon(
+                      Icons.arrow_forward_ios,
+                      size: 13,
+                      color: Color(0xFF5b616c),
+                    ),
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       mgr.openSession(s);
@@ -649,7 +728,6 @@ class _DirectoryCard extends StatefulWidget {
 }
 
 class _DirectoryCardState extends State<_DirectoryCard> {
-  bool _open = true;
   late final WorkspaceService _workspace;
 
   @override
@@ -668,20 +746,30 @@ class _DirectoryCardState extends State<_DirectoryCard> {
   void dispose() {
     _workspace.removeListener(_onStatusChange);
     _workspace.dispose();
-    widget.mgr.reportWaiting(widget.directory.id, const {}); // drop stale entries
+    widget.mgr.reportWaiting(
+      widget.directory.id,
+      const {},
+    ); // drop stale entries
     super.dispose();
   }
 
-  PopupMenuItem<String> _dirMenuItem(String value, IconData icon, String label, {bool danger = false}) {
+  PopupMenuItem<String> _dirMenuItem(
+    String value,
+    IconData icon,
+    String label, {
+    bool danger = false,
+  }) {
     final color = danger ? const Color(0xFFff6b63) : const Color(0xFFe7eaee);
     return PopupMenuItem<String>(
       value: value,
       height: 40,
-      child: Row(children: [
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(color: color, fontSize: 14)),
-      ]),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(color: color, fontSize: 14)),
+        ],
+      ),
     );
   }
 
@@ -707,13 +795,13 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         .expand((s) => s)
         .where((s) => s.active)
         .length;
-    final hasSessions = widget.directory.totalSessions > 0;
+    final latestTask = _latestTask(groups);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFF0f1115),
-        border: Border.all(color: const Color(0xFF20242b)),
+        color: AppColors.panel,
+        border: Border.all(color: AppColors.line),
         borderRadius: BorderRadius.circular(8),
         boxShadow: [
           BoxShadow(
@@ -723,233 +811,395 @@ class _DirectoryCardState extends State<_DirectoryCard> {
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _open = !_open),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+      child: InkWell(
+        onTap: () => _showDirectoryDetail(context),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 34,
-                        height: 34,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF070809),
-                          border: Border.all(color: const Color(0xFF20242b)),
-                          borderRadius: BorderRadius.circular(8),
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: AppColors.bg,
+                      border: Border.all(color: AppColors.line),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.folder_outlined,
+                      color: AppColors.muted,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.directory.name,
+                          style: const TextStyle(
+                            color: AppColors.textBright,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        child: Icon(
-                          _open
-                              ? Icons.keyboard_arrow_down_rounded
-                              : Icons.keyboard_arrow_right_rounded,
-                          color: const Color(0xFF8a909b),
-                          size: 22,
+                        const SizedBox(height: 3),
+                        Text(
+                          widget.directory.path,
+                          style: const TextStyle(
+                            color: AppColors.blue,
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.sticky_note_2_outlined,
+                      size: 19,
+                      color: AppColors.muted,
+                    ),
+                    tooltip: t('projectMemo'),
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => MemoScreen(
+                          directory: widget.directory,
+                          mgr: widget.mgr,
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 44,
+                      minHeight: 44,
+                    ),
+                  ),
+                  PopupMenuButton<String>(
+                    icon: const Icon(
+                      Icons.more_horiz_rounded,
+                      size: 19,
+                      color: AppColors.muted,
+                    ),
+                    tooltip: t('moreActions'),
+                    color: const Color(0xFF161b22),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 44,
+                      minHeight: 44,
+                    ),
+                    onSelected: (v) {
+                      switch (v) {
+                        case 'rename':
+                          _confirmRenameDirectory(context);
+                          break;
+                        case 'delete':
+                          _confirmDeleteDirectory(context);
+                          break;
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      _dirMenuItem(
+                        'rename',
+                        Icons.drive_file_rename_outline_rounded,
+                        t('rename'),
+                      ),
+                      const PopupMenuDivider(),
+                      _dirMenuItem(
+                        'delete',
+                        Icons.delete_outline_rounded,
+                        t('deleteDirectory'),
+                        danger: true,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  _ProjectStatPill(
+                    label: t('sessions'),
+                    value: widget.directory.totalSessions.toString(),
+                  ),
+                  _ProjectStatPill(
+                    label: t('active'),
+                    value: activeCount.toString(),
+                  ),
+                  _ProjectStatPill(
+                    label: 'Claude',
+                    value: claudeCount.toString(),
+                    color: _kClaudeColor,
+                  ),
+                  _ProjectStatPill(
+                    label: 'Codex',
+                    value: codexCount.toString(),
+                    color: _kCodexColor,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _DirectoryPreview(
+                events: _workspace.events,
+                latestTask: latestTask,
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.touch_app_outlined,
+                    size: 13,
+                    color: AppColors.faint,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    t('tapForDetails'),
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 11,
+                    ),
+                  ),
+                  const Spacer(),
+                  const Icon(
+                    Icons.keyboard_arrow_up_rounded,
+                    size: 18,
+                    color: AppColors.faint,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  _TaskPreview? _latestTask(Map<String, List<Session>> groups) {
+    _TaskPreview? best;
+    for (final s in groups.values.expand((x) => x)) {
+      final live = _workspace.statuses[s.id];
+      final summary = live?.summary;
+      if (summary == null || summary.isEmpty) continue;
+      final ts = live?.summaryTs ?? 0;
+      if (best == null || ts > best.ts) {
+        best = _TaskPreview(
+          who: s.label?.isNotEmpty == true ? s.label! : s.id,
+          summary: summary,
+          ts: ts,
+        );
+      }
+    }
+    return best;
+  }
+
+  void _showDirectoryDetail(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.panel,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(sheetCtx).size.height * 0.88,
+          child: Consumer<SessionManager>(
+            builder: (context, mgr, _) {
+              Directory dir = widget.directory;
+              for (final d in mgr.directories) {
+                if (d.id == widget.directory.id) {
+                  dir = d;
+                  break;
+                }
+              }
+              return AnimatedBuilder(
+                animation: _workspace,
+                builder: (context, _) {
+                  final groups = mgr.sessionsByCliKind(dir.id);
+                  final hasSessions = dir.totalSessions > 0;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 14, 8, 12),
+                        child: Row(
                           children: [
-                            Text(
-                              widget.directory.name,
-                              style: const TextStyle(
-                                color: Color(0xFFf2f4f7),
-                                fontWeight: FontWeight.w700,
-                                fontSize: 16,
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    dir.name,
+                                    style: const TextStyle(
+                                      color: AppColors.textBright,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    dir.path,
+                                    style: const TextStyle(
+                                      color: AppColors.blue,
+                                      fontSize: 11,
+                                      fontFamily: 'monospace',
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
                               ),
-                              overflow: TextOverflow.ellipsis,
                             ),
-                            const SizedBox(height: 3),
-                            Text(
-                              widget.directory.path,
-                              style: const TextStyle(
-                                color: Color(0xFF6aa3ff),
-                                fontSize: 11,
-                                fontFamily: 'monospace',
+                            _DirectoryPushButton(
+                              directory: dir,
+                              onPressed: () => _pushDirectory(context),
+                            ),
+                            IconButton(
+                              tooltip: t('close'),
+                              onPressed: () => Navigator.of(sheetCtx).pop(),
+                              icon: const Icon(
+                                Icons.close_rounded,
+                                color: AppColors.muted,
                               ),
-                              overflow: TextOverflow.ellipsis,
+                              constraints: const BoxConstraints(
+                                minWidth: 44,
+                                minHeight: 44,
+                              ),
                             ),
                           ],
                         ),
                       ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.sticky_note_2_outlined,
-                          size: 19,
-                          color: Color(0xFF8a909b),
-                        ),
-                        tooltip: '项目备忘 (multicc.memo.md)',
-                        onPressed: () => Navigator.push(
-                          context,
-                          MaterialPageRoute<void>(
-                            builder: (_) => MemoScreen(
-                              directory: widget.directory,
-                              mgr: widget.mgr,
+                      const Divider(height: 1, color: AppColors.line),
+                      Expanded(
+                        child: ListView(
+                          padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
+                          children: [
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                _AddSessionChip(
+                                  label: '+ Claude Term',
+                                  color: _kClaudeColor,
+                                  onTap: () => _createSession(
+                                    SessionCli.claude,
+                                    SessionKind.terminal,
+                                  ),
+                                ),
+                                _AddSessionChip(
+                                  label: '+ Claude Chat',
+                                  color: _kClaudeColor,
+                                  onTap: () => _createSession(
+                                    SessionCli.claude,
+                                    SessionKind.chat,
+                                  ),
+                                ),
+                                _AddSessionChip(
+                                  label: '+ Codex Term',
+                                  color: _kCodexColor,
+                                  onTap: () => _createSession(
+                                    SessionCli.codex,
+                                    SessionKind.terminal,
+                                  ),
+                                ),
+                                _AddSessionChip(
+                                  label: '+ Codex Chat',
+                                  color: _kCodexColor,
+                                  onTap: () => _createSession(
+                                    SessionCli.codex,
+                                    SessionKind.chat,
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
+                            EventTimeline(
+                              events: _workspace.events,
+                              initiallyOpen: true,
+                              maxEvents: null,
+                            ),
+                            if (!hasSessions)
+                              Container(
+                                width: double.infinity,
+                                margin: const EdgeInsets.fromLTRB(0, 12, 0, 14),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 16,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.bg.withValues(alpha: 0.65),
+                                  border: Border.all(color: AppColors.line),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  t('noSessions'),
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: AppColors.faint,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              )
+                            else ...[
+                              _SessionGroup(
+                                title: t('claudeTerminals'),
+                                color: _kClaudeColor,
+                                sessions: groups['claude_terminal']!,
+                                mgr: mgr,
+                                settings: widget.settings,
+                                statuses: _workspace.statuses,
+                                pendingNotes: _workspace.pendingNotes,
+                              ),
+                              _SessionGroup(
+                                title: t('claudeChats'),
+                                color: _kClaudeColor,
+                                sessions: groups['claude_chat']!,
+                                mgr: mgr,
+                                settings: widget.settings,
+                                statuses: _workspace.statuses,
+                                pendingNotes: _workspace.pendingNotes,
+                              ),
+                              _SessionGroup(
+                                title: t('codexTerminals'),
+                                color: _kCodexColor,
+                                sessions: groups['codex_terminal']!,
+                                mgr: mgr,
+                                settings: widget.settings,
+                                statuses: _workspace.statuses,
+                                pendingNotes: _workspace.pendingNotes,
+                              ),
+                              _SessionGroup(
+                                title: t('codexChats'),
+                                color: _kCodexColor,
+                                sessions: groups['codex_chat']!,
+                                mgr: mgr,
+                                settings: widget.settings,
+                                statuses: _workspace.statuses,
+                                pendingNotes: _workspace.pendingNotes,
+                              ),
+                            ],
+                          ],
                         ),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(
-                          minWidth: 36,
-                          minHeight: 36,
-                        ),
-                      ),
-                      // push / rename / delete collapsed into a ⋯ menu (header
-                      // kept to memo + overflow so it stays uncluttered).
-                      PopupMenuButton<String>(
-                        icon: const Icon(Icons.more_horiz_rounded, size: 19, color: Color(0xFF8a909b)),
-                        tooltip: '更多操作',
-                        color: const Color(0xFF161b22),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                        onSelected: (v) {
-                          switch (v) {
-                            case 'push': _pushDirectory(context); break;
-                            case 'rename': _confirmRenameDirectory(context); break;
-                            case 'delete': _confirmDeleteDirectory(context); break;
-                          }
-                        },
-                        itemBuilder: (_) => [
-                          _dirMenuItem('push', Icons.cloud_upload_outlined, 'Git 推送'),
-                          _dirMenuItem('rename', Icons.drive_file_rename_outline_rounded, '改名'),
-                          const PopupMenuDivider(),
-                          _dirMenuItem('delete', Icons.delete_outline_rounded, '删除目录', danger: true),
-                        ],
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      _ProjectStatPill(
-                        label: 'sessions',
-                        value: widget.directory.totalSessions.toString(),
-                      ),
-                      _ProjectStatPill(
-                        label: 'active',
-                        value: activeCount.toString(),
-                      ),
-                      _ProjectStatPill(
-                        label: 'Claude',
-                        value: claudeCount.toString(),
-                        color: _kClaudeColor,
-                      ),
-                      _ProjectStatPill(
-                        label: 'Codex',
-                        value: codexCount.toString(),
-                        color: _kCodexColor,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
+                  );
+                },
+              );
+            },
           ),
-          if (_open) ...[
-            const Divider(height: 1, color: Color(0xFF14171c)),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
-              child: Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  _AddSessionChip(
-                    label: '+ Claude Term',
-                    color: _kClaudeColor,
-                    onTap: () =>
-                        _createSession(SessionCli.claude, SessionKind.terminal),
-                  ),
-                  _AddSessionChip(
-                    label: '+ Claude Chat',
-                    color: _kClaudeColor,
-                    onTap: () =>
-                        _createSession(SessionCli.claude, SessionKind.chat),
-                  ),
-                  _AddSessionChip(
-                    label: '+ Codex Term',
-                    color: _kCodexColor,
-                    onTap: () =>
-                        _createSession(SessionCli.codex, SessionKind.terminal),
-                  ),
-                  _AddSessionChip(
-                    label: '+ Codex Chat',
-                    color: _kCodexColor,
-                    onTap: () =>
-                        _createSession(SessionCli.codex, SessionKind.chat),
-                  ),
-                ],
-              ),
-            ),
-            EventTimeline(events: _workspace.events),
-            if (!hasSessions)
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 16,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF070809).withValues(alpha: 0.65),
-                  border: Border.all(color: const Color(0xFF20242b)),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'No sessions yet',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF5b616c), fontSize: 12),
-                ),
-              )
-            else ...[
-              _SessionGroup(
-                title: 'Claude Terminals',
-                color: _kClaudeColor,
-                sessions: groups['claude_terminal']!,
-                mgr: widget.mgr,
-                settings: widget.settings,
-                statuses: _workspace.statuses,
-                pendingNotes: _workspace.pendingNotes,
-              ),
-              _SessionGroup(
-                title: 'Claude Chats',
-                color: _kClaudeColor,
-                sessions: groups['claude_chat']!,
-                mgr: widget.mgr,
-                settings: widget.settings,
-                statuses: _workspace.statuses,
-                pendingNotes: _workspace.pendingNotes,
-              ),
-              _SessionGroup(
-                title: 'Codex Terminals',
-                color: _kCodexColor,
-                sessions: groups['codex_terminal']!,
-                mgr: widget.mgr,
-                settings: widget.settings,
-                statuses: _workspace.statuses,
-                pendingNotes: _workspace.pendingNotes,
-              ),
-              _SessionGroup(
-                title: 'Codex Chats',
-                color: _kCodexColor,
-                sessions: groups['codex_chat']!,
-                mgr: widget.mgr,
-                settings: widget.settings,
-                statuses: _workspace.statuses,
-                pendingNotes: _workspace.pendingNotes,
-              ),
-              const SizedBox(height: 10),
-            ],
-          ],
-        ],
+        ),
       ),
     );
   }
@@ -962,7 +1212,9 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final appType = cli == SessionCli.codex ? 'codex' : 'claude';
     String? provider;
     try {
-      final d = await ManageService(settings: widget.settings).fetchProviders(appType);
+      final d = await ManageService(
+        settings: widget.settings,
+      ).fetchProviders(appType);
       final providers = (d['providers'] as List? ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
@@ -991,21 +1243,47 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                 ),
                 ListTile(
                   dense: true,
-                  title: const Text('默认登录 / 订阅', style: TextStyle(color: Color(0xFFe7eaee), fontSize: 14)),
-                  trailing: provider == null ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF7fd49a)) : null,
+                  title: const Text(
+                    '默认登录 / 订阅',
+                    style: TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+                  ),
+                  trailing: provider == null
+                      ? const Icon(
+                          Icons.check_rounded,
+                          size: 18,
+                          color: Color(0xFF7fd49a),
+                        )
+                      : null,
                   onTap: () => Navigator.pop(context, ''),
                 ),
                 for (final p in providers)
                   ListTile(
                     dense: true,
                     title: Text(
-                      (p['name'] as String? ?? '') + (p['isOfficial'] == true ? ' · 订阅' : ''),
-                      style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+                      (p['name'] as String? ?? '') +
+                          (p['isOfficial'] == true ? ' · 订阅' : ''),
+                      style: const TextStyle(
+                        color: Color(0xFFe7eaee),
+                        fontSize: 14,
+                      ),
                     ),
-                    subtitle: p['model'] != null && (p['model'] as String).isNotEmpty
-                        ? Text(p['model'] as String, style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11))
+                    subtitle:
+                        p['model'] != null && (p['model'] as String).isNotEmpty
+                        ? Text(
+                            p['model'] as String,
+                            style: const TextStyle(
+                              color: Color(0xFF8a909b),
+                              fontSize: 11,
+                            ),
+                          )
                         : null,
-                    trailing: p['id'] == provider ? const Icon(Icons.check_rounded, size: 18, color: Color(0xFF7fd49a)) : null,
+                    trailing: p['id'] == provider
+                        ? const Icon(
+                            Icons.check_rounded,
+                            size: 18,
+                            color: Color(0xFF7fd49a),
+                          )
+                        : null,
                     onTap: () => Navigator.pop(context, p['id'] as String),
                   ),
                 const SizedBox(height: 6),
@@ -1024,7 +1302,10 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     // Step 2: pick a model (claude only)
     String? model;
     if (cli == SessionCli.claude) {
-      final picked = await showClaudeModelPicker(context, current: widget.settings.defaultModel);
+      final picked = await showClaudeModelPicker(
+        context,
+        current: widget.settings.defaultModel,
+      );
       if (picked == null) return; // cancelled
       if (!mounted) return;
       model = picked.isEmpty ? null : picked;
@@ -1120,7 +1401,10 @@ class _DirectoryCardState extends State<_DirectoryCard> {
   Future<void> _pushDirectory(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(
-      const SnackBar(content: Text('正在推送到远程…'), duration: Duration(seconds: 30)),
+      SnackBar(
+        content: Text(t('pushing')),
+        duration: const Duration(seconds: 30),
+      ),
     );
     try {
       final r = await widget.mgr.service.pushDirectory(widget.directory.id);
@@ -1132,22 +1416,33 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         final remote = before['remote'] ?? 'origin';
         final branch = before['remoteBranch'] ?? '';
         final msg = r['pushed'] == true
-            ? '已推送 $ahead 个提交 → $remote/$branch'
-            : '无待推送提交';
+            ? t('pushed', {
+                'n': '$ahead',
+                'remote': '$remote',
+                'branch': '$branch',
+              })
+            : t('nothingToPush');
         messenger.showSnackBar(SnackBar(content: Text(msg)));
+        await widget.mgr.loadDashboard();
       } else {
-        messenger.showSnackBar(SnackBar(
-          content: Text('推送失败：${r['error'] ?? '未知错误'}'),
-          backgroundColor: const Color(0xFFff6b63),
-        ));
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              t('pushFailed', {'error': '${r['error'] ?? 'unknown'}'}),
+            ),
+            backgroundColor: AppColors.danger,
+          ),
+        );
       }
     } catch (e) {
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(
-        content: Text('推送失败：$e'),
-        backgroundColor: const Color(0xFFff6b63),
-      ));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(t('pushFailed', {'error': '$e'})),
+          backgroundColor: AppColors.danger,
+        ),
+      );
     }
   }
 
@@ -1201,24 +1496,193 @@ class _DirectoryCardState extends State<_DirectoryCard> {
   }
 }
 
+class _TaskPreview {
+  final String who;
+  final String summary;
+  final int ts;
+
+  const _TaskPreview({
+    required this.who,
+    required this.summary,
+    required this.ts,
+  });
+}
+
+class _DirectoryPreview extends StatelessWidget {
+  final List<Map<String, dynamic>> events;
+  final _TaskPreview? latestTask;
+
+  const _DirectoryPreview({required this.events, required this.latestTask});
+
+  @override
+  Widget build(BuildContext context) {
+    final recent = events.reversed.take(2).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 39,
+          child: recent.isEmpty
+              ? Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    t('noRecentActivity'),
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 11,
+                    ),
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final e in recent)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 3),
+                        child: Text(
+                          _eventLabel(e),
+                          style: const TextStyle(
+                            color: AppColors.muted,
+                            fontSize: 11,
+                            height: 1.25,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: 34,
+          child: latestTask == null
+              ? Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    t('noRecentTask'),
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 11,
+                    ),
+                  ),
+                )
+              : Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.accent.withValues(alpha: 0.10),
+                    border: Border.all(
+                      color: AppColors.accent.withValues(alpha: 0.38),
+                    ),
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                  child: Text(
+                    '🗒 ${latestTask!.who}  ${latestTask!.summary}',
+                    style: const TextStyle(
+                      color: Color(0xFF7fe6da),
+                      fontSize: 11,
+                      height: 1.2,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DirectoryPushButton extends StatelessWidget {
+  final Directory directory;
+  final VoidCallback onPressed;
+
+  const _DirectoryPushButton({
+    required this.directory,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ps = directory.pushState;
+    if (ps == null || ps.available == false || !ps.hasRemote) {
+      return const SizedBox.shrink();
+    }
+
+    late final String label;
+    late final Color color;
+    late final IconData icon;
+    if (ps.ahead > 0) {
+      label = t('pushAhead', {'n': '${ps.ahead}'});
+      color = AppColors.amber;
+      icon = Icons.cloud_upload_outlined;
+    } else if (ps.behind > 0) {
+      label = t('pushBehind', {'n': '${ps.behind}'});
+      color = AppColors.muted;
+      icon = Icons.cloud_download_outlined;
+    } else {
+      label = t('pushSynced');
+      color = AppColors.codex;
+      icon = Icons.check_circle_outline_rounded;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: TextButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, size: 16, color: color),
+        label: Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        style: TextButton.styleFrom(
+          minimumSize: const Size(44, 36),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          side: BorderSide(color: color.withValues(alpha: 0.45)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+        ),
+      ),
+    );
+  }
+}
+
 // Compact per-directory event timeline for the status board.
 // Collapsed by default (a "🕔 活动 (N) ▾" bar); tap to expand the recent events.
 // Keeps the project card compact — the timeline used to always show 8 rows.
 class EventTimeline extends StatefulWidget {
   final List<Map<String, dynamic>> events;
-  const EventTimeline({super.key, required this.events});
+  final bool initiallyOpen;
+  final int? maxEvents;
+  const EventTimeline({
+    super.key,
+    required this.events,
+    this.initiallyOpen = false,
+    this.maxEvents = 8,
+  });
 
   @override
   State<EventTimeline> createState() => _EventTimelineState();
 }
 
 class _EventTimelineState extends State<EventTimeline> {
-  bool _open = false;
+  late bool _open = widget.initiallyOpen;
 
   @override
   Widget build(BuildContext context) {
     if (widget.events.isEmpty) return const SizedBox.shrink();
-    final recent = widget.events.reversed.take(8).toList();
+    final source = widget.events.reversed;
+    final recent = widget.maxEvents == null
+        ? source.toList()
+        : source.take(widget.maxEvents!).toList();
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
       decoration: BoxDecoration(
@@ -1233,15 +1697,27 @@ class _EventTimelineState extends State<EventTimeline> {
             onTap: () => setState(() => _open = !_open),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-              child: Row(children: [
-                const Text('🕔 ', style: TextStyle(fontSize: 11)),
-                Text('活动 (${widget.events.length})',
-                  style: const TextStyle(
-                    color: Color(0xFF5b616c), fontSize: 11, fontWeight: FontWeight.w600)),
-                const Spacer(),
-                Icon(_open ? Icons.expand_less_rounded : Icons.expand_more_rounded,
-                  size: 16, color: const Color(0xFF5b616c)),
-              ]),
+              child: Row(
+                children: [
+                  const Text('🕔 ', style: TextStyle(fontSize: 11)),
+                  Text(
+                    '活动 (${widget.events.length})',
+                    style: const TextStyle(
+                      color: Color(0xFF5b616c),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    _open
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    size: 16,
+                    color: const Color(0xFF5b616c),
+                  ),
+                ],
+              ),
             ),
           ),
           if (_open)
@@ -1255,7 +1731,10 @@ class _EventTimelineState extends State<EventTimeline> {
                       padding: const EdgeInsets.symmetric(vertical: 1),
                       child: Text(
                         _eventLabel(e),
-                        style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                        style: const TextStyle(
+                          color: Color(0xFF8a909b),
+                          fontSize: 11,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1568,8 +2047,10 @@ class SessionCard extends StatelessWidget {
                 const SizedBox(height: 6),
                 Container(
                   width: double.infinity,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 5,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0x243ad6c5),
                     border: Border.all(color: const Color(0x663ad6c5)),
@@ -1616,43 +2097,89 @@ class SessionCard extends StatelessWidget {
                 children: [
                   if (mergeReady)
                     TextButton.icon(
-                      icon: const Icon(Icons.merge_type_rounded, size: 15, color: Color(0xFF070809)),
-                      label: Text(_mergeReadyLabel(live!),
-                        style: const TextStyle(color: Color(0xFF070809), fontSize: 12, fontWeight: FontWeight.w600)),
+                      icon: const Icon(
+                        Icons.merge_type_rounded,
+                        size: 15,
+                        color: Color(0xFF070809),
+                      ),
+                      label: Text(
+                        _mergeReadyLabel(live!),
+                        style: const TextStyle(
+                          color: Color(0xFF070809),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                       style: TextButton.styleFrom(
                         backgroundColor: const Color(0xFFe3b341),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
                         minimumSize: const Size(0, 28),
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       onPressed: () => _mergeSession(context),
                     ),
                   PopupMenuButton<String>(
-                    icon: const Icon(Icons.more_horiz_rounded, size: 18, color: Color(0xFF8a909b)),
+                    icon: const Icon(
+                      Icons.more_horiz_rounded,
+                      size: 18,
+                      color: Color(0xFF8a909b),
+                    ),
                     tooltip: '更多操作',
                     color: const Color(0xFF161b22),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(minWidth: 160),
                     onSelected: (v) {
                       switch (v) {
-                        case 'rename': _rename(context); break;
-                        case 'merge': _mergeSession(context); break;
-                        case 'diff':
-                          showSessionDiffDialog(context, settings: settings, sessionId: session.id);
+                        case 'rename':
+                          _rename(context);
                           break;
-                        case 'note': _leaveNote(context); break;
-                        case 'restart': _restart(context); break;
-                        case 'delete': _confirmDelete(context); break;
+                        case 'merge':
+                          _mergeSession(context);
+                          break;
+                        case 'diff':
+                          showSessionDiffDialog(
+                            context,
+                            settings: settings,
+                            sessionId: session.id,
+                          );
+                          break;
+                        case 'note':
+                          _leaveNote(context);
+                          break;
+                        case 'restart':
+                          _restart(context);
+                          break;
+                        case 'delete':
+                          _confirmDelete(context);
+                          break;
                       }
                     },
                     itemBuilder: (_) => [
                       _menuItem('rename', Icons.edit_outlined, '改名'),
-                      if (!mergeReady) _menuItem('merge', Icons.merge_type_rounded, '合并 worktree'),
+                      if (!mergeReady)
+                        _menuItem(
+                          'merge',
+                          Icons.merge_type_rounded,
+                          '合并 worktree',
+                        ),
                       _menuItem('diff', Icons.difference_outlined, '查看 Diff'),
                       _menuItem('note', Icons.mail_outline_rounded, '留言'),
-                      if (session.isTerminal) _menuItem('restart', Icons.restart_alt_rounded, 'Restart'),
+                      if (session.isTerminal)
+                        _menuItem(
+                          'restart',
+                          Icons.restart_alt_rounded,
+                          'Restart',
+                        ),
                       const PopupMenuDivider(),
-                      _menuItem('delete', Icons.delete_outline_rounded, '删除', danger: true),
+                      _menuItem(
+                        'delete',
+                        Icons.delete_outline_rounded,
+                        '删除',
+                        danger: true,
+                      ),
                     ],
                   ),
                 ],
@@ -1664,16 +2191,23 @@ class SessionCard extends StatelessWidget {
     );
   }
 
-  PopupMenuItem<String> _menuItem(String value, IconData icon, String label, {bool danger = false}) {
+  PopupMenuItem<String> _menuItem(
+    String value,
+    IconData icon,
+    String label, {
+    bool danger = false,
+  }) {
     final color = danger ? const Color(0xFFff6b63) : const Color(0xFFe7eaee);
     return PopupMenuItem<String>(
       value: value,
       height: 40,
-      child: Row(children: [
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(color: color, fontSize: 14)),
-      ]),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(color: color, fontSize: 14)),
+        ],
+      ),
     );
   }
 

@@ -29,7 +29,12 @@ class ToolCall {
   String get description {
     final p = parsedInput;
     if (p == null) return '';
-    return (p['description'] ?? p['command'] ?? p['pattern'] ?? p['file_path'] ?? '').toString();
+    return (p['description'] ??
+            p['command'] ??
+            p['pattern'] ??
+            p['file_path'] ??
+            '')
+        .toString();
   }
 }
 
@@ -53,18 +58,18 @@ class ChatMessage {
     DateTime? timestamp,
     this.isStreaming = false,
     this.cost,
-  })  : toolCalls = toolCalls ?? [],
-        timestamp = timestamp ?? DateTime.now();
+  }) : toolCalls = toolCalls ?? [],
+       timestamp = timestamp ?? DateTime.now();
 
   ChatMessage.fromHistory(Map<String, dynamic> json)
-      : role = json['role'] == 'user' ? MessageRole.user : MessageRole.assistant,
-        content = (json['content'] ?? '').toString(),
-        toolCalls = _parseHistoryTools(json['tools']),
-        timestamp = json['ts'] != null
-            ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt())
-            : DateTime.now(),
-        isStreaming = false,
-        cost = (json['cost'] as num?)?.toDouble();
+    : role = json['role'] == 'user' ? MessageRole.user : MessageRole.assistant,
+      content = (json['content'] ?? '').toString(),
+      toolCalls = _parseHistoryTools(json['tools']),
+      timestamp = json['ts'] != null
+          ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt())
+          : DateTime.now(),
+      isStreaming = false,
+      cost = (json['cost'] as num?)?.toDouble();
 
   static List<ToolCall> _parseHistoryTools(dynamic tools) {
     if (tools is! List) return [];
@@ -88,8 +93,10 @@ enum SessionCli { claude, codex }
 /// Interactive TUI terminal, or stream-json chat.
 enum SessionKind { terminal, chat }
 
-SessionCli _parseCli(String? s) => s == 'codex' ? SessionCli.codex : SessionCli.claude;
-SessionKind _parseKind(String? s) => s == 'chat' ? SessionKind.chat : SessionKind.terminal;
+SessionCli _parseCli(String? s) =>
+    s == 'codex' ? SessionCli.codex : SessionCli.claude;
+SessionKind _parseKind(String? s) =>
+    s == 'chat' ? SessionKind.chat : SessionKind.terminal;
 
 extension SessionCliX on SessionCli {
   String get name => this == SessionCli.codex ? 'codex' : 'claude';
@@ -127,13 +134,13 @@ class Session {
   final String? label;
   final String? model;
   final String? rolePrompt;
-  final String? provider;   // cc-switch provider id; null = default login
+  final String? provider; // cc-switch provider id; null = default login
   final String cwd;
   final DateTime createdAt;
   final bool active;
   final int clients;
   final DateTime? lastActivity;
-  final String? type;   // 'aux' for the special AuxQueue session
+  final String? type; // 'aux' for the special AuxQueue session
   final String? auxLabel;
 
   Session({
@@ -202,6 +209,7 @@ class Directory {
   final int claudeChatCount;
   final int codexTerminalCount;
   final int codexChatCount;
+  final DirectoryPushState? pushState;
 
   Directory({
     required this.id,
@@ -212,6 +220,7 @@ class Directory {
     this.claudeChatCount = 0,
     this.codexTerminalCount = 0,
     this.codexChatCount = 0,
+    this.pushState,
   });
 
   factory Directory.fromJson(Map<String, dynamic> json) {
@@ -227,11 +236,48 @@ class Directory {
       claudeChatCount: (counts['claude_chat'] as num?)?.toInt() ?? 0,
       codexTerminalCount: (counts['codex_terminal'] as num?)?.toInt() ?? 0,
       codexChatCount: (counts['codex_chat'] as num?)?.toInt() ?? 0,
+      pushState: json['pushState'] is Map
+          ? DirectoryPushState.fromJson(
+              (json['pushState'] as Map).cast<String, dynamic>(),
+            )
+          : null,
     );
   }
 
   int get totalSessions =>
-      claudeTerminalCount + claudeChatCount + codexTerminalCount + codexChatCount;
+      claudeTerminalCount +
+      claudeChatCount +
+      codexTerminalCount +
+      codexChatCount;
+}
+
+class DirectoryPushState {
+  final bool available;
+  final bool hasRemote;
+  final int ahead;
+  final int behind;
+  final String? remote;
+  final String? remoteBranch;
+
+  const DirectoryPushState({
+    this.available = true,
+    this.hasRemote = false,
+    this.ahead = 0,
+    this.behind = 0,
+    this.remote,
+    this.remoteBranch,
+  });
+
+  factory DirectoryPushState.fromJson(Map<String, dynamic> json) {
+    return DirectoryPushState(
+      available: json['available'] != false,
+      hasRemote: json['hasRemote'] == true,
+      ahead: (json['ahead'] as num?)?.toInt() ?? 0,
+      behind: (json['behind'] as num?)?.toInt() ?? 0,
+      remote: json['remote']?.toString(),
+      remoteBranch: json['remoteBranch']?.toString(),
+    );
+  }
 }
 
 /// A multicc-native scheduled (cron) task. Mirrors the `toView` shape returned
@@ -243,7 +289,8 @@ class CronTask {
   final String dirName;
   final String cli; // 'claude' | 'codex'
   final String prompt;
-  final String cron; // 5-field expression: minute hour day-of-month month day-of-week
+  final String
+  cron; // 5-field expression: minute hour day-of-month month day-of-week
   final bool enabled;
   final String createdBy;
   final int? lastRunAt; // epoch ms
@@ -270,19 +317,19 @@ class CronTask {
   });
 
   factory CronTask.fromJson(Map<String, dynamic> json) => CronTask(
-        id: (json['id'] ?? '').toString(),
-        name: (json['name'] ?? '').toString(),
-        dirId: (json['dirId'] ?? '').toString(),
-        dirName: (json['dirName'] ?? '').toString(),
-        cli: (json['cli'] ?? 'claude').toString(),
-        prompt: (json['prompt'] ?? '').toString(),
-        cron: (json['cron'] ?? '').toString(),
-        enabled: json['enabled'] == true,
-        createdBy: (json['createdBy'] ?? 'user').toString(),
-        lastRunAt: (json['lastRunAt'] as num?)?.toInt(),
-        lastStatus: json['lastStatus']?.toString(),
-        lastError: (json['lastError'] ?? '').toString(),
-        runCount: (json['runCount'] as num?)?.toInt() ?? 0,
-        nextRunAt: (json['nextRunAt'] as num?)?.toInt(),
-      );
+    id: (json['id'] ?? '').toString(),
+    name: (json['name'] ?? '').toString(),
+    dirId: (json['dirId'] ?? '').toString(),
+    dirName: (json['dirName'] ?? '').toString(),
+    cli: (json['cli'] ?? 'claude').toString(),
+    prompt: (json['prompt'] ?? '').toString(),
+    cron: (json['cron'] ?? '').toString(),
+    enabled: json['enabled'] == true,
+    createdBy: (json['createdBy'] ?? 'user').toString(),
+    lastRunAt: (json['lastRunAt'] as num?)?.toInt(),
+    lastStatus: json['lastStatus']?.toString(),
+    lastError: (json['lastError'] ?? '').toString(),
+    runCount: (json['runCount'] as num?)?.toInt() ?? 0,
+    nextRunAt: (json['nextRunAt'] as num?)?.toInt(),
+  );
 }
