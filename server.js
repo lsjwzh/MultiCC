@@ -3936,13 +3936,21 @@ const MAX_CHAT_MESSAGES = 50;  // keep last N messages per session
 // chat_history has a rolling window (50 messages), so older usage data gets
 // trimmed. This file stores the CUMULATIVE total per session and never shrinks.
 const TOKEN_USAGE_FILE = path.join(__dirname, 'token_usage.json');
+// Real consumed input for a turn = fresh input + cache reads + cache writes.
+// Anthropic's input_tokens EXCLUDES cache_read/cache_creation, but those are
+// real billed/consumed context tokens — counting only input_tokens undercounts
+// actual usage by a large factor on cache-heavy turns. Matches how the
+// frontend computes "本轮" context size.
+function consumedInput(u) {
+  return (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+}
 function accumulateTokenUsage(sessionName, usage) {
-  if (!usage || (!usage.input_tokens && !usage.output_tokens)) return;
+  if (!usage || (!usage.input_tokens && !usage.output_tokens && !usage.cache_read_input_tokens && !usage.cache_creation_input_tokens)) return;
   let data = {};
   try { data = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
   if (typeof data !== 'object' || Array.isArray(data)) data = {};
   const cur = data[sessionName] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
-  cur.inputTokens += usage.input_tokens || 0;
+  cur.inputTokens += consumedInput(usage);
   cur.outputTokens += usage.output_tokens || 0;
   cur.turnCount += 1;
   data[sessionName] = cur;
@@ -3962,7 +3970,7 @@ function getTokenUsage() {
 const TOKEN_DAILY_FILE = path.join(__dirname, 'token_daily.json');
 
 function accumulateTokenDaily(sessionName, usage) {
-  const inp = usage.input_tokens || 0;
+  const inp = consumedInput(usage);
   const out = usage.output_tokens || 0;
   if (inp + out === 0) return;
 
