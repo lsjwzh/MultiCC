@@ -13,12 +13,15 @@
   <title>MultiCC — Dashboard</title>
   <style>
     :root{
-      --bg:#070809; --bg-soft:#0b0d10; --panel:#0f1115; --panel-2:#14171c;
-      --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.12);
-      --text:#e7eaee; --muted:#8a909b; --faint:#5b616c;
-      --accent:#3ad6c5; --accent-dim:rgba(58,214,197,.14); --accent-line:rgba(58,214,197,.4);
+      --bg:#0a0c10; --bg-soft:#0e1116; --panel:#181d27; --panel-2:#212834;
+      --line:rgba(255,255,255,.14); --line-strong:rgba(255,255,255,.28);
+      --text:#eef1f6; --muted:#969db0; --faint:#6a7280;
+      --well:#0b0d11;
+      --accent:#3ad6c5; --accent-dim:rgba(58,214,197,.14); --accent-line:rgba(58,214,197,.45);
       --blue:#6aa3ff; --claude:#f0936b; --codex:#7fd49a; --amber:#e3b341; --danger:#ff6b63;
       --radius:14px;
+      --elev:0 1px 0 rgba(255,255,255,.05) inset, 0 12px 32px -20px rgba(0,0,0,.85);
+      --elev-hi:0 1px 0 rgba(255,255,255,.07) inset, 0 18px 44px -22px rgba(0,0,0,.9);
       --mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
       --sans:'Inter',-apple-system,system-ui,'Segoe UI',sans-serif;
     }
@@ -265,13 +268,13 @@
     .empty-state p{font-size:14px;margin-bottom:20px}
 
     /* ── Settings cards ── */
-    .settings-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:16px;max-width:780px}
-    .settings-card .sc-header{padding:14px 18px;border-bottom:1px solid var(--line);font-size:14px;font-weight:620;color:var(--text)}
+    .settings-card{background:linear-gradient(180deg,rgba(255,255,255,.018),transparent 120px),var(--panel);border:1px solid var(--line-strong);border-radius:var(--radius);overflow:hidden;margin-bottom:16px;max-width:780px;box-shadow:var(--elev)}
+    .settings-card .sc-header{padding:14px 18px;border-bottom:1px solid var(--line-strong);font-size:14px;font-weight:620;color:var(--text);background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0))}
     .settings-card .sc-body{padding:18px;display:flex;flex-direction:column;gap:14px}
     .setting-row{display:flex;align-items:center;gap:14px}
     .setting-row label{flex:0 0 120px;font-size:13px;color:var(--muted);text-align:right}
-    .setting-row input,.setting-row select,.setting-row textarea{flex:1;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;padding:9px 12px;color:var(--text);font-size:13px;font-family:var(--mono)}
-    .setting-row input:focus,.setting-row select:focus,.setting-row textarea:focus{outline:none;border-color:var(--accent-line)}
+    .setting-row input,.setting-row select,.setting-row textarea{flex:1;background:var(--well);border:1px solid var(--line-strong);border-radius:9px;padding:9px 12px;color:var(--text);font-size:13px;font-family:var(--mono);box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
+    .setting-row input:focus,.setting-row select:focus,.setting-row textarea:focus{outline:none;border-color:var(--accent-line);box-shadow:inset 0 1px 2px rgba(0,0,0,.4),0 0 0 3px var(--accent-dim)}
     .setting-row input::placeholder{color:var(--faint)}
     .sc-footer{padding:13px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:12px}
     .sc-footer .status-text{font-size:12px;color:var(--muted)}
@@ -715,17 +718,20 @@
           <div class="sec-head"><h2>消息桥接 Bridges</h2><div class="line"></div></div>
           <div style="font-size:11px;color:var(--faint);line-height:1.5;margin-bottom:14px;">每个平台为一个独立网关（专用 <code>__&lt;平台&gt;_gateway__</code> 会话），架构一致。点击标题展开/收起对应平台的配置。</div>
           <style>
-            .bridge-acc{border:1px solid var(--line);border-radius:10px;margin-bottom:12px;overflow:hidden;background:var(--bg-soft);}
-            .bridge-sum{cursor:pointer;padding:13px 16px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:9px;user-select:none;list-style:none;}
+            .bridge-acc{border:1px solid var(--line-strong);border-radius:var(--radius);margin-bottom:12px;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.022),transparent 90px),var(--panel);box-shadow:var(--elev);transition:box-shadow .18s,border-color .18s;}
+            .bridge-acc[open]{box-shadow:var(--elev-hi);}
+            .bridge-acc:hover{border-color:var(--accent-line);}
+            .bridge-sum{cursor:pointer;padding:14px 17px;font-size:14px;font-weight:640;display:flex;align-items:center;gap:10px;user-select:none;list-style:none;transition:background .15s;}
+            .bridge-sum:hover{background:rgba(255,255,255,.025);}
             .bridge-sum::-webkit-details-marker{display:none;}
-            .bridge-sum::before{content:'▸';color:var(--muted);font-size:12px;transition:transform .15s;}
+            .bridge-sum::before{content:'▸';color:var(--accent);font-size:12px;transition:transform .18s;opacity:.85;}
             .bridge-acc[open] > .bridge-sum::before{transform:rotate(90deg);}
-            .bridge-acc[open] > .bridge-sum{border-bottom:1px solid var(--line);}
+            .bridge-acc[open] > .bridge-sum{border-bottom:1px solid var(--line-strong);}
             .bridge-sum .ic{font-size:16px;}
             .bridge-hint{font-size:11px;font-weight:400;color:var(--faint);margin-left:auto;}
-            .bridge-badge{font-size:11px;font-weight:400;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);}
-            .bridge-body{padding:14px 16px;display:flex;flex-direction:column;gap:14px;}
-            .bridge-body .settings-card{margin:0;}
+            .bridge-badge{font-size:11px;font-weight:400;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.07);color:var(--muted);border:1px solid var(--line);}
+            .bridge-body{padding:16px;display:flex;flex-direction:column;gap:14px;background:var(--bg-soft);}
+            .bridge-body .settings-card{margin:0;box-shadow:none;}
           </style>
 
           <!-- WeChat accordion -->
