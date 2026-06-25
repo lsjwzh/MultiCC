@@ -2818,6 +2818,195 @@ document.addEventListener('change', (e) => {
   }
 });
 
+/* ── Generic token-based bridges: Telegram / Discord / Slack ──
+   All three share Feishu's exact REST surface + gateway model; only the config
+   fields differ. One data-driven controller drives all of them (id prefix per
+   platform), instead of copy-pasting the Feishu functions three times. */
+const TOKEN_BRIDGES = {
+  telegram: { api: '/api/telegram', idp: 'tg', name: 'Telegram', session: '__telegram_gateway__', fields: ['botToken'], logIn: '← Telegram' },
+  discord:  { api: '/api/discord',  idp: 'dc', name: 'Discord',  session: '__discord_gateway__',  fields: ['botToken'], logIn: '← Discord' },
+  slack:    { api: '/api/slack',    idp: 'sk', name: 'Slack',    session: '__slack_gateway__',    fields: ['botToken', 'appToken'], logIn: '← Slack' },
+};
+const _bridgeEvt = {};       // platform → EventSource
+const _bridgeRunning = {};   // platform → bool
+function _bid(p, suffix) { return document.getElementById(TOKEN_BRIDGES[p].idp + '-' + suffix); }
+
+function bridgeSetConfigured(p, configured) {
+  const el = _bid(p, 'cfg-state');
+  if (!el) return;
+  el.textContent = configured ? '已配置' : '未配置';
+  el.style.background = configured ? '#23863640' : '';
+  el.style.color = configured ? '#3fb950' : '';
+}
+function bridgeSetRunning(p, running) {
+  _bridgeRunning[p] = running;
+  const s = _bid(p, 'btn-start'), e = _bid(p, 'btn-stop'), b = _bid(p, 'running-badge'), w = _bid(p, 'ws-badge');
+  if (s) s.disabled = running;
+  if (e) e.disabled = !running;
+  if (b) b.style.display = running ? '' : 'none';
+  if (w) w.style.display = running ? '' : 'none';
+}
+async function bridgeSaveConfig(p) {
+  const def = TOKEN_BRIDGES[p];
+  const body = {};
+  for (const f of def.fields) { const v = (_bid(p, f)?.value || '').trim(); if (v) body[f] = v; } // empty = keep existing
+  const statusEl = _bid(p, 'cfg-status');
+  try {
+    const res = await fetch(def.api + '/config' + tokenQS('?'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    for (const f of def.fields) { const el = _bid(p, f); if (el) el.value = ''; }
+    if (statusEl) statusEl.textContent = '已保存';
+    showToast(`${def.name} 凭证已保存`);
+    bridgeLoadConfig(p);
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `保存失败: ${err.message}`;
+    showToast(`保存失败: ${err.message}`, true);
+  }
+}
+async function bridgeStart(p) {
+  const def = TOKEN_BRIDGES[p];
+  try {
+    const res = await fetch(def.api + '/start' + tokenQS('?'), { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    bridgeSetRunning(p, true);
+    bridgeConnectSSE(p);
+    showToast(`${def.name} 桥接已启动`);
+  } catch (err) { showToast(`启动失败: ${err.message}`, true); }
+}
+async function bridgeStop(p) {
+  const def = TOKEN_BRIDGES[p];
+  try {
+    await fetch(def.api + '/stop' + tokenQS('?'), { method: 'POST' });
+    bridgeSetRunning(p, false);
+    bridgeDisconnectSSE(p);
+    showToast(`${def.name} 桥接已停止`);
+  } catch (err) { showToast(`停止失败: ${err.message}`, true); }
+}
+function bridgeConnectSSE(p) {
+  const def = TOKEN_BRIDGES[p];
+  bridgeDisconnectSSE(p);
+  const es = new EventSource(def.api + '/events' + tokenQS('?'));
+  es.onmessage = (e) => { try { bridgeAppendLog(p, JSON.parse(e.data)); } catch (_) {} };
+  es.onerror = () => { bridgeDisconnectSSE(p); if (_bridgeRunning[p]) setTimeout(() => bridgeConnectSSE(p), 3000); };
+  _bridgeEvt[p] = es;
+}
+function bridgeDisconnectSSE(p) { if (_bridgeEvt[p]) { _bridgeEvt[p].close(); _bridgeEvt[p] = null; } }
+
+const _bridgeLogColors = { in: '#58a6ff', out: '#3fb950', system: '#d29922', error: '#f85149' };
+function bridgeAppendLog(p, entry) {
+  const def = TOKEN_BRIDGES[p];
+  const log = _bid(p, 'log');
+  if (!log) return;
+  const ph = log.querySelector('div[style*="text-align:center"]');
+  if (ph) ph.remove();
+  const div = document.createElement('div');
+  div.style.cssText = `border-left:2px solid ${_bridgeLogColors[entry.type] || '#484f58'};padding:2px 6px;line-height:1.4;word-break:break-word;`;
+  const d = new Date(entry.ts);
+  const time = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
+  const prefixMap = { in: def.logIn, out: '→ Agent', system: 'SYS', error: 'ERR' };
+  const prefix = prefixMap[entry.type] || entry.type;
+  div.innerHTML = `<span style="color:#484f58;font-size:10px;margin-right:4px;">${time}</span><span style="color:${_bridgeLogColors[entry.type] || '#8b949e'};font-weight:600;">${escapeHtml(prefix)}</span> ${escapeHtml(entry.text || '')}`;
+  log.appendChild(div);
+  while (log.children.length > 100) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+function _bridgeSelectedCli(p) {
+  const checked = document.querySelector(`input[name="${TOKEN_BRIDGES[p].idp}-gw-cli"]:checked`);
+  return checked ? checked.value : 'claude';
+}
+function bridgeRenderGateway(p, gw) {
+  const stateEl = _bid(p, 'gw-state'), createBtn = _bid(p, 'gw-create'), openBtn = _bid(p, 'gw-open'),
+        resetBtn = _bid(p, 'gw-reset'), destroyBtn = _bid(p, 'gw-destroy');
+  if (!stateEl) return;
+  if (gw) {
+    stateEl.textContent = gw.cli;
+    stateEl.style.background = '#23863640'; stateEl.style.color = '#3fb950';
+    createBtn.style.display = 'none'; openBtn.style.display = ''; resetBtn.style.display = ''; destroyBtn.style.display = '';
+    const radio = document.querySelector(`input[name="${TOKEN_BRIDGES[p].idp}-gw-cli"][value="${gw.cli}"]`);
+    if (radio) radio.checked = true;
+  } else {
+    stateEl.textContent = '未创建';
+    stateEl.style.background = ''; stateEl.style.color = '';
+    createBtn.style.display = ''; openBtn.style.display = 'none'; resetBtn.style.display = 'none'; destroyBtn.style.display = 'none';
+  }
+}
+async function bridgeGatewayRefresh(p) {
+  try { const res = await fetch(TOKEN_BRIDGES[p].api + '/gateway' + tokenQS('?')); const gw = await res.json(); bridgeRenderGateway(p, gw); return gw; }
+  catch (_) { return null; }
+}
+async function bridgeGatewayCreate(p) {
+  const def = TOKEN_BRIDGES[p], cli = _bridgeSelectedCli(p);
+  try {
+    const res = await fetch(def.api + '/gateway' + tokenQS('?'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cli }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    bridgeRenderGateway(p, data);
+    showToast(`${def.name} Gateway 已创建 (${cli})`);
+  } catch (err) { showToast(`创建失败: ${err.message}`, true); }
+}
+async function bridgeGatewaySwitchCli(p) {
+  const def = TOKEN_BRIDGES[p], cli = _bridgeSelectedCli(p);
+  try {
+    const res = await fetch(def.api + '/gateway' + tokenQS('?'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cli }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    bridgeRenderGateway(p, data);
+    showToast(`已切换到 ${cli}`);
+  } catch (err) { showToast(`切换失败: ${err.message}`, true); bridgeGatewayRefresh(p); }
+}
+function bridgeGatewayOpen(p) {
+  window.open('/chat?session=' + encodeURIComponent(TOKEN_BRIDGES[p].session) + tokenQS('&'), '_blank');
+}
+async function bridgeGatewayReset(p) {
+  const def = TOKEN_BRIDGES[p];
+  if (!(await showConfirm(`清空 ${def.name} Gateway 对话历史？`, { danger: true, okText: '清空' }))) return;
+  try {
+    const res = await fetch(def.api + '/gateway/reset' + tokenQS('?'), { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    showToast('已清空对话历史');
+  } catch (err) { showToast(`重置失败: ${err.message}`, true); }
+}
+async function bridgeGatewayDestroy(p) {
+  const def = TOKEN_BRIDGES[p];
+  if (!(await showConfirm(`销毁 ${def.name} Gateway 会话？历史会保留在 chat_history。`, { danger: true, okText: '销毁' }))) return;
+  try {
+    const res = await fetch(def.api + '/gateway' + tokenQS('?'), { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    bridgeRenderGateway(p, null);
+    showToast(`${def.name} Gateway 已销毁`);
+  } catch (err) { showToast(`销毁失败: ${err.message}`, true); }
+}
+async function bridgeLoadConfig(p) {
+  try { const res = await fetch(TOKEN_BRIDGES[p].api + '/config' + tokenQS('?')); const cfg = await res.json(); bridgeSetConfigured(p, !!cfg.configured); } catch (_) {}
+}
+async function bridgeCheckStatus(p) {
+  const def = TOKEN_BRIDGES[p];
+  try {
+    const res = await fetch(def.api + '/status' + tokenQS('?'));
+    const data = await res.json();
+    bridgeSetConfigured(p, !!data.configured);
+    bridgeRenderGateway(p, data.gateway);
+    if (data.running) {
+      bridgeSetRunning(p, true);
+      bridgeConnectSSE(p);
+      try { const logRes = await fetch(def.api + '/log' + tokenQS('?')); const entries = await logRes.json(); for (const e of entries.slice(-50)) bridgeAppendLog(p, e); } catch (_) {}
+    }
+  } catch (_) {}
+}
+// radio change → switch cli when that platform's gateway already exists
+document.addEventListener('change', (e) => {
+  if (!e.target || !e.target.name) return;
+  for (const p of Object.keys(TOKEN_BRIDGES)) {
+    if (e.target.name === TOKEN_BRIDGES[p].idp + '-gw-cli') {
+      const stateEl = _bid(p, 'gw-state');
+      if (stateEl && stateEl.textContent !== '未创建') bridgeGatewaySwitchCli(p);
+    }
+  }
+});
+
 /* ── Push Notification Diagnostics ── */
 
 function formatTimestamp(ts) {
@@ -3906,6 +4095,7 @@ wechatLoadConfig();
 wechatCheckStatus();
 feishuLoadConfig();
 feishuCheckStatus();
+for (const _p of Object.keys(TOKEN_BRIDGES)) { bridgeLoadConfig(_p); bridgeCheckStatus(_p); }
 auxConnect();
 autoRefreshTimer = setInterval(loadDashboard, 5000);
 // Refresh push diagnostics periodically and on visibility change
