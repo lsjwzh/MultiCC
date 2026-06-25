@@ -440,7 +440,9 @@ function handleEvent(msg) {
 
     case 'result':
       isStreaming = false;
+      var _resultBubble = currentMsgEl;  // capture before finishStreaming() nulls it
       finishStreaming();
+      if (msg.usage) attachUsageLine(_resultBubble, msg.usage);
       stopTitleAnimation();
       // No notification here: a `result` only means the stream paused, which
       // happens between turns of a multi-step agent run too. The server's
@@ -654,6 +656,40 @@ function createAssistantBubble() {
   messagesEl.appendChild(div);
   scrollToBottom();
   return div;
+}
+
+// Build the per-message token usage line shown under an assistant bubble.
+// `usage` mirrors Anthropic's shape (input_tokens / output_tokens /
+// cache_read_input_tokens / cache_creation_input_tokens). Returns null when
+// there's nothing meaningful to show.
+function buildUsageLine(usage) {
+  if (!usage) return null;
+  const i  = usage.input_tokens || 0;
+  const o  = usage.output_tokens || 0;
+  const cr = usage.cache_read_input_tokens || 0;
+  const cw = usage.cache_creation_input_tokens || 0;
+  if (i + o + cr + cw === 0) return null;
+  const n = x => x.toLocaleString('en-US');
+  const el = document.createElement('div');
+  el.className = 'msg-usage';
+  el.title = `本条消息 token 用量\n输入 ${n(i)}\n输出 ${n(o)}\n缓存读 ${n(cr)}\n缓存写 ${n(cw)}\n合计 ${n(i + o + cr + cw)}`;
+  el.innerHTML =
+    `<span class="u-in">&#8593;入 ${n(i)}</span>` +
+    `<span class="u-out">&#8595;出 ${n(o)}</span>` +
+    (cr ? `<span class="u-cache">&#9851;读 ${n(cr)}</span>` : '') +
+    (cw ? `<span class="u-cache">&#9851;写 ${n(cw)}</span>` : '');
+  return el;
+}
+
+// Attach (or refresh) the usage line on a given assistant bubble element.
+function attachUsageLine(bubbleEl, usage) {
+  if (!bubbleEl) return;
+  const ce = bubbleEl.querySelector('.msg-content');
+  if (!ce) return;
+  const old = ce.querySelector('.msg-usage');
+  if (old) old.remove();
+  const line = buildUsageLine(usage);
+  if (line) ce.appendChild(line);
 }
 
 function renderCurrentText(final = false) {
