@@ -1940,14 +1940,35 @@ async function openMessagePicker() {
 updateRoleBtn();
 loadSessionModel();
 
-/* ── Clear context button ── */
-document.getElementById('clear-ctx-btn').addEventListener('click', () => {
+/* ── Clear context button (popup: clear all / keep last N) ── */
+const clearCtxWrap = document.getElementById('clear-ctx-wrap');
+const clearCtxMenu = document.getElementById('clear-ctx-menu');
+let _clearMenuOpen = false;
+function openClearMenu() { _clearMenuOpen = true; clearCtxMenu.style.display = 'block'; }
+function closeClearMenu() { _clearMenuOpen = false; clearCtxMenu.style.display = 'none'; }
+clearCtxWrap.addEventListener('click', (e) => { e.stopPropagation(); _clearMenuOpen ? closeClearMenu() : openClearMenu(); });
+document.addEventListener('click', (e) => { if (_clearMenuOpen && !clearCtxWrap.contains(e.target)) closeClearMenu(); });
+clearCtxMenu.addEventListener('click', (e) => e.stopPropagation());
+function doClear(keepN) {
   if (isStreaming) cancelStreaming();
-  messagesEl.innerHTML = '';
-  addSystemMsg('Chat cleared');
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'clear_history' }));
+  if (keepN > 0) {
+    const msgs = [...messagesEl.querySelectorAll('.msg:not(.system-msg)')];
+    const remove = msgs.slice(0, Math.max(0, msgs.length - keepN));
+    remove.forEach(el => el.remove());
+    if (remove.length) addSystemMsg('Cleared ' + remove.length + ' earlier messages (keep last ' + keepN + ')');
+  } else {
+    messagesEl.innerHTML = '';
+    addSystemMsg('Chat cleared');
   }
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'clear_history', keep: keepN }));
+  }
+  closeClearMenu();
+}
+clearCtxMenu.querySelector('[data-action="clear-all"]').addEventListener('click', () => doClear(0));
+clearCtxMenu.querySelector('[data-action="clear-keep"]').addEventListener('click', () => {
+  const n = parseInt(document.getElementById('clear-keep-n').value, 10);
+  doClear(Math.max(1, n || 5));
 });
 
 /* ── File Attachment ── */

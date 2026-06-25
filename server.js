@@ -5262,10 +5262,17 @@ function handleChatWs(ws, req, urlObj) {
 
       if (msg.type === 'clear_history') {
         const h = chatHistories.get(sessionName);
-        // Distill the soon-to-be-discarded conversation into long-lived session
-        // memory BEFORE wiping it (key problems + how they were solved).
-        if (h && h.length) distillHistoryIntoMemory(sessionName, h.slice());
-        if (h) h.length = 0;
+        const keep = Math.max(0, parseInt(msg.keep || '0', 10) || 0);
+        if (keep > 0 && h && h.length > keep) {
+          // Keep the last N messages (typically user/assistant pairs), distill the rest.
+          const removed = h.splice(0, h.length - keep);
+          if (removed.length) distillHistoryIntoMemory(sessionName, removed);
+        } else {
+          // Distill the soon-to-be-discarded conversation into long-lived session
+          // memory BEFORE wiping it (key problems + how they were solved).
+          if (h && h.length) distillHistoryIntoMemory(sessionName, h.slice());
+          if (h) h.length = 0;
+        }
         saveChatHistory(sessionName);
         // Reset the CLI session so next turn starts fresh:
         //   claude: allocate a new UUID (will be used as --session-id)

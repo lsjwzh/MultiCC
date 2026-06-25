@@ -78,6 +78,53 @@
     }
     #header-more-menu.open { display: flex; flex-direction: column; gap: 6px; }
     #header-more-menu .hdr-btn { width: 100%; text-align: left; }
+    .hdr-menu-wrap { position: relative; display: inline-flex; }
+    .hdr-drop-menu {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      z-index: 50;
+      min-width: 200px;
+      padding: 8px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      box-shadow: 0 12px 30px rgba(0,0,0,.35);
+      flex-direction: column;
+      gap: 6px;
+    }
+    .hdr-drop-menu[style*="block"] { display: flex; }
+    .hdr-drop-menu button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 6px 10px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .hdr-drop-menu button:hover { background: #21262d; border-color: #30363d; }
+    .hdr-drop-menu button.primary {
+      color: #fff;
+      background: #238636;
+      border-color: #2ea043;
+      text-align: center;
+      font-weight: 600;
+    }
+    .hdr-drop-menu button.primary:hover { background: #2ea043; }
+    .hdr-drop-menu label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      color: #8b949e;
+      white-space: nowrap;
+    }
     @media (max-width: 760px) {
       #header { gap: 6px; }
       #header-more-wrap { display: inline-flex; }
@@ -800,7 +847,17 @@
       <span id="header-more-menu"></span>
     </span>
     <button class="hdr-btn" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
-    <button class="hdr-btn" id="clear-ctx-btn" title="Clear context" data-i18n="clear">Clear</button>
+    <span class="hdr-menu-wrap" id="clear-ctx-wrap">
+      <button class="hdr-btn" id="clear-ctx-btn" title="Clear context" data-i18n="clear">Clear</button>
+      <span class="hdr-drop-menu" id="clear-ctx-menu" style="display:none">
+        <button data-action="clear-all" data-i18n="clearHistory">清空全部</button>
+        <label style="display:flex;align-items:center;gap:4px;padding:6px 8px;font-size:12px;color:var(--faint);white-space:nowrap">
+          <input id="clear-keep-n" type="number" min="1" max="999" value="5" style="width:44px;font-size:12px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)">
+          <span data-i18n="clearKeepLast">保留最近 N 条</span>
+        </label>
+        <button data-action="clear-keep" class="primary" style="width:100%">确认</button>
+      </span>
+    </span>
     <button class="hdr-btn" id="memo-btn" title="项目备忘 (multicc.memo.md)" onclick="openMemo()">📝</button>
     <button id="manage-btn" class="hdr-btn" onclick="location.href='/manage'" data-i18n="manage">Manage</button>
   </div>
