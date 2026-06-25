@@ -405,8 +405,7 @@
     <button class="nav-item" id="macos-power-nav" data-view="power" onclick="setView('power')" style="display:none;"><span class="ic">⌁</span> macOS 电源</button>
     <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> 推送 Push</button>
     <button class="nav-item" data-view="tunnel" onclick="setView('tunnel')"><span class="ic">🌐</span> 外网穿透</button>
-    <button class="nav-item" data-view="wechat" onclick="setView('wechat')"><span class="ic">💬</span> WeChat</button>
-    <button class="nav-item" data-view="feishu" onclick="setView('feishu')"><span class="ic">📨</span> 飞书 Feishu</button>
+    <button class="nav-item" data-view="bridges" onclick="setView('bridges')"><span class="ic">🌉</span> 消息桥接 Bridges</button>
     <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> Agent 资源</button>
     <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> 临时上传</button>
 
@@ -711,9 +710,28 @@
           </div>
         </section>
 
-        <!-- ─── WeChat ─── -->
-        <section class="view" data-view="wechat">
-          <div class="sec-head"><h2>WeChat Bridge (iLink)</h2><div class="line"></div></div>
+        <!-- ─── Bridges (collapsible per-platform) ─── -->
+        <section class="view" data-view="bridges">
+          <div class="sec-head"><h2>消息桥接 Bridges</h2><div class="line"></div></div>
+          <div style="font-size:11px;color:var(--faint);line-height:1.5;margin-bottom:14px;">每个平台为一个独立网关（专用 <code>__&lt;平台&gt;_gateway__</code> 会话），架构一致。点击标题展开/收起对应平台的配置。</div>
+          <style>
+            .bridge-acc{border:1px solid var(--line);border-radius:10px;margin-bottom:12px;overflow:hidden;background:var(--bg-soft);}
+            .bridge-sum{cursor:pointer;padding:13px 16px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:9px;user-select:none;list-style:none;}
+            .bridge-sum::-webkit-details-marker{display:none;}
+            .bridge-sum::before{content:'▸';color:var(--muted);font-size:12px;transition:transform .15s;}
+            .bridge-acc[open] > .bridge-sum::before{transform:rotate(90deg);}
+            .bridge-acc[open] > .bridge-sum{border-bottom:1px solid var(--line);}
+            .bridge-sum .ic{font-size:16px;}
+            .bridge-hint{font-size:11px;font-weight:400;color:var(--faint);margin-left:auto;}
+            .bridge-badge{font-size:11px;font-weight:400;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);}
+            .bridge-body{padding:14px 16px;display:flex;flex-direction:column;gap:14px;}
+            .bridge-body .settings-card{margin:0;}
+          </style>
+
+          <!-- WeChat accordion -->
+          <details class="bridge-acc" open>
+            <summary class="bridge-sum"><span class="ic">💬</span> WeChat (iLink) <span class="bridge-hint">微信扫码入口</span></summary>
+            <div class="bridge-body">
           <div class="settings-card">
             <div class="sc-header">微信登录</div>
             <div class="sc-body" style="align-items:center;">
@@ -762,11 +780,13 @@
               <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
             </div>
           </div>
-        </section>
+            </div>
+          </details>
 
-        <!-- ─── Feishu ─── -->
-        <section class="view" data-view="feishu">
-          <div class="sec-head"><h2>飞书 Bridge (Lark 长连接)</h2><div class="line"></div></div>
+          <!-- Feishu accordion -->
+          <details class="bridge-acc">
+            <summary class="bridge-sum"><span class="ic">📨</span> 飞书 Feishu <span class="bridge-hint">Lark 长连接</span></summary>
+            <div class="bridge-body">
           <div class="settings-card">
             <div class="sc-header">应用凭证 <span id="fs-cfg-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未配置</span></div>
             <div class="sc-body">
@@ -820,6 +840,159 @@
               <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
             </div>
           </div>
+            </div>
+          </details>
+
+          <!-- Telegram accordion -->
+          <details class="bridge-acc">
+            <summary class="bridge-sum"><span class="ic">📡</span> Telegram <span id="tg-cfg-state" class="bridge-badge">未配置</span></summary>
+            <div class="bridge-body">
+              <div class="settings-card">
+                <div class="sc-header">应用凭证</div>
+                <div class="sc-body">
+                  <div class="setting-row"><label>Bot Token</label><input id="tg-botToken" type="password" placeholder="123456:ABC...（留空表示不修改）" autocomplete="off" /></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>在 Telegram 找 <code>@BotFather</code> 创建机器人获取 Token。群聊里需对 BotFather 发送 <code>/setprivacy</code> 设为 Disable，或在群中 @ 机器人，否则收不到群消息。</span></div>
+                </div>
+                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('telegram')">保存凭证</button><span class="status-text" id="tg-cfg-status"></span></div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">Gateway 会话 <span id="tg-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+                <div class="sc-body">
+                  <div class="setting-row" id="tg-gw-cli-row">
+                    <label>Agent</label>
+                    <div style="display:flex;gap:12px;">
+                      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="tg-gw-cli" value="claude" checked /> Claude</label>
+                      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="tg-gw-cli" value="codex" /> Codex</label>
+                    </div>
+                  </div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用会话 <code>__telegram_gateway__</code>，与微信 Gateway 同架构。</span></div>
+                </div>
+                <div class="sc-footer">
+                  <button class="btn btn-green" id="tg-gw-create" onclick="bridgeGatewayCreate('telegram')">创建 Gateway</button>
+                  <button class="btn" id="tg-gw-open" onclick="bridgeGatewayOpen('telegram')" style="display:none;">打开聊天</button>
+                  <button class="btn" id="tg-gw-reset" onclick="bridgeGatewayReset('telegram')" style="display:none;">重置对话</button>
+                  <button class="btn btn-danger" id="tg-gw-destroy" onclick="bridgeGatewayDestroy('telegram')" style="display:none;">销毁</button>
+                  <span class="status-text" id="tg-gw-status"></span>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">桥接运行 <span id="tg-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">长轮询</span></div>
+                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>启动后用 Bot API 长轮询接收消息，无需公网回调。请先保存 Token 并创建 Gateway。</span></div></div>
+                <div class="sc-footer">
+                  <button class="btn btn-green" id="tg-btn-start" onclick="bridgeStart('telegram')">启动桥接</button>
+                  <button class="btn btn-danger" id="tg-btn-stop" onclick="bridgeStop('telegram')" disabled>停止</button>
+                  <span class="status-text" id="tg-status"></span>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">消息日志 <span id="tg-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+                <div id="tg-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
+                  <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Discord accordion -->
+          <details class="bridge-acc">
+            <summary class="bridge-sum"><span class="ic">🎮</span> Discord <span id="dc-cfg-state" class="bridge-badge">未配置</span></summary>
+            <div class="bridge-body">
+              <div class="settings-card">
+                <div class="sc-header">应用凭证</div>
+                <div class="sc-body">
+                  <div class="setting-row"><label>Bot Token</label><input id="dc-botToken" type="password" placeholder="留空表示不修改" autocomplete="off" /></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>在 Discord Developer Portal 建 Application → Bot 复制 Token。务必开启 <code>MESSAGE CONTENT INTENT</code>；用 OAuth2 URL 邀请进服务器并授予读/发消息权限。</span></div>
+                </div>
+                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('discord')">保存凭证</button><span class="status-text" id="dc-cfg-status"></span></div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">Gateway 会话 <span id="dc-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+                <div class="sc-body">
+                  <div class="setting-row" id="dc-gw-cli-row">
+                    <label>Agent</label>
+                    <div style="display:flex;gap:12px;">
+                      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="dc-gw-cli" value="claude" checked /> Claude</label>
+                      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="dc-gw-cli" value="codex" /> Codex</label>
+                    </div>
+                  </div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用会话 <code>__discord_gateway__</code>，与微信 Gateway 同架构。</span></div>
+                </div>
+                <div class="sc-footer">
+                  <button class="btn btn-green" id="dc-gw-create" onclick="bridgeGatewayCreate('discord')">创建 Gateway</button>
+                  <button class="btn" id="dc-gw-open" onclick="bridgeGatewayOpen('discord')" style="display:none;">打开聊天</button>
+                  <button class="btn" id="dc-gw-reset" onclick="bridgeGatewayReset('discord')" style="display:none;">重置对话</button>
+                  <button class="btn btn-danger" id="dc-gw-destroy" onclick="bridgeGatewayDestroy('discord')" style="display:none;">销毁</button>
+                  <span class="status-text" id="dc-gw-status"></span>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">桥接运行 <span id="dc-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Gateway WS</span></div>
+                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>启动后建立 Gateway WebSocket 长连接接收消息。请先保存 Token 并创建 Gateway。</span></div></div>
+                <div class="sc-footer">
+                  <button class="btn btn-green" id="dc-btn-start" onclick="bridgeStart('discord')">启动桥接</button>
+                  <button class="btn btn-danger" id="dc-btn-stop" onclick="bridgeStop('discord')" disabled>停止</button>
+                  <span class="status-text" id="dc-status"></span>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">消息日志 <span id="dc-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+                <div id="dc-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
+                  <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Slack accordion -->
+          <details class="bridge-acc">
+            <summary class="bridge-sum"><span class="ic">💼</span> Slack <span id="sk-cfg-state" class="bridge-badge">未配置</span></summary>
+            <div class="bridge-body">
+              <div class="settings-card">
+                <div class="sc-header">应用凭证</div>
+                <div class="sc-body">
+                  <div class="setting-row"><label>Bot Token</label><input id="sk-botToken" type="password" placeholder="xoxb-...（留空表示不修改）" autocomplete="off" /></div>
+                  <div class="setting-row"><label>App Token</label><input id="sk-appToken" type="password" placeholder="xapp-...（留空表示不修改）" autocomplete="off" /></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>在 api.slack.com/apps 建 App：开启 <code>Socket Mode</code> 获取 App-Level Token（<code>xapp-</code>，scope <code>connections:write</code>）；OAuth 安装拿 Bot Token（<code>xoxb-</code>）；Event Subscriptions 订阅 <code>message.channels</code> 等；把 Bot 邀请进频道。</span></div>
+                </div>
+                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('slack')">保存凭证</button><span class="status-text" id="sk-cfg-status"></span></div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">Gateway 会话 <span id="sk-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+                <div class="sc-body">
+                  <div class="setting-row" id="sk-gw-cli-row">
+                    <label>Agent</label>
+                    <div style="display:flex;gap:12px;">
+                      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="sk-gw-cli" value="claude" checked /> Claude</label>
+                      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="sk-gw-cli" value="codex" /> Codex</label>
+                    </div>
+                  </div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用会话 <code>__slack_gateway__</code>，与微信 Gateway 同架构。</span></div>
+                </div>
+                <div class="sc-footer">
+                  <button class="btn btn-green" id="sk-gw-create" onclick="bridgeGatewayCreate('slack')">创建 Gateway</button>
+                  <button class="btn" id="sk-gw-open" onclick="bridgeGatewayOpen('slack')" style="display:none;">打开聊天</button>
+                  <button class="btn" id="sk-gw-reset" onclick="bridgeGatewayReset('slack')" style="display:none;">重置对话</button>
+                  <button class="btn btn-danger" id="sk-gw-destroy" onclick="bridgeGatewayDestroy('slack')" style="display:none;">销毁</button>
+                  <span class="status-text" id="sk-gw-status"></span>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">桥接运行 <span id="sk-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Socket Mode</span></div>
+                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>启动后用 Socket Mode 长连接接收消息，无需公网回调。请先保存两个 Token 并创建 Gateway。</span></div></div>
+                <div class="sc-footer">
+                  <button class="btn btn-green" id="sk-btn-start" onclick="bridgeStart('slack')">启动桥接</button>
+                  <button class="btn btn-danger" id="sk-btn-stop" onclick="bridgeStop('slack')" disabled>停止</button>
+                  <span class="status-text" id="sk-status"></span>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="sc-header">消息日志 <span id="sk-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+                <div id="sk-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
+                  <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+                </div>
+              </div>
+            </div>
+          </details>
         </section>
 
         <!-- ─── Agent Resources ─── -->
@@ -1048,8 +1221,8 @@
         voice: ['语音 Voice', '流式识别与转写'], power: ['macOS 电源', '关盖与系统睡眠设置'],
         push: ['推送通知', 'Web Push 与备用通道'],
         tunnel: ['外网穿透', '花生壳 / Tailscale 自动监控'],
-        wechat: ['WeChat Bridge', '微信入口桥接'],
-        feishu: ['飞书 Bridge', '飞书入口桥接 (Lark 长连接)'], resources: ['Agent 资源', 'Skills 与历史会话'],
+        bridges: ['消息桥接', '微信 / 飞书 / Telegram / Discord / Slack 入口'],
+        resources: ['Agent 资源', 'Skills 与历史会话'],
         storage: ['临时上传', '上传文件缓存'],
       };
       window.setView = function (v) {
