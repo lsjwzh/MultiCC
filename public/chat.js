@@ -1352,6 +1352,7 @@ async function loadSessionModel() {
     // Provider switch applies to every cli (claude & codex both have providers).
     _sessionCli = info.cli || 'claude';
     _sessionProvider = info.provider || '';
+    if (_sessionProvider) await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
     updateProviderBtn();
     if ((info.cli || 'claude') !== 'claude') return; // codex has no model switch / streaming
     _sessionModel = info.model || '';
