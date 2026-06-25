@@ -398,12 +398,64 @@ function resolveSpawnEnv(session) {
 }
 
 // ── Provider token usage stats ────────────────────────────────────────────
-// Reads token_usage.json (a persistent per-session accumulator that never gets
-// trimmed, unlike chat_history's rolling window). Falls back to scanning
-// chat_history/*.json for any sessions not yet represented in the accumulator.
+// Reads token_usage.json (persistent per-session accumulator) for cumulative
+// totals, and token_daily.json for today/week/month time-window breakdowns.
 // Sessions without a provider are grouped into "_default_".
 const SESSIONS_FILE = path.join(__dirname, '..', 'sessions.json');
 const TOKEN_USAGE_FILE = path.join(__dirname, '..', 'token_usage.json');
+const TOKEN_DAILY_FILE = path.join(__dirname, '..', 'token_daily.json');
+
+// Returns the date-key string YYYY-MM-DD for a given Date.
+function dateKey(d) {
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+}
+
+// Reads token_daily.json and computes today / week / month / all windows per provider.
+function readDailyWindows() {
+  let daily = {};
+  try { daily = JSON.parse(fs.readFileSync(TOKEN_DAILY_FILE, 'utf8')); } catch (_) {}
+  if (typeof daily !== 'object' || Array.isArray(daily)) daily = {};
+
+  const now = new Date();
+  const todayStr = dateKey(now);
+
+  // Week start (Monday)
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  const weekStartStr = dateKey(weekStart);
+
+  // Month start
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthStartStr = dateKey(monthStart);
+
+  const result = { today: {}, week: {}, month: {}, all: {} };
+
+  const add = (target, provId, inp, out, tc) => {
+    const e = target[provId] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
+    e.inputTokens += inp;
+    e.outputTokens += out;
+    e.turnCount += tc;
+    target[provId] = e;
+  };
+
+  for (const [dk, dayEntry] of Object.entries(daily)) {
+    for (const [pid, p] of Object.entries(dayEntry)) {
+      add(result.all, pid, p.inputTokens, p.outputTokens, p.turnCount);
+      if (dk >= monthStartStr) {
+        add(result.month, pid, p.inputTokens, p.outputTokens, p.turnCount);
+        if (dk >= weekStartStr) {
+          add(result.week, pid, p.inputTokens, p.outputTokens, p.turnCount);
+          if (dk === todayStr) {
+            add(result.today, pid, p.inputTokens, p.outputTokens, p.turnCount);
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
 
 function getProviderUsageStats() {
   const providerMap = new Map();  // providerId → { inputTokens, outputTokens, turnCount, sessionCount }
@@ -456,9 +508,13 @@ function getProviderUsageStats() {
 
   total.totalTokens = total.inputTokens + total.outputTokens;
 
+  // Time-window breakdown from daily aggregation
+  const dailyWindows = readDailyWindows();
+
   const stats = [];
   for (const [id, agg] of providerMap) {
     const meta = id === '_default_' ? { name: '默认登录', appType: null } : (providerMeta.get(id) || { name: id, appType: null });
+    const dw = (w) => dailyWindows[w][id] || null;
     stats.push({
       providerId: id,
       providerName: meta.name,
@@ -468,6 +524,9 @@ function getProviderUsageStats() {
       totalTokens: agg.inputTokens + agg.outputTokens,
       turnCount: agg.turnCount,
       sessionCount: agg.sessions.size,
+      today: dw('today'),
+      week: dw('week'),
+      month: dw('month'),
     });
   }
 
@@ -489,6 +548,7 @@ module.exports = {
   resolveSpawnEnv,
   buildChildEnv,
   getProviderUsageStats,
+  readDailyWindows,
   CLAUDE_ROUTING_KEYS,
   CODEX_HOMES_DIR,
 };

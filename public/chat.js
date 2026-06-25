@@ -193,6 +193,10 @@ let _contextWindow = 1000000;
 let _usedTokens = 0;
 let _costText = '';  // latest cost summary string, kept separate from the context readout
 let _sessionTokens = { input: 0, output: 0 };  // per-session cumulative token usage
+// Provider-level time-window token stats (updated after each turn)
+let _providerId = null;
+let _providerName = null;
+let _providerTokenWindows = null;  // { today, week, month, all } | null
 
 let currentMsgEl = null;
 let currentTextContent = '';
@@ -404,6 +408,10 @@ function handleEvent(msg) {
           addSystemMsg('⚠️ Response completed while disconnected. Check history above.');
           updateUI();
         }
+        // Capture provider info + time-window token stats from server.
+        if (msg.providerId !== undefined) _providerId = msg.providerId;
+        if (msg.providerName !== undefined) _providerName = msg.providerName;
+        if (msg.providerTokenWindows) _providerTokenWindows = msg.providerTokenWindows;
       } else if (msg.subtype === 'agent_notes' && Array.isArray(msg.notes)) {
         addAgentNotes(msg.notes);
       } else if (msg.message) {
@@ -445,6 +453,13 @@ function handleEvent(msg) {
       }
       updateContextBar(msg.usage, msg.modelUsage);
       updateUI();
+      break;
+
+    case 'provider_token_stats':
+      if (msg.windows) {
+        _providerTokenWindows = msg.windows;
+        updateContextBar();
+      }
       break;
 
     case 'chat_history':
@@ -1017,20 +1032,48 @@ function updateContextBar(usage, modelUsage) {
     const cacheCreate = usage.cache_creation_input_tokens || 0;
     _usedTokens = input + output + cacheRead + cacheCreate;
   }
-  const total = _sessionTokens.input + _sessionTokens.output;
+
   const parts = [];
-  if (_costText) parts.push(`<span style="margin-right:8px">${escHtml(_costText)}</span>`);
-  if (total > 0) {
-    const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1).replace(/\.0$/,'')+'M' : n >= 1e3 ? (n/1e3).toFixed(1).replace(/\.0$/,'')+'K' : String(n);
-    parts.push(`<span style="margin-right:8px;color:var(--faint)">累计 ${fmt(total)} tokens（in ${fmt(_sessionTokens.input)} / out ${fmt(_sessionTokens.output)}）</span>`);
+
+  // ── Compact number formatter: 1234 → "1.2K", 1500000 → "1.5M" ──
+  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1).replace(/\.0$/,'')+'M' : n >= 1e3 ? (n/1e3).toFixed(1).replace(/\.0$/,'')+'K' : String(n);
+  const windowFmt = (w) => {
+    if (!w || (w.inputTokens + w.outputTokens === 0)) return '';
+    const i = fmt(w.inputTokens);
+    const o = fmt(w.outputTokens);
+    return `I:${i}/O:${o}`;
+  };
+
+  // ── Provider time-window stats ──
+  if (_providerTokenWindows) {
+    const pw = _providerTokenWindows;
+    const label = _providerName || _providerId || 'Provider';
+    const entries = [];
+    if (pw.today) { const s = windowFmt(pw.today); if (s) entries.push(`日${s}`); }
+    if (pw.week) { const s = windowFmt(pw.week); if (s) entries.push(`周${s}`); }
+    if (pw.month) { const s = windowFmt(pw.month); if (s) entries.push(`月${s}`); }
+    if (entries.length) {
+      parts.push(`<span style="margin-right:10px;color:var(--amber);font-size:11px">[${escHtml(label)}] ${entries.join(' ')}</span>`);
+    }
   }
+
+  // ── Cost text (USD) ──
+  if (_costText) parts.push(`<span style="margin-right:10px">${escHtml(_costText)}</span>`);
+
+  // ── Session cumulative tokens ──
+  const total = _sessionTokens.input + _sessionTokens.output;
+  if (total > 0) {
+    parts.push(`<span style="margin-right:10px;color:var(--faint);font-size:11px">会话累计 ${fmt(total)} tokens（in ${fmt(_sessionTokens.input)} / out ${fmt(_sessionTokens.output)}）</span>`);
+  }
+
+  // ── Current-turn context ──
   if (_usedTokens > 0) {
     const pct = Math.min(100, (_usedTokens / _contextWindow) * 100);
     const color = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#3fb950';
     const usedK = (_usedTokens / 1000).toFixed(1);
     const totalK = (_contextWindow / 1000).toFixed(0);
-    parts.push(`<span style="color:${color}">Context: ${usedK}k / ${totalK}k (${pct.toFixed(1)}%)</span>`);
-    parts.push(`<span style="display:inline-block;width:80px;height:6px;background:#21262d;border-radius:3px;margin-left:6px;vertical-align:middle;"><span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span></span>`);
+    parts.push(`<span style="font-size:11px;color:${color}">本轮 ${usedK}k/${totalK}k (${pct.toFixed(1)}%)</span>`);
+    parts.push(`<span style="display:inline-block;width:60px;height:5px;background:#21262d;border-radius:3px;margin-left:4px;vertical-align:middle;"><span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span></span>`);
   }
   if (parts.length) costBar.innerHTML = parts.join('');
 }
