@@ -450,7 +450,9 @@ function handleEvent(msg) {
     case 'chat_history':
       if (!_historyLoaded) {
         _historyLoaded = true;
-        replayHistory(msg.messages);
+        // Prefer server's authoritative token_usage.json accumulator over
+        // reconstructing from the rolling chat_history window.
+        replayHistory(msg.messages, msg.tokenUsage || null);
       }
       break;
 
@@ -756,8 +758,17 @@ function showDisconnectBanner(secs) {
 }
 
 /* ── Replay saved history ── */
-function replayHistory(messages) {
-  if (!messages || !messages.length) return;
+function replayHistory(messages, serverTokenUsage) {
+  if (!messages || !messages.length) {
+    // Even without messages, serverTokenUsage may carry accumulated totals
+    // from token_usage.json (e.g. all chat_history entries were trimmed).
+    if (serverTokenUsage) {
+      _sessionTokens = { input: serverTokenUsage.inputTokens || 0, output: serverTokenUsage.outputTokens || 0 };
+      _usedTokens = _sessionTokens.input + _sessionTokens.output;
+      updateContextBar();
+    }
+    return;
+  }
   for (let mi = 0; mi < messages.length; mi++) {
     const m = messages[mi];
     try {
@@ -818,19 +829,23 @@ function replayHistory(messages) {
       console.warn('[multicc] replayHistory: skipped message', mi, err.message);
     }
   }
-  // Compute cumulative session token usage from all assistant messages.
-  _sessionTokens = { input: 0, output: 0 };
-  for (const m of messages) {
-    if (m.usage && m.role === 'assistant') {
-      _sessionTokens.input += m.usage.input_tokens || 0;
-      _sessionTokens.output += m.usage.output_tokens || 0;
+  // Compute cumulative session token usage.
+  // Prefer the server's authoritative accumulator (token_usage.json) which
+  // never gets trimmed. Fall back to summing from chat_history messages.
+  if (serverTokenUsage) {
+    _sessionTokens = { input: serverTokenUsage.inputTokens || 0, output: serverTokenUsage.outputTokens || 0 };
+  } else {
+    _sessionTokens = { input: 0, output: 0 };
+    for (const m of messages) {
+      if (m.usage && m.role === 'assistant') {
+        _sessionTokens.input += m.usage.input_tokens || 0;
+        _sessionTokens.output += m.usage.output_tokens || 0;
+      }
     }
   }
-  // Rebuild context bar with latest session totals (cost data may have been in history too).
-  if (_sessionTokens.input + _sessionTokens.output > 0) {
-    _usedTokens = _sessionTokens.input + _sessionTokens.output;
-    updateContextBar();
-  }
+  // Rebuild context bar with latest session totals.
+  _usedTokens = _sessionTokens.input + _sessionTokens.output;
+  if (_usedTokens > 0) updateContextBar();
   scrollToBottom();
   setTimeout(scrollToBottom, 300);
 }
