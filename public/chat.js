@@ -875,6 +875,12 @@ function replayHistory(messages, serverTokenUsage) {
         contentEl.appendChild(tag);
       }
 
+      // Per-message token usage line (input / output / cache read / cache write)
+      if (m.usage) {
+        const usageLine = buildUsageLine(m.usage);
+        if (usageLine) contentEl.appendChild(usageLine);
+      }
+
       div.appendChild(contentEl);
       messagesEl.appendChild(div);
     }
