@@ -1185,7 +1185,7 @@
   </div>
 
   <!-- Session view modal (large centered modal for viewing terminal/chat) -->
-  <div id="session-modal" class="modal-backdrop" onclick="if(event.target===this)closeSessionModal()">
+  <div id="session-modal" class="modal-backdrop" style="z-index:10002;" onclick="if(event.target===this)closeSessionModal()">
     <div class="modal-card" style="width:min(96vw,1200px);height:min(92vh,900px);display:flex;flex-direction:column;background:var(--bg);">
       <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;">
         <div style="flex:1;min-width:0;">
