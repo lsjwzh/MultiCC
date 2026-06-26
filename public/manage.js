@@ -767,8 +767,8 @@ function renderSessionRow(s) {
   const summary = sm && sm.summary ? sm.summary : '';
 
   const openBtn = s.kind === 'chat'
-    ? `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')">${escapeHtml(tt('open'))}</button>`
-    : `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionNewTab('${escapeHtml(s.id)}')">${escapeHtml(tt('open'))}</button>`;
+    ? `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">${escapeHtml(tt('openInNewTab'))}</button>`
+    : `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionNewTab('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">${escapeHtml(tt('openInNewTab'))}</button>`;
 
   // Lean 2-line card: status is a colour dot (hover for text), the alias is the
   // headline, and time/model sit in one muted line. cli/kind chips are dropped
@@ -1357,13 +1357,9 @@ async function renameSession(id) {
   }
 }
 
-// Route an inline-open request by session kind (terminal → iframe, chat → chat page)
+// Route an inline-open request by session kind (terminal → iframe, chat → chat iframe)
 function openSessionInline(id, kind) {
-  if (kind === 'chat') {
-    // Chat doesn't have an inline iframe panel yet — open in a new tab
-    openSessionChat(id);
-    return;
-  }
+  // Both terminal and chat sessions now open in the focus panel (popup iframe)
   focusSession(id);
 }
 
@@ -1383,12 +1379,26 @@ function getOrCreateIframe(id) {
   if (_iframeCache.has(id)) return _iframeCache.get(id);
   const urlToken = new URLSearchParams(location.search).get('token');
   const tokenParam = urlToken ? `&token=${urlToken}` : '';
+
+  // Determine session kind to set appropriate URL
+  const s = _cachedSessions.find(sess => sess.id === id);
+  const kind = s?.kind || 'terminal';
+
   const iframe = document.createElement('iframe');
   iframe.className = focusIframe.className;
   iframe.id = '';
+  iframe.dataset.sessionId = id;
+  iframe.dataset.sessionKind = kind;
   iframe.sandbox = focusIframe.sandbox.toString();
   iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%;background:#0d1117;display:none;';
-  iframe.src = `/?id=${id}${tokenParam}`;
+
+  // Chat sessions use /chat.html, terminal sessions use /?id=
+  if (kind === 'chat') {
+    iframe.src = `/chat.html?session=${id}${tokenParam.replace('&', '&')}`;
+  } else {
+    iframe.src = `/?id=${id}${tokenParam}`;
+  }
+
   focusContainer.appendChild(iframe);
   _iframeCache.set(id, iframe);
   return iframe;
