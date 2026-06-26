@@ -4275,3 +4275,14 @@ setInterval(loadPushDiagnostics, 30000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') loadPushDiagnostics();
 });
+
+// Mobile sidebar: click on backdrop (body::before) to close nav
+document.addEventListener('click', (e) => {
+  if (window.innerWidth <= 860 && document.body.classList.contains('nav-open')) {
+    // Check if click is outside the nav (on the backdrop area)
+    const nav = document.getElementById('nav');
+    if (!nav.contains(e.target) && e.target.id !== 'nav-toggle') {
+      document.body.classList.remove('nav-open');
+    }
+  }
+});
