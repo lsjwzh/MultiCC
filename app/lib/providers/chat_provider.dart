@@ -252,6 +252,12 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _onResult(Map<String, dynamic> msg) {
+    // Attach token usage to the current assistant message BEFORE finishing streaming
+    // (because _finishStreaming() sets _currentMsg to null)
+    if (msg['usage'] != null && _currentMsg != null) {
+      _currentMsg!.usage = MessageUsage.fromJson(msg['usage'] as Map<String, dynamic>);
+    }
+
     _finishStreaming();
 
     final cost = (msg['total_cost_usd'] as num?)?.toDouble();
@@ -262,11 +268,6 @@ class ChatProvider extends ChangeNotifier {
       _costText = '\$${cost.toStringAsFixed(4)}';
       if (ms != null) _costText += ' · ${ms}ms';
       if (turns != null) _costText += ' · $turns turn(s)';
-    }
-
-    // Attach token usage to the last assistant message
-    if (msg['usage'] != null && _currentMsg != null) {
-      _currentMsg!.usage = MessageUsage.fromJson(msg['usage'] as Map<String, dynamic>);
     }
 
     // Completion notification is NOT fired here: a `result` only means the
