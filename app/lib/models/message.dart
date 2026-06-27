@@ -1,5 +1,32 @@
 enum MessageRole { user, assistant, system }
 
+/// Token usage information for a message (mirrors Anthropic's usage shape)
+class MessageUsage {
+  final int inputTokens;
+  final int outputTokens;
+  final int cacheReadTokens;
+  final int cacheCreationTokens;
+
+  const MessageUsage({
+    this.inputTokens = 0,
+    this.outputTokens = 0,
+    this.cacheReadTokens = 0,
+    this.cacheCreationTokens = 0,
+  });
+
+  int get total => inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  bool get isEmpty => total == 0;
+
+  factory MessageUsage.fromJson(Map<String, dynamic> json) {
+    return MessageUsage(
+      inputTokens: (json['input_tokens'] as num?)?.toInt() ?? 0,
+      outputTokens: (json['output_tokens'] as num?)?.toInt() ?? 0,
+      cacheReadTokens: (json['cache_read_input_tokens'] as num?)?.toInt() ?? 0,
+      cacheCreationTokens: (json['cache_creation_input_tokens'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 class ToolCall {
   final String id;
   final String name;
@@ -50,6 +77,7 @@ class ChatMessage {
   final DateTime timestamp;
   bool isStreaming;
   double? cost;
+  MessageUsage? usage;
 
   ChatMessage({
     required this.role,
@@ -58,6 +86,7 @@ class ChatMessage {
     DateTime? timestamp,
     this.isStreaming = false,
     this.cost,
+    this.usage,
   }) : toolCalls = toolCalls ?? [],
        timestamp = timestamp ?? DateTime.now();
 

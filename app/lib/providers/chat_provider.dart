@@ -264,6 +264,11 @@ class ChatProvider extends ChangeNotifier {
       if (turns != null) _costText += ' · $turns turn(s)';
     }
 
+    // Attach token usage to the last assistant message
+    if (msg['usage'] != null && _currentMsg != null) {
+      _currentMsg!.usage = MessageUsage.fromJson(msg['usage'] as Map<String, dynamic>);
+    }
+
     // Completion notification is NOT fired here: a `result` only means the
     // stream stopped, which during a multi-step agent run happens between
     // turns too. The server's aux-AI debounces the pause and decides

@@ -145,8 +145,75 @@ class _AssistantBubble extends StatelessWidget {
               if (hasTools) ToolCallGroup(toolCalls: message.toolCalls),
               if (!hasText && !hasTools && message.isStreaming)
                 const _StreamingDot(),
+              // Token usage line
+              if (message.usage != null && !message.usage!.isEmpty)
+                _TokenUsageLine(usage: message.usage!),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Token usage line shown under assistant messages
+class _TokenUsageLine extends StatelessWidget {
+  final MessageUsage usage;
+  const _TokenUsageLine({required this.usage});
+
+  static String _fmt(int n) {
+    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
+    return n.toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final i = usage.inputTokens;
+    final o = usage.outputTokens;
+    final cr = usage.cacheReadTokens;
+    final cw = usage.cacheCreationTokens;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          _UsageBadge(label: '↑入', value: _fmt(i), color: const Color(0xFF58a6ff)),
+          const SizedBox(width: 6),
+          _UsageBadge(label: '↓出', value: _fmt(o), color: const Color(0xFF3fb950)),
+          if (cr > 0) ...[
+            const SizedBox(width: 6),
+            _UsageBadge(label: '⏱读', value: _fmt(cr), color: const Color(0xFFd29922)),
+          ],
+          if (cw > 0) ...[
+            const SizedBox(width: 6),
+            _UsageBadge(label: '⏱写', value: _fmt(cw), color: const Color(0xFFa371f7)),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _UsageBadge extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+  const _UsageBadge({required this.label, required this.value, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        '$label $value',
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontFamily: 'monospace',
         ),
       ),
     );
