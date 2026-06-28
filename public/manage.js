@@ -832,15 +832,30 @@ function renderDirPreview(dirId, dirSessions) {
     `;
   }
 
+  // 左侧区域（活动 + 最近 session）
+  const leftContent = `
+    <!-- 活动块 - 固定高度 36px 保证卡片对齐 -->
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;height:36px;">
+      <span style="font-size:12px;color:var(--faint);">活动</span>
+      ${activityContent}
+    </div>
+    <!-- 最近 session 块 -->
+    ${sessionContent}
+  `;
+
+  // 右侧：任务进度滚动展示器
+  const scrollerContent = renderTaskProgressScroller(dirId, dirSessions);
+
   return `
-    <div class="dir-preview" id="dir-preview-${escapeHtml(dirId)}" style="padding:12px 17px 17px;display:flex;flex-direction:column;gap:10px;">
-      <!-- 活动块 - 固定高度 36px 保证卡片对齐 -->
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;height:36px;">
-        <span style="font-size:12px;color:var(--faint);">活动</span>
-        ${activityContent}
+    <div class="dir-preview" id="dir-preview-${escapeHtml(dirId)}" style="padding:12px 17px 17px;display:flex;gap:10px;">
+      <!-- 左侧：原有区域 -->
+      <div style="flex:2;display:flex;flex-direction:column;gap:10px;">
+        ${leftContent}
       </div>
-      <!-- 最近 session 块 -->
-      ${sessionContent}
+      <!-- 右侧：任务进度滚动展示 -->
+      <div style="flex:3;">
+        ${scrollerContent}
+      </div>
     </div>
   `;
 }
@@ -852,6 +867,81 @@ function updateDirPreview(dirId) {
 function updateDirPreviewForSession(sessionId) {
   const s = (_cachedSessions || []).find(x => x.id === sessionId);
   if (s && s.dirId) updateDirPreview(s.dirId);
+}
+
+// 任务进度滚动展示器 - 展示正在进行中的任务状态
+// 自动轮播：thinking、editing、running、waiting
+function renderTaskProgressScroller(dirId, dirSessions) {
+  // 筛选活跃会话（非 idle）
+  const activeTasks = [];
+  for (const s of dirSessions) {
+    if (s.type === 'aux') continue;
+    const st = _workspaceStatus.get(s.id);
+    if (!st || st.status === 'idle') continue;
+    const summary = _workspaceSummaries.get(s.id);
+    activeTasks.push({
+      sessionId: s.id,
+      label: s.label || s.id,
+      status: st.status,
+      currentFile: st.currentFile,
+      summary: summary?.summary,
+    });
+  }
+
+  // 无活跃任务时显示占位
+  if (activeTasks.length === 0) {
+    return `
+      <div style="height:102px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
+        <span style="font-size:18px;color:var(--faint);opacity:0.6;">⏸</span>
+        <span style="font-size:11px;color:var(--faint);opacity:0.8;margin-top:4px;">${escapeHtml(tt('noActiveTask'))}</span>
+      </div>
+    `;
+  }
+
+  // 任务进度卡片容器
+  const cards = activeTasks.map(task => {
+    const info = wbStatusInfo(task.status);
+    const statusColor = info.cls === 'active' ? '#6aa3ff' : (info.cls === 'waiting' ? '#e3b341' : '#5b616c');
+    const activityText = task.currentFile
+      ? `📝 ${task.currentFile.split('/').pop()}`
+      : (task.summary || defaultActivityText(task.status));
+
+    return `
+      <div class="task-progress-card" data-session-id="${escapeHtml(task.sessionId)}"
+           style="padding:8px 10px;cursor:pointer;border-radius:7px;"
+           onclick="event.stopPropagation(); openSessionChat('${escapeHtml(task.sessionId)}')">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <!-- 状态指示灯 -->
+          <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};box-shadow:0 0 6px ${statusColor};"></span>
+          <!-- 会话标签 -->
+          <span style="flex:1;font-size:12px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(task.label)}</span>
+          <!-- 状态标签 -->
+          <span style="padding:2px 6px;font-size:10px;color:${statusColor};background:${statusColor}33;border:1px solid ${statusColor}55;border-radius:4px;">${escapeHtml(info.text)}</span>
+        </div>
+        <div style="margin-top:6px;font-size:11px;color:var(--muted);opacity:0.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(activityText)}</div>
+      </div>
+    `;
+  }).join('');
+
+  // 返回滚动容器（CSS 动画实现自动轮播）
+  const containerId = `task-scroller-${dirId}`;
+  return `
+    <div id="${containerId}" style="height:102px;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
+      <div class="task-scroller-inner" style="height:${activeTasks.length * 51}px;">
+        ${cards}
+      </div>
+    </div>
+  `;
+}
+
+function defaultActivityText(status) {
+  switch (status) {
+    case 'thinking': return '🤔 正在思考...';
+    case 'editing': return '✏️ 正在编辑文件';
+    case 'running': return '⚙️ 正在执行命令';
+    case 'waiting': return '⏳ 等待用户输入';
+    default: return '...';
+  }
 }
 
 function renderDirectoryBlock(dir, dirSessions) {
