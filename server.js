@@ -4339,6 +4339,12 @@ function appendChatMessage(sessionName, msg) {
     const at = Number.isFinite(ts) && ts > 0 ? new Date(ts) : new Date();
     const cs = chatSessions.get(sessionName);
     if (cs) cs.lastActivity = at;
+    // Interaction latency: time from this turn's start (user submit / LLM call)
+    // to the reply being saved. Stamped centrally so every completion path
+    // (claude/codex, normal/cancelled/error) records it without duplication.
+    if (msg.durationMs == null && cs && cs.turnStartedAt) {
+      msg.durationMs = Math.max(0, at.getTime() - cs.turnStartedAt);
+    }
   }
   const limit = sessionName === AUX_SESSION_ID ? AUX_HISTORY_MAX : MAX_CHAT_MESSAGES;
   const isAux = sessionName === AUX_SESSION_ID;
@@ -4972,6 +4978,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.currentToolCalls = [];
   cs.currentCost = null;
   cs.isStreaming = true;
+  cs.turnStartedAt = Date.now();  // for per-reply interaction latency (durationMs)
   cs.streamReplay = [];
   cs._resultSaved = false;
   // Marks this turn as initiated by an auto-trigger, so post-turn triggers
