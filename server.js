@@ -2746,6 +2746,116 @@ app.post('/api/voice/feedback', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── S2S: 需求确认 (requirement confirmation) ──
+// Takes raw user speech text, returns a structured breakdown for the user to
+// confirm item-by-item before the task is dispatched to the coding agent.
+app.post('/api/voice/confirm', async (req, res) => {
+  const reqId = `s2s_c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const { text, previousBreakdown, userFeedback } = req.body;
+  const raw = (text || '').trim();
+  console.log(`[multicc/s2s][${reqId}] POST /api/voice/confirm, raw: ${JSON.stringify(raw.slice(0, 120))}`);
+
+  if (!raw && !userFeedback) {
+    return res.status(400).json({ error: '缺少 text 或 userFeedback' });
+  }
+
+  const ctxParts = [];
+  if (previousBreakdown) {
+    ctxParts.push(`之前你给出的理解（JSON）：\n${JSON.stringify(previousBreakdown, null, 2)}`);
+  }
+  if (userFeedback) {
+    ctxParts.push(`用户对此的语音反馈：${userFeedback}`);
+  }
+  const ctx = ctxParts.length ? '\n\n' + ctxParts.join('\n\n') : '';
+
+  const prompt = `你是语音交互的需求确认助手。用户通过连续语音描述了一个编程/技术任务。你的职责是把用户的口语描述整理成清晰、可逐项确认的需求条目，以便在执行前与用户对齐。
+
+${ctx ? ctx + '\n\n' : ''}用户本次的语音输入：${raw || '（无新增，仅根据反馈调整）'}
+
+请输出严格的 JSON（只输出 JSON，不要 markdown 代码块，不要任何解释）：
+{
+  "summary": "一句话总结你理解的整体需求（用'我理解你要做的是：...'的口吻）",
+  "items": ["需求条目1", "需求条目2", "..."],
+  "questions": ["如果有需要进一步确认的疑问写在这里，没有则空数组"],
+  "allConfirmed": false
+}
+
+规则：
+- allConfirmed 只有在用户的反馈明确表示"全部正确/确认/没问题/对了/可以了"等时才设为 true，其余情况一律 false
+- items 每条用简洁的短句，适合语音逐条念出
+- 如果是首次确认（没有 previousBreakdown），根据原始语音拆解；如果有 previousBreakdown + userFeedback，根据反馈更新条目
+- questions 只在有真正需要澄清的疑问时才填，通常为空数组`;
+
+  const t0 = Date.now();
+  try {
+    const result = await auxQueue.enqueue({ type: 'voice_confirm', prompt, meta: { reqId } });
+    const ms = Date.now() - t0;
+    // Try to parse JSON from the result text (aux AI may wrap in markdown code block)
+    let parsed;
+    const rawText = result.text || '';
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try { parsed = JSON.parse(jsonMatch[0]); } catch (_) {}
+    }
+    if (!parsed) {
+      // Fallback: treat the whole text as summary
+      parsed = { summary: rawText.trim(), items: [], questions: [], allConfirmed: false };
+    }
+    console.log(`[multicc/s2s][${reqId}] Confirm done in ${ms}ms, items: ${parsed.items?.length || 0}, allConfirmed: ${parsed.allConfirmed}`);
+    res.json({ ok: true, ...parsed, ms });
+  } catch (err) {
+    const ms = Date.now() - t0;
+    const errMsg = err?.cancelled ? 'cancelled' : (err?.message || String(err));
+    console.error(`[multicc/s2s][${reqId}] Confirm error after ${ms}ms:`, errMsg);
+    res.status(500).json({ error: errMsg });
+  }
+});
+
+// ── S2S: 进展汇报 (progress summary) ──
+// Takes recent chat events + task description, returns a brief spoken summary
+// suitable for TTS playback to a waiting user.
+app.post('/api/voice/progress-summary', async (req, res) => {
+  const reqId = `s2s_p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const { events, taskDescription } = req.body;
+  console.log(`[multicc/s2s][${reqId}] POST /api/voice/progress-summary, events: ${Array.isArray(events) ? events.length : 0}`);
+
+  if (!Array.isArray(events) || events.length === 0) {
+    return res.json({ ok: true, summary: '' });
+  }
+
+  const eventsStr = events.map((e, i) =>
+    `${i + 1}. [${e.type || '?'}] ${(e.summary || e.text || JSON.stringify(e)).slice(0, 300)}`
+  ).join('\n');
+
+  const prompt = `你是语音交互的进展汇报助手。用户通过语音发起了一个任务，正在等待结果。请根据最近的任务进展事件，用口语化的中文给用户做一个简洁的进展汇报，适合语音播报。
+
+任务描述：${taskDescription || '编程任务'}
+
+最近的进展事件：
+${eventsStr}
+
+要求：
+- 用 1-3 句话总结当前进展，口语化，自然
+- 直接说内容，不要加"汇报："等前缀
+- 如果看到错误或卡住，也如实说明
+- 如果进展正常，简单说明已完成了什么、还在做什么
+- 不超过 100 字`;
+
+  const t0 = Date.now();
+  try {
+    const result = await auxQueue.enqueue({ type: 'progress_summary', prompt, meta: { reqId } });
+    const ms = Date.now() - t0;
+    const summary = (result.text || '').trim();
+    console.log(`[multicc/s2s][${reqId}] Progress summary done in ${ms}ms, len: ${summary.length}`);
+    res.json({ ok: true, summary, ms });
+  } catch (err) {
+    const ms = Date.now() - t0;
+    const errMsg = err?.cancelled ? 'cancelled' : (err?.message || String(err));
+    console.error(`[multicc/s2s][${reqId}] Progress summary error after ${ms}ms:`, errMsg);
+    res.status(500).json({ error: errMsg });
+  }
+});
+
 // ── Whisper vocabulary management ──
 app.get('/api/voice/vocab', (req, res) => {
   res.json(loadWhisperVocab());

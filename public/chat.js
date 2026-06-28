@@ -2856,3 +2856,139 @@ if (statusEl) statusEl.onclick = () => forceReconnect('status click');
 /* ── Start ── */
 dbg('state', 'page loaded — 开始连接');
 connect();
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * S2S 语音对话模式 (Speech-to-Speech, 豆包式交互)
+ * ════════════════════════════════════════════════════════════════════════════ */
+(function initS2S() {
+  const s2sBtn = document.getElementById('s2s-btn');
+  const s2sPanel = document.getElementById('s2s-panel');
+  const s2sStateBadge = document.getElementById('s2s-state-badge');
+  const s2sTranscript = document.getElementById('s2s-transcript');
+  const s2sBreakdown = document.getElementById('s2s-breakdown');
+  const s2sVolumeFill = document.getElementById('s2s-volume-fill');
+  const s2sStopBtn = document.getElementById('s2s-stop-btn');
+  if (!s2sBtn) return;
+
+  let s2sSession = null;
+  let s2sActive = false;
+
+  const STATE_LABELS = {
+    IDLE: 'IDLE',
+    LISTENING: '聆听中',
+    CONFIRMING: '确认中',
+    EXECUTING: '执行中',
+    REPORTING: '汇报中',
+  };
+
+  function updateS2SPanel(state) {
+    s2sStateBadge.textContent = STATE_LABELS[state] || state;
+    s2sStateBadge.className = '';
+    if (state === 'LISTENING') s2sStateBadge.classList.add('listening');
+    else if (state === 'CONFIRMING') s2sStateBadge.classList.add('confirming');
+    else if (state === 'EXECUTING') s2sStateBadge.classList.add('executing');
+    else if (state === 'REPORTING') s2sStateBadge.classList.add('reporting');
+
+    if (state === 'LISTENING' && s2sSession && !s2sSession.currentBreakdown) {
+      s2sTranscript.innerHTML = '<span class="partial">请说出你的需求…</span>';
+    }
+  }
+
+  function renderBreakdown(bd) {
+    if (!bd) { s2sBreakdown.innerHTML = ''; return; }
+    let html = '';
+    if (bd.summary) {
+      html += `<div class="bd-summary">${escapeHtml(bd.summary)}</div>`;
+    }
+    if (bd.items && bd.items.length) {
+      bd.items.forEach((item, i) => {
+        html += `<div class="bd-item"><span class="bd-item-num">${i + 1}.</span><span>${escapeHtml(item)}</span></div>`;
+      });
+    }
+    if (bd.questions && bd.questions.length) {
+      bd.questions.forEach(q => {
+        html += `<div class="bd-question">❓ ${escapeHtml(q)}</div>`;
+      });
+    }
+    s2sBreakdown.innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  async function startS2S() {
+    if (s2sActive) return;
+    s2sActive = true;
+    s2sBtn.classList.add('active');
+    s2sPanel.classList.add('open');
+    s2sBreakdown.innerHTML = '';
+    s2sTranscript.innerHTML = '<span class="partial">正在启动语音…</span>';
+
+    // Determine ASR provider from voice settings
+    let asrProvider = 'auto';
+    let ttsProvider = 'edge';
+    try {
+      const res = await fetch(withToken('/api/settings/voice'));
+      const config = await res.json();
+      if (config.asr?.provider) asrProvider = config.asr.provider;
+      if (config.tts?.provider) ttsProvider = config.tts.provider;
+    } catch (_) {}
+
+    const wsUrl = location.origin.replace(/^http/, 'ws');
+    s2sSession = new S2SSession({
+      wsUrl,
+      asrProvider,
+      ttsProvider,
+      onStateChange: (state) => updateS2SPanel(state),
+      onText: (text, isFinal) => {
+        s2sTranscript.innerHTML = `<span class="partial">${escapeHtml(text)}</span>`;
+      },
+      onBreakdown: (bd) => renderBreakdown(bd),
+      onAiText: (text) => {
+        s2sTranscript.innerHTML = escapeHtml(text);
+      },
+      onVolume: (level) => {
+        const pct = Math.min(100, Math.round(level * 400));
+        s2sVolumeFill.style.width = pct + '%';
+      },
+      onLog: (msg) => {
+        if (window._dbgEnabled) console.log('[S2S]', msg);
+      },
+      onError: (msg) => {
+        s2sTranscript.innerHTML = `<span style="color:#f85149;">错误: ${escapeHtml(msg)}</span>`;
+      },
+    });
+
+    await s2sSession.start();
+    updateS2SPanel('LISTENING');
+  }
+
+  function stopS2S() {
+    if (!s2sActive) return;
+    s2sActive = false;
+    s2sBtn.classList.remove('active');
+    s2sPanel.classList.remove('open');
+    if (s2sSession) {
+      s2sSession.stop();
+      s2sSession = null;
+    }
+    s2sVolumeFill.style.width = '0%';
+    s2sBreakdown.innerHTML = '';
+    s2sTranscript.innerHTML = '语音对话已结束';
+    setTimeout(() => {
+      if (!s2sActive) s2sTranscript.innerHTML = '点击右上角耳机按钮开启语音对话…';
+    }, 2000);
+  }
+
+  s2sBtn.addEventListener('click', () => {
+    if (s2sActive) stopS2S();
+    else startS2S();
+  });
+
+  s2sStopBtn.addEventListener('click', stopS2S);
+})();
+/* ════════════════════════════════════════════════════════════════════════════
+ * S2S 语音对话模式 — 结束
+ * ════════════════════════════════════════════════════════════════════════════ */
