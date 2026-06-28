@@ -7,6 +7,22 @@ const _urlToken = new URLSearchParams(location.search).get('token');
 function tokenQS(prefix) { return _urlToken ? `${prefix}token=${_urlToken}` : ''; }
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 
+// Directory ordering with localStorage persistence
+let _dirOrder = JSON.parse(localStorage.getItem('multicc_dir_order') || '[]');
+
+function saveDirOrder() {
+  localStorage.setItem('multicc_dir_order', JSON.stringify(_dirOrder));
+}
+
+function getDirOrder() {
+  return [..._dirOrder];
+}
+
+function reorderDirectories(newOrder) {
+  _dirOrder = newOrder;
+  saveDirOrder();
+}
+
 /* ── Helpers ── */
 function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -323,7 +339,22 @@ function renderDashboard(directories, sessions) {
 
   const orphans = regularSessions.filter(s => !s.dirId);
 
-  const dirHtml = directories.map(d => renderDirectoryBlock(d, byDir.get(d.id) || [])).join('');
+  // Sort directories by saved order
+  const dirOrder = getDirOrder();
+  const sortedDirs = [...directories].sort((a, b) => {
+    const idxA = dirOrder.indexOf(a.id);
+    const idxB = dirOrder.indexOf(b.id);
+    // If both are in the order, sort by order
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    // If only a is in the order, a comes first
+    if (idxA !== -1) return -1;
+    // If only b is in the order, b comes first
+    if (idxB !== -1) return 1;
+    // Neither is in the order, keep original order
+    return 0;
+  });
+
+  const dirHtml = sortedDirs.map(d => renderDirectoryBlock(d, byDir.get(d.id) || [])).join('');
   const orphanHtml = orphans.length ? renderOrphans(orphans) : '';
   listEl.innerHTML = dirHtml + orphanHtml;
 
@@ -344,6 +375,105 @@ function renderDashboard(directories, sessions) {
 
   // If the detail modal is open, keep its content in sync with reloads.
   if (_detailModalOpen()) { renderDirectoryDetailBody(_detailDirId); updateDirDetailPush(_detailDirId); }
+
+  // Initialize drag-and-drop for directory cards (only in overview mode)
+  if (!_focusedSessionId) {
+    initDirCardDragDrop();
+  }
+}
+
+// ── Drag and Drop for Directory Cards ─────────────────────────────────────────
+let _draggedDirId = null;
+let _dragOverDirId = null;
+
+function initDirCardDragDrop() {
+  const cards = document.querySelectorAll('#directory-list .dir-card');
+  cards.forEach(card => {
+    card.setAttribute('draggable', 'true');
+    card.style.cursor = 'grab';
+
+    card.addEventListener('dragstart', (e) => {
+      _draggedDirId = card.dataset.dirId;
+      card.style.opacity = '0.5';
+      card.style.cursor = 'grabbing';
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', card.dataset.dirId);
+    });
+
+    card.addEventListener('dragend', () => {
+      card.style.opacity = '1';
+      card.style.cursor = 'grab';
+      _draggedDirId = null;
+      _dragOverDirId = null;
+      // Remove all drag-over indicators
+      document.querySelectorAll('.dir-card.drag-over').forEach(el => el.classList.remove('drag-over'));
+    });
+
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const targetId = card.dataset.dirId;
+      if (targetId !== _draggedDirId) {
+        _dragOverDirId = targetId;
+        card.classList.add('drag-over');
+      }
+    });
+
+    card.addEventListener('dragleave', () => {
+      card.classList.remove('drag-over');
+      _dragOverDirId = null;
+    });
+
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.classList.remove('drag-over');
+      const targetId = card.dataset.dirId;
+      if (_draggedDirId && targetId && _draggedDirId !== targetId) {
+        // Get current order, initializing with all directory IDs if empty
+        let currentOrder = getDirOrder();
+
+        // If order is empty, initialize with all current directory IDs
+        if (currentOrder.length === 0) {
+          document.querySelectorAll('#directory-list .dir-card').forEach(c => {
+            currentOrder.push(c.dataset.dirId);
+          });
+        }
+
+        const draggedIdx = currentOrder.indexOf(_draggedDirId);
+        const targetIdx = currentOrder.indexOf(targetId);
+
+        let newOrder = [...currentOrder];
+
+        if (draggedIdx === -1 && targetIdx === -1) {
+          // Both new - add target, then insert dragged before it
+          newOrder.push(targetId);
+          newOrder.push(_draggedDirId);
+          // Swap to put dragged before target
+          const tIdx = newOrder.length - 1;
+          const dIdx = newOrder.length - 2;
+          newOrder[dIdx] = targetId;
+          newOrder[tIdx] = _draggedDirId;
+        } else if (draggedIdx === -1) {
+          // Dragged is new - insert before target
+          newOrder.splice(targetIdx, 0, _draggedDirId);
+        } else if (targetIdx === -1) {
+          // Target is new - add at end, move dragged there
+          newOrder.splice(draggedIdx, 1);
+          newOrder.push(_draggedDirId);
+        } else {
+          // Both exist - move dragged to target position
+          newOrder.splice(draggedIdx, 1);
+          // Recalculate target index after removal
+          const newTargetIdx = newOrder.indexOf(targetId);
+          newOrder.splice(newTargetIdx, 0, _draggedDirId);
+        }
+
+        reorderDirectories(newOrder);
+        // Re-render the directory list
+        renderSessions(_cachedSessions);
+      }
+    });
+  });
 }
 
 // ── Popover menu (kebab ⋯ buttons) ──
@@ -583,15 +713,16 @@ function renderDirPreview(dirId, dirSessions) {
   // 获取最近活动（最多3条）
   const events = (_workspaceEvents.get(dirId) || []).slice(-3).reverse();
 
-  // 获取最近的 session
+  // 获取最近的 session - 按 lastActivity 降序排序
   let latestSession = null;
   if (dirSessions && dirSessions.length > 0) {
-    // 按 lastActivity 或 createdAt 排序，取最近的一个
-    latestSession = dirSessions.sort((a, b) => {
+    // 创建副本避免修改原数组，按 lastActivity 或 createdAt 排序
+    const sorted = [...dirSessions].sort((a, b) => {
       const ta = a.lastActivity || a.createdAt || 0;
       const tb = b.lastActivity || b.createdAt || 0;
       return tb - ta;
-    })[0];
+    });
+    latestSession = sorted[0];
   }
 
   const sessionInfo = latestSession;
@@ -617,11 +748,11 @@ function renderDirPreview(dirId, dirSessions) {
     activityContent = `<span style="color:var(--faint);">暂无活动</span>`;
   }
 
-  // Session 块内容
+  // Session 块内容 - 固定高度 56px 保证卡片对齐
   let sessionContent = '';
   if (sessionInfo) {
     sessionContent = `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;">
         <span class="dot ${sessionActive ? 'active' : ''}" style="width:8px;height:8px;"></span>
         <div style="flex:1;min-width:0;">
           <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}</div>
@@ -638,7 +769,7 @@ function renderDirPreview(dirId, dirSessions) {
     `;
   } else {
     sessionContent = `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;">
         <span style="font-size:12px;color:var(--faint);">暂无关联会话</span>
       </div>
     `;
@@ -646,8 +777,8 @@ function renderDirPreview(dirId, dirSessions) {
 
   return `
     <div class="dir-preview" id="dir-preview-${escapeHtml(dirId)}" style="padding:12px 17px 17px;display:flex;flex-direction:column;gap:10px;">
-      <!-- 活动块 -->
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;">
+      <!-- 活动块 - 固定高度 36px 保证卡片对齐 -->
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;height:36px;">
         <span style="font-size:12px;color:var(--faint);">活动</span>
         ${activityContent}
       </div>
