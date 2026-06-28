@@ -1274,9 +1274,35 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    _DirectoryPreview(
-                      events: _workspace.events,
-                      latestTask: latestTask,
+                    // 任务进度展示区：左侧 AI Assist + 右侧滚动任务列表
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 左侧：原有的 AI Assist 区域
+                        Expanded(
+                          flex: 2,
+                          child: _DirectoryPreview(
+                            events: _workspace.events,
+                            latestTask: latestTask,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        // 右侧：滚动展示正在进行中的任务
+                        Expanded(
+                          flex: 3,
+                          child: _TaskProgressScroller(
+                            statuses: _workspace.statuses,
+                            sessions: groups.values.expand((x) => x).toList(),
+                            onSessionTap: (sessionId) {
+                              final s = groups.values
+                                  .expand((x) => x)
+                                  .firstWhere((s) => s.id == sessionId, orElse: () => groups.values.first.first);
+                              widget.mgr.openSession(s);
+                              widget.mgr.switchToSession(s.id);
+                            },
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 10),
                     Row(
@@ -1998,6 +2024,269 @@ class _DirectoryPreview extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// 滚动展示正在进行中的任务进度（类似大屏监控器）
+/// 自动轮播活跃会话的状态：thinking、editing、running、waiting
+class _TaskProgressScroller extends StatefulWidget {
+  final Map<String, SessionStatus> statuses;
+  final List<Session> sessions;
+  final void Function(String sessionId)? onSessionTap;
+
+  const _TaskProgressScroller({
+    required this.statuses,
+    required this.sessions,
+    this.onSessionTap,
+  });
+
+  @override
+  State<_TaskProgressScroller> createState() => _TaskProgressScrollerState();
+}
+
+class _TaskProgressScrollerState extends State<_TaskProgressScroller>
+    with SingleTickerProviderStateMixin {
+  late final PageController _pageController;
+  late final AnimationController _animController;
+  int _currentPage = 0;
+  int _itemCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 4),
+    );
+    _startAutoScroll();
+  }
+
+  @override
+  void dispose() {
+    _animController.dispose();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _startAutoScroll() {
+    _animController.addStatusListener(_onAnimStatus);
+    _animController.forward();
+  }
+
+  void _onAnimStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) {
+      _nextPage();
+      _animController.forward(from: 0);
+    }
+  }
+
+  void _nextPage() {
+    if (_itemCount <= 1 || !mounted) return;
+    _currentPage = (_currentPage + 1) % _itemCount;
+    _pageController.animateToPage(
+      _currentPage,
+      duration: const Duration(milliseconds: 600),
+      curve: Curves.easeInOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 筛选活跃会话（非 idle）
+    final activeTasks = <_ActiveTask>[];
+    for (final s in widget.sessions) {
+      if (s.isAux) continue;
+      final status = widget.statuses[s.id];
+      if (status == null || status.status == 'idle') continue;
+      activeTasks.add(_ActiveTask(
+        sessionId: s.id,
+        label: s.label?.isNotEmpty == true ? s.label! : s.id,
+        status: status.status,
+        currentFile: status.currentFile,
+        summary: status.summary,
+      ));
+    }
+
+    _itemCount = activeTasks.isEmpty ? 1 : activeTasks.length;
+
+    return SizedBox(
+      height: 79, // 与左侧 AI Assist 区域等高
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(7),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF14171c),
+            border: Border.all(color: const Color(0xFF20242b)),
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: activeTasks.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.motion_photos_pause_outlined,
+                        size: 18,
+                        color: AppColors.faint.withValues(alpha: 0.6),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        t('noActiveTask'),
+                        style: TextStyle(
+                          color: AppColors.faint.withValues(alpha: 0.8),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : PageView.builder(
+                  controller: _pageController,
+                  itemCount: activeTasks.length,
+                  onPageChanged: (i) => _currentPage = i,
+                  itemBuilder: (context, i) {
+                    final task = activeTasks[i];
+                    return _TaskProgressCard(
+                      task: task,
+                      onTap: () => widget.onSessionTap?.call(task.sessionId),
+                    );
+                  },
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ActiveTask {
+  final String sessionId;
+  final String label;
+  final String status;
+  final String? currentFile;
+  final String? summary;
+
+  const _ActiveTask({
+    required this.sessionId,
+    required this.label,
+    required this.status,
+    this.currentFile,
+    this.summary,
+  });
+}
+
+class _TaskProgressCard extends StatelessWidget {
+  final _ActiveTask task;
+  final VoidCallback? onTap;
+
+  const _TaskProgressCard({
+    required this.task,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final statusColor = _wbStatusColor(task.status);
+    final statusLabel = _wbStatusLabel(task.status);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(7),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(
+              children: [
+                // 状态指示灯（脉动动画效果）
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: statusColor.withValues(alpha: 0.5),
+                        blurRadius: 6,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 会话标签
+                Expanded(
+                  child: Text(
+                    task.label,
+                    style: const TextStyle(
+                      color: AppColors.textBright,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                // 状态标签
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+                  ),
+                  child: Text(
+                    statusLabel,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // 当前活动（文件或摘要）
+            Text(
+              _buildActivityText(),
+              style: TextStyle(
+                color: AppColors.muted.withValues(alpha: 0.9),
+                fontSize: 11,
+                height: 1.3,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _buildActivityText() {
+    if (task.currentFile != null && task.currentFile!.isNotEmpty) {
+      final fileName = task.currentFile!.split('/').last;
+      return '📝 $fileName';
+    }
+    if (task.summary != null && task.summary!.isNotEmpty) {
+      return task.summary!;
+    }
+    switch (task.status) {
+      case 'thinking':
+        return '🤔 正在思考...';
+      case 'editing':
+        return '✏️ 正在编辑文件';
+      case 'running':
+        return '⚙️ 正在执行命令';
+      case 'waiting':
+        return '⏳ 等待用户输入';
+      default:
+        return '...';
+    }
   }
 }
 
