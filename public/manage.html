@@ -383,15 +383,19 @@
     .wb-event-row .t{color:var(--muted);margin-right:4px}
     .wb-event-row.dim{color:var(--muted)}
 
-    /* 任务进度滚动展示器 */
-    .task-scroller-inner{animation:taskScroll 12s linear infinite}
+    /* 任务进度滚动展示器（与 AI Assist 等高 56px） */
+    .task-scroller-inner{animation:taskScroll 12s ease-in-out infinite}
     .task-progress-card:hover{background:rgba(58,214,197,.08)}
     @keyframes taskScroll{
-      0%,20%{transform:translateY(0)}
-      25%,45%{transform:translateY(-51px)}
-      50%,70%{transform:translateY(-102px)}
-      75%,95%{transform:translateY(-153px)}
-      100%{transform:translateY(0)}
+      0%,8%{transform:translateY(0)}
+      12%,20%{transform:translateY(-56px)}
+      24%,32%{transform:translateY(-112px)}
+      36%,44%{transform:translateY(-168px)}
+      48%,56%{transform:translateY(-224px)}
+      60%,68%{transform:translateY(-280px)}
+      72%,80%{transform:translateY(-336px)}
+      84%,92%{transform:translateY(-392px)}
+      96%,100%{transform:translateY(0)}
     }
     /* 只有 1 个任务时不滚动 */
     .task-scroller-inner[data-count="1"]{animation:none}

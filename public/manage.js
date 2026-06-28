@@ -805,11 +805,14 @@ function renderDirPreview(dirId, dirSessions) {
     activityContent = `<span style="color:var(--faint);">暂无活动</span>`;
   }
 
-  // Session 块内容 - 固定高度 56px 保证卡片对齐
+  // 任务进度滚动展示器（所有目录的活跃任务）
+  const scrollerContent = renderTaskProgressScroller(dirId, dirSessions);
+
+  // Session 块内容（AI Assist） - 固定高度 56px
   let sessionContent = '';
   if (sessionInfo) {
     sessionContent = `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;flex-shrink:0;">
         <span class="dot ${sessionActive ? 'active' : ''}" style="width:8px;height:8px;"></span>
         <div style="flex:1;min-width:0;">
           <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}</div>
@@ -826,35 +829,27 @@ function renderDirPreview(dirId, dirSessions) {
     `;
   } else {
     sessionContent = `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;flex-shrink:0;">
         <span style="font-size:12px;color:var(--faint);">暂无关联会话</span>
       </div>
     `;
   }
 
-  // 左侧区域（活动 + 最近 session）
-  const leftContent = `
-    <!-- 活动块 - 固定高度 36px 保证卡片对齐 -->
-    <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;height:36px;">
-      <span style="font-size:12px;color:var(--faint);">活动</span>
-      ${activityContent}
-    </div>
-    <!-- 最近 session 块 -->
-    ${sessionContent}
-  `;
-
-  // 右侧：任务进度滚动展示器
-  const scrollerContent = renderTaskProgressScroller(dirId, dirSessions);
-
   return `
-    <div class="dir-preview" id="dir-preview-${escapeHtml(dirId)}" style="padding:12px 17px 17px;display:flex;gap:10px;">
-      <!-- 左侧：原有区域 -->
-      <div style="flex:2;display:flex;flex-direction:column;gap:10px;">
-        ${leftContent}
+    <div class="dir-preview" id="dir-preview-${escapeHtml(dirId)}" style="padding:12px 17px 17px;display:flex;flex-direction:column;gap:10px;">
+      <!-- 活动块 - 固定高度 36px 保证卡片对齐 -->
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;height:36px;">
+        <span style="font-size:12px;color:var(--faint);">活动</span>
+        ${activityContent}
       </div>
-      <!-- 右侧：任务进度滚动展示 -->
-      <div style="flex:3;">
-        ${scrollerContent}
+      <!-- AI Assist + 任务进度滚动展示（同一行） -->
+      <div style="display:flex;gap:10px;align-items:stretch;">
+        <!-- AI Assist 块 -->
+        ${sessionContent}
+        <!-- 任务进度滚动展示器（自动撑满剩余宽度） -->
+        <div style="flex:1;min-width:0;">
+          ${scrollerContent}
+        </div>
       </div>
     </div>
   `;
@@ -888,17 +883,16 @@ function renderTaskProgressScroller(dirId, dirSessions) {
     });
   }
 
-  // 无活跃任务时显示占位
+  // 无活跃任务时显示占位（与 AI Assist 等高 56px）
   if (activeTasks.length === 0) {
     return `
-      <div style="height:102px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
-        <span style="font-size:18px;color:var(--faint);opacity:0.6;">⏸</span>
-        <span style="font-size:11px;color:var(--faint);opacity:0.8;margin-top:4px;">${escapeHtml(tt('noActiveTask'))}</span>
+      <div style="height:56px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
+        <span style="font-size:11px;color:var(--faint);opacity:0.8;">${escapeHtml(tt('noActiveTask'))}</span>
       </div>
     `;
   }
 
-  // 任务进度卡片容器
+  // 任务进度卡片容器（单行紧凑布局，与 AI Assist 等高 56px）
   const cards = activeTasks.map(task => {
     const info = wbStatusInfo(task.status);
     const statusColor = info.cls === 'active' ? '#6aa3ff' : (info.cls === 'waiting' ? '#e3b341' : '#5b616c');
@@ -908,26 +902,25 @@ function renderTaskProgressScroller(dirId, dirSessions) {
 
     return `
       <div class="task-progress-card" data-session-id="${escapeHtml(task.sessionId)}"
-           style="padding:8px 10px;cursor:pointer;border-radius:7px;"
+           style="height:56px;display:flex;align-items:center;gap:12px;padding:0 14px;cursor:pointer;"
            onclick="event.stopPropagation(); openSessionChat('${escapeHtml(task.sessionId)}')">
-        <div style="display:flex;align-items:center;gap:8px;">
-          <!-- 状态指示灯 -->
-          <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};box-shadow:0 0 6px ${statusColor};"></span>
-          <!-- 会话标签 -->
-          <span style="flex:1;font-size:12px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(task.label)}</span>
-          <!-- 状态标签 -->
-          <span style="padding:2px 6px;font-size:10px;color:${statusColor};background:${statusColor}33;border:1px solid ${statusColor}55;border-radius:4px;">${escapeHtml(info.text)}</span>
-        </div>
-        <div style="margin-top:6px;font-size:11px;color:var(--muted);opacity:0.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(activityText)}</div>
+        <!-- 状态指示灯 -->
+        <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};box-shadow:0 0 6px ${statusColor};"></span>
+        <!-- 会话标签 -->
+        <span style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">${escapeHtml(task.label)}</span>
+        <!-- 状态标签 -->
+        <span style="padding:3px 8px;font-size:10px;color:${statusColor};background:${statusColor}33;border:1px solid ${statusColor}55;border-radius:4px;">${escapeHtml(info.text)}</span>
+        <!-- 当前活动 -->
+        <span style="flex:1;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(activityText)}</span>
       </div>
     `;
   }).join('');
 
-  // 返回滚动容器（CSS 动画实现自动轮播）
+  // 返回滚动容器（CSS 动画实现自动轮播，高度 56px 与 AI Assist 等高）
   const containerId = `task-scroller-${dirId}`;
   return `
-    <div id="${containerId}" style="height:102px;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
-      <div class="task-scroller-inner" style="height:${activeTasks.length * 51}px;">
+    <div id="${containerId}" style="height:56px;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
+      <div class="task-scroller-inner" data-count="${activeTasks.length}" style="height:${activeTasks.length * 56}px;">
         ${cards}
       </div>
     </div>
