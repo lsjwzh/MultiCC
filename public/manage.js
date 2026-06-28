@@ -736,10 +736,23 @@ function showWaitingSessions(ev) {
   showSessionListPopup(ev, list, '⏳', '没有等待输入的会话');
 }
 
+// 「活跃会话」口径：最近 12 小时内使用过的会话（按最近交互时间倒序），
+// 而非"此刻进程还连着"。供 KPI 数字与弹层共用，保证两者一致。
+const RECENT_USE_WINDOW_MS = 12 * 3600 * 1000;
+function isRecentlyUsed(s) {
+  if (!s || s.type === 'aux') return false;
+  const ms = sessionLastInteractionMs(s);
+  return ms > 0 && (Date.now() - ms) <= RECENT_USE_WINDOW_MS;
+}
+function recentlyUsedSessions() {
+  return (_cachedSessions || [])
+    .filter(isRecentlyUsed)
+    .sort((a, b) => sessionLastInteractionMs(b) - sessionLastInteractionMs(a));
+}
+
 // Popup from the "活跃会话" KPI tile.
 function showActiveSessions(ev) {
-  const list = (_cachedSessions || []).filter(s => s.active && s.type !== 'aux');
-  showSessionListPopup(ev, list, '🟢', '没有活跃的会话');
+  showSessionListPopup(ev, recentlyUsedSessions(), '🟢', '最近 12 小时没有使用过的会话');
 }
 
 // Jump for a cron task: open the session it drives (cron fires into a dedicated

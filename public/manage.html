@@ -1352,9 +1352,13 @@
         try {
           const sess = (typeof _cachedSessions !== 'undefined' && _cachedSessions) ? _cachedSessions.filter(s => s.type !== 'aux') : [];
           const dirs = (typeof _cachedDirectories !== 'undefined' && _cachedDirectories) ? _cachedDirectories : [];
-          const active = sess.filter(s => s.active).length;
-          const claude = sess.filter(s => (s.cli || 'claude') === 'claude').length;
-          const codex = sess.filter(s => s.cli === 'codex').length;
+          // 「活跃」= 最近 12 小时内用过的会话（与弹层 recentlyUsedSessions 同口径）。
+          const recent = (typeof recentlyUsedSessions === 'function')
+            ? recentlyUsedSessions()
+            : sess.filter(s => s.active);
+          const active = recent.length;
+          const claude = recent.filter(s => (s.cli || 'claude') === 'claude').length;
+          const codex = recent.filter(s => s.cli === 'codex').length;
           // Dedup via the shared helper so the tile number matches the popup list.
           let wait = 0;
           if (typeof waitingSessionIds === 'function') wait = waitingSessionIds().size;
