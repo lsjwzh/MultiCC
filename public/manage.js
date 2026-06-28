@@ -687,18 +687,43 @@ function _dirNameById(dirId) {
 }
 
 function jumpToSession(s) {
-  if ((s.kind || 'terminal') === 'chat') openSessionChat(s.id);
-  else openSessionNewTab(s.id);
+  // 直接在本页面（弹层）打开会话，而不是开新标签页。
+  openSessionModal(s.id);
 }
 
-// Render a popover from a KPI tile: each session shown as "dir / alias", click
-// jumps straight to it. Shared by the 等待输入 and 活跃会话 tiles.
+// 会话的「实时运行状态 + 最近任务简介」，供 KPI 弹层各块统一展示。
+function sessionStatusBrief(s) {
+  const wb = _workspaceStatus.get(s.id);
+  let text, cls;
+  if (wb) {
+    const info = wbStatusInfo(wb.status); text = info.text; cls = info.cls;
+  } else if (s.active) {
+    text = tt('active'); cls = 'active';
+  } else {
+    const ms = _sessionStatus.get(s.id);
+    if (ms === 'waiting') { text = tt('waiting'); cls = 'waiting'; }
+    else if (ms === 'completed') { text = tt('completed'); cls = 'completed'; }
+    else { text = tt('idle'); cls = ''; }
+  }
+  const emoji = cls === 'active' ? '🟢' : (cls === 'waiting' ? '⏳' : (cls === 'completed' ? '✅' : '⚪'));
+  const sm = _workspaceSummaries.get(s.id);
+  let summary = sm && sm.summary ? sm.summary : '';
+  if (summary.length > 40) summary = summary.slice(0, 40) + '…';
+  return { text, cls, emoji, summary };
+}
+
+// Render a popover from a KPI tile: each row shows 会话名 + 运行状态 + 最近任务简介，
+// click opens it in-page. Shared by the 等待输入 / 活跃会话 tiles.
 function showSessionListPopup(ev, sessions, prefix, emptyText) {
   ev.stopPropagation();
   const items = sessions.map(s => {
     const alias = s.label || s.id;
     const dir = _dirNameById(s.dirId);
-    return { label: `${prefix} ${dir ? `${dir} / ${alias}` : alias}`, onclick: () => jumpToSession(s) };
+    const name = dir ? `${dir} / ${alias}` : alias;
+    const b = sessionStatusBrief(s);
+    let label = `${b.emoji} ${name} · ${b.text}`;
+    if (b.summary) label += ` — ${b.summary}`;
+    return { label, onclick: () => jumpToSession(s) };
   });
   if (!items.length) items.push({ label: emptyText, onclick: () => {} });
   showPopoverMenu(ev.currentTarget, items);
@@ -722,7 +747,7 @@ function showActiveSessions(ev) {
 // back to the task's edit/run modal.
 function jumpToCronTask(t) {
   if (t.lastSessionId && (_cachedSessions || []).some(s => s.id === t.lastSessionId)) {
-    openSessionChat(t.lastSessionId);
+    openSessionModal(t.lastSessionId);
   } else {
     openCronModal(t.id);
   }
