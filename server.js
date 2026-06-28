@@ -6185,16 +6185,20 @@ function reconcileAllTriggers() {
   if (n) console.log(`[multicc/trigger] armed triggers for ${n} session(s)`);
 }
 
-// ── Skill sync: keep Claude & Codex skills consistent ──
-// Two-tier: (1) bundled multicc skills from ./skills copied to both providers;
-// (2) shared skills from ~/.agents/skills symlinked to both providers.
+// ── Skill sync: keep Claude, Codex & Hermes skills consistent ──
+// Three-tier: (1) bundled multicc skills from ./skills copied to all providers;
+// (2) shared skills from ~/.agents/skills symlinked to all providers;
+// (3) skill-converter transforms canonical skills for each provider's format.
 // Runs on startup + every 5 min + on chokidar changes to ~/.agents/skills.
 
+const skillConv = require('./src/skill-converter');
+
 const SKILL_PROVIDERS = [
-  { name: 'claude', dir: path.join(os.homedir(), '.claude', 'skills'), protectedSubdirs: [] },
-  { name: 'codex', dir: path.join(os.homedir(), '.codex', 'skills'), protectedSubdirs: ['.system'] },
+  { name: 'claude',  dir: path.join(os.homedir(), '.claude', 'skills'),  protectedSubdirs: [] },
+  { name: 'codex',   dir: path.join(os.homedir(), '.codex', 'skills'),   protectedSubdirs: ['.system'] },
+  { name: 'hermes',  dir: path.join(os.homedir(), '.hermes', 'skills'),  protectedSubdirs: [] },
 ];
-const AGENTS_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
+const AGENTS_SKILLS_DIR = skillConv.AGENTS_ROOT;
 
 function _readSkillVer(dir) {
   try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); } catch (_) { return null; }
@@ -6229,39 +6233,51 @@ function installBundledSkills() {
   }
 }
 
-// (2) Symlink ~/.agents/skills/* into each provider's skill dir.
-// If a target path already exists as a non-symlink real dir (user put their own
-// version there), leave it alone and log. Protected subdirs (e.g. .system for
-// Codex) are never touched.
+// (2) Symlink ~/.agents/skills/* into each provider's skill dir, using the
+// skill-converter to produce provider-appropriate versions when needed (e.g.
+// stripped Codex frontmatter, Hermes metadata). Mechanical conversion runs
+// inline; AI-assisted deep conversion is queued for background processing.
 function syncSharedSkills() {
   let linkCount = 0;
   let skipCount = 0;
+  let convCount = 0;
 
   let agentNames;
-  try { agentNames = fs.readdirSync(AGENTS_SKILLS_DIR); } catch (_) { return { linkCount: 0, skipCount: 0 }; }
+  try { agentNames = fs.readdirSync(AGENTS_SKILLS_DIR); } catch (_) { return { linkCount: 0, skipCount: 0, convCount: 0 }; }
 
   for (const prov of SKILL_PROVIDERS) {
     fs.mkdirSync(prov.dir, { recursive: true });
     const protectedSet = new Set(prov.protectedSubdirs || []);
 
     for (const name of agentNames) {
-      if (protectedSet.has(name)) continue;  // never touch provider-protected dirs
+      if (protectedSet.has(name)) continue;
 
       const src = path.join(AGENTS_SKILLS_DIR, name);
       if (!_isSkillDir(src)) continue;
 
+      // ── Run converter for this skill → target provider ──
+      if (prov.name !== 'claude') {
+        const convResult = skillConv.ensureSkillConverted(name);
+        if (convResult.mechanical.length > 0) convCount++;
+      }
+
+      // ── Determine link target ──
+      // Claude: use canonical source directly
+      // Codex/Hermes: prefer converted cache, fall back to source
+      const linkSrc = skillConv.getLinkTarget(name, prov.name);
+      if (!linkSrc) continue;
+
       const dest = path.join(prov.dir, name);
 
-      // Already a correct symlink? Resolve to compare (existing links may be
-      // relative like ../../.agents/skills/foo, while src is absolute).
+      // Already a correct symlink? Resolve to compare.
       try {
         const lstat = fs.lstatSync(dest);
         if (lstat.isSymbolicLink()) {
-          try { if (fs.realpathSync(dest) === fs.realpathSync(src)) continue; } catch (_) {}
+          try { if (fs.realpathSync(dest) === fs.realpathSync(linkSrc)) continue; } catch (_) {}
         }
-      } catch (_) { /* dest doesn't exist yet */ }
+      } catch (_) {}
 
-      // Real directory exists (user's own version)? Don't overwrite — skip.
+      // Real directory exists (user's own version)? Don't overwrite.
       if (fs.existsSync(dest) && !fs.lstatSync(dest).isSymbolicLink()) {
         continue;
       }
@@ -6269,7 +6285,7 @@ function syncSharedSkills() {
       // Remove broken/wrong symlink and create correct one.
       try { fs.unlinkSync(dest); } catch (_) {}
       try {
-        fs.symlinkSync(src, dest);
+        fs.symlinkSync(linkSrc, dest);
         linkCount++;
       } catch (e) {
         console.warn(`[multicc/skills] symlink ${prov.name} ← ${name}: ${e.message}`);
@@ -6277,11 +6293,38 @@ function syncSharedSkills() {
       }
     }
   }
-  if (linkCount > 0 || skipCount > 0) {
-    console.log(`[multicc/skills] shared sync: ${linkCount} linked, ${skipCount} skipped`);
+  if (linkCount > 0 || skipCount > 0 || convCount > 0) {
+    console.log(`[multicc/skills] shared sync: ${linkCount} linked, ${skipCount} skipped, ${convCount} converted`);
   }
-  return { linkCount, skipCount };
+  return { linkCount, skipCount, convCount };
 }
+
+// ── AI-assisted skill conversion callback ──
+// When mechanical conversion is done, the converter queues deeper AI rewrites.
+// We spawn a one-shot background session to do the actual rewriting via Claude.
+skillConv.onAiConvertNeeded((batch) => {
+  for (const { skillName, provider } of batch) {
+    const spec = skillConv.buildAiConvertPrompt(skillName, provider);
+    if (!spec) continue;
+
+    // Spawn as a detached task — multicc monitors it and injects results
+    // back into the current session when done.
+    const cmd = [
+      `mkdir -p "${spec.outputDir}"`,
+      // Write the prompt as a temp file so the agent can read it
+      `cat > /tmp/multicc-skillconv-${skillName}.txt << 'CONVEOF'`,
+      spec.prompt,
+      `CONVEOF`,
+      // Let the agent do the conversion via claude
+      `"$CLAUDE_CMD" -p "$(cat /tmp/multicc-skillconv-${skillName}.txt)" --allowedTools "Bash,Read,Write,Edit" --output-format text --max-turns 3 2>&1`,
+    ].join(' && ');
+
+    const curlCmd = `curl -s ${process.env.MULTICC_BASE_URL || 'http://127.0.0.1:' + (process.env.PORT || 3000)}/api/sessions/${process.env.MULTICC_SESSION_ID || 'multicc-claude-chat-02'}/run-detached -H 'Content-Type: application/json' -d '${JSON.stringify({ command: cmd, label: `skillconv-${skillName}→${provider}` })}'`;
+
+    console.log(`[multicc/skills] queued AI conversion: ${skillName} → ${provider}`);
+    try { require('child_process').execSync(curlCmd, { timeout: 5000 }); } catch (_) {}
+  }
+});
 
 let _skillsSyncWatcher = null;
 function watchSharedSkills() {
@@ -6390,10 +6433,14 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
     seedTokenUsageFromHistory();
-    installBundledSkills();                         // bundled multicc skills → both Claude & Codex
-    syncSharedSkills();                             // ~/.agents/skills symlinks → both Claude & Codex
+    installBundledSkills();                         // bundled multicc skills → all providers
+    skillConv.importAllProviderSkills();            // reverse-import: Codex/Hermes → agents
+    syncSharedSkills();                             // forward sync: agents → all providers
     watchSharedSkills();                            // real-time chokidar watch on ~/.agents/skills
-    setInterval(syncSharedSkills, 5 * 60 * 1000).unref();  // periodic fallback every 5 min
+    setInterval(() => {
+      skillConv.importAllProviderSkills();          // periodic reverse import
+      syncSharedSkills();                           // periodic forward sync
+    }, 5 * 60 * 1000).unref();
     reconcileAllTriggers();
     artifacts.cleanup();
     setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
