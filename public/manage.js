@@ -239,6 +239,7 @@ async function loadDashboard() {
     const sessions = await sessRes.json();
     _cachedDirectories = directories;
     _cachedSessions = sessions;
+    if (!_auxConfig) loadAuxConfig().then(() => renderSessions(_cachedSessions || []));
     // Default expand: only directories that have an active session (keeps the
     // board calm). Fall back to expanding all when nothing is active.
     if (_expandedDirs.size === 0 && directories.length > 0) {
@@ -291,10 +292,66 @@ function renderAuxCard(s, isFocused) {
         </div>`}
       </div>
       <div class="card-footer">
-        <span class="client-count" style="color:#d2a8ff;">auxqueue</span>
-        <button class="btn btn-sm" onclick="event.stopPropagation(); focusAux()">History</button>
+        <span class="client-count" style="color:#d2a8ff;" title="辅助 AI 当前模型">${escapeHtml(_auxModelLabel())}</span>
+        <span style="display:flex;gap:6px;">
+          <button class="btn btn-sm" onclick="event.stopPropagation(); openAuxModal()">模型</button>
+          <button class="btn btn-sm" onclick="event.stopPropagation(); focusAux()">History</button>
+        </span>
       </div>
     </div>`;
+}
+
+// ── Aux AI model config ──
+let _auxConfig = null; // { providerId, model, providers:[{id,name}] }
+function _auxModelLabel() {
+  if (!_auxConfig) return 'auxqueue';
+  const prov = _auxConfig.providerId
+    ? ((_auxConfig.providers || []).find(p => p.id === _auxConfig.providerId)?.name || '自定义')
+    : '默认登录';
+  return `${prov} · ${_auxConfig.model || 'haiku'}`;
+}
+async function loadAuxConfig() {
+  try {
+    const res = await fetch('/api/aux/config' + tokenQS('?'));
+    _auxConfig = await res.json();
+  } catch (_) { _auxConfig = null; }
+}
+async function openAuxModal() {
+  await loadAuxConfig();
+  const sel = document.getElementById('aux-provider');
+  if (sel) {
+    sel.innerHTML = '<option value="">默认登录（订阅 / OAuth）</option>'
+      + (_auxConfig?.providers || []).map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+    sel.value = _auxConfig?.providerId || '';
+  }
+  const inp = document.getElementById('aux-model');
+  if (inp) inp.value = _auxConfig?.model || '';
+  const st = document.getElementById('aux-modal-status');
+  if (st) st.textContent = '';
+  document.getElementById('aux-modal')?.classList.add('visible');
+}
+function closeAuxModal() {
+  document.getElementById('aux-modal')?.classList.remove('visible');
+}
+async function saveAuxConfig() {
+  const st = document.getElementById('aux-modal-status');
+  const providerId = document.getElementById('aux-provider')?.value || '';
+  const model = document.getElementById('aux-model')?.value || '';
+  if (st) st.textContent = '保存中…';
+  try {
+    const res = await fetch('/api/aux/config' + tokenQS('?'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, model }),
+    });
+    const data = await res.json();
+    if (!data.ok) { if (st) st.textContent = data.error || '保存失败'; return; }
+    await loadAuxConfig();
+    if (st) st.textContent = '已保存 ✓';
+    renderSessions(_cachedSessions || []);
+    setTimeout(closeAuxModal, 600);
+  } catch (e) {
+    if (st) st.textContent = '保存失败：' + (e?.message || e);
+  }
 }
 
 function renderSessions(sessions) {

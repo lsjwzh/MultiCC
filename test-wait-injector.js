@@ -84,6 +84,24 @@ const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✅', msg); } els
   wait.register({ session: 'sbg2', mode: 'callback' });
   ok(wait.bgCheck('sbg2') === false, 'bgCheck skipped when explicit wait pending');
 
+  // ── F: API-error retry nudge ──
+  console.log('F. apiRetry (API/transport error guard)');
+  injected.length = 0;
+  let apiStarted = 0;
+  for (let i = 0; i < 6; i++) if (wait.apiRetry('sapi', { delayMs: 0 })) apiStarted++;
+  await sleep(20);
+  ok(apiStarted === 3, `capped at 3 consecutive (got ${apiStarted})`);
+  ok(injected.length === 3, 'exactly 3 api retry nudges injected');
+  ok(injected[0].text.includes('继续'), 'nudge asks the model to continue');
+  wait.resetApi('sapi');
+  ok(wait.apiRetry('sapi', { delayMs: 0 }), 'resetApi re-enables apiRetry');
+  await sleep(20); // flush so it can't pollute later sections
+
+  // ── F: skipped if explicit wait pending ──
+  injected.length = 0;
+  wait.register({ session: 'sapi2', mode: 'callback' });
+  ok(wait.apiRetry('sapi2') === false, 'apiRetry skipped when explicit wait pending');
+
   // ── inject defers while busy ──
   console.log('busy deferral');
   injected.length = 0; busy = true;

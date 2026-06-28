@@ -10,12 +10,21 @@ try {
 } catch (_) { /* .env not found, skip */ }
 
 // Force all spawned `claude` children to use the local OAuth subscription login
-// in ~/.claude rather than a third-party API relay. If ANTHROPIC_AUTH_TOKEN /
-// ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL are present in the inherited env (e.g.
-// leaked in from the shell that ran `pm2 start`), the claude CLI bills against
-// that token/base_url instead of the subscription. We don't use them anywhere in
-// this server, so strip them here so every child inherits a clean env.
-for (const k of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']) {
+// in ~/.claude rather than a third-party API relay. If any ANTHROPIC_* routing
+// var is present in the inherited env (e.g. leaked in from the shell that ran
+// `pm2 start` after a cc-switch to a DeepSeek/relay provider), the claude CLI
+// bills against — or worse, routes the `haiku`/`opus`/`sonnet` aliases to — that
+// provider's model instead of the subscription. We don't use them anywhere in
+// this server (per-session providers re-apply their own via buildChildEnv), so
+// strip the full routing-key set here so every child inherits a clean env. This
+// MUST stay in sync with CLAUDE_ROUTING_KEYS in src/providers.js — in particular
+// the ANTHROPIC_*_MODEL aliases, whose omission previously redirected the aux
+// helper's `--model haiku` to a leaked DeepSeek model and broke every aux task.
+for (const k of [
+  'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+]) {
   if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
 }
 
@@ -3406,6 +3415,23 @@ const AUX_SESSION_ID = '__aux__';
 const AUX_TIMEOUT_MS = 30000;
 const AUX_HISTORY_MAX = 200;
 
+// Aux model config (persisted in aux-config.json). The aux helper runs short,
+// stateless single-turn tasks (intent classify, summary, voice refine) — Haiku
+// on the OAuth subscription is the cheap default, but it's configurable so the
+// user can point it at any claude provider (e.g. a self-hosted/relay model) and
+// model. providerId=null → default OAuth login; model=null → 'haiku'.
+const AUX_CONFIG_FILE = path.join(__dirname, 'aux-config.json');
+let auxConfig = { providerId: null, model: null };
+function loadAuxConfig() {
+  try {
+    const c = JSON.parse(fs.readFileSync(AUX_CONFIG_FILE, 'utf8'));
+    auxConfig = { providerId: c.providerId || null, model: (c.model && String(c.model).trim()) || null };
+  } catch (_) { /* no config yet → defaults */ }
+}
+function saveAuxConfig() {
+  try { fs.writeFileSync(AUX_CONFIG_FILE, JSON.stringify(auxConfig, null, 2)); } catch (_) {}
+}
+
 const auxQueue = {
   queue: [],          // [{ id, type, prompt, meta, cancelled, resolve, reject, ts }]
   currentTask: null,
@@ -3419,6 +3445,7 @@ const auxQueue = {
 
   init() {
     this.history = loadChatHistory(AUX_SESSION_ID);
+    loadAuxConfig();
     // Register __aux__ as a special persisted session
     if (!persistedSessions.has(AUX_SESSION_ID)) {
       persistedSessions.set(AUX_SESSION_ID, {
@@ -3532,11 +3559,26 @@ const auxQueue = {
     return new Promise((resolve, reject) => {
       // Cold-spawn per task: prompt passed as a CLI argument, stdin ignored
       // (/dev/null → immediate EOF). No prewarm, no stdin race. Single-turn,
-      // stateless tasks (intent classify, voice refine) — Haiku is plenty and
-      // ~30× cheaper than the user's default Opus.
-      const proc = spawn(CLAUDE_CMD, ['-p', '--model', 'haiku', '--output-format', 'stream-json', '--max-turns', '1', '--verbose', task.prompt], {
+      // stateless tasks (intent classify, voice refine) — Haiku on the OAuth
+      // subscription is the cheap default (~30× cheaper than Opus), but the
+      // provider+model are configurable (aux-config.json / settings UI).
+      //
+      // buildChildEnv strips every inherited ANTHROPIC_* routing key first, then
+      // re-applies only the chosen provider's env — so a leaked global override
+      // (e.g. ANTHROPIC_DEFAULT_HAIKU_MODEL=DeepSeek-V4-pro from a cc-switch)
+      // can't silently redirect the `haiku` alias and break every aux task.
+      const auxSession = { cli: 'claude', provider: auxConfig.providerId || null };
+      const built = providers.buildChildEnv(process.env, auxSession, { TERM: 'dumb', NO_COLOR: '1' });
+      // Model precedence: explicit aux config wins; else if the provider routes
+      // elsewhere (custom base_url) let its own ANTHROPIC_MODEL decide (omit
+      // --model); else fall back to haiku on the default login.
+      const model = auxConfig.model || (built.skipDefaultModel ? null : 'haiku');
+      const args = ['-p', '--output-format', 'stream-json', '--max-turns', '1', '--verbose'];
+      if (model) args.splice(1, 0, '--model', model);
+      args.push(task.prompt);
+      const proc = spawn(CLAUDE_CMD, args, {
         cwd: __dirname,
-        env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
+        env: built.env,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
@@ -3642,6 +3684,27 @@ app.post('/api/aux/enqueue', (req, res) => {
   auxQueue.enqueue({ type: type || 'manual', prompt, meta: meta || {} })
     .then(result => res.json({ ok: true, result: result.text }))
     .catch(err => res.json({ ok: false, error: err?.message || 'cancelled' }));
+});
+
+// Aux model config: which claude provider + model the aux helper uses.
+// GET also returns the list of claude providers so the UI can render a picker.
+app.get('/api/aux/config', (req, res) => {
+  res.json({
+    providerId: auxConfig.providerId,
+    model: auxConfig.model,
+    providers: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name })),
+  });
+});
+app.post('/api/aux/config', (req, res) => {
+  const { providerId, model } = req.body || {};
+  if (providerId && !providers.getProvider('claude', String(providerId))) {
+    return res.status(400).json({ ok: false, error: '未知的 claude provider' });
+  }
+  auxConfig.providerId = providerId ? String(providerId) : null;
+  auxConfig.model = (model && String(model).trim()) || null;
+  saveAuxConfig();
+  console.log(`[multicc/aux] config updated: provider=${auxConfig.providerId || 'default'} model=${auxConfig.model || 'haiku'}`);
+  res.json({ ok: true, providerId: auxConfig.providerId, model: auxConfig.model });
 });
 
 // ── Goal-mode precheck ──
@@ -4574,6 +4637,26 @@ function resolveRolePrompt(persisted) {
   return base ? `${base}\n\n${memBlock}` : memBlock;
 }
 
+// Signature of a transport/API failure that ends a turn with a truncated answer
+// instead of a real completion (e.g. the CLI's "API Error: Connection closed
+// mid-response. The response above may be incomplete."). Anchored to the tail
+// because a genuine mid-response cutoff puts the error as the very last thing —
+// this avoids matching a turn that merely *quotes* such a string mid-answer.
+const API_ERROR_RE = /API Error:[^\n]{0,200}(Connection closed|mid-response|response above may be incomplete|terminated|Overloaded|Internal server error|Request was aborted|ECONNRESET|socket hang up)/i;
+
+// Turn-boundary hook for guard F (see wait-injector). If the just-finished turn
+// died on an API/transport error, schedule a capped "继续" retry; otherwise the
+// turn completed cleanly, so reset the consecutive-error counter. Called from
+// BOTH end-of-turn paths (per-turn proc close + streaming finalize). The
+// `sawApiError` flag captures result-event errors that never reach the text.
+function handleApiErrorBoundary(sessionName, finalText, sawApiError) {
+  const hit = sawApiError || API_ERROR_RE.test((finalText || '').slice(-300));
+  if (!hit) { waitInjector.resetApi(sessionName); return; }
+  if (waitInjector.hasWait(sessionName)) return; // an explicit wait already covers it
+  console.log(`[multicc/chat] [${sessionName}] turn ended on API/transport error → scheduling retry nudge`);
+  waitInjector.apiRetry(sessionName);
+}
+
 // Apply one claude-shaped stream-json event to chat session state, then forward
 // it to clients. Shared by the per-turn spawn path (handleLine) and the
 // persistent streaming path (runChatTurnStreaming) so the two never drift.
@@ -4622,6 +4705,11 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
   }
   if (evt.type === 'result') {
     cs.currentCost = evt.total_cost_usd || null;
+    // Flag transport/API failures so the turn-boundary hook (guard F) can resume:
+    // claude reports them as is_error + a non-"success" subtype on the result event.
+    if (evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype))) {
+      cs._sawApiError = true;
+    }
     if (cs.currentAssistantText || cs.currentToolCalls.length) {
       const usage = evt.usage || {};
       appendChatMessage(sessionName, {
@@ -4666,7 +4754,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
-  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); }
+  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetApi(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
   let cs = chatSessions.get(sessionName);
   if (!cs) {
@@ -5094,6 +5182,10 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs.currentToolCalls = [];
       cs._resultSaved = false;
       cs._codexError = null;
+      // Guard F: resume (capped) if this turn died on an API/transport error,
+      // else reset the consecutive-error counter. Skip user-initiated kills.
+      { const sawApi = cs._sawApiError; cs._sawApiError = false;
+        if (!killReason) handleApiErrorBoundary(sessionName, finalText, sawApi); }
 
       setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       chatBroadcast(sessionName, { type: 'stream_end' });
@@ -5307,6 +5399,12 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   cs.currentAssistantText = '';
   cs.currentToolCalls = [];
   cs._resultSaved = false;
+  // Guard F: a streaming turn that dropped mid-response (connection closed) lands
+  // here via the stream .catch with partial text + the API-error tail. Resume
+  // (capped) or reset the consecutive-error counter. A user-initiated interrupt
+  // bumps _streamTurnSeq, so this only runs for turns that ended on their own.
+  { const sawApi = cs._sawApiError; cs._sawApiError = false;
+    handleApiErrorBoundary(sessionName, finalText, sawApi); }
   setSessionStatus(sessionName, { status: 'idle', currentFile: null });
   chatBroadcast(sessionName, { type: 'stream_end' });
 

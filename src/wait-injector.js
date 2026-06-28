@@ -22,6 +22,14 @@
 //                  nudge a little after such a turn — same guard shape as D
 //                  (capped count, reset by a real user message, skipped when an
 //                  explicit A/B wait already covers the session).
+//   F. apiRetry  — chat-only resilience guard: a turn ended on a transport/API
+//                  error (e.g. "API Error: Connection closed mid-response") rather
+//                  than a real completion, so the assistant's answer is truncated
+//                  and the turn is effectively dead. We auto-inject "刚才异常中断，
+//                  请继续" to resume. Capped at MAX_API_RETRY *consecutive* tries:
+//                  the counter is reset the moment any turn finishes cleanly (or a
+//                  real user message arrives), so "3 in a row" means 3 failures
+//                  back-to-back, after which we stop nagging and leave it to the user.
 //
 // All three converge on inject() → runChatTurn(session, text), which for a
 // streaming session feeds the warm process (queued if a turn is mid-flight) and
@@ -38,6 +46,7 @@ let _log = () => {};
 const waits = new Map();        // waitId -> wait spec/state
 const autoState = new Map();    // session -> { count, lastHash }
 const bgState = new Map();      // session -> { count }  — run_in_background guard (E)
+const apiState = new Map();     // session -> { count }  — API/transport error retry guard (F)
 let ticker = null;
 
 const TICK_MS = 1000;
@@ -46,6 +55,8 @@ const MIN_INTERVAL_SEC = 3;
 const MAX_AUTO_CONTINUE = 5;     // consecutive auto-continues before giving up
 const MAX_BG_CHECK = 6;          // consecutive run_in_background nudges before giving up
 const BG_CHECK_DELAY_MS = 25000; // wait ~25s after a bg-launching turn, then nudge
+const MAX_API_RETRY = 3;         // consecutive API-error retries before giving up
+const API_RETRY_DELAY_MS = 4000; // wait a few seconds (let a transient blip pass) then resume
 
 function genId() { return 'w_' + crypto.randomBytes(6).toString('hex'); }
 function genToken() { return crypto.randomBytes(16).toString('hex'); }
@@ -145,6 +156,7 @@ function cancelForSession(session) {
   for (const [id, w] of waits) if (w.session === session) { waits.delete(id); n++; }
   autoState.delete(session);
   bgState.delete(session);
+  apiState.delete(session);
   return n;
 }
 
@@ -255,6 +267,37 @@ function bgCheck(session, opts = {}) {
 // Reset the bgCheck counter — call on a real user message.
 function resetBg(session) { bgState.delete(session); }
 
+// ── API/transport error retry guard (F) ──
+// Chat-only. Called at a turn boundary when the turn ended on a transport/API
+// error (connection dropped mid-response, etc.) instead of a clean completion —
+// the visible answer is truncated and nothing will resume it on its own. We
+// inject a short "继续" nudge after a brief delay so the model picks up where it
+// was cut off. Capped at MAX_API_RETRY *consecutive* attempts: resetApi() is
+// called on every clean turn (and every real user message), so the counter only
+// climbs while errors happen back-to-back; once it hits the cap we stop and
+// leave it to the user. Skipped when an explicit A/B wait already covers the
+// session (don't fight a registered wait).
+function apiRetry(session, opts = {}) {
+  if (hasWait(session)) { _log(`[wait] apiRetry skip ${session}: explicit wait pending`); return false; }
+  const st = apiState.get(session) || { count: 0 };
+  if (st.count >= MAX_API_RETRY) {
+    _log(`[wait] apiRetry cap reached for ${session} (${st.count}) — giving up, leaving it to the user`);
+    return false;
+  }
+  st.count++;
+  apiState.set(session, st);
+  const nudge = opts.nudge ||
+    `[自动恢复 ${st.count}/${MAX_API_RETRY}] 刚才异常中断（API/连接错误，回答可能被截断），请从中断处继续。`;
+  _log(`[wait] apiRetry ${session} (#${st.count}/${MAX_API_RETRY})`);
+  const d = Number(opts.delayMs);
+  const delayMs = Number.isFinite(d) ? Math.max(0, d) : API_RETRY_DELAY_MS;
+  setTimeout(() => fireInject(session, nudge), delayMs);
+  return true;
+}
+
+// Reset the apiRetry counter — call on any clean turn boundary or real user message.
+function resetApi(session) { apiState.delete(session); }
+
 // Inject only when the session is free; if a turn is mid-flight, retry shortly
 // so we never interrupt the very work we are waiting on. (Streaming queues
 // internally too, but this keeps default sessions safe.)
@@ -267,7 +310,7 @@ function fireInject(session, text, attempt = 0) {
 }
 
 function stats() {
-  return { waits: waits.size, autoSessions: autoState.size, bgSessions: bgState.size };
+  return { waits: waits.size, autoSessions: autoState.size, bgSessions: bgState.size, apiSessions: apiState.size };
 }
 
 // Busy-safe delivery of arbitrary text into a session as a new turn. Reuses the
@@ -280,6 +323,6 @@ function safeInject(session, text) { fireInject(session, text); }
 module.exports = {
   init, register, resolve, cancel, cancelForSession,
   listForSession, hasWait, tick, autoContinue, resetAuto,
-  bgCheck, resetBg, stats, safeInject,
+  bgCheck, resetBg, apiRetry, resetApi, stats, safeInject,
   _waits: waits, // for tests
 };
