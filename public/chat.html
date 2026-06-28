@@ -674,6 +674,86 @@
     }
     .vp-actions button.primary:hover { background: #2ea043; }
 
+    /* ── S2S voice conversation panel ── */
+    #s2s-panel {
+      display: none;
+      position: fixed;
+      bottom: 60px;
+      right: 16px;
+      width: 340px;
+      max-width: 94vw;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      box-shadow: 0 8px 32px #00000088;
+      z-index: 18000;
+      overflow: hidden;
+      flex-direction: column;
+    }
+    #s2s-panel.open { display: flex; }
+    #s2s-panel-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px; background: #1c2330; border-bottom: 1px solid #30363d;
+      font-size: 13px; font-weight: 600; color: #f0f6fc;
+    }
+    #s2s-state-badge {
+      font-size: 10px; padding: 2px 8px; border-radius: 10px;
+      background: #1f6feb; color: #fff; font-weight: 500; text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    #s2s-state-badge.listening { background: #238636; }
+    #s2s-state-badge.confirming { background: #d29922; color: #1a1a1a; }
+    #s2s-state-badge.executing { background: #1f6feb; }
+    #s2s-state-badge.reporting { background: #8957e5; }
+    #s2s-panel-body {
+      padding: 12px 14px; max-height: 320px; overflow-y: auto;
+      font-size: 13px; color: #c9d1d9;
+    }
+    #s2s-transcript {
+      min-height: 30px; margin-bottom: 10px;
+      padding: 8px 10px; background: #0d1117; border-radius: 8px;
+      font-size: 13px; color: #8b949e; line-height: 1.5;
+      max-height: 100px; overflow-y: auto;
+    }
+    #s2s-transcript .partial { color: #58a6ff; }
+    #s2s-breakdown { font-size: 13px; }
+    #s2s-breakdown .bd-summary {
+      padding: 8px 10px; background: #0d1117; border-radius: 8px;
+      margin-bottom: 8px; color: #f0f6fc; line-height: 1.5;
+    }
+    #s2s-breakdown .bd-item {
+      display: flex; align-items: flex-start; gap: 6px;
+      padding: 6px 10px; margin-bottom: 4px; background: #0d1117;
+      border-radius: 6px; border-left: 3px solid #238636;
+    }
+    #s2s-breakdown .bd-item-num {
+      color: #3fb950; font-weight: 600; min-width: 20px;
+    }
+    #s2s-breakdown .bd-question {
+      padding: 6px 10px; background: #1c1208; border-radius: 6px;
+      border-left: 3px solid #d29922; color: #e3b341; margin-bottom: 4px;
+    }
+    #s2s-panel-footer {
+      display: flex; gap: 8px; padding: 8px 14px;
+      border-top: 1px solid #30363d; background: #161b22;
+    }
+    #s2s-panel-footer button {
+      flex: 1; padding: 6px 12px; border-radius: 6px; border: 1px solid #30363d;
+      background: #21262d; color: #c9d1d9; font-size: 12px; cursor: pointer;
+    }
+    #s2s-panel-footer button:hover { background: #30363d; }
+    #s2s-panel-footer button.danger { border-color: #da3633; color: #f85149; }
+    #s2s-panel-footer button.danger:hover { background: #da3633; color: #fff; }
+    #s2s-btn.active { background: #1f6feb !important; border-color: #58a6ff !important; color: #fff !important; }
+    /* Volume indicator */
+    #s2s-volume-bar {
+      height: 4px; background: #30363d; border-radius: 2px; overflow: hidden;
+      margin-bottom: 8px;
+    }
+    #s2s-volume-fill {
+      height: 100%; width: 0%; background: #238636; transition: width 0.1s;
+    }
+
     /* ── Cost bar ── */
     #cost-bar {
       font-size: 11px; color: #6e7681; text-align: center;
@@ -850,6 +930,7 @@
     <span class="hdr-spacer"></span>
     <button class="hdr-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
     <button id="notify-btn" class="hdr-btn" title="语音通知 (点击开启/关闭)">&#128276;</button>
+    <button id="s2s-btn" class="hdr-btn" title="S2S 语音对话模式 (点击开启/关闭)">&#127897;</button>
     <button id="dbg-btn" class="hdr-btn" title="Debug 面板">&#128027;</button>
     <a href="/" class="hdr-btn" title="Terminal mode" data-i18n="terminal">Terminal</a>
     <button class="hdr-btn" id="model-btn" title="切换该会话使用的模型（下一轮对话生效）" style="display:none"></button>
@@ -936,6 +1017,22 @@
 
   <!-- Notify toast -->
   <div id="notify-toast"><span class="toast-close">&#10005;</span></div>
+
+  <!-- S2S voice conversation panel -->
+  <div id="s2s-panel">
+    <div id="s2s-panel-header">
+      <span>&#127897; S2S 语音对话</span>
+      <span id="s2s-state-badge">IDLE</span>
+    </div>
+    <div id="s2s-panel-body">
+      <div id="s2s-volume-bar"><div id="s2s-volume-fill"></div></div>
+      <div id="s2s-transcript">点击右上角耳机按钮开启语音对话…</div>
+      <div id="s2s-breakdown"></div>
+    </div>
+    <div id="s2s-panel-footer">
+      <button id="s2s-stop-btn" class="danger">结束对话</button>
+    </div>
+  </div>
 
   <!-- Voice panel -->
   <div id="voice-panel">
@@ -1027,6 +1124,9 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/go.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/rust.min.js"></script>
   <script src="voice-output.js"></script>
+  <script src="vad-monitor.js"></script>
+  <script src="voice-stream.js"></script>
+  <script src="s2s-session.js"></script>
   <script src="chat.js"></script>
   <script src="tour.js"></script>
 </body>
