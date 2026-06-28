@@ -136,6 +136,13 @@ function startMonitor(sessionId) {
       // runs the aux-AI on idle and pushes a `notify` verdict (single judge,
       // consistent with chat). We just render it.
       if (msg.type === 'notify') {
+        // Running = in-progress status update (task started / periodic summary).
+        // Update the badge but do NOT trigger voice alert or mark the session
+        // as alerted — that would steal the slot from the real completion event.
+        if (msg.state === 'running') {
+          setSessionStatus(sessionId, 'running');
+          return;
+        }
         const waiting = msg.state === 'waiting';
         alertSession(
           sessionId,
@@ -703,6 +710,7 @@ function sessionStatusBrief(s) {
     const ms = _sessionStatus.get(s.id);
     if (ms === 'waiting') { text = tt('waiting'); cls = 'waiting'; }
     else if (ms === 'completed') { text = tt('completed'); cls = 'completed'; }
+    else if (ms === 'running') { text = tt('running'); cls = 'active'; }
     else { text = tt('idle'); cls = ''; }
   }
   const emoji = cls === 'active' ? '🟢' : (cls === 'waiting' ? '⏳' : (cls === 'completed' ? '✅' : '⚪'));

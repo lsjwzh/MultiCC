@@ -280,6 +280,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// arrive over an open session's chat socket; NotificationService de-dups the
   /// two by id, so this and ChatProvider._maybeNotify never double-fire.
   void handleWorkspaceNotify(String sessionId, String state, String message) {
+    // Running = in-progress status update. Don't fire a push notification —
+    // it's a status update, not an alert. Only completed/waiting warrant
+    // interrupting the user.
+    if (state == 'running') return;
     if (!_isInBackground && sessionId == _activeSessionId) return;
     final who = _displayTitleFor(sessionId);
     NotificationService.show(
