@@ -258,6 +258,7 @@ let _contextWindow = 1000000;
 let _usedTokens = 0;
 let _costText = '';  // latest cost summary string, kept separate from the context readout
 let _sessionTokens = { input: 0, output: 0 };  // per-session cumulative token usage
+let _turnStartMs = 0;  // wall-clock when the current turn was sent (live reply timing)
 // Provider-level time-window token stats (updated after each turn)
 let _providerId = null;
 let _providerName = null;
@@ -508,6 +509,17 @@ function handleEvent(msg) {
       var _resultBubble = currentMsgEl;  // capture before finishStreaming() nulls it
       finishStreaming();
       if (msg.usage) attachUsageLine(_resultBubble, msg.usage);
+      // Live timing line: prefer server-stamped durationMs, else client turn clock.
+      if (_resultBubble) {
+        const ce = _resultBubble.querySelector('.msg-content');
+        if (ce && !ce.querySelector('.msg-timing')) {
+          const dur = Number.isFinite(msg.durationMs) ? msg.durationMs
+            : (_turnStartMs ? Date.now() - _turnStartMs : NaN);
+          const timing = buildTimingLine({ role: 'assistant', ts: Date.now(), durationMs: dur });
+          if (timing) ce.appendChild(timing);
+        }
+      }
+      _turnStartMs = 0;
       stopTitleAnimation();
       // No notification here: a `result` only means the stream paused, which
       // happens between turns of a multi-step agent run too. The server's
@@ -756,6 +768,41 @@ function buildUsageLine(usage) {
   return el;
 }
 
+// Human-friendly duration: 820ms / 6.2s / 1m3s.
+function fmtDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m${Math.round(s % 60)}s`;
+}
+
+// Per-message timing line: reply clock time + interaction latency (durationMs).
+// Shown under an assistant bubble so each reply records when it came back and
+// how long the turn took.
+function buildTimingLine(m) {
+  const ts = Number(m.ts);
+  const hasTs = Number.isFinite(ts) && ts > 0;
+  const dur = Number(m.durationMs);
+  const hasDur = Number.isFinite(dur) && dur >= 0;
+  if (!hasTs && !hasDur) return null;
+  const el = document.createElement('div');
+  el.className = 'msg-timing';
+  el.style.cssText = 'font-size:11px;color:#6e7681;display:flex;gap:10px;padding:1px 0;';
+  let html = '';
+  if (hasTs) {
+    const d = new Date(ts);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    html += `<span title="回复时间">&#128336; ${hh}:${mm}:${ss}</span>`;
+  }
+  if (hasDur) html += `<span title="本次交互耗时">&#9201; ${fmtDuration(dur)}</span>`;
+  el.innerHTML = html;
+  return el;
+}
+
 // Attach (or refresh) the usage line on a given assistant bubble element.
 function attachUsageLine(bubbleEl, usage) {
   if (!bubbleEl) return;
@@ -956,6 +1003,12 @@ function replayHistory(messages, serverTokenUsage) {
         if (usageLine) contentEl.appendChild(usageLine);
       }
 
+      // Per-message timing: reply clock time + interaction latency.
+      if (m.role === 'assistant') {
+        const timing = buildTimingLine(m);
+        if (timing) contentEl.appendChild(timing);
+      }
+
       div.appendChild(contentEl);
       messagesEl.appendChild(div);
     }
@@ -1100,6 +1153,7 @@ function send(opts = {}) {
       if (goalOpts) { payload.goal = true; payload.goalLimits = goalOpts.goalLimits || {}; }
       ws.send(JSON.stringify(payload));
       _pendingCancel = false;
+      _turnStartMs = Date.now();  // client-side fallback for live reply timing
       isStreaming = true;
       showThinking();
       startTitleAnimation();
