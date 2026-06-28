@@ -364,12 +364,25 @@ function renderDashboard(directories, sessions) {
   const regularSessions = sessions.filter(s => s.type !== 'aux');
   const isFocused = !!_focusedSessionId;
 
-  // Aux section (always first)
+  // Aux section (always first)：AI Assistant 虚拟卡片 + 右侧任务进度滚动展示
   const auxEl = document.getElementById('aux-section');
   if (auxEl) {
-    auxEl.innerHTML = auxSessions.length
-      ? `<div class="session-grid" style="margin-bottom:16px;">${auxSessions.map(s => renderAuxCard(s, isFocused)).join('')}</div>`
-      : '';
+    if (!auxSessions.length) {
+      auxEl.innerHTML = '';
+    } else if (isFocused) {
+      // 聚焦模式侧栏较窄，沿用原网格布局，不放滚动器
+      auxEl.innerHTML = `<div class="session-grid" style="margin-bottom:16px;">${auxSessions.map(s => renderAuxCard(s, isFocused)).join('')}</div>`;
+    } else {
+      auxEl.innerHTML = `
+        <div style="display:flex;gap:16px;align-items:stretch;margin-bottom:16px;">
+          <div style="flex:0 0 300px;max-width:300px;display:flex;flex-direction:column;gap:16px;">
+            ${auxSessions.map(s => renderAuxCard(s, isFocused)).join('')}
+          </div>
+          <div id="aux-task-scroller" style="flex:1;min-width:0;">
+            ${renderTaskProgressScroller(sessions)}
+          </div>
+        </div>`;
+    }
   }
 
   // Directory tree
@@ -805,14 +818,11 @@ function renderDirPreview(dirId, dirSessions) {
     activityContent = `<span style="color:var(--faint);">暂无活动</span>`;
   }
 
-  // 任务进度滚动展示器（所有目录的活跃任务）
-  const scrollerContent = renderTaskProgressScroller(dirId, dirSessions);
-
-  // Session 块内容（AI Assist） - 固定高度 56px
+  // Session 块内容 - 固定高度 56px 保证卡片对齐
   let sessionContent = '';
   if (sessionInfo) {
     sessionContent = `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;flex-shrink:0;">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;">
         <span class="dot ${sessionActive ? 'active' : ''}" style="width:8px;height:8px;"></span>
         <div style="flex:1;min-width:0;">
           <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}</div>
@@ -829,7 +839,7 @@ function renderDirPreview(dirId, dirSessions) {
     `;
   } else {
     sessionContent = `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;flex-shrink:0;">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;">
         <span style="font-size:12px;color:var(--faint);">暂无关联会话</span>
       </div>
     `;
@@ -842,15 +852,8 @@ function renderDirPreview(dirId, dirSessions) {
         <span style="font-size:12px;color:var(--faint);">活动</span>
         ${activityContent}
       </div>
-      <!-- AI Assist + 任务进度滚动展示（同一行） -->
-      <div style="display:flex;gap:10px;align-items:stretch;">
-        <!-- AI Assist 块 -->
-        ${sessionContent}
-        <!-- 任务进度滚动展示器（自动撑满剩余宽度） -->
-        <div style="flex:1;min-width:0;">
-          ${scrollerContent}
-        </div>
-      </div>
+      <!-- 最近 session 块 -->
+      ${sessionContent}
     </div>
   `;
 }
@@ -864,35 +867,43 @@ function updateDirPreviewForSession(sessionId) {
   if (s && s.dirId) updateDirPreview(s.dirId);
 }
 
-// 任务进度滚动展示器 - 展示正在进行中的任务状态
-// 自动轮播：thinking、editing、running、waiting
-function renderTaskProgressScroller(dirId, dirSessions) {
-  // 筛选活跃会话（非 idle）
+// 刷新首页 AI Assistant 卡片右侧的全局任务进度滚动展示器
+function updateGlobalTaskScroller() {
+  const el = document.getElementById('aux-task-scroller');
+  if (el) el.innerHTML = renderTaskProgressScroller(_cachedSessions || []);
+}
+
+// 任务进度滚动展示器 - 展示所有目录下正在进行中的任务状态
+// 放在首页「AI Assistant」虚拟卡片右侧的空白区域，自动轮播：thinking、editing、running、waiting
+function renderTaskProgressScroller(sessions) {
+  // 全局筛选活跃会话（跨所有目录，非 aux、非 idle）
   const activeTasks = [];
-  for (const s of dirSessions) {
+  for (const s of (sessions || [])) {
     if (s.type === 'aux') continue;
     const st = _workspaceStatus.get(s.id);
     if (!st || st.status === 'idle') continue;
     const summary = _workspaceSummaries.get(s.id);
+    const dir = (_cachedDirectories || []).find(d => d.id === s.dirId);
     activeTasks.push({
       sessionId: s.id,
       label: s.label || s.id,
+      dirName: dir ? dir.name : '',
       status: st.status,
       currentFile: st.currentFile,
       summary: summary?.summary,
     });
   }
 
-  // 无活跃任务时显示占位（与 AI Assist 等高 56px）
+  // 无活跃任务时显示占位（填满整块空白区域，垂直居中）
   if (activeTasks.length === 0) {
     return `
-      <div style="height:56px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
-        <span style="font-size:11px;color:var(--faint);opacity:0.8;">${escapeHtml(tt('noActiveTask'))}</span>
+      <div style="height:100%;min-height:56px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
+        <span style="font-size:12px;color:var(--faint);opacity:0.8;">${escapeHtml(tt('noActiveTask'))}</span>
       </div>
     `;
   }
 
-  // 任务进度卡片容器（单行紧凑布局，与 AI Assist 等高 56px）
+  // 任务进度卡片（单行紧凑布局，每行 56px）
   const cards = activeTasks.map(task => {
     const info = wbStatusInfo(task.status);
     const statusColor = info.cls === 'active' ? '#6aa3ff' : (info.cls === 'waiting' ? '#e3b341' : '#5b616c');
@@ -902,26 +913,27 @@ function renderTaskProgressScroller(dirId, dirSessions) {
 
     return `
       <div class="task-progress-card" data-session-id="${escapeHtml(task.sessionId)}"
-           style="height:56px;display:flex;align-items:center;gap:12px;padding:0 14px;cursor:pointer;"
+           style="height:56px;display:flex;align-items:center;gap:12px;padding:0 16px;cursor:pointer;"
            onclick="event.stopPropagation(); openSessionChat('${escapeHtml(task.sessionId)}')">
         <!-- 状态指示灯 -->
-        <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};box-shadow:0 0 6px ${statusColor};"></span>
-        <!-- 会话标签 -->
-        <span style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">${escapeHtml(task.label)}</span>
+        <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};box-shadow:0 0 6px ${statusColor};flex-shrink:0;"></span>
+        <!-- 会话标签（+所属目录） -->
+        <span style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;flex-shrink:0;">${escapeHtml(task.label)}${task.dirName ? `<span style="color:var(--faint);font-weight:400;"> · ${escapeHtml(task.dirName)}</span>` : ''}</span>
         <!-- 状态标签 -->
-        <span style="padding:3px 8px;font-size:10px;color:${statusColor};background:${statusColor}33;border:1px solid ${statusColor}55;border-radius:4px;">${escapeHtml(info.text)}</span>
+        <span style="padding:3px 8px;font-size:10px;color:${statusColor};background:${statusColor}33;border:1px solid ${statusColor}55;border-radius:4px;flex-shrink:0;">${escapeHtml(info.text)}</span>
         <!-- 当前活动 -->
-        <span style="flex:1;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(activityText)}</span>
+        <span style="flex:1;min-width:0;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(activityText)}</span>
       </div>
     `;
   }).join('');
 
-  // 返回滚动容器（CSS 动画实现自动轮播，高度 56px 与 AI Assist 等高）
-  const containerId = `task-scroller-${dirId}`;
+  // 滚动容器：56px 高的视口在面板中垂直居中，CSS 动画逐条轮播
   return `
-    <div id="${containerId}" style="height:56px;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:8px;border:1px solid var(--line);">
-      <div class="task-scroller-inner" data-count="${activeTasks.length}" style="height:${activeTasks.length * 56}px;">
-        ${cards}
+    <div style="height:100%;min-height:56px;display:flex;align-items:center;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
+      <div style="width:100%;height:56px;overflow:hidden;">
+        <div class="task-scroller-inner" data-count="${activeTasks.length}" style="height:${activeTasks.length * 56}px;">
+          ${cards}
+        </div>
       </div>
     </div>
   `;
@@ -2017,10 +2029,12 @@ function connectWorkspace(dirId) {
       _workspaceEvents.set(dirId, msg.events || []);
       updateEventTimelineDom(dirId);
       updateDirPreview(dirId);
+      updateGlobalTaskScroller();
     } else if (msg.type === 'status') {
       _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity, mergeState: msg.mergeState || _workspaceStatus.get(msg.sessionId)?.mergeState || null });
       updateSessionStatusDom(msg.sessionId);
       updateSessionMergeDom(msg.sessionId);
+      updateGlobalTaskScroller();
     } else if (msg.type === 'merge_status') {
       const prev = _workspaceStatus.get(msg.sessionId) || {};
       _workspaceStatus.set(msg.sessionId, { ...prev, mergeState: msg.mergeState || null });
@@ -2039,6 +2053,7 @@ function connectWorkspace(dirId) {
       _workspaceSummaries.set(msg.sessionId, { summary: msg.summary, ts: msg.ts || 0 });
       updateSessionSummaryDom(msg.sessionId);
       updateDirPreviewForSession(msg.sessionId);
+      updateGlobalTaskScroller();
     }
   };
   ws.onclose = () => { if (_workspaceWs.get(dirId) === ws) _workspaceWs.delete(dirId); };
