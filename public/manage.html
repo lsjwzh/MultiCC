@@ -383,6 +383,19 @@
     .wb-event-row .t{color:var(--muted);margin-right:4px}
     .wb-event-row.dim{color:var(--muted)}
 
+    /* 任务进度滚动展示器 */
+    .task-scroller-inner{animation:taskScroll 12s linear infinite}
+    .task-progress-card:hover{background:rgba(58,214,197,.08)}
+    @keyframes taskScroll{
+      0%,20%{transform:translateY(0)}
+      25%,45%{transform:translateY(-51px)}
+      50%,70%{transform:translateY(-102px)}
+      75%,95%{transform:translateY(-153px)}
+      100%{transform:translateY(0)}
+    }
+    /* 只有 1 个任务时不滚动 */
+    .task-scroller-inner[data-count="1"]{animation:none}
+
     /* lean 2-line session card */
     .sess-card-grid{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
     .lean{display:flex;align-items:center;gap:9px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;cursor:pointer;transition:border-color .12s,background .12s}
