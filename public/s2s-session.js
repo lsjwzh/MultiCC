@@ -4,31 +4,33 @@
  * 状态机: IDLE → LISTENING → CONFIRMING → EXECUTING → REPORTING → IDLE
  *
  * 流程:
- *   1. LISTENING  — 连续语音输入 (VAD 静音检测 → 自动提交)
+ *   1. LISTENING  — 连续语音输入 (VAD 静音检测 → MediaRecorder 录音 → Whisper STT)
  *   2. CONFIRMING — LLM 拆解需求 → TTS 念出 → 用户逐项确认 (可多轮)
  *   3. EXECUTING  — 确认后发送到 chat WS → 用户进入等待
  *   4. REPORTING  — 监控 chat 事件 → aux AI 总结 → TTS 播报;
  *                   超过 60s 无响应 → "任务还在进行中"
  *   5. 任务完成 → TTS 播报结果 → 回到 IDLE
  *
- * 依赖: VoiceStream, VoiceOutput, VadMonitor (已加载), chat.js 的 ws 连接
+ * 依赖: VoiceOutput (TTS), VadMonitor (静音检测), chat.js 的 ws 连接
+ * 使用 /api/voice/stt (Whisper) 做语音识别 — 与现有 mic 按钮同一通道
  * ════════════════════════════════════════════════════════════════════════════ */
 
 class S2SSession {
   constructor(opts) {
     this.opts = opts || {};
-    // wsUrl is like ws://host:port  (no path)
     this.wsUrl = opts.wsUrl || location.origin.replace(/^http/, 'ws');
     this.httpUrl = this.wsUrl.replace(/^ws/, 'http').replace(/^wss/, 'https');
 
     // State machine
     this.state = 'IDLE'; // IDLE | LISTENING | CONFIRMING | EXECUTING | REPORTING
 
-    // Components
+    // Audio components
     this.mediaStream = null;
     this.vadMonitor = null;
-    this.voiceInput = null;   // VoiceStream (ASR)
     this.voiceOutput = null;  // VoiceOutput (TTS)
+    this.mediaRecorder = null;
+    this.audioChunks = [];
+    this.isRecording = false;
 
     // Accumulated text from current ASR round
     this.accumulatedText = '';
@@ -41,21 +43,21 @@ class S2SSession {
     this.progressEvents = [];     // events since last summary
     this.lastActivityTime = 0;    // timestamp of last chat event
     this.progressTimer = null;    // setInterval for periodic check
-    this.summaryTimer = null;     // setTimeout for next summary
+    this.summaryTimer = null;     // setInterval for timeout check
     this.lastSummaryTime = 0;
 
-    // Chat WS hook (we piggyback on chat.js's ws)
-    this._originalOnMessage = null;
-    this._originalSend = null;
+    // Chat WS hook
     this._taskCompleted = false;
 
     // Callbacks
     this.onStateChange = opts.onStateChange || (() => {});
-    this.onText = opts.onText || (() => {});         // ASR partial/final text
+    this.onText = opts.onText || (() => {});         // ASR text
     this.onAiText = opts.onAiText || (() => {});     // AI text to display
     this.onBreakdown = opts.onBreakdown || (() => {}); // confirmation breakdown update
     this.onError = opts.onError || (() => {});
     this.onLog = opts.onLog || (() => {});
+    this.onVolume = opts.onVolume || (() => {});
+    this.onAsrStatus = opts.onAsrStatus || (() => {}); // "recording" | "transcribing" | "idle"
 
     // Binds
     this._handleChatEvent = this._handleChatEvent.bind(this);
@@ -70,26 +72,23 @@ class S2SSession {
     this.accumulatedText = '';
 
     try {
-      // Get microphone
+      // Get microphone — single getUserMedia shared by VAD and MediaRecorder
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
 
-      // Start VAD
+      // Start VAD for silence detection (await to catch errors)
       this.vadMonitor = new VadMonitor({
         stream: this.mediaStream,
-        silenceThreshold: 0.015,
-        silenceTimeout: 1200,   // 1.2s silence = user finished speaking
-        speechThreshold: 0.025,
-        speechTimeout: 200,
+        silenceThreshold: 0.012,
+        silenceTimeout: 1500,   // 1.5s silence = user finished speaking
+        speechThreshold: 0.020,
+        speechTimeout: 250,
         onSpeechStart: () => this._onSpeechStart(),
         onSilence: (dur) => this._onSilence(dur),
-        onVolume: (level) => { if (this.opts.onVolume) this.opts.onVolume(level); },
+        onVolume: (level) => this.onVolume(level),
       });
-      this.vadMonitor.start(this.mediaStream);
-
-      // Start ASR
-      await this._startASR();
+      await this.vadMonitor.start(this.mediaStream);
 
       // Hook into chat WS to intercept events
       this._hookChatWs();
@@ -98,17 +97,21 @@ class S2SSession {
     } catch (err) {
       this._setState('IDLE');
       this.onError('无法启动语音会话: ' + err.message);
+      this._cleanup();
     }
   }
 
   stop() {
     this._log('Stopping S2S session');
     this._setState('IDLE');
-    this._stopASR();
+    this._stopRecording();
     this._stopTts();
     this._unhookChatWs();
     this._clearTimers();
+    this._cleanup();
+  }
 
+  _cleanup() {
     if (this.vadMonitor) { this.vadMonitor.stop(); this.vadMonitor = null; }
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach(t => t.stop());
@@ -121,81 +124,117 @@ class S2SSession {
 
   getState() { return this.state; }
 
-  // Allow external code to inject a confirmed task (e.g. user typed instead)
-  injectConfirmedTask(text) {
-    this.accumulatedText = text;
-    this._enterExecuting(text);
+  // ── Recording + STT ──────────────────────────────────────────────────────
+
+  _startRecording() {
+    if (this.isRecording || !this.mediaStream) return;
+    this.audioChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+
+    try {
+      this.mediaRecorder = new MediaRecorder(this.mediaStream, mimeType ? { mimeType } : {});
+    } catch (e) {
+      this._log('MediaRecorder creation failed:', e.message);
+      return;
+    }
+
+    this.mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) this.audioChunks.push(e.data);
+    };
+    this.mediaRecorder.onstop = () => {
+      const blob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
+      this.audioChunks = [];
+      if (blob.size > 0) this._transcribe(blob);
+    };
+
+    this.mediaRecorder.start();
+    this.isRecording = true;
+    this.onAsrStatus('recording');
+    this._log('Recording started');
   }
 
-  // ── ASR ──────────────────────────────────────────────────────────────────
+  _stopRecording() {
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      try { this.mediaRecorder.stop(); } catch (_) {}
+    }
+    this.isRecording = false;
+  }
 
-  async _startASR() {
-    const asrProvider = this.opts.asrProvider || 'auto';
-    const asrWsUrl = `${this.wsUrl}/ws/voice`;
-    this.voiceInput = new VoiceStream({
-      wsUrl: asrWsUrl,
-      provider: asrProvider,
-      lang: 'zh',
-      onReady: (provider) => this._log('ASR ready:', provider),
-      onText: (text, isFinal) => {
+  async _transcribe(blob) {
+    this.onAsrStatus('transcribing');
+    this._log('Transcribing audio, size:', blob.size);
+
+    try {
+      const fd = new FormData();
+      fd.append('file', blob, 's2s-recording.webm');
+      const res = await fetch(withToken(`${this.httpUrl}/api/voice/stt`), {
+        method: 'POST',
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      const text = (data.text || '').trim();
+      this._log('STT result:', text.slice(0, 80));
+
+      if (text) {
         this.accumulatedText = text;
-        this.onText(text, isFinal);
-      },
-      onDone: (text) => {
-        this._log('ASR done:', text);
-      },
-      onError: (msg) => {
-        this._log('ASR error:', msg);
-        this.onError(msg);
-      },
-    });
-    await this.voiceInput.start();
-  }
-
-  _stopASR() {
-    if (this.voiceInput) {
-      try { this.voiceInput.abort(); } catch (_) {}
-      this.voiceInput = null;
+        this.onText(text, true);
+        // Process the text based on current state
+        this._processRecognizedText(text);
+      } else {
+        this._log('Empty STT result, ignoring');
+        this.onAsrStatus('idle');
+      }
+    } catch (err) {
+      this._log('STT failed:', err.message);
+      this.onError('语音识别失败: ' + err.message);
+      this.onAsrStatus('idle');
     }
   }
 
-  _restartASR() {
-    this._stopASR();
-    this.accumulatedText = '';
-    return this._startASR().catch(() => {});
+  _processRecognizedText(text) {
+    if (this.state === 'LISTENING') {
+      // If we have a pending breakdown, the user is responding to confirmation
+      if (this.currentBreakdown && !this.currentBreakdown.allConfirmed) {
+        this._handleConfirmationResponse(text);
+      } else {
+        // First utterance → enter confirmation phase
+        this._enterConfirming(text);
+      }
+    }
   }
 
   // ── VAD callbacks ───────────────────────────────────────────────────────
 
   _onSpeechStart() {
-    // Barge-in: if TTS is playing, stop it and resume listening
+    // Barge-in: if TTS is playing, stop it
     if (this.state === 'CONFIRMING') {
       this._log('Barge-in during confirming, stopping TTS');
       this._stopTts();
       this._setState('LISTENING');
       this.accumulatedText = '';
-      this._restartASR();
     } else if (this.state === 'REPORTING') {
-      // During progress reporting, just stop TTS and return to executing
       this._log('Barge-in during reporting, stopping TTS');
       this._stopTts();
       this._setState('EXECUTING');
+    }
+
+    // Start recording when user begins speaking (in LISTENING state)
+    if (this.state === 'LISTENING') {
+      this._startRecording();
     }
   }
 
   _onSilence(duration) {
     if (this.state !== 'LISTENING') return;
-    const text = this.accumulatedText.trim();
-    if (!text) return;
-
-    this._log('Silence detected, text:', text.slice(0, 80));
-
-    // If we have a pending breakdown, the user is responding to confirmation
-    if (this.currentBreakdown && !this.currentBreakdown.allConfirmed) {
-      this._handleConfirmationResponse(text);
-    } else {
-      // First utterance → enter confirmation phase
-      this._enterConfirming(text);
+    // Stop recording and transcribe
+    if (this.isRecording) {
+      this._log('Silence detected, stopping recording');
+      this._stopRecording();
+      // _transcribe will be called by mediaRecorder.onstop
     }
   }
 
@@ -203,7 +242,7 @@ class S2SSession {
 
   async _enterConfirming(rawText) {
     this._setState('CONFIRMING');
-    this._stopASR();
+    this.onAsrStatus('idle');
 
     // Immediately TTS a "let me confirm" message
     this._speak('好的，我来确认一下你的需求。');
@@ -214,7 +253,6 @@ class S2SSession {
       this.onBreakdown(breakdown);
 
       if (breakdown.allConfirmed) {
-        // Edge case: AI thinks it's already confirmed (shouldn't happen on first pass)
         this._speak(breakdown.summary);
         this._enterExecuting(rawText);
         return;
@@ -227,11 +265,10 @@ class S2SSession {
       // After TTS, listen for user's confirmation response
       this._setState('LISTENING');
       this.accumulatedText = '';
-      await this._restartASR();
     } catch (err) {
       this.onError('需求确认失败: ' + err.message);
       this._setState('LISTENING');
-      this._restartASR();
+      this.accumulatedText = '';
     }
   }
 
@@ -251,9 +288,8 @@ class S2SSession {
   }
 
   async _handleConfirmationResponse(userText) {
-    // User responded during confirming phase — send to confirm endpoint with feedback
     this._setState('CONFIRMING');
-    this._stopASR();
+    this.onAsrStatus('idle');
 
     try {
       const breakdown = await this._callConfirm(
@@ -266,7 +302,6 @@ class S2SSession {
 
       if (breakdown.allConfirmed) {
         this._speak('好的，需求确认完毕，开始执行。');
-        // Build the final task text from confirmed items
         const taskText = this._buildTaskText(breakdown);
         this._enterExecuting(taskText);
         return;
@@ -279,11 +314,10 @@ class S2SSession {
       // Listen again for further feedback
       this._setState('LISTENING');
       this.accumulatedText = '';
-      await this._restartASR();
     } catch (err) {
       this.onError('确认处理失败: ' + err.message);
       this._setState('LISTENING');
-      this._restartASR();
+      this.accumulatedText = '';
     }
   }
 
@@ -321,7 +355,7 @@ class S2SSession {
     this.lastSummaryTime = Date.now();
     this._taskCompleted = false;
 
-    // Send the task to chat WebSocket (piggyback on chat.js's ws)
+    // Send the task to chat WebSocket
     this._sendChatMessage(taskText);
 
     // Start progress monitoring timers
@@ -338,14 +372,14 @@ class S2SSession {
       this._checkProgress();
     }, 15000);
 
-    // 60s inactivity check
+    // 60s inactivity check (check every 30s)
     this.summaryTimer = setInterval(() => {
       const idle = Date.now() - this.lastActivityTime;
       if (idle > 60000) {
         this._speak('任务还在进行中，请稍候。');
         this.lastActivityTime = Date.now(); // reset so we don't repeat too fast
       }
-    }, 30000); // check every 30s, triggers if idle > 60s
+    }, 30000);
   }
 
   _clearTimers() {
@@ -354,7 +388,6 @@ class S2SSession {
   }
 
   _checkProgress() {
-    // Only summarize if there are new events and enough time has passed
     if (this.state !== 'EXECUTING' && this.state !== 'REPORTING') return;
     if (this.progressEvents.length === 0) return;
 
@@ -395,15 +428,11 @@ class S2SSession {
   // ── Chat WS hook ─────────────────────────────────────────────────────────
 
   _hookChatWs() {
-    // We hook into chat.js's global `ws` variable
     if (typeof ws === 'undefined' || !ws) {
       this._log('Chat WS not available, will retry in 1s');
       setTimeout(() => this._hookChatWs(), 1000);
       return;
     }
-
-    // Store original onmessage to chain our handler
-    this._originalOnMessage = ws.onmessage;
     ws.addEventListener('message', this._handleChatEvent);
     this._log('Hooked into chat WS');
   }
@@ -460,22 +489,18 @@ class S2SSession {
         break;
       }
       case 'result': {
-        // Task turn finished
         this.progressEvents.push({ type: 'result', summary: `任务回合完成，耗时 ${msg.duration_ms || '?'}ms` });
         this.lastActivityTime = now;
         break;
       }
       case 'notify': {
-        // Task completed or waiting
         if (msg.state === 'completed' || msg.state === 'waiting') {
           this._onTaskComplete(msg);
         }
         break;
       }
       case 'stream_end': {
-        // Process exited
         if (this.state === 'EXECUTING' || this.state === 'REPORTING') {
-          // Give a brief moment for any final events
           setTimeout(() => {
             if (this.state === 'EXECUTING' || this.state === 'REPORTING') {
               this._onTaskComplete({ state: 'completed' });
@@ -492,13 +517,10 @@ class S2SSession {
     this._taskCompleted = true;
     this._clearTimers();
 
-    // Final progress summary
     const isWaiting = notifyMsg.state === 'waiting';
     const finalText = isWaiting ? '任务已完成，等待你的下一步指示。' : '任务已完成。';
 
-    // Collect any remaining events for a final summary
     if (this.progressEvents.length > 0) {
-      // Async: get final summary then speak
       this._reportFinalProgress(finalText);
     } else {
       this._speak(finalText);
@@ -525,12 +547,10 @@ class S2SSession {
   }
 
   _finishTask() {
-    // Return to listening for next command
     this._setState('LISTENING');
     this.accumulatedText = '';
     this.taskDescription = '';
-    this.currentBreakdown = null; // clear so next utterance starts fresh
-    this._restartASR();
+    this.currentBreakdown = null;
   }
 
   // ── TTS ──────────────────────────────────────────────────────────────────
@@ -538,8 +558,6 @@ class S2SSession {
   _speak(text) {
     if (!text) return Promise.resolve();
     this._log('TTS:', text.slice(0, 80));
-
-    // Stop any current TTS
     this._stopTts();
 
     const ttsProvider = this.opts.ttsProvider || 'edge';
@@ -572,10 +590,6 @@ class S2SSession {
       return;
     }
     ws.send(JSON.stringify({ type: 'user_message', text }));
-    // Trigger UI state via chat.js globals
-    if (typeof isStreaming !== 'undefined') {
-      // chat.js will handle this via its own onmessage
-    }
   }
 
   // ── State management ─────────────────────────────────────────────────────

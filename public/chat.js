@@ -2890,7 +2890,9 @@ connect();
     else if (state === 'REPORTING') s2sStateBadge.classList.add('reporting');
 
     if (state === 'LISTENING' && s2sSession && !s2sSession.currentBreakdown) {
-      s2sTranscript.innerHTML = '<span class="partial">请说出你的需求…</span>';
+      s2sTranscript.innerHTML = '<span class="partial">🎤 请说出你的需求…</span>';
+    } else if (state === 'LISTENING' && s2sSession && s2sSession.currentBreakdown) {
+      s2sTranscript.innerHTML = '<span class="partial">🎤 请确认或修改…</span>';
     }
   }
 
@@ -2953,10 +2955,20 @@ connect();
         const pct = Math.min(100, Math.round(level * 400));
         s2sVolumeFill.style.width = pct + '%';
       },
+      onAsrStatus: (status) => {
+        if (status === 'recording') {
+          s2sStateBadge.textContent = '录音中';
+        } else if (status === 'transcribing') {
+          s2sStateBadge.textContent = '识别中';
+        } else if (status === 'idle' && s2sSession && s2sSession.state === 'LISTENING') {
+          s2sStateBadge.textContent = '聆听中';
+        }
+      },
       onLog: (msg) => {
-        if (window._dbgEnabled) console.log('[S2S]', msg);
+        console.log('[S2S]', msg);
       },
       onError: (msg) => {
+        console.error('[S2S] Error:', msg);
         s2sTranscript.innerHTML = `<span style="color:#f85149;">错误: ${escapeHtml(msg)}</span>`;
       },
     });
