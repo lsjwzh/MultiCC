@@ -2198,6 +2198,20 @@ function _cronTime(ts) {
   return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// 获取 session 的简介
+function _getCronSessionSummary(sessionId) {
+  if (!sessionId) return null;
+  const sm = _workspaceSummaries.get(sessionId);
+  return sm && sm.summary ? sm.summary : null;
+}
+
+// 获取 session 信息
+function _getCronSessionInfo(sessionId) {
+  if (!sessionId) return null;
+  const sess = (_cachedSessions || []).find(s => s.id === sessionId);
+  return sess || null;
+}
+
 async function loadCronTasks() {
   const list = document.getElementById('cron-list');
   if (!list) return;
@@ -2214,29 +2228,98 @@ async function loadCronTasks() {
     list.innerHTML = '';
     for (const t of tasks) {
       const row = document.createElement('div');
-      row.style.cssText = 'border:1px solid #21262d;border-radius:8px;padding:10px 12px;background:#0d1117;';
-      const statusColor = t.lastStatus === 'ok' ? '#3fb950' : (t.lastStatus ? '#f85149' : '#6e7681');
-      const statusTxt = t.lastStatus ? `上次 ${_cronTime(t.lastRunAt)} · ${t.lastStatus === 'ok' ? '成功' : (t.lastError || t.lastStatus)}` : '尚未运行';
+      row.className = 'cron-task-card';
+      row.style.cssText = 'border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--bg-soft);display:flex;flex-direction:column;gap:10px;min-height:160px;';
+
+      // 获取最近 session 信息
+      const sessionInfo = _getCronSessionInfo(t.lastSessionId);
+      const sessionSummary = _getCronSessionSummary(t.lastSessionId);
+      const sessionActive = sessionInfo && sessionInfo.active;
+      const sessionLabel = sessionInfo ? (sessionInfo.label || sessionInfo.id) : null;
+      const sessionModel = sessionInfo && sessionInfo.model ? modelShortName(sessionInfo.model) : '';
+
+      // 活动状态
+      const statusColor = t.lastStatus === 'ok' ? 'var(--accent)' : (t.lastStatus ? 'var(--danger)' : 'var(--faint)');
+
       row.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span style="font-weight:600;color:#f0f6fc;">${escapeHtml(t.name)}</span>
-          <span style="font-size:11px;padding:1px 6px;border-radius:4px;background:${t.enabled ? '#23863622' : '#6e768122'};color:${t.enabled ? '#3fb950' : '#8b949e'};">${t.enabled ? '启用' : '停用'}</span>
+        <!-- 标题行 -->
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-weight:600;color:var(--text);font-size:15px;">${escapeHtml(t.name)}</span>
+          <span style="font-size:11px;padding:2px 7px;border-radius:5px;background:${t.enabled ? 'rgba(63,185,80,0.15)' : 'rgba(110,118,129,0.15)'};color:${t.enabled ? 'var(--accent)' : 'var(--faint)'};font-weight:500;">${t.enabled ? '启用' : '停用'}</span>
           <span style="flex:1;"></span>
+        </div>
+
+        <!-- 活动块 -->
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;">
+          <span style="font-size:12px;color:var(--faint);">活动</span>
+          ${sessionActive ? `
+            <span class="dot active" style="width:8px;height:8px;"></span>
+            <span style="font-size:12px;color:var(--accent);">正在运行</span>
+          ` : t.lastRunAt ? `
+            <span style="font-size:12px;color:var(--muted);">上次 ${_cronTime(t.lastRunAt)}</span>
+            <span style="font-size:12px;color:${statusColor};">· ${t.lastStatus === 'ok' ? '成功' : (t.lastError || t.lastStatus)}</span>
+            ${t.enabled && t.nextRunAt ? `<span style="font-size:12px;color:var(--faint);">· 下次 ${_cronTime(t.nextRunAt)}</span>` : ''}
+          ` : `
+            <span style="font-size:12px;color:var(--faint);">尚未运行</span>
+          `}
+        </div>
+
+        <!-- 最近 session 块 -->
+        ${sessionInfo ? `
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;cursor:pointer;" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(t.lastSessionId)}')" title="点击打开会话">
+            <span class="dot ${sessionActive ? 'active' : ''}" style="width:8px;height:8px;"></span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}</div>
+              <div style="font-size:11px;color:var(--faint);display:flex;gap:6px;align-items:center;">
+                <span>${escapeHtml(formatRelative(sessionInfo.lastActivity || sessionInfo.createdAt))}</span>
+                ${sessionModel ? `<span>· ${escapeHtml(sessionModel)}</span>` : ''}
+              </div>
+              ${sessionSummary ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">🗒 ${escapeHtml(sessionSummary)}</div>` : ''}
+            </div>
+            <button class="btn btn-sm" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(t.lastSessionId)}')" title="打开会话">
+              打开
+            </button>
+          </div>
+        ` : `
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;">
+            <span style="font-size:12px;color:var(--faint);">暂无关联会话</span>
+          </div>
+        `}
+
+        <!-- 详情行 -->
+        <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;">
+          <code style="color:var(--amber);font-family:monospace;">${escapeHtml(t.cron)}</code>
+          <span>·</span>
+          <span>📁 ${escapeHtml(t.dirName)}</span>
+          <span>·</span>
+          <span>${escapeHtml(t.cli)}</span>
+          <span>·</span>
+          <span>创建者 ${escapeHtml(t.createdBy)}</span>
+        </div>
+
+        <!-- prompt 预览 -->
+        <div style="font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:6px 10px;background:rgba(0,0,0,0.1);border-radius:6px;">
+          💬 ${escapeHtml((t.prompt || '').slice(0, 120))}${(t.prompt || '').length > 120 ? '…' : ''}
+        </div>
+
+        <!-- 操作按钮 -->
+        <div style="display:flex;gap:6px;margin-top:auto;padding-top:4px;border-top:1px solid var(--line);">
           <button class="btn btn-sm" title="立即运行" onclick="runCronTask('${t.id}')">▶ 运行</button>
           <button class="btn btn-sm" onclick="toggleCronTask('${t.id}', ${t.enabled ? 'false' : 'true'})">${t.enabled ? '停用' : '启用'}</button>
           <button class="btn btn-sm" onclick="openCronModal('${t.id}')">编辑</button>
+          <span style="flex:1;"></span>
           <button class="btn btn-sm btn-danger" onclick="deleteCronTask('${t.id}')">删除</button>
         </div>
-        <div style="font-size:12px;color:#8b949e;margin-top:6px;font-family:monospace;">
-          <code style="color:#d29922;">${escapeHtml(t.cron)}</code> · 📁 ${escapeHtml(t.dirName)} · ${escapeHtml(t.cli)} · 创建者 ${escapeHtml(t.createdBy)}
-        </div>
-        <div style="font-size:12px;color:#6e7681;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml((t.prompt || '').slice(0, 80))}${(t.prompt || '').length > 80 ? '…' : ''}</div>
-        <div style="font-size:11px;margin-top:4px;color:${statusColor};">${escapeHtml(statusTxt)}${t.enabled && t.nextRunAt ? ` · 下次 ${_cronTime(t.nextRunAt)}` : ''}</div>
       `;
       list.appendChild(row);
     }
+
+    // 添加卡片网格样式
+    list.style.display = 'grid';
+    list.style.gridTemplateColumns = 'repeat(auto-fill, minmax(400px, 1fr))';
+    list.style.gap = '12px';
   } catch (err) {
-    list.innerHTML = `<div style="color:#f85149;font-size:13px;">加载失败：${escapeHtml(err.message)}</div>`;
+    list.innerHTML = `<div style="color:var(--danger);font-size:13px;">加载失败：${escapeHtml(err.message)}</div>`;
   }
 }
 
