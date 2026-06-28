@@ -876,25 +876,30 @@ function updateGlobalTaskScroller() {
 // 任务进度滚动展示器 - 展示所有目录下正在进行中的任务状态
 // 放在首页「AI Assistant」虚拟卡片右侧的空白区域，自动轮播：thinking、editing、running、waiting
 function renderTaskProgressScroller(sessions) {
-  // 全局筛选活跃会话（跨所有目录，非 aux、非 idle）
+  // 取「当天用过的会话」（跨所有目录，非 aux），按最近使用时间倒序
   const activeTasks = [];
   for (const s of (sessions || [])) {
     if (s.type === 'aux') continue;
     const st = _workspaceStatus.get(s.id);
-    if (!st || st.status === 'idle') continue;
+    // 最近使用时间：优先用 workspace 实时状态里的，回退到会话列表里的
+    const ts = (st && st.lastActivity) || s.lastActivity || s.createdAt || 0;
+    if (!isToday(ts)) continue;
     const summary = _workspaceSummaries.get(s.id);
     const dir = (_cachedDirectories || []).find(d => d.id === s.dirId);
     activeTasks.push({
       sessionId: s.id,
       label: s.label || s.id,
       dirName: dir ? dir.name : '',
-      status: st.status,
-      currentFile: st.currentFile,
+      status: st ? st.status : 'idle',
+      currentFile: st ? st.currentFile : null,
       summary: summary?.summary,
+      lastActivity: ts,
     });
   }
+  // 反向排序：最近用过的排最前
+  activeTasks.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
 
-  // 无活跃任务时显示占位（填满整块空白区域，垂直居中）
+  // 当天无任何会话时显示占位（填满整块空白区域，垂直居中）
   if (activeTasks.length === 0) {
     return `
       <div style="height:100%;min-height:56px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
@@ -927,16 +932,56 @@ function renderTaskProgressScroller(sessions) {
     `;
   }).join('');
 
+  // 每条停留 15s：按当前条数生成对应的轮播关键帧，并设置动画总时长 = 条数 × 15s
+  const count = activeTasks.length;
+  ensureTaskScrollerKeyframes(count);
+  const animStyle = count > 1
+    ? `animation:taskScroll ${count * 15}s ease-in-out infinite;`
+    : 'animation:none;';
+
   // 滚动容器：56px 高的视口在面板中垂直居中，CSS 动画逐条轮播
   return `
     <div style="height:100%;min-height:56px;display:flex;align-items:center;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
       <div style="width:100%;height:56px;overflow:hidden;">
-        <div class="task-scroller-inner" data-count="${activeTasks.length}" style="height:${activeTasks.length * 56}px;">
+        <div class="task-scroller-inner" data-count="${count}" style="height:${count * 56}px;${animStyle}">
           ${cards}
         </div>
       </div>
     </div>
   `;
+}
+
+// 当天判断
+function isToday(ts) {
+  if (!ts) return false;
+  const d = new Date(ts), n = new Date();
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+}
+
+// 按当前任务条数生成轮播关键帧（每条停留约 15s，末尾快速滑到下一条）
+// 只有一个全局滚动器，因此直接覆盖同名 @keyframes 即可
+function ensureTaskScrollerKeyframes(count) {
+  if (count < 2) return;
+  let styleEl = document.getElementById('task-scroller-kf');
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    styleEl.id = 'task-scroller-kf';
+    document.head.appendChild(styleEl);
+  }
+  if (styleEl.dataset.count === String(count)) return; // 条数没变就不重建
+  const step = 100 / count;
+  let frames = '';
+  for (let i = 0; i < count; i++) {
+    const winStart = i * step;
+    const slideStart = winStart + step * 0.88; // 每条窗口末尾 12% 用来滑动
+    const winEnd = (i + 1) * step;
+    const y = -(i * 56);
+    const yNext = (i === count - 1) ? 0 : -((i + 1) * 56);
+    frames += `${winStart.toFixed(2)}%,${slideStart.toFixed(2)}%{transform:translateY(${y}px)}`;
+    frames += `${winEnd.toFixed(2)}%{transform:translateY(${yNext}px)}`;
+  }
+  styleEl.textContent = `@keyframes taskScroll{${frames}}`;
+  styleEl.dataset.count = String(count);
 }
 
 function defaultActivityText(status) {
@@ -945,6 +990,7 @@ function defaultActivityText(status) {
     case 'editing': return '✏️ 正在编辑文件';
     case 'running': return '⚙️ 正在执行命令';
     case 'waiting': return '⏳ 等待用户输入';
+    case 'idle': return '💤 空闲';
     default: return '...';
   }
 }

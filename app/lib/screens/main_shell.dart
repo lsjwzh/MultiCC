@@ -512,21 +512,36 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
         orderedDirectories.addAll(mgr.directories);
       }
 
-      return RefreshIndicator(
-        onRefresh: mgr.loadDashboard,
-        color: const Color(0xFF6aa3ff),
-        backgroundColor: const Color(0xFF0f1115),
-          child: ListView.builder(
-            padding: const EdgeInsets.all(12),
-            itemCount: orderedDirectories.length,
-            itemBuilder: (_, i) => _DirectoryCard(
-              directory: orderedDirectories[i],
-              settings: widget.settings,
-              mgr: mgr,
-              index: i,
+      return Column(
+        children: [
+          // 首页全局任务滚动展示器（当天用过的会话，最近优先）
+          _HomeTaskScroller(
+            sessions: mgr.sessions,
+            directories: mgr.directories,
+            onSessionTap: (s) {
+              mgr.openSession(s);
+              mgr.switchToSession(s.id);
+            },
+          ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: mgr.loadDashboard,
+              color: const Color(0xFF6aa3ff),
+              backgroundColor: const Color(0xFF0f1115),
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(12, 2, 12, 12),
+                itemCount: orderedDirectories.length,
+                itemBuilder: (_, i) => _DirectoryCard(
+                  directory: orderedDirectories[i],
+                  settings: widget.settings,
+                  mgr: mgr,
+                  index: i,
+                ),
+              ),
             ),
           ),
-        );
+        ],
+      );
       },
     );
   }
@@ -1274,31 +1289,10 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    // 最近活动区域
-                    _RecentActivityBlock(events: _workspace.events),
-                    const SizedBox(height: 6),
-                    // AI Assist + 任务进度滚动展示（同一行）
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        // AI Assist 块（固定宽度）
-                        _AiAssistBlock(latestTask: latestTask),
-                        const SizedBox(width: 10),
-                        // 任务进度滚动展示器（自动撑满剩余宽度）
-                        Expanded(
-                          child: _TaskProgressScroller(
-                            statuses: _workspace.statuses,
-                            sessions: groups.values.expand((x) => x).toList(),
-                            onSessionTap: (sessionId) {
-                              final s = groups.values
-                                  .expand((x) => x)
-                                  .firstWhere((s) => s.id == sessionId, orElse: () => groups.values.first.first);
-                              widget.mgr.openSession(s);
-                              widget.mgr.switchToSession(s.id);
-                            },
-                          ),
-                        ),
-                      ],
+                    // 预览区域（最近活动 + 最新任务）— 恢复原始布局
+                    _DirectoryPreview(
+                      events: _workspace.events,
+                      latestTask: latestTask,
                     ),
                     const SizedBox(height: 10),
                     Row(
@@ -1931,100 +1925,6 @@ class _TaskPreview {
   });
 }
 
-// 最近活动块（单独抽取）
-class _RecentActivityBlock extends StatelessWidget {
-  final List<Map<String, dynamic>> events;
-  const _RecentActivityBlock({required this.events});
-
-  @override
-  Widget build(BuildContext context) {
-    final recent = events.reversed.take(2).toList();
-    return SizedBox(
-      height: 39,
-      child: recent.isEmpty
-          ? Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                t('noRecentActivity'),
-                style: const TextStyle(
-                  color: AppColors.faint,
-                  fontSize: 11,
-                ),
-              ),
-            )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                for (final e in recent)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 3),
-                    child: Text(
-                      _eventLabel(e),
-                      style: const TextStyle(
-                        color: AppColors.muted,
-                        fontSize: 11,
-                        height: 1.25,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ],
-            ),
-    );
-  }
-}
-
-// AI Assist 块（单独抽取，固定宽度）
-class _AiAssistBlock extends StatelessWidget {
-  final _TaskPreview? latestTask;
-  const _AiAssistBlock({required this.latestTask});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 34,
-      child: latestTask == null
-          ? Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppColors.panel,
-                border: Border.all(color: AppColors.line),
-                borderRadius: BorderRadius.circular(7),
-              ),
-              child: Text(
-                t('noRecentTask'),
-                style: const TextStyle(
-                  color: AppColors.faint,
-                  fontSize: 11,
-                ),
-              ),
-            )
-          : Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppColors.accent.withValues(alpha: 0.10),
-                border: Border.all(
-                  color: AppColors.accent.withValues(alpha: 0.38),
-                ),
-                borderRadius: BorderRadius.circular(7),
-              ),
-              child: Text(
-                '🗒 ${latestTask!.who}  ${latestTask!.summary}',
-                style: const TextStyle(
-                  color: Color(0xFF7fe6da),
-                  fontSize: 11,
-                  height: 1.2,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-    );
-  }
-}
-
 class _DirectoryPreview extends StatelessWidget {
   final List<Map<String, dynamic>> events;
   final _TaskPreview? latestTask;
@@ -2117,24 +2017,24 @@ class _DirectoryPreview extends StatelessWidget {
   }
 }
 
-/// 滚动展示正在进行中的任务进度（类似大屏监控器）
-/// 自动轮播活跃会话的状态：thinking、editing、running、waiting
-class _TaskProgressScroller extends StatefulWidget {
-  final Map<String, SessionStatus> statuses;
+/// 首页全局任务滚动展示器（放在目录列表上方，类似大屏监控器）
+/// 展示「当天用过的会话」，按最近使用时间倒序，每条停留 15s 自动轮播
+class _HomeTaskScroller extends StatefulWidget {
   final List<Session> sessions;
-  final void Function(String sessionId)? onSessionTap;
+  final List<Directory> directories;
+  final void Function(Session session)? onSessionTap;
 
-  const _TaskProgressScroller({
-    required this.statuses,
+  const _HomeTaskScroller({
     required this.sessions,
+    required this.directories,
     this.onSessionTap,
   });
 
   @override
-  State<_TaskProgressScroller> createState() => _TaskProgressScrollerState();
+  State<_HomeTaskScroller> createState() => _HomeTaskScrollerState();
 }
 
-class _TaskProgressScrollerState extends State<_TaskProgressScroller>
+class _HomeTaskScrollerState extends State<_HomeTaskScroller>
     with SingleTickerProviderStateMixin {
   late final PageController _pageController;
   late final AnimationController _animController;
@@ -2147,7 +2047,7 @@ class _TaskProgressScrollerState extends State<_TaskProgressScroller>
     _pageController = PageController();
     _animController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 4),
+      duration: const Duration(seconds: 15), // 每条停留 15s
     );
     _startAutoScroll();
   }
@@ -2181,54 +2081,66 @@ class _TaskProgressScrollerState extends State<_TaskProgressScroller>
     );
   }
 
+  bool _isToday(DateTime? ts) {
+    if (ts == null) return false;
+    final n = DateTime.now();
+    return ts.year == n.year && ts.month == n.month && ts.day == n.day;
+  }
+
   @override
   Widget build(BuildContext context) {
-    // 筛选活跃会话（非 idle）
-    final activeTasks = <_ActiveTask>[];
+    // 取「当天用过的会话」（非 aux），按最近使用时间倒序
+    final dirNames = {for (final d in widget.directories) d.id: d.name};
+    final tasks = <_ActiveTask>[];
     for (final s in widget.sessions) {
       if (s.isAux) continue;
-      final status = widget.statuses[s.id];
-      if (status == null || status.status == 'idle') continue;
-      activeTasks.add(_ActiveTask(
-        sessionId: s.id,
+      if (!_isToday(s.lastActivity)) continue;
+      tasks.add(_ActiveTask(
+        session: s,
         label: s.label?.isNotEmpty == true ? s.label! : s.id,
-        status: status.status,
-        currentFile: status.currentFile,
-        summary: status.summary,
+        dirName: dirNames[s.dirId] ?? '',
+        active: s.active,
+        lastActivity: s.lastActivity,
       ));
     }
+    tasks.sort((a, b) {
+      final ta = a.lastActivity?.millisecondsSinceEpoch ?? 0;
+      final tb = b.lastActivity?.millisecondsSinceEpoch ?? 0;
+      return tb.compareTo(ta);
+    });
 
-    _itemCount = activeTasks.isEmpty ? 1 : activeTasks.length;
+    _itemCount = tasks.isEmpty ? 1 : tasks.length;
 
-    return SizedBox(
-      height: 34, // 与左侧 AI Assist 块等高
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+      height: 46,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(7),
+        borderRadius: BorderRadius.circular(9),
         child: Container(
           decoration: BoxDecoration(
             color: const Color(0xFF14171c),
             border: Border.all(color: const Color(0xFF20242b)),
-            borderRadius: BorderRadius.circular(7),
+            borderRadius: BorderRadius.circular(9),
           ),
-          child: activeTasks.isEmpty
+          child: tasks.isEmpty
               ? Center(
                   child: Text(
                     t('noActiveTask'),
                     style: TextStyle(
                       color: AppColors.faint.withValues(alpha: 0.8),
-                      fontSize: 11,
+                      fontSize: 12,
                     ),
                   ),
                 )
               : PageView.builder(
                   controller: _pageController,
-                  itemCount: activeTasks.length,
+                  itemCount: tasks.length,
                   onPageChanged: (i) => _currentPage = i,
                   itemBuilder: (context, i) {
-                    final task = activeTasks[i];
+                    final task = tasks[i];
                     return _TaskProgressCard(
                       task: task,
-                      onTap: () => widget.onSessionTap?.call(task.sessionId),
+                      onTap: () => widget.onSessionTap?.call(task.session),
                     );
                   },
                 ),
@@ -2239,18 +2151,18 @@ class _TaskProgressScrollerState extends State<_TaskProgressScroller>
 }
 
 class _ActiveTask {
-  final String sessionId;
+  final Session session;
   final String label;
-  final String status;
-  final String? currentFile;
-  final String? summary;
+  final String dirName;
+  final bool active;
+  final DateTime? lastActivity;
 
   const _ActiveTask({
-    required this.sessionId,
+    required this.session,
     required this.label,
-    required this.status,
-    this.currentFile,
-    this.summary,
+    required this.dirName,
+    required this.active,
+    required this.lastActivity,
   });
 }
 
@@ -2263,41 +2175,28 @@ class _TaskProgressCard extends StatelessWidget {
     this.onTap,
   });
 
+  String _relativeTime(DateTime? ts) {
+    if (ts == null) return '';
+    final diff = DateTime.now().difference(ts);
+    if (diff.inMinutes < 1) return '刚刚';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} 分钟前';
+    if (diff.inHours < 24) return '${diff.inHours} 小时前';
+    return '${diff.inDays} 天前';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final statusColor = _wbStatusColor(task.status);
-    final statusLabel = _wbStatusLabel(task.status);
-
-    // 活动文本
-    String activityText;
-    if (task.currentFile != null && task.currentFile!.isNotEmpty) {
-      activityText = '📝 ${task.currentFile!.split('/').last}';
-    } else if (task.summary != null && task.summary!.isNotEmpty) {
-      activityText = task.summary!;
-    } else {
-      switch (task.status) {
-        case 'thinking':
-          activityText = '🤔 思考中...';
-          break;
-        case 'editing':
-          activityText = '✏️ 编辑文件';
-          break;
-        case 'running':
-          activityText = '⚙️ 执行中';
-          break;
-        case 'waiting':
-          activityText = '⏳ 等待输入';
-          break;
-        default:
-          activityText = '...';
-      }
-    }
+    final Color statusColor =
+        task.active ? const Color(0xFF6aa3ff) : const Color(0xFF5b616c);
+    final String statusLabel = task.active ? '运行中' : '空闲';
+    final String activityText =
+        task.active ? '⚙️ 正在运行' : '🕘 ${_relativeTime(task.lastActivity)}';
 
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(7),
+      borderRadius: BorderRadius.circular(9),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(
           children: [
             // 状态指示灯
@@ -2317,18 +2216,30 @@ class _TaskProgressCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            // 会话标签
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 120),
-              child: Text(
-                task.label,
-                style: const TextStyle(
-                  color: AppColors.textBright,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+            // 会话标签（+所属目录）
+            Flexible(
+              child: RichText(
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+                text: TextSpan(
+                  text: task.label,
+                  style: const TextStyle(
+                    color: AppColors.textBright,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  children: [
+                    if (task.dirName.isNotEmpty)
+                      TextSpan(
+                        text: '  ·  ${task.dirName}',
+                        style: const TextStyle(
+                          color: AppColors.faint,
+                          fontSize: 11,
+                          fontWeight: FontWeight.normal,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(width: 10),
@@ -2350,17 +2261,15 @@ class _TaskProgressCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            // 当前活动
-            Expanded(
-              child: Text(
-                activityText,
-                style: const TextStyle(
-                  color: AppColors.muted,
-                  fontSize: 11,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+            // 当前活动 / 最近使用
+            Text(
+              activityText,
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
