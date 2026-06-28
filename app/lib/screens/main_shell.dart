@@ -1274,22 +1274,18 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    // 任务进度展示区：左侧 AI Assist + 右侧滚动任务列表
+                    // 最近活动区域
+                    _RecentActivityBlock(events: _workspace.events),
+                    const SizedBox(height: 6),
+                    // AI Assist + 任务进度滚动展示（同一行）
                     Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // 左侧：原有的 AI Assist 区域
-                        Expanded(
-                          flex: 2,
-                          child: _DirectoryPreview(
-                            events: _workspace.events,
-                            latestTask: latestTask,
-                          ),
-                        ),
+                        // AI Assist 块（固定宽度）
+                        _AiAssistBlock(latestTask: latestTask),
                         const SizedBox(width: 10),
-                        // 右侧：滚动展示正在进行中的任务
+                        // 任务进度滚动展示器（自动撑满剩余宽度）
                         Expanded(
-                          flex: 3,
                           child: _TaskProgressScroller(
                             statuses: _workspace.statuses,
                             sessions: groups.values.expand((x) => x).toList(),
@@ -1935,6 +1931,100 @@ class _TaskPreview {
   });
 }
 
+// 最近活动块（单独抽取）
+class _RecentActivityBlock extends StatelessWidget {
+  final List<Map<String, dynamic>> events;
+  const _RecentActivityBlock({required this.events});
+
+  @override
+  Widget build(BuildContext context) {
+    final recent = events.reversed.take(2).toList();
+    return SizedBox(
+      height: 39,
+      child: recent.isEmpty
+          ? Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                t('noRecentActivity'),
+                style: const TextStyle(
+                  color: AppColors.faint,
+                  fontSize: 11,
+                ),
+              ),
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (final e in recent)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Text(
+                      _eventLabel(e),
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 11,
+                        height: 1.25,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+}
+
+// AI Assist 块（单独抽取，固定宽度）
+class _AiAssistBlock extends StatelessWidget {
+  final _TaskPreview? latestTask;
+  const _AiAssistBlock({required this.latestTask});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 34,
+      child: latestTask == null
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.panel,
+                border: Border.all(color: AppColors.line),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              child: Text(
+                t('noRecentTask'),
+                style: const TextStyle(
+                  color: AppColors.faint,
+                  fontSize: 11,
+                ),
+              ),
+            )
+          : Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.accent.withValues(alpha: 0.10),
+                border: Border.all(
+                  color: AppColors.accent.withValues(alpha: 0.38),
+                ),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              child: Text(
+                '🗒 ${latestTask!.who}  ${latestTask!.summary}',
+                style: const TextStyle(
+                  color: Color(0xFF7fe6da),
+                  fontSize: 11,
+                  height: 1.2,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+    );
+  }
+}
+
 class _DirectoryPreview extends StatelessWidget {
   final List<Map<String, dynamic>> events;
   final _TaskPreview? latestTask;
@@ -2111,7 +2201,7 @@ class _TaskProgressScrollerState extends State<_TaskProgressScroller>
     _itemCount = activeTasks.isEmpty ? 1 : activeTasks.length;
 
     return SizedBox(
-      height: 79, // 与左侧 AI Assist 区域等高
+      height: 34, // 与左侧 AI Assist 块等高
       child: ClipRRect(
         borderRadius: BorderRadius.circular(7),
         child: Container(
@@ -2122,23 +2212,12 @@ class _TaskProgressScrollerState extends State<_TaskProgressScroller>
           ),
           child: activeTasks.isEmpty
               ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.motion_photos_pause_outlined,
-                        size: 18,
-                        color: AppColors.faint.withValues(alpha: 0.6),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        t('noActiveTask'),
-                        style: TextStyle(
-                          color: AppColors.faint.withValues(alpha: 0.8),
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    t('noActiveTask'),
+                    style: TextStyle(
+                      color: AppColors.faint.withValues(alpha: 0.8),
+                      fontSize: 11,
+                    ),
                   ),
                 )
               : PageView.builder(
@@ -2189,104 +2268,104 @@ class _TaskProgressCard extends StatelessWidget {
     final statusColor = _wbStatusColor(task.status);
     final statusLabel = _wbStatusLabel(task.status);
 
+    // 活动文本
+    String activityText;
+    if (task.currentFile != null && task.currentFile!.isNotEmpty) {
+      activityText = '📝 ${task.currentFile!.split('/').last}';
+    } else if (task.summary != null && task.summary!.isNotEmpty) {
+      activityText = task.summary!;
+    } else {
+      switch (task.status) {
+        case 'thinking':
+          activityText = '🤔 思考中...';
+          break;
+        case 'editing':
+          activityText = '✏️ 编辑文件';
+          break;
+        case 'running':
+          activityText = '⚙️ 执行中';
+          break;
+        case 'waiting':
+          activityText = '⏳ 等待输入';
+          break;
+        default:
+          activityText = '...';
+      }
+    }
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(7),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
           children: [
-            Row(
-              children: [
-                // 状态指示灯（脉动动画效果）
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: statusColor,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: statusColor.withValues(alpha: 0.5),
-                        blurRadius: 6,
-                        spreadRadius: 1,
-                      ),
-                    ],
+            // 状态指示灯
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: statusColor,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: statusColor.withValues(alpha: 0.5),
+                    blurRadius: 6,
+                    spreadRadius: 1,
                   ),
-                ),
-                const SizedBox(width: 8),
-                // 会话标签
-                Expanded(
-                  child: Text(
-                    task.label,
-                    style: const TextStyle(
-                      color: AppColors.textBright,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                // 状态标签
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: statusColor.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: statusColor.withValues(alpha: 0.3)),
-                  ),
-                  child: Text(
-                    statusLabel,
-                    style: TextStyle(
-                      color: statusColor,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            // 当前活动（文件或摘要）
-            Text(
-              _buildActivityText(),
-              style: TextStyle(
-                color: AppColors.muted.withValues(alpha: 0.9),
-                fontSize: 11,
-                height: 1.3,
+                ],
               ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(width: 10),
+            // 会话标签
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 120),
+              child: Text(
+                task.label,
+                style: const TextStyle(
+                  color: AppColors.textBright,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 10),
+            // 状态标签
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: statusColor.withValues(alpha: 0.15),
+                border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                statusLabel,
+                style: TextStyle(
+                  color: statusColor,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            // 当前活动
+            Expanded(
+              child: Text(
+                activityText,
+                style: const TextStyle(
+                  color: AppColors.muted,
+                  fontSize: 11,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  String _buildActivityText() {
-    if (task.currentFile != null && task.currentFile!.isNotEmpty) {
-      final fileName = task.currentFile!.split('/').last;
-      return '📝 $fileName';
-    }
-    if (task.summary != null && task.summary!.isNotEmpty) {
-      return task.summary!;
-    }
-    switch (task.status) {
-      case 'thinking':
-        return '🤔 正在思考...';
-      case 'editing':
-        return '✏️ 正在编辑文件';
-      case 'running':
-        return '⚙️ 正在执行命令';
-      case 'waiting':
-        return '⏳ 等待用户输入';
-      default:
-        return '...';
-    }
   }
 }
 
