@@ -52,6 +52,10 @@ class ChatProvider extends ChangeNotifier {
   int _reconnectAttempt = 0;
   bool _historyApplied = false;
 
+  /// True once we've successfully connected at least once, so we can tell a
+  /// fresh first connect apart from a (service-driven) reconnect.
+  bool _hasConnectedOnce = false;
+
   /// When a resume/half-open reconnect is in flight, the next `chat_history`
   /// is a refresh that should REPLACE the on-screen transcript atomically
   /// (rather than the insert used on the very first load).
@@ -104,6 +108,20 @@ class ChatProvider extends ChangeNotifier {
         if (_connectionState == ChatConnectionState.connected) {
           _reconnectAttempt = 0;
           _statusText = 'Connected';
+          // ChatService reconnects on its own (heartbeat timeout / onDone /
+          // onError) WITHOUT going through our reconnect(), so `_historyApplied`
+          // would stay true and the server's authoritative `chat_history` sent
+          // on the new socket would be ignored — leaving the chat frozen on a
+          // stale, half-streamed bubble until a manual refresh. On any
+          // non-first connect, re-arm the history refresh so the next
+          // chat_history atomically replaces the transcript, catching up on
+          // anything that completed while we were disconnected. Matches the web
+          // client, which reloads authoritative history on reconnect.
+          if (_hasConnectedOnce) {
+            _historyApplied = false;
+            _replaceHistoryOnReconnect = true;
+          }
+          _hasConnectedOnce = true;
         }
         notifyListeners();
         break;
