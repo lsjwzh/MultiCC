@@ -1,8 +1,1 @@
-{
-  "versionName": "2.6.3",
-  "versionCode": 41,
-  "buildTime": "2026-06-27T12:43:00Z",
-  "changes": [
-    "fix(app): 在 _finishStreaming 前处理 usage，确保消息气泡显示 token 统计"
-  ]
-}
+{"versionName":"2.6.5","versionCode":43,"builtAt":"2026-06-28T23:37:57Z"}
