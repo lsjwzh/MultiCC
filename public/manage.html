@@ -192,6 +192,13 @@
     .dir-block.open .dir-body{display:block}
     .dir-empty{border:1px dashed var(--line);border-radius:10px;color:var(--faint);font-size:12px;padding:14px;text-align:center;background:var(--bg-soft)}
 
+    /* Drag-and-drop styles for directory cards */
+    .dir-card[draggable="true"]{cursor:grab;user-select:none}
+    .dir-card[draggable="true"]:active{cursor:grabbing}
+    .dir-card.drag-over{border-color:var(--accent);box-shadow:0 0 12px rgba(58,214,197,.35);transform:scale(1.01)}
+    .dir-card[draggable="true"]:focus{outline:2px solid var(--accent);outline-offset:2px}
+
+
     /* Compact overview card: click to open the detail modal. */
     .dir-card{cursor:pointer}
     .dir-preview{padding:2px 17px 15px}
