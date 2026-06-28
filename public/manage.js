@@ -803,21 +803,32 @@ function dirSessionsOf(dirId) {
   return (_cachedSessions || []).filter(s => s.dirId === dirId && s.type !== 'aux');
 }
 
+// 会话「最近交互时间」(ms)：取实时工作区状态、会话最近回复、创建时间中的最新者。
+// lastActivity/createdAt 是 ISO 字符串（不能直接相减），workspaceStatus.lastActivity 是毫秒数，
+// 这里统一归一化成毫秒再比较，供卡片排序与显示用。
+function sessionLastInteractionMs(s) {
+  if (!s) return 0;
+  const st = _workspaceStatus.get(s.id);
+  let best = 0;
+  for (const c of [st && st.lastActivity, s.lastActivity, s.createdAt]) {
+    if (c == null) continue;
+    const ms = typeof c === 'number' ? c : Date.parse(c);
+    if (Number.isFinite(ms) && ms > best) best = ms;
+  }
+  return best;
+}
+
 // Compact preview shown on the overview card: unified card with activity block,
 // recent session, and quick-open button. Full detail lives in the modal.
 function renderDirPreview(dirId, dirSessions) {
   // 获取最近活动（最多3条）
   const events = (_workspaceEvents.get(dirId) || []).slice(-3).reverse();
 
-  // 获取最近的 session - 按 lastActivity 降序排序
+  // 取「最近交互过」的 session（按最近交互时间降序，含实时活动）
   let latestSession = null;
   if (dirSessions && dirSessions.length > 0) {
-    // 创建副本避免修改原数组，按 lastActivity 或 createdAt 排序
-    const sorted = [...dirSessions].sort((a, b) => {
-      const ta = a.lastActivity || a.createdAt || 0;
-      const tb = b.lastActivity || b.createdAt || 0;
-      return tb - ta;
-    });
+    const sorted = [...dirSessions].sort(
+      (a, b) => sessionLastInteractionMs(b) - sessionLastInteractionMs(a));
     latestSession = sorted[0];
   }
 
@@ -853,7 +864,7 @@ function renderDirPreview(dirId, dirSessions) {
         <div style="flex:1;min-width:0;">
           <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}</div>
           <div style="font-size:11px;color:var(--faint);display:flex;gap:6px;align-items:center;">
-            <span>${escapeHtml(formatRelative(sessionInfo.lastActivity || sessionInfo.createdAt))}</span>
+            <span>${escapeHtml(formatRelative(sessionLastInteractionMs(sessionInfo) || sessionInfo.createdAt))}</span>
             ${sessionModel ? `<span>· ${escapeHtml(sessionModel)}</span>` : ''}
           </div>
           ${sessionSummary && sessionSummary.summary ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">🗒 ${escapeHtml(sessionSummary.summary)}</div>` : ''}
@@ -1241,7 +1252,7 @@ function renderSessionRow(s) {
       <div class="lean-main">
         <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
         <div class="lean-meta">
-          <span>${escapeHtml(formatRelative(s.lastActivity || s.createdAt))}</span>
+          <span>${escapeHtml(formatRelative(sessionLastInteractionMs(s) || s.createdAt))}</span>
           ${model ? `<span class="sep">·</span><span class="model" title="模型：${escapeHtml(s.model)}">${escapeHtml(model)}</span>` : ''}
         </div>
         <div class="sess-file" id="sess-file-${escapeHtml(s.id)}"${wbFile ? '' : ' style="display:none"'}>${wbFile ? '✎ ' + escapeHtml(wbFile) : ''}</div>
