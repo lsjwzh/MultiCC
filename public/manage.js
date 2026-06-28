@@ -378,7 +378,7 @@ function renderDashboard(directories, sessions) {
           <div style="flex:0 0 300px;max-width:300px;display:flex;flex-direction:column;gap:16px;">
             ${auxSessions.map(s => renderAuxCard(s, isFocused)).join('')}
           </div>
-          <div id="aux-task-scroller" style="flex:1;min-width:0;">
+          <div id="aux-task-scroller" style="flex:1;min-width:0;position:relative;">
             ${renderTaskProgressScroller(sessions)}
           </div>
         </div>`;
@@ -906,7 +906,7 @@ function renderTaskProgressScroller(sessions) {
   // 当天无任何会话时显示占位（填满整块空白区域，垂直居中）
   if (activeTasks.length === 0) {
     return `
-      <div style="height:100%;min-height:56px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
+      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
         <span style="font-size:12px;color:var(--faint);opacity:0.8;">${escapeHtml(tt('noActiveTask'))}</span>
       </div>
     `;
@@ -940,7 +940,7 @@ function renderTaskProgressScroller(sessions) {
   // 计算「同时可见几行」，行数装不下时再逐行无缝轮播。
   const count = activeTasks.length;
   return `
-    <div style="height:100%;min-height:56px;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
+    <div style="position:absolute;inset:0;overflow:hidden;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid var(--line);">
       <div id="task-scroller-viewport" style="width:100%;height:100%;overflow:hidden;">
         <div class="task-scroller-inner" data-count="${count}">
           ${cards}
