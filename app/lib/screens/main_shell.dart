@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
@@ -322,9 +323,32 @@ class _SheetHandle extends StatelessWidget {
 //  DASHBOARD — full view when no chat is active
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _DirectoryListBody extends StatelessWidget {
+class _DirectoryListBody extends StatefulWidget {
   final SettingsService settings;
   const _DirectoryListBody({required this.settings});
+
+  @override
+  State<_DirectoryListBody> createState() => _DirectoryListBodyState();
+}
+
+class _DirectoryListBodyState extends State<_DirectoryListBody> {
+  // 从SharedPreferences加载目录顺序
+  static const String _dirOrderKey = 'directory_order';
+
+  Future<List<String>?> _loadDirOrder() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_dirOrderKey);
+  }
+
+  Future<void> _saveDirOrder(List<String> order) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_dirOrderKey, order);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -332,6 +356,7 @@ class _DirectoryListBody extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: const Color(0xFF070809),
+      // AppBar
       appBar: AppBar(
         backgroundColor: const Color(0xFF0f1115),
         foregroundColor: const Color(0xFFe7eaee),
@@ -385,7 +410,7 @@ class _DirectoryListBody extends StatelessWidget {
             tooltip: t('settings'),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => SettingsScreen(settings: settings),
+                builder: (_) => SettingsScreen(settings: widget.settings),
               ),
             ),
           ),
@@ -394,7 +419,7 @@ class _DirectoryListBody extends StatelessWidget {
           preferredSize: const Size.fromHeight(57),
           child: Column(
             children: [
-              _KpiRow(settings: settings),
+              _KpiRow(settings: widget.settings),
               const Divider(height: 1, color: Color(0xFF20242b)),
             ],
           ),
@@ -468,17 +493,208 @@ class _DirectoryListBody extends StatelessWidget {
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: mgr.loadDashboard,
-      color: const Color(0xFF6aa3ff),
-      backgroundColor: const Color(0xFF0f1115),
-      child: ListView.builder(
-        padding: const EdgeInsets.all(12),
-        itemCount: mgr.directories.length,
-        itemBuilder: (_, i) => _DirectoryCard(
-          directory: mgr.directories[i],
-          settings: settings,
-          mgr: mgr,
+    return FutureBuilder<List<String>?>(future: _loadDirOrder(), builder: (context, snapshot) {
+      final savedOrder = snapshot.data;
+      final orderedDirectories = <Directory>[];
+
+      if (savedOrder != null && savedOrder.isNotEmpty) {
+        // 按保存的顺序排列，未保存的新目录追加到末尾
+        final dirMap = {for (var d in mgr.directories) d.id: d};
+        for (final id in savedOrder) {
+          if (dirMap.containsKey(id)) {
+            orderedDirectories.add(dirMap[id]!);
+            dirMap.remove(id);
+          }
+        }
+        // 添加新创建的目录
+        orderedDirectories.addAll(dirMap.values);
+      } else {
+        orderedDirectories.addAll(mgr.directories);
+      }
+
+      return RefreshIndicator(
+        onRefresh: mgr.loadDashboard,
+        color: const Color(0xFF6aa3ff),
+        backgroundColor: const Color(0xFF0f1115),
+          child: ListView.builder(
+            padding: const EdgeInsets.all(12),
+            itemCount: orderedDirectories.length,
+            itemBuilder: (_, i) => _DirectoryCard(
+              directory: orderedDirectories[i],
+              settings: widget.settings,
+              mgr: mgr,
+              index: i,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _handleDragEnd(int fromIndex, int toIndex) async {
+    final mgr = context.read<SessionManager>();
+    final dirs = List<Directory>.from(mgr.directories);
+
+    if (fromIndex < 0 || fromIndex >= dirs.length || toIndex < 0 || toIndex >= dirs.length) {
+      return;
+    }
+
+    // 更新列表顺序
+    final temp = dirs[fromIndex];
+    dirs.removeAt(fromIndex);
+    dirs.insert(toIndex, temp);
+
+    // 保存顺序
+    final newOrder = dirs.map((d) => d.id).toList();
+    await _saveDirOrder(newOrder);
+
+    // 通知 SessionManager 刷新（如果需要）
+    // mgr.notifyListeners();
+
+    // 刷新UI
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _showNewDirectoryDialog(BuildContext context, SessionManager mgr) async {
+    final nameCtrl = TextEditingController();
+    final pathCtrl = TextEditingController();
+    String? error;
+    List<Map<String, String>> suggestions = [];
+    Timer? debounce;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          backgroundColor: const Color(0xFF0f1115),
+          title: const Text(
+            'New directory',
+            style: TextStyle(color: Color(0xFFf2f4f7)),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Name',
+                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: nameCtrl,
+                autofocus: true,
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                decoration: _inputDec(hint: 'My project'),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Path',
+                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: pathCtrl,
+                style: const TextStyle(
+                  color: Color(0xFFe7eaee),
+                  fontSize: 13,
+                  fontFamily: 'monospace',
+                ),
+                decoration: _inputDec(hint: '/Users/you/code/my-project'),
+                onChanged: (_) {
+                  debounce?.cancel();
+                  debounce = Timer(const Duration(milliseconds: 200), () async {
+                    final res = await mgr.service.fetchFsList(pathCtrl.text);
+                    setState(() => suggestions = res);
+                  });
+                },
+              ),
+              if (suggestions.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 6),
+                  constraints: const BoxConstraints(maxHeight: 180),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFF20242b)),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    itemCount: suggestions.length,
+                    itemBuilder: (_, i) {
+                      final e = suggestions[i];
+                      return InkWell(
+                        onTap: () {
+                          pathCtrl.text = '${e['path']}/';
+                          if (nameCtrl.text.trim().isEmpty) {
+                            nameCtrl.text = e['name'] ?? '';
+                          }
+                          debounce?.cancel();
+                          debounce = Timer(
+                            const Duration(milliseconds: 200),
+                            () async {
+                              final res = await mgr.service.fetchFsList(
+                                pathCtrl.text,
+                              );
+                              setState(() => suggestions = res);
+                            },
+                          );
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 7,
+                          ),
+                          child: Text(
+                            '📁 ${e['name']}',
+                            style: const TextStyle(
+                              color: Color(0xFFe7eaee),
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              if (error != null)
+                const SizedBox(height: 10),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Color(0xFF8a909b)),
+              ),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF22ab9c),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () async {
+                final name = nameCtrl.text.trim();
+                final p = pathCtrl.text.trim();
+                if (name.isEmpty || p.isEmpty) {
+                  setState(() => error = 'Name and path are required');
+                  return;
+                }
+                try {
+                  await mgr.createDirectory(name: name, path: p);
+                  if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+                } catch (e) {
+                  setState(
+                    () => error = e.toString().replaceFirst('Exception: ', ''),
+                  );
+                }
+              },
+              child: const Text('Create'),
+            ),
+          ],
         ),
       ),
     );
@@ -718,11 +934,13 @@ class _DirectoryCard extends StatefulWidget {
   final Directory directory;
   final SettingsService settings;
   final SessionManager mgr;
+  final int index;
 
   const _DirectoryCard({
     required this.directory,
     required this.settings,
     required this.mgr,
+    required this.index,
   });
 
   @override
@@ -809,210 +1027,343 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         .length;
     final latestTask = _latestTask(groups);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      decoration: BoxDecoration(
-        color: AppColors.panel,
-        border: Border.all(color: AppColors.line),
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.18),
-            blurRadius: 22,
-            offset: const Offset(0, 10),
+    return Draggable<int>(
+      data: widget.index,
+      feedback: Material(
+        elevation: 6,
+        color: Colors.transparent,
+        child: Container(
+          width: MediaQuery.of(context).size.width - 24,
+          margin: const EdgeInsets.only(bottom: 14),
+          decoration: BoxDecoration(
+            color: AppColors.panel,
+            border: Border.all(color: AppColors.accent, width: 2),
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.4),
+                blurRadius: 12,
+                offset: const Offset(0, 8),
+              ),
+            ],
           ),
-        ],
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
+            child: Row(
+              children: [
+                Icon(Icons.drag_indicator, color: AppColors.accent, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    widget.directory.name,
+                    style: const TextStyle(
+                      color: AppColors.textBright,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
-      child: InkWell(
-        onTap: () => _showDirectoryDetail(context),
-        borderRadius: BorderRadius.circular(8),
+      childWhenDragging: Container(
+        margin: const EdgeInsets.only(bottom: 14),
+        decoration: BoxDecoration(
+          color: AppColors.panel.withValues(alpha: 0.5),
+          border: Border.all(color: AppColors.line),
+          borderRadius: BorderRadius.circular(8),
+        ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Row(
-                children: [
-                  Container(
-                    width: 34,
-                    height: 34,
-                    decoration: BoxDecoration(
-                      color: AppColors.bg,
-                      border: Border.all(color: AppColors.line),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Icon(
-                      Icons.folder_outlined,
-                      color: AppColors.muted,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.directory.name,
-                          style: const TextStyle(
-                            color: AppColors.textBright,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 16,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          widget.directory.path,
-                          style: const TextStyle(
-                            color: AppColors.blue,
-                            fontSize: 11,
-                            fontFamily: 'monospace',
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.sticky_note_2_outlined,
-                      size: 19,
-                      color: AppColors.muted,
-                    ),
-                    tooltip: t('projectMemo'),
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute<void>(
-                        builder: (_) => MemoScreen(
-                          directory: widget.directory,
-                          mgr: widget.mgr,
-                        ),
-                      ),
-                    ),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 44,
-                      minHeight: 44,
-                    ),
-                  ),
-                  PopupMenuButton<String>(
-                    icon: const Icon(
-                      Icons.more_horiz_rounded,
-                      size: 19,
-                      color: AppColors.muted,
-                    ),
-                    tooltip: t('moreActions'),
-                    color: const Color(0xFF161b22),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 44,
-                      minHeight: 44,
-                    ),
-                    onSelected: (v) {
-                      switch (v) {
-                        case 'rename':
-                          _confirmRenameDirectory(context);
-                          break;
-                        case 'delete':
-                          _confirmDeleteDirectory(context);
-                          break;
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      _dirMenuItem(
-                        'rename',
-                        Icons.drive_file_rename_outline_rounded,
-                        t('rename'),
-                      ),
-                      const PopupMenuDivider(),
-                      _dirMenuItem(
-                        'delete',
-                        Icons.delete_outline_rounded,
-                        t('deleteDirectory'),
-                        danger: true,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  _ProjectStatPill(
-                    label: t('sessions'),
-                    value: widget.directory.totalSessions.toString(),
-                  ),
-                  _ProjectStatPill(
-                    label: t('active'),
-                    value: activeCount.toString(),
-                  ),
-                  _ProjectStatPill(
-                    label: 'Claude',
-                    value: claudeCount.toString(),
-                    color: _kClaudeColor,
-                  ),
-                  _ProjectStatPill(
-                    label: 'Codex',
-                    value: codexCount.toString(),
-                    color: _kCodexColor,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _DirectoryPreview(
-                events: _workspace.events,
-                latestTask: latestTask,
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.touch_app_outlined,
-                    size: 13,
+              Icon(Icons.drag_indicator, color: AppColors.faint, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  widget.directory.name,
+                  style: const TextStyle(
                     color: AppColors.faint,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
                   ),
-                  const SizedBox(width: 5),
-                  Text(
-                    t('tapForDetails'),
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontSize: 11,
-                    ),
-                  ),
-                  const Spacer(),
-                  const Icon(
-                    Icons.keyboard_arrow_up_rounded,
-                    size: 18,
-                    color: AppColors.faint,
-                  ),
-                ],
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ),
         ),
       ),
+      child: DragTarget<int>(
+        onWillAcceptWithDetails: (details) {
+          return details.data != widget.index;
+        },
+        onAcceptWithDetails: (details) {
+          // 通知父组件处理拖拽结束
+          final parent = context.findAncestorStateOfType<_DirectoryListBodyState>();
+          if (parent != null) {
+            parent._handleDragEnd(details.data, widget.index);
+          }
+        },
+        builder: (context, candidateData, rejectedData) {
+          final isHovering = candidateData.isNotEmpty;
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+              color: isHovering ? AppColors.panel2 : AppColors.panel,
+              border: Border.all(
+                color: isHovering ? AppColors.accent : AppColors.line,
+                width: isHovering ? 2 : 1,
+              ),
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.18),
+                  blurRadius: 22,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: InkWell(
+              onTap: () => _showDirectoryDetail(context),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        // 拖拽指示器
+                        Icon(
+                          Icons.drag_indicator,
+                          size: 18,
+                          color: AppColors.faint,
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            color: AppColors.bg,
+                            border: Border.all(color: AppColors.line),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(
+                            Icons.folder_outlined,
+                            color: AppColors.muted,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                widget.directory.name,
+                                style: const TextStyle(
+                                  color: AppColors.textBright,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                widget.directory.path,
+                                style: const TextStyle(
+                                  color: AppColors.blue,
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(
+                            Icons.sticky_note_2_outlined,
+                            size: 19,
+                            color: AppColors.muted,
+                          ),
+                          tooltip: t('projectMemo'),
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute<void>(
+                              builder: (_) => MemoScreen(
+                                directory: widget.directory,
+                                mgr: widget.mgr,
+                              ),
+                            ),
+                          ),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 44,
+                            minHeight: 44,
+                          ),
+                        ),
+                        PopupMenuButton<String>(
+                          icon: const Icon(
+                            Icons.more_horiz_rounded,
+                            size: 19,
+                            color: AppColors.muted,
+                          ),
+                          tooltip: t('moreActions'),
+                          color: const Color(0xFF161b22),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 44,
+                            minHeight: 44,
+                          ),
+                          onSelected: (v) {
+                            switch (v) {
+                              case 'rename':
+                                _confirmRenameDirectory(context);
+                                break;
+                              case 'delete':
+                                _confirmDeleteDirectory(context);
+                                break;
+                            }
+                          },
+                          itemBuilder: (_) => [
+                            _dirMenuItem(
+                              'rename',
+                              Icons.drive_file_rename_outline_rounded,
+                              t('rename'),
+                            ),
+                            const PopupMenuDivider(),
+                            _dirMenuItem(
+                              'delete',
+                              Icons.delete_outline_rounded,
+                              t('deleteDirectory'),
+                              danger: true,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _ProjectStatPill(
+                          label: t('sessions'),
+                          value: widget.directory.totalSessions.toString(),
+                        ),
+                        _ProjectStatPill(
+                          label: t('active'),
+                          value: activeCount.toString(),
+                        ),
+                        _ProjectStatPill(
+                          label: 'Claude',
+                          value: claudeCount.toString(),
+                          color: _kClaudeColor,
+                        ),
+                        _ProjectStatPill(
+                          label: 'Codex',
+                          value: codexCount.toString(),
+                          color: _kCodexColor,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    _DirectoryPreview(
+                      events: _workspace.events,
+                      latestTask: latestTask,
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.touch_app_outlined,
+                          size: 13,
+                          color: AppColors.faint,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          t('tapForDetails'),
+                          style: const TextStyle(
+                            color: AppColors.faint,
+                            fontSize: 11,
+                          ),
+                        ),
+                        const Spacer(),
+                        const Icon(
+                          Icons.keyboard_arrow_up_rounded,
+                          size: 18,
+                          color: AppColors.faint,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 
   _TaskPreview? _latestTask(Map<String, List<Session>> groups) {
-    _TaskPreview? best;
-    for (final s in groups.values.expand((x) => x)) {
+    // 获取该目录下所有会话，按 lastActivity 或 createdAt 排序
+    final allSessions = groups.values.expand((x) => x).toList();
+    if (allSessions.isEmpty) return null;
+
+    // 按 lastActivity 或 createdAt 降序排序
+    allSessions.sort((a, b) {
+      final ta = a.lastActivity?.millisecondsSinceEpoch ?? a.createdAt.millisecondsSinceEpoch;
+      final tb = b.lastActivity?.millisecondsSinceEpoch ?? b.createdAt.millisecondsSinceEpoch;
+      return tb.compareTo(ta);
+    });
+
+    // 找到最新的有 summary 的会话
+    for (final s in allSessions) {
       final live = _workspace.statuses[s.id];
       final summary = live?.summary;
       if (summary == null || summary.isEmpty) continue;
-      final ts = live?.summaryTs ?? 0;
-      if (best == null || ts > best.ts) {
-        best = _TaskPreview(
-          who: s.label?.isNotEmpty == true ? s.label! : s.id,
-          summary: summary,
-          ts: ts,
-        );
+      final ts = live?.summaryTs ?? s.lastActivity?.millisecondsSinceEpoch ?? s.createdAt.millisecondsSinceEpoch;
+      return _TaskPreview(
+        who: s.label?.isNotEmpty == true ? s.label! : s.id,
+        summary: summary,
+        ts: ts,
+      );
+    }
+
+    // 如果没有活跃的 summary，返回最近活跃的会话信息
+    final latest = allSessions.first;
+    final live = _workspace.statuses[latest.id];
+    final ts = live?.summaryTs ?? latest.lastActivity?.millisecondsSinceEpoch ?? latest.createdAt.millisecondsSinceEpoch;
+
+    // 生成一个基本的任务描述
+    String summary;
+    if (live?.currentFile != null && live!.currentFile!.isNotEmpty) {
+      summary = '正在编辑 ${live.currentFile!.split('/').last}';
+    } else if (latest.active) {
+      summary = '正在运行';
+    } else {
+      final ago = DateTime.now().millisecondsSinceEpoch ~/ 1000 - ts ~/ 1000;
+      if (ago < 3600) {
+        summary = '最近 ${ago ~/ 60} 分钟前活跃';
+      } else if (ago < 86400) {
+        summary = '最近 ${ago ~/ 3600} 小时前活跃';
+      } else {
+        summary = '最近 ${ago ~/ 86400} 天前活跃';
       }
     }
-    return best;
+
+    return _TaskPreview(
+      who: latest.label?.isNotEmpty == true ? latest.label! : latest.id,
+      summary: summary,
+      ts: ts,
+    );
   }
 
   Future<void> _showDirectoryDetail(BuildContext context) async {
@@ -1570,6 +1921,7 @@ class _DirectoryPreview extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 固定高度的最近活动区域
         SizedBox(
           height: 39,
           child: recent.isEmpty
@@ -1585,6 +1937,7 @@ class _DirectoryPreview extends StatelessWidget {
                 )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     for (final e in recent)
                       Padding(
@@ -1604,6 +1957,7 @@ class _DirectoryPreview extends StatelessWidget {
                 ),
         ),
         const SizedBox(height: 6),
+        // 固定高度的最新任务区域
         SizedBox(
           height: 34,
           child: latestTask == null
@@ -2641,161 +2995,6 @@ class _AddSessionChip extends StatelessWidget {
       ),
     );
   }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  NEW DIRECTORY DIALOG
-// ═══════════════════════════════════════════════════════════════════════════════
-
-Future<void> _showNewDirectoryDialog(
-  BuildContext context,
-  SessionManager mgr,
-) async {
-  final nameCtrl = TextEditingController();
-  final pathCtrl = TextEditingController();
-  String? error;
-  List<Map<String, String>> suggestions = [];
-  Timer? debounce;
-
-  await showDialog<void>(
-    context: context,
-    builder: (dialogCtx) => StatefulBuilder(
-      builder: (context, setState) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
-        title: const Text(
-          'New directory',
-          style: TextStyle(color: Color(0xFFf2f4f7)),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Name',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            TextField(
-              controller: nameCtrl,
-              autofocus: true,
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(hint: 'My project'),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'Path',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            TextField(
-              controller: pathCtrl,
-              style: const TextStyle(
-                color: Color(0xFFe7eaee),
-                fontSize: 13,
-                fontFamily: 'monospace',
-              ),
-              decoration: _inputDec(hint: '/Users/you/code/my-project'),
-              onChanged: (_) {
-                debounce?.cancel();
-                debounce = Timer(const Duration(milliseconds: 200), () async {
-                  final res = await mgr.service.fetchFsList(pathCtrl.text);
-                  setState(() => suggestions = res);
-                });
-              },
-            ),
-            if (suggestions.isNotEmpty)
-              Container(
-                margin: const EdgeInsets.only(top: 6),
-                constraints: const BoxConstraints(maxHeight: 180),
-                decoration: BoxDecoration(
-                  border: Border.all(color: const Color(0xFF20242b)),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.zero,
-                  itemCount: suggestions.length,
-                  itemBuilder: (_, i) {
-                    final e = suggestions[i];
-                    return InkWell(
-                      onTap: () {
-                        pathCtrl.text = '${e['path']}/';
-                        if (nameCtrl.text.trim().isEmpty) {
-                          nameCtrl.text = e['name'] ?? '';
-                        }
-                        debounce?.cancel();
-                        debounce = Timer(
-                          const Duration(milliseconds: 200),
-                          () async {
-                            final res = await mgr.service.fetchFsList(
-                              pathCtrl.text,
-                            );
-                            setState(() => suggestions = res);
-                          },
-                        );
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 7,
-                        ),
-                        child: Text(
-                          '📁 ${e['name']}',
-                          style: const TextStyle(
-                            color: Color(0xFFe7eaee),
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            if (error != null) ...[
-              const SizedBox(height: 10),
-              Text(
-                error!,
-                style: const TextStyle(color: Color(0xFFff6b63), fontSize: 12),
-              ),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogCtx),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF8a909b)),
-            ),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF22ab9c),
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () async {
-              final name = nameCtrl.text.trim();
-              final p = pathCtrl.text.trim();
-              if (name.isEmpty || p.isEmpty) {
-                setState(() => error = 'Name and path are required');
-                return;
-              }
-              try {
-                await mgr.createDirectory(name: name, path: p);
-                if (dialogCtx.mounted) Navigator.pop(dialogCtx);
-              } catch (e) {
-                setState(
-                  () => error = e.toString().replaceFirst('Exception: ', ''),
-                );
-              }
-            },
-            child: const Text('Create'),
-          ),
-        ],
-      ),
-    ),
-  );
 }
 
 InputDecoration _inputDec({String? hint}) => InputDecoration(
