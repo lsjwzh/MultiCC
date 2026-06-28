@@ -1352,13 +1352,13 @@
         try {
           const sess = (typeof _cachedSessions !== 'undefined' && _cachedSessions) ? _cachedSessions.filter(s => s.type !== 'aux') : [];
           const dirs = (typeof _cachedDirectories !== 'undefined' && _cachedDirectories) ? _cachedDirectories : [];
-          // 「活跃」= 最近 12 小时内用过的会话（与弹层 recentlyUsedSessions 同口径）。
-          const recent = (typeof recentlyUsedSessions === 'function')
-            ? recentlyUsedSessions()
+          // 「活跃」= 当前正在执行 / 生成的会话（与弹层 runningSessions 同口径）。
+          const running = (typeof runningSessions === 'function')
+            ? runningSessions()
             : sess.filter(s => s.active);
-          const active = recent.length;
-          const claude = recent.filter(s => (s.cli || 'claude') === 'claude').length;
-          const codex = recent.filter(s => s.cli === 'codex').length;
+          const active = running.length;
+          const claude = running.filter(s => (s.cli || 'claude') === 'claude').length;
+          const codex = running.filter(s => s.cli === 'codex').length;
           // Dedup via the shared helper so the tile number matches the popup list.
           let wait = 0;
           if (typeof waitingSessionIds === 'function') wait = waitingSessionIds().size;
