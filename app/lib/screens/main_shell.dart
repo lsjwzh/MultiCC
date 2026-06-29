@@ -1051,7 +1051,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         .length;
     final latestTask = _latestTask(groups);
 
-    return Draggable<int>(
+    return LongPressDraggable<int>(
       data: widget.index,
       feedback: Material(
         elevation: 6,
