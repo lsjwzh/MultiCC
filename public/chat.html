@@ -272,6 +272,24 @@
     }
 
     /* ── Tool call cards ── */
+    /* All tool cards of one turn live inside a bounded, scrollable stack so a
+       long run of tool calls can't flood the chat and yank it to the bottom. */
+    .tool-stack {
+      margin: 8px 0;
+      max-height: 320px;
+      overflow-y: auto;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      background: #161b22;
+      padding: 6px 8px;
+      scrollbar-width: thin;
+      scrollbar-color: #30363d transparent;
+    }
+    .tool-stack::-webkit-scrollbar { width: 8px; }
+    .tool-stack::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+    .tool-stack::-webkit-scrollbar-track { background: transparent; }
+    .tool-stack .tool-card:first-child { margin-top: 0; }
+    .tool-stack .tool-card:last-child { margin-bottom: 0; }
     .tool-card {
       margin: 8px 0; border: 1px solid #30363d; border-radius: 8px;
       overflow: hidden; font-size: 13px;
