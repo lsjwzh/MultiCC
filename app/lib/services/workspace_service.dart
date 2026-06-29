@@ -21,6 +21,12 @@ class SessionStatus {
   final String? summary;
   final int summaryTs;
 
+  /// Task run-time window (ms epoch, 0 = none). [runStartedAt] is stamped when a
+  /// turn begins (user sent a message); [runEndedAt] freezes when it ends. While
+  /// the agent is mid-run [runEndedAt] is 0 and the elapsed time keeps growing.
+  final int runStartedAt;
+  final int runEndedAt;
+
   const SessionStatus({
     required this.status,
     this.currentFile,
@@ -32,6 +38,8 @@ class SessionStatus {
     this.baseBranch,
     this.summary,
     this.summaryTs = 0,
+    this.runStartedAt = 0,
+    this.runEndedAt = 0,
   });
 
   SessionStatus copyWith({
@@ -45,6 +53,8 @@ class SessionStatus {
     String? baseBranch,
     String? summary,
     int? summaryTs,
+    int? runStartedAt,
+    int? runEndedAt,
   }) {
     return SessionStatus(
       status: status ?? this.status,
@@ -57,6 +67,8 @@ class SessionStatus {
       baseBranch: baseBranch ?? this.baseBranch,
       summary: summary ?? this.summary,
       summaryTs: summaryTs ?? this.summaryTs,
+      runStartedAt: runStartedAt ?? this.runStartedAt,
+      runEndedAt: runEndedAt ?? this.runEndedAt,
     );
   }
 }
@@ -145,6 +157,8 @@ class WorkspaceService extends ChangeNotifier {
           ? rawSummary
           : prev?.summary,
       summaryTs: (m['summaryTs'] as num?)?.toInt() ?? prev?.summaryTs ?? 0,
+      runStartedAt: (m['runStartedAt'] as num?)?.toInt() ?? prev?.runStartedAt ?? 0,
+      runEndedAt: (m['runEndedAt'] as num?)?.toInt() ?? prev?.runEndedAt ?? 0,
     );
   }
 

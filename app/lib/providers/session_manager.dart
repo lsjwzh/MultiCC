@@ -6,6 +6,7 @@ import '../services/background_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../services/workspace_service.dart';
 import 'chat_provider.dart';
 
 class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
