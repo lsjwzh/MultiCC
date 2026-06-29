@@ -260,6 +260,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       final key = '${s.cli.name}_${s.kind.name}';
       groups[key]?.add(s);
     }
+    int sessionTs(Session s) =>
+        (s.lastActivity ?? s.createdAt).millisecondsSinceEpoch;
+    for (final ss in groups.values) {
+      ss.sort((a, b) => sessionTs(b).compareTo(sessionTs(a)));
+    }
     return groups;
   }
 

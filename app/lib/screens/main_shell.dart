@@ -71,6 +71,18 @@ String _mergeReadyLabel(SessionStatus status) {
   return t('mergeReadyLabel', {'base': base});
 }
 
+DateTime _sessionLastInteractionAt(Session session, SessionStatus? live) {
+  var best = session.createdAt;
+  final saved = session.lastActivity;
+  if (saved != null && saved.isAfter(best)) best = saved;
+  final liveMs = live?.lastActivity ?? 0;
+  if (liveMs > 0) {
+    final liveAt = DateTime.fromMillisecondsSinceEpoch(liveMs);
+    if (liveAt.isAfter(best)) best = liveAt;
+  }
+  return best;
+}
+
 class MainShell extends StatefulWidget {
   final SettingsService settings;
   const MainShell({super.key, required this.settings});
@@ -1344,8 +1356,8 @@ class _DirectoryCardState extends State<_DirectoryCard> {
 
     // 按 lastActivity 或 createdAt 降序排序
     allSessions.sort((a, b) {
-      final ta = a.lastActivity?.millisecondsSinceEpoch ?? a.createdAt.millisecondsSinceEpoch;
-      final tb = b.lastActivity?.millisecondsSinceEpoch ?? b.createdAt.millisecondsSinceEpoch;
+      final ta = _sessionLastInteractionAt(a, _workspace.statuses[a.id]);
+      final tb = _sessionLastInteractionAt(b, _workspace.statuses[b.id]);
       return tb.compareTo(ta);
     });
 
@@ -1354,7 +1366,9 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       final live = _workspace.statuses[s.id];
       final summary = live?.summary;
       if (summary == null || summary.isEmpty) continue;
-      final ts = live?.summaryTs ?? s.lastActivity?.millisecondsSinceEpoch ?? s.createdAt.millisecondsSinceEpoch;
+      final ts = live?.summaryTs != null && live!.summaryTs > 0
+          ? live.summaryTs
+          : _sessionLastInteractionAt(s, live).millisecondsSinceEpoch;
       return _TaskPreview(
         who: s.label?.isNotEmpty == true ? s.label! : s.id,
         summary: summary,
@@ -1365,7 +1379,9 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     // 如果没有活跃的 summary，返回最近活跃的会话信息
     final latest = allSessions.first;
     final live = _workspace.statuses[latest.id];
-    final ts = live?.summaryTs ?? latest.lastActivity?.millisecondsSinceEpoch ?? latest.createdAt.millisecondsSinceEpoch;
+    final ts = live?.summaryTs != null && live!.summaryTs > 0
+        ? live.summaryTs
+        : _sessionLastInteractionAt(latest, live).millisecondsSinceEpoch;
 
     // 生成一个基本的任务描述
     String summary;
@@ -2586,11 +2602,18 @@ class _SessionGroup extends StatelessWidget {
               final columns = constraints.maxWidth >= 520 ? 2 : 1;
               final cardWidth =
                   (constraints.maxWidth - gap * (columns - 1)) / columns;
+              final sortedSessions = [...sessions]
+                ..sort(
+                  (a, b) => _sessionLastInteractionAt(
+                    b,
+                    statuses[b.id],
+                  ).compareTo(_sessionLastInteractionAt(a, statuses[a.id])),
+                );
               return Wrap(
                 spacing: gap,
                 runSpacing: gap,
                 children: [
-                  for (final s in sessions)
+                  for (final s in sortedSessions)
                     SizedBox(
                       width: cardWidth,
                       child: SessionCard(
@@ -2634,11 +2657,9 @@ class SessionCard extends StatelessWidget {
     final cliColor = session.cli == SessionCli.codex
         ? _kCodexColor
         : _kClaudeColor;
-    final ago = timeago.format(
-      session.lastActivity ?? session.createdAt,
-      locale: 'en_short',
-    );
     final live = liveStatus;
+    final lastInteraction = _sessionLastInteractionAt(session, live);
+    final ago = timeago.format(lastInteraction, locale: 'en_short');
     final statusColor = live != null
         ? _wbStatusColor(live.status)
         : (session.active ? const Color(0xFF7fd49a) : const Color(0xFF5b616c));
@@ -2649,6 +2670,9 @@ class SessionCard extends StatelessWidget {
     final subtitle = session.label?.isNotEmpty == true
         ? session.id
         : session.shortCwd;
+    final model = session.model?.isNotEmpty == true
+        ? claudeModelShortName(session.model)
+        : '';
 
     return Container(
       decoration: BoxDecoration(
@@ -2713,6 +2737,19 @@ class SessionCard extends StatelessWidget {
                     ),
                   ],
                   const Spacer(),
+                  if (model.isNotEmpty) ...[
+                    Flexible(
+                      child: Text(
+                        model,
+                        style: const TextStyle(
+                          color: Color(0xFF5b616c),
+                          fontSize: 10,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                   Text(
                     ago,
                     style: const TextStyle(
