@@ -1985,8 +1985,14 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   const model = (req.body.model || '').trim() || null;
   // provider: omit → inherit global default; '' → explicit no-override; id → that provider.
   const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
+  const rolePrompt = (req.body.rolePrompt || '').trim() || null;
   const r = createSessionRecord({ dir: d, cli, kind, label, model, provider });
   if (!r.ok) return res.status(400).json({ error: r.error });
+  // Apply rolePrompt after session is created
+  if (rolePrompt) {
+    r.session.rolePrompt = rolePrompt;
+    savePersistedSessions();
+  }
   res.json(r.session);
 });
 

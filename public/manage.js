@@ -1661,17 +1661,55 @@ function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), curr
 }
 
 async function newSessionInDir(dirId, cli, kind) {
+  // ── Step 1: Session name (label) ──
+  const label = await showPrompt(
+    tt('sessionNamePrompt') || 'Enter session name (optional, press Enter to skip)',
+    '', { okText: tt('next') || 'Next' }
+  );
+  if (label === null) return; // cancelled
+
+  // ── Step 2: Role prompt ──
+  const rolePrompt = await showRoleEditor({
+    title: '会话角色提示词（可选，留空则继承目录默认）',
+    placeholder: '例如：你是开发保姆，被触发时用 multicc-trigger skill 检查 git 改动并提醒提交和测试...',
+  });
+  if (rolePrompt === null) return; // cancelled
+
+  // ── Step 3: Provider selection ──
+  let provider = null;
+  try {
+    const appType = cli === 'codex' ? 'codex' : 'claude';
+    const pres = await fetch(`/api/providers?appType=${appType}${tokenQS('&')}`);
+    if (pres.ok) {
+      const data = await pres.json();
+      const providers = data.providers || [];
+      if (providers.length > 0) {
+        provider = await showProviderPicker({ title: '选择该会话使用的 Provider', providers });
+        if (provider === null) return; // cancelled
+      }
+    }
+  } catch (_) { /* provider fetch failed — skip */ }
+
+  // ── Step 4: Model selection (claude only) ──
   let model = null;
   if (cli === 'claude') {
     const picked = await showModelPicker();
     if (picked === null) return; // cancelled
     model = picked || null;
   }
+
+  // ── Step 5: Create ──
   try {
+    const body = { cli, kind };
+    if (label.trim()) body.label = label.trim();
+    if (model) body.model = model;
+    if (provider !== null && provider !== undefined) body.provider = provider;
+    if (rolePrompt.trim()) body.rolePrompt = rolePrompt.trim();
+
     const res = await fetch(`/api/directories/${dirId}/sessions${tokenQS('?')}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cli, kind, model }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -1687,6 +1725,78 @@ async function newSessionInDir(dirId, cli, kind) {
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
   }
+}
+
+// Provider picker dialog (same pattern as showModelPicker).
+// providers: [{id, name, isOfficial, model}]
+function showProviderPicker({ title = '选择 Provider', providers = [] } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:420px;max-width:94vw;max-height:80vh;display:flex;flex-direction:column;';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:10px;';
+    msg.textContent = title;
+    box.appendChild(msg);
+
+    const list = document.createElement('div');
+    list.style.cssText = 'overflow-y:auto;flex:1;margin-bottom:8px;max-height:50vh;';
+    // Default option
+    const defRow = _providerRow('默认登录 / 订阅（不覆盖）', '', '', true, false, 0);
+    defRow.style.cursor = 'pointer';
+    defRow.onclick = () => close('');
+    list.appendChild(defRow);
+    providers.forEach((p, i) => {
+      const row = _providerRow(p.name, p.model || '', p.id, false, p.isOfficial, i + 1);
+      row.style.cursor = 'pointer';
+      row.onclick = () => close(p.id);
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const cancel = document.createElement('button');
+    cancel.className = 'btn'; cancel.textContent = tt('cancel');
+    cancel.onclick = () => close(null);
+    row.appendChild(cancel);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = (result) => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(result);
+    };
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); close(null); }
+    }
+    document.addEventListener('keydown', onKey, true);
+    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+  });
+}
+
+function _providerRow(name, model, id, isDefault, isOfficial, idx) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;padding:7px 8px;border-radius:6px;margin-bottom:2px;';
+  row.addEventListener('mouseenter', () => row.style.background = '#1c2128');
+  row.addEventListener('mouseleave', () => row.style.background = '');
+  const info = document.createElement('div');
+  info.style.cssText = 'flex:1;min-width:0;';
+  const nameEl = document.createElement('div');
+  nameEl.style.cssText = 'font-size:13px;color:#e7eaee;';
+  nameEl.textContent = name + (isOfficial ? ' · 订阅' : '');
+  info.appendChild(nameEl);
+  if (model) {
+    const modelEl = document.createElement('div');
+    modelEl.style.cssText = 'font-size:11px;color:#8b949e;margin-top:2px;';
+    modelEl.textContent = model;
+    info.appendChild(modelEl);
+  }
+  row.appendChild(info);
+  return row;
 }
 
 async function changeSessionModel(id) {

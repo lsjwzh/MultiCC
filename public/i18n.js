@@ -40,37 +40,8 @@
       registered: '已登记 ›',
       newDirectory: '＋ 新建目录',
       createSession: '+ 新建 ▾',
-      gitPush: 'Git 推送',
-      deleteDirectory: '删除目录',
-      deleteSession: '删除会话',
-      note: '留言',
-      rolePrompt: '角色提示词',
-      rolePromptSet: '角色提示词（已设）',
-      changeModel: '切换模型（{model}）',
-      mergeTo: '合并到 {base}',
-      mergeToAhead: '✓ 合并到 {base}（{n} 个提交）',
-      dirtyChanges: '有未提交改动',
-      aheadCommits: '{n} 个提交领先',
-      mergeReadyTitle: '可合并：{detail}',
-      mergeWorktreeTitle: '把 worktree 合并回基分支',
-      moreSessionActions: '更多操作（改名/留言/Diff/合并/删除）',
-      moreSessionActionsReady: '{detail}（点击展开更多）',
-      terminal: 'Terminal',
-      manage: 'Manage',
-      clear: 'Clear',
-      clearHistory: '清空全部',
-      clearKeepLast: '保留最近 {n} 条',
-      changeDir: '切换目录',
-      sync: '同步',
-      syncing: '同步中…',
-      syncWorktree: '同步 worktree',
-      behindLabel: '⎇ {branch} · 落后 {base} {n} 个提交',
-      behindBanner: '⚠ 当前 worktree（{branch}）已落后 {base} {n} 个提交，点顶部「同步」按钮可直接合并。',
-      worktreeClean: '当前 worktree 没有需要合并的内容。',
-      worktreeMergeable: '当前 worktree {detail}，可以合并回 {base}。',
-      mergeWorktreeConfirmReady: '当前 worktree 有可合并内容。\n合并前会自动提交未提交改动，是否继续？',
-      mergeWorktreeConfirm: '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-      modelTitle: '切换该会话使用的模型（下一轮对话生效）',
+      sessionNamePrompt: '输入会话名称（可选，留空自动生成）',
+      next: '下一步',
       providerTitle: '切换该会话使用的 Provider（下一轮对话生效）',
       providerDefault: '默认登录 / 订阅（不覆盖）',
       providerEmpty: '还没有可用 provider。请到管理台「Provider」页配置。',
@@ -122,7 +93,10 @@
       registered: 'Registered ›',
       newDirectory: '+ New directory',
       createSession: '+ New ▾',
-      gitPush: 'Git push',
+      sessionNamePrompt: 'Enter session name (optional, auto-generated if blank)',
+      next: 'Next',
+      providerTitle: 'Change this session Provider (applies next turn)',
+      providerDefault: 'Default login / subscription (no override)',
       deleteDirectory: 'Delete directory',
       deleteSession: 'Delete session',
       note: 'Note',
@@ -167,7 +141,6 @@
       language: 'EN/中',
     },
   };
-
   const getLang = () => localStorage.getItem('multicc_lang') || 'zh';
 
   function t(key, params) {
@@ -181,28 +154,28 @@
     return text;
   }
 
-  function setLang(lang) {
-    localStorage.setItem('multicc_lang', I18N[lang] ? lang : 'zh');
-    location.reload();
-  }
+function setLang(lang) {
+  localStorage.setItem('multicc_lang', I18N[lang] ? lang : 'zh');
+  location.reload();
+}
 
-  function toggleLang() {
-    setLang(getLang() === 'zh' ? 'en' : 'zh');
-  }
+function toggleLang() {
+  setLang(getLang() === 'zh' ? 'en' : 'zh');
+}
 
-  function applyI18n(root) {
-    const scope = root || document;
-    document.documentElement.lang = getLang();
-    scope.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
-    scope.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle); });
-    scope.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.dataset.i18nPlaceholder); });
-    scope.querySelectorAll('.lang-toggle').forEach((el) => { el.textContent = t('language'); });
-  }
+function applyI18n(root) {
+  const scope = root || document;
+  document.documentElement.lang = getLang();
+  scope.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
+  scope.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle); });
+  scope.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  scope.querySelectorAll('.lang-toggle').forEach((el) => { el.textContent = t('language'); });
+}
 
-  window.I18N = I18N;
-  window.t = t;
-  window.setLang = setLang;
-  window.toggleLang = toggleLang;
-  window.applyI18n = applyI18n;
-  document.addEventListener('DOMContentLoaded', () => applyI18n(document));
+window.I18N = I18N;
+window.t = t;
+window.setLang = setLang;
+window.toggleLang = toggleLang;
+window.applyI18n = applyI18n;
+document.addEventListener('DOMContentLoaded', () => applyI18n(document));
 })();

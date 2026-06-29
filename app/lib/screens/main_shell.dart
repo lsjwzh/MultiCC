@@ -1650,7 +1650,82 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
 
-    // Step 1: pick a provider (both claude & codex)
+    // ── Step 1: Session name (label) ──
+    final nameCtrl = TextEditingController();
+    final label = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF0f1115),
+        title: const Text(
+          '输入会话名称',
+          style: TextStyle(color: Color(0xFFf2f4f7)),
+        ),
+        content: TextField(
+          controller: nameCtrl,
+          autofocus: true,
+          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+          decoration: _inputDec(hint: '可选，留空自动生成'),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text(
+              '取消',
+              style: TextStyle(color: Color(0xFF8a909b)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, nameCtrl.text),
+            child: const Text(
+              '下一步',
+              style: TextStyle(color: Color(0xFF6aa3ff)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (label == null) return; // cancelled
+    if (!mounted) return;
+
+    // ── Step 2: Role prompt ──
+    final roleCtrl = TextEditingController();
+    final rolePrompt = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF0f1115),
+        title: const Text(
+          '角色提示词（可选）',
+          style: TextStyle(color: Color(0xFFf2f4f7)),
+        ),
+        content: TextField(
+          controller: roleCtrl,
+          maxLines: 4,
+          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+          decoration: _inputDec(hint: '留空则继承目录默认角色'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text(
+              '跳过',
+              style: TextStyle(color: Color(0xFF8a909b)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, roleCtrl.text),
+            child: const Text(
+              '下一步',
+              style: TextStyle(color: Color(0xFF6aa3ff)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (rolePrompt == null) return; // cancelled
+    if (!mounted) return;
+
+    // ── Step 3: pick a provider (both claude & codex) ──
     final appType = cli == SessionCli.codex ? 'codex' : 'claude';
     String? provider;
     try {
@@ -1741,7 +1816,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       // If provider fetch fails, continue without provider selection
     }
 
-    // Step 2: pick a model (claude only)
+    // ── Step 4: pick a model (claude only) ──
     String? model;
     if (cli == SessionCli.claude) {
       final picked = await showClaudeModelPicker(
@@ -1752,11 +1827,14 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       if (!mounted) return;
       model = picked.isEmpty ? null : picked;
     }
+
+    // ── Step 5: Create ──
     try {
       final s = await widget.mgr.createSessionInDir(
         dirId: widget.directory.id,
         cli: cli,
         kind: kind,
+        label: label.trim().isNotEmpty ? label.trim() : null,
         model: model,
         provider: provider,
       );
