@@ -730,8 +730,8 @@ function handleEvent(msg) {
       }
       updateContextBar(msg.usage, msg.modelUsage);
       updateUI();
-      // Auto-commit & merge if enabled for this message
-      autoCommitIfNeeded(_resultBubble);
+      // Auto-commit & merge if enabled for this turn (checkbox lives under the user message)
+      autoCommitIfNeeded(_lastUserBubble);
       break;
 
     case 'provider_token_stats':
@@ -945,8 +945,6 @@ function createAssistantBubble() {
   div.innerHTML = '<div class="msg-content streaming-dot"></div>';
   messagesEl.appendChild(div);
   scrollToBottom();
-  // Attach per-message auto-commit checkbox (default from session setting)
-  attachAutoCommitCheck(div, _sessionAutoCommit);
   return div;
 }
 
@@ -1099,12 +1097,17 @@ function addToolResult(tc, text, isError) {
   tc.card.querySelector('.tool-desc').textContent = isError ? 'failed' : 'done';
 }
 
+let _lastUserBubble = null;  // the most recent user message bubble (holds the per-turn auto-commit checkbox)
 function addUserMsg(text) {
   const div = document.createElement('div');
   div.className = 'msg user';
   div.textContent = text;
   messagesEl.appendChild(div);
+  // Per-message auto-commit checkbox lives under the user's own message.
+  attachAutoCommitCheck(div, _sessionAutoCommit);
+  _lastUserBubble = div;
   scrollToBottom();
+  return div;
 }
 
 function addAgentNotes(notes) {
@@ -1216,9 +1219,6 @@ function replayHistory(messages, serverTokenUsage) {
 
       div.appendChild(contentEl);
       messagesEl.appendChild(div);
-
-      // Attach per-message auto-commit checkbox for historical messages
-      attachAutoCommitCheck(div, _sessionAutoCommit);
     }
     } catch (err) {
       console.warn('[multicc] replayHistory: skipped message', mi, err.message);
@@ -2354,8 +2354,9 @@ autoCommitBtn?.addEventListener('click', async () => {
 // Returns the checkbox element so caller can read .checked state later.
 function attachAutoCommitCheck(bubbleEl, checked) {
   if (!bubbleEl) return null;
-  const ce = bubbleEl.querySelector('.msg-content');
-  if (!ce) return null;
+  // User bubbles hold their text directly (no .msg-content wrapper); attach to
+  // the bubble itself in that case so the checkbox sits under "我" message.
+  const ce = bubbleEl.querySelector('.msg-content') || bubbleEl;
   // Remove any existing auto-commit line
   const old = ce.querySelector('.msg-auto-commit');
   if (old) old.remove();
