@@ -1,0 +1,157 @@
+{
+  "1bmkc8p7-chat": {
+    "inputTokens": 143663264,
+    "outputTokens": 547583,
+    "turnCount": 13
+  },
+  "2choi9lq-chat": {
+    "inputTokens": 78713296,
+    "outputTokens": 310975,
+    "turnCount": 10
+  },
+  "7l3meih7-chat": {
+    "inputTokens": 34364,
+    "outputTokens": 158,
+    "turnCount": 2
+  },
+  "ancientgods-codex-chat-02": {
+    "inputTokens": 5874222,
+    "outputTokens": 102808,
+    "turnCount": 12
+  },
+  "dslkxhj5-chat": {
+    "inputTokens": 81964858,
+    "outputTokens": 420637,
+    "turnCount": 13
+  },
+  "mafit-codex-chat-01": {
+    "inputTokens": 1221423316,
+    "outputTokens": 6042393,
+    "turnCount": 95
+  },
+  "marketing-codex-chat-01": {
+    "inputTokens": 13224976,
+    "outputTokens": 82932,
+    "turnCount": 5
+  },
+  "marketing-codex-chat-03": {
+    "inputTokens": 844090,
+    "outputTokens": 61704,
+    "turnCount": 6
+  },
+  "multicc-codex-chat-01": {
+    "inputTokens": 286034304,
+    "outputTokens": 1100698,
+    "turnCount": 23
+  },
+  "o9xs8d31-chat": {
+    "inputTokens": 129650,
+    "outputTokens": 4683,
+    "turnCount": 2
+  },
+  "qgrwl5r6-chat": {
+    "inputTokens": 170318,
+    "outputTokens": 16822,
+    "turnCount": 3
+  },
+  "shop-codex-chat-01": {
+    "inputTokens": 2088944,
+    "outputTokens": 71580,
+    "turnCount": 11
+  },
+  "wexin-codex-chat-01": {
+    "inputTokens": 6130345,
+    "outputTokens": 113688,
+    "turnCount": 12
+  },
+  "ywzrbabu-chat": {
+    "inputTokens": 11442,
+    "outputTokens": 92,
+    "turnCount": 1
+  },
+  "multicc-claude-chat-01": {
+    "inputTokens": 95374413,
+    "outputTokens": 1440068,
+    "turnCount": 68
+  },
+  "mafit-claude-chat-18": {
+    "inputTokens": 5248824,
+    "outputTokens": 30994,
+    "turnCount": 19
+  },
+  "marketing-claude-chat-02": {
+    "inputTokens": 20904216,
+    "outputTokens": 102744,
+    "turnCount": 3
+  },
+  "mafit-claude-chat-20": {
+    "inputTokens": 394228,
+    "outputTokens": 5868,
+    "turnCount": 2
+  },
+  "mafit-claude-chat-01": {
+    "inputTokens": 39702785,
+    "outputTokens": 292872,
+    "turnCount": 32
+  },
+  "mafit-claude-chat-17": {
+    "inputTokens": 39494047,
+    "outputTokens": 142269,
+    "turnCount": 73
+  },
+  "multicc-claude-chat-02": {
+    "inputTokens": 73889666,
+    "outputTokens": 117965,
+    "turnCount": 13
+  },
+  "multicc-claude-chat-03": {
+    "inputTokens": 35639558,
+    "outputTokens": 126998,
+    "turnCount": 21
+  },
+  "mafit-claude-chat-12": {
+    "inputTokens": 101630734,
+    "outputTokens": 156137,
+    "turnCount": 136
+  },
+  "mafit-claude-chat-14": {
+    "inputTokens": 3610460,
+    "outputTokens": 5156,
+    "turnCount": 1
+  },
+  "mafit-claude-chat-19": {
+    "inputTokens": 260634,
+    "outputTokens": 3487,
+    "turnCount": 4
+  },
+  "marketing-claude-chat-03": {
+    "inputTokens": 22285795,
+    "outputTokens": 129569,
+    "turnCount": 16
+  },
+  "multicc-claude-chat-04": {
+    "inputTokens": 35305077,
+    "outputTokens": 185379,
+    "turnCount": 45
+  },
+  "feishuwork-claude-chat-01": {
+    "inputTokens": 30820211,
+    "outputTokens": 120087,
+    "turnCount": 27
+  },
+  "mafit-claude-chat-21": {
+    "inputTokens": 110835259,
+    "outputTokens": 462073,
+    "turnCount": 83
+  },
+  "mafit-claude-chat-22": {
+    "inputTokens": 13578025,
+    "outputTokens": 27443,
+    "turnCount": 182
+  },
+  "multicc-claude-chat-06": {
+    "inputTokens": 3421,
+    "outputTokens": 50,
+    "turnCount": 1
+  }
+}

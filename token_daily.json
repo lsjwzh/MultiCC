@@ -1,0 +1,310 @@
+{
+  "2026-06-25": {
+    "d9b3c869-5ce6-445c-bc1e-d8ae810f6e25": {
+      "inputTokens": 29595872,
+      "outputTokens": 256883,
+      "turnCount": 28
+    },
+    "_default_": {
+      "inputTokens": 124912390,
+      "outputTokens": 608017,
+      "turnCount": 41
+    },
+    "2e7e5d6b-9ed4-472b-9d5f-76c0d30de380": {
+      "inputTokens": 3227822,
+      "outputTokens": 45714,
+      "turnCount": 18
+    },
+    "59836289-c494-499e-8fbc-1b7741d6103d": {
+      "inputTokens": 1959547,
+      "outputTokens": 6624,
+      "turnCount": 1
+    }
+  },
+  "2026-05-19": {
+    "_default_": {
+      "inputTokens": 19607553,
+      "outputTokens": 135473,
+      "turnCount": 8
+    }
+  },
+  "2026-05-20": {
+    "_default_": {
+      "inputTokens": 164697910,
+      "outputTokens": 637389,
+      "turnCount": 18
+    }
+  },
+  "2026-05-21": {
+    "_default_": {
+      "inputTokens": 120165605,
+      "outputTokens": 511016,
+      "turnCount": 12
+    }
+  },
+  "2026-06-16": {
+    "ecc250c5-ead3-4ec3-a0e8-677f03032d99": {
+      "inputTokens": 242104,
+      "outputTokens": 7395,
+      "turnCount": 3
+    }
+  },
+  "2026-06-18": {
+    "ecc250c5-ead3-4ec3-a0e8-677f03032d99": {
+      "inputTokens": 534416,
+      "outputTokens": 8512,
+      "turnCount": 1
+    }
+  },
+  "2026-06-19": {
+    "ecc250c5-ead3-4ec3-a0e8-677f03032d99": {
+      "inputTokens": 2868912,
+      "outputTokens": 48011,
+      "turnCount": 4
+    },
+    "_default_": {
+      "inputTokens": 2346784,
+      "outputTokens": 21787,
+      "turnCount": 4
+    }
+  },
+  "2026-06-20": {
+    "ecc250c5-ead3-4ec3-a0e8-677f03032d99": {
+      "inputTokens": 2177950,
+      "outputTokens": 37177,
+      "turnCount": 2
+    },
+    "_default_": {
+      "inputTokens": 3026947,
+      "outputTokens": 35874,
+      "turnCount": 3
+    }
+  },
+  "2026-06-22": {
+    "ecc250c5-ead3-4ec3-a0e8-677f03032d99": {
+      "inputTokens": 50840,
+      "outputTokens": 1713,
+      "turnCount": 2
+    },
+    "_default_": {
+      "inputTokens": 936185,
+      "outputTokens": 26103,
+      "turnCount": 5
+    }
+  },
+  "2026-04-21": {
+    "_default_": {
+      "inputTokens": 45806,
+      "outputTokens": 250,
+      "turnCount": 3
+    }
+  },
+  "2026-06-23": {
+    "_default_": {
+      "inputTokens": 17031,
+      "outputTokens": 1001,
+      "turnCount": 1
+    }
+  },
+  "2026-06-24": {
+    "_default_": {
+      "inputTokens": 65827230,
+      "outputTokens": 324895,
+      "turnCount": 8
+    }
+  },
+  "2026-04-24": {
+    "_default_": {
+      "inputTokens": 170318,
+      "outputTokens": 16822,
+      "turnCount": 3
+    }
+  },
+  "2026-05-26": {
+    "_default_": {
+      "inputTokens": 757934,
+      "outputTokens": 32621,
+      "turnCount": 7
+    }
+  },
+  "2026-05-27": {
+    "_default_": {
+      "inputTokens": 740077,
+      "outputTokens": 26406,
+      "turnCount": 3
+    }
+  },
+  "2026-05-30": {
+    "_default_": {
+      "inputTokens": 590933,
+      "outputTokens": 12553,
+      "turnCount": 1
+    }
+  },
+  "2026-06-13": {
+    "_default_": {
+      "inputTokens": 789250,
+      "outputTokens": 24935,
+      "turnCount": 7
+    }
+  },
+  "2026-06-14": {
+    "_default_": {
+      "inputTokens": 366717,
+      "outputTokens": 10330,
+      "turnCount": 1
+    }
+  },
+  "2026-06-15": {
+    "_default_": {
+      "inputTokens": 937925,
+      "outputTokens": 17275,
+      "turnCount": 1
+    }
+  },
+  "2026-06-21": {
+    "_default_": {
+      "inputTokens": 2577758,
+      "outputTokens": 40139,
+      "turnCount": 2
+    }
+  },
+  "2026-06-26": {
+    "2e7e5d6b-9ed4-472b-9d5f-76c0d30de380": {
+      "inputTokens": 23906972,
+      "outputTokens": 128012,
+      "turnCount": 54
+    },
+    "59836289-c494-499e-8fbc-1b7741d6103d": {
+      "inputTokens": 2474871,
+      "outputTokens": 27998,
+      "turnCount": 5
+    },
+    "_default_": {
+      "inputTokens": 265187288,
+      "outputTokens": 905961,
+      "turnCount": 97
+    },
+    "d9b3c869-5ce6-445c-bc1e-d8ae810f6e25": {
+      "inputTokens": 9287267,
+      "outputTokens": 86958,
+      "turnCount": 11
+    },
+    "a11c6bba-c151-4d36-887b-65e4fec9626d": {
+      "inputTokens": 5599622,
+      "outputTokens": 15961,
+      "turnCount": 7
+    }
+  },
+  "2026-06-27": {
+    "2e7e5d6b-9ed4-472b-9d5f-76c0d30de380": {
+      "inputTokens": 64111083,
+      "outputTokens": 75585,
+      "turnCount": 79
+    },
+    "a11c6bba-c151-4d36-887b-65e4fec9626d": {
+      "inputTokens": 28696564,
+      "outputTokens": 80977,
+      "turnCount": 33
+    },
+    "_default_": {
+      "inputTokens": 378552657,
+      "outputTokens": 2096170,
+      "turnCount": 96
+    },
+    "d9b3c869-5ce6-445c-bc1e-d8ae810f6e25": {
+      "inputTokens": 24955883,
+      "outputTokens": 204374,
+      "turnCount": 22
+    },
+    "4e0a7e2b-6ccd-4a64-bdad-6d0ebb558242": {
+      "inputTokens": 3455147,
+      "outputTokens": 11731,
+      "turnCount": 3
+    }
+  },
+  "2026-06-28": {
+    "_default_": {
+      "inputTokens": 847798239,
+      "outputTokens": 3875515,
+      "turnCount": 135
+    },
+    "d9b3c869-5ce6-445c-bc1e-d8ae810f6e25": {
+      "inputTokens": 47565179,
+      "outputTokens": 768639,
+      "turnCount": 27
+    },
+    "4e0a7e2b-6ccd-4a64-bdad-6d0ebb558242": {
+      "inputTokens": 1468878,
+      "outputTokens": 3704,
+      "turnCount": 2
+    },
+    "a11c6bba-c151-4d36-887b-65e4fec9626d": {
+      "inputTokens": 44075244,
+      "outputTokens": 256176,
+      "turnCount": 48
+    },
+    "2e7e5d6b-9ed4-472b-9d5f-76c0d30de380": {
+      "inputTokens": 4087222,
+      "outputTokens": 37199,
+      "turnCount": 3
+    },
+    "59836289-c494-499e-8fbc-1b7741d6103d": {
+      "inputTokens": 8655845,
+      "outputTokens": 57978,
+      "turnCount": 5
+    }
+  },
+  "2026-06-29": {
+    "_default_": {
+      "inputTokens": 27646171,
+      "outputTokens": 123981,
+      "turnCount": 65
+    },
+    "d9b3c869-5ce6-445c-bc1e-d8ae810f6e25": {
+      "inputTokens": 29035008,
+      "outputTokens": 413428,
+      "turnCount": 11
+    },
+    "a11c6bba-c151-4d36-887b-65e4fec9626d": {
+      "inputTokens": 5934534,
+      "outputTokens": 42929,
+      "turnCount": 5
+    },
+    "2e7e5d6b-9ed4-472b-9d5f-76c0d30de380": {
+      "inputTokens": 26284087,
+      "outputTokens": 41876,
+      "turnCount": 10
+    },
+    "sub2api-1782699495628": {
+      "inputTokens": 19752,
+      "outputTokens": 41,
+      "turnCount": 1
+    },
+    "xlapis-ds-周卡-1782700014062": {
+      "inputTokens": 61240744,
+      "outputTokens": 26565,
+      "turnCount": 15
+    },
+    "59836289-c494-499e-8fbc-1b7741d6103d": {
+      "inputTokens": 17123625,
+      "outputTokens": 10508,
+      "turnCount": 4
+    },
+    "c0bda28c-64f0-4f99-a853-48dd5924627b": {
+      "inputTokens": 3318,
+      "outputTokens": 42,
+      "turnCount": 1
+    },
+    "claude-official": {
+      "inputTokens": 1409804,
+      "outputTokens": 38639,
+      "turnCount": 6
+    },
+    "4e0a7e2b-6ccd-4a64-bdad-6d0ebb558242": {
+      "inputTokens": 3421,
+      "outputTokens": 50,
+      "turnCount": 1
+    }
+  }
+}
