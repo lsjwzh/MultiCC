@@ -2048,6 +2048,13 @@ app.patch('/api/sessions/:id', (req, res) => {
     const v = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
     if (!v.ok) return res.status(400).json({ error: 'invalid provider' });
     s.provider = v.value;
+    // When switching provider the old session.model may hold a model that
+    // only works with the previous backend (e.g. claude-opus-4-8 set while
+    // on Anthropic Official, then switching to DeepSeek/GLM which don't
+    // ship that model). Clear it so the provider's own ANTHROPIC_MODEL /
+    // ANTHROPIC_DEFAULT_*_MODEL env takes effect and the user can re-set
+    // via /model afterwards if they need something specific.
+    if (s.model) s.model = null;
     // Chat sessions pick it up on the next per-turn spawn; a warm streaming
     // process must be torn down so it relaunches with the new env.
     if (s.streaming) chatStream.close(s.id);
