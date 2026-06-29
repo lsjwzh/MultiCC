@@ -1661,49 +1661,30 @@ function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), curr
 }
 
 async function newSessionInDir(dirId, cli, kind) {
-  // ── Step 1: Session name (label) ──
-  const label = await showPrompt(
-    tt('sessionNamePrompt') || 'Enter session name (optional, press Enter to skip)',
-    '', { okText: tt('next') || 'Next' }
-  );
-  if (label === null) return; // cancelled
-
-  // ── Step 2: Role prompt ──
-  const rolePrompt = await showRoleEditor({
-    title: '会话角色提示词（可选，留空则继承目录默认）',
-    placeholder: '例如：你是开发保姆，被触发时用 multicc-trigger skill 检查 git 改动并提醒提交和测试...',
-  });
-  if (rolePrompt === null) return; // cancelled
-
-  // ── Step 3: Provider selection ──
-  let provider = null;
+  // Single dialog: name + role + provider + model
+  let providers = [];
   try {
     const appType = cli === 'codex' ? 'codex' : 'claude';
     const pres = await fetch(`/api/providers?appType=${appType}${tokenQS('&')}`);
     if (pres.ok) {
       const data = await pres.json();
-      const providers = data.providers || [];
-      if (providers.length > 0) {
-        provider = await showProviderPicker({ title: '选择该会话使用的 Provider', providers });
-        if (provider === null) return; // cancelled
-      }
+      providers = data.providers || [];
     }
-  } catch (_) { /* provider fetch failed — skip */ }
+  } catch (_) {}
 
-  // ── Step 4: Model selection (claude only) ──
-  let model = null;
-  if (cli === 'claude') {
-    const picked = await showModelPicker();
-    if (picked === null) return; // cancelled
-    model = picked || null;
-  }
+  const result = await showCreateSessionDialog({
+    cli, kind, providers,
+    isClaude: cli === 'claude',
+  });
+  if (result === null) return; // cancelled
 
-  // ── Step 5: Create ──
+  const { label, rolePrompt, provider, model } = result;
+
   try {
     const body = { cli, kind };
     if (label.trim()) body.label = label.trim();
     if (model) body.model = model;
-    if (provider !== null && provider !== undefined) body.provider = provider;
+    if (provider !== null && provider !== undefined && provider !== '') body.provider = provider;
     if (rolePrompt.trim()) body.rolePrompt = rolePrompt.trim();
 
     const res = await fetch(`/api/directories/${dirId}/sessions${tokenQS('?')}`, {
@@ -1727,76 +1708,126 @@ async function newSessionInDir(dirId, cli, kind) {
   }
 }
 
-// Provider picker dialog (same pattern as showModelPicker).
-// providers: [{id, name, isOfficial, model}]
-function showProviderPicker({ title = '选择 Provider', providers = [] } = {}) {
+// Single unified creation dialog (name + role + provider + model)
+function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
     const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:420px;max-width:94vw;max-height:80vh;display:flex;flex-direction:column;';
-    const msg = document.createElement('div');
-    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:10px;';
-    msg.textContent = title;
-    box.appendChild(msg);
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:94vw;max-height:90vh;overflow-y:auto;';
 
-    const list = document.createElement('div');
-    list.style.cssText = 'overflow-y:auto;flex:1;margin-bottom:8px;max-height:50vh;';
-    // Default option
-    const defRow = _providerRow('默认登录 / 订阅（不覆盖）', '', '', true, false, 0);
-    defRow.style.cursor = 'pointer';
-    defRow.onclick = () => close('');
-    list.appendChild(defRow);
-    providers.forEach((p, i) => {
-      const row = _providerRow(p.name, p.model || '', p.id, false, p.isOfficial, i + 1);
-      row.style.cursor = 'pointer';
-      row.onclick = () => close(p.id);
-      list.appendChild(row);
+    const title = document.createElement('div');
+    title.style.cssText = 'font-size:15px;color:#f2f4f7;font-weight:600;margin-bottom:14px;';
+    title.textContent = `新建 ${cli === 'codex' ? 'Codex' : 'Claude'} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
+    box.appendChild(title);
+
+    // ── Name input ──
+    const nameLabel = document.createElement('div');
+    nameLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
+    nameLabel.textContent = '会话名称（可选）';
+    box.appendChild(nameLabel);
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = '留空自动生成';
+    nameInput.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
+    box.appendChild(nameInput);
+
+    // ── Role prompt ──
+    const roleLabel = document.createElement('div');
+    roleLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
+    roleLabel.textContent = '角色提示词（可选）';
+    box.appendChild(roleLabel);
+    const roleInput = document.createElement('textarea');
+    roleInput.placeholder = '留空则继承目录默认角色';
+    roleInput.rows = 3;
+    roleInput.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;resize:vertical;font-family:inherit;box-sizing:border-box;';
+    box.appendChild(roleInput);
+
+    // ── Provider select ──
+    const provLabel = document.createElement('div');
+    provLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
+    provLabel.textContent = 'Provider';
+    box.appendChild(provLabel);
+    const provSelect = document.createElement('select');
+    provSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
+    const defOpt = document.createElement('option');
+    defOpt.value = ''; defOpt.textContent = '默认登录 / 订阅（不覆盖）';
+    provSelect.appendChild(defOpt);
+    providers.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name + (p.isOfficial ? ' · 订阅' : '') + (p.model ? ' · ' + p.model : '');
+      provSelect.appendChild(opt);
     });
-    box.appendChild(list);
+    box.appendChild(provSelect);
 
+    // ── Model select (claude only) ──
+    let modelSelect = null, modelCustom = null;
+    if (isClaude) {
+      const modelLabel = document.createElement('div');
+      modelLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
+      modelLabel.textContent = '模型';
+      box.appendChild(modelLabel);
+      modelSelect = document.createElement('select');
+      modelSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;box-sizing:border-box;';
+      for (const o of CLAUDE_MODEL_OPTIONS) {
+        const opt = document.createElement('option');
+        opt.value = o.value; opt.textContent = o.labelKey ? tt(o.labelKey) : o.label;
+        modelSelect.appendChild(opt);
+      }
+      box.appendChild(modelSelect);
+
+      modelCustom = document.createElement('input');
+      modelCustom.type = 'text';
+      modelCustom.placeholder = '模型 ID，如 claude-opus-4-8';
+      modelCustom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;box-sizing:border-box;';
+      box.appendChild(modelCustom);
+      const syncCustom = () => { modelCustom.style.display = modelSelect.value === '__custom__' ? '' : 'none'; };
+      syncCustom();
+      modelSelect.onchange = () => { syncCustom(); if (modelSelect.value === '__custom__') modelCustom.focus(); };
+    }
+
+    // ── Buttons ──
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:4px;';
     const cancel = document.createElement('button');
     cancel.className = 'btn'; cancel.textContent = tt('cancel');
-    cancel.onclick = () => close(null);
-    row.appendChild(cancel);
+    const ok = document.createElement('button');
+    ok.className = 'btn btn-green'; ok.textContent = tt('create');
+    row.appendChild(cancel); row.appendChild(ok);
     box.appendChild(row);
     overlay.appendChild(box);
     document.body.appendChild(overlay);
+
+    nameInput.focus();
 
     const close = (result) => {
       document.removeEventListener('keydown', onKey, true);
       overlay.remove();
       resolve(result);
     };
+    const accept = () => {
+      let model = null;
+      if (isClaude) {
+        model = modelSelect.value === '__custom__' ? modelCustom.value.trim() : modelSelect.value;
+      }
+      close({
+        label: nameInput.value,
+        rolePrompt: roleInput.value,
+        provider: provSelect.value,
+        model: model || null,
+      });
+    };
+    const reject = () => close(null);
     function onKey(e) {
-      if (e.key === 'Escape') { e.preventDefault(); close(null); }
+      if (e.key === 'Escape') { e.preventDefault(); reject(); }
+      else if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); accept(); }
     }
+    ok.onclick = accept;
+    cancel.onclick = reject;
+    overlay.onclick = (e) => { if (e.target === overlay) reject(); };
     document.addEventListener('keydown', onKey, true);
-    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
   });
-}
-
-function _providerRow(name, model, id, isDefault, isOfficial, idx) {
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;align-items:center;padding:7px 8px;border-radius:6px;margin-bottom:2px;';
-  row.addEventListener('mouseenter', () => row.style.background = '#1c2128');
-  row.addEventListener('mouseleave', () => row.style.background = '');
-  const info = document.createElement('div');
-  info.style.cssText = 'flex:1;min-width:0;';
-  const nameEl = document.createElement('div');
-  nameEl.style.cssText = 'font-size:13px;color:#e7eaee;';
-  nameEl.textContent = name + (isOfficial ? ' · 订阅' : '');
-  info.appendChild(nameEl);
-  if (model) {
-    const modelEl = document.createElement('div');
-    modelEl.style.cssText = 'font-size:11px;color:#8b949e;margin-top:2px;';
-    modelEl.textContent = model;
-    info.appendChild(modelEl);
-  }
-  row.appendChild(info);
-  return row;
 }
 
 async function changeSessionModel(id) {
