@@ -7,7 +7,7 @@ import 'settings_service.dart';
 
 /// Live status of one agent/session in the workspace status board.
 class SessionStatus {
-  /// idle | thinking | editing | running | waiting | completed
+  /// idle | thinking | editing | running | waiting | completed | error
   final String status;
   final String? currentFile;
   final int lastActivity;

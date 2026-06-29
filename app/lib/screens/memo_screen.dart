@@ -230,7 +230,7 @@ class _MemoScreenState extends State<MemoScreen> {
                     style: const TextStyle(
                       color: Color(0xFFe7eaee),
                       fontFamily: 'monospace',
-                      fontSize: 13,
+                      fontSize: 14,
                       height: 1.5,
                     ),
                     decoration: const InputDecoration(
