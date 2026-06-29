@@ -23,7 +23,8 @@
   "editing": "编辑中",
   "running": "运行中",
   "waiting": "等待",
-  "idle": "idle",
+  "completed": "已完成",
+  "idle": "空闲",
 
   "rename": "改名",
   "cancel": "取消",

@@ -20,7 +20,8 @@
   "editing": "Editing",
   "running": "Running",
   "waiting": "Waiting",
-  "idle": "idle",
+  "completed": "Completed",
+  "idle": "Idle",
 
   "rename": "Rename",
   "cancel": "Cancel",

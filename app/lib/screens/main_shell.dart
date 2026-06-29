@@ -38,6 +38,8 @@ Color _wbStatusColor(String? status) {
       return const Color(0xFF7fd49a);
     case 'waiting':
       return const Color(0xFFf0936b);
+    case 'completed':
+      return const Color(0xFF3ad6c5);
     default:
       return const Color(0xFF5b616c);
   }
@@ -53,6 +55,8 @@ String _wbStatusLabel(String? status) {
       return t('running');
     case 'waiting':
       return t('waiting');
+    case 'completed':
+      return t('completed');
     default:
       return t('idle');
   }

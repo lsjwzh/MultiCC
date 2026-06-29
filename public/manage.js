@@ -1083,6 +1083,7 @@ function defaultActivityText(status) {
     case 'editing': return '✏️ 正在编辑文件';
     case 'running': return '⚙️ 正在执行命令';
     case 'waiting': return '⏳ 等待用户输入';
+    case 'completed': return '✅ 已完成';
     case 'idle': return '💤 空闲';
     default: return '...';
   }
@@ -1260,8 +1261,8 @@ function renderSessionRow(s) {
   const summary = sm && sm.summary ? sm.summary : '';
 
   const openBtn = s.kind === 'chat'
-    ? `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">${escapeHtml(tt('openInNewTab'))}</button>`
-    : `<button class="btn btn-sm" onclick="event.stopPropagation(); openSessionNewTab('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">${escapeHtml(tt('openInNewTab'))}</button>`;
+    ? `<button class="btn-icon" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">🔗</button>`
+    : `<button class="btn-icon" onclick="event.stopPropagation(); openSessionNewTab('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">🔗</button>`;
 
   // Lean 2-line card: status is a colour dot (hover for text), the alias is the
   // headline, and time/model sit in one muted line. cli/kind chips are dropped
@@ -2282,6 +2283,7 @@ function wbStatusInfo(status) {
     case 'editing':  return { text: tt('editing'), cls: 'active' };
     case 'running':  return { text: tt('running'), cls: 'active' };
     case 'waiting':  return { text: tt('waiting'), cls: 'waiting' };
+    case 'completed': return { text: tt('completed'), cls: 'completed' };
     default:         return { text: tt('idle'), cls: '' };
   }
 }

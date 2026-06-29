@@ -4971,7 +4971,10 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
     // (user submit) to this result — "模型接到消息到输出完成的耗时".
     const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
     forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs, num_turns: cs.chatTurnCount });
-    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    // A clean result rests at 'completed' (turn finished); an errored result
+    // (flagged just above) falls back to 'idle'. The close/finalize handler has
+    // the final say and corrects this if the process then dies abnormally.
+    setSessionStatus(sessionName, { status: cs._sawApiError ? 'idle' : 'completed', currentFile: null });
     scheduleIntentClassify(cs, sessionName);
     // Anti-pattern guard (E): if this turn launched a run_in_background Bash and
     // didn't register an explicit wait, the background process won't survive the
@@ -5310,7 +5313,9 @@ function runChatTurn(sessionName, text, opts = {}) {
             cs._resultSaved = true;
           }
           forward({ type: 'result', total_cost_usd: null, usage, durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined, num_turns: cs.chatTurnCount });
-          setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+          // turn.completed only fires on a clean codex turn (errors emit
+          // 'error'/'turn.failed'), so this rests at 'completed'.
+          setSessionStatus(sessionName, { status: 'completed', currentFile: null });
           scheduleIntentClassify(cs, sessionName);
           return;
         }
@@ -5443,10 +5448,15 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs._codexError = null;
       // Guard F: resume (capped) if this turn died on an API/transport error,
       // else reset the consecutive-error counter. Skip user-initiated kills.
-      { const sawApi = cs._sawApiError; cs._sawApiError = false;
-        if (!killReason) handleApiErrorBoundary(sessionName, finalText, sawApi); }
+      const sawApi = cs._sawApiError; cs._sawApiError = false;
+      if (!killReason) handleApiErrorBoundary(sessionName, finalText, sawApi);
 
-      setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+      // Resting status: a turn that exited cleanly (kind 'normal' = exit 0 with
+      // output, not killed, no API error) rests at 'completed'; a crash / kill /
+      // empty / API-error exit rests at 'idle'. `kind` was classified above
+      // before cs._resultSaved was cleared.
+      const turnCompletedOk = kind === 'normal' && !killReason && !sawApi;
+      setSessionStatus(sessionName, { status: turnCompletedOk ? 'completed' : 'idle', currentFile: null });
       chatBroadcast(sessionName, { type: 'stream_end' });
 
       // Auto-回流: turn was dispatched on the gateway's behalf → push result back.
@@ -5658,14 +5668,18 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   const finalText = cs.currentAssistantText;
   cs.currentAssistantText = '';
   cs.currentToolCalls = [];
+  // A clean turn fired the `result` event (set _resultSaved); an interrupted /
+  // dropped turn lands here without it. Capture before the reset below.
+  const completedOk = cs._resultSaved;
   cs._resultSaved = false;
   // Guard F: a streaming turn that dropped mid-response (connection closed) lands
   // here via the stream .catch with partial text + the API-error tail. Resume
   // (capped) or reset the consecutive-error counter. A user-initiated interrupt
   // bumps _streamTurnSeq, so this only runs for turns that ended on their own.
-  { const sawApi = cs._sawApiError; cs._sawApiError = false;
-    handleApiErrorBoundary(sessionName, finalText, sawApi); }
-  setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+  const sawApi = cs._sawApiError; cs._sawApiError = false;
+  handleApiErrorBoundary(sessionName, finalText, sawApi);
+  // Turn that completed cleanly rests at 'completed'; aborted / API-error → 'idle'.
+  setSessionStatus(sessionName, { status: (completedOk && !sawApi) ? 'completed' : 'idle', currentFile: null });
   chatBroadcast(sessionName, { type: 'stream_end' });
 
   // Gateway/dispatch回流 — same hooks the per-turn close handler fires.
