@@ -3445,7 +3445,7 @@ ${tail}`,
     if (mon) mon.classifyPending = false;
     if (result.cancelled) return;
     const { state, summary } = parseClassifyResult(result.text);
-    const msg = state === 'waiting' ? '等待操作' : '任务已完成';
+    const msg = state === 'waiting' ? '等待交互' : '任务完成';
     triggerPush(sessionId, state, msg);
     terminalBroadcast(sessionId, { type: 'notify', state, message: msg });
     const dirId = persistedSessions.get(sessionId)?.dirId;
@@ -3518,7 +3518,9 @@ function triggerPush(sessionId, type, message) {
   const shortCwd = cwd.length > 30 ? '...' + cwd.slice(-27) : cwd;
 
   const payload = {
-    title: type === 'waiting' ? `MultiCC #${sessionId}: 等待操作` : `MultiCC #${sessionId}: 完成`,
+    title: type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
+      : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
+      : `MultiCC #${sessionId}: 完成`,
     body: `${message}\n${shortCwd}`,
     sessionId,
     type,
@@ -4726,7 +4728,7 @@ function scheduleIntentClassify(cs, sessionName) {
   C = 任务已完成，不需要任何后续动作
   W = 正在等待用户回复、确认或决策（需要用户操作）
   B = 正在等待某个后台任务/外部数据/第三方返回后才能继续，且无需用户操作（例如“等部署完成”“等接口返回”“稍后再查”）
-第2行：用不超过 20 个汉字概括它最近在做的事（动词开头，如“修复登录页样式”），无法概括就留空。
+第2行：用不超过 20 个汉字概括它这一轮做了什么/得出的结论（动词开头，如“修复登录页样式”“给出三种方案对比”）。这一行必须给出，不得为空、不要只回字母、不要写“无”或“无法概括”；实在没有具体动作就概括它回复的主旨。
 
 回复内容：
 ${tail}`,
@@ -4746,7 +4748,7 @@ ${tail}`,
         return;
       }
       waitInjector.resetAuto(sessionName); // done / waiting-on-user → reset D's counter
-      const msg = state === 'waiting' ? '等待操作' : '任务已完成';
+      const msg = state === 'waiting' ? '等待交互' : '任务完成';
       // This aux-AI verdict is the single source of truth for "is the turn done
       // or waiting?". Fan it out to every channel from here so nothing re-judges:
       //   1. web push / Bark / webhook (PWA + external)
@@ -4764,8 +4766,10 @@ ${tail}`,
       }
       setSessionSummary(sessionId, summary);
       // Reflect on the status board — but only if no new turn has started since.
+      // state is 'waiting' | 'completed'; keep 'completed' so the card rests at
+      // 「已完成」 rather than reverting to 「空闲」.
       if (!cs.isStreaming) {
-        setSessionStatus(sessionName, { status: state === 'waiting' ? 'waiting' : 'idle' });
+        setSessionStatus(sessionName, { status });
       }
       console.log(`[multicc/aux] Intent classify for ${sessionName}: ${state}${summary ? ` · ${summary}` : ''}`);
     }).catch(() => {
@@ -4803,6 +4807,29 @@ function emitRunningNotify(sessionName, message) {
   const dirId = persisted.dirId;
   if (dirId) {
     workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'running', message });
+  }
+}
+
+// Terminal outcome of a chat turn. Fired immediately at turn end so the card
+// stops lingering on the in-progress "正在处理…" text:
+//   • status badge → completed / error  (status event)
+//   • summary line → the outcome label   (summary event) — replaces 正在处理…
+// Both are display-only (no user-facing alert). The lock-screen push / voice /
+// app notification (the `notify` event) only fires when `alert` is set — true
+// for errors; false for a plain completion, which the 30s intent_classify
+// reports once (and which then refines this summary to the actual content).
+function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
+  const persisted = persistedSessions.get(sessionName);
+  if (!persisted) return;
+  const sessionId = persisted.id || sessionName;
+  setSessionStatus(sessionName, { status, currentFile: null });
+  setSessionSummary(sessionId, message);
+  if (alert) {
+    triggerPush(sessionId, notifyState, `[Chat] ${message}`);
+    chatBroadcast(sessionName, { type: 'notify', state: notifyState, message });
+    if (persisted.dirId) {
+      workspaceBroadcast(persisted.dirId, { type: 'notify', sessionId, state: notifyState, message });
+    }
   }
 }
 
@@ -5445,18 +5472,29 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs.currentAssistantText = '';
       cs.currentToolCalls = [];
       cs._resultSaved = false;
-      cs._codexError = null;
+      const hadCodexError = !!cs._codexError; cs._codexError = null;
       // Guard F: resume (capped) if this turn died on an API/transport error,
       // else reset the consecutive-error counter. Skip user-initiated kills.
       const sawApi = cs._sawApiError; cs._sawApiError = false;
       if (!killReason) handleApiErrorBoundary(sessionName, finalText, sawApi);
 
-      // Resting status: a turn that exited cleanly (kind 'normal' = exit 0 with
-      // output, not killed, no API error) rests at 'completed'; a crash / kill /
-      // empty / API-error exit rests at 'idle'. `kind` was classified above
-      // before cs._resultSaved was cleared.
-      const turnCompletedOk = kind === 'normal' && !killReason && !sawApi;
-      setSessionStatus(sessionName, { status: turnCompletedOk ? 'completed' : 'idle', currentFile: null });
+      // Resting status (status board + notify fan-out):
+      //   • user-initiated stop  → idle (no alert)
+      //   • API error / non-zero / signaled exit / codex provider error → error
+      //     ('出现异常', alerts; cancel the pending classify so its later verdict
+      //      can't overwrite the error state)
+      //   • clean exit with output (kind 'normal') → completed ('任务完成')
+      //   • empty / unclassified exit → idle
+      if (killReason) {
+        setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+      } else if (sawApi || hadCodexError || kind === 'nonzero_exit' || kind === 'signaled') {
+        cancelPendingClassify(cs);
+        emitTurnOutcome(sessionName, { status: 'error', notifyState: 'error', message: '出现异常', alert: true });
+      } else if (kind === 'normal') {
+        emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
+      } else {
+        setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+      }
       chatBroadcast(sessionName, { type: 'stream_end' });
 
       // Auto-回流: turn was dispatched on the gateway's behalf → push result back.
@@ -5678,8 +5716,16 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   // bumps _streamTurnSeq, so this only runs for turns that ended on their own.
   const sawApi = cs._sawApiError; cs._sawApiError = false;
   handleApiErrorBoundary(sessionName, finalText, sawApi);
-  // Turn that completed cleanly rests at 'completed'; aborted / API-error → 'idle'.
-  setSessionStatus(sessionName, { status: (completedOk && !sawApi) ? 'completed' : 'idle', currentFile: null });
+  // Resting status: API/transport error → error ('出现异常', alerts); a clean
+  // result → completed ('任务完成'); an aborted/partial turn → idle.
+  if (sawApi) {
+    cancelPendingClassify(cs);
+    emitTurnOutcome(sessionName, { status: 'error', notifyState: 'error', message: '出现异常', alert: true });
+  } else if (completedOk) {
+    emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
+  } else {
+    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+  }
   chatBroadcast(sessionName, { type: 'stream_end' });
 
   // Gateway/dispatch回流 — same hooks the per-turn close handler fires.

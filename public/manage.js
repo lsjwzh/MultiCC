@@ -143,11 +143,12 @@ function startMonitor(sessionId) {
           setSessionStatus(sessionId, 'running');
           return;
         }
-        const waiting = msg.state === 'waiting';
+        const st = msg.state === 'waiting' ? 'waiting'
+          : msg.state === 'error' ? 'error' : 'completed';
         alertSession(
           sessionId,
-          waiting ? 'waiting' : 'completed',
-          msg.message || (waiting ? '等待操作' : '任务已完成'),
+          st,
+          msg.message || (st === 'waiting' ? '等待交互' : st === 'error' ? '出现异常' : '任务完成'),
         );
         return;
       }
@@ -710,10 +711,11 @@ function sessionStatusBrief(s) {
     const ms = _sessionStatus.get(s.id);
     if (ms === 'waiting') { text = tt('waiting'); cls = 'waiting'; }
     else if (ms === 'completed') { text = tt('completed'); cls = 'completed'; }
+    else if (ms === 'error') { text = tt('error'); cls = 'error'; }
     else if (ms === 'running') { text = tt('running'); cls = 'active'; }
     else { text = tt('idle'); cls = ''; }
   }
-  const emoji = cls === 'active' ? '🟢' : (cls === 'waiting' ? '⏳' : (cls === 'completed' ? '✅' : '⚪'));
+  const emoji = cls === 'active' ? '🟢' : (cls === 'waiting' ? '⏳' : (cls === 'completed' ? '✅' : (cls === 'error' ? '❌' : '⚪')));
   const sm = _workspaceSummaries.get(s.id);
   let summary = sm && sm.summary ? sm.summary : '';
   if (summary.length > 40) summary = summary.slice(0, 40) + '…';
@@ -1084,6 +1086,7 @@ function defaultActivityText(status) {
     case 'running': return '⚙️ 正在执行命令';
     case 'waiting': return '⏳ 等待用户输入';
     case 'completed': return '✅ 已完成';
+    case 'error': return '❌ 出现异常';
     case 'idle': return '💤 空闲';
     default: return '...';
   }
@@ -2335,6 +2338,7 @@ function wbStatusInfo(status) {
     case 'running':  return { text: tt('running'), cls: 'active' };
     case 'waiting':  return { text: tt('waiting'), cls: 'waiting' };
     case 'completed': return { text: tt('completed'), cls: 'completed' };
+    case 'error':    return { text: tt('error'), cls: 'error' };
     default:         return { text: tt('idle'), cls: '' };
   }
 }

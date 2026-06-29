@@ -24,6 +24,7 @@
   "running": "运行中",
   "waiting": "等待",
   "completed": "已完成",
+  "error": "出现异常",
   "idle": "空闲",
 
   "rename": "改名",

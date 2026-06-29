@@ -21,6 +21,7 @@
   "running": "Running",
   "waiting": "Waiting",
   "completed": "Completed",
+  "error": "Error",
   "idle": "Idle",
 
   "rename": "Rename",

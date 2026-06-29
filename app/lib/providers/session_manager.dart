@@ -291,8 +291,13 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     if (state == 'running') return;
     if (!_isInBackground && sessionId == _activeSessionId) return;
     final who = _displayTitleFor(sessionId);
+    final outcome = state == 'waiting'
+        ? '等待交互'
+        : state == 'error'
+            ? '出现异常'
+            : '任务完成';
     NotificationService.show(
-      title: 'MultiCC · $who: ${state == 'waiting' ? '等待操作' : '任务完成'}',
+      title: 'MultiCC · $who: $outcome',
       body: message.isNotEmpty ? message : who,
       id: sessionId.hashCode,
       payload: sessionId,

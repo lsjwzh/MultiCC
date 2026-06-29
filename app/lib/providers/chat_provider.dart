@@ -212,11 +212,12 @@ class ChatProvider extends ChangeNotifier {
             notifyListeners();
           }
         } else {
-          final waiting = notifyState == 'waiting';
-          _maybeNotify(
-            waiting ? '等待操作' : '任务完成',
-            notifyMsg,
-          );
+          final outcome = notifyState == 'waiting'
+              ? '等待交互'
+              : notifyState == 'error'
+                  ? '出现异常'
+                  : '任务完成';
+          _maybeNotify(outcome, notifyMsg);
         }
         break;
 

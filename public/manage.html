@@ -232,6 +232,7 @@
     .sess-status.active{background:rgba(58,214,197,.13);color:var(--accent)}
     .sess-status.waiting{background:rgba(227,179,65,.14);color:var(--amber)}
     .sess-status.completed{background:rgba(58,214,197,.13);color:var(--accent)}
+    .sess-status.error{background:rgba(255,107,99,.14);color:var(--danger)}
     .sess-actions{display:flex;gap:4px;opacity:.75;flex-shrink:0}
     .sess-row:hover .sess-actions{opacity:1}
     .sess-actions .btn{height:26px;padding:0 9px;font-size:10px;border-radius:7px}
@@ -257,10 +258,12 @@
     .status-badge.active,.status-badge.completed{background:rgba(58,214,197,.13);color:var(--accent)}
     .status-badge.running{background:rgba(106,163,255,.15);color:var(--blue)}
     .status-badge.waiting{background:rgba(227,179,65,.14);color:var(--amber)}
+    .status-badge.error{background:rgba(255,107,99,.14);color:var(--danger)}
     .status-badge.inactive,.status-badge.idle{background:rgba(255,255,255,.05);color:var(--faint)}
     .notify-badge{display:none;position:absolute;top:10px;right:12px;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;animation:pulse-badge 1.5s infinite;z-index:1}
     .notify-badge.waiting{display:inline-block;background:var(--amber);color:#04110f}
     .notify-badge.completed{display:inline-block;background:var(--accent);color:#04110f}
+    .notify-badge.error{display:inline-block;background:var(--danger);color:#fff}
     @keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.5}}
     .card-body{padding:0 16px 14px;display:flex;flex-direction:column;gap:8px}
     .card-field{display:flex;align-items:baseline;gap:8px;font-size:12px}
@@ -409,6 +412,7 @@
     .lean .dot.active{background:var(--codex);box-shadow:0 0 0 3px rgba(127,212,154,.18)}
     .lean .dot.waiting{background:#e3b341;box-shadow:0 0 0 3px rgba(227,179,65,.18)}
     .lean .dot.completed{background:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+    .lean .dot.error{background:var(--danger);box-shadow:0 0 0 3px rgba(255,107,99,.18)}
     .lean-main{flex:1;min-width:0}
     .lean-name{font-weight:600;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
     .lean-meta{font-size:11px;color:var(--muted);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
