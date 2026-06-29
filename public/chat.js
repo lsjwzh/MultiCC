@@ -815,7 +815,7 @@ function handleStreamEvent(evt) {
         currentToolCards.set(evt.index, {
           card, inputJson: '', name: evt.content_block.name, id: evt.content_block.id
         });
-        currentMsgEl.querySelector('.msg-content').appendChild(card);
+        appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
       }
       break;
 
@@ -909,7 +909,7 @@ function finalizeAssistantMsg(message) {
           id: block.id,
         };
         currentToolCards.set(`id:${block.id}`, tc);
-        currentMsgEl.querySelector('.msg-content').appendChild(card);
+        appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
       } else if (block.input) {
         tc.inputJson = JSON.stringify(block.input);
       }
@@ -1022,7 +1022,9 @@ function renderCurrentText(final = false) {
   const contentEl = currentMsgEl.querySelector('.msg-content');
   if (!contentEl) return;
 
-  const toolEls = contentEl.querySelectorAll('.tool-card');
+  // Detach the tool stack so it survives the innerHTML rebuild below, then
+  // re-append it after the text so cards keep their place (and scroll state).
+  const toolStack = contentEl.querySelector('.tool-stack');
   let html = '';
   if (currentTextContent.trim()) {
     html = renderMarkdown(currentTextContent);
@@ -1033,7 +1035,7 @@ function renderCurrentText(final = false) {
   contentEl.innerHTML = '';
   while (tmp.firstChild) contentEl.appendChild(tmp.firstChild);
   fixupLocalImages(contentEl);
-  toolEls.forEach(el => contentEl.appendChild(el));
+  if (toolStack) contentEl.appendChild(toolStack);
 
   if (!final && isStreaming) {
     contentEl.classList.add('streaming-dot');
@@ -1052,6 +1054,26 @@ function highlightCodeBlocks(root) {
   root.querySelectorAll('pre code').forEach(block => {
     try { highlighter.highlightElement(block); } catch (_) {}
   });
+}
+
+// Tool cards never go straight into .msg-content; they live in a single
+// bounded, scrollable .tool-stack so a long tool run stays contained.
+function getToolStack(contentEl) {
+  let stack = contentEl.querySelector('.tool-stack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.className = 'tool-stack';
+    contentEl.appendChild(stack);
+  }
+  return stack;
+}
+
+// Append a tool card into the turn's stack and keep the stack pinned to its
+// latest entry (without scrolling the whole chat).
+function appendToolCard(contentEl, card) {
+  const stack = getToolStack(contentEl);
+  stack.appendChild(card);
+  stack.scrollTop = stack.scrollHeight;
 }
 
 function createToolCard(name, id) {
@@ -1170,8 +1192,9 @@ function replayHistory(messages, serverTokenUsage) {
         highlightCodeBlocks(contentEl);
       }
 
-      // Render tool calls as collapsed cards
+      // Render tool calls as collapsed cards inside a bounded scroll stack
       if (m.tools?.length) {
+        const stack = getToolStack(contentEl);
         for (const tc of m.tools) {
           const card = document.createElement('div');
           card.className = 'tool-card';
@@ -1192,7 +1215,7 @@ function replayHistory(messages, serverTokenUsage) {
                 `<pre>${escHtml(tc.result)}</pre>` : '') +
             `</div>`;
           card.querySelector('.tool-header').onclick = () => card.classList.toggle('open');
-          contentEl.appendChild(card);
+          stack.appendChild(card);
         }
       }
 
