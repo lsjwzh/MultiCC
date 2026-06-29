@@ -566,25 +566,23 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     );
   }
 
-  Future<void> _handleDragEnd(int fromIndex, int toIndex) async {
+  Future<void> _handleDragEnd(String fromDirId, String toDirId) async {
     final mgr = context.read<SessionManager>();
     final dirs = List<Directory>.from(mgr.directories);
 
-    if (fromIndex < 0 || fromIndex >= dirs.length || toIndex < 0 || toIndex >= dirs.length) {
-      return;
-    }
+    final fromIdx = dirs.indexWhere((d) => d.id == fromDirId);
+    final toIdx = dirs.indexWhere((d) => d.id == toDirId);
+
+    if (fromIdx == -1 || toIdx == -1 || fromIdx == toIdx) return;
 
     // 更新列表顺序
-    final temp = dirs[fromIndex];
-    dirs.removeAt(fromIndex);
-    dirs.insert(toIndex, temp);
+    final temp = dirs.removeAt(fromIdx);
+    final insertIdx = dirs.indexWhere((d) => d.id == toDirId);
+    dirs.insert(insertIdx, temp);
 
     // 保存顺序
     final newOrder = dirs.map((d) => d.id).toList();
     await _saveDirOrder(newOrder);
-
-    // 通知 SessionManager 刷新（如果需要）
-    // mgr.notifyListeners();
 
     // 刷新UI
     if (mounted) {
@@ -1228,8 +1226,8 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         .length;
     final latestTask = _latestTask(groups);
 
-    return LongPressDraggable<int>(
-      data: widget.index,
+    return LongPressDraggable<String>(
+      data: widget.directory.id,
       feedback: Material(
         elevation: 6,
         color: Colors.transparent,
@@ -1298,15 +1296,15 @@ class _DirectoryCardState extends State<_DirectoryCard> {
           ),
         ),
       ),
-      child: DragTarget<int>(
+      child: DragTarget<String>(
         onWillAcceptWithDetails: (details) {
-          return details.data != widget.index;
+          return details.data != widget.directory.id;
         },
         onAcceptWithDetails: (details) {
           // 通知父组件处理拖拽结束
           final parent = context.findAncestorStateOfType<_DirectoryListBodyState>();
           if (parent != null) {
-            parent._handleDragEnd(details.data, widget.index);
+            parent._handleDragEnd(details.data, widget.directory.id);
           }
         },
         builder: (context, candidateData, rejectedData) {
