@@ -14,6 +14,9 @@ chat_history/
 events/
 logs/
 .multicc.pid
+# Token 统计为运行时状态，服务持续改写；跟踪它们会让工作区永远 dirty、挡住 ./multicc update
+token_usage.json
+token_daily.json
 
 # Local tool config
 .claude/
