@@ -548,6 +548,9 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
 
     return FutureBuilder<List<String>?>(future: _loadDirOrder(), builder: (context, snapshot) {
       final savedOrder = snapshot.data;
+      // 缓存到 _lastSavedOrder，供 _handleDragEnd → _buildVisualOrder 使用
+      _lastSavedOrder = savedOrder;
+
       final orderedDirectories = <Directory>[];
 
       if (savedOrder != null && savedOrder.isNotEmpty) {
@@ -584,12 +587,44 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               child: ListView.builder(
                 padding: const EdgeInsets.fromLTRB(12, 2, 12, 12),
                 itemCount: orderedDirectories.length,
-                itemBuilder: (_, i) => _DirectoryCard(
-                  directory: orderedDirectories[i],
-                  settings: widget.settings,
-                  mgr: mgr,
-                  index: i,
-                ),
+                itemBuilder: (_, i) {
+                  final dir = orderedDirectories[i];
+                  final showInsertIndicator = _dragHoverDirId == dir.id;
+                  return Column(
+                    key: ValueKey(dir.id),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 虚拟插入指示器：拖拽悬停时在目标卡片上方显示
+                      if (showInsertIndicator)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: AppColors.accent,
+                            borderRadius: BorderRadius.circular(2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.accent.withValues(alpha: 0.5),
+                                blurRadius: 8,
+                                spreadRadius: 1,
+                              ),
+                            ],
+                          ),
+                        ),
+                      _DirectoryCard(
+                        directory: dir,
+                        settings: widget.settings,
+                        mgr: mgr,
+                        index: i,
+                        onDragHover: (dirId) {
+                          if (_dragHoverDirId != dirId) {
+                            setState(() => _dragHoverDirId = dirId);
+                          }
+                        },
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ),
@@ -599,27 +634,54 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     );
   }
 
+  /// 当前被拖拽悬停的目录 ID（用于显示插入指示器）
+  String? _dragHoverDirId;
+
+  /// 构建与用户视觉一致的有序列表（savedOrder 优先，新目录追加末尾）
+  List<String> _buildVisualOrder(SessionManager mgr) {
+    final saved = _lastSavedOrder ?? [];
+    final dirIds = mgr.directories.map((d) => d.id).toSet();
+    final visual = <String>[];
+    for (final id in saved) {
+      if (dirIds.contains(id)) {
+        visual.add(id);
+        dirIds.remove(id);
+      }
+    }
+    // 新目录追加末尾
+    for (final d in mgr.directories) {
+      if (dirIds.contains(d.id)) visual.add(d.id);
+    }
+    return visual;
+  }
+
+  List<String>? _lastSavedOrder;
+
   Future<void> _handleDragEnd(String fromDirId, String toDirId) async {
     final mgr = context.read<SessionManager>();
-    final dirs = List<Directory>.from(mgr.directories);
 
-    final fromIdx = dirs.indexWhere((d) => d.id == fromDirId);
-    final toIdx = dirs.indexWhere((d) => d.id == toDirId);
+    // 基于视觉顺序（而非 mgr.directories 服务端顺序）来重排
+    final visualOrder = _buildVisualOrder(mgr);
 
-    if (fromIdx == -1 || toIdx == -1 || fromIdx == toIdx) return;
+    final fromIdx = visualOrder.indexOf(fromDirId);
+    final toIdx = visualOrder.indexOf(toDirId);
 
-    // 更新列表顺序
-    final temp = dirs.removeAt(fromIdx);
-    final insertIdx = dirs.indexWhere((d) => d.id == toDirId);
-    dirs.insert(insertIdx, temp);
+    if (fromIdx == -1 || toIdx == -1 || fromIdx == toIdx) {
+      if (mounted) setState(() => _dragHoverDirId = null);
+      return;
+    }
 
-    // 保存顺序
-    final newOrder = dirs.map((d) => d.id).toList();
-    await _saveDirOrder(newOrder);
+    // 从原位置移除，插入到目标位置之前
+    visualOrder.removeAt(fromIdx);
+    final insertIdx = visualOrder.indexOf(toDirId);
+    visualOrder.insert(insertIdx, fromDirId);
 
-    // 刷新UI
+    _lastSavedOrder = visualOrder;
+    await _saveDirOrder(visualOrder);
+
+    // 清除拖拽状态 + 刷新UI
     if (mounted) {
-      setState(() {});
+      setState(() => _dragHoverDirId = null);
     }
   }
 
@@ -1191,12 +1253,14 @@ class _DirectoryCard extends StatefulWidget {
   final SettingsService settings;
   final SessionManager mgr;
   final int index;
+  final void Function(String dirId)? onDragHover;
 
   const _DirectoryCard({
     required this.directory,
     required this.settings,
     required this.mgr,
     required this.index,
+    this.onDragHover,
   });
 
   @override
@@ -1298,6 +1362,13 @@ class _DirectoryCardState extends State<_DirectoryCard> {
 
     return LongPressDraggable<String>(
       data: widget.directory.id,
+      onDragEnd: (_) {
+        // 拖拽结束（无论是否成功 drop）都清除悬停指示器
+        final parent = context.findAncestorStateOfType<_DirectoryListBodyState>();
+        if (parent != null && parent._dragHoverDirId != null) {
+          parent.setState(() => parent._dragHoverDirId = null);
+        }
+      },
       feedback: Material(
         elevation: 6,
         color: Colors.transparent,
@@ -1368,7 +1439,19 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       ),
       child: DragTarget<String>(
         onWillAcceptWithDetails: (details) {
-          return details.data != widget.directory.id;
+          if (details.data != widget.directory.id) {
+            // 通知父组件：拖拽悬停在此卡片上，显示插入指示器
+            widget.onDragHover?.call(widget.directory.id);
+            return true;
+          }
+          return false;
+        },
+        onLeave: (_) {
+          // 拖拽离开时清除悬停状态
+          final parent = context.findAncestorStateOfType<_DirectoryListBodyState>();
+          if (parent != null && parent._dragHoverDirId == widget.directory.id) {
+            parent.setState(() => parent._dragHoverDirId = null);
+          }
         },
         onAcceptWithDetails: (details) {
           // 通知父组件处理拖拽结束
