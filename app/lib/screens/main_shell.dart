@@ -764,6 +764,7 @@ class _KpiRow extends StatelessWidget {
               t('activeSessions'),
               mgr.activeSessions,
               '🟢',
+              emptyText: '最近 12 小时没有使用过的会话',
             ),
           ),
           const SizedBox(width: 8),
@@ -777,6 +778,7 @@ class _KpiRow extends StatelessWidget {
               t('waitingSessions'),
               mgr.waitingSessions,
               '⏳',
+              emptyText: '没有等待输入的会话',
             ),
           ),
           const SizedBox(width: 8),
@@ -867,13 +869,31 @@ void _showSessionSheet(
   SessionManager mgr,
   String title,
   List<Session> sessions,
-  String prefix,
-) {
+  String prefix, {
+  String emptyText = '没有符合的会话',
+}) {
   String dirName(String? dirId) {
     for (final d in mgr.directories) {
       if (d.id == dirId) return d.name;
     }
     return '';
+  }
+
+  final runningIds = mgr.runningSessionIds;
+  final waitingIds = mgr.waitingSessionIds;
+
+  /// Derive a status colour + text for the popup row (no live workspace feed).
+  ({Color color, String text}) statusInfo(Session s) {
+    if (runningIds.contains(s.id)) {
+      return (color: const Color(0xFF7fd49a), text: t('running'));
+    }
+    if (waitingIds.contains(s.id)) {
+      return (color: const Color(0xFFf0936b), text: t('waiting'));
+    }
+    if (s.active) {
+      return (color: const Color(0xFF3ad6c5), text: t('active'));
+    }
+    return (color: const Color(0xFF5b616c), text: t('idle'));
   }
 
   showModalBottomSheet<void>(
@@ -899,25 +919,36 @@ void _showSessionSheet(
                   ),
                 ),
                 const Spacer(),
-                Text(
-                  '${sessions.length}',
-                  style: const TextStyle(
-                    color: Color(0xFF8a909b),
-                    fontSize: 13,
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF21262d),
+                    borderRadius: BorderRadius.circular(10),
                   ),
+                  child: Text(
+                    '${sessions.length}',
+                    style: const TextStyle(
+                      color: Color(0xFF8a909b),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  '↕ 点击打开',
+                  style: TextStyle(color: Color(0xFF5b616c), fontSize: 11),
                 ),
               ],
             ),
           ),
+          const Divider(height: 1, color: Color(0xFF21262d)),
           if (sessions.isEmpty)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(18, 8, 18, 24),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '没有符合的会话',
-                  style: TextStyle(color: Color(0xFF5b616c), fontSize: 13),
-                ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 24, 18, 24),
+              child: Text(
+                emptyText,
+                style: const TextStyle(color: Color(0xFF5b616c), fontSize: 13),
               ),
             )
           else
@@ -929,27 +960,153 @@ void _showSessionSheet(
                   final s = sessions[i];
                   final alias = (s.label?.isNotEmpty == true) ? s.label! : s.id;
                   final dir = dirName(s.dirId);
-                  return ListTile(
-                    dense: true,
-                    leading: Text(prefix, style: const TextStyle(fontSize: 16)),
-                    title: Text(
-                      dir.isNotEmpty ? '$dir / $alias' : alias,
-                      style: const TextStyle(
-                        color: Color(0xFFe7eaee),
-                        fontSize: 14,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    trailing: const Icon(
-                      Icons.arrow_forward_ios,
-                      size: 13,
-                      color: Color(0xFF5b616c),
-                    ),
+                  final st = statusInfo(s);
+                  final cliColor = s.cli == SessionCli.codex
+                      ? _kCodexColor
+                      : _kClaudeColor;
+                  final lastInteraction = _sessionLastInteractionAt(s, null);
+                  final ago = timeago.format(lastInteraction, locale: 'en_short');
+                  final model = s.model?.isNotEmpty == true
+                      ? claudeModelShortName(s.model)
+                      : '';
+                  final provider = s.provider?.isNotEmpty == true ? s.provider! : '';
+
+                  return InkWell(
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       mgr.openSession(s);
                       mgr.switchToSession(s.id);
                     },
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                      decoration: const BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(color: Color(0xFF1c2128), width: 0.5),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Row 1: status dot + cli/kind badges + status label + time
+                          Row(
+                            children: [
+                              Container(
+                                width: 7,
+                                height: 7,
+                                decoration: BoxDecoration(
+                                  color: st.color,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              _MiniBadge(label: s.cli.name, color: cliColor),
+                              const SizedBox(width: 5),
+                              _MiniBadge(
+                                label: s.kind.name,
+                                color: const Color(0xFF8a909b),
+                                icon: s.isChat
+                                    ? Icons.chat_bubble_outline_rounded
+                                    : Icons.terminal_rounded,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                st.text,
+                                style: TextStyle(
+                                  color: st.color,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                ago,
+                                style: const TextStyle(
+                                  color: Color(0xFF5b616c),
+                                  fontSize: 10,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              const Icon(
+                                Icons.arrow_forward_ios,
+                                size: 11,
+                                color: Color(0xFF5b616c),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                          // Row 2: session name
+                          Text(
+                            dir.isNotEmpty ? '$dir / $alias' : alias,
+                            style: const TextStyle(
+                              color: Color(0xFFe7eaee),
+                              fontSize: 13,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w600,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          // Row 3: id + model + provider (muted line)
+                          if (s.label?.isNotEmpty == true || model.isNotEmpty || provider.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Row(
+                              children: [
+                                if (s.label?.isNotEmpty == true) ...[
+                                  Text(
+                                    s.id,
+                                    style: const TextStyle(
+                                      color: Color(0xFF5b616c),
+                                      fontSize: 10,
+                                      fontFamily: 'monospace',
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                                if (model.isNotEmpty) ...[
+                                  if (s.label?.isNotEmpty == true) ...[
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      '·',
+                                      style: TextStyle(color: const Color(0xFF5b616c).withValues(alpha: 0.5)),
+                                    ),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  Text(
+                                    model,
+                                    style: const TextStyle(
+                                      color: Color(0xFF5b616c),
+                                      fontSize: 10,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                                if (provider.isNotEmpty) ...[
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    '·',
+                                    style: TextStyle(color: const Color(0xFF5b616c).withValues(alpha: 0.5)),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      provider,
+                                      style: const TextStyle(
+                                        color: Color(0xFF5b616c),
+                                        fontSize: 10,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
                   );
                 },
               ),
