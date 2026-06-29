@@ -342,6 +342,15 @@
       color: #3fb950;
       font-weight: 600;
     }
+    /* On the blue user bubble the gray text + dark divider are unreadable — lighten them. */
+    .msg.user .msg-auto-commit {
+      border-top-color: rgba(255, 255, 255, 0.25);
+      color: #dbe9ff;
+    }
+    .msg.user .msg-auto-commit:hover { color: #fff; }
+    .msg.user .msg-auto-commit input[type="checkbox"] { accent-color: #2ea043; }
+    .msg.user .msg-auto-commit.done,
+    .msg.user .msg-auto-commit.done::after { color: #7ee787; }
 
     /* ── Thinking indicator ── */
     .thinking-bubble {
