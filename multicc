@@ -127,21 +127,37 @@ do_update() {
     return 1
   fi
 
-  # Refuse to clobber local changes
-  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-    echo "Working tree has local changes — aborting to avoid overwriting them."
-    echo "Commit or stash your changes, then run './multicc update' again."
-    return 1
-  fi
-
-  local branch before after
+  local branch before after stashed=0
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
   before="$(git rev-parse HEAD 2>/dev/null)"
+
+  # The running server constantly rewrites runtime-state files, so the working
+  # tree is almost never clean. Instead of aborting, stash local changes (tracked
+  # + untracked), fast-forward, then restore them — no manual commit/stash needed.
+  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    echo "Working tree has local changes — stashing them before update..."
+    if ! git stash push --include-untracked -m "multicc-auto-update" >/dev/null 2>&1; then
+      echo "git stash failed — resolve your working tree manually, then retry."
+      return 1
+    fi
+    stashed=1
+  fi
 
   echo "Updating MultiCC (branch: $branch)..."
   if ! git pull --ff-only origin "$branch"; then
     echo "git pull failed (not a fast-forward, or network issue) — resolve manually and retry."
+    [ "$stashed" = 1 ] && git stash pop >/dev/null 2>&1
     return 1
+  fi
+
+  # Restore the stashed local changes on top of the freshly pulled code.
+  if [ "$stashed" = 1 ]; then
+    if ! git stash pop >/dev/null 2>&1; then
+      echo "⚠️  Update pulled successfully, but your local changes conflict with it."
+      echo "   Your changes are safe in 'git stash' (run: git stash list / git stash pop)."
+      echo "   Resolve the conflict, then restart with './multicc restart'."
+      return 1
+    fi
   fi
 
   after="$(git rev-parse HEAD 2>/dev/null)"
