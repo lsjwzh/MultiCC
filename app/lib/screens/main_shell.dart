@@ -1650,191 +1650,142 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
 
-    // ── Step 1: Session name (label) ──
-    final nameCtrl = TextEditingController();
-    final label = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
-        title: const Text(
-          '输入会话名称',
-          style: TextStyle(color: Color(0xFFf2f4f7)),
-        ),
-        content: TextField(
-          controller: nameCtrl,
-          autofocus: true,
-          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
-          decoration: _inputDec(hint: '可选，留空自动生成'),
-          onSubmitted: (v) => Navigator.pop(context, v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text(
-              '取消',
-              style: TextStyle(color: Color(0xFF8a909b)),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, nameCtrl.text),
-            child: const Text(
-              '下一步',
-              style: TextStyle(color: Color(0xFF6aa3ff)),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (label == null) return; // cancelled
-    if (!mounted) return;
-
-    // ── Step 2: Role prompt ──
-    final roleCtrl = TextEditingController();
-    final rolePrompt = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
-        title: const Text(
-          '角色提示词（可选）',
-          style: TextStyle(color: Color(0xFFf2f4f7)),
-        ),
-        content: TextField(
-          controller: roleCtrl,
-          maxLines: 4,
-          style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
-          decoration: _inputDec(hint: '留空则继承目录默认角色'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text(
-              '跳过',
-              style: TextStyle(color: Color(0xFF8a909b)),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, roleCtrl.text),
-            child: const Text(
-              '下一步',
-              style: TextStyle(color: Color(0xFF6aa3ff)),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (rolePrompt == null) return; // cancelled
-    if (!mounted) return;
-
-    // ── Step 3: pick a provider (both claude & codex) ──
+    // Fetch providers for the picker
     final appType = cli == SessionCli.codex ? 'codex' : 'claude';
-    String? provider;
+    List<Map<String, dynamic>> providers = [];
     try {
       final d = await ManageService(
         settings: widget.settings,
       ).fetchProviders(appType);
-      final providers = (d['providers'] as List? ?? [])
+      providers = (d['providers'] as List? ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
-      if (providers.isNotEmpty) {
-        final picked = await showModalBottomSheet<String>(
-          context: context,
-          backgroundColor: const Color(0xFF0f1115),
-          shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-          ),
-          builder: (_) => SafeArea(
+    } catch (_) {}
+
+    // Single dialog: name + role + provider + model
+    String? label;
+    String? rolePrompt;
+    String? provider;
+    String? model;
+
+    final nameCtrl = TextEditingController();
+    final roleCtrl = TextEditingController();
+    String? pickedProvider;
+    String? pickedModel;
+    final modelKnown = kClaudeModelOptions.any((e) => e.key == widget.settings.defaultModel);
+
+    final formKey = GlobalKey<FormState>();
+    final formResult = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0f1115),
+        title: Text(
+          '新建 ${cli == SessionCli.codex ? 'Codex' : ''} ${kind == SessionKind.chat ? 'Chat' : 'Terminal'}',
+          style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
+        ),
+        content: SingleChildScrollView(
+          child: Form(
+            key: formKey,
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(18, 16, 18, 8),
-                  child: Text(
-                    '选择该会话使用的 Provider',
-                    style: TextStyle(
-                      color: Color(0xFFf2f4f7),
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+                // ── Name ──
+                const Text('会话名称', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: nameCtrl,
+                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                  decoration: _inputDec(hint: '可选，留空自动生成'),
+                ),
+                const SizedBox(height: 12),
+                // ── Role prompt ──
+                const Text('角色提示词', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: roleCtrl,
+                  maxLines: 3,
+                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                  decoration: _inputDec(hint: '可选，留空继承目录默认'),
+                ),
+                const SizedBox(height: 12),
+                // ── Provider ──
+                const Text('Provider', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+                const SizedBox(height: 4),
+                DropdownButtonFormField<String>(
+                  value: pickedProvider,
+                  dropdownColor: const Color(0xFF0f1115),
+                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                  decoration: _inputDec(),
+                  items: [
+                    DropdownMenuItem(
+                      value: '',
+                      child: const Text('默认登录 / 订阅', style: TextStyle(color: Color(0xFFe7eaee))),
                     ),
-                  ),
-                ),
-                ListTile(
-                  dense: true,
-                  title: const Text(
-                    '默认登录 / 订阅',
-                    style: TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
-                  ),
-                  trailing: provider == null
-                      ? const Icon(
-                          Icons.check_rounded,
-                          size: 18,
-                          color: Color(0xFF7fd49a),
-                        )
-                      : null,
-                  onTap: () => Navigator.pop(context, ''),
-                ),
-                for (final p in providers)
-                  ListTile(
-                    dense: true,
-                    title: Text(
-                      (p['name'] as String? ?? '') +
-                          (p['isOfficial'] == true ? ' · 订阅' : ''),
-                      style: const TextStyle(
-                        color: Color(0xFFe7eaee),
-                        fontSize: 14,
+                    ...providers.map((p) => DropdownMenuItem(
+                      value: p['id'] as String,
+                      child: Text(
+                        '${p['name']}${p['isOfficial'] == true ? ' · 订阅' : ''}',
+                        style: const TextStyle(color: Color(0xFFe7eaee)),
                       ),
-                    ),
-                    subtitle:
-                        p['model'] != null && (p['model'] as String).isNotEmpty
-                        ? Text(
-                            p['model'] as String,
-                            style: const TextStyle(
-                              color: Color(0xFF8a909b),
-                              fontSize: 11,
-                            ),
-                          )
-                        : null,
-                    trailing: p['id'] == provider
-                        ? const Icon(
-                            Icons.check_rounded,
-                            size: 18,
-                            color: Color(0xFF7fd49a),
-                          )
-                        : null,
-                    onTap: () => Navigator.pop(context, p['id'] as String),
+                    )),
+                  ],
+                  onChanged: (v) => pickedProvider = v,
+                ),
+                // ── Model (claude only) ──
+                if (cli == SessionCli.claude) ...[
+                  const SizedBox(height: 12),
+                  const Text('模型', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+                  const SizedBox(height: 4),
+                  DropdownButtonFormField<String>(
+                    value: widget.settings.defaultModel.isNotEmpty && modelKnown
+                        ? widget.settings.defaultModel : null,
+                    dropdownColor: const Color(0xFF0f1115),
+                    style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                    decoration: _inputDec(),
+                    items: kClaudeModelOptions.map((e) => DropdownMenuItem(
+                      value: e.key,
+                      child: Text(e.value, style: const TextStyle(color: Color(0xFFe7eaee))),
+                    )).toList(),
+                    onChanged: (v) => pickedModel = v,
                   ),
-                const SizedBox(height: 6),
+                ],
               ],
             ),
           ),
-        );
-        if (picked == null) return; // cancelled
-        if (!mounted) return;
-        provider = picked.isEmpty ? null : picked;
-      }
-    } catch (_) {
-      // If provider fetch fails, continue without provider selection
-    }
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF22ab9c),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    if (formResult != true) return;
+    if (!mounted) return;
 
-    // ── Step 4: pick a model (claude only) ──
-    String? model;
+    label = nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : null;
+    rolePrompt = roleCtrl.text.trim().isNotEmpty ? roleCtrl.text.trim() : null;
+    provider = (pickedProvider != null && pickedProvider!.isNotEmpty) ? pickedProvider : null;
     if (cli == SessionCli.claude) {
-      final picked = await showClaudeModelPicker(
-        context,
-        current: widget.settings.defaultModel,
-      );
-      if (picked == null) return; // cancelled
-      if (!mounted) return;
-      model = picked.isEmpty ? null : picked;
+      model = (pickedModel != null && pickedModel!.isNotEmpty) ? pickedModel : null;
     }
 
-    // ── Step 5: Create ──
     try {
       final s = await widget.mgr.createSessionInDir(
         dirId: widget.directory.id,
         cli: cli,
         kind: kind,
-        label: label.trim().isNotEmpty ? label.trim() : null,
+        label: label,
         model: model,
         provider: provider,
       );
