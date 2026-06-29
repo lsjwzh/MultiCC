@@ -1239,7 +1239,7 @@
     </div>
   </div>
 
-  <!-- Session view modal (large centered modal for viewing terminal/chat) -->
+  <!-- Session view modal (large centered modal with iframe pool for hot-start) -->
   <div id="session-modal" class="modal-backdrop" style="z-index:10002;" onclick="if(event.target===this)closeSessionModal()">
     <div class="modal-card" style="width:min(96vw,1200px);height:min(92vh,900px);display:flex;flex-direction:column;background:var(--bg);">
       <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;">
@@ -1250,7 +1250,7 @@
         <button class="btn btn-sm" id="session-modal-newtab" title="Open in new tab">Open in new tab</button>
         <button class="btn" onclick="closeSessionModal()">Close</button>
       </div>
-      <iframe id="session-modal-iframe" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" style="flex:1;border:none;width:100%;height:100%;background:#0d1117;"></iframe>
+      <div id="session-modal-body" style="flex:1;position:relative;background:#0d1117;overflow:hidden;"></div>
     </div>
   </div>
 

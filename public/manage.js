@@ -1991,9 +1991,56 @@ async function renameSession(id) {
   }
 }
 
+/* ── Session iframe pool: hot-start cache ── */
+const MAX_CACHED_IFRAMES = 6;
+const _sessionIframePool = new Map(); // sessionId → { iframe, lastUsed }
+const _sessionIframeBody = document.getElementById('session-modal-body');
+
+function _getOrCreateSessionIframe(id, kind) {
+  // Return cached if still alive
+  const cached = _sessionIframePool.get(id);
+  if (cached && cached.iframe && cached.iframe.parentNode) {
+    cached.lastUsed = Date.now();
+    return cached.iframe;
+  }
+
+  // Evict least recently used if at capacity
+  if (_sessionIframePool.size >= MAX_CACHED_IFRAMES) {
+    let oldestId = null, oldest = Infinity;
+    for (const [sid, entry] of _sessionIframePool) {
+      if (sid === _currentSessionModalId) continue; // don't evict the currently shown one
+      if (entry.lastUsed < oldest) { oldest = entry.lastUsed; oldestId = sid; }
+    }
+    if (oldestId) {
+      const evicted = _sessionIframePool.get(oldestId);
+      if (evicted && evicted.iframe && evicted.iframe.parentNode) {
+        evicted.iframe.remove();
+      }
+      _sessionIframePool.delete(oldestId);
+    }
+  }
+
+  // Create new iframe
+  const iframe = document.createElement('iframe');
+  iframe.sandbox = 'allow-same-origin allow-scripts allow-forms allow-popups';
+  iframe.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:none;background:#0d1117;';
+
+  const urlToken = new URLSearchParams(location.search).get('token');
+  const tokenParam = urlToken ? (kind === 'chat' ? `&token=${urlToken}` : `&token=${urlToken}`) : '';
+
+  if (kind === 'chat') {
+    iframe.src = `/chat.html?session=${id}${tokenParam}`;
+  } else {
+    iframe.src = `/?id=${id}${tokenParam}`;
+  }
+
+  _sessionIframeBody.appendChild(iframe);
+  _sessionIframePool.set(id, { iframe, lastUsed: Date.now(), kind });
+  return iframe;
+}
+
 /* ── Session view modal (large centered modal) ── */
 const sessionModal = document.getElementById('session-modal');
-const sessionModalIframe = document.getElementById('session-modal-iframe');
 const sessionModalTitle = document.getElementById('session-modal-title');
 const sessionModalSubtitle = document.getElementById('session-modal-subtitle');
 const sessionModalNewtab = document.getElementById('session-modal-newtab');
@@ -2005,22 +2052,23 @@ function openSessionModal(id) {
   if (!s) return;
 
   acknowledgeSession(id);
-  _currentSessionModalId = id;
-  _currentSessionModalKind = s.kind || 'terminal';
+  const kind = s.kind || 'terminal';
 
   // Set title
-  sessionModalTitle.textContent = s.kind === 'chat' ? '💬 Chat Session' : '🖥 Terminal Session';
+  sessionModalTitle.textContent = kind === 'chat' ? '💬 Chat Session' : '🖥 Terminal Session';
   sessionModalSubtitle.textContent = `#${id} · ${s.cwd || ''}`;
 
-  // Set iframe URL based on session kind
-  const urlToken = new URLSearchParams(location.search).get('token');
-  const tokenParam = urlToken ? (s.kind === 'chat' ? `&token=${urlToken}` : `&token=${urlToken}`) : '';
-
-  if (s.kind === 'chat') {
-    sessionModalIframe.src = `/chat.html?session=${id}${tokenParam}`;
-  } else {
-    sessionModalIframe.src = `/?id=${id}${tokenParam}`;
+  // Hide all pooled iframes first
+  for (const [, entry] of _sessionIframePool) {
+    if (entry.iframe && entry.iframe.style) entry.iframe.style.display = 'none';
   }
+
+  // Get or create the iframe for this session, show it
+  const iframe = _getOrCreateSessionIframe(id, kind);
+  iframe.style.display = '';
+
+  _currentSessionModalId = id;
+  _currentSessionModalKind = kind;
 
   // Show modal
   sessionModal.classList.add('visible');
@@ -2028,9 +2076,9 @@ function openSessionModal(id) {
 
 function closeSessionModal() {
   sessionModal.classList.remove('visible');
-  sessionModalIframe.src = '';
-  _currentSessionModalId = null;
-  _currentSessionModalKind = null;
+  // Do NOT clear src or remove iframe — just hide modal;
+  // iframes stay cached for hot restart.
+  // The title/subtitle will be overwritten on next open.
 }
 
 sessionModalNewtab.addEventListener('click', () => {
@@ -2153,10 +2201,13 @@ async function deleteSession(id) {
       return;
     }
     showToast(`Session ${id} deleted`);
-    // Clean up cached iframe
+    // Clean up cached iframes (both focus panel and session modal pool)
     const cachedFrame = _iframeCache.get(id);
     if (cachedFrame) { cachedFrame.remove(); _iframeCache.delete(id); }
+    const poolEntry = _sessionIframePool.get(id);
+    if (poolEntry && poolEntry.iframe && poolEntry.iframe.parentNode) { poolEntry.iframe.remove(); _sessionIframePool.delete(id); }
     if (_focusedSessionId === id) closeFocusPanel();
+    if (_currentSessionModalId === id) { _currentSessionModalId = null; _currentSessionModalKind = null; }
     loadSessions();
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
