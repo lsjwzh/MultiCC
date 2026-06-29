@@ -795,12 +795,22 @@ function handleStreamEvent(evt) {
     case 'message_start':
       isStreaming = true;
       hideThinking();
-      // Always start a fresh bubble at the end of the conversation.
-      // Reusing a stale `currentMsgEl` (e.g. left over from an error or
-      // a previous turn) puts streaming content into the wrong spot and
-      // can place tool cards above the user message that triggered them.
-      finishStreaming();
-      currentMsgEl = createAssistantBubble();
+      // Within ONE user turn, the agent loop emits a fresh message_start per
+      // LLM step. Reuse the same bubble across the whole turn so all text and
+      // tool cards land in one place (one bounded, scrollable .tool-stack)
+      // instead of spawning a new bubble — and a new stack — on every step.
+      // This matches how the server persists a turn (one assistant message
+      // with all tools) and the codex path (no message_start at all).
+      // The turn ends at `result` / `stream_end` / `error`, which all call
+      // finishStreaming() and null currentMsgEl, so a genuinely new turn (or a
+      // stale bubble left by an error) still starts a fresh bubble below.
+      if (!currentMsgEl) {
+        currentMsgEl = createAssistantBubble();
+      } else if (currentTextContent && !currentTextContent.endsWith('\n\n')) {
+        // Continuing the same turn: keep prior text but separate this step's
+        // text from the previous step's with a blank line.
+        currentTextContent += '\n\n';
+      }
       startTitleAnimation();
       updateUI();
       break;
