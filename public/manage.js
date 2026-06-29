@@ -6,6 +6,7 @@ let _focusedSessionId = null;
 const _urlToken = new URLSearchParams(location.search).get('token');
 function tokenQS(prefix) { return _urlToken ? `${prefix}token=${_urlToken}` : ''; }
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
+const NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY = 'multicc_notify_existing_sessions_opened_20260629';
 
 // Directory ordering with localStorage persistence
 let _dirOrder = JSON.parse(localStorage.getItem('multicc_dir_order') || '[]');
@@ -199,6 +200,14 @@ function syncMonitors(sessions) {
   }
 }
 
+function openBellForExistingSessionsOnce(sessions) {
+  if (localStorage.getItem(NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY) === 'done') return;
+  if (typeof enableTaskNotifyForSessions === 'function') {
+    enableTaskNotifyForSessions(sessions);
+  }
+  localStorage.setItem(NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY, 'done');
+}
+
 /* ── Session status (persistent badge on card) ── */
 // Tracks each session's display status: 'waiting' | 'completed' | null
 const _sessionStatus = new Map();
@@ -355,8 +364,18 @@ const _alertedSessions = new Set(); // sessions whose current alert has been rea
 function alertSession(sessionId, type, message) {
   // Always update the persistent status badge
   setSessionStatus(sessionId, type);
+  if (typeof getTaskNotifyEnabled === 'function' && !getTaskNotifyEnabled(sessionId)) return;
   // Voice: only if this alert hasn't been read yet
   if (_alertedSessions.has(sessionId)) return;
+  if (document.visibilityState !== 'visible' && typeof showLocalTaskNotification === 'function') {
+    showLocalTaskNotification({
+      sessionId,
+      type,
+      title: type === 'waiting' ? `MultiCC #${sessionId}: 等待操作` : `MultiCC #${sessionId}: 完成`,
+      body: message,
+      url: location.pathname + location.search,
+    });
+  }
   if (window.speechSynthesis) {
     const text = `Session ${sessionId}: ${message}`;
     const utterance = new SpeechSynthesisUtterance(text);
@@ -365,6 +384,7 @@ function alertSession(sessionId, type, message) {
     utterance.volume = 0.8;
     window.speechSynthesis.speak(utterance);
   }
+  _alertedSessions.add(sessionId);
 }
 
 function acknowledgeSession(sessionId) {
@@ -389,6 +409,7 @@ async function loadDashboard() {
     const sessions = await sessRes.json();
     _cachedDirectories = directories;
     _cachedSessions = sessions;
+    openBellForExistingSessionsOnce(sessions);
     if (!_auxConfig) loadAuxConfig().then(() => renderSessions(_cachedSessions || []));
     // Default expand: only directories that have an active session (keeps the
     // board calm). Fall back to expanding all when nothing is active.

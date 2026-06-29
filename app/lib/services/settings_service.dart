@@ -26,6 +26,8 @@ class SettingsService {
   static const _keyCwd = 'multicc_cwd';
   static const _keyDefaultModel = 'multicc_default_model';
   static const _keyNotify = 'multicc_notifications_enabled';
+  static const _keyNotifyForceOnMigration =
+      'multicc_notifications_force_on_20260629';
   static const _keyKeepAlive = 'multicc_keepalive_enabled';
   static const _keyFontScale = 'multicc_font_scale';
   static const _keyLang = 'multicc_lang';
@@ -50,6 +52,10 @@ class SettingsService {
     if (_instance == null) {
       _instance = SettingsService._();
       _instance!._prefs = await SharedPreferences.getInstance();
+      if (_instance!._prefs.getBool(_keyNotifyForceOnMigration) != true) {
+        await _instance!._prefs.setBool(_keyNotify, true);
+        await _instance!._prefs.setBool(_keyNotifyForceOnMigration, true);
+      }
       _instance!.fontScale.value =
           _instance!._prefs.getDouble(_keyFontScale) ?? 1.0;
     }

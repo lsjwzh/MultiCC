@@ -625,6 +625,7 @@ function handleEvent(msg) {
         if (!('is_streaming' in msg)) break;
 
         sessionId = msg.session_id || msg.session || sessionId;
+        refreshNotifyPreference();
         if (!_sessionName && sessionId) updateTabIdentity(sessionId);
         if (msg.cwd) updateCwdDisplay(msg.cwd);
         // Update CLI badge in the header (Claude orange / Codex green)
@@ -681,7 +682,7 @@ function handleEvent(msg) {
       break;
 
     case 'session_id':
-      if (msg.id) { sessionId = msg.id; if (!_sessionName) updateTabIdentity(msg.id); }
+      if (msg.id) { sessionId = msg.id; refreshNotifyPreference(); if (!_sessionName) updateTabIdentity(msg.id); }
       break;
 
     case 'stream_event':
@@ -2695,7 +2696,12 @@ function guessPastedFileName(file) {
 /* ── Voice Notifications (task complete / waiting for action) ── */
 const notifyBtn   = document.getElementById('notify-btn');
 const notifyToast = document.getElementById('notify-toast');
-let _notifyEnabled = localStorage.getItem('multicc_notify') !== 'off';
+function currentNotifySessionId() {
+  return _sessionName || sessionId || '';
+}
+let _notifyEnabled = typeof getTaskNotifyEnabled === 'function'
+  ? getTaskNotifyEnabled(_sessionName)
+  : true;
 let _notifyLastCompleted = 0;
 let _notifyLastAction = 0;
 let _notifyToastTimer = null;
@@ -2704,26 +2710,55 @@ const NOTIFY_COOLDOWN = 8000;
 
 function updateNotifyBtn() {
   if (!notifyBtn) return;
+  const pushInfo = typeof getPushInfo === 'function' ? getPushInfo() : null;
+  const pushOn = !!(pushInfo && pushInfo.subscribed);
   if (_notifyEnabled) {
     notifyBtn.style.background = '#1f6feb';
     notifyBtn.style.borderColor = '#58a6ff';
     notifyBtn.style.color = '#fff';
-    notifyBtn.title = '语音通知 (已开启)';
+    notifyBtn.title = pushOn ? '任务提醒 (系统通知已开启)' : '任务提醒 (点击开启系统通知)';
   } else {
     notifyBtn.style.background = '#21262d';
     notifyBtn.style.borderColor = '#30363d';
     notifyBtn.style.color = '#c9d1d9';
-    notifyBtn.title = '语音通知 (已关闭)';
+    notifyBtn.title = '任务提醒 (已关闭)';
   }
 }
 updateNotifyBtn();
 
 if (notifyBtn) {
-  notifyBtn.addEventListener('click', () => {
-    _notifyEnabled = !_notifyEnabled;
-    localStorage.setItem('multicc_notify', _notifyEnabled ? 'on' : 'off');
+  notifyBtn.addEventListener('click', async () => {
+    const pushOn = typeof isPushSubscribed === 'function' && isPushSubscribed();
+    if (_notifyEnabled && pushOn) {
+      _notifyEnabled = false;
+      if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(currentNotifySessionId(), false);
+      updateNotifyBtn();
+      if (typeof unsubscribePush === 'function') await unsubscribePush();
+      updateNotifyBtn();
+      return;
+    }
+
+    _notifyEnabled = true;
+    if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(currentNotifySessionId(), true);
     updateNotifyBtn();
+    if (typeof ensurePushSubscribed === 'function') {
+      const ok = await ensurePushSubscribed();
+      if (!ok) {
+        _notifyEnabled = false;
+        if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(currentNotifySessionId(), false);
+      }
+      updateNotifyBtn();
+    }
   });
+}
+
+window.addEventListener('multicc-push-state', updateNotifyBtn);
+
+function refreshNotifyPreference() {
+  if (typeof getTaskNotifyEnabled === 'function') {
+    _notifyEnabled = getTaskNotifyEnabled(currentNotifySessionId());
+    updateNotifyBtn();
+  }
 }
 
 function showNotifyToast(text, type) {
@@ -2803,6 +2838,17 @@ function speakNotify(text, type) {
   }
 
   showNotifyToast(text, type);
+
+  if (typeof showLocalTaskNotification === 'function') {
+    const sid = _sessionName || sessionId || 'chat';
+    showLocalTaskNotification({
+      sessionId: sid,
+      type: type === 'waiting' ? 'waiting' : 'completed',
+      title: type === 'waiting' ? `MultiCC #${sid}: 等待操作` : `MultiCC #${sid}: 完成`,
+      body: text,
+      url: location.pathname + location.search,
+    });
+  }
 
   if (window.speechSynthesis) {
     const utterance = new SpeechSynthesisUtterance(text);
