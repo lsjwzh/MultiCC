@@ -71,9 +71,58 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Sessions currently active (running), excluding the aux helper session.
-  List<Session> get activeSessions =>
-      _sessions.where((s) => s.active && !s.isAux).toList();
+  // ── Central live workspace status ─────────────────────────────────────────
+  // Each _DirectoryCard owns a WorkspaceService; it reports its full session →
+  // status map here so the dashboard popups can show live status / summary /
+  // run-time for every directory (mirrors the web's single `_workspaceStatus`).
+  final Map<String, Map<String, SessionStatus>> _statusByDir = {};
+
+  /// A _DirectoryCard reports its directory's live status map. Always notifies —
+  /// statuses change value (summary/run-time) without changing the id set.
+  void reportStatuses(String dirId, Map<String, SessionStatus> statuses) {
+    if (statuses.isEmpty) {
+      _statusByDir.remove(dirId);
+    } else {
+      _statusByDir[dirId] = Map.of(statuses);
+    }
+    notifyListeners();
+  }
+
+  /// Live status for a session across all directories (null if none yet).
+  SessionStatus? liveStatus(String sessionId) {
+    for (final m in _statusByDir.values) {
+      final st = m[sessionId];
+      if (st != null) return st;
+    }
+    return null;
+  }
+
+  /// Last-interaction time for a session, newest of: live workspace activity,
+  /// REST lastActivity, createdAt. Mirrors web's sessionLastInteractionMs.
+  DateTime _lastInteractionAt(Session s) {
+    var best = s.createdAt;
+    final saved = s.lastActivity;
+    if (saved != null && saved.isAfter(best)) best = saved;
+    final liveMs = liveStatus(s.id)?.lastActivity ?? 0;
+    if (liveMs > 0) {
+      final liveAt = DateTime.fromMillisecondsSinceEpoch(liveMs);
+      if (liveAt.isAfter(best)) best = liveAt;
+    }
+    return best;
+  }
+
+  /// 「活跃会话」口径，对齐 web：最近 12 小时内使用过的会话（按最近交互倒序），
+  /// 而非"此刻进程还连着"(s.active)。
+  static const _recentUseWindow = Duration(hours: 12);
+  List<Session> get activeSessions {
+    final now = DateTime.now();
+    final list = _sessions
+        .where((s) =>
+            !s.isAux && now.difference(_lastInteractionAt(s)) <= _recentUseWindow)
+        .toList();
+    list.sort((a, b) => _lastInteractionAt(b).compareTo(_lastInteractionAt(a)));
+    return list;
+  }
 
   /// Sessions currently waiting on user input (resolved from the aggregate).
   List<Session> get waitingSessions {
