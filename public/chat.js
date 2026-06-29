@@ -1565,7 +1565,10 @@ function updateModelBtn() {
 }
 
 // WebView-safe picker (native select/confirm are unreliable in Android WebViews).
-function showModelPicker(current) {
+function showModelPicker(current, providerOptions) {
+  const allowed = (providerOptions && providerOptions.length)
+    ? providerOptions
+    : CLAUDE_MODEL_OPTIONS.map(o => o.value).filter(Boolean);
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -1576,13 +1579,15 @@ function showModelPicker(current) {
     msg.textContent = tt('modelTitle');
     box.appendChild(msg);
 
-    const isKnown = CLAUDE_MODEL_OPTIONS.some(o => o.value === current);
+    const isKnown = allowed.includes(current);
     const select = document.createElement('select');
     select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
-    for (const o of CLAUDE_MODEL_OPTIONS) {
-      const opt = document.createElement('option');
-      opt.value = o.value; opt.textContent = o.labelKey ? tt(o.labelKey) : o.label;
-      select.appendChild(opt);
+for (const v of allowed) {
+  const opt = document.createElement("option");
+  opt.value = v;
+  const named = CLAUDE_MODEL_OPTIONS.find(o => o.value === v);
+  opt.textContent = named ? (named.labelKey ? tt(named.labelKey) : named.label) : v;
+  select.appendChild(opt);
     }
     select.value = isKnown ? current : '__custom__';
     box.appendChild(select);
@@ -1643,7 +1648,8 @@ async function loadSessionModel() {
 }
 
 modelBtn?.addEventListener('click', async () => {
-  const picked = await showModelPicker(_sessionModel);
+  const provOpts = _sessionProvider ? _providerList.find(p => p.id === _sessionProvider)?.modelOptions : null;
+  const picked = await showModelPicker(_sessionModel, provOpts);
   if (picked === null) return;
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {

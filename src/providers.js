@@ -163,28 +163,37 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, providerId })
 // Public-safe summary — never leaks a full token (only masked).
 function summarize(p) {
   const cfg = parseConfig(p.settingsConfig);
-  let baseUrl = '', model = '', token = '';
+  let baseUrl = '', model = '', token = '', modelOptions = [];
   if (p.appType === 'claude') {
     const env = cfg.env || {};
     baseUrl = env.ANTHROPIC_BASE_URL || '';
     model = env.ANTHROPIC_MODEL || '';
     token = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '';
+    // Collect all models this provider can serve: primary + DEFAULT_* overrides.
+    const aliasKeys = ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'];
+    const seen = new Set();
+    const ordered = [];
+    for (const v of [env.ANTHROPIC_MODEL, ...aliasKeys.map(k => env[k])]) {
+      if (v && !seen.has(v)) { seen.add(v); ordered.push(v); }
+    }
+    modelOptions = ordered;
   } else {
     baseUrl = tomlValue(cfg.config, 'base_url');
     model = tomlValue(cfg.config, 'model');
     token = (cfg.auth && cfg.auth.OPENAI_API_KEY) ||
-      (cfg.auth && cfg.auth.tokens && cfg.auth.tokens.access_token) || '';
+            (cfg.auth && cfg.auth.tokens && cfg.auth.tokens.access_token) || '';
   }
   return {
     id: p.id,
     appType: p.appType,
     name: p.name,
-    source: p.source || 'local',     // 'local' | 'ccswitch'
+    source: p.source || 'local', // 'local' | 'ccswitch'
     baseUrl,
     model,
+    modelOptions,
     tokenMask: maskToken(token),
     hasToken: !!token,
-    isOfficial: !baseUrl,            // no custom base url → default login / subscription
+    isOfficial: !baseUrl, // no custom base url -> default login / subscription
   };
 }
 
@@ -377,16 +386,13 @@ function resolveSpawnEnv(session) {
     // Claude CLI auth precedence (v2.1.x): OAuth/keychain > ANTHROPIC_API_KEY >
     // ANTHROPIC_AUTH_TOKEN.  Without CLAUDE_CODE_SIMPLE=1, OAuth wins and the
     // provider's ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL are silently ignored.
-    if (env.ANTHROPIC_BASE_URL) {
-      env.CLAUDE_CODE_SIMPLE = '1';
-      // Prefer the token via ANTHROPIC_API_KEY (x-api-key header — highest
-      // priority in SIMPLE mode) and keep ANTHROPIC_AUTH_TOKEN as a fallback
-      // (Authorization: Bearer header for proxies that expect it).
-      if (env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY) {
-        env.ANTHROPIC_API_KEY = env.ANTHROPIC_AUTH_TOKEN;
-      }
-    }
-    return { env, skipDefaultModel: !!env.ANTHROPIC_BASE_URL, providerName: p.name };
+if (env.ANTHROPIC_BASE_URL) {
+  env.CLAUDE_CODE_SIMPLE = '1';
+  // Only set ANTHROPIC_API_KEY if the provider explicitly provided one.
+  // Auto-copying AUTH_TOKEN to API_KEY forces the x-api-key header on
+  // providers that don't accept it (e.g. Zhipu GLM 401s because it only
+  // reads Authorization: Bearer). Leave AUTH_TOKEN as-is for Bearer auth.
+}    return { env, skipDefaultModel: !!env.ANTHROPIC_BASE_URL, providerName: p.name };
   }
 
   try {
