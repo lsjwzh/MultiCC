@@ -1556,7 +1556,11 @@ cancelBtn.addEventListener('click', cancelStreaming);
 cancelBtn.addEventListener('touchend', (e) => { e.preventDefault(); cancelStreaming(); });
 
 function mergeStatusText(st) {
-  if (!st || !st.mergeReady) return tt('worktreeClean');
+  if (!st || (!st.mergeReady && !(st.dirty || st.ahead > 0))) return tt('worktreeClean');
+  // Dirty/ahead exist but merge is blocked — show why.
+  if (!st.mergeReady && !st.baseCheckedOut) {
+    return `Worktree has changes but cannot merge — ${st.baseBranch || 'main'} is not the active branch in the main directory.`;
+  }
   const bits = [];
   if (st.dirty) bits.push(tt('dirtyChanges'));
   if ((st.ahead || 0) > 0) bits.push(tt('aheadCommits', { n: st.ahead }));
