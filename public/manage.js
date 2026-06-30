@@ -43,6 +43,14 @@ function formatRelative(iso) {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
+function formatDuration(sec) {
+  if (!sec || sec < 0) return '';
+  const s = Math.floor(sec);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m${s % 60}s`;
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
 function shortenPath(p, maxLen) {
   if (!p) return '(unknown)';
   if (p.length <= maxLen) return p;

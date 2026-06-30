@@ -3452,7 +3452,8 @@ ${tail}`,
     if (mon) mon.classifyPending = false;
     if (result.cancelled) return;
     const { state, summary } = parseClassifyResult(result.text);
-    const msg = state === 'waiting' ? '等待交互' : '任务完成';
+    const doneMsg = summary ? `任务完成：${summary}` : '任务完成';
+    const msg = state === 'waiting' ? '等待交互' : doneMsg;
     triggerPush(sessionId, state, msg);
     terminalBroadcast(sessionId, { type: 'notify', state, message: msg });
     const dirId = persistedSessions.get(sessionId)?.dirId;
@@ -4776,7 +4777,8 @@ ${tail}`,
         return;
       }
       waitInjector.resetAuto(sessionName); // done / waiting-on-user → reset D's counter
-      const msg = state === 'waiting' ? '等待交互' : '任务完成';
+      const doneMsg = summary ? `任务完成：${summary}` : '任务完成';
+      const msg = state === 'waiting' ? '等待交互' : doneMsg;
       // This aux-AI verdict is the single source of truth for "is the turn done
       // or waiting?". Fan it out to every channel from here so nothing re-judges:
       //   1. web push / Bark / webhook (PWA + external)
@@ -4850,6 +4852,19 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) return;
   const sessionId = persisted.id || sessionName;
+
+  // Enrich bare "任务完成" with the last meaningful task summary, so the
+  // dashboard / chat shows "任务完成：修复登录页样式" instead of a dry "任务完成".
+  // The summary may come from the in-progress aux-AI (stored via setSessionSummary
+  // during the turn) or from a prior intent_classify.
+  if (message === '任务完成') {
+    const sm = sessionSummaries.get(sessionId);
+    const raw = sm?.summary || '';
+    // Strip any status label prefix to get the pure task description
+    const clean = raw.replace(/^(正在处理：|任务完成：)/, '').trim();
+    if (clean) message = `任务完成：${clean}`;
+  }
+
   setSessionStatus(sessionName, { status, currentFile: null });
   setSessionSummary(sessionId, message);
   if (alert) {
