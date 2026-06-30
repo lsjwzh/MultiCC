@@ -410,14 +410,40 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void cancel() => _service.cancel();
+  /// Cancel the in-flight response. Matches the web client's cancelStreaming():
+  /// sends the cancel signal (or queues it for reconnect) AND finalizes the
+  /// streaming bubble locally + shows a "已取消" system message, so the user
+  /// gets instant feedback instead of waiting for a server `result` that may
+  /// never arrive if the socket died mid-stream.
+  void cancel() {
+    _service.cancel();
+    _finishStreaming();
+    _addSystemMsg('已取消');
+    notifyListeners();
+  }
 
-  void clearHistory() {
-    _messages.clear();
+  /// Clear chat history. Matches the web client's behaviour:
+  ///   1. If a response is streaming, cancel the running CLI process FIRST
+  ///      (server's `clear_history` only wipes the history array + resets the
+  ///      CLI session id — it does NOT kill the in-flight `claudeProc`, so
+  ///      without cancelling the ongoing stream would keep arriving and
+  ///      repopulate the chat, making the clear look like a no-op).
+  ///   2. When [keep] > 0, only the messages before the last [keep] are
+  ///      discarded locally and on the server (keep-last-N mode).
+  void clearHistory({int keep = 0}) {
+    if (isStreaming) {
+      cancel();
+      _finishStreaming();
+    }
+    if (keep > 0 && _messages.length > keep) {
+      _messages.removeRange(0, _messages.length - keep);
+    } else {
+      _messages.clear();
+    }
     _currentMsg = null;
     _activeTools.clear();
     _historyApplied = false;
-    _service.clearHistory();
+    _service.clearHistory(keep: keep);
     notifyListeners();
   }
 

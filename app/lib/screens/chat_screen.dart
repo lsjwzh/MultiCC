@@ -333,6 +333,8 @@ class _Header extends StatelessWidget {
                 compact: narrow,
               ),
               const SizedBox(width: 4),
+              _ClearCtxButton(provider: provider),
+              const SizedBox(width: 4),
               _HeaderOverflowMenu(
                 mergeReady: mergeReady,
                 onRole: () =>
@@ -342,7 +344,6 @@ class _Header extends StatelessWidget {
                 onMemo: () =>
                     _openMemoFromSession(context, provider.sessionName),
                 onMerge: onMerge,
-                onClear: () => _confirmClear(context, provider),
                 onSettings: () => _openSettings(context, settings),
                 onShare: () => _shareFromSession(
                     context, provider.sessionName, settings),
@@ -374,31 +375,6 @@ class _Header extends StatelessWidget {
           backgroundColor: const Color(0xFF14171c),
         ),
       );
-  }
-
-  void _confirmClear(BuildContext context, ChatProvider provider) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(t('clearHistoryTitle')),
-        content: Text(t('clearHistoryBody')),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(t('cancel'),
-                style: const TextStyle(color: Color(0xFF8a909b))),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              provider.clearHistory();
-            },
-            child: Text(t('clearBtn'),
-                style: const TextStyle(color: Color(0xFFff6b63))),
-          ),
-        ],
-      ),
-    );
   }
 
   void _openSettings(BuildContext context, SettingsService settings) {
@@ -1437,8 +1413,232 @@ class _HeaderBtn extends StatelessWidget {
   }
 }
 
+/// Clear-context button for the chat header. Mirrors the web client's "Clear"
+/// button: tapping opens a small popup with two options —
+///   • 清空全部 (clear all)  → clearHistory(keep: 0)
+///   • 保留最近 N 条          → clearHistory(keep: N)
+/// The provider's clearHistory() cancels any in-flight stream before wiping,
+/// so clearing while streaming actually takes effect instead of looking like a
+/// no-op (the running CLI process gets killed first).
+class _ClearCtxButton extends StatefulWidget {
+  final ChatProvider provider;
+  const _ClearCtxButton({required this.provider});
+
+  @override
+  State<_ClearCtxButton> createState() => _ClearCtxButtonState();
+}
+
+class _ClearCtxButtonState extends State<_ClearCtxButton> {
+  final _keepCtrl = TextEditingController(text: '5');
+  bool _menuOpen = false;
+  final _layerLink = LayerLink();
+  OverlayEntry? _overlay;
+
+  void _closeMenu() {
+    _overlay?.remove();
+    _overlay = null;
+    if (mounted) setState(() => _menuOpen = false);
+  }
+
+  void _openMenu() {
+    if (_menuOpen) {
+      _closeMenu();
+      return;
+    }
+    setState(() => _menuOpen = true);
+    _overlay = OverlayEntry(
+      builder: (ctx) => _ClearMenuBody(
+        link: _layerLink,
+        keepCtrl: _keepCtrl,
+        onClearAll: () {
+          _closeMenu();
+          widget.provider.clearHistory(keep: 0);
+        },
+        onClearKeep: () {
+          final n = int.tryParse(_keepCtrl.text.trim()) ?? 5;
+          _closeMenu();
+          widget.provider.clearHistory(keep: n < 1 ? 1 : n);
+        },
+        onDismiss: _closeMenu,
+      ),
+    );
+    Overlay.of(context).insert(_overlay!);
+  }
+
+  @override
+  void dispose() {
+    _overlay?.remove();
+    _keepCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CompositedTransformTarget(
+      link: _layerLink,
+      child: Tooltip(
+        message: t('clearCtx'),
+        child: GestureDetector(
+          onTap: _openMenu,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF14171c),
+              border: Border.all(color: const Color(0xFF20242b)),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.delete_sweep_outlined,
+                  color: const Color(0xFFff6b63),
+                  size: 16,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  t('clearCtx'),
+                  style: const TextStyle(
+                    color: Color(0xFFff6b63),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ClearMenuBody extends StatelessWidget {
+  final LayerLink link;
+  final TextEditingController keepCtrl;
+  final VoidCallback onClearAll;
+  final VoidCallback onClearKeep;
+  final VoidCallback onDismiss;
+  const _ClearMenuBody({
+    required this.link,
+    required this.keepCtrl,
+    required this.onClearAll,
+    required this.onClearKeep,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // Tap-outside dismiss layer
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onDismiss,
+          child: const SizedBox.expand(),
+        ),
+        CompositedTransformFollower(
+          link: link,
+          targetAnchor: Alignment.bottomRight,
+          followerAnchor: Alignment.topRight,
+          offset: const Offset(0, 6),
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: 180,
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF14171c),
+                border: Border.all(color: const Color(0xFF20242b)),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Clear all
+                  InkWell(
+                    onTap: onClearAll,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 9),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.delete_sweep_outlined,
+                              size: 16, color: Color(0xFFff6b63)),
+                          const SizedBox(width: 8),
+                          Text(t('clearAll'),
+                              style: const TextStyle(
+                                  color: Color(0xFFff6b63), fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 44,
+                          child: TextField(
+                            controller: keepCtrl,
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(
+                                color: Color(0xFFe7eaee), fontSize: 12),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 6),
+                              enabledBorder: OutlineInputBorder(
+                                borderSide: const BorderSide(
+                                    color: Color(0xFF20242b)),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderSide: const BorderSide(
+                                    color: Color(0xFF3ad6c5)),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            t('clearKeepLast'),
+                            style: const TextStyle(
+                                color: Color(0xFF8a909b), fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: TextButton(
+                      onPressed: onClearKeep,
+                      style: TextButton.styleFrom(
+                        foregroundColor: const Color(0xFF22ab9c),
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                      ),
+                      child: Text(t('clearKeepConfirm'),
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Overflow menu for the chat header. Collapses the occasional actions
-/// (memo / merge worktree / clear history / settings) behind a single "⋮"
+/// (memo / merge worktree / settings) behind a single "⋮"
 /// trigger, keeping the header's action cluster a fixed, compact width so its
 /// icons never overflow the right edge on narrow screens.
 class _HeaderOverflowMenu extends StatelessWidget {
@@ -1447,7 +1647,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final VoidCallback onMemory;
   final VoidCallback onMemo;
   final VoidCallback onMerge;
-  final VoidCallback onClear;
   final VoidCallback onSettings;
   final VoidCallback onShare;
   final VoidCallback onShareMessages;
@@ -1457,7 +1656,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onMemory,
     required this.onMemo,
     required this.onMerge,
-    required this.onClear,
     required this.onSettings,
     required this.onShare,
     required this.onShareMessages,
@@ -1487,9 +1685,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
           case 'merge':
             onMerge();
             break;
-          case 'clear':
-            onClear();
-            break;
           case 'share':
             onShare();
             break;
@@ -1518,8 +1713,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
           mergeReady ? t('mergeWorktreeReady', {'base': ''}) : t('mergeWorktree'),
           mergeReady ? const Color(0xFFe3b341) : const Color(0xFFe7eaee),
         ),
-        _item('clear', Icons.delete_sweep_outlined, t('clearHistory'),
-            const Color(0xFFff6b63)),
         const PopupMenuDivider(),
         _item('settings', Icons.settings_outlined, t('settings'),
             const Color(0xFFe7eaee)),

@@ -138,6 +138,10 @@
   "clearHistoryTitle": "清空历史",
   "clearHistoryBody": "这会清空聊天记录并重置会话。",
   "clearBtn": "清空",
+  "clearCtx": "清空",
+  "clearAll": "清空全部",
+  "clearKeepLast": "保留最近 N 条",
+  "clearKeepConfirm": "确认",
 
   "changeCwd": "切换",
   "changeCwdTitle": "切换工作目录",
