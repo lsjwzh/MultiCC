@@ -207,7 +207,6 @@ function setSessionStatus(sessionId, type) {
   if (_sessionStatus.get(sessionId) === type) return; // no change
   _sessionStatus.set(sessionId, type);
   renderSessions(_cachedSessions);
-refreshAllCardBorders();
 }
 
 function clearSessionStatus(sessionId) {
@@ -401,7 +400,6 @@ async function loadDashboard() {
       }
     }
     renderDashboard(directories, sessions);
-refreshAllCardBorders();
 refreshAllCardBorders();
 syncMonitors(sessions);
     startRuntimeTicker();
@@ -1300,7 +1298,7 @@ function renderDirectoryBlock(dir, dirSessions) {
   // body is a 2-line preview; clicking opens the full detail in a modal.
   if (_focusedSessionId) {
     return `
-    <div class="dir-block open" data-dir-id="${escapeHtml(id)}">
+    <div class="dir-block open${isAnySessionInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}">
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1314,7 +1312,7 @@ function renderDirectoryBlock(dir, dirSessions) {
 
   // Overview mode: unified card with min-height and grid layout
   return `
-    <div class="dir-block dir-card" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;">
+    <div class="dir-block dir-card${isAnySessionInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;">
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1450,7 +1448,7 @@ function renderSessionRow(s) {
   // (the group header already says "Claude Chats"); #id, delete and the rest
   // live in the ⋯ menu / title attribute.
   return `
-    <div class="lean${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
+    <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
       <span class="dot ${statusCls}" id="sess-status-${escapeHtml(s.id)}" title="${escapeHtml(statusText)}"></span>
       <div class="lean-main">
         <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
