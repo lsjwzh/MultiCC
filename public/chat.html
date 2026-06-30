@@ -70,10 +70,6 @@
       top: calc(100% + 6px);
       z-index: 50;
       min-width: 190px;
-      max-width: calc(100vw - 16px);
-      max-height: calc(100vh - 120px);
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
       padding: 6px;
       background: #161b22;
       border: 1px solid #30363d;
@@ -82,6 +78,25 @@
     }
     #header-more-menu.open { display: flex; flex-direction: column; gap: 6px; }
     #header-more-menu .hdr-btn { width: 100%; text-align: left; }
+    /* On phone screens the menu becomes a centered modal sheet so nothing
+       gets clipped by the viewport edge. */
+    @media (max-width: 760px) {
+      #header-more-menu {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        right: auto;
+        transform: translate(-50%, -50%);
+        min-width: 260px;
+        max-width: calc(100vw - 32px);
+        max-height: calc(100vh - 64px);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 10px;
+        z-index: 10000;
+        box-shadow: 0 16px 40px rgba(0,0,0,.5);
+      }
+    }
     .hdr-menu-wrap { position: relative; display: inline-flex; }
     .hdr-drop-menu {
       display: none;

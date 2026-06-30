@@ -237,16 +237,48 @@ function syncHeaderMoreMenu() {
 
 headerMoreBtn?.addEventListener('click', (e) => {
   e.stopPropagation();
-  headerMoreMenu?.classList.toggle('open');
+  const willOpen = !headerMoreMenu?.classList.contains('open');
+  if (willOpen) openHeaderMoreModal();
 });
 headerMoreMenu?.addEventListener('click', (e) => {
-  if (e.target.closest('.hdr-btn')) headerMoreMenu.classList.remove('open');
+  if (e.target.closest('.hdr-btn')) closeHeaderMoreModal();
 });
 document.addEventListener('click', (e) => {
-  if (headerMoreWrap && !headerMoreWrap.contains(e.target)) headerMoreMenu?.classList.remove('open');
+  if (headerMoreWrap && !headerMoreWrap.contains(e.target) &&
+      (!_headerMoreBackdrop || !_headerMoreBackdrop.contains(e.target))) {
+    closeHeaderMoreModal();
+  }
 });
 window.addEventListener('resize', syncHeaderMoreMenu);
 setTimeout(syncHeaderMoreMenu, 0);
+
+// Phone (<=760px): render the "more" menu as a centered modal with a backdrop,
+// so items never get clipped by the viewport edge. Desktop keeps the original
+// dropdown behavior.
+let _headerMoreBackdrop = null;
+function openHeaderMoreModal() {
+  closeHeaderMoreModal();
+  const compact = window.innerWidth <= 760;
+  if (compact) {
+    _headerMoreBackdrop = document.createElement('div');
+    _headerMoreBackdrop.style.cssText =
+      'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px;';
+    // Re-parent the menu into the backdrop so it can be centered.
+    _headerMoreBackdrop.appendChild(headerMoreMenu);
+    document.body.appendChild(_headerMoreBackdrop);
+    _headerMoreBackdrop.onclick = (e) => { if (e.target === _headerMoreBackdrop) closeHeaderMoreModal(); };
+  }
+  headerMoreMenu?.classList.add('open');
+}
+function closeHeaderMoreModal() {
+  headerMoreMenu?.classList.remove('open');
+  // Restore the menu to its original wrap when we tore it out for modal mode.
+  if (_headerMoreBackdrop) {
+    headerMoreWrap?.appendChild(headerMoreMenu);
+    _headerMoreBackdrop.remove();
+    _headerMoreBackdrop = null;
+  }
+}
 
 /* ── State ── */
 let ws = null;
