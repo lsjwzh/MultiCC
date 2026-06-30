@@ -2,8 +2,14 @@
 # ============================================================================
 # MultiCC — One-Click Install Script
 # ============================================================================
+# MultiCC version  1.0.0
+# Release channel  stable — see https://github.com/lsjwzh/MultiCC/releases
+# ============================================================================
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
+#   Stable release:
+#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.0.0/install.sh | bash
+#   Latest (main branch, may be ahead of the latest stable release):
+#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 #
 # Or download and run locally:
 #   chmod +x install.sh && ./install.sh
@@ -132,6 +138,9 @@ HELP
     *) err "Unknown option: $1 (use --help)"; exit 1 ;;
   esac
 done
+
+# MultiCC version — keep in sync with package.json when cutting a release
+INSTALLER_VERSION="1.0.0"
 
 REPO_URL="https://github.com/lsjwzh/MultiCC.git"
 
