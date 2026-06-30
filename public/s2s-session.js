@@ -77,12 +77,14 @@ class S2SSession {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
 
-      // Start VAD for silence detection (await to catch errors)
+      // Start VAD for silence detection (await to catch errors). Thresholds are
+      // RMS amplitudes (see VadMonitor) with an adaptive noise floor on top, so
+      // normal speaking volume triggers reliably without a hot mic.
       this.vadMonitor = new VadMonitor({
         stream: this.mediaStream,
-        silenceThreshold: 0.012,
+        silenceThreshold: 0.010,
         silenceTimeout: 1500,   // 1.5s silence = user finished speaking
-        speechThreshold: 0.020,
+        speechThreshold: 0.018,
         speechTimeout: 250,
         onSpeechStart: () => this._onSpeechStart(),
         onSilence: (dur) => this._onSilence(dur),
@@ -186,6 +188,8 @@ class S2SSession {
         this._processRecognizedText(text);
       } else {
         this._log('Empty STT result, ignoring');
+        // Surface it so the panel doesn't look frozen after the user spoke.
+        this.onText('（没听清，请再说一次）', true);
         this.onAsrStatus('idle');
       }
     } catch (err) {
@@ -198,12 +202,17 @@ class S2SSession {
   _processRecognizedText(text) {
     if (this.state === 'LISTENING') {
       // If we have a pending breakdown, the user is responding to confirmation
-      if (this.currentBreakdown && !this.currentBreakdown.allConfirmed) {
-        this._handleConfirmationResponse(text);
-      } else {
-        // First utterance → enter confirmation phase
-        this._enterConfirming(text);
-      }
+      // Both branches are async; catch so a failure surfaces instead of
+      // silently leaving the session stuck in LISTENING.
+      const p = (this.currentBreakdown && !this.currentBreakdown.allConfirmed)
+        ? this._handleConfirmationResponse(text)
+        : this._enterConfirming(text);
+      Promise.resolve(p).catch((err) => {
+        this._log('processRecognizedText failed:', err && err.message);
+        this.onError('需求处理失败: ' + (err && err.message || err));
+        this._setState('LISTENING');
+        this.accumulatedText = '';
+      });
     }
   }
 
@@ -563,14 +572,26 @@ class S2SSession {
     const ttsProvider = this.opts.ttsProvider || 'edge';
     const ttsWsUrl = `${this.wsUrl}/ws/tts`;
 
+    // Never reject: TTS is best-effort narration. A failed playback must not
+    // break the confirm/execute flow, so any error resolves quietly (logged).
     return new Promise((resolve) => {
-      this.voiceOutput = new VoiceOutput({
-        wsUrl: ttsWsUrl,
-        provider: ttsProvider,
-        onDone: () => { this.voiceOutput = null; resolve(); },
-        onError: (msg) => { this._log('TTS error:', msg); this.voiceOutput = null; resolve(); },
-      });
-      this.voiceOutput.speak(text).catch(() => resolve());
+      try {
+        this.voiceOutput = new VoiceOutput({
+          wsUrl: ttsWsUrl,
+          provider: ttsProvider,
+          onDone: () => { this.voiceOutput = null; resolve(); },
+          onError: (msg) => { this._log('TTS error:', msg); this.voiceOutput = null; resolve(); },
+        });
+        this.voiceOutput.speak(text).catch((e) => {
+          this._log('TTS speak failed:', e && e.message);
+          this.voiceOutput = null;
+          resolve();
+        });
+      } catch (e) {
+        this._log('TTS init failed:', e && e.message);
+        this.voiceOutput = null;
+        resolve();
+      }
     });
   }
 

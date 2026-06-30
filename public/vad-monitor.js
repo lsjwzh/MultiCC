@@ -27,27 +27,37 @@ class VadMonitor {
     this.analyser = null;
     this.worklet = null;
     this.running = false;
-    
+
     // Detection state
     this.isSpeaking = false;
     this.silenceStart = null;
     this.lastVolume = 0;
-    
-    // Configurable thresholds
-    this.silenceThreshold = opts.silenceThreshold || 0.02; // Volume threshold for silence
-    this.speechThreshold = opts.speechThreshold || 0.03;   // Volume threshold for speech
-    this.silenceTimeout = opts.silenceTimeout || 1000;     // Ms of silence to trigger
-    this.speechTimeout = opts.speechTimeout || 300;        // Ms of speech to trigger speech start
+    this.noiseFloor = 0;        // adaptive ambient-noise baseline (RMS)
+    this._calibrated = false;
+    this._calibrationSamples = 0;
+
+    // Configurable thresholds. These are RMS amplitudes (0-1) on the
+    // time-domain waveform, NOT averaged frequency-bin magnitudes. RMS tracks
+    // perceived loudness far better, so speech reliably clears these without a
+    // hot mic. Defaults are sensitive on purpose; the adaptive noise floor adds
+    // a margin on top so a noisy room still works.
+    this.silenceThreshold = opts.silenceThreshold || 0.010; // below this (+floor) = silence
+    this.speechThreshold = opts.speechThreshold || 0.018;   // above this (+floor) = speech
+    this.silenceTimeout = opts.silenceTimeout || 1000;      // Ms of silence to trigger
+    this.speechTimeout = opts.speechTimeout || 300;         // Ms of speech to trigger speech start
     this.speechStart = null;
   }
 
   async start(stream) {
     if (this.running) return;
-    
+
     this.running = true;
     this.isSpeaking = false;
     this.silenceStart = null;
     this.speechStart = null;
+    this.noiseFloor = 0;
+    this._calibrated = false;
+    this._calibrationSamples = 0;
 
     // Create AudioContext
     this.ac = new (window.AudioContext || window.webkitAudioContext)();
@@ -55,42 +65,64 @@ class VadMonitor {
       await this.ac.resume();
     }
 
-    // Create AnalyserNode for volume measurement
+    // Create AnalyserNode for waveform (time-domain) measurement.
     this.analyser = this.ac.createAnalyser();
-    this.analyser.fftSize = 256;
-    this.analyser.smoothingTimeConstant = 0.3;
+    this.analyser.fftSize = 1024;
+    this.analyser.smoothingTimeConstant = 0;
 
     // Connect stream to analyser
     this.source = this.ac.createMediaStreamSource(stream);
     this.source.connect(this.analyser);
 
+    // Reusable time-domain buffer
+    this._timeBuf = new Float32Array(this.analyser.fftSize);
+
     // Start monitoring loop
     this._monitorLoop();
+  }
+
+  // Root-mean-square amplitude of the current waveform window (0-1).
+  _readRms() {
+    const buf = this._timeBuf;
+    this.analyser.getFloatTimeDomainData(buf);
+    let sumSq = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = buf[i];
+      sumSq += v * v;
+    }
+    return Math.sqrt(sumSq / buf.length);
   }
 
   _monitorLoop() {
     if (!this.running || !this.analyser) return;
 
-    const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-    this.analyser.getByteFrequencyData(dataArray);
+    const rms = this._readRms();
+    this.lastVolume = rms;
 
-    // Calculate average volume (0-1)
-    let sum = 0;
-    for (let i = 0; i < dataArray.length; i++) {
-      sum += dataArray[i];
+    // Calibrate ambient noise floor over the first ~0.5s of silence so the
+    // thresholds adapt to the room. We take the running max of early samples
+    // (assumed non-speech) as a conservative floor.
+    if (!this._calibrated) {
+      this.noiseFloor = Math.max(this.noiseFloor, rms);
+      if (++this._calibrationSamples >= 30) { // ~0.5s at 60fps
+        this._calibrated = true;
+      }
     }
-    const volume = sum / dataArray.length / 255;
-    this.lastVolume = volume;
 
-    // Report volume
+    // Effective thresholds = configured value + a fraction of the noise floor.
+    const speechLvl = this.speechThreshold + this.noiseFloor * 0.5;
+    const silenceLvl = this.silenceThreshold + this.noiseFloor * 0.5;
+
+    // Report volume (normalized so the UI bar is responsive: RMS speech is
+    // typically 0.02-0.15, so scale into a visible range).
     if (this.opts.onVolume) {
-      this.opts.onVolume(volume);
+      this.opts.onVolume(rms);
     }
 
     const now = Date.now();
 
     // Speech detection logic
-    if (volume > this.speechThreshold) {
+    if (rms > speechLvl) {
       // User is speaking
       if (!this.isSpeaking) {
         // Potential speech start
@@ -109,8 +141,10 @@ class VadMonitor {
         // Continue speaking, reset silence timer
         this.silenceStart = null;
       }
-    } else if (volume < this.silenceThreshold) {
-      // Silence detected
+    } else if (rms < silenceLvl) {
+      // Below silence level — reset any tentative speech-start, and if we were
+      // speaking, start counting silence toward end-of-utterance.
+      this.speechStart = null;
       if (this.isSpeaking) {
         if (!this.silenceStart) {
           this.silenceStart = now;

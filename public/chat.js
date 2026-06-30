@@ -3649,7 +3649,9 @@ connect();
         s2sTranscript.innerHTML = escapeHtml(text);
       },
       onVolume: (level) => {
-        const pct = Math.min(100, Math.round(level * 400));
+        // level is RMS amplitude (~0.02-0.15 for speech). Scale into a
+        // responsive 0-100% bar with a gentle curve so quiet speech still moves.
+        const pct = Math.min(100, Math.round(Math.sqrt(level) * 220));
         s2sVolumeFill.style.width = pct + '%';
       },
       onAsrStatus: (status) => {
