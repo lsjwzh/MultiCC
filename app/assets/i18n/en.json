@@ -116,6 +116,10 @@
   "clearHistoryTitle": "Clear History",
   "clearHistoryBody": "This will clear chat history and reset the session.",
   "clearBtn": "Clear",
+  "clearCtx": "Clear",
+  "clearAll": "Clear all",
+  "clearKeepLast": "Keep last N",
+  "clearKeepConfirm": "OK",
 
   "changeCwd": "Change",
   "changeCwdTitle": "Change Working Directory",

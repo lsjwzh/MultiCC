@@ -31,6 +31,10 @@ class ChatService {
   Timer? _reconnectTimer;
   bool _disposed = false;
   bool isStreaming = false;
+  // Cancel requested while WS was disconnected — resend on reconnect, matching
+  // the web client's _pendingCancel. Without this, a cancel tapped during a
+  // brief disconnect is silently dropped and the user is stuck streaming.
+  bool _pendingCancel = false;
 
   // ── Heartbeat: detect "half-open" sockets ──
   // When the phone sleeps / network switches, the OS can freeze the socket
@@ -103,6 +107,14 @@ class ChatService {
         _reconnectAttempt = 0;
         _lastActivity = DateTime.now();
         _startHeartbeat();
+        // Flush a cancel that was requested while disconnected — the server
+        // never saw it, so the CLI process is still running.
+        if (_pendingCancel) {
+          _pendingCancel = false;
+          try {
+            channel.sink.add(jsonEncode({'type': 'cancel'}));
+          } catch (_) {}
+        }
         _emit('state_change', _state);
       }).catchError((_) {
         if (_disposed || _channel != channel) return;
@@ -290,15 +302,29 @@ class ChatService {
     }
   }
 
+  /// Cancel the in-flight CLI turn. Mirrors the web client's cancelStreaming():
+  ///   • If connected, send `{type:'cancel'}` immediately (idempotent on the
+  ///     server — safe even if the turn already ended).
+  ///   • If disconnected, set `_pendingCancel` so the cancel is flushed on the
+  ///     next successful reconnect — the CLI process keeps running until then.
+  ///   • Always flip `isStreaming = false` locally so the UI (stop → send
+  ///     button) reacts instantly, instead of waiting for a server `result`
+  ///     that may never come if the socket died mid-stream.
   void cancel() {
-    try {
-      _channel?.sink.add(jsonEncode({'type': 'cancel'}));
-    } catch (_) {}
+    if (_channel != null && _state == ChatConnectionState.connected) {
+      try {
+        _channel!.sink.add(jsonEncode({'type': 'cancel'}));
+      } catch (_) {}
+      _pendingCancel = false;
+    } else {
+      _pendingCancel = true;
+    }
+    isStreaming = false;
   }
 
-  void clearHistory() {
+  void clearHistory({int keep = 0}) {
     try {
-      _channel?.sink.add(jsonEncode({'type': 'clear_history'}));
+      _channel?.sink.add(jsonEncode({'type': 'clear_history', 'keep': keep}));
     } catch (_) {}
   }
 
