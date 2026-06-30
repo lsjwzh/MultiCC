@@ -119,8 +119,12 @@ function gitWorktreeMergeState(dir, session) {
     baseCheckedOut = gitBaseBranch(dir.path) === baseBranch;
   } catch (_) {}
 
+  // mergeReady requires combined with the ability to actually merge.
+  // If base is not checked out in the main dir no merge can succeed despite
+  // dirty or ahead changes; gate it so the UI indicator is truthful.
+  const canMerge = dirty || ahead > 0;
   return {
-    mergeReady: dirty || ahead > 0,
+    mergeReady: canMerge && baseCheckedOut,
     dirty,
     ahead,
     behind,
@@ -160,6 +164,8 @@ function checkMergedJsSyntax(dirPath, fromRef, toRef) {
 }
 
 // Commit pending work in the worktree, then merge its branch into the base branch.
+// ⚠️ Validation runs FIRST so a failing precondition (wrong base checked out, etc.)
+// never leaves orphaned commits on the worktree branch with no path to merge.
 function gitMergeBack(dir, session) {
   const dirPath = dir.path;
   const branch = session.branch;
@@ -167,6 +173,14 @@ function gitMergeBack(dir, session) {
   const wtPath = session.worktreePath;
   if (!branch || !wtPath) return { ok: false, error: 'session has no worktree' };
 
+  // ── Phase 1: validate preconditions (no side effects yet) ──
+  const curBranch = gitBaseBranch(dirPath);
+  if (curBranch !== baseBranch) {
+    return { ok: false, error:
+      `base branch '${baseBranch}' is not checked out in the main directory (currently on '${curBranch}'); merge manually` };
+  }
+
+  // ── Phase 2: commit local work into the session branch ──
   let committed = false;
   if (fs.existsSync(wtPath)) {
     try {
@@ -177,17 +191,13 @@ function gitMergeBack(dir, session) {
     }
   }
 
-  const curBranch = gitBaseBranch(dirPath);
-  if (curBranch !== baseBranch) {
-    return { ok: false, error:
-      `base branch '${baseBranch}' is not checked out in the main directory (currently on '${curBranch}'); merge manually` };
-  }
-
+  // ── Phase 3: count ahead; early exit if nothing to merge ──
   let ahead = 0;
   try { ahead = parseInt(gitRun(dirPath, ['rev-list', '--count', `${baseBranch}..${branch}`]) || '0', 10); }
   catch (_) {}
   if (ahead === 0) return { ok: true, merged: false, committed, message: '没有新提交需要合并' };
 
+  // ── Phase 4: merge & validate ──
   let preMergeHead = '';
   try { preMergeHead = gitRun(dirPath, ['rev-parse', 'HEAD']); } catch (_) {}
 
