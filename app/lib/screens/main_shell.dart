@@ -1781,6 +1781,28 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                             ],
                           ),
                         ),
+                        IconButton(
+                          tooltip: t('projectMemo'),
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => MemoScreen(
+                                  directory: dir,
+                                  mgr: widget.mgr,
+                                ),
+                              ),
+                            );
+                          },
+                          icon: const Icon(
+                            Icons.sticky_note_2_outlined,
+                            size: 20,
+                            color: AppColors.muted,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 40,
+                            minHeight: 44,
+                          ),
+                        ),
                         _DirectoryPushButton(
                           directory: dir,
                           onPressed: () => _pushDirectory(context),
