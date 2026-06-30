@@ -182,6 +182,19 @@ function summarize(p) {
     model = tomlValue(cfg.config, 'model');
     token = (cfg.auth && cfg.auth.OPENAI_API_KEY) ||
             (cfg.auth && cfg.auth.tokens && cfg.auth.tokens.access_token) || '';
+    // Collect models this codex provider can serve: the primary `model` from
+    // config.toml plus any extras declared in `modelCatalog.models`. This lets
+    // the session model auto-fill correctly when switching onto a codex
+    // provider (e.g. 讯飞GLM5.2 which declares model="astron-code-latest").
+    const seen = new Set();
+    const ordered = [];
+    const extras = (cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models))
+      ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean)
+      : [];
+    for (const v of [model, ...extras]) {
+      if (v && !seen.has(v)) { seen.add(v); ordered.push(v); }
+    }
+    modelOptions = ordered;
   }
   return {
     id: p.id,

@@ -2041,15 +2041,22 @@ app.patch('/api/sessions/:id', (req, res) => {
   }
   if (req.body.model !== undefined) {
     const model = (req.body.model || '').toString().trim();
-    if (s.cli !== 'claude') return res.status(400).json({ error: 'model is claude-only' });
-    // Allow `/` and `:` for OpenRouter-style ids (openrouter/owl-alpha) and provider:model forms.
-    if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
-      return res.status(400).json({ error: 'invalid model' });
+    // codex sessions read their model from the provider's config.toml, not from
+    // a per-session override; silently ignore the field instead of 400-ing so
+    // the UI's post-provider-switch refresh doesn't surface "model is
+    // claude-only" as a hard failure.
+    if (s.cli !== 'claude') {
+      // no-op; leave s.model to be resolved by the provider at spawn time
+    } else {
+      // Allow `/` and `:` for OpenRouter-style ids (openrouter/owl-alpha) and provider:model forms.
+      if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
+        return res.status(400).json({ error: 'invalid model' });
+      }
+      s.model = model || null;
+      // Chat sessions pick this up on the next turn (fresh spawn per turn);
+      // terminal sessions need a session restart to relaunch claude with it.
+      appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
     }
-    s.model = model || null;
-    // Chat sessions pick this up on the next turn (fresh spawn per turn);
-    // terminal sessions need a session restart to relaunch claude with it.
-    appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
   }
   if (req.body.rolePrompt !== undefined) {
     const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
