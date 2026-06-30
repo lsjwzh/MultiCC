@@ -3443,7 +3443,7 @@ function classifyTerminalIdle(sessionId, tail) {
 第1行：仅一个字母，表示当前状态——
   C = 任务已完成或回到空闲提示符，不需要用户操作
   W = 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
-第2行：用不超过 20 个汉字概括它最近在做的事（动词开头，如“修复登录页样式”），无法概括就留空。
+第2行：用不超过 20 个汉字概括整体任务是什么（如”memo图片更换””登录页样式修复””数据库迁移”），无法概括就留空。如果终端输出显示多步操作，请概括整体任务而非当前步骤。
 
 终端输出（尾部）：
 ${tail}`,
@@ -4749,6 +4749,12 @@ function scheduleIntentClassify(cs, sessionName) {
     const taskId = crypto.randomUUID();
     cs.pendingClassifyTaskId = taskId;
 
+    // Gather recent user messages to help the AI understand the overall task
+    const recentUserMsgs = getRecentUserMessages(sessionName, 3);
+    const userContext = recentUserMsgs.length > 0
+      ? `\n最近几轮用户消息（用于理解整体任务）：\n${recentUserMsgs.map((m, i) => `${i + 1}. ${briefTaskDescription(m)}`).join('\n')}`
+      : '';
+
     auxQueue.enqueue({
       id: taskId,
       type: 'intent_classify',
@@ -4756,8 +4762,8 @@ function scheduleIntentClassify(cs, sessionName) {
 第1行：仅一个字母——
   C = 任务已完成，不需要任何后续动作
   W = 正在等待用户回复、确认或决策（需要用户操作）
-  B = 正在等待某个后台任务/外部数据/第三方返回后才能继续，且无需用户操作（例如“等部署完成”“等接口返回”“稍后再查”）
-第2行：用不超过 20 个汉字概括它这一轮做了什么/得出的结论（动词开头，如“修复登录页样式”“给出三种方案对比”）。这一行必须给出，不得为空、不要只回字母、不要写“无”或“无法概括”；实在没有具体动作就概括它回复的主旨。
+  B = 正在等待某个后台任务/外部数据/第三方返回后才能继续，且无需用户操作（例如”等部署完成””等接口返回””稍后再查”）
+第2行：用不超过 20 个汉字概括整体任务是什么（基于最近用户请求和AI回复综合判断，如”memo图片更换””登录页样式修复””数据库迁移脚本”）。这一行必须给出，不得为空、不要只回字母、不要写”无”或”无法概括”。如果多轮对话围绕同一个任务，请保持任务名一致。${userContext}
 
 回复内容：
 ${tail}`,
@@ -4812,12 +4818,13 @@ ${tail}`,
 // The intent_classify path only fires AFTER a turn completes. Users also want
 // to know "what task is running" and "what's the current status" WHILE the
 // agent is still working. This does exactly that:
-//   • Task start: immediately stamp a brief description derived from the user
-//     message so the dashboard / chat shows "正在处理：xxx" the instant the
-//     turn begins — no AI call, zero latency.
+//   • Task start: immediately stamp the stable task name derived from the user
+//     message so the dashboard / chat shows "处理中：memo图片更换" the instant
+//     the turn begins — no AI call, zero latency.
 //   • In-progress: every PROGRESS_SUMMARY_INTERVAL_MS while still streaming,
-//     ask the aux AI to summarize the assistant's current output into ≤20
-//     chars, then fan it out via setSessionSummary + a `running` notify event
+//     ask the aux AI to summarize the assistant's current sub-action into ≤15
+//     chars, then combine with the stable task name as "处理中：xxx — 子动作"
+//     and fan it out via setSessionSummary + a `running` notify event
 //     so both the workspace board and chat clients can display it.
 
 function briefTaskDescription(text) {
@@ -4826,6 +4833,22 @@ function briefTaskDescription(text) {
   brief = brief.replace(/^【[^】]*】\s*/, '');
   if (brief.length > 40) brief = brief.slice(0, 40) + '…';
   return brief || '新任务';
+}
+
+// Get recent user messages from chat history for task summary context.
+// Returns up to `maxCount` most recent user messages (oldest first).
+function getRecentUserMessages(sessionName, maxCount = 3) {
+  try {
+    const history = loadChatHistory(sessionName);
+    const userMsgs = [];
+    for (let i = history.length - 1; i >= 0 && userMsgs.length < maxCount; i--) {
+      const msg = history[i];
+      if (msg && msg.role === 'user' && msg.content) {
+        userMsgs.unshift(msg.content);
+      }
+    }
+    return userMsgs;
+  } catch (_) { return []; }
 }
 
 function emitRunningNotify(sessionName, message) {
@@ -4841,9 +4864,9 @@ function emitRunningNotify(sessionName, message) {
 }
 
 // Terminal outcome of a chat turn. Fired immediately at turn end so the card
-// stops lingering on the in-progress "正在处理…" text:
+// moves from the in-progress "处理中：xxx" to the completed label:
 //   • status badge → completed / error  (status event)
-//   • summary line → the outcome label   (summary event) — replaces 正在处理…
+//   • summary line → the outcome label   (summary event) — replaces 处理中：xxx
 // Both are display-only (no user-facing alert). The lock-screen push / voice /
 // app notification (the `notify` event) only fires when `alert` is set — true
 // for errors; false for a plain completion, which the 30s intent_classify
@@ -4853,16 +4876,22 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
   if (!persisted) return;
   const sessionId = persisted.id || sessionName;
 
-  // Enrich bare "任务完成" with the last meaningful task summary, so the
-  // dashboard / chat shows "任务完成：修复登录页样式" instead of a dry "任务完成".
-  // The summary may come from the in-progress aux-AI (stored via setSessionSummary
-  // during the turn) or from a prior intent_classify.
+  // Enrich bare "任务完成" with the stable task name so the
+  // dashboard / chat shows "任务完成：memo图片更换" instead of a dry "任务完成".
+  // Prefer the current turn's stored task name; fall back to the last
+  // session summary (from a prior intent_classify).
   if (message === '任务完成') {
-    const sm = sessionSummaries.get(sessionId);
-    const raw = sm?.summary || '';
-    // Strip any status label prefix to get the pure task description
-    const clean = raw.replace(/^(正在处理：|任务完成：)/, '').trim();
-    if (clean) message = `任务完成：${clean}`;
+    const cs = chatSessions.get(sessionName);
+    const taskName = cs?.currentTaskName || '';
+    if (taskName) {
+      message = `任务完成：${taskName}`;
+    } else {
+      const sm = sessionSummaries.get(sessionId);
+      const raw = sm?.summary || '';
+      // Strip any status label prefix plus optional " — subAction" suffix
+      const clean = raw.replace(/^(正在处理：|处理中：|任务完成：)/, '').replace(/\s*—\s*.+$/, '').trim();
+      if (clean) message = `任务完成：${clean}`;
+    }
   }
 
   setSessionStatus(sessionName, { status, currentFile: null });
@@ -4890,9 +4919,12 @@ function startProgressSummary(cs, sessionName) {
     }
 
     const tail = text.slice(-1500);
+    const taskName = cs.currentTaskName || '未知任务';
     auxQueue.enqueue({
       type: 'progress_summary',
-      prompt: `用不超过20个汉字概括AI助手当前正在做的事情（动词开头，如"正在编辑server.js"、"正在运行测试"、"正在分析错误日志"）。只输出概括内容，不要解释、不要前缀。
+      prompt: `当前整体任务：「${taskName}」
+
+用不超过15个汉字概括AI助手当前正在执行的具体操作步骤（动词开头，如"修改CSS样式"、"运行单元测试"、"编写API接口"、"排查报错原因"）。只描述当前步骤，不要重复整体任务名。只输出概括内容，不要解释、不要前缀。
 
 回复内容：
 ${tail}`,
@@ -4900,10 +4932,12 @@ ${tail}`,
     }).then(result => {
       if (result.cancelled) return;
       if (!cs.isStreaming) return; // turn finished while we were asking
-      const summary = (result.text || '').trim().replace(/^["'"']|["'"']$/g, '').slice(0, 30);
-      if (summary && summary !== '-' && summary !== '—') {
-        emitRunningNotify(sessionName, summary);
-        console.log(`[multicc/aux] Progress summary for ${sessionName}: ${summary}`);
+      const subAction = (result.text || '').trim().replace(/^["'"']|["'"']$/g, '').slice(0, 30);
+      if (subAction && subAction !== '-' && subAction !== '—') {
+        const taskName = cs.currentTaskName || '新任务';
+        const label = `处理中：${taskName} — ${subAction}`;
+        emitRunningNotify(sessionName, label);
+        console.log(`[multicc/aux] Progress summary for ${sessionName}: ${label}`);
       }
       // Reschedule for the next cycle
       if (cs.isStreaming) {
@@ -5152,6 +5186,8 @@ function runChatTurn(sessionName, text, opts = {}) {
 
   // Reset accumulators
   cs.currentAssistantText = '';
+  cs.currentUserText = text;          // store user message for summary context
+  cs.currentTaskName = briefTaskDescription(text); // stable task name across turn
   cs.currentToolCalls = [];
   cs.currentCost = null;
   cs.isStreaming = true;
@@ -5163,7 +5199,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // shows "what's running" the instant the turn begins — no AI call, zero
   // latency. The in-progress aux-AI summary will refine it ~45s later.
   cancelProgressSummary(cs);
-  emitRunningNotify(sessionName, `正在处理：${briefTaskDescription(text)}`);
+  emitRunningNotify(sessionName, `处理中：${cs.currentTaskName}`);
   startProgressSummary(cs, sessionName);
   // Marks this turn as initiated by an auto-trigger, so post-turn triggers
   // don't recurse on their own output (see firePostTurnTriggers).
