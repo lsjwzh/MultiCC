@@ -14,6 +14,42 @@ let _swRegistration = null;
 let _pushSubscription = null;
 let _lastValidateTime = 0;
 const VALIDATE_MIN_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const TASK_NOTIFY_DEFAULT = true;
+const TASK_NOTIFY_PREFIX = 'multicc_notify:';
+const TASK_NOTIFY_LEGACY_KEY = 'multicc_notify';
+
+function taskNotifyKey(sessionId) {
+  return sessionId ? `${TASK_NOTIFY_PREFIX}${sessionId}` : TASK_NOTIFY_LEGACY_KEY;
+}
+
+function getTaskNotifyEnabled(sessionId) {
+  const key = taskNotifyKey(sessionId);
+  const raw = localStorage.getItem(key);
+  if (raw === 'on') return true;
+  if (raw === 'off') return false;
+  // New sessions and old sessions without an explicit per-session preference
+  // should start with the bell on. The legacy global key is still respected
+  // when it has an explicit value, but missing values default to on.
+  return TASK_NOTIFY_DEFAULT;
+}
+
+function setTaskNotifyEnabled(sessionId, enabled) {
+  localStorage.setItem(taskNotifyKey(sessionId), enabled ? 'on' : 'off');
+}
+
+function enableTaskNotifyForSessions(sessions) {
+  if (!Array.isArray(sessions)) return;
+  for (const s of sessions) {
+    if (!s || !s.id || s.type === 'aux' || s.type === 'gateway') continue;
+    setTaskNotifyEnabled(s.id, true);
+  }
+}
+
+function emitPushStateChanged() {
+  try {
+    window.dispatchEvent(new CustomEvent('multicc-push-state', { detail: getPushInfo() }));
+  } catch (_) {}
+}
 
 /**
  * Initialize PWA: register service worker and set up push if available.
@@ -147,15 +183,35 @@ async function syncSubscriptionToServer(sub) {
       body: JSON.stringify(sub.toJSON()),
     });
     localStorage.setItem('multicc_push_endpoint', sub.endpoint);
+    emitPushStateChanged();
   } catch (err) {
     console.error('[pwa] Sync subscription failed:', err);
   }
+}
+
+async function ensurePushSubscribed() {
+  if (_pushSubscription) return true;
+  if (_swRegistration) {
+    try {
+      _pushSubscription = await _swRegistration.pushManager.getSubscription();
+      if (_pushSubscription) {
+        await syncSubscriptionToServer(_pushSubscription);
+        updatePushUI(true);
+        return true;
+      }
+    } catch (_) {}
+  }
+  return subscribePush();
 }
 
 /**
  * Subscribe to push notifications. Returns true if successful.
  */
 async function subscribePush() {
+  if (typeof Notification === 'undefined' || !('PushManager' in window)) {
+    console.log('[pwa] Push notifications not supported');
+    return false;
+  }
   if (!_swRegistration) {
     console.warn('[pwa] No SW registration');
     return false;
@@ -228,10 +284,16 @@ async function unsubscribePush() {
  * Toggle push subscription on/off.
  */
 async function togglePush() {
+  if (!_pushSubscription && _swRegistration) {
+    try {
+      _pushSubscription = await _swRegistration.pushManager.getSubscription();
+    } catch (_) {}
+  }
   if (_pushSubscription) {
     await unsubscribePush();
+    return false;
   } else {
-    await subscribePush();
+    return subscribePush();
   }
 }
 
@@ -250,6 +312,47 @@ function updatePushUI(subscribed) {
     btn.textContent = 'Push';
     btn.classList.remove('active');
     btn.title = 'Enable push notifications';
+  }
+  emitPushStateChanged();
+}
+
+async function showLocalTaskNotification(payload) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+
+  const sessionId = payload.sessionId || 'general';
+  const type = payload.type || 'completed';
+  const title = payload.title || (type === 'waiting'
+    ? `MultiCC #${sessionId}: 等待操作`
+    : `MultiCC #${sessionId}: 完成`);
+  const options = {
+    body: payload.body || payload.message || '',
+    icon: '/icon.svg',
+    badge: '/icon.svg',
+    tag: payload.tag || `multicc-${sessionId}`,
+    renotify: true,
+    vibrate: [200, 100, 200],
+    data: {
+      sessionId,
+      type,
+      url: payload.url || location.pathname + location.search,
+    },
+  };
+
+  try {
+    if (_swRegistration) {
+      await _swRegistration.showNotification(title, options);
+    } else {
+      const n = new Notification(title, options);
+      n.onclick = () => {
+        window.focus();
+        if (options.data.url) location.href = options.data.url;
+        n.close();
+      };
+    }
+    return true;
+  } catch (err) {
+    console.error('[pwa] Local notification failed:', err);
+    return false;
   }
 }
 

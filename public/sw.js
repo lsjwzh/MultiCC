@@ -75,9 +75,16 @@ self.addEventListener('notificationclick', (event) => {
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // Try to focus an existing window on the manage page
+      let targetPath = '/manage';
+      try {
+        targetPath = new URL(targetUrl, self.location.origin).pathname;
+      } catch (_) {}
+
+      // Try to focus an existing window for the target page first.
       for (const client of clientList) {
-        if (client.url.includes('/manage') && 'focus' in client) {
+        let clientPath = '';
+        try { clientPath = new URL(client.url).pathname; } catch (_) {}
+        if (clientPath === targetPath && 'focus' in client) {
           client.focus();
           // Post message to focus the session
           if (data.sessionId) {

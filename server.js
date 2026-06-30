@@ -2262,6 +2262,10 @@ app.get('/api/sessions/:id', (req, res) => {
 app.get('/api/sessions/:id/merge-status', (req, res) => {
   const persisted = persistedSessions.get(req.params.id);
   if (!persisted) return res.status(404).json({ error: 'session not found' });
+  const dir = directories.get(persisted.dirId);
+  if (!dir) return res.status(404).json({ error: 'directory not found' });
+  res.json(gitWorktreeMergeState(dir, persisted));
+});
 
 app.get('/api/sessions/:id/diff', (req, res) => {
   const persisted = persistedSessions.get(req.params.id);
@@ -2302,11 +2306,6 @@ app.get('/api/sessions/:id/diff', (req, res) => {
     mergeState: gitWorktreeMergeState(dir, persisted),
     error,
   });
-});
-
-  const dir = directories.get(persisted.dirId);
-  if (!dir) return res.status(404).json({ error: 'directory not found' });
-  res.json(gitWorktreeMergeState(dir, persisted));
 });
 
 app.delete('/api/sessions/:id', (req, res) => {
