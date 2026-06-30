@@ -59,6 +59,21 @@ gen_token() {
   printf '%s' "$t"
 }
 
+# Safely upsert a KEY=VALUE line into .env without using sed. The value may
+# contain characters that are special to sed's replacement (/, &, \) — e.g. a
+# user-supplied --token — so a `sed "s/.../$VALUE/"` rewrite would corrupt the
+# command or abort the script under `set -e`. We instead drop any existing line
+# for KEY and append the literal new line. KEY is always a fixed literal here.
+set_env_var() {
+  local key="$1" val="$2" file="$3" tmp
+  tmp="$(mktemp "${file}.XXXXXX")" || { err "Could not create temp file next to $file"; exit 1; }
+  if [ -f "$file" ]; then
+    grep -v "^${key}=" "$file" > "$tmp" 2>/dev/null || true
+  fi
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  mv "$tmp" "$file"
+}
+
 banner() {
   echo ""
   echo "${C_BOLD}${C_MAGENTA}╔══════════════════════════════════════════════════════╗${C_RESET}"
@@ -77,14 +92,18 @@ NO_SERVICE=false
 NO_CLONE=false
 BRANCH="main"
 
+# Guard value-taking flags: under `set -u`, referencing $2 when a flag is the
+# last argument aborts with an unhelpful "$2: unbound variable". Fail cleanly.
+need_val() { [ "$2" -ge 2 ] || { err "Option $1 requires a value (use --help)"; exit 1; }; }
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dir)       INSTALL_DIR="$2"; shift 2 ;;
-    --token)     ACCESS_TOKEN="$2"; shift 2 ;;
-    --port)      PORT="$2"; shift 2 ;;
+    --dir)       need_val "$1" "$#"; INSTALL_DIR="$2"; shift 2 ;;
+    --token)     need_val "$1" "$#"; ACCESS_TOKEN="$2"; shift 2 ;;
+    --port)      need_val "$1" "$#"; PORT="$2"; shift 2 ;;
     --no-service) NO_SERVICE=true; shift ;;
     --no-clone)  NO_CLONE=true; shift ;;
-    --branch)    BRANCH="$2"; shift 2 ;;
+    --branch)    need_val "$1" "$#"; BRANCH="$2"; shift 2 ;;
     --help|-h)
       cat << 'HELP'
 MultiCC — One-Click Install Script
@@ -115,6 +134,11 @@ HELP
 done
 
 REPO_URL="https://github.com/lsjwzh/MultiCC.git"
+
+# Validate --port early so we never write a non-numeric PORT into .env.
+case "$PORT" in
+  ''|*[!0-9]*) err "Invalid --port: '$PORT' (must be a number, e.g. 3000)"; exit 1 ;;
+esac
 
 banner
 
@@ -334,18 +358,8 @@ if [ -z "$ACCESS_TOKEN" ]; then
 fi
 
 if [ -f .env ]; then
-  if grep -q '^ACCESS_TOKEN=' .env 2>/dev/null; then
-    sed -i.bak "s/^ACCESS_TOKEN=.*/ACCESS_TOKEN=$ACCESS_TOKEN/" .env
-    rm -f .env.bak
-  else
-    echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> .env
-  fi
-  if grep -q '^PORT=' .env 2>/dev/null; then
-    sed -i.bak "s/^PORT=.*/PORT=$PORT/" .env
-    rm -f .env.bak
-  else
-    echo "PORT=$PORT" >> .env
-  fi
+  set_env_var "ACCESS_TOKEN" "$ACCESS_TOKEN" .env
+  set_env_var "PORT" "$PORT" .env
 else
   cat > .env << EOF
 # MultiCC configuration
@@ -354,6 +368,8 @@ ACCESS_TOKEN=$ACCESS_TOKEN
 PORT=$PORT
 EOF
 fi
+# .env holds the access token (a secret); keep it owner-only.
+chmod 600 .env 2>/dev/null || warn "Could not chmod 600 .env — review its permissions manually"
 ok "ACCESS_TOKEN configured"
 ok "PORT set to $PORT"
 
