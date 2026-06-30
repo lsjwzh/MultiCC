@@ -122,8 +122,12 @@ async function setFunnel(on, port) {
   const p = Number.isFinite(port) && port > 0 ? Math.floor(port) : 3000;
   const args = on ? ['funnel', '--bg', String(p)] : ['funnel', 'reset'];
   const r = await execShell(TAILSCALE_BIN, args);
-  if (r.ok) return { ok: true, message: on ? `已开启 Funnel 公网访问 (端口 ${p})` : '已关闭所有 Funnel' };
-  return { ok: false, message: `Funnel 操作失败: ${(r.stderr || '').slice(0, 200)}` };
+  if (!r.ok) return { ok: false, message: `Funnel 操作失败: ${(r.stderr || '').slice(0, 200)}` };
+  // Keep config in sync with the actual tailscale state so the UI doesn't
+  // revert to stale values on the next loadTunnelSettings() reload.
+  config.tailscale = { ...config.tailscale, funnel: !!on, funnelPort: p };
+  saveConfig();
+  return { ok: true, message: on ? `已开启 Funnel 公网访问 (端口 ${p})` : '已关闭所有 Funnel' };
 }
 
 // Read-only Funnel status text from tailscale.

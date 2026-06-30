@@ -3325,6 +3325,8 @@ app.post('/api/settings/tunnel', (req, res) => {
     update.tailscale = {};
     if (typeof b.tailscale.enabled === 'boolean') update.tailscale.enabled = b.tailscale.enabled;
     if (typeof b.tailscale.url === 'string') update.tailscale.url = b.tailscale.url.trim();
+    if (typeof b.tailscale.funnel === 'boolean') update.tailscale.funnel = b.tailscale.funnel;
+    if (Number.isFinite(b.tailscale.funnelPort) && b.tailscale.funnelPort > 0) update.tailscale.funnelPort = Math.floor(b.tailscale.funnelPort);
   }
   for (const k of ['intervalSec', 'failThreshold', 'restartCooldownSec', 'maxRestartsPerHour']) {
     if (Number.isFinite(b[k]) && b[k] > 0) update[k] = Math.floor(b[k]);
