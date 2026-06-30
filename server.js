@@ -1956,8 +1956,10 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!['claude', 'codex'].includes(cli)) return { ok: false, error: 'cli must be claude or codex' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
-  // Model is claude-only and interpolated into a tmux shell command — keep the charset tight.
-  if (model && (cli !== 'claude' || !/^[A-Za-z0-9._\[\]-]{1,100}$/.test(model))) {
+  // Model is claude-only and interpolated into a tmux shell command — keep the charset
+  // tight, but allow `/` and `:` so OpenRouter-style ids (openrouter/owl-alpha,
+  // anthropic/claude-sonnet-4.6) and provider:model forms pass; neither is a shell metachar.
+  if (model && (cli !== 'claude' || !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model))) {
     return { ok: false, error: 'invalid model' };
   }
   // Provider override (cc-switch). An explicit value is validated; when omitted
@@ -2040,7 +2042,8 @@ app.patch('/api/sessions/:id', (req, res) => {
   if (req.body.model !== undefined) {
     const model = (req.body.model || '').toString().trim();
     if (s.cli !== 'claude') return res.status(400).json({ error: 'model is claude-only' });
-    if (model && !/^[A-Za-z0-9._\[\]-]{1,100}$/.test(model)) {
+    // Allow `/` and `:` for OpenRouter-style ids (openrouter/owl-alpha) and provider:model forms.
+    if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
       return res.status(400).json({ error: 'invalid model' });
     }
     s.model = model || null;
