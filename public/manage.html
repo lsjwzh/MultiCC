@@ -155,6 +155,21 @@
     }
     .dir-block:hover{border-color:var(--line-strong);transform:translateY(-2px)}
     body.has-focus .dir-block{transform:none}
+
+ /* rainbow border for running cards — animates border-color + glow, follows border-radius */
+ .card-border-rainbow {
+   animation: rainbow-border 3s linear infinite;
+ }
+ @keyframes rainbow-border {
+   0%   { border-color: #ff0000; box-shadow: 0 0 0 1px #ff0000, 0 0 14px #ff000088; }
+   14%  { border-color: #ff8800; box-shadow: 0 0 0 1px #ff8800, 0 0 14px #ff880088; }
+   28%  { border-color: #ffff00; box-shadow: 0 0 0 1px #ffff00, 0 0 14px #ffff0088; }
+   42%  { border-color: #00ff00; box-shadow: 0 0 0 1px #00ff00, 0 0 14px #00ff0088; }
+   57%  { border-color: #0088ff; box-shadow: 0 0 0 1px #0088ff, 0 0 14px #0088ff88; }
+   71%  { border-color: #0000ff; box-shadow: 0 0 0 1px #0000ff, 0 0 14px #0000ff88; }
+   85%  { border-color: #8800ff; box-shadow: 0 0 0 1px #8800ff, 0 0 14px #8800ff88; }
+   100% { border-color: #ff0000; box-shadow: 0 0 0 1px #ff0000, 0 0 14px #ff000088; }
+ }
     .dir-header{display:flex;align-items:flex-start;gap:11px;padding:15px 17px 12px}
     body.has-focus .dir-header{padding:12px;gap:8px}
     .dir-toggle{width:30px;height:30px;flex:0 0 30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft);color:var(--muted);cursor:pointer;transition:.15s}
