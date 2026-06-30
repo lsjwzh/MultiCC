@@ -2757,9 +2757,34 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+function playDing(type) {
+  // Short pleasant chime via WebAudio — used when the chat tab is visible so
+  // the user gets an audible cue without a full voice announcement.
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    // completed: rising two-tone (C6 → G6); waiting: gentle single tone (E5)
+    const freqs = type === 'completed' ? [1046.5, 1567.98] : [659.25];
+    const t0 = ctx.currentTime;
+    freqs.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0.0001, t0 + i * 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.25, t0 + i * 0.12 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.12 + 0.28);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0 + i * 0.12);
+      osc.stop(t0 + i * 0.12 + 0.3);
+    });
+    setTimeout(() => { try { ctx.close(); } catch (_) {} }, (freqs.length * 120 + 400));
+  } catch (_) {}
+}
+
 function speakNotify(text, type) {
   if (!_notifyEnabled) return;
-  if (document.visibilityState === 'visible') return;
 
   const now = Date.now();
   if (type === 'completed') {
@@ -2768,6 +2793,13 @@ function speakNotify(text, type) {
   } else {
     if (now - _notifyLastAction < NOTIFY_COOLDOWN) return;
     _notifyLastAction = now;
+  }
+
+  // When the chat tab is visible the user is already looking at it, so just
+  // play a short "ding" instead of a full voice announcement.
+  if (document.visibilityState === 'visible') {
+    playDing(type);
+    return;
   }
 
   showNotifyToast(text, type);
