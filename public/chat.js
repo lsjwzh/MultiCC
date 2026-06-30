@@ -135,11 +135,16 @@ async function loadSessionIdentity() {
 }
 loadSessionIdentity();
 // Double-click the visible session title in the header to rename it.
+// Use event delegation so it works even if the span is repopulated later.
   const _stEl = document.getElementById('session-title');
-  if (_stEl) {
-    _stEl.style.cursor = 'pointer';
-    _stEl.addEventListener('dblclick', (ev) => { ev.preventDefault(); ev.stopPropagation(); renameSessionFromChat(); });
-  }
+  if (_stEl) _stEl.style.cursor = 'pointer';
+  document.addEventListener('dblclick', (ev) => {
+    const el = ev.target.closest('#session-title');
+    if (!el) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    renameSessionFromChat();
+  });
 
 /* ── Markdown setup ── */
 if (typeof marked !== 'undefined' && marked.setOptions) {
