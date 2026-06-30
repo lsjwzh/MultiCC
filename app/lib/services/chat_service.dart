@@ -35,6 +35,10 @@ class ChatService {
   // the web client's _pendingCancel. Without this, a cancel tapped during a
   // brief disconnect is silently dropped and the user is stuck streaming.
   bool _pendingCancel = false;
+  // User tapped cancel (connected case). Set so that late stream_event frames
+  // from the dying CLI process can't flip isStreaming back on. Cleared when a
+  // new turn begins (send) or the stream truly ends (stream_end/result/error).
+  bool _cancelRequested = false;
 
   // ── Heartbeat: detect "half-open" sockets ──
   // When the phone sleeps / network switches, the OS can freeze the socket
@@ -229,11 +233,13 @@ class ChatService {
 
       case 'result':
         isStreaming = false;
+        _cancelRequested = false;
         _emit('result', msg);
         break;
 
       case 'error':
         isStreaming = false;
+        _cancelRequested = false;
         _emit('error', msg['error']?.toString() ?? 'Unknown error');
         break;
 
@@ -246,6 +252,16 @@ class ChatService {
         });
         break;
 
+      case 'stream_end':
+        // Safety net: server confirms process exited — ensure isStreaming is
+        // cleared. Without this, a cancel followed by a late-arriving
+        // message_start (emitted by the CLI before it actually dies) can
+        // re-set isStreaming=true, leaving the app stuck showing the stop
+        // button + thinking bubble while the web client has already ended.
+        isStreaming = false;
+        _cancelRequested = false;
+        break;
+
       default:
         break;
     }
@@ -255,7 +271,12 @@ class ChatService {
     final evtType = evt['type'] as String? ?? '';
     switch (evtType) {
       case 'message_start':
-        isStreaming = true;
+        // Guard: if the user already tapped cancel, a late message_start from
+        // the dying CLI must not flip isStreaming back on — otherwise the
+        // stop button and thinking bubble reappear for a turn the user aborted.
+        if (!_cancelRequested) {
+          isStreaming = true;
+        }
         _emit('message_start', evt);
         break;
       case 'content_block_start':
@@ -295,6 +316,7 @@ class ChatService {
       }
       _channel!.sink.add(jsonEncode(payload));
       isStreaming = true;
+      _cancelRequested = false; // New turn — clear any stale cancel guard
       return true;
     } catch (_) {
       _scheduleReconnect();
@@ -316,6 +338,7 @@ class ChatService {
         _channel!.sink.add(jsonEncode({'type': 'cancel'}));
       } catch (_) {}
       _pendingCancel = false;
+      _cancelRequested = true; // Guard against late events from the dying CLI
     } else {
       _pendingCancel = true;
     }
