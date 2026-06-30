@@ -539,6 +539,8 @@ class _ModelChipState extends State<_ModelChip> {
       );
       return;
     }
+    if (!_loaded) await _load();
+    if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final picked = await showClaudeModelPicker(
       context,

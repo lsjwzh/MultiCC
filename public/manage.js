@@ -5035,12 +5035,26 @@ const PROVIDER_PRESETS = [
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
   { key: 'codex-official', label: 'Codex 官方', appType: 'codex', baseUrl: '', model: '', note: '走 ChatGPT 登录' },
-  { key: 'codex-deepseek', label: 'DeepSeek', appType: 'codex', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', note: '✅ 经本地代理自动转换协议（实测可用）' },
-  { key: 'codex-glm', label: '智谱 GLM', appType: 'codex', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6', note: '✅ 经本地代理自动转换协议（实测可用）' },
-  { key: 'codex-qwen', label: 'Qwen 通义千问', appType: 'codex', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus', note: '✅ 经本地代理自动转换协议（实测可用）' },
-  { key: 'codex-minimax', label: 'MiniMax', appType: 'codex', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2', note: '✅ 经本地代理自动转换协议（实测可用）' },
-  { key: 'codex-openrouter', label: 'OpenRouter', appType: 'codex', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat', note: '✅ 直连 responses 协议（原生支持）' },
+  { key: 'codex-deepseek', label: 'DeepSeek', appType: 'codex', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
+  { key: 'codex-glm', label: '智谱 GLM', appType: 'codex', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
+  { key: 'codex-qwen', label: 'Qwen 通义千问', appType: 'codex', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
+  { key: 'codex-minimax', label: 'MiniMax', appType: 'codex', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
+  { key: 'codex-openrouter', label: 'OpenRouter', appType: 'codex', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat', useChatResponsesProxy: false, note: '✅ 直连 responses 协议（原生支持）' },
 ];
+
+function providerModelList(primary, raw) {
+  const seen = new Set();
+  return [primary, ...(raw || '').split(/[\n,]/)]
+    .map(s => String(s || '').trim())
+    .filter(s => s && !seen.has(s) && seen.add(s));
+}
+
+function syncNewProviderProxyVisibility() {
+  const appType = document.getElementById('prov-new-apptype');
+  const row = document.getElementById('prov-new-proxy-row');
+  if (row && appType) row.style.display = appType.value === 'codex' ? '' : 'none';
+}
+document.getElementById('prov-new-apptype')?.addEventListener('change', syncNewProviderProxyVisibility);
 
 function applyProviderPreset() {
   const presetSel = document.getElementById('prov-new-preset');
@@ -5049,6 +5063,8 @@ function applyProviderPreset() {
   const baseUrl = document.getElementById('prov-new-baseurl');
   const token = document.getElementById('prov-new-token');
   const model = document.getElementById('prov-new-model');
+  const models = document.getElementById('prov-new-models');
+  const proxy = document.getElementById('prov-new-chat-proxy');
   const status = document.getElementById('prov-new-status');
   if (!presetSel || !appType || !name || !baseUrl || !token || !model) return;
 
@@ -5057,6 +5073,8 @@ function applyProviderPreset() {
     name.value = '';
     baseUrl.value = '';
     model.value = '';
+    if (models) models.value = '';
+    if (proxy) proxy.checked = false;
     if (status) { status.textContent = ''; status.className = 'status-text'; }
     return;
   }
@@ -5066,6 +5084,8 @@ function applyProviderPreset() {
   name.value = preset.label;
   baseUrl.value = preset.baseUrl;
   model.value = preset.model;
+  if (models) models.value = preset.model || '';
+  if (proxy) proxy.checked = !!preset.useChatResponsesProxy;
   token.value = '';
   if (status) {
     status.textContent = preset.note || '已套用模板，请填写 API Key';
@@ -5073,6 +5093,8 @@ function applyProviderPreset() {
   }
   token.focus();
 }
+
+syncNewProviderProxyVisibility();
 
 async function loadProviders() {
   try {
@@ -5247,7 +5269,7 @@ function renderProviderList() {
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
-        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${p.model ? ' · ' + escapeHtml(p.model) : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
+        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · chat→responses' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
@@ -5284,6 +5306,8 @@ async function createProvider() {
     authToken: document.getElementById('prov-new-token').value.trim(),
     model: document.getElementById('prov-new-model').value.trim(),
   };
+  body.models = providerModelList(body.model, document.getElementById('prov-new-models')?.value || '');
+  body.useChatResponsesProxy = document.getElementById('prov-new-chat-proxy')?.checked === true;
   if (!body.name) { if (status) { status.textContent = '名称必填'; status.className = 'status-text err'; } return; }
   try {
     const res = await fetch('/api/providers' + tokenQS('?'), {
@@ -5297,6 +5321,8 @@ async function createProvider() {
     document.getElementById('prov-new-baseurl').value = '';
     document.getElementById('prov-new-token').value = '';
     document.getElementById('prov-new-model').value = '';
+    document.getElementById('prov-new-models').value = '';
+    document.getElementById('prov-new-chat-proxy').checked = false;
     const presetSel = document.getElementById('prov-new-preset');
     if (presetSel) presetSel.value = '';
     loadProviders();
@@ -5314,12 +5340,20 @@ function editProvider(appType, id) {
     `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">${label}</div>
      <input data-k="${label}" type="${type}" value="${escapeHtml(val || '')}" placeholder="${escapeHtml(ph)}" autocomplete="off"
        style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>`;
+  const textarea = (label, val, ph) =>
+    `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">${label}</div>
+     <textarea data-k="${label}" rows="3" placeholder="${escapeHtml(ph)}"
+       style="width:100%;min-height:74px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">${escapeHtml(val || '')}</textarea></label>`;
   overlay.innerHTML = `
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:14px">编辑 Provider · ${escapeHtml(p.appType)}</div>
       ${field('名称', p.name, '名称')}
       ${field('Base URL', p.baseUrl, 'https://…（留空=官方/订阅）')}
       ${field('Model', p.model, '可选')}
+      ${textarea('模型列表', (p.modelOptions || []).join('\n'), '每行一个模型；留空则只使用 Model')}
+      ${appType === 'codex' ? `<label style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;margin-bottom:10px">
+        <input id="ep-chat-proxy" type="checkbox" ${p.useChatResponsesProxy ? 'checked' : ''}> OpenAI chat 协议转 response 协议
+      </label>` : ''}
       ${field('API Key', '', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置', 'password')}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
         <button class="btn" id="ep-cancel" style="font-size:13px">取消</button>
@@ -5328,12 +5362,18 @@ function editProvider(appType, id) {
       <div id="ep-status" class="status-text" style="margin-top:8px"></div>
     </div>`;
   document.body.appendChild(overlay);
-  const val = (k) => overlay.querySelector(`input[data-k="${k}"]`).value.trim();
+  const val = (k) => overlay.querySelector(`[data-k="${k}"]`).value.trim();
   const close = () => overlay.remove();
   overlay.querySelector('#ep-cancel').onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   overlay.querySelector('#ep-save').onclick = async () => {
-    const body = { name: val('名称'), baseUrl: val('Base URL'), model: val('Model') };
+    const body = {
+      name: val('名称'),
+      baseUrl: val('Base URL'),
+      model: val('Model'),
+      models: providerModelList(val('Model'), val('模型列表')),
+    };
+    if (appType === 'codex') body.useChatResponsesProxy = overlay.querySelector('#ep-chat-proxy')?.checked === true;
     const tok = val('API Key');
     if (tok) body.authToken = tok;  // blank = keep existing
     const st = overlay.querySelector('#ep-status');
