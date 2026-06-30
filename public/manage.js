@@ -1464,6 +1464,7 @@ function renderSessionRow(s) {
         <div class="sess-runtime" id="sess-runtime-${escapeHtml(s.id)}"${runtimeText ? '' : ' style="display:none"'}>${escapeHtml(runtimeText)}</div>
       </div>
       <span class="lean-actions">
+        ${mergeReady ? `<button class="sess-merge-btn" id="sess-merge-${escapeHtml(s.id)}" title="${escapeHtml(mergeTitle)} — 点击合并" onclick="event.stopPropagation(); mergeSession('${escapeHtml(s.id)}')">🔀${mergeState.ahead > 0 ? ' ' + mergeState.ahead : ''}</button>` : ''}
         ${openBtn}
         <button class="btn-icon${mergeReady ? ' merge-ready' : ''}" id="sess-menu-${escapeHtml(s.id)}" title="${escapeHtml(mergeReady ? tt('moreSessionActionsReady', { detail: mergeTitle }) : tt('moreSessionActions'))}" onclick="event.stopPropagation(); showSessionMenu(event, '${escapeHtml(s.id)}')">⋯</button>
       </span>
@@ -2717,6 +2718,26 @@ function updateSessionMergeDom(sessionId) {
   btn.title = ready
     ? `可合并：${ms.dirty ? '有未提交改动' : ''}${ms.dirty && ms.ahead > 0 ? '，' : ''}${ms.ahead > 0 ? `${ms.ahead} 个提交领先` : ''}`
     : '把 worktree 合并回基分支';
+
+  // Live-sync the inline merge badge (🔀 N) — create/update/remove to match
+  // the current merge state without re-rendering the whole row.
+  const actions = btn.parentElement;
+  let badge = document.getElementById(`sess-merge-${sessionId}`);
+  if (ready) {
+    const label = `🔀${ms.ahead > 0 ? ' ' + ms.ahead : ''}`;
+    const title = `可合并：${ms.dirty ? '有未提交改动' : ''}${ms.dirty && ms.ahead > 0 ? '，' : ''}${ms.ahead > 0 ? `${ms.ahead} 个提交领先` : ''} — 点击合并`;
+    if (!badge) {
+      badge = document.createElement('button');
+      badge.className = 'sess-merge-btn';
+      badge.id = `sess-merge-${sessionId}`;
+      badge.onclick = (e) => { e.stopPropagation(); mergeSession(sessionId); };
+      actions.insertBefore(badge, actions.firstChild);
+    }
+    badge.textContent = label;
+    badge.title = title;
+  } else if (badge) {
+    badge.remove();
+  }
 }
 
 /* ── Leave-a-note modal ── */
