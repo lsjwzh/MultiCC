@@ -2631,6 +2631,11 @@ function attachAutoCommitCheck(bubbleEl, checked) {
 const shareBtn = document.getElementById('share-btn');
 
 async function shareApi(method, p, body) {
+  // Defensive: ALL admin share-management routes are scoped under
+  // /api/sessions/:id/... and Express treats an empty :id as a 404. Bail
+  // early with a clear message instead of silently 404ing (which is what
+  // made the 撤销 button look "dead" when the page had no ?session= param).
+  if (!_sessionName) throw new Error('未获取到会话标识（session id），请从管理面板进入此会话后再使用分享功能');
   const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}${p}`), {
     method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
   });
