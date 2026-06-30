@@ -1330,8 +1330,6 @@ function openDirectoryDetail(dirId) {
   if (!dir) return;
   _detailDirId = dirId;
   connectWorkspace(dirId);
-  // Activity timeline starts collapsed (3 events); click "展开全部" to see more.
-  _expandedEvents.delete(dirId);
   const title = document.getElementById('dir-detail-title');
   const sub = document.getElementById('dir-detail-subtitle');
   if (title) title.textContent = dir.name;
@@ -2629,10 +2627,10 @@ function eventLabel(evt) {
 const _expandedEvents = new Set();
 
 function renderEventTimeline(dirId) {
-  // 默认只显示最近3条，展开后显示全部（最多12条）
+  // Modal/card preview: only the 3 most recent events. The full log lives on
+  // a standalone page (openEventsPage) so the popup stays compact.
   const allEvents = (_workspaceEvents.get(dirId) || []).slice(-12).reverse();
-  const open = _expandedEvents.has(dirId);
-  const displayEvents = open ? allEvents : allEvents.slice(0, 3);
+  const displayEvents = allEvents.slice(0, 3);
   const n = displayEvents.length;
   const total = allEvents.length;
 
@@ -2640,8 +2638,8 @@ function renderEventTimeline(dirId) {
     ? displayEvents.map(e => `<div class="wb-event-row"><span class="t">${new Date(e.ts).toLocaleTimeString()}</span> ${escapeHtml(eventLabel(e))}</div>`).join('')
     : '<div class="wb-event-row dim">暂无活动</div>';
 
-  const expandBtnHtml = !open && total > 3
-    ? `<button class="btn btn-sm" style="margin-top:8px;font-size:11px;" onclick="event.stopPropagation(); toggleEventsCollapsed('${escapeHtml(dirId)}')">展开全部 (${total - 3} 条) ▾</button>`
+  const expandBtnHtml = total > 3
+    ? `<button class="btn btn-sm" style="margin-top:8px;font-size:11px;" onclick="event.stopPropagation(); openEventsPage('${escapeHtml(dirId)}')">查看全部 (${total} 条) ↗</button>`
     : '';
 
   return `<div class="wb-events" id="wb-events-${escapeHtml(dirId)}">
@@ -2653,10 +2651,11 @@ function renderEventTimeline(dirId) {
   </div>`;
 }
 
-function toggleEventsCollapsed(dirId) {
-  if (_expandedEvents.has(dirId)) _expandedEvents.delete(dirId);
-  else _expandedEvents.add(dirId);
-  updateEventTimelineDom(dirId);
+function openEventsPage(dirId) {
+  const qs = _urlToken
+    ? `?dirId=${encodeURIComponent(dirId)}&token=${encodeURIComponent(_urlToken)}`
+    : `?dirId=${encodeURIComponent(dirId)}`;
+  window.open(`events.html${qs}`, '_blank');
 }
 
 function updateEventTimelineDom(dirId) {

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0d1117" />
+  <title>📋 活动记录 · MultiCC</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: #0d1117; color: #c9d1d9;
+      font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    #header {
+      flex-shrink: 0; background: #161b22;
+      border-bottom: 1px solid #21262d;
+      padding: 12px 16px; display: flex; align-items: center; gap: 10px;
+    }
+    #title { flex: 1; min-width: 0; }
+    #title-name { font-size: 15px; font-weight: 680; color: #f0f6fc; }
+    #title-sub {
+      font-size: 11px; color: #58a6ff; font-family: monospace;
+      margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .btn {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover { background: #30363d; }
+    #body { flex: 1; overflow: auto; padding: 14px 16px; }
+    .evt-row {
+      display: flex; gap: 10px; padding: 7px 10px; border-radius: 6px;
+      font-size: 13px; line-height: 1.5; border-bottom: 1px solid rgba(48,54,61,0.4);
+    }
+    .evt-row:hover { background: rgba(255,255,255,0.02); }
+    .evt-time { color: #8b949e; font-family: monospace; font-size: 11px; flex-shrink: 0; min-width: 64px; padding-top: 2px; }
+    .evt-label { flex: 1; min-width: 0; word-break: break-word; }
+    .empty { color: #6e7681; text-align: center; padding: 40px 0; font-size: 13px; }
+    #count { color: #6e7681; font-size: 11px; padding: 0 16px 10px; flex-shrink: 0; border-bottom: 1px solid #21262d; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <div id="title">
+      <div id="title-name">📋 活动记录</div>
+      <div id="title-sub">加载中…</div>
+    </div>
+    <button class="btn" onclick="refresh()">↻ 刷新</button>
+  </div>
+  <div id="count"></div>
+  <div id="body"><div class="empty">加载中…</div></div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const dirId = params.get('dirId') || '';
+    const urlToken = params.get('token') || '';
+    const tokenQS = (p) => urlToken ? `${p}token=${encodeURIComponent(urlToken)}` : '';
+    const dirsApi = `/api/directories${tokenQS('?')}`;
+    const eventsApi = `/api/directories/${encodeURIComponent(dirId)}/events${tokenQS('?')}`;
+
+    function eventLabel(evt) {
+      const who = evt.sessionLabel || evt.sessionId || '';
+      switch (evt.type) {
+        case 'session_created': return `🆕 新建会话 ${who}（${evt.detail || ''}）`;
+        case 'session_renamed': return `✏️ 会话改名为 ${evt.detail || who}`;
+        case 'session_model_changed': return `🧠 切换模型 ${evt.detail || who}`;
+        case 'session_deleted': return `🗑 删除会话 ${evt.detail || who}`;
+        case 'merged':          return `🔀 ${who} 合并：${evt.detail || ''}`;
+        case 'memory_updated':  return `🧠 ${who} ${evt.detail || '更新会话记忆'}`;
+        case 'synced':          return `🔄 ${who} 同步：${evt.detail || ''}`;
+        case 'sync_conflict':   return `⚠️ ${who} ${evt.detail || '同步冲突'}`;
+        case 'dispatch':        return `📤 ${who} 分发 ${evt.detail || ''}`;
+        case 'note':            return `📨 ${who} 留言 ${evt.detail || ''}`;
+        case 'note_delivered':  return `📬 ${who}：${evt.detail || ''}`;
+        case 'session_role_changed': return `🎭 ${who} ${evt.detail || '角色变更'}`;
+        case 'session_streaming_changed': return `📡 ${who} ${evt.detail || '流式切换'}`;
+        case 'session_autocontinue_changed': return `🔁 ${who} ${evt.detail || '自动接力'}`;
+        case 'session_autocommit_changed': return `📦 ${who} ${evt.detail || '自动提交'}`;
+        case 'session_provider_changed': return `🔌 ${who} ${evt.detail || '切换 Provider'}`;
+        case 'trigger_added':  return `⚡ ${who} ${evt.detail || '添加触发器'}`;
+        case 'pushed':         return `↑ ${who} ${evt.detail || '推送'}`;
+        default:               return `· ${evt.type} ${who}`;
+      }
+    }
+    function fmtTs(ts) {
+      const d = new Date(ts);
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      if (sameDay) return d.toLocaleTimeString('zh-CN', { hour12: false });
+      return d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN', { hour12: false });
+    }
+
+    async function refresh() {
+      try {
+        const [dirRes, evtRes] = await Promise.all([
+          fetch(dirsApi).then(r => r.json()),
+          fetch(eventsApi).then(r => r.json()),
+        ]);
+        const dir = (Array.isArray(dirRes) ? dirRes : []).find(d => d.id === dirId);
+        document.getElementById('title-name').textContent = '📋 ' + (dir ? dir.name : '活动记录');
+        document.getElementById('title-sub').textContent = dir ? dir.path : dirId;
+        const events = (evtRes.events || []).slice().reverse();
+        const body = document.getElementById('body');
+        document.getElementById('count').textContent = events.length ? `共 ${events.length} 条活动` : '';
+        if (!events.length) {
+          body.innerHTML = '<div class="empty">暂无活动记录</div>';
+          return;
+        }
+        body.innerHTML = events.map(e =>
+          `<div class="evt-row"><span class="evt-time">${fmtTs(e.ts)}</span><span class="evt-label">${eventLabel(e).replace(/</g,'&lt;')}</span></div>`
+        ).join('');
+      } catch (e) {
+        document.getElementById('body').innerHTML = '<div class="empty">加载失败：' + e.message + '</div>';
+      }
+    }
+    refresh();
+  </script>
+</body>
+</html>
