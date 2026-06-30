@@ -91,6 +91,23 @@ function tomlValue(toml, key) {
   return m ? m[1] : '';
 }
 
+function uniqueModels(values) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of values || []) {
+    const v = String(raw || '').trim();
+    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+  }
+  return out;
+}
+
+function parseModelList(models, primary) {
+  const extras = Array.isArray(models)
+    ? models
+    : String(models || '').split(/[\n,]/);
+  return uniqueModels([primary, ...extras]);
+}
+
 // Domestic providers that only expose /chat/completions (no /responses).
 // When a codex provider's baseUrl hits one of these, we rewrite config.toml's
 // base_url to the local codex-proxy endpoint and stash the real chat/completions
@@ -116,14 +133,41 @@ function detectDomesticTarget(baseUrl) {
   return null;
 }
 
+function chatCompletionsTarget(baseUrl) {
+  if (!baseUrl) return null;
+  const known = detectDomesticTarget(baseUrl);
+  if (known) return known;
+  try {
+    const u = new URL(baseUrl);
+    let path = u.pathname.replace(/\/+$/, '');
+    if (/\/chat\/completions$/i.test(path)) return u.toString();
+    if (!path || path === '/') path = '/v1';
+    u.pathname = path + '/chat/completions';
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function withTomlModel(toml, model) {
+  if (!model) return toml || '';
+  if (/(^|\n)\s*model\s*=/.test(toml || '')) {
+    return (toml || '').replace(/(^|\n)(\s*model\s*=\s*)"[^"]*"/, `$1$2"${model}"`);
+  }
+  return `model = "${model}"\n` + (toml || '');
+}
+
 // Build a cc-switch-shaped settingsConfig from simple fields.
-function buildSettingsConfig(appType, { baseUrl, authToken, model, providerId }) {
+function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, useChatResponsesProxy }) {
+  const modelOptions = parseModelList(models, model);
   if (appType === 'claude') {
     const env = {};
     if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
     if (authToken) env.ANTHROPIC_AUTH_TOKEN = authToken;
     if (model) env.ANTHROPIC_MODEL = model;
-    return { env };
+    return { env, modelCatalog: { models: modelOptions.map(m => ({ model: m })) } };
   }
   const provName = 'custom';
   // codex CLI (>= 0.130) only supports wire_api = "responses"; the "chat"
@@ -139,7 +183,7 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, providerId })
   // For domestic services, config.toml's base_url is rewritten to the local
   // proxy; the real /chat/completions URL + apiKey are stored in
   // settingsConfig.proxyTarget for src/codex-proxy.js to read.
-  const realTarget = detectDomesticTarget(baseUrl);
+  const realTarget = useChatResponsesProxy ? chatCompletionsTarget(baseUrl) : null;
   const port = process.env.PORT || 3000;
   const proxyBaseUrl = (realTarget && providerId)
     ? `http://127.0.0.1:${port}/codex-proxy/${providerId}`
@@ -153,9 +197,18 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, providerId })
     proxyBaseUrl ? `base_url = "${proxyBaseUrl}"` : '',
     'wire_api = "responses"',
   ].filter(Boolean);
-  const cfg = { auth: { OPENAI_API_KEY: authToken || null }, config: lines.join('\n') + '\n' };
+  const cfg = {
+    auth: { OPENAI_API_KEY: authToken || null },
+    config: lines.join('\n') + '\n',
+    modelCatalog: { models: modelOptions.map(m => ({ model: m })) },
+  };
   if (realTarget) {
-    cfg.proxyTarget = { baseUrl: realTarget, apiKey: authToken || '' };
+    cfg.proxyTarget = {
+      baseUrl: realTarget,
+      apiKey: authToken || '',
+      originalBaseUrl: baseUrl || '',
+      mode: 'chat-to-responses',
+    };
   }
   return cfg;
 }
@@ -169,16 +222,14 @@ function summarize(p) {
     baseUrl = env.ANTHROPIC_BASE_URL || '';
     model = env.ANTHROPIC_MODEL || '';
     token = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '';
-    // Collect all models this provider can serve: primary + DEFAULT_* overrides.
+    // Collect all models this provider can serve: primary + DEFAULT_* overrides + catalog.
     const aliasKeys = ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'];
-    const seen = new Set();
-    const ordered = [];
-    for (const v of [env.ANTHROPIC_MODEL, ...aliasKeys.map(k => env[k])]) {
-      if (v && !seen.has(v)) { seen.add(v); ordered.push(v); }
-    }
-    modelOptions = ordered;
+    const catalog = (cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models))
+      ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean)
+      : [];
+    modelOptions = uniqueModels([env.ANTHROPIC_MODEL, ...aliasKeys.map(k => env[k]), ...catalog]);
   } else {
-    baseUrl = tomlValue(cfg.config, 'base_url');
+    baseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
     model = tomlValue(cfg.config, 'model');
     token = (cfg.auth && cfg.auth.OPENAI_API_KEY) ||
             (cfg.auth && cfg.auth.tokens && cfg.auth.tokens.access_token) || '';
@@ -204,6 +255,7 @@ function summarize(p) {
     baseUrl,
     model,
     modelOptions,
+    useChatResponsesProxy: !!(cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses'),
     tokenMask: maskToken(token),
     hasToken: !!token,
     isOfficial: !baseUrl, // no custom base url -> default login / subscription
@@ -230,14 +282,14 @@ function getProviderSummary(appType, id) {
 // Back-compat alias (server.js used getProviderRow previously).
 const getProviderRow = getProvider;
 
-function createProvider({ appType, name, baseUrl, authToken, model, settingsConfig }) {
+function createProvider({ appType, name, baseUrl, authToken, model, models, useChatResponsesProxy, settingsConfig }) {
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
   // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
   const id = crypto.randomUUID();
   const cfg = (settingsConfig && typeof settingsConfig === 'object')
     ? settingsConfig
-    : buildSettingsConfig(appType, { baseUrl, authToken, model, providerId: id });
+    : buildSettingsConfig(appType, { baseUrl, authToken, model, models, useChatResponsesProxy, providerId: id });
   const p = {
     id,
     appType,
@@ -252,7 +304,7 @@ function createProvider({ appType, name, baseUrl, authToken, model, settingsConf
   return { id: p.id, appType, name: p.name };
 }
 
-function updateProvider(appType, id, { name, baseUrl, authToken, model, settingsConfig }) {
+function updateProvider(appType, id, { name, baseUrl, authToken, model, models, useChatResponsesProxy, settingsConfig }) {
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
   if (!p) throw new Error('provider not found');
@@ -264,11 +316,22 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, settings
     if (baseUrl !== undefined) { if (baseUrl) cfg.env.ANTHROPIC_BASE_URL = baseUrl; else delete cfg.env.ANTHROPIC_BASE_URL; }
     if (authToken !== undefined && authToken) cfg.env.ANTHROPIC_AUTH_TOKEN = authToken;
     if (model !== undefined) { if (model) cfg.env.ANTHROPIC_MODEL = model; else delete cfg.env.ANTHROPIC_MODEL; }
+    if (models !== undefined || model !== undefined) {
+      cfg.modelCatalog = { models: parseModelList(models, model !== undefined ? model : cfg.env.ANTHROPIC_MODEL).map(m => ({ model: m })) };
+    }
   } else {
+    const currentBaseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
+    const nextProxy = useChatResponsesProxy !== undefined
+      ? !!useChatResponsesProxy
+      : !!(cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses');
     const rebuilt = buildSettingsConfig('codex', {
-      baseUrl: baseUrl !== undefined ? baseUrl : tomlValue(cfg.config, 'base_url'),
+      baseUrl: baseUrl !== undefined ? baseUrl : currentBaseUrl,
       authToken: authToken || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
       model: model !== undefined ? model : tomlValue(cfg.config, 'model'),
+      models: models !== undefined
+        ? models
+        : ((cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models)) ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean) : undefined),
+      useChatResponsesProxy: nextProxy,
       providerId: id,
     });
     // Drop a stale proxyTarget if the user switched to a non-domestic baseUrl.
@@ -412,7 +475,7 @@ if (env.ANTHROPIC_BASE_URL) {
     const home = path.join(CODEX_HOMES_DIR, providerId);
     fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
     if (cfg.auth) fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify(cfg.auth, null, 2));
-    if (cfg.config) fs.writeFileSync(path.join(home, 'config.toml'), cfg.config);
+    if (cfg.config) fs.writeFileSync(path.join(home, 'config.toml'), withTomlModel(cfg.config, session.model));
     return { env: { CODEX_HOME: home }, skipDefaultModel: false, providerName: p.name, codexHome: home };
   } catch (_) {
     return { env: {}, skipDefaultModel: false, providerName: p.name };

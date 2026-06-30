@@ -313,8 +313,13 @@ class _ProviderCard extends StatelessWidget {
     final official = p['isOfficial'] == true;
     final baseUrl = p['baseUrl'] as String? ?? '';
     final model = p['model'] as String? ?? '';
+    final models = (p['modelOptions'] as List? ?? [])
+        .map((e) => e.toString())
+        .where((e) => e.trim().isNotEmpty)
+        .toList();
     final tokenMask = p['tokenMask'] as String? ?? '';
     final source = p['source'] as String? ?? 'local';
+    final proxied = p['useChatResponsesProxy'] == true;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -344,10 +349,14 @@ class _ProviderCard extends StatelessWidget {
             style: const TextStyle(color: AppColors.muted, fontSize: 12.5),
             overflow: TextOverflow.ellipsis,
           ),
-          if (model.isNotEmpty || tokenMask.isNotEmpty) ...[
+          if (model.isNotEmpty || models.length > 1 || tokenMask.isNotEmpty || proxied) ...[
             const SizedBox(height: 4),
             Text(
-              [if (model.isNotEmpty) model, if (tokenMask.isNotEmpty) tokenMask].join(' · '),
+              [
+                if (models.length > 1) '${models.length} models' else if (model.isNotEmpty) model,
+                if (proxied) 'chat→responses',
+                if (tokenMask.isNotEmpty) tokenMask,
+              ].join(' · '),
               style: const TextStyle(color: AppColors.faint, fontSize: 11.5, fontFamily: 'monospace'),
               overflow: TextOverflow.ellipsis,
             ),
@@ -400,7 +409,9 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   late final TextEditingController _baseUrl;
   late final TextEditingController _token;
   late final TextEditingController _model;
+  late final TextEditingController _models;
   late String _appType;
+  late bool _useChatResponsesProxy;
   bool _saving = false;
   String? _err;
 
@@ -415,6 +426,12 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     _baseUrl = TextEditingController(text: p?['baseUrl'] as String? ?? '');
     _token = TextEditingController();
     _model = TextEditingController(text: p?['model'] as String? ?? '');
+    final modelOptions = (p?['modelOptions'] as List? ?? [])
+        .map((e) => e.toString())
+        .where((e) => e.trim().isNotEmpty)
+        .toList();
+    _models = TextEditingController(text: modelOptions.join('\n'));
+    _useChatResponsesProxy = p?['useChatResponsesProxy'] == true;
   }
 
   @override
@@ -423,7 +440,15 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     _baseUrl.dispose();
     _token.dispose();
     _model.dispose();
+    _models.dispose();
     super.dispose();
+  }
+
+  List<String> _modelList() {
+    final values = <String>[_model.text.trim()];
+    values.addAll(_models.text.split(RegExp(r'[\n,]')).map((e) => e.trim()));
+    final seen = <String>{};
+    return values.where((e) => e.isNotEmpty && seen.add(e)).toList();
   }
 
   Future<void> _save() async {
@@ -442,6 +467,8 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           baseUrl: _baseUrl.text.trim(),
           authToken: _token.text.trim(),
           model: _model.text.trim(),
+          models: _modelList(),
+          useChatResponsesProxy: _useChatResponsesProxy,
         );
       } else {
         await widget.manage.createProvider(
@@ -450,6 +477,8 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           baseUrl: _baseUrl.text.trim(),
           authToken: _token.text.trim(),
           model: _model.text.trim(),
+          models: _modelList(),
+          useChatResponsesProxy: _useChatResponsesProxy,
         );
       }
       if (mounted) Navigator.pop(context, true);
@@ -508,6 +537,23 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             const SizedBox(height: 14),
             const _FieldLabel('Model（可选）'),
             _input(_model, hint: '如 deepseek-chat', mono: true),
+            const SizedBox(height: 14),
+            const _FieldLabel('可用模型列表（每行一个，可选）'),
+            _input(_models, hint: 'deepseek-chat\ndeepseek-reasoner', mono: true, maxLines: 3),
+            if (_appType == 'codex') ...[
+              const SizedBox(height: 10),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                value: _useChatResponsesProxy,
+                activeColor: AppColors.accent,
+                title: const Text('OpenAI chat 协议转 response 协议',
+                    style: TextStyle(color: AppColors.text, fontSize: 13.5)),
+                subtitle: const Text('勾选后运行时使用本地代理；列表中仍显示你填写的 Base URL。',
+                    style: TextStyle(color: AppColors.faint, fontSize: 12)),
+                onChanged: (v) => setState(() => _useChatResponsesProxy = v),
+              ),
+            ],
             if (_err != null) ...[
               const SizedBox(height: 10),
               Text(_err!, style: const TextStyle(color: AppColors.danger, fontSize: 12.5)),
@@ -532,7 +578,10 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     final sel = _appType == value;
     return Expanded(
       child: GestureDetector(
-        onTap: () => setState(() => _appType = value),
+        onTap: () => setState(() {
+          _appType = value;
+          if (value != 'codex') _useChatResponsesProxy = false;
+        }),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 11),
           alignment: Alignment.center,
@@ -552,10 +601,11 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   }
 
   Widget _input(TextEditingController c,
-      {String? hint, bool mono = false, bool obscure = false}) {
+      {String? hint, bool mono = false, bool obscure = false, int maxLines = 1}) {
     return TextField(
       controller: c,
       obscureText: obscure,
+      maxLines: obscure ? 1 : maxLines,
       autocorrect: false,
       enableSuggestions: false,
       style: TextStyle(color: AppColors.text, fontSize: 14, fontFamily: mono ? 'monospace' : null),

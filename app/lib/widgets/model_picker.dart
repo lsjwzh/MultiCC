@@ -8,6 +8,7 @@ Future<String?> showClaudeModelPicker(
   BuildContext context, {
   String current = '',
   String title = '选择该会话使用的模型',
+  List<String> providerOptions = const [],
 }) {
   return showModalBottomSheet<String>(
     context: context,
@@ -16,7 +17,14 @@ Future<String?> showClaudeModelPicker(
       borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
     ),
     builder: (ctx) {
-      final isKnown = kClaudeModelOptions.any((e) => e.key == current);
+      final customOptions = _orderedOptions(providerOptions);
+      final options = customOptions.isNotEmpty
+          ? [
+              const MapEntry('', '默认 / 跟随 Provider'),
+              ...customOptions.map((m) => MapEntry(m, m)),
+            ]
+          : kClaudeModelOptions;
+      final isKnown = options.any((e) => e.key == current);
       return SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -33,7 +41,7 @@ Future<String?> showClaudeModelPicker(
                 ),
               ),
             ),
-            for (final e in kClaudeModelOptions)
+            for (final e in options)
               ListTile(
                 dense: true,
                 title: Text(
@@ -80,6 +88,16 @@ Future<String?> showClaudeModelPicker(
       );
     },
   );
+}
+
+List<String> _orderedOptions(List<String> values) {
+  final seen = <String>{};
+  final out = <String>[];
+  for (final raw in values) {
+    final v = raw.trim();
+    if (v.isNotEmpty && seen.add(v)) out.add(v);
+  }
+  return out;
 }
 
 Future<String?> _showCustomModelDialog(

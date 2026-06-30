@@ -655,7 +655,9 @@
               <div class="setting-row"><label>名称</label><input id="prov-new-name" type="text" placeholder="如 DeepSeek / OpenRouter" /></div>
               <div class="setting-row"><label>Base URL</label><input id="prov-new-baseurl" type="text" placeholder="https://api.deepseek.com/anthropic（留空=官方/订阅）" /></div>
               <div class="setting-row"><label>API Key</label><input id="prov-new-token" type="password" placeholder="sk-..." autocomplete="off" /></div>
-              <div class="setting-row"><label>Model</label><input id="prov-new-model" type="text" placeholder="如 deepseek-chat（可选）" /></div>
+              <div class="setting-row"><label>Model</label><input id="prov-new-model" type="text" placeholder="默认模型，如 deepseek-chat（可选）" /></div>
+              <div class="setting-row"><label>模型列表</label><textarea id="prov-new-models" rows="3" placeholder="每行一个模型；留空则只使用上面的 Model" style="min-height:74px"></textarea></div>
+              <div class="setting-row" id="prov-new-proxy-row"><label>协议转换</label><label style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px"><input id="prov-new-chat-proxy" type="checkbox" /> OpenAI chat 协议转 response 协议</label></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="createProvider()">Create</button><span class="status-text" id="prov-new-status"></span></div>
           </div>

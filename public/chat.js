@@ -2019,7 +2019,7 @@ document.getElementById('diff-modal')?.addEventListener('click', (e) => {
 
 startMergeStatusPolling();
 
-/* ── Per-session model switch (claude only) ── */
+/* ── Per-session model switch ── */
 const modelBtn = document.getElementById('model-btn');
 const CLAUDE_MODEL_OPTIONS = [
   { value: '', labelKey: 'defaultClaudeSetting' },
@@ -2046,8 +2046,8 @@ function updateModelBtn() {
 // WebView-safe picker (native select/confirm are unreliable in Android WebViews).
 function showModelPicker(current, providerOptions) {
   const allowed = (providerOptions && providerOptions.length)
-    ? providerOptions
-    : CLAUDE_MODEL_OPTIONS.map(o => o.value).filter(Boolean);
+    ? ['', ...providerOptions.filter(Boolean), '__custom__']
+    : CLAUDE_MODEL_OPTIONS.map(o => o.value);
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -2117,9 +2117,12 @@ async function loadSessionModel() {
     _sessionProvider = info.provider || '';
     if (_sessionProvider) await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
     updateProviderBtn();
-    if ((info.cli || 'claude') !== 'claude') return; // codex has no model switch / streaming
     _sessionModel = info.model || '';
     updateModelBtn();
+    if ((info.cli || 'claude') !== 'claude') {
+      updateAutoCommitBtn();
+      return; // streaming is claude-only
+    }
     _sessionStreaming = !!info.streaming;
     _sessionAutoContinue = !!info.autoContinue;
     updateStreamBtn();

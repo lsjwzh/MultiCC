@@ -319,13 +319,12 @@ class _Header extends StatelessWidget {
               ),
               // Model & Provider chips — compact variants on narrow screens.
               const SizedBox(width: 4),
-              if (provider.cli == SessionCli.claude) ...[
-                _ModelChip(
-                    sessionId: provider.sessionName,
-                    settings: settings,
-                    compact: narrow),
-                const SizedBox(width: 4),
-              ],
+              _ModelChip(
+                  sessionId: provider.sessionName,
+                  cli: provider.cli,
+                  settings: settings,
+                  compact: narrow),
+              const SizedBox(width: 4),
               _ProviderChip(
                 sessionId: provider.sessionName,
                 cli: provider.cli,
@@ -390,9 +389,10 @@ class _Header extends StatelessWidget {
 /// Tap to switch (next turn applies).
 class _ModelChip extends StatefulWidget {
   final String sessionId;
+  final SessionCli cli;
   final SettingsService settings;
   final bool compact;
-  const _ModelChip({required this.sessionId, required this.settings, this.compact = false});
+  const _ModelChip({required this.sessionId, required this.cli, required this.settings, this.compact = false});
 
   @override
   State<_ModelChip> createState() => _ModelChipState();
@@ -402,6 +402,8 @@ class _ModelChipState extends State<_ModelChip> {
   List<Map<String, dynamic>> _providers = [];
   bool _loaded = false;
 
+  String get _appType => widget.cli == SessionCli.codex ? 'codex' : 'claude';
+
   @override
   void initState() {
     super.initState();
@@ -410,7 +412,7 @@ class _ModelChipState extends State<_ModelChip> {
 
   Future<void> _load() async {
     try {
-      final d = await ManageService(settings: widget.settings).fetchProviders('claude');
+      final d = await ManageService(settings: widget.settings).fetchProviders(_appType);
       if (!mounted) return;
       setState(() {
         _providers = (d['providers'] as List? ?? [])
@@ -444,14 +446,26 @@ class _ModelChipState extends State<_ModelChip> {
     return '默认';
   }
 
-  /// True when the session's custom provider supplies its own model (so the
-  /// claude `--model` switch is moot — the provider's ANTHROPIC_MODEL wins).
+  /// True when the session's custom provider supplies its own model.
   bool _providerSuppliesModel(String? pid) {
     if (pid == null || pid.isEmpty) return false;
     for (final p in _providers) {
       if (p['id'] == pid) return (p['model'] as String?)?.isNotEmpty == true;
     }
     return false;
+  }
+
+  List<String> _providerModels(String? pid) {
+    if (pid == null || pid.isEmpty) return const [];
+    for (final p in _providers) {
+      if (p['id'] == pid) {
+        return (p['modelOptions'] as List? ?? [])
+            .map((e) => e.toString())
+            .where((e) => e.trim().isNotEmpty)
+            .toList();
+      }
+    }
+    return const [];
   }
 
   @override
@@ -461,13 +475,14 @@ class _ModelChipState extends State<_ModelChip> {
     for (final x in mgr.sessions) {
       if (x.id == widget.sessionId) { s = x; break; }
     }
-    // When the model is dictated by a custom provider (provider has its own
-    // model and the session didn't explicitly override it), the standalone
-    // model chip is both redundant (the provider chip already says deepseek)
-    // and wide enough to overflow the header row — hide it.
-    if (s != null &&
+    // For Claude, provider-supplied single-model configs already make the
+    // provider chip clear enough. Keep Codex visible because model switching is
+    // otherwise unavailable there.
+    if (widget.cli == SessionCli.claude &&
+        s != null &&
         (s.model == null || s.model!.isEmpty) &&
-        _providerSuppliesModel(s.provider)) {
+        _providerSuppliesModel(s.provider) &&
+        _providerModels(s.provider).length <= 1) {
       return const SizedBox.shrink();
     }
     final label = _modelLabel(s);
@@ -529,6 +544,7 @@ class _ModelChipState extends State<_ModelChip> {
       context,
       current: s.model ?? '',
       title: t('switchModel'),
+      providerOptions: _providerModels(s.provider),
     );
     if (picked == null) return;
     try {

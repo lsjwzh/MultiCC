@@ -1956,10 +1956,10 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!['claude', 'codex'].includes(cli)) return { ok: false, error: 'cli must be claude or codex' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
-  // Model is claude-only and interpolated into a tmux shell command — keep the charset
-  // tight, but allow `/` and `:` so OpenRouter-style ids (openrouter/owl-alpha,
-  // anthropic/claude-sonnet-4.6) and provider:model forms pass; neither is a shell metachar.
-  if (model && (cli !== 'claude' || !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model))) {
+  // Model can be set for both Claude and Codex sessions. Claude terminal mode
+  // interpolates it into a shell command, so keep the charset tight; Codex uses
+  // the same id shape in config.toml.
+  if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
     return { ok: false, error: 'invalid model' };
   }
   // Provider override (cc-switch). An explicit value is validated; when omitted
@@ -1993,7 +1993,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     cli, kind,
     cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
     label,
-    model: model || null, // claude-only; null = follow the user's /model default
+    model: model || null, // null = follow default/provider model
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     createdAt: new Date().toISOString(),
     worktreePath,
@@ -2041,22 +2041,14 @@ app.patch('/api/sessions/:id', (req, res) => {
   }
   if (req.body.model !== undefined) {
     const model = (req.body.model || '').toString().trim();
-    // codex sessions read their model from the provider's config.toml, not from
-    // a per-session override; silently ignore the field instead of 400-ing so
-    // the UI's post-provider-switch refresh doesn't surface "model is
-    // claude-only" as a hard failure.
-    if (s.cli !== 'claude') {
-      // no-op; leave s.model to be resolved by the provider at spawn time
-    } else {
-      // Allow `/` and `:` for OpenRouter-style ids (openrouter/owl-alpha) and provider:model forms.
-      if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
-        return res.status(400).json({ error: 'invalid model' });
-      }
-      s.model = model || null;
-      // Chat sessions pick this up on the next turn (fresh spawn per turn);
-      // terminal sessions need a session restart to relaunch claude with it.
-      appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
+    // Allow `/` and `:` for OpenRouter-style ids and provider:model forms.
+    if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
+      return res.status(400).json({ error: 'invalid model' });
     }
+    s.model = model || null;
+    // Chat sessions pick this up on the next turn (fresh spawn per turn);
+    // terminal sessions need a session restart to relaunch their CLI with it.
+    appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
   }
   if (req.body.rolePrompt !== undefined) {
     const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
@@ -4155,6 +4147,8 @@ app.post('/api/providers', (req, res) => {
       baseUrl: (req.body.baseUrl || '').trim(),
       authToken: (req.body.authToken || '').trim(),
       model: (req.body.model || '').trim(),
+      models: req.body.models,
+      useChatResponsesProxy: req.body.useChatResponsesProxy,
       settingsConfig: req.body.settingsConfig,
     });
     res.json({ ok: true, ...r });
@@ -4168,6 +4162,8 @@ app.patch('/api/providers/:appType/:id', (req, res) => {
       baseUrl: req.body.baseUrl,
       authToken: req.body.authToken,
       model: req.body.model,
+      models: req.body.models,
+      useChatResponsesProxy: req.body.useChatResponsesProxy,
       settingsConfig: req.body.settingsConfig,
     });
     res.json({ ok: true });

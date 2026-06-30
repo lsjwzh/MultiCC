@@ -178,6 +178,8 @@ class ManageService {
     String baseUrl = '',
     String authToken = '',
     String model = '',
+    List<String> models = const [],
+    bool useChatResponsesProxy = false,
   }) async {
     final res = await http
         .post(Uri.parse(_url('/api/providers')),
@@ -188,6 +190,8 @@ class ManageService {
               'baseUrl': baseUrl,
               'authToken': authToken,
               'model': model,
+              'models': models,
+              'useChatResponsesProxy': useChatResponsesProxy,
             }))
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
@@ -200,12 +204,18 @@ class ManageService {
     String? baseUrl,
     String? authToken,
     String? model,
+    List<String>? models,
+    bool? useChatResponsesProxy,
   }) async {
     final body = <String, dynamic>{};
     if (name != null) body['name'] = name;
     if (baseUrl != null) body['baseUrl'] = baseUrl;
     if (authToken != null && authToken.isNotEmpty) body['authToken'] = authToken;
     if (model != null) body['model'] = model;
+    if (models != null) body['models'] = models;
+    if (useChatResponsesProxy != null) {
+      body['useChatResponsesProxy'] = useChatResponsesProxy;
+    }
     final res = await http
         .patch(Uri.parse(_url('/api/providers/$appType/$id')),
             headers: _headers, body: jsonEncode(body))
