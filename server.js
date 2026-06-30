@@ -4564,22 +4564,34 @@ function workspaceBroadcast(dirId, payload) {
   }
 }
 
+// Statuses where the agent is actively working a turn (the run-time clock ticks).
+// Everything else — completed / idle / error / waiting — is a resting state that
+// freezes the clock.
+function isRunningStatus(s) { return s === 'thinking' || s === 'editing' || s === 'running'; }
+
 // Update a session's live status and push the delta to workspace subscribers.
 function setSessionStatus(sessionId, patch) {
   const persisted = persistedSessions.get(sessionId);
   if (!persisted || persisted.type === 'aux') return;
-  const prev = workspaceStatus.get(sessionId) || { status: 'idle', currentFile: null, lastActivity: 0, turnStartedAt: 0 };
-  const newStatus = patch.status !== undefined ? patch.status : prev.status;
-  const isActive = !['idle', 'completed', 'error', 'waiting'].includes(newStatus);
+  const prev = workspaceStatus.get(sessionId) || { status: 'idle', currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null };
+  const now = Date.now();
+  const nextStatus = patch.status !== undefined ? patch.status : prev.status;
+  // Run-time tracking: stamp runStartedAt when a turn begins (resting → working),
+  // freeze runEndedAt when it ends (working → resting). Mid-turn transitions
+  // between working states (thinking↔editing↔running) keep the original start.
+  let runStartedAt = prev.runStartedAt || null;
+  let runEndedAt = prev.runEndedAt !== undefined ? prev.runEndedAt : null;
+  const wasRunning = !!prev.runStartedAt && !prev.runEndedAt;
+  if (isRunningStatus(nextStatus)) {
+    if (!wasRunning) { runStartedAt = now; runEndedAt = null; }  // a new run segment begins
+  } else if (wasRunning) {
+    runEndedAt = now;  // the run just ended at a resting state — freeze the clock
+  }
   const next = {
-    status: newStatus,
+    status: nextStatus,
     currentFile: patch.currentFile !== undefined ? patch.currentFile : prev.currentFile,
-    lastActivity: Date.now(),
-    // Carry turnStartedAt through mid-turn status changes (thinking→editing→running).
-    // Clear it when the turn ends (idle/completed/error/waiting).
-    turnStartedAt: patch.turnStartedAt !== undefined
-      ? patch.turnStartedAt
-      : (isActive ? (prev.turnStartedAt || 0) : 0),
+    lastActivity: now,
+    runStartedAt, runEndedAt,
   };
   workspaceStatus.set(sessionId, next);
   // Only broadcast when the status or current file actually changed — callers may
@@ -4588,7 +4600,7 @@ function setSessionStatus(sessionId, patch) {
   workspaceBroadcast(persisted.dirId, {
     type: 'status', sessionId,
     status: next.status, currentFile: next.currentFile, lastActivity: next.lastActivity,
-    turnStartedAt: next.turnStartedAt || null,
+    runStartedAt: next.runStartedAt, runEndedAt: next.runEndedAt,
     mergeState: gitWorktreeMergeState(directories.get(persisted.dirId), persisted),
   });
 }
@@ -4597,7 +4609,7 @@ function workspaceSnapshot(dirId) {
   const out = [];
   for (const s of persistedSessions.values()) {
     if (s.dirId !== dirId || s.type === 'aux' || s.type === 'gateway') continue;
-    const st = workspaceStatus.get(s.id) || { status: 'idle', currentFile: null, lastActivity: 0, turnStartedAt: 0 };
+    const st = workspaceStatus.get(s.id) || { status: 'idle', currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null };
     const active = sessions.get(s.id);
     const chat = chatSessions.get(s.id);
     const sum = sessionSummaries.get(s.id) || null;
@@ -4605,7 +4617,7 @@ function workspaceSnapshot(dirId) {
       id: s.id, label: s.label || null, cli: s.cli || 'claude', kind: s.kind || 'terminal',
       branch: s.branch || null, invalid: invalidSessions.get(s.id) || null,
       status: st.status, currentFile: st.currentFile, lastActivity: st.lastActivity,
-      turnStartedAt: st.turnStartedAt || null,
+      runStartedAt: st.runStartedAt || null, runEndedAt: st.runEndedAt || null,
       clients: s.kind === 'chat' ? (chat?.clients.size || 0) : (active?.clients.size || 0),
       pendingNotes: pendingNotesFor(s.id).length,
       mergeState: gitWorktreeMergeState(directories.get(s.dirId), s),
@@ -5157,7 +5169,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // don't recurse on their own output (see firePostTurnTriggers).
   cs._originTrigger = !!originTrigger;
   cs.originDispatchId = originDispatchId || null;
-  setSessionStatus(sessionName, { status: 'thinking', currentFile: null, turnStartedAt: cs.turnStartedAt });
+  setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
 
   const provider = cliProviders[cs.cli] || cliProviders.claude;
   // For claude: first turn → --session-id <uuid>, subsequent → --resume <uuid>.

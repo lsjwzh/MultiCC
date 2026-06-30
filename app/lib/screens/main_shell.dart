@@ -91,6 +91,39 @@ DateTime _sessionLastInteractionAt(Session session, SessionStatus? live) {
   return best;
 }
 
+// ── 任务运行时长 ────────────────────────────────────────────────────────────
+// 从用户发出消息（runStartedAt）算起任务执行了多久；进行中实时累加，终止/等待
+// 时冻结到 runEndedAt。返回 null 表示无可用数据。
+bool _isRunningStatus(String? s) =>
+    s == 'thinking' || s == 'editing' || s == 'running';
+
+Duration? _runDuration(SessionStatus? live) {
+  if (live == null || live.runStartedAt <= 0) return null;
+  final running = _isRunningStatus(live.status) && live.runEndedAt <= 0;
+  final end = running
+      ? DateTime.now().millisecondsSinceEpoch
+      : (live.runEndedAt > 0 ? live.runEndedAt : live.runStartedAt);
+  final ms = end - live.runStartedAt;
+  return Duration(milliseconds: ms < 0 ? 0 : ms);
+}
+
+// 紧凑中文时长：12秒 / 3分20秒 / 1时05分。
+String _formatRunDuration(Duration d) {
+  final totalSec = d.inSeconds;
+  final h = totalSec ~/ 3600;
+  final m = (totalSec % 3600) ~/ 60;
+  final sec = totalSec % 60;
+  if (h > 0) return '$h时${m.toString().padLeft(2, '0')}分';
+  if (m > 0) return '$m分${sec.toString().padLeft(2, '0')}秒';
+  return '$sec秒';
+}
+
+// 运行时长短语（带 ⏱），无数据返回空串。
+String _runTimeText(SessionStatus? live) {
+  final d = _runDuration(live);
+  return d == null ? '' : '⏱ ${_formatRunDuration(d)}';
+}
+
 class MainShell extends StatefulWidget {
   final SettingsService settings;
   const MainShell({super.key, required this.settings});
@@ -515,6 +548,9 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
 
     return FutureBuilder<List<String>?>(future: _loadDirOrder(), builder: (context, snapshot) {
       final savedOrder = snapshot.data;
+      // 缓存到 _lastSavedOrder，供 _handleDragEnd → _buildVisualOrder 使用
+      _lastSavedOrder = savedOrder;
+
       final orderedDirectories = <Directory>[];
 
       if (savedOrder != null && savedOrder.isNotEmpty) {
@@ -551,12 +587,44 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
               child: ListView.builder(
                 padding: const EdgeInsets.fromLTRB(12, 2, 12, 12),
                 itemCount: orderedDirectories.length,
-                itemBuilder: (_, i) => _DirectoryCard(
-                  directory: orderedDirectories[i],
-                  settings: widget.settings,
-                  mgr: mgr,
-                  index: i,
-                ),
+                itemBuilder: (_, i) {
+                  final dir = orderedDirectories[i];
+                  final showInsertIndicator = _dragHoverDirId == dir.id;
+                  return Column(
+                    key: ValueKey(dir.id),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 虚拟插入指示器：拖拽悬停时在目标卡片上方显示
+                      if (showInsertIndicator)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: AppColors.accent,
+                            borderRadius: BorderRadius.circular(2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.accent.withValues(alpha: 0.5),
+                                blurRadius: 8,
+                                spreadRadius: 1,
+                              ),
+                            ],
+                          ),
+                        ),
+                      _DirectoryCard(
+                        directory: dir,
+                        settings: widget.settings,
+                        mgr: mgr,
+                        index: i,
+                        onDragHover: (dirId) {
+                          if (_dragHoverDirId != dirId) {
+                            setState(() => _dragHoverDirId = dirId);
+                          }
+                        },
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ),
@@ -566,27 +634,54 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     );
   }
 
+  /// 当前被拖拽悬停的目录 ID（用于显示插入指示器）
+  String? _dragHoverDirId;
+
+  /// 构建与用户视觉一致的有序列表（savedOrder 优先，新目录追加末尾）
+  List<String> _buildVisualOrder(SessionManager mgr) {
+    final saved = _lastSavedOrder ?? [];
+    final dirIds = mgr.directories.map((d) => d.id).toSet();
+    final visual = <String>[];
+    for (final id in saved) {
+      if (dirIds.contains(id)) {
+        visual.add(id);
+        dirIds.remove(id);
+      }
+    }
+    // 新目录追加末尾
+    for (final d in mgr.directories) {
+      if (dirIds.contains(d.id)) visual.add(d.id);
+    }
+    return visual;
+  }
+
+  List<String>? _lastSavedOrder;
+
   Future<void> _handleDragEnd(String fromDirId, String toDirId) async {
     final mgr = context.read<SessionManager>();
-    final dirs = List<Directory>.from(mgr.directories);
 
-    final fromIdx = dirs.indexWhere((d) => d.id == fromDirId);
-    final toIdx = dirs.indexWhere((d) => d.id == toDirId);
+    // 基于视觉顺序（而非 mgr.directories 服务端顺序）来重排
+    final visualOrder = _buildVisualOrder(mgr);
 
-    if (fromIdx == -1 || toIdx == -1 || fromIdx == toIdx) return;
+    final fromIdx = visualOrder.indexOf(fromDirId);
+    final toIdx = visualOrder.indexOf(toDirId);
 
-    // 更新列表顺序
-    final temp = dirs.removeAt(fromIdx);
-    final insertIdx = dirs.indexWhere((d) => d.id == toDirId);
-    dirs.insert(insertIdx, temp);
+    if (fromIdx == -1 || toIdx == -1 || fromIdx == toIdx) {
+      if (mounted) setState(() => _dragHoverDirId = null);
+      return;
+    }
 
-    // 保存顺序
-    final newOrder = dirs.map((d) => d.id).toList();
-    await _saveDirOrder(newOrder);
+    // 从原位置移除，插入到目标位置之前
+    visualOrder.removeAt(fromIdx);
+    final insertIdx = visualOrder.indexOf(toDirId);
+    visualOrder.insert(insertIdx, fromDirId);
 
-    // 刷新UI
+    _lastSavedOrder = visualOrder;
+    await _saveDirOrder(visualOrder);
+
+    // 清除拖拽状态 + 刷新UI
     if (mounted) {
-      setState(() {});
+      setState(() => _dragHoverDirId = null);
     }
   }
 
@@ -877,15 +972,16 @@ void _showSessionSheet(
     return '';
   }
 
-  final runningIds = mgr.runningSessionIds;
-  final waitingIds = mgr.waitingSessionIds;
-
-  /// Derive a status colour + text for the popup row (no live workspace feed).
-  ({Color color, String text}) statusInfo(Session s) {
-    if (runningIds.contains(s.id)) {
+  /// Derive a status colour + text from the live workspace status (full 7-state
+  /// mapping, aligned to web), falling back to the aggregate id sets / s.active.
+  ({Color color, String text}) statusInfo(Session s, SessionStatus? live) {
+    if (live != null) {
+      return (color: _wbStatusColor(live.status), text: _wbStatusLabel(live.status));
+    }
+    if (mgr.runningSessionIds.contains(s.id)) {
       return (color: const Color(0xFF7fd49a), text: t('running'));
     }
-    if (waitingIds.contains(s.id)) {
+    if (mgr.waitingSessionIds.contains(s.id)) {
       return (color: const Color(0xFFf0936b), text: t('waiting'));
     }
     if (s.active) {
@@ -900,8 +996,12 @@ void _showSessionSheet(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
+    // Re-render once a second so the run-time of in-progress tasks visibly ticks
+    // and live status / summary changes surface while the sheet is open.
     builder: (sheetCtx) => SafeArea(
-      child: Column(
+      child: StreamBuilder<int>(
+        stream: Stream<int>.periodic(const Duration(seconds: 1), (i) => i),
+        builder: (streamCtx, _) => Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Padding(
@@ -958,16 +1058,19 @@ void _showSessionSheet(
                   final s = sessions[i];
                   final alias = (s.label?.isNotEmpty == true) ? s.label! : s.id;
                   final dir = dirName(s.dirId);
-                  final st = statusInfo(s);
+                  final live = mgr.liveStatus(s.id);
+                  final st = statusInfo(s, live);
                   final cliColor = s.cli == SessionCli.codex
                       ? _kCodexColor
                       : _kClaudeColor;
-                  final lastInteraction = _sessionLastInteractionAt(s, null);
+                  final lastInteraction = _sessionLastInteractionAt(s, live);
                   final ago = timeago.format(lastInteraction, locale: 'en_short');
                   final model = s.model?.isNotEmpty == true
                       ? claudeModelShortName(s.model)
                       : '';
                   final provider = s.provider?.isNotEmpty == true ? s.provider! : '';
+                  final summary = live?.summary ?? '';
+                  final runtime = _runTimeText(live);
 
                   return InkWell(
                     onTap: () {
@@ -1016,6 +1119,17 @@ void _showSessionSheet(
                                 ),
                               ),
                               const Spacer(),
+                              if (runtime.isNotEmpty) ...[
+                                Text(
+                                  runtime,
+                                  style: const TextStyle(
+                                    color: Color(0xFF7a818c),
+                                    fontSize: 10,
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                              ],
                               Text(
                                 ago,
                                 style: const TextStyle(
@@ -1102,6 +1216,19 @@ void _showSessionSheet(
                               ],
                             ),
                           ],
+                          // Row 4: aux-AI 最近任务简介 (align to web popup)
+                          if (summary.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              '🗒 $summary',
+                              style: const TextStyle(
+                                color: Color(0xFF8a909b),
+                                fontSize: 10,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -1111,6 +1238,7 @@ void _showSessionSheet(
             ),
           const SizedBox(height: 8),
         ],
+        ),
       ),
     ),
   );
@@ -1125,12 +1253,14 @@ class _DirectoryCard extends StatefulWidget {
   final SettingsService settings;
   final SessionManager mgr;
   final int index;
+  final void Function(String dirId)? onDragHover;
 
   const _DirectoryCard({
     required this.directory,
     required this.settings,
     required this.mgr,
     required this.index,
+    this.onDragHover,
   });
 
   @override
@@ -1171,6 +1301,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       const {},
     ); // drop stale entries
     widget.mgr.reportRunning(widget.directory.id, const {});
+    widget.mgr.reportStatuses(widget.directory.id, const {});
     super.dispose();
   }
 
@@ -1210,6 +1341,9 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         .map((e) => e.key)
         .toSet();
     widget.mgr.reportRunning(widget.directory.id, running);
+    // Report the full live status map so the dashboard popups can show each
+    // session's real-time status / summary / run-time (mirrors web).
+    widget.mgr.reportStatuses(widget.directory.id, _workspace.statuses);
     if (mounted) setState(() {});
   }
 
@@ -1228,6 +1362,13 @@ class _DirectoryCardState extends State<_DirectoryCard> {
 
     return LongPressDraggable<String>(
       data: widget.directory.id,
+      onDragEnd: (_) {
+        // 拖拽结束（无论是否成功 drop）都清除悬停指示器
+        final parent = context.findAncestorStateOfType<_DirectoryListBodyState>();
+        if (parent != null && parent._dragHoverDirId != null) {
+          parent.setState(() => parent._dragHoverDirId = null);
+        }
+      },
       feedback: Material(
         elevation: 6,
         color: Colors.transparent,
@@ -1298,7 +1439,19 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       ),
       child: DragTarget<String>(
         onWillAcceptWithDetails: (details) {
-          return details.data != widget.directory.id;
+          if (details.data != widget.directory.id) {
+            // 通知父组件：拖拽悬停在此卡片上，显示插入指示器
+            widget.onDragHover?.call(widget.directory.id);
+            return true;
+          }
+          return false;
+        },
+        onLeave: (_) {
+          // 拖拽离开时清除悬停状态
+          final parent = context.findAncestorStateOfType<_DirectoryListBodyState>();
+          if (parent != null && parent._dragHoverDirId == widget.directory.id) {
+            parent.setState(() => parent._dragHoverDirId = null);
+          }
         },
         onAcceptWithDetails: (details) {
           // 通知父组件处理拖拽结束
@@ -3021,6 +3174,17 @@ class SessionCard extends StatelessWidget {
                     ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+              if (_runTimeText(live).isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  _runTimeText(live),
+                  style: const TextStyle(
+                    color: Color(0xFF7a818c),
+                    fontSize: 10,
+                    fontFamily: 'monospace',
                   ),
                 ),
               ],

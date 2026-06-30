@@ -269,6 +269,7 @@ async function loadDashboard() {
     }
     renderDashboard(directories, sessions);
     syncMonitors(sessions);
+    startRuntimeTicker();
   } catch (err) {
     console.error('Failed to load dashboard:', err);
     const el = document.getElementById('directory-list');
@@ -727,7 +728,8 @@ function sessionStatusBrief(s) {
   const sm = _workspaceSummaries.get(s.id);
   let summary = sm && sm.summary ? sm.summary : '';
   if (summary.length > 40) summary = summary.slice(0, 40) + '…';
-  return { text, cls, emoji, summary };
+  const runtime = sessionRunTimeText(s.id);
+  return { text, cls, emoji, summary, runtime };
 }
 
 // Render a popover from a KPI tile: each row shows 会话名 + 运行状态 + 最近任务简介，
@@ -740,12 +742,7 @@ function showSessionListPopup(ev, sessions, prefix, emptyText) {
     const name = dir ? `${dir} / ${alias}` : alias;
     const b = sessionStatusBrief(s);
     let label = `${b.emoji} ${name} · ${b.text}`;
-    // Show elapsed time for actively-running sessions
-    const wb = _workspaceStatus.get(s.id);
-    if (wb && wb.turnStartedAt) {
-      const elapsed = (Date.now() - wb.turnStartedAt) / 1000;
-      if (elapsed > 0) label += ` ⏱ ${formatDuration(elapsed)}`;
-    }
+    if (b.runtime) label += ` · ${b.runtime}`;
     if (b.summary) label += ` — ${b.summary}`;
     return { label, onclick: () => jumpToSession(s) };
   });
@@ -853,6 +850,37 @@ function sessionLastInteractionMs(s) {
     if (Number.isFinite(ms) && ms > best) best = ms;
   }
   return best;
+}
+
+// ── 任务运行时长 ──────────────────────────────────────────────────────────
+// 从用户发出消息（任务开始 runStartedAt）算起，任务执行了多久。进行中
+// (thinking/editing/running) 实时累加；终止/等待时冻结到 runEndedAt。
+function isRunningWbStatus(status) {
+  return status === 'thinking' || status === 'editing' || status === 'running';
+}
+// 返回运行时长(ms)，无法计算时返回 null。
+function runDurationMs(st) {
+  if (!st || !st.runStartedAt) return null;
+  const live = isRunningWbStatus(st.status) && !st.runEndedAt;
+  const end = live ? Date.now() : (st.runEndedAt || st.runStartedAt);
+  return Math.max(0, end - st.runStartedAt);
+}
+// 紧凑中文时长：12秒 / 3分20秒 / 1时05分。
+function formatRunDuration(ms) {
+  if (ms == null || ms < 0) return '';
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const sec = totalSec % 60;
+  if (h > 0) return `${h}时${String(m).padStart(2, '0')}分`;
+  if (m > 0) return `${m}分${String(sec).padStart(2, '0')}秒`;
+  return `${sec}秒`;
+}
+// 会话运行时长短语（带 ⏱ 前缀），无可用数据时返回空串。供卡片/弹层共用。
+function sessionRunTimeText(sessionId) {
+  const ms = runDurationMs(_workspaceStatus.get(sessionId));
+  const txt = formatRunDuration(ms);
+  return txt ? `⏱ ${txt}` : '';
 }
 
 // Compact preview shown on the overview card: unified card with activity block,
@@ -1276,6 +1304,7 @@ function renderSessionRow(s) {
   const wbFile = (wb && wb.currentFile) ? wb.currentFile.split('/').pop() : '';
   const sm = _workspaceSummaries.get(s.id);
   const summary = sm && sm.summary ? sm.summary : '';
+  const runtimeText = sessionRunTimeText(s.id);
 
   const openBtn = s.kind === 'chat'
     ? `<button class="btn-icon" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">🔗</button>`
@@ -1296,6 +1325,7 @@ function renderSessionRow(s) {
         </div>
         <div class="sess-file" id="sess-file-${escapeHtml(s.id)}"${wbFile ? '' : ' style="display:none"'}>${wbFile ? '✎ ' + escapeHtml(wbFile) : ''}</div>
         <div class="sess-summary" id="sess-summary-${escapeHtml(s.id)}" title="${summary ? '最近任务：' + escapeHtml(summary) : ''}"${summary ? '' : ' style="display:none"'}>${summary ? '🗒 ' + escapeHtml(summary) : ''}</div>
+        <div class="sess-runtime" id="sess-runtime-${escapeHtml(s.id)}"${runtimeText ? '' : ' style="display:none"'}>${escapeHtml(runtimeText)}</div>
       </div>
       <span class="lean-actions">
         ${openBtn}
@@ -2369,22 +2399,24 @@ function connectWorkspace(dirId) {
     let msg; try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'snapshot') {
       for (const s of msg.sessions) {
-        _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity, turnStartedAt: s.turnStartedAt || null, mergeState: s.mergeState || null });
+        _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity, runStartedAt: s.runStartedAt || null, runEndedAt: s.runEndedAt || null, mergeState: s.mergeState || null });
         _workspaceNotes.set(s.id, s.pendingNotes || 0);
         if (s.summary) _workspaceSummaries.set(s.id, { summary: s.summary, ts: s.summaryTs || 0 });
         updateSessionStatusDom(s.id);
         updateSessionNotesDom(s.id);
         updateSessionMergeDom(s.id);
         updateSessionSummaryDom(s.id);
+        updateSessionRuntimeDom(s.id);
       }
       _workspaceEvents.set(dirId, msg.events || []);
       updateEventTimelineDom(dirId);
       updateDirPreview(dirId);
       updateGlobalTaskScroller();
     } else if (msg.type === 'status') {
-      _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity, turnStartedAt: msg.turnStartedAt || null, mergeState: msg.mergeState || _workspaceStatus.get(msg.sessionId)?.mergeState || null });
+      _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity, runStartedAt: msg.runStartedAt || null, runEndedAt: msg.runEndedAt || null, mergeState: msg.mergeState || _workspaceStatus.get(msg.sessionId)?.mergeState || null });
       updateSessionStatusDom(msg.sessionId);
       updateSessionMergeDom(msg.sessionId);
+      updateSessionRuntimeDom(msg.sessionId);
       updateGlobalTaskScroller();
     } else if (msg.type === 'merge_status') {
       const prev = _workspaceStatus.get(msg.sessionId) || {};
@@ -2500,6 +2532,32 @@ function updateSessionSummaryDom(sessionId) {
   el.textContent = text ? '🗒 ' + text : '';
   el.title = text ? `最近任务：${text}` : '';
   el.style.display = text ? '' : 'none';
+}
+
+// Refresh one session's run-time line from the live workspace status.
+function updateSessionRuntimeDom(sessionId) {
+  const el = document.getElementById(`sess-runtime-${sessionId}`);
+  if (!el) return;
+  const text = sessionRunTimeText(sessionId);
+  el.textContent = text;
+  el.style.display = text ? '' : 'none';
+}
+
+// Live ticker: while any session is mid-run the elapsed time must visibly count
+// up, so re-render every visible run-time line once a second (cheap; only touches
+// existing nodes). Started once on first call.
+let _runtimeTicker = null;
+function startRuntimeTicker() {
+  if (_runtimeTicker) return;
+  _runtimeTicker = setInterval(() => {
+    const nodes = document.querySelectorAll('[id^="sess-runtime-"]');
+    for (const el of nodes) {
+      const id = el.id.slice('sess-runtime-'.length);
+      const text = sessionRunTimeText(id);
+      el.textContent = text;
+      el.style.display = text ? '' : 'none';
+    }
+  }, 1000);
 }
 
 function updateSessionNotesDom(sessionId) {
