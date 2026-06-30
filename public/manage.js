@@ -1330,7 +1330,8 @@ function openDirectoryDetail(dirId) {
   if (!dir) return;
   _detailDirId = dirId;
   connectWorkspace(dirId);
-  _expandedEvents.add(dirId);   // show the activity timeline open inside the modal
+  // Activity timeline starts collapsed (3 events); click "展开全部" to see more.
+  _expandedEvents.delete(dirId);
   const title = document.getElementById('dir-detail-title');
   const sub = document.getElementById('dir-detail-subtitle');
   if (title) title.textContent = dir.name;
