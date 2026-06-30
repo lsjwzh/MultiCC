@@ -163,36 +163,47 @@ else
 fi
 
 # ── Detect Node.js ────────────────────────────────────────────────────────
-NODE_MIN_MAJOR=18
+# server.js does `require('chokidar')`, and chokidar 5 is ESM-only. Loading a
+# pure-ESM package via require() without a flag was only backported to Node
+# 20.19.0 (20.x line) and 22.12.0 (22.x line). On Node 18 or 20.0–20.18 the
+# server crashes at startup with ERR_REQUIRE_ESM, so we gate here on the exact
+# floor (≥20.19.0) instead of letting users discover it only at `start`.
+NODE_MIN_MAJOR=20
+NODE_MIN_MINOR=19
+
+# 0 (true) if major.minor is older than the required floor.
+node_too_old() {
+  [ "$1" -lt "$NODE_MIN_MAJOR" ] && return 0
+  [ "$1" -gt "$NODE_MIN_MAJOR" ] && return 1
+  [ "$2" -lt "$NODE_MIN_MINOR" ]
+}
+
+print_node_install_hint() {
+  echo ""
+  if [ "$IS_MACOS" = true ]; then
+    echo "  Install: brew install node       # Homebrew ships a current (>= 20.19) Node"
+  else
+    echo "  Install:"
+    echo "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -   # recommended (>= 20.19)"
+    echo "    sudo apt-get install -y nodejs"
+  fi
+  echo "  Or visit: https://nodejs.org/en/download   (pick an LTS >= 20.19)"
+}
 
 if command -v node >/dev/null 2>&1; then
   NODE_VERSION="$(node --version | sed 's/^v//')"
   NODE_MAJOR="$(echo "$NODE_VERSION" | cut -d. -f1)"
-  if [ "$NODE_MAJOR" -ge "$NODE_MIN_MAJOR" ]; then
-    ok "Node.js v${NODE_VERSION}"
-  else
-    err "Node.js v${NODE_VERSION} found, but v${NODE_MIN_MAJOR}+ is required."
-    echo ""
-    echo "  Install via:"
-    if [ "$IS_MACOS" = true ]; then
-      echo "    brew install node"
-    else
-      echo "    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
-      echo "    sudo apt-get install -y nodejs"
-    fi
-    echo "  Or: https://nodejs.org/en/download"
+  NODE_MINOR="$(echo "$NODE_VERSION" | cut -d. -f2)"
+  if node_too_old "$NODE_MAJOR" "$NODE_MINOR"; then
+    err "Node.js v${NODE_VERSION} found, but v${NODE_MIN_MAJOR}.${NODE_MIN_MINOR}.0+ is required."
+    echo "  (the server depends on chokidar 5, whose require(ESM) support landed in Node 20.19 / 22.12)"
+    print_node_install_hint
     exit 1
   fi
+  ok "Node.js v${NODE_VERSION}"
 else
-  err "Node.js is not installed."
-  echo ""
-  if [ "$IS_MACOS" = true ]; then
-    echo "  Install: brew install node"
-  else
-    echo "  Install: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
-    echo "           sudo apt-get install -y nodejs"
-  fi
-  echo "  Or visit: https://nodejs.org/en/download"
+  err "Node.js is not installed (v${NODE_MIN_MAJOR}.${NODE_MIN_MINOR}.0+ is required)."
+  print_node_install_hint
   exit 1
 fi
 

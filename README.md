@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node.js >=18" />
+  <img src="https://img.shields.io/badge/node-%3E%3D20.19-brightgreen" alt="Node.js >=20.19" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-Android%20%7C%20iOS-02569B" alt="Flutter app" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
@@ -223,7 +223,7 @@ deps if needed, and restarts) — no need to re-run the install script.
 
 ### Prerequisites
 
-- **Node.js** >= 18
+- **Node.js** >= 20.19 (the server's `chokidar` dependency needs `require(ESM)` support, backported in Node 20.19 / 22.12)
 - **tmux** (for terminal mode; chat mode does not need it)
 - **Claude Code CLI** — `claude` on your PATH, already logged in
 - **Flutter** 3.8+ (only if you want to build the native app yourself)

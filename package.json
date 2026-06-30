@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Web interface for Claude Code CLI",
   "main": "server.js",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node test.js",
