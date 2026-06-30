@@ -8,6 +8,29 @@ function tokenQS(prefix) { return _urlToken ? `${prefix}token=${_urlToken}` : ''
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 const NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY = 'multicc_notify_existing_sessions_opened_20260629';
 
+// Directory/card grid template — phone screens get a single minmax(0,1fr) column
+// so long nowrap content (e.g. file paths in dir-cards) cannot force the grid
+// track wider than the viewport and clip cards on the right.
+const MOBILE_GRID_BREAKPOINT = 860;
+function directoryGridTemplate() {
+  return window.innerWidth <= MOBILE_GRID_BREAKPOINT
+    ? 'minmax(0, 1fr)'
+    : 'repeat(auto-fill, minmax(400px, 1fr))';
+}
+// Re-apply the grid template when the viewport size class changes (portrait ↔
+// landscape, or window resize). We only adjust when crossing the breakpoint to
+// avoid recomputing on every pixel of resize. Containers we manage mark
+// themselves with the .multicc-auto-grid class (see renderDirectories / cron).
+let _lastGridWasMobile = window.innerWidth <= MOBILE_GRID_BREAKPOINT;
+window.addEventListener('resize', () => {
+  const isMobile = window.innerWidth <= MOBILE_GRID_BREAKPOINT;
+  if (isMobile === _lastGridWasMobile) return;
+  _lastGridWasMobile = isMobile;
+  for (const el of document.querySelectorAll('.multicc-auto-grid')) {
+    if (el.style.display === 'grid') el.style.gridTemplateColumns = directoryGridTemplate();
+  }
+});
+
 // Directory ordering with localStorage persistence
 let _dirOrder = JSON.parse(localStorage.getItem('multicc_dir_order') || '[]');
 
@@ -605,12 +628,16 @@ function renderDashboard(directories, sessions) {
   // 应用网格布局（仅在概览模式）
   if (!_focusedSessionId) {
     listEl.style.display = 'grid';
-    listEl.style.gridTemplateColumns = 'repeat(auto-fill, minmax(400px, 1fr))';
+    // Phone screens: single column that can shrink (min 0) so long nowrap
+    // path strings inside cards can't force the track past the viewport.
+    listEl.style.gridTemplateColumns = directoryGridTemplate();
     listEl.style.gap = '12px';
+    listEl.classList.add('multicc-auto-grid');
   } else {
     listEl.style.display = '';
     listEl.style.gridTemplateColumns = '';
     listEl.style.gap = '';
+    listEl.classList.remove('multicc-auto-grid');
   }
 
   // Keep a live workspace socket open for every directory so the compact card
@@ -3255,6 +3282,7 @@ async function loadCronTasks() {
     if (cnt) cnt.textContent = tasks.length ? `(${tasks.length})` : '';
     if (!tasks.length) {
       list.innerHTML = '<div style="color:#6e7681;font-size:13px;">还没有定时任务。点「+ 新建」，或让 agent 帮你登记。</div>';
+      list.classList.remove('multicc-auto-grid');
       return;
     }
     list.innerHTML = '';
@@ -3348,8 +3376,10 @@ async function loadCronTasks() {
 
     // 添加卡片网格样式
     list.style.display = 'grid';
-    list.style.gridTemplateColumns = 'repeat(auto-fill, minmax(400px, 1fr))';
+    // 同步目录卡片：手机屏单列可缩，避免 min-content 撑出 viewport
+    list.style.gridTemplateColumns = directoryGridTemplate();
     list.style.gap = '12px';
+    list.classList.add('multicc-auto-grid');
   } catch (err) {
     list.innerHTML = `<div style="color:var(--danger);font-size:13px;">加载失败：${escapeHtml(err.message)}</div>`;
   }
