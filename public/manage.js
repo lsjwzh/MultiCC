@@ -1337,6 +1337,8 @@ function openDirectoryDetail(dirId) {
   if (sub) { sub.textContent = dir.path; sub.title = dir.path; }
   const addBtn = document.getElementById('dir-detail-add');
   if (addBtn) addBtn.onclick = (e) => { e.stopPropagation(); showNewSessionMenu(e, dirId); };
+  const memoBtn = document.getElementById('dir-detail-memo');
+  if (memoBtn) memoBtn.onclick = (e) => { e.stopPropagation(); openMemo(dirId); };
   updateDirDetailPush(dirId);
   renderDirectoryDetailBody(dirId);
   const m = document.getElementById('dir-detail-modal');
