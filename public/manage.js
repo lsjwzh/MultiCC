@@ -269,13 +269,15 @@ function updateReviewCard(card, status) {
 
 /* ── Card border rainbow animation helpers ── */
 function isSessionRunning(sessionId) {
+  // 1. Live workspace status (from /ws/workspace) — thinking/editing/running
   const st = _workspaceStatus.get(sessionId);
+  if (st && (st.status === 'thinking' || st.status === 'editing' || st.status === 'running')) return true;
+  // 2. Monitor-detected running state (from terminal notify messages)
+  if (_sessionStatus.get(sessionId) === 'running') return true;
+  // 3. Monitor active state (fallback)
   const mon = monitors.get(sessionId);
-  const wsRunning = st && (st.status === 'thinking' || st.status === 'editing' || st.status === 'running');
-  const monRunning = mon && mon.state === 'active';
-  const s = _cachedSessions.find(x => x.id === sessionId);
-  const sActive = s && s.active;
-  return !!(wsRunning || monRunning || sActive);
+  if (mon && (mon.state === 'active' || mon.state === 'running')) return true;
+  return false;
 }
 function isAnySessionInDirRunning(dirId) {
   return (dirSessionsOf(dirId) || []).some(s => isSessionRunning(s.id));
@@ -2544,12 +2546,14 @@ function connectWorkspace(dirId) {
       _workspaceEvents.set(dirId, msg.events || []);
       updateEventTimelineDom(dirId);
       updateDirPreview(dirId);
+      refreshAllCardBorders();
       updateGlobalTaskScroller();
     } else if (msg.type === 'status') {
       _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity, runStartedAt: msg.runStartedAt || null, runEndedAt: msg.runEndedAt || null, mergeState: msg.mergeState || _workspaceStatus.get(msg.sessionId)?.mergeState || null });
       updateSessionStatusDom(msg.sessionId);
       updateSessionMergeDom(msg.sessionId);
       updateSessionRuntimeDom(msg.sessionId);
+      refreshAllCardBorders();
       updateGlobalTaskScroller();
     } else if (msg.type === 'merge_status') {
       const prev = _workspaceStatus.get(msg.sessionId) || {};

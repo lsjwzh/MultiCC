@@ -156,41 +156,19 @@
     .dir-block:hover{border-color:var(--line-strong);transform:translateY(-2px)}
     body.has-focus .dir-block{transform:none}
 
- /* rainbow border for running cards */
+ /* rainbow border for running cards — animates border-color + glow, follows border-radius */
  .card-border-rainbow {
-   border-color: transparent !important;
-   outline: 3px solid transparent;
-   outline-offset: -2px;
-   animation: rainbow-border 3s linear infinite;
-   box-shadow: 0 0 0 3px transparent;
- }
- @keyframes rainbow-border {
-   0%   { outline-color: #ff0000; box-shadow: 0 0 12px #ff000066; }
-   14%  { outline-color: #ff8800; box-shadow: 0 0 12px #ff880066; }
-   28%  { outline-color: #ffff00; box-shadow: 0 0 12px #ffff0066; }
-   42%  { outline-color: #00ff00; box-shadow: 0 0 12px #00ff0066; }
-   57%  { outline-color: #0088ff; box-shadow: 0 0 12px #0088ff66; }
-   71%  { outline-color: #0000ff; box-shadow: 0 0 12px #0000ff66; }
-   85%  { outline-color: #8800ff; box-shadow: 0 0 12px #8800ff66; }
-   100% { outline-color: #ff0000; box-shadow: 0 0 12px #ff000066; }
- }
-
- /* rainbow border for running cards (dir + lean session cards) */
- .card-border-rainbow {
-   border: none !important;
-   outline: 3px solid transparent;
-   outline-offset: -2px;
    animation: rainbow-border 3s linear infinite;
  }
  @keyframes rainbow-border {
-   0%   { outline-color: #ff0000; }
-   14%  { outline-color: #ff8800; }
-   28%  { outline-color: #ffff00; }
-   42%  { outline-color: #00ff00; }
-   57%  { outline-color: #0088ff; }
-   71%  { outline-color: #0000ff; }
-   85%  { outline-color: #8800ff; }
-   100% { outline-color: #ff0000; }
+   0%   { border-color: #ff0000; box-shadow: 0 0 0 1px #ff0000, 0 0 14px #ff000088; }
+   14%  { border-color: #ff8800; box-shadow: 0 0 0 1px #ff8800, 0 0 14px #ff880088; }
+   28%  { border-color: #ffff00; box-shadow: 0 0 0 1px #ffff00, 0 0 14px #ffff0088; }
+   42%  { border-color: #00ff00; box-shadow: 0 0 0 1px #00ff00, 0 0 14px #00ff0088; }
+   57%  { border-color: #0088ff; box-shadow: 0 0 0 1px #0088ff, 0 0 14px #0088ff88; }
+   71%  { border-color: #0000ff; box-shadow: 0 0 0 1px #0000ff, 0 0 14px #0000ff88; }
+   85%  { border-color: #8800ff; box-shadow: 0 0 0 1px #8800ff, 0 0 14px #8800ff88; }
+   100% { border-color: #ff0000; box-shadow: 0 0 0 1px #ff0000, 0 0 14px #ff000088; }
  }
     .dir-header{display:flex;align-items:flex-start;gap:11px;padding:15px 17px 12px}
     body.has-focus .dir-header{padding:12px;gap:8px}
