@@ -215,6 +215,140 @@ function clearSessionStatus(sessionId) {
   renderSessions(_cachedSessions);
 }
 
+/* ── Session review status (persistent badge on card) ── */
+// Tracks review state: 'needs_review' | 'reviewing' | 'reviewed' | null
+const _reviewStatus = new Map();
+function setReviewStatus(sessionId, status) {
+  if (_reviewStatus.get(sessionId) === status) return;
+  _reviewStatus.set(sessionId, status);
+  updateReviewInDOM(sessionId, status);
+}
+function clearReviewStatus(sessionId) {
+  if (!_reviewStatus.has(sessionId)) return;
+  _reviewStatus.delete(sessionId);
+  updateReviewInDOM(sessionId, null);
+}
+function updateReviewCard(card, status) {
+  const badge = card.querySelector('.status-badge');
+  const dot = card.querySelector('.dot');
+  const reviewBadge = card.querySelector('.review-badge');
+  const reviewBtn = card.querySelector('.review-action-btn');
+  if (badge) {
+    badge.classList.remove('reviewed', 'reviewing', 'needs_review');
+    if (status) badge.classList.add(status);
+  }
+  if (dot) {
+    dot.classList.remove('needs_review', 'reviewing', 'reviewed');
+    if (status) dot.classList.add(status);
+  }
+  if (reviewBadge) {
+    if (status === 'needs_review') {
+      reviewBadge.style.display = '';
+      reviewBadge.textContent = '🔴 待评审';
+      reviewBadge.style.background = 'rgba(248,81,73,.18)';
+      reviewBadge.style.color = '#f85149';
+      reviewBadge.style.borderColor = 'rgba(248,81,73,.35)';
+    } else if (status === 'reviewing') {
+      reviewBadge.style.display = '';
+      reviewBadge.textContent = '🔵 评审中';
+      reviewBadge.style.background = 'rgba(106,163,255,.18)';
+      reviewBadge.style.color = '#6aa3ff';
+      reviewBadge.style.borderColor = 'rgba(106,163,255,.35)';
+    } else if (status === 'reviewed') {
+      reviewBadge.style.display = '';
+      reviewBadge.textContent = '🟢 已评审';
+      reviewBadge.style.background = 'rgba(58,214,197,.18)';
+      reviewBadge.style.color = '#3ad6c5';
+      reviewBadge.style.borderColor = 'rgba(58,214,197,.35)';
+    } else {
+      reviewBadge.style.display = 'none';
+    }
+  }
+  if (reviewBtn) reviewBtn.style.display = status === 'reviewed' ? 'none' : '';
+}
+
+/* ── Card border rainbow animation helpers ── */
+function isSessionRunning(sessionId) {
+  // 1. Live workspace status (from /ws/workspace) — thinking/editing/running
+  const st = _workspaceStatus.get(sessionId);
+  if (st && (st.status === 'thinking' || st.status === 'editing' || st.status === 'running')) return true;
+  // 2. Monitor-detected running state (from terminal notify messages)
+  if (_sessionStatus.get(sessionId) === 'running') return true;
+  // 3. Monitor active state (fallback)
+  const mon = monitors.get(sessionId);
+  if (mon && (mon.state === 'active' || mon.state === 'running')) return true;
+  return false;
+}
+function isAnySessionInDirRunning(dirId) {
+  return (dirSessionsOf(dirId) || []).some(s => isSessionRunning(s.id));
+}
+function applyCardBorderState(cardEl, isRunning) {
+  if (!cardEl) return;
+  if (isRunning) cardEl.classList.add('card-border-rainbow');
+  else cardEl.classList.remove('card-border-rainbow');
+}
+function refreshCardBordersForDir(dirId) {
+  const running = isAnySessionInDirRunning(dirId);
+  const dirCard = document.querySelector('.dir-card[data-dir-id="' + escapeHtml(dirId) + '"]');
+  applyCardBorderState(dirCard, running);
+  (dirSessionsOf(dirId) || []).forEach(s => {
+    document.querySelectorAll('.lean[data-id="' + escapeHtml(s.id) + '"]').forEach(card => {
+      applyCardBorderState(card, isSessionRunning(s.id));
+    });
+  });
+}
+function refreshAllCardBorders() {
+  (_cachedDirectories || []).forEach(d => refreshCardBordersForDir(d.id));
+  document.querySelectorAll('#directory-list > .dir-block:not([data-dir-id]) .lean').forEach(card => {
+    const sid = card.getAttribute('data-id');
+    applyCardBorderState(card, sid ? isSessionRunning(sid) : false);
+  });
+}
+function updateReviewInDOM(sessionId, status) {
+  const leanCards = document.querySelectorAll('.lean[data-id="' + escapeHtml(sessionId) + '"]');
+  leanCards.forEach(card => applyReviewToLeanCard(card, status));
+  const otherCards = document.querySelectorAll('[data-id="' + escapeHtml(sessionId) + '"]:not(.lean)');
+  otherCards.forEach(card => {
+    const badge = card.querySelector('.status-badge');
+    if (badge) {
+      badge.classList.remove('reviewed', 'reviewing', 'needs_review');
+      if (status) badge.classList.add(status);
+    }
+  });
+}
+function applyReviewToLeanCard(card, status) {
+  const dot = card.querySelector('.dot');
+  const reviewBadge = card.querySelector('.review-badge');
+  const reviewBtn = card.querySelector('.review-action-btn');
+  if (dot) {
+    dot.classList.remove('needs_review', 'reviewing', 'reviewed');
+    if (status) dot.classList.add(status);
+  }
+  if (reviewBadge) {
+    if (status === 'needs_review') {
+      reviewBadge.style.display = '';
+      reviewBadge.textContent = '🔴 待评审';
+      reviewBadge.style.background = 'rgba(248,81,73,.18)';
+      reviewBadge.style.color = '#f85149';
+      reviewBadge.style.borderColor = 'rgba(248,81,73,.35)';
+    } else if (status === 'reviewing') {
+      reviewBadge.style.display = '';
+      reviewBadge.textContent = '🔵 评审中';
+      reviewBadge.style.background = 'rgba(106,163,255,.18)';
+      reviewBadge.style.color = '#6aa3ff';
+      reviewBadge.style.borderColor = 'rgba(106,163,255,.35)';
+    } else if (status === 'reviewed') {
+      reviewBadge.style.display = '';
+      reviewBadge.textContent = '🟢 已评审';
+      reviewBadge.style.background = 'rgba(58,214,197,.18)';
+      reviewBadge.style.color = '#3ad6c5';
+      reviewBadge.style.borderColor = 'rgba(58,214,197,.35)';
+    } else {
+      reviewBadge.style.display = 'none';
+    }
+  }
+  if (reviewBtn) reviewBtn.style.display = status === 'reviewed' ? 'none' : '';
+}
 /* ── Alerts (one-shot voice, silenced once user views the session) ── */
 const _alertedSessions = new Set(); // sessions whose current alert has been read
 
@@ -268,7 +402,8 @@ async function loadDashboard() {
       }
     }
     renderDashboard(directories, sessions);
-    syncMonitors(sessions);
+refreshAllCardBorders();
+syncMonitors(sessions);
     startRuntimeTicker();
   } catch (err) {
     console.error('Failed to load dashboard:', err);
@@ -1165,7 +1300,7 @@ function renderDirectoryBlock(dir, dirSessions) {
   // body is a 2-line preview; clicking opens the full detail in a modal.
   if (_focusedSessionId) {
     return `
-    <div class="dir-block open" data-dir-id="${escapeHtml(id)}">
+    <div class="dir-block open${isAnySessionInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}">
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1179,7 +1314,7 @@ function renderDirectoryBlock(dir, dirSessions) {
 
   // Overview mode: unified card with min-height and grid layout
   return `
-    <div class="dir-block dir-card" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;">
+    <div class="dir-block dir-card${isAnySessionInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;">
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1315,7 +1450,7 @@ function renderSessionRow(s) {
   // (the group header already says "Claude Chats"); #id, delete and the rest
   // live in the ⋯ menu / title attribute.
   return `
-    <div class="lean${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
+    <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
       <span class="dot ${statusCls}" id="sess-status-${escapeHtml(s.id)}" title="${escapeHtml(statusText)}"></span>
       <div class="lean-main">
         <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
@@ -2411,12 +2546,14 @@ function connectWorkspace(dirId) {
       _workspaceEvents.set(dirId, msg.events || []);
       updateEventTimelineDom(dirId);
       updateDirPreview(dirId);
+      refreshAllCardBorders();
       updateGlobalTaskScroller();
     } else if (msg.type === 'status') {
       _workspaceStatus.set(msg.sessionId, { status: msg.status, currentFile: msg.currentFile, lastActivity: msg.lastActivity, runStartedAt: msg.runStartedAt || null, runEndedAt: msg.runEndedAt || null, mergeState: msg.mergeState || _workspaceStatus.get(msg.sessionId)?.mergeState || null });
       updateSessionStatusDom(msg.sessionId);
       updateSessionMergeDom(msg.sessionId);
       updateSessionRuntimeDom(msg.sessionId);
+      refreshAllCardBorders();
       updateGlobalTaskScroller();
     } else if (msg.type === 'merge_status') {
       const prev = _workspaceStatus.get(msg.sessionId) || {};
