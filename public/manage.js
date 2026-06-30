@@ -1480,7 +1480,7 @@ function renderSessionRow(s) {
     <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
       <span class="dot ${statusCls}" id="sess-status-${escapeHtml(s.id)}" title="${escapeHtml(statusText)}"></span>
       <div class="lean-main">
-        <div class="lean-name" title="#${escapeHtml(s.id)} · 双击改名" ondblclick="event.stopPropagation();event.preventDefault();renameSession('${escapeHtml(s.id)}')">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
+        <div class="lean-name" title="#${escapeHtml(s.id)} · 双击改名" onclick="_sessionNameClick(event,'${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
         <div class="lean-meta">
           <span>${escapeHtml(formatRelative(sessionLastInteractionMs(s) || s.createdAt))}</span>
           ${model ? `<span class="sep">·</span><span class="model" title="模型：${escapeHtml(s.model)}">${escapeHtml(model)}</span>` : ''}
@@ -2173,6 +2173,27 @@ async function changeDirectoryRole(id) {
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
   }
+}
+
+// Click vs double-click on a session name: a single click opens the session
+// inline (matching the rest of the row), a double click renames it. Without the
+// timer the first click would open the modal and swallow the dblclick.
+const _nameClickTimers = new Map();
+function _sessionNameClick(ev, id, kind) {
+  ev.stopPropagation();
+  if (_nameClickTimers.has(id)) {
+    // second click within window → double click → rename
+    clearTimeout(_nameClickTimers.get(id));
+    _nameClickTimers.delete(id);
+    ev.preventDefault();
+    renameSession(id);
+    return;
+  }
+  const t = setTimeout(() => {
+    _nameClickTimers.delete(id);
+    openSessionInline(id, kind);
+  }, 260);
+  _nameClickTimers.set(id, t);
 }
 
 async function renameSession(id) {
