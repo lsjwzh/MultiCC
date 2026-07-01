@@ -62,70 +62,94 @@ It was built around four observations:
 
 ## vs. the ecosystem
 
-A handful of open-source projects sit on top of Claude Code and/or Codex CLI — not as alternative coding agents, but as **harnesses**: tools that spawn, manage, and route the official CLI binaries. Here's how they compare.
+The open-source ecosystem around Claude Code and Codex has grown fast. Below is a survey of projects that **harness** these CLIs (spawn, manage, and route the official binaries) rather than replace them.
+
+> **Standalone coding agents** like [OpenCode](https://github.com/naklecha/opencode), [Aider](https://github.com/paul-gauthier/aider), and [Cline](https://github.com/cline/cline) implement their own agent loop — they're alternatives to Claude Code, not orchestration layers on top. They're excluded from this comparison.
 
 ### The CLI harness landscape
 
-| Project | Stars | Drives | Mode | Key mechanism |
-|---------|-------|--------|------|---------------|
-| **[claude-squad](https://github.com/abliao/claude-squad)** | ~7.9k | Claude Code only | Batch runner | YAML task definitions → parallel/sequential `claude` spawns, one git worktree per task |
-| **[Ruflo](https://github.com/nicholasxuu/ruflo)** | ~42k | Claude Code only | Interactive TUI | tmux-backed session manager with worktree per session; terminal-native session switching |
-| **[cc-switch](https://github.com/infinidot/cc-switch)** | ~105k | Claude Code only | Provider switcher | Globally swaps `ANTHROPIC_*` env vars to route Claude Code through DeepSeek, OpenRouter, etc. |
-| **[CCR](https://github.com/BiuBiu232/CCR)** | ~35k | Claude Code only | Provider router | GUI-based multi-provider router for Claude Code, similar layer to cc-switch |
-| **MultiCC** | — | **Claude Code + Codex** | **Orchestration platform** | Persistent session registry, managed tmux + chat spawns, git worktree isolation, WebSocket fan-out |
+| Project | Stars | Architecture | Drives | What it solves |
+|---------|-------|-------------|--------|----------------|
+| **[cc-switch](https://github.com/farion1231/cc-switch)** | ~111k | Desktop GUI (Tauri) | Claude Code, Codex, OpenCode, Gemini CLI | **Provider & account management.** Switch API keys/providers globally, manage skills across CLIs. The "control panel" for which API backs your CLI. |
+| **[Ruflo](https://github.com/ruvnet/ruflo)** | ~62k | CLI + MCP server (TypeScript) | Claude Code, Codex | **Agent meta-harness.** 100+ specialized agents, coordinated swarms, self-learning memory, federation across machines. The "framework" for building agent systems. |
+| **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** | ~38k | API proxy (Go) | Claude Code, Codex, Gemini, Grok | **API routing.** Wraps multiple CLIs behind a single OpenAI-compatible API endpoint. The "router" layer. |
+| **[oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode)** | ~37k | CLI (TypeScript) | Claude Code | **Teams-first orchestration.** Multi-agent parallel execution with a teams metaphor. Claude Code only. |
+| **[AionUi](https://github.com/iOfficeAI/AionUi)** | ~29k | Desktop + Web (TypeScript) | Claude Code, Codex, OpenCode, Gemini CLI | **Cowork desktop app.** Multi-agent chat UI, 24/7 automation, skills customization. The "desktop workspace" for AI agents. |
+| **[vibe-kanban](https://github.com/BloopAI/vibe-kanban)** | ~27k | Web UI (Rust) | Claude Code, Codex, 10+ agents | **Kanban task management.** Plan on a board, each task gets a workspace + agent. *Sunsetting.* |
+| **[cc-connect](https://github.com/chenhg5/cc-connect)** | ~13k | Bridge (Go) | Claude Code, Codex, Gemini CLI | **IM bridge only.** Routes agent I/O to Feishu/DingTalk/Slack/Telegram/Discord/WeChat Work. No orchestration. |
+| **[CloudCLI](https://github.com/siteboon/claudecodeui)** | ~12k | Web + Mobile (TypeScript) | Claude Code, Codex, Cursor CLI, Gemini | **Web/mobile UI.** Chat interface, file explorer, shell terminal for multiple CLIs. |
+| **[Superset](https://github.com/superset-sh/superset)** | ~12k | Desktop (Electron) | Claude Code, Codex, any CLI | **Code editor for agents.** Parallel worktrees, diff viewer, IDE integration. The "IDE" layer. |
+| **[Orca](https://github.com/stablyai/orca)** | ~10k | Desktop + Mobile (TypeScript) | Claude Code, Codex, OpenCode | **Agent IDE.** Parallel worktrees, SSH remote, mobile companion, GitHub/Linear integration. YC-backed. |
+| **[cockpit-tools](https://github.com/jlcodes99/cockpit-tools)** | ~12k | Desktop (Rust) | Codex, Cursor, Copilot, etc. | **Account manager.** Multi-account switching, quota monitoring, instance management. |
+| **MultiCC** | — | **Self-hosted server** (Node.js) | **Claude Code, Codex** | **Persistent multi-agent service.** Web + mobile + IM, scheduling, notifications, voice, cross-session dispatch. |
 
-> **Why does driving both CLIs matter?** Claude Code and Codex have different strengths: Claude Code excels at complex reasoning and tool use within the Anthropic ecosystem; Codex is often faster and cheaper for straightforward code generation, and can route through non-Anthropic providers natively. A harness that drives both lets you pick the right tool per task without switching platforms.
-
-*Note: projects like [OpenCode](https://github.com/naklecha/opencode), [Aider](https://github.com/paul-gauthier/aider), and [Cline](https://github.com/cline/cline) are **standalone coding agents** — they implement their own agent loop rather than spawning the official Claude Code or Codex CLI. They solve a different problem (alternative agent implementation vs. agent orchestration) and are excluded from this comparison.*
-
-### Head-to-head comparison
-
-| Capability | claude-squad | Ruflo | cc-switch / CCR | **MultiCC** |
-|------------|:---:|:---:|:---:|:---:|
-| **Drives Claude Code** | ✅ | ✅ | ✅ | ✅ |
-| **Drives Codex** | ❌ | ❌ | ❌ | ✅ |
-| **Per-session provider isolation** | ❌ | ❌ | ❌ (global only) | ✅ |
-| **Git worktree per session** | ✅ | ✅ | N/A | ✅ |
-| **Merge/sync back to base** | ❌ (manual) | ❌ (manual) | N/A | ✅ (API + UI one-click) |
-| **Syntax-gated merges** | ❌ | ❌ | N/A | ✅ |
-| **Chat mode (streaming bubbles)** | ❌ | ❌ | ❌ | ✅ |
-| **Terminal mode (xterm.js)** | ❌ | ✅ (TUI) | ❌ | ✅ |
-| **Multi-client per session** | ❌ | ❌ | ❌ | ✅ (web + app concurrently) |
-| **Mobile app (native)** | ❌ | ❌ | ❌ | ✅ (Flutter: Android + iOS) |
-| **Push notifications** | ❌ | ❌ | ❌ | ✅ (Web Push, Bark, webhook) |
-| **IM bridges** | ❌ | ❌ | ❌ | ✅ (WeChat, Feishu, Telegram, Discord, Slack) |
-| **Cron / scheduled tasks** | ❌ | ❌ | ❌ | ✅ |
-| **Wait/poll auto-resume** | ❌ | ❌ | ❌ | ✅ |
-| **run-detached (background)** | ❌ | ❌ | ❌ | ✅ |
-| **Cross-session dispatch** | ❌ | ❌ | ❌ | ✅ |
-| **Agent Commander** | ❌ | ❌ | ❌ | ✅ |
-| **Session sharing (snapshot)** | ❌ | ❌ | ❌ | ✅ |
-| **S2S real-time voice** | ❌ | ❌ | ❌ | ✅ |
-| **Voice input (STT + AI refine)** | ❌ | ❌ | ❌ | ✅ |
-| **Token usage tracking** | ❌ | ❌ | ❌ | ✅ (per-provider, daily/weekly/all-time) |
-| **i18n (zh/en)** | ❌ | ❌ | ❌ | ✅ |
-| **Onboarding tour** | ❌ | ❌ | ❌ | ✅ |
-| **Public tunnel (Tailscale)** | ❌ | ❌ | ❌ | ✅ |
-| **Auto-update** | ❌ | ❌ | ❌ | ✅ (`./multicc update` + APK auto-update) |
-| **Browser-based dashboard** | ❌ | ❌ | ✅ (cc-switch GUI) | ✅ (`/manage`) |
-| **Zero frontend build step** | ✅ | ✅ | — | ✅ |
-
-### What problem does each solve?
+### What problem does each project solve?
 
 ```
-"I want to batch-run 10 Claude Code tasks in parallel"           → claude-squad
-"I want a nice terminal UI to switch between Claude sessions"    → Ruflo
-"I want to use DeepSeek instead of Anthropic to save cost"       → cc-switch / CCR
+"I want to switch API providers / manage accounts"    → cc-switch, cockpit-tools
+"I want to build multi-agent swarms with memory"      → Ruflo
+"I want a desktop workspace for AI agents"             → AionUi
+"I want a Kanban board for coding agents"              → vibe-kanban
+"I want an IDE that runs agents in parallel"           → Superset, Orca
+"I want a web/mobile UI for my CLI agents"             → CloudCLI
+"I want to bridge my agents to IM"                     → cc-connect
+"I want to route multiple CLIs through one API"        → CLIProxyAPI
 
-"I want to treat my AI coding agents as a persistent service:
-   → run Claude for architecture, Codex for boilerplate
-   → check progress from my phone during lunch
-   → get a WeChat message when the PR is ready
-   → schedule a daily code review at 9 AM
-   → talk to an agent like a phone call while driving"           → MultiCC
+"I want a self-hosted server that turns my AI coding
+ agents into a persistent, multi-client, scheduled,
+ notifiable, voice-enabled, IM-connected service"      → MultiCC
 ```
 
-MultiCC is not a better batch runner than claude-squad, a better TUI than Ruflo, or a better provider switcher than cc-switch. It's a **different category**: an orchestration platform that wraps both Claude Code and Codex into a persistent, multi-client, multi-agent service. You can still use cc-switch as a provider source inside MultiCC, and MultiCC can run claude-squad-style parallel tasks — but it adds the scheduling, notification, mobile, voice, and cross-session collaboration layers those tools don't attempt to provide.
+### Head-to-head: orchestration harnesses that drive both Claude Code + Codex
+
+Only projects that explicitly support **both** Claude Code and Codex are included. Capabilities marked as of July 2026 based on public READMEs.
+
+| Capability | cc-switch | Ruflo | AionUi | Superset | Orca | CloudCLI | **MultiCC** |
+|------------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Architecture** | Desktop GUI | CLI + MCP | Desktop + Web | Desktop IDE | Desktop + Mobile | Web + Mobile | **Self-hosted server** |
+| **Drives Claude Code** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Drives Codex** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Per-session provider isolation** | ❌ (global) | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Git worktree per session** | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ |
+| **Merge/sync back to base branch** | N/A | ❌ | N/A | ✅ | ✅ | N/A | ✅ (API + UI) |
+| **Syntax-gated merges** | N/A | ❌ | N/A | ❌ | ❌ | N/A | ✅ |
+| **Terminal mode (xterm.js)** | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Chat mode (streaming bubbles)** | ❌ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| **Multi-client per session** | N/A | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (web + app concurrent) |
+| **Mobile app (native)** | ❌ | ❌ | ❌ | ❌ | ✅ (iOS + Android) | ✅ (responsive web) | ✅ (Flutter) |
+| **Push notifications** | ❌ | ❌ | ❌ | ❌ | ✅ (mobile) | ❌ | ✅ (5 channels) |
+| **IM bridges** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (WeChat, Feishu, TG, Discord, Slack) |
+| **Cron / scheduled tasks** | ❌ | ✅ (daemon) | ✅ (24/7) | ❌ | ❌ | ❌ | ✅ |
+| **Wait/poll auto-resume** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **run-detached (background)** | ❌ | ✅ (daemon) | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **Cross-session dispatch** | ❌ | ✅ (swarm) | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Session sharing (snapshot link)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **S2S real-time voice** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Voice input (STT + AI refine)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Token usage tracking** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Public tunnel (Tailscale/DDNS)** | N/A | ❌ | ❌ | N/A | ❌ | ❌ | ✅ |
+| **Self-update mechanism** | ✅ (app update) | ✅ (npx) | ✅ (app update) | ✅ (app update) | ✅ (app update) | ❌ | ✅ (`./multicc update` + APK) |
+| **Zero frontend build step** | ❌ (Tauri) | ✅ | ❌ | ❌ (Electron) | ❌ | ❌ | ✅ |
+| **Runs headless on a server** | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ (cloud) | ✅ |
+
+### Where MultiCC is unique
+
+MultiCC is the only project in this list that is a **self-hosted server** rather than a desktop app or CLI tool. This architectural choice unlocks its differentiators:
+
+1. **Always-on, headless operation.** Runs on your Mac mini / Linux box / VPS. No desktop needed. Agents keep working after you close your laptop.
+2. **Multi-client per session.** Web, Flutter app, and IM bridges can all attach to the same session simultaneously — output fans out to all.
+3. **IM-native.** Five IM bridges (WeChat, Feishu, Telegram, Discord, Slack) with bidirectional relay and `<<dispatch>>` confirmation. cc-connect does bridging only; MultiCC does bridging + orchestration.
+4. **Scheduled & autonomous work.** Cron jobs with persistent context, wait/poll auto-resume, run-detached background tasks — agents continue without human nudges.
+5. **Voice.** S2S real-time voice (VAD → ASR → LLM → TTS → barge-in) and classic STT with vocabulary learning. No other harness offers voice.
+6. **Per-session provider isolation.** One session on Claude Max, another on DeepSeek, no env bleed. Other tools switch globally or don't manage providers.
+
+### Where MultiCC is weaker
+
+- **No desktop IDE integration.** Superset and Orca offer diff viewers, inline editing, and IDE handoff. MultiCC's terminal is xterm.js in a browser — no native editor integration.
+- **No SSH remote worktrees.** Orca supports running agents on a remote beefy machine via SSH. MultiCC runs everything on the server host.
+- **No native GUI app.** cc-switch and AionUi are polished desktop apps. MultiCC is a web server (by design, but some users prefer a native app).
+- **Smaller community.** The projects above have 10k–111k stars. MultiCC is newer and less known.
+- **No swarm framework.** Ruflo offers 100+ specialized agents, self-learning memory, and federation. MultiCC's cross-session dispatch is simpler and more manual.
 
 ---
 
