@@ -1876,9 +1876,9 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                         ),
                         EventTimeline(
                           events: _workspace.events,
-                          initiallyOpen: true,
-                          maxEvents: null,
-                          maxExpandedHeight: 280,
+                          initiallyOpen: false,
+                          maxEvents: 3,
+                          maxExpandedHeight: 120,
                         ),
                         if (!hasSessions)
                           Container(
