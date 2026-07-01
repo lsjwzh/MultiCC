@@ -485,6 +485,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     String? label,
     String? model,
     String? provider,
+    String? rolePrompt,
   }) async {
     final s = await _sessionService.createSessionInDir(
       dirId: dirId,
@@ -493,6 +494,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       label: label,
       model: model,
       provider: provider,
+      rolePrompt: rolePrompt,
     );
     await loadDashboard();
     return s;

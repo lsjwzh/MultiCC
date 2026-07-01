@@ -16,7 +16,8 @@ import '../i18n.dart';
 import '../theme.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
-import '../widgets/model_picker.dart';
+import '../models/agent_preset.dart';
+import '../services/agent_preset_service.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
 import 'settings_screen.dart';
@@ -2000,132 +2001,27 @@ class _DirectoryCardState extends State<_DirectoryCard> {
           .toList();
     } catch (_) {}
 
-    // Single dialog: name + role + provider + model
-    String? label;
-    String? rolePrompt;
-    String? provider;
-    String? model;
-
-    final nameCtrl = TextEditingController();
-    final roleCtrl = TextEditingController();
-    String? pickedProvider;
-    String? pickedModel;
-    final modelKnown = kClaudeModelOptions.any((e) => e.key == widget.settings.defaultModel);
-
-    final formKey = GlobalKey<FormState>();
-    final formResult = await showDialog<bool>(
+    final result = await showDialog<_CreateSessionResult>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF0f1115),
-        title: Text(
-          '新建 ${cli == SessionCli.codex ? 'Codex' : ''} ${kind == SessionKind.chat ? 'Chat' : 'Terminal'}',
-          style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
-        ),
-        content: SingleChildScrollView(
-          child: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // ── Name ──
-                const Text('会话名称', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
-                const SizedBox(height: 4),
-                TextField(
-                  controller: nameCtrl,
-                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                  decoration: _inputDec(hint: '可选，留空自动生成'),
-                ),
-                const SizedBox(height: 12),
-                // ── Role prompt ──
-                const Text('角色提示词', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
-                const SizedBox(height: 4),
-                TextField(
-                  controller: roleCtrl,
-                  maxLines: 3,
-                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                  decoration: _inputDec(hint: '可选，留空继承目录默认'),
-                ),
-                const SizedBox(height: 12),
-                // ── Provider ──
-                const Text('Provider', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
-                const SizedBox(height: 4),
-                DropdownButtonFormField<String>(
-                  value: pickedProvider,
-                  dropdownColor: const Color(0xFF0f1115),
-                  style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                  decoration: _inputDec(),
-                  items: [
-                    DropdownMenuItem(
-                      value: '',
-                      child: const Text('默认登录 / 订阅', style: TextStyle(color: Color(0xFFe7eaee))),
-                    ),
-                    ...providers.map((p) => DropdownMenuItem(
-                      value: p['id'] as String,
-                      child: Text(
-                        '${p['name']}${p['isOfficial'] == true ? ' · 订阅' : ''}',
-                        style: const TextStyle(color: Color(0xFFe7eaee)),
-                      ),
-                    )),
-                  ],
-                  onChanged: (v) => pickedProvider = v,
-                ),
-                // ── Model (claude only) ──
-                if (cli == SessionCli.claude) ...[
-                  const SizedBox(height: 12),
-                  const Text('模型', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
-                  const SizedBox(height: 4),
-                  DropdownButtonFormField<String>(
-                    value: widget.settings.defaultModel.isNotEmpty && modelKnown
-                        ? widget.settings.defaultModel : null,
-                    dropdownColor: const Color(0xFF0f1115),
-                    style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                    decoration: _inputDec(),
-                    items: kClaudeModelOptions.map((e) => DropdownMenuItem(
-                      value: e.key,
-                      child: Text(e.value, style: const TextStyle(color: Color(0xFFe7eaee))),
-                    )).toList(),
-                    onChanged: (v) => pickedModel = v,
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF22ab9c),
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('创建'),
-          ),
-        ],
+      builder: (ctx) => _CreateSessionDialog(
+        cli: cli,
+        kind: kind,
+        providers: providers,
+        settings: widget.settings,
       ),
     );
-    if (formResult != true) return;
+    if (result == null) return;
     if (!mounted) return;
-
-    label = nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : null;
-    rolePrompt = roleCtrl.text.trim().isNotEmpty ? roleCtrl.text.trim() : null;
-    provider = (pickedProvider != null && pickedProvider!.isNotEmpty) ? pickedProvider : null;
-    if (cli == SessionCli.claude) {
-      model = (pickedModel != null && pickedModel!.isNotEmpty) ? pickedModel : null;
-    }
 
     try {
       final s = await widget.mgr.createSessionInDir(
         dirId: widget.directory.id,
         cli: cli,
         kind: kind,
-        label: label,
-        model: model,
-        provider: provider,
+        label: result.label,
+        model: result.model,
+        provider: result.provider,
+        rolePrompt: result.rolePrompt,
       );
       if (!mounted) return;
       // Auto-open the freshly created session
@@ -3735,3 +3631,292 @@ InputDecoration _inputDec({String? hint}) => InputDecoration(
     borderRadius: BorderRadius.circular(6),
   ),
 );
+
+// ── New-session dialog with role presets + provider→model linkage ───────────
+
+class _CreateSessionResult {
+  final String? label;
+  final String? rolePrompt;
+  final String? provider;
+  final String? model;
+  _CreateSessionResult({this.label, this.rolePrompt, this.provider, this.model});
+}
+
+class _CreateSessionDialog extends StatefulWidget {
+  final SessionCli cli;
+  final SessionKind kind;
+  final List<Map<String, dynamic>> providers;
+  final SettingsService settings;
+
+  const _CreateSessionDialog({
+    required this.cli,
+    required this.kind,
+    required this.providers,
+    required this.settings,
+  });
+
+  @override
+  State<_CreateSessionDialog> createState() => _CreateSessionDialogState();
+}
+
+class _CreateSessionDialogState extends State<_CreateSessionDialog> {
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _roleCtrl;
+  late final AgentPresetService _presetSvc;
+  AgentPresetIndex? _presetIndex;
+  bool _loadingPresets = false;
+
+  String? _pickedProvider; // null or '' = default; id = that provider
+  String? _pickedModel;
+  bool _customModel = false;
+  final _customModelCtrl = TextEditingController();
+
+  bool get _isClaude => widget.cli == SessionCli.claude;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController();
+    _roleCtrl = TextEditingController();
+    _presetSvc = AgentPresetService(settings: widget.settings);
+    _loadPresets();
+    // Default model: user's default if known, else null (follow server default)
+    final modelKnown = kClaudeModelOptions.any((e) => e.key == widget.settings.defaultModel);
+    if (_isClaude && widget.settings.defaultModel.isNotEmpty && modelKnown) {
+      _pickedModel = widget.settings.defaultModel;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _roleCtrl.dispose();
+    _customModelCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadPresets() async {
+    setState(() => _loadingPresets = true);
+    try {
+      _presetIndex = await _presetSvc.fetchIndex();
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() => _loadingPresets = false);
+  }
+
+  /// Build the model options for the current provider selection.
+  List<MapEntry<String, String>> get _currentModelOptions {
+    Map<String, dynamic>? prov;
+    for (final p in widget.providers) {
+      if (p['id'] == _pickedProvider) { prov = p; break; }
+    }
+    final opts = prov?['modelOptions'];
+    if (opts is List && opts.isNotEmpty) {
+      return opts
+          .map((m) => m.toString())
+          .map((s) => MapEntry<String, String>(s, s))
+          .toList();
+    }
+    // Fall back to standard Claude models
+    return kClaudeModelOptions;
+  }
+
+  Future<void> _pickPreset() async {
+    final id = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AgentPresetPickerSheet(service: _presetSvc, index: _presetIndex),
+    );
+    if (id == null || !mounted) return;
+    try {
+      final prompt = await _presetSvc.fetchPrompt(id);
+      if (!mounted) return;
+      if (_roleCtrl.text.trim().isNotEmpty) {
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (c) => AlertDialog(
+            backgroundColor: const Color(0xFF14171c),
+            title: const Text('替换当前内容?', style: TextStyle(color: Color(0xFFe7eaee), fontSize: 15)),
+            content: const Text('角色框已有内容，使用模板会覆盖。', style: TextStyle(color: Color(0xFF8a909b), fontSize: 13)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b)))),
+              TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('替换', style: TextStyle(color: Color(0xFFff6b63)))),
+            ],
+          ),
+        );
+        if (ok != true) return;
+      }
+      setState(() => _roleCtrl.text = prompt);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('模板加载失败：$e')));
+    }
+  }
+
+  void _onProviderChanged(String? v) {
+    setState(() {
+      _pickedProvider = v;
+      // Reset model to first option of the new provider's list
+      final opts = _currentModelOptions;
+      if (opts.isNotEmpty && opts.first.key.isNotEmpty) {
+        _pickedModel = opts.first.key;
+        _customModel = false;
+      } else {
+        _pickedModel = null;
+        _customModel = false;
+      }
+    });
+  }
+
+  void _submit() {
+    String? model;
+    if (_customModel) {
+      model = _customModelCtrl.text.trim().isNotEmpty ? _customModelCtrl.text.trim() : null;
+    } else {
+      model = (_pickedModel != null && _pickedModel!.isNotEmpty) ? _pickedModel : null;
+    }
+    final result = _CreateSessionResult(
+      label: _nameCtrl.text.trim().isNotEmpty ? _nameCtrl.text.trim() : null,
+      rolePrompt: _roleCtrl.text.trim().isNotEmpty ? _roleCtrl.text.trim() : null,
+      provider: (_pickedProvider != null && _pickedProvider!.isNotEmpty) ? _pickedProvider : null,
+      model: model,
+    );
+    Navigator.of(context).pop(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final modelOptions = _currentModelOptions;
+    return AlertDialog(
+      backgroundColor: const Color(0xFF0f1115),
+      title: Text(
+        '新建 ${widget.cli == SessionCli.codex ? 'Codex' : 'Claude'} ${widget.kind == SessionKind.chat ? 'Chat' : 'Terminal'}',
+        style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Name ──
+            const Text('会话名称', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+            const SizedBox(height: 4),
+            TextField(
+              controller: _nameCtrl,
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              decoration: _inputDec(hint: '可选，留空自动生成'),
+            ),
+            const SizedBox(height: 12),
+            // ── Role prompt with preset picker ──
+            Row(
+              children: [
+                const Text('角色提示词', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+                const Spacer(),
+                TextButton.icon(
+                  icon: const Icon(Icons.auto_awesome, size: 14),
+                  label: Text(
+                    _loadingPresets ? '加载中…' : '选择预设角色',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF6aa3ff),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 28),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: _loadingPresets ? null : _pickPreset,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            TextField(
+              controller: _roleCtrl,
+              maxLines: 3,
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              decoration: _inputDec(hint: '可选，留空继承目录默认'),
+            ),
+            const SizedBox(height: 12),
+            // ── Provider ──
+            const Text('Provider', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+            const SizedBox(height: 4),
+            DropdownButtonFormField<String>(
+              value: _pickedProvider ?? '',
+              dropdownColor: const Color(0xFF0f1115),
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              decoration: _inputDec(),
+              items: [
+                const DropdownMenuItem(
+                  value: '',
+                  child: Text('默认登录 / 订阅', style: TextStyle(color: Color(0xFFe7eaee))),
+                ),
+                ...widget.providers.map((p) => DropdownMenuItem(
+                  value: p['id'] as String,
+                  child: Text(
+                    '${p['name']}${p['isOfficial'] == true ? ' · 订阅' : ''}',
+                    style: const TextStyle(color: Color(0xFFe7eaee)),
+                  ),
+                )),
+              ],
+              onChanged: _onProviderChanged,
+            ),
+            // ── Model (linked to provider) ──
+            const SizedBox(height: 12),
+            const Text('模型', style: TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+            const SizedBox(height: 4),
+            DropdownButtonFormField<String>(
+              value: _customModel ? '__custom__' : _pickedModel,
+              dropdownColor: const Color(0xFF0f1115),
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              decoration: _inputDec(),
+              items: [
+                ...modelOptions.map((e) => DropdownMenuItem(
+                  value: e.key,
+                  child: Text(e.value, style: const TextStyle(color: Color(0xFFe7eaee))),
+                )),
+                DropdownMenuItem(
+                  value: '__custom__',
+                  child: const Text('自定义…', style: TextStyle(color: Color(0xFF8a909b))),
+                ),
+              ],
+              onChanged: (v) {
+                setState(() {
+                  if (v == '__custom__') {
+                    _customModel = true;
+                    _pickedModel = null;
+                  } else {
+                    _customModel = false;
+                    _pickedModel = v;
+                  }
+                });
+              },
+            ),
+            if (_customModel) ...[
+              const SizedBox(height: 6),
+              TextField(
+                controller: _customModelCtrl,
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                decoration: _inputDec(hint: '模型 ID，如 claude-opus-4-8'),
+                autofocus: true,
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF22ab9c),
+            foregroundColor: Colors.white,
+          ),
+          onPressed: _submit,
+          child: const Text('创建'),
+        ),
+      ],
+    );
+  }
+}

@@ -448,11 +448,13 @@ class SessionService {
     String? label,
     String? model,
     String? provider,
+    String? rolePrompt,
   }) async {
     final body = <String, dynamic>{'cli': cli.name, 'kind': kind.name};
     if (label != null && label.isNotEmpty) body['label'] = label;
     if (model != null && model.isNotEmpty) body['model'] = model;
     if (provider != null) body['provider'] = provider;
+    if (rolePrompt != null && rolePrompt.isNotEmpty) body['rolePrompt'] = rolePrompt;
     final res = await http
         .post(
           Uri.parse(_url('/api/directories/$dirId/sessions')),
