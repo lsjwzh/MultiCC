@@ -22,30 +22,39 @@ class NotificationService {
     if (_initialized) return;
     _initialized = true;
 
-    await _plugin.initialize(
-      settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-        // iOS was previously unconfigured, so notifications never surfaced on
-        // iPhone at all. Darwin settings request the permission prompt on first
-        // init and allow alerts/sound while the app is foregrounded.
-        iOS: DarwinInitializationSettings(
-          requestAlertPermission: true,
-          requestBadgePermission: true,
-          requestSoundPermission: true,
-        ),
-      ),
-      // Fires when the user taps a notification while the app is alive
-      // (foreground or background). The payload carries the session id.
-      onDidReceiveNotificationResponse: _onResponse,
-    );
+    // On iOS simulators, DarwinInitializationSettings with permission requests
+    // can hang indefinitely because the simulator doesn't have a real
+    // notification service.  Wrap the whole init in a timeout so the app doesn't
+    // black-screen on startup.
+    try {
+      await _plugin
+          .initialize(
+            settings: const InitializationSettings(
+              android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+              iOS: DarwinInitializationSettings(
+                requestAlertPermission: true,
+                requestBadgePermission: true,
+                requestSoundPermission: true,
+              ),
+            ),
+            onDidReceiveNotificationResponse: _onResponse,
+          )
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // init timed out or threw — the app is still usable without local
+      // notifications, so don't crash.  The plugin's _initialized flag stays
+      // true so callers don't try to re-init and hit the same hang.
+    }
 
     // Android 13+ requires an explicit runtime permission request; the Darwin
     // settings above already cover iOS.
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >()
-        ?.requestNotificationsPermission();
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.requestNotificationsPermission();
+    } catch (_) {}
 
     // Cold start: the app may have been launched by tapping a notification
     // while it was fully terminated. The tap doesn't fire the callback above,

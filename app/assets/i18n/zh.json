@@ -213,12 +213,12 @@
   "newClaudeTerm": "+ Claude Term",
   "newClaudeChat": "+ Claude Chat",
   "newCodexTerm": "+ Codex Term",
-  "newCodexChat": "+ Codex Chat"
+  "newCodexChat": "+ Codex Chat",
 
   "fileBrowser": "文件浏览",
   "restartCli": "重启会话 (Restart CLI)",
   "restartCliBody": "将终止并重建该会话底层的 CLI 进程。进行中的任务会被中断，但聊天记录保留。确定重启？",
   "restart": "重启",
   "restarting": "正在重启会话…",
-  "restarted": "✓ 会话已重启",
+  "restarted": "✓ 会话已重启"
 }
