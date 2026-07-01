@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="#what-is-multicc">What</a> &bull;
+  <a href="#vs-the-ecosystem">vs. Ecosystem</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#features">Features</a> &bull;
   <a href="#architecture">Architecture</a> &bull;
@@ -56,6 +57,57 @@ It was built around four observations:
         │     claude / codex CLI               claude stream-json / codex exec│
         └──────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## vs. the ecosystem
+
+MultiCC sits at a different layer than most open-source Claude Code / Codex tools. Here's how it fits into the landscape:
+
+### What each project solves
+
+| Project | Layer | Core problem |
+|---------|-------|-------------|
+| **[cc-switch](https://github.com/infinidot/cc-switch)** (~105k ★) | **Provider routing** | "I want to use DeepSeek/OpenRouter instead of Anthropic's API to drive Claude Code." Switches `ANTHROPIC_*` env vars globally; great for cost-saving but no per-session isolation. |
+| **[CCR](https://github.com/BiuBiu232/CCR)** (~35k ★) | **Provider routing** | Same layer as cc-switch — a Claude Code API router with multi-provider support and a GUI. |
+| **[claude-squad](https://github.com/abliao/claude-squad)** (~7.9k ★) | **Multi-agent runner** | "I want to run N Claude Code sessions in parallel against my codebase." YAML task definitions, git worktree per agent, sequential/parallel execution. |
+| **[Ruflo](https://github.com/nicholasxuu/ruflo)** (~42k ★) | **Multi-session TUI** | "I want a better terminal UI to manage multiple Claude Code sessions." TUI with session switching, git worktree, and tmux integration. |
+| **[OpenCode](https://github.com/naklecha/opencode)** | **Coding agent CLI** | "I want an open-source alternative to Claude Code CLI." A standalone coding agent that supports multiple LLM backends (Anthropic, OpenAI, DeepSeek, etc.). |
+| **[Cline](https://github.com/cline/cline)** | **IDE agent** | "I want an AI coding agent inside VS Code." An IDE extension that reads/writes files, runs terminals, and uses MCP tools. |
+| **[Claude Code](https://docs.anthropic.com/en/docs/claude-code) (official)** | **Coding agent CLI** | The CLI that all of the above build on. Single-session, single-machine, no orchestration. |
+
+### What MultiCC solves (the layer above)
+
+MultiCC doesn't replace any of these — it **orchestrates** them. It assumes you already have `claude` and/or `codex` installed locally, and adds the layer that turns them from a CLI tool into a **persistent multi-agent service**:
+
+| Problem | How the ecosystem handles it | How MultiCC handles it |
+|---------|------------------------------|------------------------|
+| **Agent runs while you're away** | You keep the terminal open or use `screen`/`tmux` manually. If it disconnects, you lose context. | Terminal sessions run in managed `tmux`; chat sessions are turn-based and stateful. Close your laptop — pick it up from your phone. |
+| **Multiple agents in one repo** | Manually create git worktrees, or use claude-squad's YAML runner for batch tasks. | Each session auto-gets its own worktree + branch. Merge/sync APIs move changes safely. Syntax-gated merges prevent broken code from reaching the base branch. |
+| **Cheap provider for grunt work, premium for hard problems** | Switch cc-switch globally, or set env vars per terminal window. | Per-session provider isolation — one session on DeepSeek, another on Claude Max, no env bleed. |
+| **IM notifications when an agent finishes** | None. You check the terminal. | Five notification channels (Web Push, Bark, webhook, voice alert, Flutter local). Only fires when you're not watching. |
+| **Drive agents from your phone** | SSH + tmux, or use the official Claude Code mobile app (single-session, no orchestration). | Native Flutter app + PWA: full chat UI, terminal, voice input, push notifications, inline images. |
+| **Agent asks a question while you're away** | It waits forever, or you set `--dangerously-skip-permissions` and hope. | Wait/poll mechanism auto-resumes the agent when a condition is met. Notifications tell you the agent needs input. |
+| **Recurring scheduled tasks** | Write a cron job that runs `claude -p "..."`. No context carries over. | Native cron jobs with persistent chat sessions — context builds across runs. |
+| **Talk to agents like a phone call** | Not possible. | S2S real-time voice: VAD → streaming ASR → LLM confirmation → TTS reads reply aloud → interrupt by speaking. |
+| **Share agent results with teammates** | Copy/paste terminal output. | Share chat messages as read-only snapshot links, optionally password-protected. |
+| **Cross-session collaboration** | Manually coordinate which session does what. | `<<dispatch>>` markers route tasks between sessions. Agent Commander coordinates the fleet. Notes pass context between agents. |
+
+### When to use what
+
+```
+"I want cheaper API access"          → cc-switch or CCR
+"I want to batch-run N tasks"        → claude-squad
+"I want a nicer terminal UI"         → Ruflo
+"I want an agent inside my IDE"      → Cline
+"I want an open-source coding CLI"   → OpenCode
+
+"I want a control plane that turns
+ my AI coding agents into a
+ persistent, multi-client service"   → MultiCC
+```
+
+MultiCC can use cc-switch as a provider source, run claude-squad-like parallel tasks, and provide a Ruflo-like multi-session view — but its real value is the orchestration layer on top: scheduling, notifications, IM bridges, voice, cross-session dispatch, and multi-device access.
 
 ---
 
