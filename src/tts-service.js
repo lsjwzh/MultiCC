@@ -74,8 +74,9 @@ function providerStatus() {
   return status;
 }
 
-// Edge TTS via command line
-async function edgeTtsSession(opts, cb) {
+// Edge TTS via command line. Returns a session handle with .stop() so the WS
+// handler can interrupt playback; NOT a Promise (the caller does not await).
+function edgeTtsSession(opts, cb) {
   const text = opts.text || '';
   if (!text) {
     cb.onError('Text is empty');
@@ -90,62 +91,58 @@ async function edgeTtsSession(opts, cb) {
     '--volume=+0%',
   ];
 
-  return new Promise((resolve) => {
-    let settled = false;
-    let proc;
-    try {
-      proc = spawn(cfg.edge.command, params);
-    } catch (e) {
-      // spawn() itself threw (very rare); treat like ENOENT.
-      console.error('[TTS][edge] spawn threw:', e.message);
-      cb.onError(`edge-tts 不可用：${e.message}`);
-      resolve(null);
+  let settled = false;
+  let stopped = false;
+  let proc;
+  try {
+    proc = spawn(cfg.edge.command, params);
+  } catch (e) {
+    console.error('[TTS][edge] spawn threw:', e.message);
+    cb.onError(`edge-tts 不可用：${e.message}`);
+    return null;
+  }
+
+  let audioData = [];
+
+  // CRITICAL: handle the 'error' event (ENOENT when edge-tts is not on PATH,
+  // EACCES, etc.). Without this listener Node re-throws it as an unhandled
+  // exception and crashes the whole server.
+  proc.on('error', (err) => {
+    if (settled) return;
+    settled = true;
+    console.error('[TTS][edge] spawn error:', err.message);
+    cb.onError(`edge-tts 不可用：${err.message}（请安装 edge-tts 或在设置里切换 TTS 提供方）`);
+  });
+
+  proc.stdout.on('data', (chunk) => {
+    if (!stopped) audioData.push(chunk);
+  });
+
+  proc.stderr.on('data', (err) => {
+    console.error('[TTS][edge] stderr:', err.toString());
+  });
+
+  proc.on('close', (code) => {
+    if (settled) return;
+    settled = true;
+    if (stopped) return; // interrupted via stop() — drop any partial audio
+    if (code !== 0) {
+      cb.onError(`edge-tts exited with code ${code}`);
       return;
     }
-
-    let audioData = [];
-
-    // CRITICAL: handle the 'error' event (ENOENT when edge-tts is not on
-    // PATH, EACCES, etc.). Without this listener Node re-throws it as an
-    // unhandled exception and crashes the whole server — which is what killed
-    // in-flight /api/voice/confirm requests and made S2S look "stuck".
-    proc.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      console.error('[TTS][edge] spawn error:', err.message);
-      cb.onError(`edge-tts 不可用：${err.message}（请安装 edge-tts 或在设置里切换 TTS 提供方）`);
-      resolve(null);
-    });
-
-    proc.stdout.on('data', (chunk) => {
-      // Save raw MP3 data
-      audioData.push(chunk);
-    });
-
-    proc.stderr.on('data', (err) => {
-      console.error('[TTS][edge] stderr:', err.toString());
-    });
-
-    proc.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      if (code !== 0) {
-        cb.onError(`edge-tts exited with code ${code}`);
-        resolve(null);
-        return;
-      }
-
-      // Send ready signal
-      cb.onReady(cfg.edge.sampleRate);
-
-      // Send all audio chunks
-      for (const chunk of audioData) {
-        cb.onAudio(chunk);
-      }
-      cb.onDone();
-      resolve(null);
-    });
+    cb.onReady(cfg.edge.sampleRate);
+    for (const chunk of audioData) cb.onAudio(chunk);
+    cb.onDone();
   });
+
+  // Session handle: kill the child process to interrupt playback immediately.
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      try { proc.kill('SIGTERM'); } catch (_) {}
+    },
+  };
 }
 
 // OpenAI TTS API
@@ -306,18 +303,20 @@ function handleTtsWs(ws, req) {
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to create TTS session' }));
       }
     } else if (msg.type === 'stop') {
-      if (session) {
-        session.stop();
-        session = null;
+      // Provider sessions are expected to be handles with .stop(); guard for
+      // any that still return a Promise (can't stop a Promise — don't crash).
+      if (session && typeof session.stop === 'function') {
+        try { session.stop(); } catch (_) {}
       }
+      session = null;
     }
   });
 
   ws.on('close', () => {
-    if (session) {
-      session.stop();
-      session = null;
+    if (session && typeof session.stop === 'function') {
+      try { session.stop(); } catch (_) {}
     }
+    session = null;
   });
 }
 
