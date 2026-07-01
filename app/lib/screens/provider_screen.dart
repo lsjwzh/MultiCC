@@ -162,11 +162,6 @@ class _ProviderScreenState extends State<ProviderScreen> {
                       const SizedBox(height: 16),
                       _defaultsCard(),
                       const SizedBox(height: 16),
-                      const Padding(
-                        padding: EdgeInsets.only(left: 4, bottom: 8),
-                        child: Text('已配置的 Provider',
-                            style: TextStyle(color: AppColors.faint, fontSize: 12, fontWeight: FontWeight.w600)),
-                      ),
                       if (_providers.isEmpty)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 24),
@@ -174,18 +169,42 @@ class _ProviderScreenState extends State<ProviderScreen> {
                               textAlign: TextAlign.center,
                               style: TextStyle(color: AppColors.faint, fontSize: 13)),
                         )
-                      else
-                        ..._providers.map((p) => Padding(
-                              padding: const EdgeInsets.only(bottom: 10),
-                              child: _ProviderCard(
-                                p: p,
-                                onEdit: () => _openEditor(provider: p),
-                                onDelete: () => _delete(p),
-                              ),
-                            )),
+                      else ...[
+                        _providerGroup('🤖 Claude', _byType('claude')),
+                        const SizedBox(height: 16),
+                        _providerGroup('⚡ Codex', _byType('codex')),
+                      ],
                     ],
                   ),
                 ),
+    );
+  }
+
+  Widget _providerGroup(String label, List<Map<String, dynamic>> providers) {
+    if (providers.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(left: 4, bottom: 4),
+        child: Text('$label（无）',
+            style: const TextStyle(color: AppColors.faint, fontSize: 12, fontWeight: FontWeight.w600)),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: Text('$label（${providers.length}）',
+              style: const TextStyle(color: AppColors.faint, fontSize: 12, fontWeight: FontWeight.w600)),
+        ),
+        ...providers.map((p) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _ProviderCard(
+                p: p,
+                onEdit: () => _openEditor(provider: p),
+                onDelete: () => _delete(p),
+              ),
+            )),
+      ],
     );
   }
 
@@ -332,8 +351,6 @@ class _ProviderCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              _miniChip(p['appType'] as String? ?? ''),
-              const SizedBox(width: 8),
               Expanded(
                 child: Text(p['name'] as String? ?? '',
                     style: const TextStyle(color: AppColors.textBright, fontWeight: FontWeight.w700, fontSize: 15),
@@ -381,16 +398,6 @@ class _ProviderCard extends StatelessWidget {
       ),
     );
   }
-
-  Widget _miniChip(String t) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-        decoration: BoxDecoration(
-          color: AppColors.panel2,
-          borderRadius: BorderRadius.circular(5),
-          border: Border.all(color: AppColors.line),
-        ),
-        child: Text(t, style: const TextStyle(color: AppColors.faint, fontSize: 11)),
-      );
 }
 
 // ── Editor bottom sheet ──────────────────────────────────────────────────────
@@ -412,6 +419,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   late final TextEditingController _models;
   late String _appType;
   late bool _useChatResponsesProxy;
+  bool _obscureKey = true;
   bool _saving = false;
   String? _err;
 
@@ -533,7 +541,14 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             const _FieldLabel('API Key'),
             _input(_token,
                 hint: hasToken ? '留空 = 保留原 key（$mask）' : 'sk-...',
-                obscure: true),
+                obscure: _obscureKey,
+                suffix: IconButton(
+                  icon: Icon(_obscureKey ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                      size: 18, color: AppColors.muted),
+                  onPressed: () => setState(() => _obscureKey = !_obscureKey),
+                  tooltip: _obscureKey ? '显示 Key' : '隐藏 Key',
+                  splashRadius: 16,
+                )),
             const SizedBox(height: 14),
             const _FieldLabel('Model（可选）'),
             _input(_model, hint: '如 deepseek-chat', mono: true),
@@ -601,7 +616,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   }
 
   Widget _input(TextEditingController c,
-      {String? hint, bool mono = false, bool obscure = false, int maxLines = 1}) {
+      {String? hint, bool mono = false, bool obscure = false, int maxLines = 1, Widget? suffix}) {
     return TextField(
       controller: c,
       obscureText: obscure,
@@ -615,6 +630,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
         filled: true,
         fillColor: AppColors.panel2,
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        suffixIcon: suffix,
         enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.line)),
         focusedBorder: OutlineInputBorder(
