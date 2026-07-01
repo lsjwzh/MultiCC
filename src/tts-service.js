@@ -9,7 +9,9 @@ const https = require('https');
 const cfg = {
   defaultProvider: process.env.TTS_PROVIDER || 'edge',
   edge: {
-    command: 'edge-tts',
+    // Allow an absolute path override (e.g. when the binary lives in a Python
+    // user-bin dir not on pm2's PATH). Falls back to looking up "edge-tts".
+    command: process.env.EDGE_TTS_CMD || 'edge-tts',
     params: ['--voice', 'zh-CN-XiaoxiaoNeural'],
     sampleRate: 24000,
   },
@@ -48,6 +50,7 @@ function providerStatus() {
   // Edge TTS check
   try {
     const result = spawn('which', ['edge-tts']);
+    result.on('error', () => { status.edge = { ready: false }; }); // 'which' missing — unlikely
     result.on('close', code => {
       status.edge = { ready: code === 0, command: 'edge-tts' };
     });
@@ -88,28 +91,53 @@ async function edgeTtsSession(opts, cb) {
   ];
 
   return new Promise((resolve) => {
-    const proc = spawn(cfg.edge.command, params);
+    let settled = false;
+    let proc;
+    try {
+      proc = spawn(cfg.edge.command, params);
+    } catch (e) {
+      // spawn() itself threw (very rare); treat like ENOENT.
+      console.error('[TTS][edge] spawn threw:', e.message);
+      cb.onError(`edge-tts 不可用：${e.message}`);
+      resolve(null);
+      return;
+    }
+
     let audioData = [];
-    
+
+    // CRITICAL: handle the 'error' event (ENOENT when edge-tts is not on
+    // PATH, EACCES, etc.). Without this listener Node re-throws it as an
+    // unhandled exception and crashes the whole server — which is what killed
+    // in-flight /api/voice/confirm requests and made S2S look "stuck".
+    proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      console.error('[TTS][edge] spawn error:', err.message);
+      cb.onError(`edge-tts 不可用：${err.message}（请安装 edge-tts 或在设置里切换 TTS 提供方）`);
+      resolve(null);
+    });
+
     proc.stdout.on('data', (chunk) => {
       // Save raw MP3 data
       audioData.push(chunk);
     });
-    
+
     proc.stderr.on('data', (err) => {
       console.error('[TTS][edge] stderr:', err.toString());
     });
-    
+
     proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
       if (code !== 0) {
         cb.onError(`edge-tts exited with code ${code}`);
         resolve(null);
         return;
       }
-      
+
       // Send ready signal
       cb.onReady(cfg.edge.sampleRate);
-      
+
       // Send all audio chunks
       for (const chunk of audioData) {
         cb.onAudio(chunk);
