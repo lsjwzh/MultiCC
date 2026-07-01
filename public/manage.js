@@ -5374,7 +5374,7 @@ function renderProviderList() {
       (_providerData.available ? '在下方新增。' : 'cc-switch 不可用。') + '</span>';
     return;
   }
-  box.innerHTML = _providerData.providers.map(p => {
+  const cardHtml = (p) => {
     const stat = (_providerData.stats || []).find(s => s.providerId === p.id);
     let statHtml = '';
     if (stat) {
@@ -5393,7 +5393,6 @@ function renderProviderList() {
     }
     return `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
-      <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-soft);color:var(--faint)">${escapeHtml(p.appType)}</span>
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
@@ -5402,7 +5401,17 @@ function renderProviderList() {
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
     </div>`;
-  }).join('');
+  };
+  const groupHtml = (label, emoji, providers) => {
+    if (!providers.length) return '';
+    return `<div style="margin-bottom:12px;">
+      <div style="font-size:12px;color:var(--muted);font-weight:600;margin-bottom:6px;padding:0 2px">${emoji} ${label} <span style="color:var(--faint);font-weight:400">(${providers.length})</span></div>
+      <div style="display:flex;flex-direction:column;gap:8px;">${providers.map(cardHtml).join('')}</div>
+    </div>`;
+  };
+  const claudeProvs = _providerData.providers.filter(p => p.appType !== 'codex');
+  const codexProvs = _providerData.providers.filter(p => p.appType === 'codex');
+  box.innerHTML = groupHtml('Claude', '🤖', claudeProvs) + groupHtml('Codex', '⚡', codexProvs);
 }
 
 async function saveProviderDefaults() {
@@ -5472,6 +5481,14 @@ function editProvider(appType, id) {
     `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">${label}</div>
      <textarea data-k="${label}" rows="3" placeholder="${escapeHtml(ph)}"
        style="width:100%;min-height:74px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">${escapeHtml(val || '')}</textarea></label>`;
+  // Password field with eye toggle for API Key
+  const keyField = (val, ph) =>
+    `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">API Key</div>
+     <div style="display:flex;align-items:center;gap:6px">
+       <input data-k="API Key" type="password" value="${escapeHtml(val || '')}" placeholder="${escapeHtml(ph)}" autocomplete="off"
+         style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
+       <button type="button" class="btn eye-toggle" style="padding:4px 8px;font-size:12px;flex-shrink:0" title="显示/隐藏 Key">👁</button>
+     </div></label>`;
   overlay.innerHTML = `
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:14px">编辑 Provider · ${escapeHtml(p.appType)}</div>
@@ -5482,7 +5499,7 @@ function editProvider(appType, id) {
       ${appType === 'codex' ? `<label style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;margin-bottom:10px">
         <input id="ep-chat-proxy" type="checkbox" ${p.useChatResponsesProxy ? 'checked' : ''}> OpenAI chat 协议转 response 协议
       </label>` : ''}
-      ${field('API Key', '', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置', 'password')}
+      ${keyField('', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置')}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
         <button class="btn" id="ep-cancel" style="font-size:13px">取消</button>
         <button class="btn btn-green" id="ep-save" style="font-size:13px">保存</button>
@@ -5568,4 +5585,19 @@ document.addEventListener('click', (e) => {
       document.body.classList.remove('nav-open');
     }
   }
+});
+
+// Eye toggle for password fields (provider API keys, etc.) — works for both
+// static DOM fields and dynamically created editor dialogs.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.eye-toggle');
+  if (!btn) return;
+  const sel = btn.dataset.target;
+  const input = sel
+    ? document.getElementById(sel)
+    : btn.closest('label')?.querySelector('input[data-k]');
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.textContent = show ? '🙈' : '👁';
 });
