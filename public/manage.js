@@ -1947,6 +1947,53 @@ async function newSessionInDir(dirId, cli, kind) {
   }
 }
 
+// ── Agent-preset (role library) helpers for the new-session dialog ──
+let _agentPresetIndexCache = null;
+async function fetchAgentPresetIndex() {
+  if (_agentPresetIndexCache) return _agentPresetIndexCache;
+  try {
+    const res = await fetch(`/api/agent-presets${tokenQS('?')}`);
+    if (!res.ok) return null;
+    _agentPresetIndexCache = await res.json();
+    return _agentPresetIndexCache;
+  } catch (_) { return null; }
+}
+async function fetchAgentPresetPrompt(id) {
+  try {
+    const res = await fetch(`/api/agent-presets/${encodeURIComponent(id)}${tokenQS('?')}`);
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.prompt || null;
+  } catch (_) { return null; }
+}
+
+// Build the <select> options for a model dropdown based on the selected
+// provider's modelOptions. Falls back to CLAUDE_MODEL_OPTIONS when no
+// provider or a provider without modelOptions is chosen.
+function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProviderId, isClaude) {
+  const prev = modelSelect.value;
+  modelSelect.innerHTML = '';
+  const prov = providers.find(p => p.id === selectedProviderId);
+  const opts = (prov && prov.modelOptions && prov.modelOptions.length)
+    ? prov.modelOptions.map(m => ({ value: m, label: m }))
+    : (isClaude ? CLAUDE_MODEL_OPTIONS : []);
+  for (const o of opts) {
+    const opt = document.createElement('option');
+    opt.value = o.value; opt.textContent = o.labelKey ? tt(o.labelKey) : o.label;
+    modelSelect.appendChild(opt);
+  }
+  // Always allow custom model entry
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__'; customOpt.textContent = tt('custom') || '自定义…';
+  modelSelect.appendChild(customOpt);
+  // Try to preserve previous selection, otherwise default to '' (follow provider/default)
+  const hasVal = [...modelSelect.options].some(o => o.value === prev);
+  modelSelect.value = hasVal ? prev : (opts.length ? opts[0].value : '__custom__');
+  const syncCustom = () => { modelCustom.style.display = modelSelect.value === '__custom__' ? '' : 'none'; };
+  syncCustom();
+  modelSelect.onchange = () => { syncCustom(); if (modelSelect.value === '__custom__') modelCustom.focus(); };
+}
+
 // Single unified creation dialog (name + role + provider + model)
 function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true }) {
   return new Promise((resolve) => {
@@ -1971,11 +2018,61 @@ function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true })
     nameInput.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
     box.appendChild(nameInput);
 
-    // ── Role prompt ──
+    // ── Role prompt with preset picker ──
     const roleLabel = document.createElement('div');
     roleLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
     roleLabel.textContent = '角色提示词（可选）';
     box.appendChild(roleLabel);
+
+    // Preset-role picker row
+    const presetRow = document.createElement('div');
+    presetRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+    const presetSel = document.createElement('select');
+    presetSel.style.cssText = 'flex:1;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none;';
+    const ph = document.createElement('option');
+    ph.value = ''; ph.textContent = '⭐ 从预设角色填入…（加载中）';
+    presetSel.appendChild(ph);
+    presetRow.appendChild(presetSel);
+    box.appendChild(presetRow);
+    fetchAgentPresetIndex().then((idx) => {
+      if (!idx) { ph.textContent = '预设角色加载失败'; return; }
+      ph.textContent = '⭐ 从预设角色填入…';
+      const presets = idx.presets || [];
+      const byId = {};
+      for (const p of presets) byId[p.id] = p;
+      const feat = (idx.featured || []).map((id) => byId[id]).filter(Boolean);
+      if (feat.length) {
+        const og = document.createElement('optgroup'); og.label = '⭐ 推荐';
+        for (const p of feat) {
+          const o = document.createElement('option');
+          o.value = p.id; o.textContent = `${p.emoji || ''} ${p.name}`.trim();
+          og.appendChild(o);
+        }
+        presetSel.appendChild(og);
+      }
+      for (const c of (idx.categories || [])) {
+        const items = presets.filter((x) => x.category === c.key);
+        if (!items.length) continue;
+        const og = document.createElement('optgroup'); og.label = c.label || c.key;
+        for (const p of items) {
+          const o = document.createElement('option');
+          o.value = p.id; o.textContent = `${p.emoji || ''} ${p.name}`.trim();
+          og.appendChild(o);
+        }
+        presetSel.appendChild(og);
+      }
+    });
+    presetSel.addEventListener('change', async () => {
+      const id = presetSel.value;
+      presetSel.value = '';
+      if (!id) return;
+      presetSel.disabled = true;
+      const prompt = await fetchAgentPresetPrompt(id);
+      presetSel.disabled = false;
+      if (prompt) { roleInput.value = prompt; roleInput.focus(); }
+      else showToast('预设角色加载失败', true);
+    });
+
     const roleInput = document.createElement('textarea');
     roleInput.placeholder = '留空则继承目录默认角色';
     roleInput.rows = 3;
@@ -2000,31 +2097,32 @@ function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true })
     });
     box.appendChild(provSelect);
 
-    // ── Model select (claude only) ──
+    // ── Model select (both Claude & Codex, linked to provider) ──
     let modelSelect = null, modelCustom = null;
-    if (isClaude) {
-      const modelLabel = document.createElement('div');
-      modelLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
-      modelLabel.textContent = '模型';
-      box.appendChild(modelLabel);
-      modelSelect = document.createElement('select');
-      modelSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;box-sizing:border-box;';
-      for (const o of CLAUDE_MODEL_OPTIONS) {
-        const opt = document.createElement('option');
-        opt.value = o.value; opt.textContent = o.labelKey ? tt(o.labelKey) : o.label;
-        modelSelect.appendChild(opt);
-      }
-      box.appendChild(modelSelect);
+    // Always show model selector — for Claude it has the standard list as
+    // fallback; for Codex it starts empty (custom only) unless a provider
+    // with modelOptions is picked.
+    const modelLabel = document.createElement('div');
+    modelLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
+    modelLabel.textContent = '模型';
+    box.appendChild(modelLabel);
+    modelSelect = document.createElement('select');
+    modelSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;box-sizing:border-box;';
+    box.appendChild(modelSelect);
 
-      modelCustom = document.createElement('input');
-      modelCustom.type = 'text';
-      modelCustom.placeholder = '模型 ID，如 claude-opus-4-8';
-      modelCustom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;box-sizing:border-box;';
-      box.appendChild(modelCustom);
-      const syncCustom = () => { modelCustom.style.display = modelSelect.value === '__custom__' ? '' : 'none'; };
-      syncCustom();
-      modelSelect.onchange = () => { syncCustom(); if (modelSelect.value === '__custom__') modelCustom.focus(); };
-    }
+    modelCustom = document.createElement('input');
+    modelCustom.type = 'text';
+    modelCustom.placeholder = '模型 ID，如 claude-opus-4-8';
+    modelCustom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;box-sizing:border-box;';
+    box.appendChild(modelCustom);
+
+    // Initial model options (no provider selected → Claude defaults or empty for Codex)
+    rebuildModelOptions(modelSelect, modelCustom, providers, '', isClaude);
+
+    // Provider → Model linkage: when provider changes, rebuild model list
+    provSelect.addEventListener('change', () => {
+      rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude);
+    });
 
     // ── Buttons ──
     const row = document.createElement('div');
@@ -2047,7 +2145,7 @@ function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true })
     };
     const accept = () => {
       let model = null;
-      if (isClaude) {
+      if (modelSelect) {
         model = modelSelect.value === '__custom__' ? modelCustom.value.trim() : modelSelect.value;
       }
       close({
