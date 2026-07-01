@@ -183,7 +183,7 @@ function isAuthenticated(req) {
   app.use((req, res, next) => {
     // Allow login page, static assets
     if (req.path === '/login' || req.path === '/logout') return next();
-    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json)$/i.test(req.path)) return next();
+    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json|apk)$/i.test(req.path)) return next();
     // Wait-callback endpoint is secured by its own per-wait token so external
     // (off-box) systems can deliver results without the ACCESS_TOKEN cookie.
     if (req.method === 'POST' && /^\/api\/wait\/[^/]+\/resolve$/.test(req.path)) return next();
