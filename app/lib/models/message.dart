@@ -171,6 +171,7 @@ class Session {
   final String? cliSessionId;
   final String? label;
   final String? model;
+  final String? effectiveModel; // model actually used at spawn time (override > provider > /model default)
   final String? rolePrompt;
   final String? provider; // cc-switch provider id; null = default login
   final String cwd;
@@ -189,6 +190,7 @@ class Session {
     this.cliSessionId,
     this.label,
     this.model,
+    this.effectiveModel,
     this.rolePrompt,
     this.provider,
     this.cwd = '',
@@ -209,6 +211,7 @@ class Session {
       cliSessionId: json['cliSessionId']?.toString(),
       label: json['label']?.toString(),
       model: json['model']?.toString(),
+      effectiveModel: json['effectiveModel']?.toString(),
       rolePrompt: json['rolePrompt']?.toString(),
       provider: json['provider']?.toString(),
       cwd: (json['cwd'] ?? '').toString(),

@@ -493,11 +493,16 @@ class _ModelChipState extends State<_ModelChip> {
     }
   }
 
-  /// Effective model label: explicit session model, or provider's default model,
-  /// or "默认" if neither.
+  /// Effective model label: prefer the server-resolved effectiveModel (which
+  /// accounts for session override > provider model > user's /model default),
+  /// fall back to the local estimate, or "默认" if neither is available.
   String _modelLabel(Session? s) {
     if (s == null) return '默认';
-    // Explicit session model always wins.
+    // Server-provided effective model wins (includes /model default fallback).
+    if (s.effectiveModel != null && s.effectiveModel!.isNotEmpty) {
+      return claudeModelShortName(s.effectiveModel);
+    }
+    // Explicit session model override.
     if (s.model != null && s.model!.isNotEmpty) {
       return claudeModelShortName(s.model);
     }

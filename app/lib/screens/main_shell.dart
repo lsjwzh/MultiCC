@@ -1066,9 +1066,11 @@ void _showSessionSheet(
                       : _kClaudeColor;
                   final lastInteraction = _sessionLastInteractionAt(s, live);
                   final ago = timeago.format(lastInteraction, locale: 'en_short');
-                  final model = s.model?.isNotEmpty == true
-                      ? claudeModelShortName(s.model)
-                      : '';
+                  final model = s.effectiveModel?.isNotEmpty == true
+                      ? claudeModelShortName(s.effectiveModel)
+                      : (s.model?.isNotEmpty == true
+                          ? claudeModelShortName(s.model)
+                          : '');
                   final provider = s.provider?.isNotEmpty == true ? s.provider! : '';
                   final summary = live?.summary ?? '';
                   final runtime = _runTimeText(live);
@@ -2933,9 +2935,11 @@ class SessionCard extends StatelessWidget {
     final subtitle = session.label?.isNotEmpty == true
         ? session.id
         : session.shortCwd;
-    final model = session.model?.isNotEmpty == true
-        ? claudeModelShortName(session.model)
-        : '';
+    final model = session.effectiveModel?.isNotEmpty == true
+        ? claudeModelShortName(session.effectiveModel)
+        : (session.model?.isNotEmpty == true
+            ? claudeModelShortName(session.model)
+            : '');
 
     return Container(
       decoration: BoxDecoration(
