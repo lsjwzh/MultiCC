@@ -58,6 +58,7 @@ class VadMonitor {
     this.noiseFloor = 0;
     this._calibrated = false;
     this._calibrationSamples = 0;
+    this._calibSum = 0;
 
     // Create AudioContext
     this.ac = new (window.AudioContext || window.webkitAudioContext)();
@@ -99,24 +100,37 @@ class VadMonitor {
     const rms = this._readRms();
     this.lastVolume = rms;
 
-    // Calibrate ambient noise floor over the first ~0.5s of silence so the
-    // thresholds adapt to the room. We take the running max of early samples
-    // (assumed non-speech) as a conservative floor.
+    // Calibrate ambient noise floor over the first ~0.5s (assumed non-speech)
+    // so thresholds adapt to the room. We AVERAGE early samples rather than
+    // take the max, so a single breath/click can't push the floor sky-high and
+    // then make speech impossible to detect.
     if (!this._calibrated) {
-      this.noiseFloor = Math.max(this.noiseFloor, rms);
+      this._calibSum = (this._calibSum || 0) + rms;
       if (++this._calibrationSamples >= 30) { // ~0.5s at 60fps
+        this.noiseFloor = this._calibSum / this._calibrationSamples;
         this._calibrated = true;
       }
     }
 
-    // Effective thresholds = configured value + a fraction of the noise floor.
-    const speechLvl = this.speechThreshold + this.noiseFloor * 0.5;
-    const silenceLvl = this.silenceThreshold + this.noiseFloor * 0.5;
+    // Effective thresholds = configured value + a capped fraction of the floor.
+    // Cap keeps a noisy calibration from raising the bar beyond reach.
+    const floorBoost = Math.min(this.noiseFloor * 0.5, 0.015);
+    const speechLvl = this.speechThreshold + floorBoost;
+    const silenceLvl = this.silenceThreshold + floorBoost;
 
     // Report volume (normalized so the UI bar is responsive: RMS speech is
     // typically 0.02-0.15, so scale into a visible range).
     if (this.opts.onVolume) {
       this.opts.onVolume(rms);
+    }
+    // Live diagnostics (rms / floor / thresholds / speaking) for the debug line.
+    if (this.opts.onDebug) {
+      this.opts.onDebug({
+        rms, noiseFloor: this.noiseFloor,
+        speechLvl, silenceLvl,
+        isSpeaking: this.isSpeaking,
+        calibrated: this._calibrated,
+      });
     }
 
     const now = Date.now();

@@ -57,6 +57,7 @@ class S2SSession {
     this.onError = opts.onError || (() => {});
     this.onLog = opts.onLog || (() => {});
     this.onVolume = opts.onVolume || (() => {});
+    this.onVadDebug = opts.onVadDebug || (() => {}); // live VAD diagnostics
     this.onAsrStatus = opts.onAsrStatus || (() => {}); // "recording" | "transcribing" | "idle"
 
     // Binds
@@ -89,6 +90,7 @@ class S2SSession {
         onSpeechStart: () => this._onSpeechStart(),
         onSilence: (dur) => this._onSilence(dur),
         onVolume: (level) => this.onVolume(level),
+        onDebug: (info) => this.onVadDebug(info),
       });
       await this.vadMonitor.start(this.mediaStream);
 

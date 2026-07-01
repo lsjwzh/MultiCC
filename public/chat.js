@@ -3691,6 +3691,14 @@ connect();
         const pct = Math.min(100, Math.round(Math.sqrt(level) * 220));
         s2sVolumeFill.style.width = pct + '%';
       },
+      onVadDebug: (info) => {
+        const dbg = document.getElementById('s2s-vad-debug');
+        if (!dbg) return;
+        const f = (n) => (n || 0).toFixed(4);
+        dbg.textContent =
+          `rms ${f(info.rms)} | 说话阈 ${f(info.speechLvl)} | 静音阈 ${f(info.silenceLvl)}\n` +
+          `底噪 ${f(info.noiseFloor)} | ${info.calibrated ? '已校准' : '校准中…'} | ${info.isSpeaking ? '🎙说话中' : '静默'}`;
+      },
       onAsrStatus: (status) => {
         if (status === 'recording') {
           s2sStateBadge.textContent = '录音中';
