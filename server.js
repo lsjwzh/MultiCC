@@ -491,13 +491,74 @@ function effectiveSessionModel(session) {
       const p = providers.getProviderSummary(appType, providerId);
       if (p && p.model) return p.model;
       // Claude provider with custom base URL but no explicit ANTHROPIC_MODEL:
-      // the provider's own env decides at spawn time; we have no concrete value.
-      if (appType === 'claude' && p && p.baseUrl) return null;
+      // the provider's own env decides at spawn time; we have no concrete value
+      // until the CLI reports one at runtime (reportedModel).
+      if (appType === 'claude' && p && p.baseUrl) return session.reportedModel || null;
     } catch (_) { /* fall through */ }
   }
   // Default login (no provider override).
-  if (appType === 'claude') return claudeDefaultModel();
-  return null;
+  if (appType === 'claude') return claudeDefaultModel() || session.reportedModel || null;
+  return session.reportedModel || null;
+}
+
+// Remember the model the CLI actually reported at runtime (stream-json system
+// init `model` / assistant `message.model`). This is the only source of truth
+// for relay providers (custom base URL, no explicit ANTHROPIC_MODEL) where the
+// model is decided server-side by the relay.
+function noteReportedModel(sessionName, model) {
+  if (!model || typeof model !== 'string' || model.includes('<synthetic>')) return;
+  const p = persistedSessions.get(sessionName);
+  if (!p || p.reportedModel === model) return;
+  p.reportedModel = model;
+  savePersistedSessions();
+}
+
+// One-time startup backfill: sessions created before reportedModel existed can
+// recover it from the CLI's own transcript (~/.claude/projects/*/<cliSessionId>.jsonl)
+// so cards show a model right away instead of waiting for the next turn.
+function backfillReportedModels() {
+  const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
+  let dirs;
+  try {
+    dirs = fs.readdirSync(claudeProjects, { withFileTypes: true }).filter(d => d.isDirectory());
+  } catch (_) { return; }
+  let updated = 0;
+  for (const p of persistedSessions.values()) {
+    if (p.reportedModel || (p.cli && p.cli !== 'claude') || !p.cliSessionId) continue;
+    if (effectiveSessionModel(p)) continue; // already resolvable statically
+    for (const d of dirs) {
+      const jl = path.join(claudeProjects, d.name, `${p.cliSessionId}.jsonl`);
+      let tail;
+      try {
+        const fd = fs.openSync(jl, 'r');
+        try {
+          const size = fs.fstatSync(fd).size;
+          const len = Math.min(256 * 1024, size);
+          const buf = Buffer.alloc(len);
+          fs.readSync(fd, buf, 0, len, size - len);
+          tail = buf.toString('utf8');
+        } finally { fs.closeSync(fd); }
+      } catch (_) { continue; }
+      // Last assistant message's model in the transcript wins.
+      const lines = tail.split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const j = JSON.parse(lines[i]);
+          const m = j.type === 'assistant' && j.message && j.message.model;
+          if (m && typeof m === 'string' && !m.includes('<synthetic>')) {
+            p.reportedModel = m;
+            updated++;
+            break;
+          }
+        } catch (_) { /* truncated first line etc. */ }
+      }
+      break; // found the transcript file; don't scan other project dirs
+    }
+  }
+  if (updated) {
+    savePersistedSessions();
+    console.log(`[multicc] Backfilled reportedModel for ${updated} session(s) from CLI transcripts`);
+  }
 }
 
 // The concrete model to snapshot onto a session when switching provider, so
@@ -5124,6 +5185,7 @@ function handleApiErrorBoundary(sessionName, finalText, sawApiError) {
 // The `result` event is the turn boundary: it saves the assistant message,
 // returns the session to idle, and fires post-turn hooks.
 function applyClaudeChatEvent(cs, sessionName, evt, forward) {
+  if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
   if (evt.type === 'assistant' && evt.message?.content) {
     for (const block of evt.message.content) {
       if (block.type === 'text') {
@@ -5210,8 +5272,9 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
     // Decoupled via the bus so chat doesn't depend on the triggers domain.
     bus.emit('chat:turn-complete', sessionName, cs);
   }
-  // Drop claude's `system init` — server already sent its own
-  if (evt.type === 'system' && evt.subtype === 'init') return;
+  // Drop claude's `system init` — server already sent its own (but keep the
+  // runtime-reported model before discarding).
+  if (evt.type === 'system' && evt.subtype === 'init') { noteReportedModel(sessionName, evt.model); return; }
   forward(evt);
 }
 
@@ -5866,7 +5929,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
 
   console.log(`[multicc/chat] [${sessionName}] (streaming) send turn=${cs.chatTurnCount} model=${model} status=${JSON.stringify(chatStream.status(sessionName))}`);
   chatStream.send(sessionName, promptText, (evt) => {
-    if (evt.type === 'system' && evt.subtype === 'init') return; // server already sent its own init
+    if (evt.type === 'system' && evt.subtype === 'init') { noteReportedModel(sessionName, evt.model); return; } // server already sent its own init
     applyClaudeChatEvent(cs, sessionName, evt, forward);
   })
     .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq))
@@ -6838,6 +6901,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
     seedTokenUsageFromHistory();
+    backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
     installBundledSkills();                         // bundled multicc skills → all providers
     skillConv.importAllProviderSkills();            // reverse-import: Codex/Hermes → agents
     syncSharedSkills();                             // forward sync: agents → all providers
