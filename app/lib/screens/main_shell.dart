@@ -16,6 +16,7 @@ import '../i18n.dart';
 import '../theme.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
+import '../widgets/rainbow_border.dart';
 import '../models/agent_preset.dart';
 import '../services/agent_preset_service.dart';
 import 'chat_screen.dart';
@@ -2951,6 +2952,7 @@ class SessionCard extends StatelessWidget {
     final statusColor = live != null
         ? _wbStatusColor(live.status)
         : (session.active ? const Color(0xFF7fd49a) : const Color(0xFF5b616c));
+    final isRunning = live != null && _isRunningStatus(live.status);
     final mergeReady = live?.mergeReady == true;
     final title = session.label?.isNotEmpty == true
         ? session.label!
@@ -2978,45 +2980,48 @@ class SessionCard extends StatelessWidget {
           : session.provider;
     }
 
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF070809),
-        border: Border.all(color: const Color(0xFF20242b)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: InkWell(
-        onTap: () {
-          final open = onOpen;
-          if (open != null) {
-            open(session);
-          } else {
-            _open(context);
-          }
-        },
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: BoxDecoration(
-                      color: statusColor,
-                      shape: BoxShape.circle,
+    return RainbowBorder(
+      running: isRunning,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF070809),
+          border: Border.all(color: const Color(0xFF20242b)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: InkWell(
+          onTap: () {
+            final open = onOpen;
+            if (open != null) {
+              open(session);
+            } else {
+              _open(context);
+            }
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: statusColor,
+                        shape: BoxShape.circle,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 7),
-                  _MiniBadge(label: session.cli.name, color: cliColor),
-                  const SizedBox(width: 6),
-                  _MiniBadge(
-                    label: session.kind.name,
-                    color: const Color(0xFF8a909b),
-                    icon: session.isChat
-                        ? Icons.chat_bubble_outline_rounded
+                    const SizedBox(width: 7),
+                    _MiniBadge(label: session.cli.name, color: cliColor),
+                    const SizedBox(width: 6),
+                    _MiniBadge(
+                      label: session.kind.name,
+                      color: const Color(0xFF8a909b),
+                      icon: session.isChat
+                          ? Icons.chat_bubble_outline_rounded
                         : Icons.terminal_rounded,
                   ),
                   if (live != null && live.status != 'idle') ...[
@@ -3279,6 +3284,7 @@ class SessionCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
       ),
     );
   }
