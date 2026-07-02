@@ -1282,6 +1282,7 @@ class _DirectoryDetailAction {
 
 class _DirectoryCardState extends State<_DirectoryCard> {
   late final WorkspaceService _workspace;
+  List<Map<String, dynamic>> _providers = [];
 
   @override
   void initState() {
@@ -1293,6 +1294,19 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     _workspace.onNotify = widget.mgr.handleWorkspaceNotify;
     _workspace.addListener(_onStatusChange);
     _workspace.connect();
+    _loadProviders();
+  }
+
+  Future<void> _loadProviders() async {
+    try {
+      final data = await ManageService(settings: widget.settings).fetchProviders();
+      if (!mounted) return;
+      setState(() {
+        _providers = (data['providers'] as List? ?? [])
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList();
+      });
+    } catch (_) {}
   }
 
   @override
@@ -1913,6 +1927,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                             settings: widget.settings,
                             statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes,
+                            providers: _providers,
                             onOpen: (s) => Navigator.of(
                               sheetCtx,
                             ).pop(_DirectoryDetailAction.open(s)),
@@ -1925,6 +1940,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                             settings: widget.settings,
                             statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes,
+                            providers: _providers,
                             onOpen: (s) => Navigator.of(
                               sheetCtx,
                             ).pop(_DirectoryDetailAction.open(s)),
@@ -1937,6 +1953,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                             settings: widget.settings,
                             statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes,
+                            providers: _providers,
                             onOpen: (s) => Navigator.of(
                               sheetCtx,
                             ).pop(_DirectoryDetailAction.open(s)),
@@ -1949,6 +1966,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                             settings: widget.settings,
                             statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes,
+                            providers: _providers,
                             onOpen: (s) => Navigator.of(
                               sheetCtx,
                             ).pop(_DirectoryDetailAction.open(s)),
@@ -2828,6 +2846,7 @@ class _SessionGroup extends StatelessWidget {
   final SettingsService settings;
   final Map<String, SessionStatus> statuses;
   final Map<String, int> pendingNotes;
+  final List<Map<String, dynamic>> providers;
   final ValueChanged<Session>? onOpen;
 
   const _SessionGroup({
@@ -2838,6 +2857,7 @@ class _SessionGroup extends StatelessWidget {
     required this.settings,
     required this.statuses,
     required this.pendingNotes,
+    this.providers = const [],
     this.onOpen,
   });
 
@@ -2887,6 +2907,7 @@ class _SessionGroup extends StatelessWidget {
                         settings: settings,
                         liveStatus: statuses[s.id],
                         pendingNotes: pendingNotes[s.id] ?? 0,
+                        providers: providers,
                         onOpen: onOpen,
                       ),
                     ),
@@ -2906,6 +2927,7 @@ class SessionCard extends StatelessWidget {
   final SettingsService settings;
   final SessionStatus? liveStatus;
   final int pendingNotes;
+  final List<Map<String, dynamic>> providers;
   final ValueChanged<Session>? onOpen;
   const SessionCard({
     super.key,
@@ -2914,6 +2936,7 @@ class SessionCard extends StatelessWidget {
     required this.settings,
     this.liveStatus,
     this.pendingNotes = 0,
+    this.providers = const [],
     this.onOpen,
   });
 
@@ -2940,6 +2963,20 @@ class SessionCard extends StatelessWidget {
         : (session.model?.isNotEmpty == true
             ? claudeModelShortName(session.model)
             : '');
+    // Resolve provider display name from the cached provider list.
+    String? provName;
+    if (session.provider != null && session.provider!.isNotEmpty) {
+      try {
+        final match = providers.firstWhere(
+          (p) => p['id'] == session.provider,
+          orElse: () => {},
+        );
+        provName = match['name']?.toString();
+      } catch (_) {}
+      provName ??= session.provider!.length > 8
+          ? session.provider!.substring(0, 8)
+          : session.provider;
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -3004,12 +3041,25 @@ class SessionCard extends StatelessWidget {
                     ),
                   ],
                   const Spacer(),
+                  if (provName != null) ...[
+                    Flexible(
+                      child: Text(
+                        provName,
+                        style: const TextStyle(
+                          color: Color(0xFF7aa2f7),
+                          fontSize: 10,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                   if (model.isNotEmpty) ...[
                     Flexible(
                       child: Text(
                         model,
                         style: const TextStyle(
-                          color: Color(0xFF5b616c),
+                          color: Color(0xFF22ab9c),
                           fontSize: 10,
                         ),
                         overflow: TextOverflow.ellipsis,
