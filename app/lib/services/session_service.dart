@@ -218,10 +218,33 @@ class SessionService {
     }
   }
 
-  /// Create an external share link for a session. access: 'view' | 'operate'
-  /// ('operate' requires a non-empty password). Returns the share record incl.
-  /// `url` (built server-side from the request host, so it matches the base URL
-  /// the app is configured with). The recipient always opens a web page.
+  /// List all active shares for a session.
+  Future<List<Map<String, dynamic>>> listShares(String id) async {
+    final res = await http
+        .get(Uri.parse(_url('/api/sessions/$id/shares')), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final list = (data['shares'] as List? ?? []);
+    return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
+  }
+
+  /// Revoke (delete) a share by its token.
+  Future<void> deleteShare(String sessionId, String token) async {
+    final res = await http
+        .delete(
+          Uri.parse(_url('/api/sessions/$sessionId/share/$token')),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+  }
   Future<Map<String, dynamic>> createShare(
     String id, {
     required String access,

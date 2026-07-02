@@ -941,108 +941,312 @@ Future<String?> _showMemoryEditor(BuildContext context,
   );
 }
 
-// Share a session externally. Recipient always opens a web page; this only
-// creates the link and lets the user copy it. 'operate' requires a password.
+// Share a session externally. Mirrors the web share dialog: create link with
+// access type + optional password + expiry, list existing shares with type
+// badges and revoke buttons, copy link to clipboard.
 Future<void> _shareFromSession(
     BuildContext context, String sessionId, SettingsService settings) async {
   final svc = SessionService(settings: settings);
   String access = 'view';
   final pwCtrl = TextEditingController();
+  int expiryHrs = 0;
   String? url;
   String? error;
   bool busy = false;
+  List<Map<String, dynamic>> shares = [];
+  bool loadingShares = true;
+
+  Future<void> refreshShares(StateSetter setState) async {
+    try {
+      shares = await svc.listShares(sessionId);
+    } catch (_) {
+      shares = [];
+    }
+    setState(() => loadingShares = false);
+  }
 
   await showDialog<void>(
     context: context,
     builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setState) => AlertDialog(
-        backgroundColor: const Color(0xFF14171c),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: Color(0xFF20242b)),
-        ),
-        title: const Text('分享会话',
-            style: TextStyle(color: Color(0xFFe7eaee), fontSize: 16)),
-        content: SizedBox(
-          width: 360,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('接收方在浏览器打开链接即可。',
-                  style: TextStyle(color: Color(0xFF8b949e), fontSize: 12)),
-              const SizedBox(height: 4),
-              const Text('「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码。',
-                  style: TextStyle(color: Color(0xFFe3853f), fontSize: 12)),
-              const SizedBox(height: 12),
-              DropdownButton<String>(
-                value: access,
-                dropdownColor: const Color(0xFF14171c),
-                isExpanded: true,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
-                items: const [
-                  DropdownMenuItem(value: 'view', child: Text('只读查看')),
-                  DropdownMenuItem(value: 'operate', child: Text('可对话（需密码）')),
+      builder: (ctx, setState) {
+        // Load shares on first build
+        if (loadingShares) {
+          refreshShares(setState);
+        }
+        return AlertDialog(
+          backgroundColor: const Color(0xFF14171c),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: Color(0xFF20242b)),
+          ),
+          title: const Text('分享会话',
+              style: TextStyle(color: Color(0xFFe7eaee), fontSize: 16)),
+          content: SizedBox(
+            width: 380,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('接收方在浏览器打开链接即可。',
+                      style: TextStyle(color: Color(0xFF8b949e), fontSize: 12)),
+                  const SizedBox(height: 4),
+                  const Text('「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码。',
+                      style: TextStyle(color: Color(0xFFe3853f), fontSize: 12)),
+                  const SizedBox(height: 14),
+                  // ── Access type ──
+                  Row(
+                    children: [
+                      _expandedChoice('view', '只读查看', access, (v) => setState(() => access = v)),
+                      const SizedBox(width: 8),
+                      _expandedChoice('operate', '可对话', access, (v) => setState(() => access = v)),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  // ── Password ──
+                  TextField(
+                    controller: pwCtrl,
+                    style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+                    decoration: const InputDecoration(
+                      hintText: '密码（只读可留空；可对话必填）',
+                      hintStyle: TextStyle(color: Color(0xFF6e7681), fontSize: 13),
+                      filled: true,
+                      fillColor: Color(0xFF1c2128),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.all(Radius.circular(8)),
+                          borderSide: BorderSide(color: Color(0xFF20242b))),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  // ── Expiry ──
+                  const Text('有效期', style: TextStyle(color: Color(0xFF8b949e), fontSize: 11)),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      _expiryChip('永不过期', 0, expiryHrs,
+                          (v) => setState(() => expiryHrs = v)),
+                      _expiryChip('1h', 1, expiryHrs,
+                          (v) => setState(() => expiryHrs = v)),
+                      _expiryChip('1天', 24, expiryHrs,
+                          (v) => setState(() => expiryHrs = v)),
+                      _expiryChip('7天', 168, expiryHrs,
+                          (v) => setState(() => expiryHrs = v)),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  // ── Generate button ──
+                  SizedBox(
+                    width: double.infinity,
+                    height: 42,
+                    child: ElevatedButton(
+                      onPressed: busy ? null : () async {
+                        final pw = pwCtrl.text.trim();
+                        if (access == 'operate' && pw.isEmpty) {
+                          setState(() => error = '「可对话」必须设置密码');
+                          return;
+                        }
+                        setState(() { busy = true; error = null; });
+                        try {
+                          final r = await svc.createShare(sessionId,
+                              access: access,
+                              password: pw.isEmpty ? null : pw,
+                              expiresAt: expiryHrs > 0
+                                  ? (DateTime.now().millisecondsSinceEpoch + expiryHrs * 3600 * 1000)
+                                  : null);
+                          setState(() { url = r['url'] as String?; busy = false; });
+                          pwCtrl.clear();
+                          refreshShares(setState);
+                        } catch (e) {
+                          setState(() { error = '$e'; busy = false; });
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF238636),
+                        foregroundColor: Colors.white,
+                      ),
+                      child: busy
+                          ? const SizedBox(width: 18, height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : Text(url == null ? '生成链接' : '重新生成'),
+                    ),
+                  ),
+                  if (error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(error!, style: const TextStyle(color: Color(0xFFff6b63), fontSize: 12)),
+                  ],
+                  if (url != null) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1c2128),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF20242b)),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: SelectableText(url!,
+                                style: const TextStyle(color: Color(0xFF79c0ff), fontSize: 12)),
+                          ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: () {
+                              Clipboard.setData(ClipboardData(text: url!));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('链接已复制')));
+                            },
+                            child: const Icon(Icons.copy, size: 18, color: Color(0xFF8b949e)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  // ── Existing shares ──
+                  const SizedBox(height: 18),
+                  const Text('已有分享',
+                      style: TextStyle(color: Color(0xFF8b949e), fontSize: 12, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  if (loadingShares)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Center(child: SizedBox(width: 18, height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8b949e)))),
+                    )
+                  else if (shares.isEmpty)
+                    const Text('暂无', style: TextStyle(color: Color(0xFF6e7681), fontSize: 13))
+                  else
+                    ...shares.map((s) => _shareCard(s, () async {
+                      final token = s['token'] as String;
+                      try {
+                        await svc.deleteShare(sessionId, token);
+                        setState(() => shares.removeWhere((x) => x['token'] == token));
+                      } catch (e) {
+                        if (ctx.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('撤销失败：$e')));
+                        }
+                      }
+                    })),
                 ],
-                onChanged: busy ? null : (v) => setState(() => access = v ?? 'view'),
               ),
-              TextField(
-                controller: pwCtrl,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
-                decoration: const InputDecoration(
-                  hintText: '密码（只读可留空；可对话必填）',
-                  hintStyle: TextStyle(color: Color(0xFF6e7681), fontSize: 13),
-                ),
-              ),
-              if (error != null) ...[
-                const SizedBox(height: 8),
-                Text(error!, style: const TextStyle(color: Color(0xFFff6b63), fontSize: 12)),
-              ],
-              if (url != null) ...[
-                const SizedBox(height: 12),
-                SelectableText(url!,
-                    style: const TextStyle(color: Color(0xFF79c0ff), fontSize: 12)),
-              ],
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('关闭', style: TextStyle(color: Color(0xFF8b949e))),
-          ),
-          if (url != null)
-            TextButton(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: url!));
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('链接已复制')));
-              },
-              child: const Text('复制链接', style: TextStyle(color: Color(0xFF58a6ff))),
             ),
-          TextButton(
-            onPressed: busy
-                ? null
-                : () async {
-                    final pw = pwCtrl.text.trim();
-                    if (access == 'operate' && pw.isEmpty) {
-                      setState(() => error = '「可对话」必须设置密码');
-                      return;
-                    }
-                    setState(() { busy = true; error = null; });
-                    try {
-                      final r = await svc.createShare(sessionId,
-                          access: access, password: pw.isEmpty ? null : pw);
-                      setState(() { url = r['url'] as String?; busy = false; });
-                    } catch (e) {
-                      setState(() { error = '$e'; busy = false; });
-                    }
-                  },
-            child: Text(url == null ? '生成链接' : '重新生成',
-                style: const TextStyle(color: Color(0xFF3fb950))),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('关闭', style: TextStyle(color: Color(0xFF8b949e))),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+Widget _expandedChoice(String value, String label, String current, ValueChanged<String> onChanged) {
+  final sel = current == value;
+  return Expanded(
+    child: GestureDetector(
+      onTap: () => onChanged(value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: sel ? const Color(0xFF1a3a5c) : const Color(0xFF1c2128),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: sel ? const Color(0xFF58a6ff) : const Color(0xFF20242b)),
+        ),
+        child: Text(label, style: TextStyle(
+            color: sel ? const Color(0xFF79c0ff) : const Color(0xFF8b949e),
+            fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+            fontSize: 13)),
       ),
+    ),
+  );
+}
+
+Widget _expiryChip(String label, int value, int current, ValueChanged<int> onChanged) {
+  final sel = current == value;
+  return Padding(
+    padding: const EdgeInsets.only(right: 8),
+    child: GestureDetector(
+      onTap: () => onChanged(value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: sel ? const Color(0xFF1a3a5c) : const Color(0xFF1c2128),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: sel ? const Color(0xFF58a6ff) : const Color(0xFF20242b)),
+        ),
+        child: Text(label, style: TextStyle(
+            color: sel ? const Color(0xFF79c0ff) : const Color(0xFF8b949e),
+            fontWeight: sel ? FontWeight.w500 : FontWeight.w400,
+            fontSize: 12)),
+      ),
+    ),
+  );
+}
+
+String _shareTypeLabel(Map<String, dynamic> s) {
+  if (s['type'] == 'messages') {
+    return '📎 消息快照·${s['messageCount'] ?? 0}条${s['hasPassword'] == true ? '·密码' : ''}';
+  }
+  if (s['access'] == 'operate') return '🔌 可对话';
+  if (s['hasPassword'] == true) return '🔒 密码查看';
+  return '🌐 公开查看';
+}
+
+Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
+  final exp = s['expiresAt'] as int?;
+  final expStr = exp != null && exp > 0
+      ? ' · 到期 ${DateTime.fromMillisecondsSinceEpoch(exp).toLocal().toString().substring(0, 16)}'
+      : '';
+  final url = (s['url'] as String?) ?? '';
+  return Container(
+    margin: const EdgeInsets.only(bottom: 8),
+    padding: const EdgeInsets.all(10),
+    decoration: BoxDecoration(
+      color: const Color(0xFF1c2128),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: const Color(0xFF20242b)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text('${_shareTypeLabel(s)}$expStr',
+                  style: const TextStyle(color: Color(0xFF79c0ff), fontSize: 12),
+                  overflow: TextOverflow.ellipsis),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: url));
+                if (s['url'] != null) {
+                  // Access via mounted context — just use a simple approach
+                  try {
+                    Clipboard.setData(ClipboardData(text: url));
+                  } catch (_) {}
+                }
+              },
+              child: const Icon(Icons.copy, size: 16, color: Color(0xFF6e7681)),
+            ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: onRevoke,
+              child: const Icon(Icons.close_rounded, size: 18, color: Color(0xFFf85149)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(url,
+            style: const TextStyle(color: Color(0xFF6e7681), fontSize: 11, fontFamily: 'monospace'),
+            maxLines: 1, overflow: TextOverflow.ellipsis),
+      ],
     ),
   );
 }
