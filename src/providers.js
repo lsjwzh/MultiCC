@@ -387,7 +387,22 @@ function importFromCcSwitch() {
       importedAt: Date.now(),
     };
     const key = `${r.app_type}:${r.id}`;
-    if (byKey.has(key)) { list[byKey.get(key)] = { ...list[byKey.get(key)], ...entry }; updated++; }
+    if (byKey.has(key)) {
+      // Preserve local-only env fields that cc-switch doesn't manage
+      // (ANTHROPIC_API_KEY, MULTICC_TOOLS, etc.), then merge cc-switch data.
+      const prev = list[byKey.get(key)];
+      const prevEnv = (prev.settingsConfig && prev.settingsConfig.env) || {};
+      const prevLocalKeys = {};
+      for (const k of ['ANTHROPIC_API_KEY', 'MULTICC_TOOLS']) {
+        if (prevEnv[k] !== undefined) prevLocalKeys[k] = prevEnv[k];
+      }
+      list[byKey.get(key)] = { ...prev, ...entry };
+      if (Object.keys(prevLocalKeys).length) {
+        const merged = list[byKey.get(key)];
+        merged.settingsConfig.env = { ...merged.settingsConfig.env, ...prevLocalKeys };
+      }
+      updated++;
+    }
     else { list.push(entry); imported++; }
   }
   saveStore(list);
@@ -437,6 +452,7 @@ function buildChildEnv(base, session, extra = {}) {
     skipDefaultModel: spawn.skipDefaultModel,
     providerName: spawn.providerName,
     codexHome: spawn.codexHome,
+    tools: spawn.tools,
   };
 }
 
@@ -468,7 +484,7 @@ if (env.ANTHROPIC_BASE_URL) {
   // Auto-copying AUTH_TOKEN to API_KEY forces the x-api-key header on
   // providers that don't accept it (e.g. Zhipu GLM 401s because it only
   // reads Authorization: Bearer). Leave AUTH_TOKEN as-is for Bearer auth.
-}    return { env, skipDefaultModel: !!env.ANTHROPIC_BASE_URL, providerName: p.name };
+}    return { env, skipDefaultModel: !!env.ANTHROPIC_BASE_URL, providerName: p.name, tools: src.MULTICC_TOOLS };
   }
 
   try {

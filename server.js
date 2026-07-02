@@ -2036,6 +2036,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     label,
     model: model || null, // null = follow default/provider model
     provider: providerId,  // cc-switch provider id; null = default login/subscription
+    autoCommit: true,      // default: auto-commit & merge after task completion
     createdAt: new Date().toISOString(),
     worktreePath,
     branch,
