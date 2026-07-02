@@ -2564,16 +2564,68 @@ class _AgentPresetPickerSheetState extends State<AgentPresetPickerSheet> {
             style: TextStyle(color: AppColors.faint, fontSize: 13)),
       );
     }
-    return ListView.separated(
+
+    // When no category filter and no search query is active, show a
+    // "⭐ 推荐" (featured) section at the top — matching the web dropdown
+    // which renders featured presets in a dedicated optgroup first.
+    final featured = (_category.isEmpty && _query.isEmpty)
+        ? (_index?.featuredPresets ?? const <AgentPreset>[])
+        : const <AgentPreset>[];
+    final featuredIds = featured.map((p) => p.id).toSet();
+    final rest = items.where((p) => !featuredIds.contains(p.id)).toList();
+
+    if (featured.isEmpty) {
+      return ListView.separated(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        itemCount: rest.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 8),
+        itemBuilder: (_, i) {
+          final p = rest[i];
+          return _PresetCard(
+            preset: p,
+            selected: _selectedId == p.id,
+            onTap: () => setState(() => _selectedId = p.id),
+          );
+        },
+      );
+    }
+
+    // Featured section + remaining items
+    return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-      itemCount: items.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemCount: featured.length + (rest.isEmpty ? 0 : 1) + rest.length,
       itemBuilder: (_, i) {
-        final p = items[i];
-        return _PresetCard(
-          preset: p,
-          selected: _selectedId == p.id,
-          onTap: () => setState(() => _selectedId = p.id),
+        if (i < featured.length) {
+          final p = featured[i];
+          return Padding(
+            padding: EdgeInsets.only(bottom: i == featured.length - 1 ? 0 : 8),
+            child: _PresetCard(
+              preset: p,
+              selected: _selectedId == p.id,
+              onTap: () => setState(() => _selectedId = p.id),
+              featured: true,
+            ),
+          );
+        }
+        final adj = i - featured.length;
+        if (adj == 0) {
+          return const Padding(
+            padding: EdgeInsets.only(top: 10, bottom: 8),
+            child: Text('全部模板',
+                style: TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600)),
+          );
+        }
+        final p = rest[adj - 1];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: _PresetCard(
+            preset: p,
+            selected: _selectedId == p.id,
+            onTap: () => setState(() => _selectedId = p.id),
+          ),
         );
       },
     );
@@ -2624,8 +2676,9 @@ class _PresetCard extends StatelessWidget {
   final AgentPreset preset;
   final bool selected;
   final VoidCallback onTap;
+  final bool featured;
   const _PresetCard(
-      {required this.preset, required this.selected, required this.onTap});
+      {required this.preset, required this.selected, required this.onTap, this.featured = false});
 
   @override
   Widget build(BuildContext context) {
@@ -2637,10 +2690,10 @@ class _PresetCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: Container(
           decoration: BoxDecoration(
-            color: AppColors.panel2,
+            color: featured ? AppColors.accent.withValues(alpha: 0.06) : AppColors.panel2,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-                color: selected ? AppColors.accent : AppColors.line,
+                color: selected ? AppColors.accent : (featured ? AppColors.accent.withValues(alpha: 0.3) : AppColors.line),
                 width: selected ? 1.5 : 1),
           ),
           child: IntrinsicHeight(
@@ -2664,6 +2717,11 @@ class _PresetCard extends StatelessWidget {
                       children: [
                         Row(
                           children: [
+                            if (featured) ...[
+                              const Text('⭐',
+                                  style: TextStyle(fontSize: 14)),
+                              const SizedBox(width: 4),
+                            ],
                             if (preset.emoji.isNotEmpty) ...[
                               Text(preset.emoji,
                                   style: const TextStyle(fontSize: 16)),

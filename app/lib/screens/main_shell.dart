@@ -3684,11 +3684,11 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
     _roleCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
     _loadPresets();
-    // Default model: user's default if known, else null (follow server default)
-    final modelKnown = kClaudeModelOptions.any((e) => e.key == widget.settings.defaultModel);
-    if (_isClaude && widget.settings.defaultModel.isNotEmpty && modelKnown) {
-      _pickedModel = widget.settings.defaultModel;
-    }
+    // Web behavior: start with no model selected (empty = follow provider
+    // default or server default). The user's settings.defaultModel is only
+    // used as a convenience pre-fill for the model dropdown's initial display,
+    // but the picked value starts null to match web's "empty = default".
+    _pickedModel = null;
   }
 
   @override
@@ -3709,6 +3709,8 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
   }
 
   /// Build the model options for the current provider selection.
+  /// Mirrors web rebuildModelOptions(): provider modelOptions if available,
+  /// else CLAUDE_MODEL_OPTIONS for Claude only (empty list for Codex).
   List<MapEntry<String, String>> get _currentModelOptions {
     Map<String, dynamic>? prov;
     for (final p in widget.providers) {
@@ -3721,8 +3723,10 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
           .map((s) => MapEntry<String, String>(s, s))
           .toList();
     }
-    // Fall back to standard Claude models
-    return kClaudeModelOptions;
+    // No provider (or provider without modelOptions):
+    //  - Claude: fall back to standard model list
+    //  - Codex: empty list (custom model entry only), matching web behavior
+    return _isClaude ? kClaudeModelOptions : const [];
   }
 
   Future<void> _pickPreset() async {
@@ -3761,9 +3765,15 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
   void _onProviderChanged(String? v) {
     setState(() {
       _pickedProvider = v;
-      // Reset model to first option of the new provider's list
+      // Try to preserve the current model selection across provider switches
+      // (matching web rebuildModelOptions behavior). If the current model
+      // isn't in the new list, fall back to the first option or custom.
       final opts = _currentModelOptions;
-      if (opts.isNotEmpty && opts.first.key.isNotEmpty) {
+      final prevModel = _customModel ? null : _pickedModel;
+      if (prevModel != null && opts.any((e) => e.key == prevModel)) {
+        // Current model exists in new provider's list — keep it
+        _customModel = false;
+      } else if (opts.isNotEmpty && opts.first.key.isNotEmpty) {
         _pickedModel = opts.first.key;
         _customModel = false;
       } else {
@@ -3857,7 +3867,9 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
                 ...widget.providers.map((p) => DropdownMenuItem(
                   value: p['id'] as String,
                   child: Text(
-                    '${p['name']}${p['isOfficial'] == true ? ' · 订阅' : ''}',
+                    '${p['name']}'
+                    '${p['isOfficial'] == true ? ' · 订阅' : ''}'
+                    '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
                     style: const TextStyle(color: Color(0xFFe7eaee)),
                   ),
                 )),
