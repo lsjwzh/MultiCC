@@ -638,8 +638,9 @@ const MULTICC_IMG_HINT = [
   '【后台长任务，丢了别管 ——【硬性规则，优先级高于任何角色设定】】在 multicc 的 chat 会话里，凡是「跑完/等到再继续」的等待型后台操作，一律禁止用以下方式：① 裸 `&`/nohup；② Claude Code 自带 Bash 工具的 `run_in_background:true`（这是最常见的违规！包括用它去轮询/守候一个或多个文件、状态、子会话结果）；③ Monitor / BashOutput 轮询；④ `tail -f | grep` 等待标记。原因：chat 会话里这些后台进程和监听器会在本轮结束/上下文重置时被环境连同任务一起回收，进程被静默杀掉（OOM、退出码 137，不写日志）后你的等待永远不会被唤醒——表现就是「消息到此断掉、不会自动恢复，直到用户来催」（你正在看的这条提示就是因为有人这么做了）。正确做法：改用 multicc 的 run-detached 接口（由 multicc 服务以 setsid 启动，独立于本轮甚至服务重启，跑完自动把「退出码+输出尾巴」作为下一条消息发回给你续接）；或在命令本身够快时前台同步跑（给足 timeout 一次拿结果）。',
   `     curl -s $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/run-detached -H 'Content-Type: application/json' \\`,
   `       -d '{"command":"<要后台跑的完整shell命令>","label":"<简短任务名>"}'`,
-  '     可选字段：cwd（默认你的工作目录）、intervalSec（轮询间隔秒，默认 10）、maxChecks（最多检查次数，默认 360≈1 小时）。返回里有 taskId 与 logPath；用 GET $MULTICC_BASE_URL/api/detached/<taskId> 可随时查实时状态与日志尾巴。',
+  '     可选字段：cwd（默认你的工作目录）、intervalSec（轮询间隔秒，默认 10）、maxChecks（最多检查次数，默认 360≈1 小时）、daemon（设为 true 表示这是常驻服务如 dev server / API 服务，永不退出——此时不注册轮询等待，不会产生「[轮询超时]」误报，启动后用 GET /api/detached/<taskId> 查状态即可）。返回里有 taskId 与 logPath；用 GET $MULTICC_BASE_URL/api/detached/<taskId> 可随时查实时状态与日志尾巴。',
   '  登记后正常结束本轮即可，任务完成时 multicc 会自动续接。若需中途向用户报进度，配合下面「边做边报」用 GET /api/detached/<taskId> tail 日志即可，不要前台死等。',
+  '  ⚠️ 常驻服务（dev server / API / 任何不退出的进程）必须加 "daemon":true，否则轮询永远等不到 done 文件、必然超时报「[轮询超时]」误报。',
   '  ⚠️ 典型违规场景（这些都必须用 run-detached，不能用 Bash run_in_background）：等构建/打包/部署/长测试跑完；轮询某文件出现某关键字；**等多个子会话/兄弟会话把结果写进各自文件后再汇总**（比如 dispatch 出去几个会话后守着它们的 chat_history json）；等第三方接口/部署状态变化。判断标准很简单：只要这一步是「我先发起、然后要等它在未来某刻完成、完成后我才继续」，就用 run-detached 或前台同步跑，绝不用 run_in_background 守。run-detached 同样支持轮询（intervalSec/maxChecks）和自定义 pollCmd，能覆盖上面所有场景，且跨轮不丢、自动续接。',
   '  🚫【绝对禁令，无例外】不要给 Bash 工具传 `run_in_background: true`。在 chat 会话里这个参数起的后台进程会被回收，等于白跑。需要后台 → run-detached；需要尽快拿结果 → 前台同步跑（给足 timeout）。这条不是建议而是禁令：multicc 会在每一轮结束后检查你是否用了 `run_in_background`，一旦发现就会自动给你发一条纠正消息把你拉回正轨——所以与其被纠正，不如一开始就别用。唯一可接受的「后台」是 multicc 的 run-detached 接口，没有第二种。',
 
@@ -5862,10 +5863,20 @@ app.post('/api/sessions/:id/run-detached', (req, res) => {
     const baseCwd = cwdForSession(s);
     const cwd = b.cwd ? resolveCwd(baseCwd, String(b.cwd)) : baseCwd;
     const job = detached.launch({ command, cwd, label: b.label });
-    // 10s interval × 360 checks ≈ 1h ceiling before the poll gives up; tune via body.
+    const label = (b.label || command.replace(/\s+/g, ' ').slice(0, 60)).trim();
+    // Daemon mode: for long-running services (dev server, API, etc.) that never
+    // exit on their own. The done-file model (poll until process exits) doesn't
+    // apply — the poll would always time out and produce false "[轮询超时]"
+    // injections. Instead, just launch the process and return; the caller can
+    // check status via GET /api/detached/:taskId at any time.
+    const isDaemon = b.daemon === true || b.daemon === 'true';
+    if (isDaemon) {
+      res.json({ ok: true, taskId: job.id, waitId: null, pid: job.pid, logPath: job.logPath, daemon: true });
+      return;
+    }
+    // Normal mode: 10s interval × 360 checks ≈ 1h ceiling before the poll gives up; tune via body.
     const intervalSec = Math.max(3, Number(b.intervalSec) || 10);
     const maxChecks = Math.max(1, Number(b.maxChecks) || 360);
-    const label = (b.label || command.replace(/\s+/g, ' ').slice(0, 60)).trim();
     const reg = waitInjector.register({
       session: s.id, mode: 'poll', cwd,
       pollCmd: job.pollCmd, untilContains: job.doneMarker,
