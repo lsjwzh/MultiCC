@@ -2725,13 +2725,30 @@ async function openShareDialog() {
   const listEl = box.querySelector('#sh-list');
 
   async function refresh() {
-    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : '<div style="color:#8b949e;font-size:12px;">暂无</div>'; bind(); }
+    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : '<div style="color:#8b949e;font-size:12px;">暂无</div>'; }
     catch (e) { listEl.innerHTML = `<div style="color:#f85149;font-size:12px;">${e.message}</div>`; }
   }
-  function bind() {
-    listEl.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); b.textContent = '已复制'; setTimeout(() => b.textContent = '复制', 1200); });
-    listEl.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('撤销这个分享链接？')) return; try { await shareApi('DELETE', '/share/' + encodeURIComponent(b.dataset.del)); refresh(); } catch (e) { alert(e.message); } });
-  }
+  // Use event delegation on listEl so bind() is never needed — handlers survive
+  // any innerHTML replacement, and data-* attrs always read the live DOM.
+  listEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    if (btn.hasAttribute('data-copy')) {
+      navigator.clipboard?.writeText(btn.dataset.copy);
+      btn.textContent = '已复制';
+      setTimeout(() => { if (btn.isConnected) btn.textContent = '复制'; }, 1200);
+    } else if (btn.hasAttribute('data-del')) {
+      if (!confirm('撤销这个分享链接？')) return;
+      const token = btn.dataset.del;
+      if (!token) return;
+      btn.disabled = true;
+      btn.textContent = '撤销中…';
+      shareApi('DELETE', '/share/' + encodeURIComponent(token))
+        .then(() => refresh())
+        .catch(e => alert(e.message))
+        .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = '撤销'; } });
+    }
+  });
   box.querySelector('#sh-create').onclick = async () => {
     const access = box.querySelector('#sh-access').value;
     const password = box.querySelector('#sh-pw').value.trim();
