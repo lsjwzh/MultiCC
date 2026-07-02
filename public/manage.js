@@ -433,6 +433,11 @@ async function loadDashboard() {
     _cachedDirectories = directories;
     _cachedSessions = sessions;
     openBellForExistingSessionsOnce(sessions);
+    // Load provider list in background if not yet loaded, then re-render
+    // session cards so provider names resolve from IDs.
+    if (!_providerData.available) {
+      loadProviders().then(() => renderDashboard(_cachedDirectories, _cachedSessions));
+    }
     if (!_auxConfig) loadAuxConfig().then(() => renderSessions(_cachedSessions || []));
     // Default expand: only directories that have an active session (keeps the
     // board calm). Fall back to expanding all when nothing is active.
@@ -1490,6 +1495,10 @@ function renderSessionRow(s) {
     : tt('mergeWorktreeTitle');
   const displayName = s.label || s.id;
   const model = s.effectiveModel ? modelShortName(s.effectiveModel) : '';
+  // Resolve provider display name from cached provider list (may be async-loaded;
+  // falls back to the raw id or nothing).
+  const provInfo = s.provider ? (_providerData.providers || []).find(p => p.id === s.provider) : null;
+  const provName = provInfo ? provInfo.name : (s.provider ? s.provider.slice(0, 8) : '');
   const wbFile = (wb && wb.currentFile) ? wb.currentFile.split('/').pop() : '';
   const sm = _workspaceSummaries.get(s.id);
   const summary = sm && sm.summary ? sm.summary : '';
@@ -1510,6 +1519,7 @@ function renderSessionRow(s) {
         <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
         <div class="lean-meta">
           <span>${escapeHtml(formatRelative(sessionLastInteractionMs(s) || s.createdAt))}</span>
+          ${provName ? `<span class="sep">·</span><span class="provider-chip" title="Provider：${escapeHtml(s.provider || '')}">${escapeHtml(provName)}</span>` : ''}
           ${model ? `<span class="sep">·</span><span class="model" title="模型：${escapeHtml(s.effectiveModel || '')}">${escapeHtml(model)}</span>` : ''}
         </div>
         <div class="sess-file" id="sess-file-${escapeHtml(s.id)}"${wbFile ? '' : ' style="display:none"'}>${wbFile ? '✎ ' + escapeHtml(wbFile) : ''}</div>
