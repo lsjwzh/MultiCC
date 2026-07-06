@@ -503,13 +503,17 @@ function renderAuxCard(s, isFocused) {
 }
 
 // ── Aux AI model config ──
-let _auxConfig = null; // { providerId, model, providers:[{id,name}] }
+let _auxConfig = null; // { cli, providerId, model, claudeProviders, codexProviders }
 function _auxModelLabel() {
   if (!_auxConfig) return 'auxqueue';
+  const cli = (_auxConfig.cli || 'claude') === 'codex' ? 'codex' : 'claude';
+  const providers = cli === 'codex' ? (_auxConfig.codexProviders || []) : (_auxConfig.claudeProviders || _auxConfig.providers || []);
   const prov = _auxConfig.providerId
-    ? ((_auxConfig.providers || []).find(p => p.id === _auxConfig.providerId)?.name || '自定义')
+    ? (providers.find(p => p.id === _auxConfig.providerId)?.name || '自定义')
     : '默认登录';
-  return `${prov} · ${_auxConfig.model || 'haiku'}`;
+  const fallback = cli === 'claude' ? 'haiku' : 'provider 默认';
+  const effort = _auxConfig.effort || (cli === 'codex' ? 'xhigh' : 'medium');
+  return `${cli} · ${prov} · ${_auxConfig.model || fallback} · ${effort}`;
 }
 async function loadAuxConfig() {
   try {
@@ -517,14 +521,33 @@ async function loadAuxConfig() {
     _auxConfig = await res.json();
   } catch (_) { _auxConfig = null; }
 }
+function refreshAuxProviderOptions() {
+  const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
+  const sel = document.getElementById('aux-provider');
+  if (!sel) return;
+  const list = cli === 'codex'
+    ? (_auxConfig?.codexProviders || [])
+    : (_auxConfig?.claudeProviders || _auxConfig?.providers || []);
+  sel.innerHTML = '<option value="">默认登录</option>'
+    + list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+  const current = _auxConfig?.cli === cli ? (_auxConfig?.providerId || '') : '';
+  sel.value = current;
+  refreshAuxEffortOptions();
+}
+function refreshAuxEffortOptions() {
+  const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
+  const sel = document.getElementById('aux-effort');
+  if (!sel) return;
+  const opts = cli === 'codex' ? ['low', 'medium', 'high', 'xhigh'] : ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+  sel.innerHTML = opts.map(v => `<option value="${v}">${escapeHtml(v)}</option>`).join('');
+  const current = _auxConfig?.effort || (cli === 'codex' ? 'xhigh' : 'medium');
+  sel.value = opts.includes(current) ? current : opts[0];
+}
 async function openAuxModal() {
   await loadAuxConfig();
-  const sel = document.getElementById('aux-provider');
-  if (sel) {
-    sel.innerHTML = '<option value="">默认登录（订阅 / OAuth）</option>'
-      + (_auxConfig?.providers || []).map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
-    sel.value = _auxConfig?.providerId || '';
-  }
+  const cliSel = document.getElementById('aux-cli');
+  if (cliSel) cliSel.value = (_auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
+  refreshAuxProviderOptions();
   const inp = document.getElementById('aux-model');
   if (inp) inp.value = _auxConfig?.model || '';
   const st = document.getElementById('aux-modal-status');
@@ -536,13 +559,15 @@ function closeAuxModal() {
 }
 async function saveAuxConfig() {
   const st = document.getElementById('aux-modal-status');
+  const cli = (document.getElementById('aux-cli')?.value || 'claude') === 'codex' ? 'codex' : 'claude';
   const providerId = document.getElementById('aux-provider')?.value || '';
   const model = document.getElementById('aux-model')?.value || '';
+  const effort = document.getElementById('aux-effort')?.value || '';
   if (st) st.textContent = '保存中…';
   try {
     const res = await fetch('/api/aux/config' + tokenQS('?'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providerId, model }),
+      body: JSON.stringify({ cli, providerId, model, effort }),
     });
     const data = await res.json();
     if (!data.ok) { if (st) st.textContent = data.error || '保存失败'; return; }
@@ -2057,28 +2082,31 @@ function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), curr
 async function newSessionInDir(dirId, cli, kind) {
   // Single dialog: name + role + provider + model
   let providers = [];
+  let defaultProviderId = '';
   try {
     const appType = cli === 'codex' ? 'codex' : 'claude';
     const pres = await fetch(`/api/providers?appType=${appType}${tokenQS('&')}`);
     if (pres.ok) {
       const data = await pres.json();
       providers = data.providers || [];
+      defaultProviderId = (data.defaults && data.defaults[appType]) || '';
     }
   } catch (_) {}
 
   const result = await showCreateSessionDialog({
-    cli, kind, providers,
+    cli, kind, providers, defaultProviderId,
     isClaude: cli === 'claude',
   });
   if (result === null) return; // cancelled
 
-  const { label, rolePrompt, provider, model } = result;
+  const { label, rolePrompt, provider, model, effort } = result;
 
   try {
     const body = { cli, kind };
     if (label.trim()) body.label = label.trim();
     if (model) body.model = model;
     if (provider !== null && provider !== undefined && provider !== '') body.provider = provider;
+    if (effort) body.effort = effort;
     if (rolePrompt.trim()) body.rolePrompt = rolePrompt.trim();
 
     const res = await fetch(`/api/directories/${dirId}/sessions${tokenQS('?')}`, {
@@ -2113,22 +2141,77 @@ async function fetchAgentPresetIndex() {
     return _agentPresetIndexCache;
   } catch (_) { return null; }
 }
-async function fetchAgentPresetPrompt(id) {
+async function fetchAgentPreset(id) {
   try {
     const res = await fetch(`/api/agent-presets/${encodeURIComponent(id)}${tokenQS('?')}`);
     if (!res.ok) return null;
-    const d = await res.json();
-    return d.prompt || null;
+    return await res.json();
   } catch (_) { return null; }
+}
+async function fetchAgentPresetPrompt(id) {
+  const d = await fetchAgentPreset(id);
+  return d && d.prompt ? d.prompt : null;
+}
+
+function providerIdForPresetDefault(preset, providers) {
+  if (!preset) return '';
+  const declared = preset.defaultProviderId || '';
+  if (declared && providers.some(p => p.id === declared)) return declared;
+  const model = preset.defaultModel || '';
+  const key = (preset.defaultProviderKey || '').toLowerCase();
+  if (key === 'xf-maas-coding') {
+    const byModel = providers.find(p => model && (p.modelOptions || []).includes(model));
+    if (byModel) return byModel.id;
+    const byName = providers.find(p => /讯飞|xf|maas/i.test(p.name || ''));
+    return byName ? byName.id : '';
+  }
+  if (key === 'openai-codex') {
+    const byName = providers.find(p => /openai|codex\s*官方|官方/i.test(p.name || ''));
+    if (byName) return byName.id;
+    const byModel = providers.find(p => (p.modelOptions || []).some(m => /^gpt-/i.test(m)));
+    return byModel ? byModel.id : '';
+  }
+  return '';
+}
+
+function applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId }) {
+  if (!preset) return;
+  const presetCli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
+  const dialogCli = isClaude ? 'claude' : 'codex';
+  if (presetCli && presetCli !== dialogCli) return;
+
+  const providerId = providerIdForPresetDefault(preset, providers);
+  if (providerId && [...provSelect.options].some(o => o.value === providerId)) {
+    provSelect.value = providerId;
+  }
+  rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId);
+
+  const model = preset.defaultModel || '';
+  if (model) {
+    if ([...modelSelect.options].some(o => o.value === model)) {
+      modelSelect.value = model;
+      modelCustom.value = '';
+    } else {
+      modelSelect.value = '__custom__';
+      modelCustom.value = model;
+    }
+    modelSelect.dispatchEvent(new Event('change'));
+  }
+
+  const effort = preset.defaultEffort || '';
+  if (effort && [...effortSelect.options].some(o => o.value === effort)) {
+    effortSelect.value = effort;
+  }
 }
 
 // Build the <select> options for a model dropdown based on the selected
 // provider's modelOptions. Falls back to CLAUDE_MODEL_OPTIONS when no
 // provider or a provider without modelOptions is chosen.
-function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProviderId, isClaude) {
+function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProviderId, isClaude, defaultProviderId = '') {
   const prev = modelSelect.value;
   modelSelect.innerHTML = '';
-  const prov = providers.find(p => p.id === selectedProviderId);
+  const effectiveProviderId = selectedProviderId || defaultProviderId || '';
+  const prov = providers.find(p => p.id === effectiveProviderId);
   // Alias-mapped relays: offer the tiers directly, each option reading
   // "opus · GLM5.2 · glm-5.2". The tier key is the value — the server honors
   // session.model === opus/sonnet/haiku/fable as a wire model. Tier order +
@@ -2160,7 +2243,7 @@ function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProvid
 }
 
 // Single unified creation dialog (name + role + provider + model)
-function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true }) {
+function showCreateSessionDialog({ cli, kind, providers = [], defaultProviderId = '', isClaude = true }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -2232,9 +2315,13 @@ function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true })
       presetSel.value = '';
       if (!id) return;
       presetSel.disabled = true;
-      const prompt = await fetchAgentPresetPrompt(id);
+      const preset = await fetchAgentPreset(id);
       presetSel.disabled = false;
-      if (prompt) { roleInput.value = prompt; roleInput.focus(); }
+      if (preset && preset.prompt) {
+        roleInput.value = preset.prompt;
+        applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId });
+        roleInput.focus();
+      }
       else showToast('预设角色加载失败', true);
     });
 
@@ -2251,15 +2338,21 @@ function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true })
     box.appendChild(provLabel);
     const provSelect = document.createElement('select');
     provSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
-    const defOpt = document.createElement('option');
-    defOpt.value = ''; defOpt.textContent = '默认登录 / 订阅（不覆盖）';
-    provSelect.appendChild(defOpt);
+    const defaultProvider = providers.find(p => p.id === defaultProviderId);
+    if (!defaultProvider) {
+      const defOpt = document.createElement('option');
+      defOpt.value = '';
+      defOpt.textContent = '默认登录 / 订阅（不覆盖）';
+      provSelect.appendChild(defOpt);
+    }
     providers.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.name + (p.isOfficial ? ' · 订阅' : '') + (p.model ? ' · ' + p.model : '');
+      const isDefault = p.id === defaultProviderId;
+      opt.textContent = (isDefault ? '默认 · ' : '') + p.name + (p.isOfficial ? ' · 订阅' : '') + (p.model ? ' · ' + p.model : '');
       provSelect.appendChild(opt);
     });
+    if (defaultProvider) provSelect.value = defaultProviderId;
     box.appendChild(provSelect);
 
     // ── Model select (both Claude & Codex, linked to provider) ──
@@ -2277,17 +2370,37 @@ function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true })
 
     modelCustom = document.createElement('input');
     modelCustom.type = 'text';
-    modelCustom.placeholder = '模型 ID，如 claude-opus-4-8';
+    modelCustom.placeholder = isClaude ? '模型 ID，如 claude-opus-4-8' : '模型 ID，如 gpt-5.5 / xopglm52';
     modelCustom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;display:none;box-sizing:border-box;';
     box.appendChild(modelCustom);
 
-    // Initial model options (no provider selected → Claude defaults or empty for Codex)
-    rebuildModelOptions(modelSelect, modelCustom, providers, '', isClaude);
+    // Empty provider follows the configured default provider for this CLI, so
+    // Codex still shows GPT / XF model choices instead of Claude-only fallback.
+    rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId);
 
     // Provider → Model linkage: when provider changes, rebuild model list
     provSelect.addEventListener('change', () => {
-      rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude);
+      rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId);
     });
+
+    // ── Effort / Reasoning level ──
+    const effortLabel = document.createElement('div');
+    effortLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
+    effortLabel.textContent = isClaude ? 'Effort' : 'Reasoning Level';
+    box.appendChild(effortLabel);
+    const effortSelect = document.createElement('select');
+    effortSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
+    const effortOptions = isClaude
+      ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
+      : ['low', 'medium', 'high', 'xhigh'];
+    for (const v of effortOptions) {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      effortSelect.appendChild(opt);
+    }
+    effortSelect.value = isClaude ? 'medium' : 'xhigh';
+    box.appendChild(effortSelect);
 
     // ── Buttons ──
     const row = document.createElement('div');
@@ -2318,6 +2431,7 @@ function showCreateSessionDialog({ cli, kind, providers = [], isClaude = true })
         rolePrompt: roleInput.value,
         provider: provSelect.value,
         model: model || null,
+        effort: effortSelect.value,
       });
     };
     const reject = () => close(null);
@@ -2687,7 +2801,19 @@ focusNewtab.addEventListener('click', () => {
   if (_focusedSessionId) openSessionNewTab(_focusedSessionId);
 });
 
+function openAuxNewTab() {
+  const params = new URLSearchParams();
+  if (_urlToken) params.set('token', _urlToken);
+  params.set('focus', 'aux');
+  window.open(`/manage.html?${params.toString()}`, '_blank');
+  acknowledgeSession('__aux__');
+}
+
 function openSessionNewTab(id) {
+  if (id === '__aux__') {
+    openAuxNewTab();
+    return;
+  }
   const urlToken = new URLSearchParams(location.search).get('token');
   const tokenParam = urlToken ? `?token=${urlToken}&id=${id}` : `?id=${id}`;
   window.open(`/${tokenParam}`, '_blank');
@@ -5466,12 +5592,8 @@ const PROVIDER_PRESETS = [
   { key: 'claude-minimax', label: 'MiniMax', appType: 'claude', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2' },
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
-  { key: 'codex-official', label: 'Codex 官方', appType: 'codex', baseUrl: '', model: '', note: '走 ChatGPT 登录' },
-  { key: 'codex-deepseek', label: 'DeepSeek', appType: 'codex', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
-  { key: 'codex-glm', label: '智谱 GLM', appType: 'codex', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
-  { key: 'codex-qwen', label: 'Qwen 通义千问', appType: 'codex', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
-  { key: 'codex-minimax', label: 'MiniMax', appType: 'codex', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2', useChatResponsesProxy: true, note: '✅ 经本地代理转换 chat→responses' },
-  { key: 'codex-openrouter', label: 'OpenRouter', appType: 'codex', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat', useChatResponsesProxy: false, note: '✅ 直连 responses 协议（原生支持）' },
+  { key: 'codex-official', label: 'OpenAI（Codex 官方）', appType: 'codex', baseUrl: '', model: 'gpt-5.5', models: 'gpt-5.5\ngpt-5.4\ngpt-5.4-mini\ngpt-5.3-codex-spark', note: '走 ChatGPT 登录；Provider 是 OpenAI，模型在 Model 层选择' },
+  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopdeepseekv4pro', models: 'xopdeepseekv4pro\nxopglm52', useChatResponsesProxy: false, note: '直连 responses 协议；Provider 是讯飞，模型在 DeepSeek/GLM 间选择，档位在会话里选' },
 ];
 
 function providerModelList(primary, raw) {
@@ -5545,7 +5667,7 @@ function applyProviderPreset() {
   name.value = preset.label;
   baseUrl.value = preset.baseUrl;
   model.value = preset.model;
-  if (models) models.value = preset.model || '';
+  if (models) models.value = preset.models || preset.model || '';
   if (proxy) proxy.checked = !!preset.useChatResponsesProxy;
   token.value = '';
   if (status) {
@@ -5909,7 +6031,9 @@ async function deleteProvider(appType, id, name) {
 }
 
 /* ── Init ── */
-loadDashboard();
+loadDashboard().then(() => {
+  if (new URLSearchParams(location.search).get('focus') === 'aux') focusAux();
+});
 loadProviders();
 loadVoiceSettings();
 loadGoalSettings();

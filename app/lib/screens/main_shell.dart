@@ -2161,6 +2161,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     // Fetch providers for the picker
     final appType = cli == SessionCli.codex ? 'codex' : 'claude';
     List<Map<String, dynamic>> providers = [];
+    String? defaultProviderId;
     try {
       final d = await ManageService(
         settings: widget.settings,
@@ -2168,6 +2169,10 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       providers = (d['providers'] as List? ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
+      final defaults = d['defaults'];
+      if (defaults is Map && defaults[appType] != null) {
+        defaultProviderId = defaults[appType].toString();
+      }
     } catch (_) {}
 
     final result = await showDialog<_CreateSessionResult>(
@@ -2176,6 +2181,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         cli: cli,
         kind: kind,
         providers: providers,
+        defaultProviderId: defaultProviderId,
         settings: widget.settings,
       ),
     );
@@ -4169,12 +4175,14 @@ class _CreateSessionDialog extends StatefulWidget {
   final SessionCli cli;
   final SessionKind kind;
   final List<Map<String, dynamic>> providers;
+  final String? defaultProviderId;
   final SettingsService settings;
 
   const _CreateSessionDialog({
     required this.cli,
     required this.kind,
     required this.providers,
+    this.defaultProviderId,
     required this.settings,
   });
 
@@ -4191,11 +4199,21 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
 
   String? _pickedProvider; // null or '' = default; id = that provider
   String? _pickedModel;
-  String _pickedEffort = 'medium';
+  late String _pickedEffort;
   bool _customModel = false;
   final _customModelCtrl = TextEditingController();
 
   bool get _isClaude => widget.cli == SessionCli.claude;
+  String get _defaultEffort => _isClaude ? 'medium' : 'xhigh';
+  bool get _hasConcreteDefaultProvider =>
+      widget.defaultProviderId != null &&
+      widget.defaultProviderId!.isNotEmpty &&
+      widget.providers.any((p) => p['id'] == widget.defaultProviderId);
+  String get _effectiveProviderId {
+    final picked = _pickedProvider;
+    if (picked != null && picked.isNotEmpty) return picked;
+    return widget.defaultProviderId ?? '';
+  }
 
   @override
   void initState() {
@@ -4203,12 +4221,11 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
     _nameCtrl = TextEditingController();
     _roleCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
+    if (_hasConcreteDefaultProvider) _pickedProvider = widget.defaultProviderId;
+    _pickedEffort = _defaultEffort;
     _loadPresets();
-    // Web behavior: start with no model selected (empty = follow provider
-    // default or server default). The user's settings.defaultModel is only
-    // used as a convenience pre-fill for the model dropdown's initial display,
-    // but the picked value starts null to match web's "empty = default".
-    _pickedModel = null;
+    final opts = _currentModelOptions;
+    _pickedModel = opts.isNotEmpty ? opts.first.key : null;
   }
 
   @override
@@ -4233,8 +4250,9 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
   /// else CLAUDE_MODEL_OPTIONS for Claude only (empty list for Codex).
   List<MapEntry<String, String>> get _currentModelOptions {
     Map<String, dynamic>? prov;
+    final providerId = _effectiveProviderId;
     for (final p in widget.providers) {
-      if (p['id'] == _pickedProvider) {
+      if (p['id'] == providerId) {
         prov = p;
         break;
       }
@@ -4268,10 +4286,90 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
           .map((s) => MapEntry<String, String>(s, s))
           .toList();
     }
+    // Empty provider follows the configured default provider for this CLI:
+    // Codex should still show GPT / XF model choices instead of a Claude list.
     // No provider (or provider without modelOptions):
     //  - Claude: fall back to standard model list
     //  - Codex: empty list (custom model entry only), matching web behavior
     return _isClaude ? kClaudeModelOptions : const [];
+  }
+
+  String _providerName(String? id) {
+    if (id == null || id.isEmpty) return '';
+    for (final p in widget.providers) {
+      if (p['id'] == id) return p['name']?.toString() ?? id;
+    }
+    return id;
+  }
+
+  String _providerIdForPresetDefault(AgentPreset preset) {
+    final declared = preset.defaultProviderId ?? '';
+    if (declared.isNotEmpty &&
+        widget.providers.any((p) => p['id'] == declared)) {
+      return declared;
+    }
+    final key = preset.defaultProviderKey.toLowerCase();
+    final model = preset.defaultModel;
+    if (key == 'xf-maas-coding') {
+      for (final p in widget.providers) {
+        final opts = (p['modelOptions'] as List? ?? [])
+            .map((e) => e.toString())
+            .toList();
+        if (model.isNotEmpty && opts.contains(model)) return p['id'] as String;
+      }
+      for (final p in widget.providers) {
+        final name = (p['name'] ?? '').toString().toLowerCase();
+        if (name.contains('讯飞') || name.contains('xf') || name.contains('maas')) {
+          return p['id'] as String;
+        }
+      }
+    }
+    if (key == 'openai-codex') {
+      for (final p in widget.providers) {
+        final name = (p['name'] ?? '').toString().toLowerCase();
+        if (name.contains('openai') || name.contains('codex 官方') || name.contains('官方')) {
+          return p['id'] as String;
+        }
+      }
+      for (final p in widget.providers) {
+        final opts = (p['modelOptions'] as List? ?? [])
+            .map((e) => e.toString())
+            .toList();
+        if (opts.any((m) => m.startsWith('gpt-'))) return p['id'] as String;
+      }
+    }
+    return '';
+  }
+
+  void _applyPresetDefaults(AgentPreset preset) {
+    final presetCli =
+        preset.defaultCli.trim().toLowerCase() == 'claude'
+            ? SessionCli.claude
+            : SessionCli.codex;
+    if (presetCli != widget.cli) return;
+
+    final providerId = _providerIdForPresetDefault(preset);
+    if (providerId.isNotEmpty) _pickedProvider = providerId;
+
+    final opts = _currentModelOptions;
+    final model = preset.defaultModel;
+    if (model.isNotEmpty) {
+      if (opts.any((e) => e.key == model)) {
+        _pickedModel = model;
+        _customModel = false;
+        _customModelCtrl.clear();
+      } else {
+        _pickedModel = null;
+        _customModel = true;
+        _customModelCtrl.text = model;
+      }
+    }
+
+    final effort = preset.defaultEffort;
+    final validEfforts = _isClaude
+        ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
+        : const ['low', 'medium', 'high', 'xhigh'];
+    if (validEfforts.contains(effort)) _pickedEffort = effort;
   }
 
   Future<void> _pickPreset() async {
@@ -4284,7 +4382,8 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
     );
     if (id == null || !mounted) return;
     try {
-      final prompt = await _presetSvc.fetchPrompt(id);
+      final preset = await _presetSvc.fetchPreset(id);
+      final prompt = preset.prompt ?? '';
       if (!mounted) return;
       if (_roleCtrl.text.trim().isNotEmpty) {
         final ok = await showDialog<bool>(
@@ -4319,7 +4418,10 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
         );
         if (ok != true) return;
       }
-      setState(() => _roleCtrl.text = prompt);
+      setState(() {
+        _roleCtrl.text = prompt;
+        _applyPresetDefaults(preset);
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -4444,18 +4546,19 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
               decoration: _inputDec(),
               items: [
-                const DropdownMenuItem(
-                  value: '',
-                  child: Text(
-                    '默认登录 / 订阅',
-                    style: TextStyle(color: Color(0xFFe7eaee)),
+                if (!_hasConcreteDefaultProvider)
+                  const DropdownMenuItem(
+                    value: '',
+                    child: Text(
+                      '默认登录 / 订阅',
+                      style: TextStyle(color: Color(0xFFe7eaee)),
+                    ),
                   ),
-                ),
                 ...widget.providers.map(
                   (p) => DropdownMenuItem(
                     value: p['id'] as String,
                     child: Text(
-                      '${p['name']}'
+                      '${p['id'] == widget.defaultProviderId ? '默认 · ' : ''}${p['name']}'
                       '${p['isOfficial'] == true ? ' · 订阅' : ''}'
                       '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
                       style: const TextStyle(color: Color(0xFFe7eaee)),
@@ -4512,7 +4615,11 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
               TextField(
                 controller: _customModelCtrl,
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                decoration: _inputDec(hint: '模型 ID，如 claude-opus-4-8'),
+                decoration: _inputDec(
+                  hint: _isClaude
+                      ? '模型 ID，如 claude-opus-4-8'
+                      : '模型 ID，如 gpt-5.5 / xopglm52',
+                ),
                 autofocus: true,
               ),
             ],
@@ -4550,7 +4657,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
                         ),
                       )
                       .toList(),
-              onChanged: (v) => setState(() => _pickedEffort = v ?? 'medium'),
+              onChanged: (v) => setState(() => _pickedEffort = v ?? _defaultEffort),
             ),
           ],
         ),

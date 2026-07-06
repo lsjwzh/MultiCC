@@ -44,8 +44,8 @@ class AgentPresetService {
     return index;
   }
 
-  /// Fetch the full prompt body for a single preset id.
-  Future<String> fetchPrompt(String id) async {
+  /// Fetch the full preset record for a single preset id.
+  Future<AgentPreset> fetchPreset(String id) async {
     final res = await http
         .get(Uri.parse(_url('/api/agent-presets/$id')), headers: _headers)
         .timeout(const Duration(seconds: 10));
@@ -54,7 +54,13 @@ class AgentPresetService {
     }
     final data = jsonDecode(res.body);
     final map = data is Map<String, dynamic> ? data : <String, dynamic>{};
-    return (map['prompt'] ?? '').toString();
+    return AgentPreset.fromJson(map);
+  }
+
+  /// Fetch the full prompt body for a single preset id.
+  Future<String> fetchPrompt(String id) async {
+    final preset = await fetchPreset(id);
+    return preset.prompt ?? '';
   }
 
   /// Drop the cached index (e.g. on logout / base-url change).

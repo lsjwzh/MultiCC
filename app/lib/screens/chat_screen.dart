@@ -733,6 +733,7 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
   late final TextEditingController _subCustomCtrl;
 
   bool get _isClaude => widget.cli == SessionCli.claude;
+  String get _defaultEffort => _isClaude ? 'medium' : 'xhigh';
 
   static const _claudeEfforts = <String>[
     'low',
@@ -749,7 +750,7 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
     super.initState();
     _provider = widget.provider;
     _model = _normalizeModel(widget.provider, widget.model);
-    _effort = _validEfforts.contains(widget.effort) ? widget.effort : 'medium';
+    _effort = _validEfforts.contains(widget.effort) ? widget.effort : _defaultEffort;
     final known = _modelChoices(_provider).contains(_model);
     _customModel = _model.isNotEmpty && !known;
     _customCtrl = TextEditingController(text: _customModel ? _model : '');
@@ -1050,7 +1051,7 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
                     ),
                   )
                   .toList(),
-              onChanged: (v) => setState(() => _effort = v ?? 'medium'),
+              onChanged: (v) => setState(() => _effort = v ?? _defaultEffort),
             ),
             if (_isClaude) ...[
               const Divider(height: 32),
@@ -1198,7 +1199,9 @@ Future<void> openAIConfigSheet(
       providers: providers,
       provider: sess.provider ?? '',
       model: sess.model ?? '',
-      effort: sess.effectiveEffort ?? sess.effort ?? 'medium',
+      effort: sess.effectiveEffort ??
+          sess.effort ??
+          (sess.cli == SessionCli.codex ? 'xhigh' : 'medium'),
       subProviderId: sess.subagent?.providerId,
       subModel: sess.subagent?.model,
     ),

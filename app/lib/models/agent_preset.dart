@@ -11,6 +11,13 @@ class AgentPreset {
   final String color; // color name, e.g. "cyan" / "blue"
   final String emoji;
   final String vibe;
+  final String defaultCli;
+  final String defaultProviderKey;
+  final String? defaultProviderId;
+  final String? defaultProviderName;
+  final String defaultModel;
+  final String defaultEffort;
+  final String defaultModelNote;
   final String? prompt; // null in the index, populated by the detail endpoint
 
   const AgentPreset({
@@ -21,6 +28,13 @@ class AgentPreset {
     required this.color,
     required this.emoji,
     required this.vibe,
+    this.defaultCli = 'codex',
+    this.defaultProviderKey = '',
+    this.defaultProviderId,
+    this.defaultProviderName,
+    this.defaultModel = '',
+    this.defaultEffort = '',
+    this.defaultModelNote = '',
     this.prompt,
   });
 
@@ -33,6 +47,13 @@ class AgentPreset {
       color: (j['color'] ?? '').toString(),
       emoji: (j['emoji'] ?? '').toString(),
       vibe: (j['vibe'] ?? '').toString(),
+      defaultCli: (j['defaultCli'] ?? 'codex').toString(),
+      defaultProviderKey: (j['defaultProviderKey'] ?? '').toString(),
+      defaultProviderId: j['defaultProviderId']?.toString(),
+      defaultProviderName: j['defaultProviderName']?.toString(),
+      defaultModel: (j['defaultModel'] ?? '').toString(),
+      defaultEffort: (j['defaultEffort'] ?? '').toString(),
+      defaultModelNote: (j['defaultModelNote'] ?? '').toString(),
       prompt: j['prompt']?.toString(),
     );
   }

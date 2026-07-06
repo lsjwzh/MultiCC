@@ -561,6 +561,10 @@ function codexReasoningConfigArg(session) {
   const level = codexReasoningLevel(session);
   return level ? `model_reasoning_effort="${level}"` : null;
 }
+function codexModelConfigArg(session) {
+  const model = session && session.model ? String(session.model).trim() : '';
+  return model ? `model="${model}"` : null;
+}
 function effortLabel(e) {
   return e || claudeDefaultEffort();
 }
@@ -590,7 +594,7 @@ function codexDefaultReasoningLevel() {
       if (effort && CODEX_REASONING_LEVELS.has(effort)) return effort;
     } catch (_) { /* fall through */ }
   }
-  return 'medium';
+  return 'xhigh';
 }
 
 // ── CLI provider abstraction ──
@@ -730,9 +734,10 @@ const cliProviders = {
     buildTerminalCmd(session) {
       const baseArgs = CODEX_ARGS.length ? ' ' + CODEX_ARGS.join(' ') : '';
       const effortArg = codexReasoningConfigArg(session);
-      const effortArgs = effortArg ? ` -c '${effortArg}'` : '';
-      if (session.cliSessionId) return `${CODEX_CMD}${baseArgs}${effortArgs} resume ${session.cliSessionId}`;
-      return `${CODEX_CMD}${baseArgs}${effortArgs}`;
+      const modelArg = codexModelConfigArg(session);
+      const configArgs = [effortArg, modelArg].filter(Boolean).map(a => ` -c '${a}'`).join('');
+      if (session.cliSessionId) return `${CODEX_CMD}${baseArgs}${configArgs} resume ${session.cliSessionId}`;
+      return `${CODEX_CMD}${baseArgs}${configArgs}`;
     },
     // Chat-mode spawn args: `exec --json [--skip-git-repo-check] [--dangerously-bypass-approvals-and-sandbox] [resume <id>] <prompt>`
     buildChatSpawnArgs(session, prompt, opts) {
@@ -748,12 +753,16 @@ const cliProviders = {
         args.push('exec');
         const effortArg = codexReasoningConfigArg(session);
         if (effortArg) args.push('-c', effortArg);
+        const modelArg = codexModelConfigArg(session);
+        if (modelArg) args.push('-c', modelArg);
         args.push('--json', '--skip-git-repo-check',
           '--dangerously-bypass-approvals-and-sandbox', p);
       } else {
         args.push('exec');
         const effortArg = codexReasoningConfigArg(session);
         if (effortArg) args.push('-c', effortArg);
+        const modelArg = codexModelConfigArg(session);
+        if (modelArg) args.push('-c', modelArg);
         args.push('resume', session.cliSessionId, '--json',
           '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', p);
       }
@@ -958,6 +967,10 @@ function isNewSchema(arr) {
   return arr.some(s => s.dirId !== undefined || s.kind !== undefined);
 }
 
+function hasMigratableOldSessions(arr) {
+  return arr.some(s => !(s.id === '__aux__' || s.type === 'aux') && s.dirId === undefined && s.kind === undefined);
+}
+
 // One-shot migration: old paired sessions → directories + split sessions.
 function migrateOldSchema(oldList) {
   const newDirs = new Map();
@@ -1015,7 +1028,7 @@ function loadPersistedState() {
 
   const dirMap = loadDirectories();
 
-  if (rawSessions.length > 0 && !isNewSchema(rawSessions)) {
+  if (rawSessions.length > 0 && !isNewSchema(rawSessions) && hasMigratableOldSessions(rawSessions)) {
     console.log('[multicc] Migrating sessions.json to directory-based schema...');
     const { newDirs, newSessions, chatHistoryRenames } = migrateOldSchema(rawSessions);
     // Rename chat_history files (old paired id → new chat session id)
@@ -1063,11 +1076,20 @@ const { createDirectoryModule } = require('./src/directory');
 // Seed a default Agent Commander chat session for a newly-registered directory
 // (session-domain logic, exposed to the directory domain via its session port).
 function seedCommanderSession(dir) {
-  const commander = agentCommanderPrompt();
-  if (commander) {
-    const r = createSessionRecord({ dir, cli: 'claude', kind: 'chat', label: '🫡 Agent Commander' });
+  const commander = agentCommanderPreset();
+  if (commander && commander.prompt) {
+    const enriched = enrichAgentPresetDefaults(commander);
+    const r = createSessionRecord({
+      dir,
+      cli: enriched.defaultCli === 'claude' ? 'claude' : 'codex',
+      kind: 'chat',
+      label: '🫡 Agent Commander',
+      provider: enriched.defaultProviderId || undefined,
+      model: enriched.defaultModel || null,
+      effort: enriched.defaultEffort || null,
+    });
     if (r.ok) {
-      r.session.rolePrompt = commander;
+      r.session.rolePrompt = commander.prompt;
       savePersistedSessions();
       appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
     } else {
@@ -1698,6 +1720,9 @@ function createSession(id) {
   if (!persisted) {
     throw new Error(`Session ${id} has no persisted record. Create it via /api/directories/:id/sessions first.`);
   }
+  if (persisted.type === 'aux' || persisted.type === 'gateway') {
+    throw new Error(`Session ${id} is a system session, not a terminal`);
+  }
   if (persisted.kind && persisted.kind !== 'terminal') {
     throw new Error(`Session ${id} is kind=${persisted.kind}, not a terminal`);
   }
@@ -2140,9 +2165,43 @@ function loadAgentPresets() {
 // Prompt of the bundled "Agent Commander" preset — used to seed a default
 // commander session in every newly-created directory. Returns null if missing.
 const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
-function agentCommanderPrompt() {
+function resolveAgentPresetProviderId(preset) {
+  const cli = preset && preset.defaultCli === 'claude' ? 'claude' : 'codex';
+  const key = String((preset && preset.defaultProviderKey) || '').toLowerCase();
+  const model = String((preset && preset.defaultModel) || '').trim();
+  const list = providers.listProviders(cli);
+  if (key === 'openai-codex') {
+    const byName = list.find(p => /openai|codex\s*官方|官方/i.test(p.name || ''));
+    if (byName) return byName.id;
+    const byModel = list.find(p => (p.modelOptions || []).includes('gpt-5.5') || (p.modelOptions || []).some(m => /^gpt-/i.test(m)));
+    return byModel ? byModel.id : null;
+  }
+  if (key === 'xf-maas-coding') {
+    const byModel = list.find(p => model && (p.modelOptions || []).includes(model));
+    if (byModel) return byModel.id;
+    const byName = list.find(p => /讯飞|xf|maas/i.test(p.name || ''));
+    return byName ? byName.id : null;
+  }
+  return null;
+}
+
+function enrichAgentPresetDefaults(preset) {
+  if (!preset || typeof preset !== 'object') return preset;
+  const defaultProviderId = resolveAgentPresetProviderId(preset);
+  const cli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
+  const defaultProviderName = defaultProviderId
+    ? (providers.getProviderSummary(cli, defaultProviderId)?.name || defaultProviderId)
+    : null;
+  return { ...preset, defaultProviderId, defaultProviderName };
+}
+
+function agentCommanderPreset() {
   const data = loadAgentPresets();
   const p = data && (data.presets || []).find(x => x.id === AGENT_COMMANDER_PRESET_ID);
+  return p || null;
+}
+function agentCommanderPrompt() {
+  const p = agentCommanderPreset();
   return (p && p.prompt) ? p.prompt : null;
 }
 
@@ -2150,7 +2209,10 @@ app.get('/api/agent-presets', (req, res) => {
   const data = loadAgentPresets();
   if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
   // Strip the prompt field from the list to keep the payload small.
-  const presets = (data.presets || []).map(({ prompt, ...meta }) => meta);
+  const presets = (data.presets || []).map(p => {
+    const { prompt, ...meta } = enrichAgentPresetDefaults(p);
+    return meta;
+  });
   res.json({
     source: data.source,
     version: data.version,
@@ -2166,7 +2228,7 @@ app.get('/api/agent-presets/:id', (req, res) => {
   if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
   const preset = (data.presets || []).find(p => p.id === req.params.id);
   if (!preset) return res.status(404).json({ error: 'not found' });
-  res.json(preset);
+  res.json(enrichAgentPresetDefaults(preset));
 });
 
 app.get('/api/agent-resources/claude-sessions', (req, res) => {
@@ -2323,6 +2385,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
   const effortLevel = normalizeEffort(effort);
   if (effortLevel === undefined) return { ok: false, error: 'invalid effort' };
   if (!validEffortForCli(cli, effortLevel)) return { ok: false, error: 'invalid reasoning level' };
+  const sessionEffort = effortLevel || (cli === 'codex' ? codexDefaultReasoningLevel() : null);
   const rp = rolePrompt == null ? null : String(rolePrompt).trim();
   if (rp && rp.length > 40000) return { ok: false, error: 'rolePrompt too long (max 40000)' };
   // Provider override (cc-switch). An explicit value is validated; when omitted
@@ -2357,7 +2420,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
     label,
     model: model || null, // null = follow default/provider model
-    effort: effortLevel || null, // null = follow Claude Code/provider default
+    effort: sessionEffort || null, // null = follow Claude Code/provider default
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     autoCommit: true,      // default: auto-commit & merge after task completion
     autoDispatch: false,   // default: do NOT inject dispatch context prompt unless user opts in
@@ -4613,20 +4676,27 @@ function triggerPush(sessionId, type, message) {
 
 // ── AuxQueue: stateless claude -p AI service (intent classification, etc.) ──
 const AUX_SESSION_ID = '__aux__';
-const AUX_TIMEOUT_MS = 30000;
+const AUX_TIMEOUT_MS = Math.max(10000, parseInt(process.env.AUX_TIMEOUT_MS || '90000', 10) || 90000);
 const AUX_HISTORY_MAX = 200;
 
 // Aux model config (persisted in aux-config.json). The aux helper runs short,
-// stateless single-turn tasks (intent classify, summary, voice refine) — Haiku
-// on the OAuth subscription is the cheap default, but it's configurable so the
-// user can point it at any claude provider (e.g. a self-hosted/relay model) and
-// model. providerId=null → default OAuth login; model=null → 'haiku'.
+// stateless single-turn tasks (intent classify, summary, voice refine). It can
+// use either Claude providers or Codex providers; providerId=null follows the
+// selected CLI's default login, model=null follows that provider's default.
 const AUX_CONFIG_FILE = path.join(__dirname, 'aux-config.json');
-let auxConfig = { providerId: null, model: null };
+let auxConfig = { cli: 'claude', providerId: null, model: null, effort: null };
+function normalizeAuxCli(v) {
+  return String(v || '').toLowerCase() === 'codex' ? 'codex' : 'claude';
+}
 function loadAuxConfig() {
   try {
     const c = JSON.parse(fs.readFileSync(AUX_CONFIG_FILE, 'utf8'));
-    auxConfig = { providerId: c.providerId || null, model: (c.model && String(c.model).trim()) || null };
+    auxConfig = {
+      cli: normalizeAuxCli(c.cli),
+      providerId: c.providerId || null,
+      model: (c.model && String(c.model).trim()) || null,
+      effort: normalizeEffort(c.effort) || null,
+    };
   } catch (_) { /* no config yet → defaults */ }
 }
 function saveAuxConfig() {
@@ -4800,6 +4870,11 @@ const auxQueue = {
   },
 
   execute(task) {
+    if (auxConfig.cli === 'codex') return this.executeCodex(task);
+    return this.executeClaude(task);
+  },
+
+  executeClaude(task) {
     return new Promise((resolve, reject) => {
       // Cold-spawn per task: prompt passed as a CLI argument, stdin ignored
       // (/dev/null → immediate EOF). No prewarm, no stdin race. Single-turn,
@@ -4824,6 +4899,8 @@ const auxQueue = {
       const model = auxConfig.model || (built.skipDefaultModel ? null : 'haiku');
       const args = ['-p', '--output-format', 'stream-json', '--max-turns', '1', '--verbose'];
       if (model) args.splice(1, 0, '--model', model);
+      const effort = cliEffortLevel({ cli: 'claude', effort: auxConfig.effort });
+      if (effort) args.push('--effort', effort);
       args.push(task.prompt);
       const proc = spawn(CLAUDE_CMD, args, {
         cwd: __dirname,
@@ -4895,6 +4972,105 @@ const auxQueue = {
     });
   },
 
+  executeCodex(task) {
+    return new Promise((resolve, reject) => {
+      // Codex aux calls are stateless one-shot requests. Keep them read-only
+      // and approval-free so internal classifier/summary prompts never stall.
+      const auxSession = {
+        cli: 'codex',
+        provider: auxConfig.providerId || null,
+        model: auxConfig.model || null,
+        effort: auxConfig.effort || null,
+      };
+      const built = providers.buildChildEnv(process.env, auxSession, {
+        TERM: 'dumb',
+        NO_COLOR: '1',
+      });
+      const args = ['exec'];
+      const effortArg = codexReasoningConfigArg(auxSession);
+      if (effortArg) args.push('-c', effortArg);
+      const modelArg = codexModelConfigArg(auxSession);
+      if (modelArg) args.push('-c', modelArg);
+      args.push(
+        '-c', 'sandbox_mode="read-only"',
+        '-c', 'approval_policy="never"',
+        '--json',
+        '--skip-git-repo-check',
+        task.prompt,
+      );
+      const proc = spawn(CODEX_CMD, args, {
+        cwd: __dirname,
+        env: built.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let assistantText = '';
+      let lineBuf = '';
+      let stderrBuf = '';
+      let codexError = '';
+
+      const timeout = setTimeout(() => {
+        try { proc.kill('SIGTERM'); } catch (_) {}
+        reject(new Error('timeout'));
+      }, AUX_TIMEOUT_MS);
+
+      const collectText = (text) => {
+        if (!text) return;
+        assistantText += (assistantText ? '\n\n' : '') + text;
+      };
+
+      const handleLine = (line) => {
+        let evt;
+        try { evt = JSON.parse(line); } catch (_) { return; }
+        if (evt.type === 'item.completed') {
+          const it = evt.item || {};
+          if (it.type === 'agent_message') collectText(it.text || '');
+          if (it.type === 'message' && Array.isArray(it.content)) {
+            collectText(it.content.map(c => c.text || '').join(''));
+          }
+          return;
+        }
+        if (evt.type === 'error' || evt.type === 'turn.failed') {
+          codexError = (evt.message || (evt.error && evt.error.message) || 'codex failed').toString();
+          return;
+        }
+        if (evt.type === 'response.output_text.delta' && evt.delta) {
+          assistantText += evt.delta;
+        }
+      };
+
+      proc.stdout.on('data', (chunk) => {
+        lineBuf += chunk.toString();
+        const lines = lineBuf.split('\n');
+        lineBuf = lines.pop();
+        for (const line of lines) {
+          if (line.trim()) handleLine(line);
+        }
+      });
+
+      proc.stderr.on('data', (chunk) => { stderrBuf += chunk.toString(); });
+
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        if (lineBuf.trim()) handleLine(lineBuf);
+        if (assistantText) {
+          resolve(assistantText);
+        } else if (codexError) {
+          reject(new Error(codexError));
+        } else if (code !== 0) {
+          reject(new Error(`codex exited ${code}: ${stderrBuf.slice(0, 300)}`));
+        } else {
+          resolve('');
+        }
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+  },
+
   broadcast(payload) {
     broadcastTo(this.clients, payload);
   },
@@ -4934,25 +5110,36 @@ app.post('/api/aux/enqueue', (req, res) => {
     .catch(err => res.json({ ok: false, error: err?.message || 'cancelled' }));
 });
 
-// Aux model config: which claude provider + model the aux helper uses.
-// GET also returns the list of claude providers so the UI can render a picker.
+// Aux model config: which CLI/provider/model the aux helper uses.
+// GET also returns provider lists so the UI can render a picker.
 app.get('/api/aux/config', (req, res) => {
+  const cli = normalizeAuxCli(auxConfig.cli);
   res.json({
+    cli,
     providerId: auxConfig.providerId,
     model: auxConfig.model,
-    providers: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name })),
+    effort: auxConfig.effort,
+    providers: providers.listProviders(cli).map(p => ({ id: p.id, name: p.name })),
+    claudeProviders: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name })),
+    codexProviders: providers.listProviders('codex').map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
   });
 });
 app.post('/api/aux/config', (req, res) => {
   const { providerId, model } = req.body || {};
-  if (providerId && !providers.getProvider('claude', String(providerId))) {
-    return res.status(400).json({ ok: false, error: '未知的 claude provider' });
+  const cli = normalizeAuxCli((req.body || {}).cli);
+  const effort = normalizeEffort((req.body || {}).effort);
+  if (effort === undefined) return res.status(400).json({ ok: false, error: 'invalid effort' });
+  if (!validEffortForCli(cli, effort)) return res.status(400).json({ ok: false, error: 'invalid reasoning level' });
+  if (providerId && !providers.getProvider(cli, String(providerId))) {
+    return res.status(400).json({ ok: false, error: `未知的 ${cli} provider` });
   }
+  auxConfig.cli = cli;
   auxConfig.providerId = providerId ? String(providerId) : null;
   auxConfig.model = (model && String(model).trim()) || null;
+  auxConfig.effort = effort || null;
   saveAuxConfig();
-  console.log(`[multicc/aux] config updated: provider=${auxConfig.providerId || 'default'} model=${auxConfig.model || 'haiku'}`);
-  res.json({ ok: true, providerId: auxConfig.providerId, model: auxConfig.model });
+  console.log(`[multicc/aux] config updated: cli=${auxConfig.cli} provider=${auxConfig.providerId || 'default'} model=${auxConfig.model || (auxConfig.cli === 'claude' ? 'haiku' : 'provider-default')} effort=${auxConfig.effort || 'default'}`);
+  res.json({ ok: true, cli: auxConfig.cli, providerId: auxConfig.providerId, model: auxConfig.model, effort: auxConfig.effort });
 });
 
 // ── Goal-mode precheck ──
@@ -5373,6 +5560,13 @@ app.put('/api/provider-defaults', (req, res) => {
 
 // Root → manage page (unless ?id= is specified, which means a terminal session)
 app.get('/', (req, res, next) => {
+  if (req.query.id === '__aux__') {
+    const params = new URLSearchParams();
+    if (req.query.token) params.set('token', String(req.query.token));
+    params.set('focus', 'aux');
+    res.redirect(`/manage.html?${params.toString()}`);
+    return;
+  }
   if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
   res.redirect('/manage');
 });
@@ -7401,6 +7595,9 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
 
 function runChatTurn(sessionName, text, opts = {}) {
   const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits } = opts;
+  const clientMsgId = typeof opts.clientMsgId === 'string' ? opts.clientMsgId.trim().slice(0, 128) : '';
+  text = String(text || '').trim();
+  if (!text) return false;
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
@@ -7430,11 +7627,34 @@ function runChatTurn(sessionName, text, opts = {}) {
       currentCost: null,
       isStreaming: false,
       streamReplay: [],
+      recentClientMsgIds: [],
+      recentClientMsgIdSet: new Set(),
       pendingClassifyTimer: null,
       pendingClassifyTaskId: null,
       progressSummaryTimer: null,
     };
     chatSessions.set(sessionName, cs);
+  }
+
+  if (!cs.recentClientMsgIds) cs.recentClientMsgIds = [];
+  if (!cs.recentClientMsgIdSet) cs.recentClientMsgIdSet = new Set(cs.recentClientMsgIds);
+  if (clientMsgId && cs.recentClientMsgIdSet.has(clientMsgId)) {
+    console.warn(`[multicc/chat] [${sessionName}] dropped duplicate client message id=${clientMsgId}`);
+    return false;
+  }
+  const busySameText = !originContinue && !originTrigger && !originDispatchId &&
+    (cs.isStreaming || cs.claudeProc) && cs.currentUserText === text;
+  if (busySameText) {
+    console.warn(`[multicc/chat] [${sessionName}] dropped duplicate in-flight user message (${text.length} chars)`);
+    return false;
+  }
+  if (clientMsgId) {
+    cs.recentClientMsgIds.push(clientMsgId);
+    cs.recentClientMsgIdSet.add(clientMsgId);
+    while (cs.recentClientMsgIds.length > 80) {
+      const old = cs.recentClientMsgIds.shift();
+      if (old) cs.recentClientMsgIdSet.delete(old);
+    }
   }
 
   cancelPendingClassify(cs);
@@ -7480,6 +7700,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // Save user message to history
   appendChatMessage(sessionName, {
     role: 'user', content: text, ts: Date.now(),
+    clientMsgId: clientMsgId || undefined,
   });
 
   // Reset accumulators
@@ -8212,6 +8433,8 @@ function handleChatWs(ws, req, urlObj) {
       currentCost: null,
       isStreaming: false,
       streamReplay: [],
+      recentClientMsgIds: [],
+      recentClientMsgIdSet: new Set(),
       pendingClassifyTimer: null,
       pendingClassifyTaskId: null,
       progressSummaryTimer: null,
@@ -8400,6 +8623,9 @@ function handleChatWs(ws, req, urlObj) {
         // Goal mode: client flags the message; server applies the configured
         // round/budget limits (per-send override merged over the global config).
         const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};
+        if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) {
+          turnOpts.clientMsgId = msg.clientMsgId;
+        }
         runChatTurn(sessionName, msg.text, turnOpts);
         return;
       }
