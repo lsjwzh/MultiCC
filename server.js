@@ -4826,7 +4826,7 @@ const auxQueue = {
   lastTaskTime: null,
   // ── Health monitoring (③) ──────────────────────────────────────────────
   // consecutiveFails counts failed (non-cancelled) tasks in a row. >=3 →
-  // unhealthy; the summary/liveness/reconcile machinery degrades to rules (④)
+  // unhealthy; the summary/reconcile machinery degrades to rules (④)
   // and the dashboard shows a non-dismissible red banner. Any success clears it.
   health: { consecutiveFails: 0, unhealthy: false, lastFailAt: null, lastFailMsg: '', sinceAt: null },
   clients: new Set(), // WebSocket clients watching aux events
@@ -6172,39 +6172,24 @@ function parseClassifyResult(text) {
 
 // ── Task state persistence (step ①) ───────────────────────────────────────────
 // persisted.taskState is the durable closed-loop task snapshot: it survives
-// restarts so the liveness probe (⑤) can
+// restarts so the reconcile (②) can
 // decide what was running, whether it stalled, and whether to nudge. Falls back
 // to {} for legacy sessions that predate this field.
 //
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
-//     lastTurnEndedAt, lifecycle, pendingDispatches, progressSig }
+//     lastTurnEndedAt, lifecycle, pendingDispatches }
 //   lifecycle ∈ running | completed | waiting | interrupted
-//   progressSig: a cheap signature of the latest progress text, used by the
-//   liveness probe to tell "made progress" from "stalled" across probes.
 const TASK_STATE_DEFAULTS = {
   goal: '', phase: 'idle', startedAt: null, endedAt: null,
   lastSummary: '', lastSummaryAt: null, lastTurnEndedAt: null,
-  lifecycle: 'idle', pendingDispatches: [], progressSig: '',
+  lifecycle: 'idle', pendingDispatches: [],
 };
 
 function getTaskState(persisted) {
   if (!persisted) return { ...TASK_STATE_DEFAULTS };
   const ts = persisted.taskState || {};
   return { ...TASK_STATE_DEFAULTS, ...ts };
-}
-
-// Cheap progress signature: lowercased alphanumeric words of the summary text,
-// joined and hashed to a short string. Two summaries with the same meaningful
-// content produce the same sig (ignoring punctuation/whitespace), so the probe
-// can detect "no change since last probe".
-function progressSigOf(text) {
-  const words = String(text || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
-  const joined = words.join('');
-  // djb2-ish hash → base36, keep it short.
-  let h = 5381;
-  for (let i = 0; i < joined.length; i++) h = ((h * 33) ^ joined.charCodeAt(i)) >>> 0;
-  return h.toString(36);
 }
 
 // Merge a patch into persisted.taskState and persist. Best-effort save: callers
@@ -6219,26 +6204,11 @@ function setTaskState(sessionId, patch, opts = {}) {
   return next;
 }
 
-// ── Liveness probe + nudge (⑤, turn-ended branch) ──────────────────────────
-// Every 60s we ask each chat session: "is a task that should be running actually
-// stuck?" The trigger is the conjunction of:
-//   ① the turn has ended (cs.isStreaming === false)
-//   ② lifecycle is still 'running' or 'interrupted' (never cleanly closed)
-//   ③ progressSig has not changed for 2 consecutive probes (2 minutes) — i.e.
-//     nothing new has been summarized since the last probe
-// When all three hold and the nudge cooldown (5 min) has elapsed, we inject a
-// gentle "is this still going?" message into the session and notify the user.
-// We deliberately do NOT nudge sessions whose turn is still streaming — a long
-// build/test naturally produces no new summary for a while, and nudging would
-// interrupt real work.
-const LIVENESS_PROBE_INTERVAL_MS = 60 * 1000;
-const LIVENESS_STALE_PROBES = 2;          // 2 consecutive no-progress probes
-const LIVENESS_NUDGE_COOLDOWN_MS = 5 * 60 * 1000;
 const AUX_HEALTH_PROBE_INTERVAL_MS = 5 * 60 * 1000;  // ④: probe aux recovery while unhealthy
 
 // ④ Degraded-mode recovery probe: while aux is unhealthy, every 5 min run a
 // trivial aux task. Any success → recordSuccess → unhealthy clears → normal
-// summary/liveness/resume resumes. Cheap (a 1-token reply) and self-limiting
+// summary/reconcile/resume resumes. Cheap (a 1-token reply) and self-limiting
 // (only runs while unhealthy; no-op when healthy).
 // ── Network health hold (⑥A) ────────────────────────────────────────────────
 // When the upstream model API becomes unreliable (503, timeout, 402, etc.),
@@ -6371,12 +6341,12 @@ function auxHealthProbe() {
 // ── Startup reconcile + manual reclassify ───────────────────────────────────
 // On boot, re-judge every session left in a non-terminal lifecycle (running /
 // interrupted) with activity in the last 12h, using the SAME unified classify
-// prompt as the live path — clears zombie states so the liveness probe doesn't
+// prompt as the live path — clears zombie states so the reconcile doesn't
 // nag them. A manual API (reconcileOneOnStartup with {save:true}) can re-judge
 // ANY session on demand and洗掉 injected/junk goals. Skipped when aux unhealthy.
 const STARTUP_RECONCILE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
-// A "goal" that is really injected system text (liveness nudge / API-recovery
+// A "goal" that is really injected system text (nudge / API-recovery
 // resume / auto-continue prompt), NOT a task. These leaked into goals via the old
 // rule-based fallback; they must never be fed back into classify nor kept.
 function isInjectedOrJunkGoal(goal) {
@@ -6452,55 +6422,6 @@ function reconcileOneOnStartup(sid, ts, opts = {}) {
     .catch(e => { if (e && e.cancelled) return; console.warn(`[multicc/reconcile] reclassify ${sid} failed: ${e.message}`); });
 }
 
-function livenessProbe() {
-  const now = Date.now();
-  for (const [sessionName, cs] of chatSessions) {
-    try {
-      const persisted = persistedSessions.get(sessionName);
-      if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') continue;
-      const st = getTaskState(persisted);
-      // Only probe tasks that look in-flight but whose turn has ended.
-      if (st.lifecycle !== 'running' && st.lifecycle !== 'interrupted') continue;
-      if (cs.isStreaming) continue;                       // ① turn still running → skip
-      // ③ progressSig stall tracking.
-      const curSig = st.progressSig || '';
-      const lastProbeSig = st.lastProbeSig || '';
-      let staleProbes = st.staleProbes || 0;
-      if (curSig && curSig === lastProbeSig && curSig === (st.lastSummary ? progressSigOf(st.lastSummary) : curSig)) {
-        staleProbes = (st.lastProbeSigAt && (now - st.lastProbeSigAt) >= LIVENESS_PROBE_INTERVAL_MS) ? staleProbes + 1 : staleProbes;
-      } else {
-        staleProbes = 0;
-      }
-      const patch = { lastProbeSig: curSig, lastProbeSigAt: now, staleProbes };
-      // ② + ③: needs staleProbes >= threshold AND never-cleanly-closed lifecycle.
-      // ④ degraded: when aux is unhealthy, stretch the cooldown — nudging won't
-      // get a smart response anyway and the banner already tells the user.
-      const cooldown = auxQueue.isUnhealthy() ? 15 * 60 * 1000 : LIVENESS_NUDGE_COOLDOWN_MS;
-      const cooled = st.lastNudgeAt && (now - st.lastNudgeAt) < cooldown;
-      if (staleProbes >= LIVENESS_STALE_PROBES && !cooled && !isNetworkUnhealthy()) {  // ⑥A: don't nudge when API is down
-        const goal = st.goal || '当前任务';
-        const stallMin = Math.round((now - (st.lastSummaryAt || st.lastTurnEndedAt || now)) / 60000);
-        const nudgeMsg = `检测到任务「${goal}」似乎停滞了（已约 ${stallMin} 分钟无进展且回合已结束）。请确认当前状态：是已完成？还是在等待什么？还是遇到了卡点需要继续？`;
-        patch.lastNudgeAt = now;
-        patch.staleProbes = 0;  // reset after nudging; next stall cycle starts fresh
-        setTaskState(sessionName, patch, { save: false });
-        savePersistedSessions();
-        // Inject the nudge as a new turn (busy-safe via waitInjector).
-        try { waitInjector.safeInject(sessionName, nudgeMsg); } catch (_) {}
-        // Notify the user too.
-        const dirId = persisted.dirId;
-        if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId: sessionName, state: 'waiting', message: `任务「${goal}」停滞，已自动催更` });
-        triggerPush(sessionName, 'waiting', `[Chat] 任务「${goal}」停滞，已自动催更`);
-        console.log(`[multicc/liveness] nudged ${sessionName}: goal="${goal}", stalled ${stallMin}min`);
-      } else {
-        setTaskState(sessionName, patch, { save: false });
-      }
-    } catch (e) {
-      console.warn(`[multicc/liveness] probe ${sessionName} failed: ${e.message}`);
-    }
-  }
-}
-
 // Store an aux-AI task summary for a session and push it to the workspace board.
 function setSessionSummary(sessionId, summary) {
   if (!summary) return;
@@ -6509,14 +6430,11 @@ function setSessionSummary(sessionId, summary) {
   const ts = Date.now();
   sessionSummaries.set(sessionId, { summary, ts });
   // Persist the one-liner (legacy field, still used by the dashboard tooltip)
-  // AND the full taskState snapshot: lastSummary/lastSummaryAt/progressSig so
-  // the liveness probe (⑤) can compare across probes after a restart.
-  const sig = progressSigOf(summary);
+  // and the full taskState snapshot for restart reconcile.
   const tsChanged = persisted.summary !== summary;
-  const stChanged = (persisted.taskState?.lastSummary !== summary) || (persisted.taskState?.progressSig !== sig);
   if (tsChanged) persisted.summary = summary;
-  if (tsChanged || stChanged) {
-    setTaskState(sessionId, { lastSummary: summary, lastSummaryAt: ts, progressSig: sig }, { save: false });
+  if (tsChanged || persisted.taskState?.lastSummary !== summary) {
+    setTaskState(sessionId, { lastSummary: summary, lastSummaryAt: ts }, { save: false });
     savePersistedSessions();
   }
   workspaceBroadcast(persisted.dirId, { type: 'summary', sessionId, summary, ts });
@@ -7085,7 +7003,7 @@ function classifyTurnEnd(cs, sessionName) {
 // ── Closed-loop task model ─────────────────────────────────────────────────
 // The goal is produced solely by the classify loop (turn-start + every 60s).
 // No rule-based fallback from the raw user message — that path used to turn
-// greetings ("hi") and injected liveness/recovery text into bogus goals.
+// greetings ("hi") and injected recovery text into bogus goals.
 function newCurrentTask(goal) {
   return {
     goal: goal || '新任务',    // placeholder until the first classify fills it in
@@ -7190,8 +7108,8 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
   }
 
   setSessionStatus(sessionName, { status, currentFile: null });
-  // Persist turn-end lifecycle so the liveness probe (⑤) and restart reconcile
-  // (②) know this task's turn ended at this moment. status completed/error →
+  // Persist turn-end lifecycle so reconcile
+  // know this task's turn ended at this moment. status completed/error →
   // lifecycle completed; waiting stays waiting. (intent_classify may refine.)
   {
     const lc = (status === 'error') ? 'completed' : (status === 'waiting' ? 'waiting' : 'completed');
@@ -9374,8 +9292,6 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     setTimeout(() => reconcileTasksOnStartup(), 6000);
     artifacts.cleanup();
     setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
-    // Liveness probe (⑤): nudge sessions whose task stalled after the turn ended.
-    setInterval(() => livenessProbe(), LIVENESS_PROBE_INTERVAL_MS).unref();
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
     setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS).unref();
   });
