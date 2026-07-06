@@ -6352,7 +6352,12 @@ const STARTUP_RECONCILE_WINDOW_MS = 12 * 60 * 60 * 1000;
 function isInjectedOrJunkGoal(goal) {
   const g = String(goal || '').trim();
   if (!g) return false;
-  return /^(检测到任务|\[自动恢复|继续：|服务刚重启|上游\s*API\s*已恢复|某任务|等待交互：检测到|任务完成：检测到)/.test(g);
+  return g.startsWith(waitInjector.SYS_PREFIX);
+}
+
+// Whether a user message is system-injected (autoContinue / apiRetry / bgCheck).
+function isSystemInjectedMsg(msg) {
+  return String(msg || '').trim().startsWith(waitInjector.SYS_PREFIX);
 }
 
 function reconcileTasksOnStartup() {
@@ -6390,7 +6395,11 @@ function reconcileOneOnStartup(sid, ts, opts = {}) {
     for (let i = history.length - 1; i >= 0 && (!reply || !userMsg); i--) {
       const m = history[i];
       if (!reply && m.role === 'assistant') reply = String(m.content || '');
-      if (!userMsg && m.role === 'user') userMsg = String(m.content || '');
+      // Skip system-injected messages — they are noise that drowns real user
+      // intent. Only real user input counts. Language-agnostic SYS_PREFIX.
+      if (!userMsg && m.role === 'user' && !isSystemInjectedMsg(m.content)) {
+        userMsg = String(m.content || '').trim();
+      }
     }
   } catch (_) {}
   if (userMsg.length < 1 && reply.length < 20) return; // nothing to judge
@@ -6404,8 +6413,9 @@ function reconcileOneOnStartup(sid, ts, opts = {}) {
     .then(result => {
       if (result.cancelled) return;
       const res = parseTaskClassify(result.text);
-      // '—' → no concrete task → fall back to the CLEANED prior (junk already stripped → '').
-      const goal = (res.goal && res.goal !== '—') ? res.goal : cleanPrior;
+      // '—' → no concrete task. If classify can't find a real task from the history,
+      // leave goal empty rather than retaining a stale placeholder ("新任务") or junk.
+      const goal = (res.goal && res.goal !== '—') ? res.goal : '';
       // Turn is long over → finalize. P (still-processing) is treated as completed.
       const lifecycle = res.state === 'waiting' ? 'waiting' : 'completed';
       setTaskState(sid, { goal, phase: res.phase || ts.phase, lifecycle, endedAt: Date.now() }, { save });

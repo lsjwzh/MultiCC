@@ -230,7 +230,7 @@ function autoContinue(session, opts = {}) {
   _log(`[wait] auto-continue ${session} (#${st.count})`);
   const d = Number(opts.delayMs);
   const delayMs = Number.isFinite(d) ? Math.max(0, d) : 2000;
-  setTimeout(() => fireInject(session, nudge), delayMs);
+  injectSystemMsg(session, nudge, delayMs);
   return true;
 }
 
@@ -260,7 +260,7 @@ function bgCheck(session, opts = {}) {
   _log(`[wait] bgCheck ${session} (#${st.count})`);
   const d = Number(opts.delayMs);
   const delayMs = Number.isFinite(d) ? Math.max(0, d) : BG_CHECK_DELAY_MS;
-  setTimeout(() => fireInject(session, nudge), delayMs);
+  injectSystemMsg(session, nudge, delayMs);
   return true;
 }
 
@@ -291,12 +291,17 @@ function apiRetry(session, opts = {}) {
   _log(`[wait] apiRetry ${session} (#${st.count}/${MAX_API_RETRY})`);
   const d = Number(opts.delayMs);
   const delayMs = Number.isFinite(d) ? Math.max(0, d) : API_RETRY_DELAY_MS;
-  setTimeout(() => fireInject(session, nudge), delayMs);
+  injectSystemMsg(session, nudge, delayMs);
   return true;
 }
 
 // Reset the apiRetry counter — call on any clean turn boundary or real user message.
 function resetApi(session) { apiState.delete(session); }
+
+// Universal prefix for all system-injected messages (autoContinue, apiRetry,
+// bgCheck). Recognition side (server.js) matches this single token to skip
+// injected text during classify/reconcile, replacing the old per-language regex.
+const SYS_PREFIX = '🔇';
 
 // Inject only when the session is free; if a turn is mid-flight, retry shortly
 // so we never interrupt the very work we are waiting on. (Streaming queues
@@ -307,6 +312,21 @@ function fireInject(session, text, attempt = 0) {
     return;
   }
   Promise.resolve(_inject(session, text)).catch(e => _log(`[wait] inject failed for ${session}: ${e.message}`));
+}
+
+// Fire an auto-generated nudge/retry message into a session. Always prefixed
+// with SYS_PREFIX so classifiers and reconcilers can reliably identify and
+// ignore it — language-agnostic, no fragile regex.
+function injectSystemMsg(session, text, delayMs) {
+  const msg = `${SYS_PREFIX}${text}`;
+  const d = Number(delayMs);
+  const delay = Number.isFinite(d) ? Math.max(0, d) : 0;
+  const go = () => {
+    if (_isBusy(session)) { setTimeout(go, 1000); return; }
+    Promise.resolve(_inject(session, msg)).catch(e => _log(`[wait] system inject failed for ${session}: ${e.message}`));
+  };
+  if (delay) { setTimeout(go, delay); return; }
+  go();
 }
 
 function stats() {
@@ -324,5 +344,6 @@ module.exports = {
   init, register, resolve, cancel, cancelForSession,
   listForSession, hasWait, tick, autoContinue, resetAuto,
   bgCheck, resetBg, apiRetry, resetApi, stats, safeInject,
+  injectSystemMsg, SYS_PREFIX,
   _waits: waits, // for tests
 };
