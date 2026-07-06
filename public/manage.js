@@ -852,6 +852,12 @@ function showNewSessionMenu(ev, dirId) {
     { sep: true },
     { label: '+ Codex Chat', onclick: () => newSessionInDir(dirId, 'codex', 'chat') },
     { label: '+ Codex Terminal', onclick: () => newSessionInDir(dirId, 'codex', 'terminal') },
+    { sep: true },
+    { label: '+ OpenCode Chat', onclick: () => newSessionInDir(dirId, 'opencode', 'chat') },
+    { label: '+ OpenCode Terminal', onclick: () => newSessionInDir(dirId, 'opencode', 'terminal') },
+    { sep: true },
+    { label: '+ ZCode Chat', onclick: () => newSessionInDir(dirId, 'zcode', 'chat') },
+    { label: '+ ZCode Terminal', onclick: () => newSessionInDir(dirId, 'zcode', 'terminal') },
   ]);
 }
 
@@ -1048,6 +1054,10 @@ function renderDirSessionGroups(dirSessions) {
     renderGroup('claude', 'chat', 'Claude Chats'),
     renderGroup('codex',  'terminal', 'Codex Terminals'),
     renderGroup('codex',  'chat', 'Codex Chats'),
+    renderGroup('opencode', 'terminal', 'OpenCode Terminals'),
+    renderGroup('opencode', 'chat', 'OpenCode Chats'),
+    renderGroup('zcode', 'terminal', 'ZCode Terminals'),
+    renderGroup('zcode', 'chat', 'ZCode Chats'),
   ].filter(Boolean).join('') || `<div class="dir-empty">${escapeHtml(tt('noSessions'))}</div>`;
 }
 
@@ -2252,7 +2262,8 @@ function showCreateSessionDialog({ cli, kind, providers = [], defaultProviderId 
 
     const title = document.createElement('div');
     title.style.cssText = 'font-size:15px;color:#f2f4f7;font-weight:600;margin-bottom:14px;';
-    title.textContent = `新建 ${cli === 'codex' ? 'Codex' : 'Claude'} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
+    const CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode' };
+    title.textContent = `新建 ${CLI_LABELS[cli] || cli} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
     box.appendChild(title);
 
     // ── Name input ──

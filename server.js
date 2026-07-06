@@ -562,6 +562,71 @@ function resolveCodex() {
 const CODEX_CMD = resolveCodex();
 const CODEX_ARGS = process.env.CODEX_ARGS ? process.env.CODEX_ARGS.split(' ') : [];
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
+
+// ── opencode CLI binary resolution (mirrors claude/codex lookup) ──
+// opencode is the open-source AI coding agent (sst/opencode). Non-interactive
+// chat uses `opencode run --format json --auto`. Override the path with OPENCODE_CMD.
+function resolveOpencode() {
+  if (process.env.OPENCODE_CMD) return process.env.OPENCODE_CMD;
+  const candidates = [
+    path.join(os.homedir(), '.opencode', 'bin', 'opencode'),  // official curl installer
+    '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode',
+    path.join(os.homedir(), '.local', 'bin', 'opencode'),
+  ];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  if (!isWindows) {
+    for (const sh of ['/bin/zsh', '/bin/bash']) {
+      if (!fs.existsSync(sh)) continue;
+      try {
+        const r = execSync(`${sh} -l -c 'which opencode 2>/dev/null'`, { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
+        if (r && fs.existsSync(r)) return r;
+      } catch (_) {}
+    }
+  }
+  try {
+    const r = execSync(isWindows ? 'where opencode' : 'which opencode', { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
+    if (r) return r;
+  } catch (_) {}
+  return isWindows ? 'opencode.exe' : 'opencode';
+}
+const OPENCODE_CMD = resolveOpencode();
+
+// ── zcode CLI binary resolution ──
+// zcode (智谱 Z.ai ZCode) is primarily a desktop GUI; multicc drives its CLI
+// companion the same way as opencode when a `zcode` binary is on PATH.
+// Override the path with ZCODE_CMD. Flags mirror opencode's `run` interface.
+function resolveZcode() {
+  if (process.env.ZCODE_CMD) return process.env.ZCODE_CMD;
+  const candidates = [
+    '/opt/homebrew/bin/zcode', '/usr/local/bin/zcode',
+    path.join(os.homedir(), '.local', 'bin', 'zcode'),
+    path.join(os.homedir(), '.zcode', 'bin', 'zcode'),
+  ];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  if (!isWindows) {
+    for (const sh of ['/bin/zsh', '/bin/bash']) {
+      if (!fs.existsSync(sh)) continue;
+      try {
+        const r = execSync(`${sh} -l -c 'which zcode 2>/dev/null'`, { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
+        if (r && fs.existsSync(r)) return r;
+      } catch (_) {}
+    }
+  }
+  try {
+    const r = execSync(isWindows ? 'where zcode' : 'which zcode', { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
+    if (r) return r;
+  } catch (_) {}
+  return isWindows ? 'zcode.exe' : 'zcode';
+}
+const ZCODE_CMD = resolveZcode();
+
+// Map a cli name to its provider pool (appType). codex has its own pool; every
+// other cli (claude, opencode, zcode, …) shares the Anthropic-compatible 'claude'
+// pool. opencode/zcode read ANTHROPIC_* env too when using an anthropic provider,
+// so a chosen claude-pool provider routes correctly for them.
+function appTypeForCli(cli) {
+  return cli === 'codex' ? 'codex' : 'claude';
+}
 console.log(`[multicc] Using codex: ${CODEX_CMD}`);
 
 // ── Global default CLI for auxiliary AI (intent classify, task summary, etc.) ──
@@ -830,6 +895,73 @@ const cliProviders = {
       return args;
     },
     needsAsyncSessionIdCapture: true,  // capture from ~/.codex/sessions filename
+  },
+  opencode: {
+    name: 'opencode',
+    cmd: OPENCODE_CMD,
+    // Interactive TUI: `opencode` first time, `opencode --session <id>` to resume.
+    // opencode auto-manages its own session id, so terminal mode launches bare.
+    buildTerminalCmd(session) {
+      let cmd = OPENCODE_CMD;
+      if (session.model) cmd += ` --model ${session.model}`;
+      if (session.cliSessionId) cmd += ` --session ${session.cliSessionId}`;
+      return cmd;
+    },
+    // Chat-mode spawn args: `run --format json --auto [--model X] [--session id] <prompt>`
+    // --format json emits one NDJSON event per line (envelope {type,timestamp,sessionID,part});
+    // --auto auto-approves permissions (≈ --dangerously-skip-permissions / codex bypass).
+    buildChatSpawnArgs(session, prompt, opts) {
+      const args = ['run', '--format', 'json', '--auto'];
+      // opencode uses provider/model ids; only pass --model when one is explicitly set.
+      if (session.model) args.push('--model', session.model);
+      // opencode generates its own `ses_…` id; we capture it from the first stream
+      // event and reuse it on every subsequent turn via --session.
+      if (opts.isFirstTurn) {
+        // no --session → opencode creates a fresh session whose id we capture.
+      } else if (session.cliSessionId) {
+        args.push('--session', session.cliSessionId);
+      } else {
+        // No id captured yet (e.g. recovery) — continue the last session.
+        args.push('--continue');
+      }
+      // Role prompt: opencode `run` has no system-prompt flag, so prepend it into
+      // the prompt text on the first turn (resume keeps earlier context).
+      let p = prompt;
+      if (opts.isFirstTurn && opts.rolePrompt) {
+        p = `[角色设定]\n${opts.rolePrompt}\n[角色设定结束]\n\n${prompt}`;
+      }
+      args.push(p);
+      return args;
+    },
+    // sessionID is captured from the chat JSON stream directly (see handleLine),
+    // not via the codex-style ~/.codex/sessions filesystem scan.
+    needsAsyncSessionIdCapture: false,
+  },
+  zcode: {
+    name: 'zcode',
+    cmd: ZCODE_CMD,
+    // zcode (Z.ai ZCode) is driven opencode-style: same `run --format json` headless
+    // interface. The adapter is wired identically; a real `zcode` headless binary
+    // (or a symlink) makes it work end-to-end. Override the binary with ZCODE_CMD.
+    buildTerminalCmd(session) {
+      let cmd = ZCODE_CMD;
+      if (session.model) cmd += ` --model ${session.model}`;
+      if (session.cliSessionId) cmd += ` --session ${session.cliSessionId}`;
+      return cmd;
+    },
+    buildChatSpawnArgs(session, prompt, opts) {
+      const args = ['run', '--format', 'json', '--auto'];
+      if (session.model) args.push('--model', session.model);
+      if (!opts.isFirstTurn && session.cliSessionId) args.push('--session', session.cliSessionId);
+      else if (!opts.isFirstTurn) args.push('--continue');
+      let p = prompt;
+      if (opts.isFirstTurn && opts.rolePrompt) {
+        p = `[角色设定]\n${opts.rolePrompt}\n[角色设定结束]\n\n${prompt}`;
+      }
+      args.push(p);
+      return args;
+    },
+    needsAsyncSessionIdCapture: false,
   },
 };
 
@@ -1743,7 +1875,7 @@ function sessionIdPrefixForDirectory(dir) {
 
 function allocateSessionId(dir, cli, kind) {
   const prefix = sessionIdPrefixForDirectory(dir);
-  const cliPart = cli === 'codex' ? 'codex' : 'claude';
+  const cliPart = ['claude', 'codex', 'opencode', 'zcode'].includes(cli) ? cli : 'claude';
   const kindPart = kind === 'chat' ? 'chat' : 'term';
   const stem = `${prefix}-${cliPart}-${kindPart}`;
   let maxSeq = 0;
@@ -2459,7 +2591,7 @@ app.get('/api/directories/:id/workspace', (req, res) => {
 // { ok:true, id, session, reused? } or { ok:false, error }.
 function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, rolePrompt = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
-  if (!['claude', 'codex'].includes(cli)) return { ok: false, error: 'cli must be claude or codex' };
+  if (!['claude', 'codex', 'opencode', 'zcode'].includes(cli)) return { ok: false, error: 'cli must be claude, codex, opencode or zcode' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
   // Model can be set for both Claude and Codex sessions. Claude terminal mode
   // interpolates it into a shell command, so keep the charset tight; Codex uses
@@ -7903,6 +8035,110 @@ function runChatTurn(sessionName, text, opts = {}) {
         return;  // unknown event type: drop
       }
 
+      if (cs.cli === 'opencode' || cs.cli === 'zcode') {
+        // ── opencode/zcode → claude-shaped events ──
+        // `run --format json` emits NDJSON: {type,timestamp,sessionID,part:{...}}.
+        // Capture the CLI-assigned session id (ses_…) once, so subsequent turns
+        // resume via --session <id>.
+        if (evt.sessionID && !persisted.cliSessionId) {
+          persisted.cliSessionId = evt.sessionID;
+          savePersistedSessions();
+          console.log(`[multicc/chat] [${sessionName}] captured ${cs.cli} sessionID=${evt.sessionID}`);
+        }
+        const part = evt.part || {};
+        const cliLabel = cs.cli === 'opencode' ? 'OpenCode' : 'ZCode';
+
+        if (evt.type === 'step_start') {
+          setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+          return;
+        }
+        if (evt.type === 'text') {
+          const text = part.text || '';
+          if (text) {
+            cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + text;
+            forward({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+            setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+          }
+          return;
+        }
+        if (evt.type === 'tool_use' || evt.type === 'tool_call') {
+          // opencode delivers a tool call + its result in one event once
+          // state.status flips to "completed". Dedupe by callID so a card isn't
+          // duplicated when an intermediate "running" event precedes it.
+          const toolName = part.tool || part.name || 'tool';
+          const callId = part.callID || part.id || `call_${cs.currentToolCalls.length}`;
+          const state = part.state || {};
+          const input = state.input != null ? state.input : (part.args || {});
+          let tc = cs.currentToolCalls.find(t => t.id === callId);
+          if (!tc) {
+            tc = { name: toolName, input, id: callId };
+            cs.currentToolCalls.push(tc);
+            forward({
+              type: 'assistant',
+              message: { content: [{ type: 'tool_use', name: toolName, id: callId, input }] },
+            });
+          }
+          setSessionStatus(sessionName, { status: 'running', currentFile: state.title || null });
+          if (state.status === 'completed' || state.output !== undefined) {
+            const resultText = typeof state.output === 'string'
+              ? state.output
+              : (state.output == null ? '' : JSON.stringify(state.output));
+            forward({
+              type: 'user',
+              message: { content: [{ type: 'tool_result', tool_use_id: callId, content: resultText, is_error: state.status === 'error' }] },
+            });
+            tc.result = resultText.length > 1000 ? resultText.slice(0, 1000) + '...' : resultText;
+            tc.is_error = state.status === 'error';
+          }
+          return;
+        }
+        if (evt.type === 'step_finish') {
+          // reason === 'stop' → clean turn end; anything else (e.g. 'tool-calls')
+          // is an intermediate step → keep accumulating, don't finalize.
+          if (part.reason && part.reason !== 'stop') return;
+          const tokens = part.tokens || {};
+          const usage = {
+            input_tokens: tokens.input || 0,
+            output_tokens: tokens.output || 0,
+            cache_read_input_tokens: (tokens.cache && tokens.cache.read) || 0,
+            cache_creation_input_tokens: (tokens.cache && tokens.cache.write) || 0,
+          };
+          if (cs.currentAssistantText || cs.currentToolCalls.length) {
+            appendChatMessage(sessionName, {
+              role: 'assistant', content: cs.currentAssistantText,
+              tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+              cost: part.cost != null ? part.cost : null, usage, ts: Date.now(),
+            });
+            accumulateTokenUsage(sessionName, usage);
+            broadcastProviderTokenStats(sessionName);
+            broadcastRoleTokenStats(sessionName);
+            cs.chatTurnCount++;
+            cs._resultSaved = true;
+          }
+          forward({
+            type: 'result',
+            total_cost_usd: part.cost != null ? part.cost : null,
+            usage,
+            durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
+            num_turns: cs.chatTurnCount,
+          });
+          setSessionStatus(sessionName, { status: 'completed', currentFile: null });
+          classifyTurnEnd(cs, sessionName);
+          return;
+        }
+        if (evt.type === 'error') {
+          const err = evt.error || part.error;
+          const msg = (err && err.data && err.data.message)
+            || (err && err.message)
+            || (typeof err === 'string' ? err : '')
+            || `${cs.cli} 出错`;
+          cs._opencodeError = msg;
+          forward({ type: 'error', error: `${cliLabel} 出错：${msg}` });
+          return;
+        }
+        return;  // unknown opencode/zcode event: drop
+      }
+
       // ── Claude: shared with the streaming path ──
       applyClaudeChatEvent(cs, sessionName, evt, forward);
     };
@@ -8010,7 +8246,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       // once with a fresh session id (covers resume-failed / session-id conflict cases).
       // A reported codex error (cs._codexError) is a real provider failure, not a
       // resume glitch — retrying would just hit the same wall, so skip it.
-      if (!isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._codexError) {
+      if (!isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._codexError && !cs._opencodeError) {
         const stderrTail = stderrBuf.slice(-300).trim();
         const reason = stderrTail.includes('already in use') ? 'session-id conflict'
           : stderrTail.includes('No conversation found') || stderrTail.includes('session not found') ? 'resume target missing'
@@ -8067,6 +8303,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs.currentToolCalls = [];
       cs._resultSaved = false;
       const hadCodexError = !!cs._codexError && !recoveredCodexDisconnect; cs._codexError = null;
+      cs._opencodeError = null;
       cs._codexRecoveredDisconnect = false;
       cs._codexPendingStreamError = '';
       cs._codexPendingStreamErrorCount = 0;
