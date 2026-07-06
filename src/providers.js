@@ -31,6 +31,10 @@ try { Database = require('better-sqlite3'); } catch (_) { Database = null; }
 // cc-switch import. Most users never touch this feature, so paying the
 // native-compilation cost upfront wastes time and breaks on machines
 // without build toolchains.
+//
+// Windows: better-sqlite3 needs node-gyp → Visual Studio Build Tools + Python.
+// Pre-built binaries are available for common Node/arch combos and npm install
+// will prefer them; native compilation is the fallback.
 function ensureDatabase() {
   if (Database) return true;
   console.log('[multicc] better-sqlite3 not installed — installing on demand (cc-switch import)…');
@@ -49,7 +53,32 @@ function ensureDatabase() {
   }
 }
 
-const CC_DB = path.join(os.homedir(), '.cc-switch', 'cc-switch.db');
+function nativeBuildHint() {
+  switch (process.platform) {
+    case 'darwin':
+      return '  xcode-select --install';
+    case 'win32':
+      return '  npm install --global windows-build-tools\n' +
+        '  (Or install Visual Studio Build Tools with "Desktop development with C++" + Python 3)';
+    default:
+      return '  sudo apt-get install -y build-essential python3 make g++';
+  }
+}
+
+// cc-switch stores its data at ~/.cc-switch/ on all platforms (Rust dirs::home_dir).
+// On Windows the default is C:\Users\<name>\.cc-switch\. However, Git Bash / Cygwin
+// users may have a HOME env var pointing elsewhere, and cc-switch has a legacy
+// fallback for that. For multicc we also check that secondary location.
+const CC_DB_DEFAULT = path.join(os.homedir(), '.cc-switch', 'cc-switch.db');
+function resolveCcDb() {
+  if (fs.existsSync(CC_DB_DEFAULT)) return CC_DB_DEFAULT;
+  // Windows Git Bash legacy fallback — cc-switch does the same (see its config.rs)
+  if (process.platform === 'win32' && process.env.HOME) {
+    const legacy = path.join(process.env.HOME, '.cc-switch', 'cc-switch.db');
+    if (fs.existsSync(legacy)) return legacy;
+  }
+  return CC_DB_DEFAULT; // return default path even if absent (caller checks)
+}
 // multicc's own store, in the project root (one level up from src/).
 const STORE_FILE = path.join(__dirname, '..', 'providers.json');
 // Per-provider CODEX_HOME dirs materialized on demand so codex sessions can
@@ -86,7 +115,7 @@ function saveStore(list) {
   catch (e) { console.error('[multicc] save providers.json failed:', e.message); }
 }
 
-function ccSwitchAvailable() { return fs.existsSync(CC_DB); }
+function ccSwitchAvailable() { return fs.existsSync(resolveCcDb()); }
 
 function parseConfig(s) {
   if (s && typeof s === 'object') return s;
@@ -453,18 +482,16 @@ function deleteProvider(appType, id) {
 // cc-switch id (kept as the provider id with source='ccswitch'), so re-import
 // refreshes existing entries instead of duplicating. Local providers untouched.
 function importFromCcSwitch() {
-  if (!fs.existsSync(CC_DB)) throw new Error('cc-switch database not found at ' + CC_DB);
+  const ccDb = resolveCcDb();
+  if (!fs.existsSync(ccDb)) throw new Error('cc-switch database not found at ' + ccDb);
   if (!ensureDatabase()) {
-    const hint = process.platform === 'darwin'
-      ? '  xcode-select --install'
-      : '  sudo apt-get install -y build-essential python3 make g++';
     throw new Error(
       'Failed to install better-sqlite3 (native compilation).\n' +
-      'Install build tools and retry:\n' + hint + '\n' +
+      'Install build tools and retry:\n' + nativeBuildHint() + '\n' +
       'Or manually: cd ' + PROJECT_DIR + ' && npm install better-sqlite3'
     );
   }
-  const db = new Database(CC_DB, { readonly: true, fileMustExist: true, timeout: 4000 });
+  const db = new Database(ccDb, { readonly: true, fileMustExist: true, timeout: 4000 });
   let rows;
   try {
     rows = db.prepare('SELECT id, app_type, name, settings_config FROM providers ORDER BY app_type, sort_index, name').all();

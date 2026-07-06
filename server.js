@@ -2717,9 +2717,20 @@ app.post('/api/debug/classify/:id', (req, res) => {
   const cs = chatSessions.get(sessionName);
   if (!cs) return res.status(400).json({ error: 'session not active' });
   cs.currentAssistantText = lastText;
-  runClassifyNow(cs, sessionName, (err) => {
-    if (err) return res.json({ error: err.message });
-    res.json({ ok: true, sessionName, tailPreview: tail.slice(-300).replace(/\n/g, ' '), note: 'check server logs for classify RESULT' });
+  // runClassifyNow is fire-and-forget: it enqueues an aux task and resolves the
+  // result asynchronously (logging the RESULT), so there's no callback to await.
+  // The ⑦ gate makes it a silent no-op when aux is unhealthy — surface that here
+  // so a debug caller isn't left wondering why no RESULT shows up in the logs.
+  const auxUnhealthy = auxQueue.isUnhealthy();
+  runClassifyNow(cs, sessionName);
+  res.json({
+    ok: true,
+    sessionName,
+    triggered: !auxUnhealthy,
+    tailPreview: tail.slice(-300).replace(/\n/g, ' '),
+    note: auxUnhealthy
+      ? 'aux unhealthy — classify suppressed (⑦ gate), no RESULT will be logged'
+      : 'classify enqueued — check server logs for classify RESULT',
   });
 });
 
@@ -3409,9 +3420,7 @@ app.delete('/api/sessions/:id', (req, res) => {
   if (chat) {
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(id);
-    if (chat.pendingClassifyTimer) clearTimeout(chat.pendingClassifyTimer);
-    if (chat.taskGoalTimer) clearTimeout(chat.taskGoalTimer);
-    if (chat.progressSummaryTimer) clearTimeout(chat.progressSummaryTimer);
+    if (chat._classifyTimer) clearTimeout(chat._classifyTimer);
     chatSessions.delete(id);
   }
   waitInjector.cancelForSession(id);
@@ -6130,7 +6139,7 @@ function parseClassifyResult(text) {
 
 // ── Task state persistence (step ①) ───────────────────────────────────────────
 // persisted.taskState is the durable closed-loop task snapshot: it survives
-// restarts so reconcileTasksAfterRestart (②) and the liveness probe (⑤) can
+// restarts so the liveness probe (⑤) can
 // decide what was running, whether it stalled, and whether to nudge. Falls back
 // to {} for legacy sessions that predate this field.
 //
@@ -6324,118 +6333,6 @@ function auxHealthProbe() {
   }).then(result => {
     if (result && !result.cancelled) auxQueue.recordSuccess();
   }).catch(() => { /* recordFail already called inside drain */ });
-}
-
-// ── Restart reconcile (②) ───────────────────────────────────────────────────
-// After a server restart, any task that was 'running' right before the crash
-// never got a clean lifecycle transition — its summary may be stale or wrong
-// (e.g. an old "出现异常" from a prior crash). This re-judges each such session
-// once via the aux AI: completed / waiting-on-user / interrupted. Interrupted
-// sessions get a gentle resume prompt; the user is notified either way.
-//
-// Scope: only sessions whose taskState.lifecycle is running/interrupted AND
-// whose lastTurnEndedAt is within RESTART_RECONCILE_WINDOW_MS (12 hours). Older
-// ones are assumed settled (re-judging everything wastes aux calls).
-// Degraded (④): if aux is unhealthy, skip the AI re-judge, mark interrupted,
-// and notify the user to confirm manually.
-const RESTART_RECONCILE_WINDOW_MS = 12 * 60 * 60 * 1000;
-
-const RECONCILE_STALE_KEYWORDS = ['出现异常', '异常中断', '中断', 'error', '失败'];
-
-function reconcileTasksAfterRestart() {
-  const now = Date.now();
-  const candidates = [];
-  for (const [sid, p] of persistedSessions) {
-    if (!p || p.type === 'aux' || p.type === 'gateway') continue;
-    const ts = getTaskState(p);
-    // Candidate if: lifecycle is running/interrupted (never cleanly closed),
-    // OR the persisted summary still shows a stale anomaly keyword (pre-taskState
-    // sessions whose last summary was an error/crash marker from a prior run).
-    const lcBad = ts.lifecycle === 'running' || ts.lifecycle === 'interrupted';
-    const summary = (typeof p.summary === 'string' ? p.summary : '').toLowerCase();
-    const staleAnomaly = ts.lifecycle !== 'completed' && ts.lifecycle !== 'waiting'
-      && RECONCILE_STALE_KEYWORDS.some(k => summary.includes(k));
-    if (!lcBad && !staleAnomaly) continue;
-    const endedAt = ts.lastTurnEndedAt || ts.lastSummaryAt || 0;
-    // For stale-anomaly-only candidates with no taskState timestamps, fall back
-    // to the session's lastActivity so very old ones aren't dragged back in.
-    const ref = endedAt || (p.lastActivity ? new Date(p.lastActivity).getTime() : 0);
-    if (ref && (now - ref) > RESTART_RECONCILE_WINDOW_MS) continue;
-    candidates.push({ sid, ts });
-  }
-  if (!candidates.length) return;
-  console.log(`[multicc/reconcile] ${candidates.length} session(s) to re-judge after restart`);
-  for (const { sid, ts } of candidates) {
-    if (auxQueue.isUnhealthy()) {
-      // ④ degraded: can't ask the AI — mark interrupted, notify, let the user decide.
-      setTaskState(sid, { lifecycle: 'interrupted' }, { save: false });
-      const dirId = persistedSessions.get(sid)?.dirId;
-      const msg = `摘要服务异常，无法自动判定任务「${ts.goal || ''}」的状态，请人工确认`;
-      if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId: sid, state: 'waiting', message: msg });
-      triggerPush(sid, 'waiting', `[Chat] ${msg}`);
-      continue;
-    }
-    _reconcileOneSession(sid, ts);
-  }
-  savePersistedSessions();
-}
-
-// Re-judge one session via the aux AI. Reads recent chat history + the prior
-// taskState to decide the outcome. Fire-and-forget.
-function _reconcileOneSession(sid, ts) {
-  let recentTail = '';
-  try {
-    const history = loadChatHistory(sid);
-    const tail = history.slice(-6);
-    recentTail = tail.map(m => `${m.role === 'user' ? '用户' : '助手'}: ${String(m.content || '').slice(0, 300)}`).join('\n');
-  } catch (_) {}
-  const prompt = `服务刚重启，需要判断下面这个任务在重启前的真实结局。任务目标：「${ts.goal || '未知'}」
-最近对话片段：
-${recentTail || '（无）'}
-
-请只输出一个字母判定结局：
-C = 任务已经完成（哪怕重启打断，但实质已完成）
-W = 正在等待用户回复/确认/决策
-I = 异常中断（任务没做完就被打断，需要继续）
-只输出这一个字母，不要解释。`;
-  auxQueue.enqueue({ type: 'restart_reconcile', prompt, meta: { sid } })
-    .then(result => {
-      const verdict = (result && result.text || '').trim().toUpperCase().slice(0, 1);
-      const p = persistedSessions.get(sid);
-      if (!p) return;
-      const goal = ts.goal || '该任务';
-      if (verdict === 'C') {
-        setTaskState(sid, { lifecycle: 'completed', endedAt: Date.now() });
-        setSessionSummary(sid, `任务完成：${goal}`);
-        console.log(`[multicc/reconcile] ${sid}: completed`);
-      } else if (verdict === 'W') {
-        setTaskState(sid, { lifecycle: 'waiting' });
-        setSessionSummary(sid, `等待交互：${goal}`);
-        console.log(`[multicc/reconcile] ${sid}: waiting`);
-      } else {
-        // I = interrupted. Only auto-inject a resume prompt if we actually know
-        // the goal — otherwise the injected message itself becomes the session's
-        // summary/goal (garbage). No-goal sessions just get a notify.
-        setTaskState(sid, { lifecycle: 'interrupted' });
-        const hasGoal = !!(ts.goal && ts.goal.trim());
-        setSessionSummary(sid, hasGoal ? `异常中断：${goal}` : `异常中断（未命名任务）`);
-        if (hasGoal && !isNetworkUnhealthy()) {
-          // ⑥A: skip resume-inject when the API is down — the resume message
-          // would fail anyway. holdSession instead so the session gets picked
-          // up by resumeHeldSessions on recovery.
-          const resumeMsg = `服务刚重启，检测到任务「${goal}」可能未完成就中断了。请确认当前状态：是已完成？还是需要继续？如果需要继续，请接着做。`;
-          try { waitInjector.safeInject(sid, resumeMsg); } catch (_) {}
-        } else if (hasGoal && isNetworkUnhealthy()) {
-          holdSession(sid, 'reconcile');
-        }
-        const dirId = p.dirId;
-        const nudge = hasGoal ? `任务「${goal}」疑似中断，已发送续接提示` : `某任务疑似中断（无目标记录），请人工确认`;
-        if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId: sid, state: 'waiting', message: nudge });
-        triggerPush(sid, 'waiting', `[Chat] ${nudge}`);
-        console.log(`[multicc/reconcile] ${sid}: interrupted${hasGoal ? ' → resumed' : ' (no goal, notify only)'}`);
-      }
-    })
-    .catch(e => console.warn(`[multicc/reconcile] ${sid} failed: ${e.message}`));
 }
 
 function livenessProbe() {
@@ -6870,202 +6767,187 @@ function purgeNotesForSession(sessionId) {
   if (notes.length !== before) saveNotes();
 }
 
-// ── Chat intent classification: 30s delayed trigger ──
-const CLASSIFY_DELAY_MS = 30000;
-const PROGRESS_SUMMARY_INTERVAL_MS = 45000; // during-stream progress summary cadence
-const TASK_GOAL_DELAY_MS = Math.max(0, parseInt(process.env.TASK_GOAL_DELAY_MS || '8000', 10) || 8000);
+// ── Unified classify — the single source of truth for task state ────────────
+// All three facets (goal, phase, C/W/B) come from ONE aux call per invocation.
+// Call sites:
+//   · turn-in-progress: every CLASSIFY_INTERVAL_MS while streaming
+//   · turn-end:          immediately (no 30s delay) to finalise C/W/B
+//   · reconcile/retry:   removed — classify manages its own retry
+// On aux unhealthy: classify calls are suppressed; the last-known goal/phase
+// is frozen and the dashboard banner warns the user.
+const CLASSIFY_INTERVAL_MS = 60000; // in-progress cadence
 
-function cancelPendingClassify(cs) {
-  if (cs.pendingClassifyTimer) {
-    clearTimeout(cs.pendingClassifyTimer);
-    cs.pendingClassifyTimer = null;
-  }
-  if (cs.pendingClassifyTaskId) {
-    auxQueue.cancel(cs.pendingClassifyTaskId);
-    cs.pendingClassifyTaskId = null;
-  }
+function cancelClassify(cs) {
+  if (cs._classifyTimer) { clearTimeout(cs._classifyTimer); cs._classifyTimer = null; }
+  if (cs._classifyTaskId) { auxQueue.cancel(cs._classifyTaskId); cs._classifyTaskId = null; }
 }
 
-// ── API error retry with linear backoff ──────────────────────────────────
-// When a turn dies on API/transport error, don't immediately stamp “出现异常”.
-// Retry classify with linear backoff intervals so a transient network blip
-// doesn't leave a permanent error label. After max retries, fall through to
-// emitTurnOutcome(“出现异常”).
-const CLASSIFY_RETRY_DELAYS_MS = [10000, 20000, 40000]; // 10s → 20s → 40s
+// Parse the unified 3-line classify output.
+// Line 1: goal — noun-phrase in the conversation's language (中文 ≤20 字 / EN ≤10 words)
+// Line 2: phase ∈ 规划中|实现中|验证中|收尾中|已完成 (Chinese codes; EN synonyms tolerated)
+// Line 3: C | W | B
+// Tolerant of blank lines, prefixes, and model cruft.
+function parseClassifyResult(text) {
+  const lines = String(text || '').trim().split('\n').map(l => l.trim()).filter(Boolean);
+  // Goal may be English (≤10 words ≈ 60 chars) or Chinese (≤20 chars) → cap at 60.
+  const goal    = (lines[0] || '').replace(/^(第1行[:：]|目标[:：]|goal[:：]?)\s*/i, '').slice(0, 60);
+  const phaseRaw = (lines[1] || '').replace(/^(第2行[:：]|阶段[:：]|phase[:：]?)\s*/i, '').trim();
+  const stateRaw = (lines[2] || '').toUpperCase().replace(/^(第3行[:：]|状态[:：]|state[:：]?)\s*/i, '').trim();
 
-function retryClassifyAfterError(cs, sessionName, attempt) {
-  if (attempt >= CLASSIFY_RETRY_DELAYS_MS.length) {
-    // Exhausted all retries — finalize as error
-    cancelPendingClassify(cs);
-    emitTurnOutcome(sessionName, { status: 'error', notifyState: 'error', message: '出现异常', alert: true });
-    console.log(`[multicc/aux] Classify retry EXHAUSTED for ${sessionName} after ${attempt} attempts → error`);
-    return;
+  // Phase normalisation — Chinese codes preferred, English synonyms tolerated.
+  const phaseMap = {
+    '规划中': 'planning', '实现中': 'implementing', '验证中': 'verifying', '收尾中': 'wrapping', '已完成': 'done',
+    'planning': 'planning', 'implementing': 'implementing', 'verifying': 'verifying', 'wrapping': 'wrapping', 'done': 'done',
+  };
+  const phase = phaseMap[phaseRaw] || phaseMap[phaseRaw.toLowerCase()] || null;
+
+  // State normalisation
+  const first = stateRaw.slice(0, 1);
+  const state   = (first === 'W' || first === 'B') ? 'waiting' : 'completed';
+  const background = first === 'B';
+
+  // Garbage filter for goal
+  let goalOk = goal.length >= 2 && goal.length <= 60;
+  if (goalOk) {
+    const _g = goal.toLowerCase();
+    const _garbage = /api\s*error|insufficient\s*balance|自动恢复|异常中断|claude exited|status[_= ]?5\d\d|\b40[0-9]\b|\b50[0-9]\b|available skills|<.parameter>|claude code built-in|skills are from/i.test(_g)
+      || (/\berror\b/.test(_g) && goal.length < 12);
+    if (_garbage) goalOk = false;
   }
-  const delay = CLASSIFY_RETRY_DELAYS_MS[attempt];
-  console.log(`[multicc/aux] Classify retry #${attempt + 1}/${CLASSIFY_RETRY_DELAYS_MS.length} for ${sessionName} in ${delay / 1000}s`);
-  setTimeout(() => {
-    // Re-check: if a new turn has started or session is already classified, skip
-    const csNow = chatSessions.get(sessionName);
-    if (!csNow || csNow.isStreaming) {
-      console.log(`[multicc/aux] Classify retry SKIP ${sessionName}: new turn in progress`);
-      return;
-    }
-    runClassifyNow(csNow, sessionName, (err) => {
-      if (err) {
-        // classify failed (aux error or unhealthy) — retry with longer backoff
-        retryClassifyAfterError(csNow, sessionName, attempt + 1);
-      }
-      // success → classify already handled (C/W/B → setSummary, notify, etc.)
-    });
-  }, delay);
+  return { goal: goalOk ? goal : '', phase, state, background };
 }
 
-function scheduleIntentClassify(cs, sessionName) {
-  cancelPendingClassify(cs); // clear any previous pending
-  cancelProgressSummary(cs); // task is done — stop the in-progress summary cycle
+function runClassifyNow(cs, sessionName) {
+  // ⑦ Gate: aux unhealthy → suppress, freeze last-known state
+  if (auxQueue.isUnhealthy()) return;
 
   const text = cs.currentAssistantText;
   if (!text || text.length < 20) return;
 
   const tail = text.slice(-1500);
   const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
-
-  // [diagnostic log] 记录 intent_classify 触发时的输入末尾，方便排查误判
-  const tailPreview = tail.slice(-300).replace(/\n/g, '↵');
-  console.log(`[multicc/aux] Intent classify SCHEDULED for ${sessionName} (delay 30s) | tail_end: “${tailPreview}”`);
-
-  cs.pendingClassifyTimer = setTimeout(() => {
-    cs.pendingClassifyTimer = null;
-    runClassifyNow(cs, sessionName);
-  }, CLASSIFY_DELAY_MS);
-}
-
-// ── Unified classify (intent + goal) ─────────────────────────────────────
-// Shared by the normal 30s-delayed path AND the API-error retry path.
-// Merges intent_classify + task_goal into ONE aux call: the model outputs
-//   line 1: C/W/B
-//   line 2: task goal (≤20 chars noun-phrase)
-// On success: updates summary, lifecycle, and optionally task goal.
-// Calls onError(err) on failure so the retry loop can advance.
-function runClassifyNow(cs, sessionName, onError) {
-  const text = cs.currentAssistantText;
-  if (!text || text.length < 20) { if (onError) onError(new Error('no text')); return; }
-  const tail = text.slice(-1500);
-  const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
+  const priorGoal = cs.currentTask?.goal || '';
   const taskId = crypto.randomUUID();
-  cs.pendingClassifyTaskId = taskId;
+  cs._classifyTaskId = taskId;
 
-  // ④ Degraded mode: aux is unhealthy
-  if (auxQueue.isUnhealthy()) {
-    const goal = cs.currentTask?.goal || cs.currentTaskName || '';
-    const msg = goal ? `任务完成：${goal}` : '任务完成';
-    setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now(), lifecycle: 'completed' }, { save: false });
-    setSessionSummary(sessionId, goal || '');
-    if (!cs.isStreaming) setSessionStatus(sessionName, { status: 'completed' });
-    chatBroadcast(sessionName, { type: 'notify', state: 'completed', message: msg });
-    const dirId = persistedSessions.get(sessionName)?.dirId;
-    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', message: msg });
-    console.log(`[multicc/aux] Classify DEGRADED (aux unhealthy) for ${sessionName}: completed · ${goal} | isUnhealthy=true`);
-    if (onError) onError(new Error('aux unhealthy'));
-    return;
-  }
-
-  // Gather recent user messages + current goal for the merged prompt
+  // Gather recent user messages for context
   const recentUserMsgs = getRecentUserMessages(sessionName, 3);
   const userContext = recentUserMsgs.length > 0
     ? `\n最近几轮用户消息（用于理解整体任务）：\n${recentUserMsgs.map((m, i) => `${i + 1}. ${briefTaskDescription(m)}`).join('\n')}`
     : '';
-  const priorGoal = cs.currentTask?.goal || '';
 
   auxQueue.enqueue({
     id: taskId,
     type: 'intent_classify',
-    prompt: `你是对话意图分析器。读完 AI 助手回复，判断：说完这段话后，对话的主动权在谁手里？
+    prompt: `你是任务状态分析器。读完 AI 助手回复，判断当前闭环任务的状态。请严格输出三行。
 
-如果主动权在用户手里（AI 在等用户回复、确认、决策、或用户的问题还没有被回答完）→ 输出 W
-如果主动权不在任何人手里，而是在等外部系统/后台任务/网络恢复（AI 没法继续，用户也帮不上忙）→ 输出 B
-如果主动权在 AI 手里（任务已经闭环完成，用户不需要再做任何事，AI 也没有在等任何外部条件）→ 输出 C
+第1行：当前闭环任务的目标，用一个简短的名词性短语。
+       语言跟随对话语言：对话是中文就用中文（≤20 汉字，如"memo图片更换""给目录卡片加 git 状态行"）；对话是英文就用英文（≤10 words, e.g. "Fix login page styling", "Add git status to fleet cards"）。
+       严格忽略反问、确认、推进类消息（如"如何了""做到哪了""继续""好了吗" / "how is it going", "continue", "done?"），这些不是任务目标。
+       已有目标「${priorGoal || '无'}」，如仍围绕同一任务请保持一致。
+       如果 AI 回复没有体现任何具体任务、只是闲聊或泛泛回答，输出「—」。
 
-判断时请站在「对话本身」的角度思考，而不是机械匹配关键词。一段回复可能先汇报了结果、再抛出一个反问——那后半句的反问就说明 AI 还在等用户，不是完成了。
+第2行：当前任务的阶段，必须原样输出以下五个中文词之一（无论对话语言）：
+       规划中 / 实现中 / 验证中 / 收尾中 / 已完成
+       AI 在等用户回复时不应判为「已完成」；只有把所有用户要求都做完了才判「已完成」。
 
-第1行：仅一个字母 C / W / B
-第2行：用不超过 20 个汉字概括当前闭环任务的目标（名词性短语，如"memo图片更换""登录页样式修复"）。必须给出，不得为空。忽略反问/确认/推进类消息。已有目标「${priorGoal || '无'}」，如仍围绕同一任务请保持一致。${userContext}
+第3行：仅一个字母，对话主动权判断：
+       W = 在用户手里（AI 在等用户回复、确认、决策；末尾有反问/选项/征求意见）
+       B = 在等外部系统/后台任务（AI 没法继续，用户也帮不上忙；在等 build/部署/API/子进程）
+       C = 在 AI 手里（任务闭环完成，用户不需要再做任何事）
+
+判断第3行时请站在「对话本身」的角度思考。一段回复可能先汇报了结果、再抛出一个反问——那后半句的反问说明 AI 还在等用户，应判 W。
+
+只输出这三行。不要加序号、解释、引号、空行。${userContext}
 
 回复内容：
 ${tail}`,
     meta: { sessionName, sessionId },
   }).then(result => {
-    cs.pendingClassifyTaskId = null;
+    cs._classifyTaskId = null;
     if (result.cancelled) return;
-    const { state, summary, background } = parseClassifyResult(result.text);
+    const res = parseClassifyResult(result.text);
 
-    // Update task goal if classify returned a good one (merged prompt path)
-    if (summary && summary.length >= 2 && cs.currentTask && priorGoal !== summary) {
-      // Don't overwrite a good goal with garbage
-      const _g = summary.toLowerCase();
-      const _garbage = /api\s*error|insufficient\s*balance|自动恢复|异常中断|claude exited|status[_= ]?5\d\d|\b40[0-9]\b|\b50[0-9]\b/.test(_g)
-        || (/\berror\b/.test(_g) && summary.length < 12);
-      if (!_garbage && summary.length <= 40) {
-        cs.currentTask.goal = summary;
-        setTaskState(sessionName, { goal: summary });
+    // ── Update goal ──
+    if (res.goal && res.goal !== '—' && cs.currentTask) {
+      if (res.goal !== (cs.currentTask.goal || '')) {
+        cs.currentTask.goal = res.goal;
+        setTaskState(sessionName, { goal: res.goal });
       }
     }
 
+    // ── Update phase ──
+    if (res.phase && cs.currentTask) {
+      cs.currentTask.phase = res.phase;
+    }
+
+    // ── Decide outcome ──
     const persistedRec = persistedSessions.get(sessionName);
-    if (background && persistedRec?.autoContinue && !waitInjector.hasWait(sessionName)) {
-      setSessionSummary(sessionId, summary);
+    const goal = cs.currentTask?.goal || '';
+
+    // B + autoContinue: kick off background wait loop
+    if (res.background && persistedRec?.autoContinue && !waitInjector.hasWait(sessionName)) {
+      setSessionSummary(sessionId, goal || res.goal);
       console.log(`[multicc/aux] Classify for ${sessionName}: background → auto-continue`);
       waitInjector.autoContinue(sessionName, { cwd: cs.cwd });
       return;
     }
     waitInjector.resetAuto(sessionName);
-    const goal = cs.currentTask?.goal || '';
-    const doneMsg = goal ? `任务完成：${goal}` : (summary ? `任务完成：${summary}` : '任务完成');
-    const msg = state === 'waiting' ? '等待交互' : doneMsg;
-    triggerPush(sessionId, state, `[Chat] ${msg}`);
-    chatBroadcast(sessionName, { type: 'notify', state, message: msg });
-    const dirId = persistedSessions.get(sessionName)?.dirId;
-    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state, message: msg });
-    setSessionSummary(sessionId, goal || summary);
+
     if (!cs.isStreaming) {
-      setSessionStatus(sessionName, { status: state });
+      // Turn is over — apply the final C/W/B
+      const doneMsg = goal ? `任务完成：${goal}` : '任务完成';
+      const msg = res.state === 'waiting' ? '等待交互' : doneMsg;
+      triggerPush(sessionId, res.state, `[Chat] ${msg}`);
+      chatBroadcast(sessionName, { type: 'notify', state: res.state, message: msg });
+      const dirId = persistedSessions.get(sessionName)?.dirId;
+      if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: res.state, message: msg });
+      setSessionSummary(sessionId, goal);
+      setSessionStatus(sessionName, { status: res.state });
+      // Persist lifecycle for liveness probe
+      setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now(), lifecycle: res.state === 'waiting' ? 'waiting' : 'completed' }, { save: false });
+      console.log(`[multicc/aux] Classify RESULT for ${sessionName}: state=${res.state} goal=”${goal}” phase=${cs.currentTask?.phase || '?'}`);
+    } else {
+      // Turn still streaming — update the in-progress label
+      const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[cs.currentTask?.phase] || '';
+      const subLabel = phaseLabel ? ` · ${phaseLabel}` : '';
+      const label = `处理中：${goal}${subLabel}`;
+      emitRunningNotify(sessionName, label);
+      console.log(`[multicc/aux] Classify in-progress for ${sessionName}: goal=”${goal}” phase=${cs.currentTask?.phase || '?'}`);
     }
-    console.log(`[multicc/aux] Classify RESULT for ${sessionName}: raw="${result.text?.replace(/\n/g,'↵')?.slice(0,200)}" → ${state}${summary ? ` · ${summary}` : ''}`);
   }).catch((e) => {
     console.log(`[multicc/aux] Classify FAILED for ${sessionName}: ${e.message}`);
-    cs.pendingClassifyTaskId = null;
-    if (onError) onError(e);
+    cs._classifyTaskId = null;
   });
 }
 
-// ── Task start + in-progress summary ─────────────────────────────────────
-// The intent_classify path only fires AFTER a turn completes. Users also want
-// to know "what task is running" and "what's the current status" WHILE the
-// agent is still working. This does exactly that:
-//   • Task start: immediately stamp the stable task name derived from the user
-//     message so the dashboard / chat shows "处理中：memo图片更换" the instant
-//     the turn begins — no AI call, zero latency.
-//   • In-progress: every PROGRESS_SUMMARY_INTERVAL_MS while still streaming,
-//     ask the aux AI to summarize the assistant's current sub-action into ≤15
-//     chars, then combine with the stable task name as "处理中：xxx — 子动作"
-//     and fan it out via setSessionSummary + a `running` notify event
-//     so both the workspace board and chat clients can display it.
-
-function briefTaskDescription(text) {
-  let brief = (text || '').trim().replace(/\s+/g, ' ');
-  // Strip common goal-mode wrapper if present
-  brief = brief.replace(/^【[^】]*】\s*/, '');
-  if (brief.length > 40) brief = brief.slice(0, 40) + '…';
-  return brief || '新任务';
+// Schedule the in-progress classify loop. Called once at turn start; re-arms
+// itself every CLASSIFY_INTERVAL_MS while the session is still streaming.
+function scheduleClassifyLoop(cs, sessionName) {
+  cancelClassify(cs);
+  cs._classifyTimer = setTimeout(() => {
+    cs._classifyTimer = null;
+    if (!cs.isStreaming) return; // stop — turn finished
+    runClassifyNow(cs, sessionName);
+    // Re-arm for the next cycle
+    if (cs.isStreaming) scheduleClassifyLoop(cs, sessionName);
+  }, CLASSIFY_INTERVAL_MS);
 }
 
-// ── Closed-loop task model (step 2) ─────────────────────────────────────────
-// Replaces the bare currentTaskName string with a currentTask object carrying
-// a stable, model-generated goal + phase + steps. The goal is a noun-phrase
-// describing the closed-loop task (e.g. "把发送按钮改成主色调蓝并适配深色模式"),
-// NOT a truncated copy of the user's latest one-shot message. Falls back to
-// briefTaskDescription synchronously so the first frame is zero-latency, then
-// refines asynchronously via the aux AI.
+// Fire classify immediately after a turn ends (no 30s delay needed — classify
+// is now the ONLY decider of C/W/B, so we want the answer as fast as possible).
+function classifyTurnEnd(cs, sessionName) {
+  cancelClassify(cs); // stop the in-progress loop
+  const text = cs.currentAssistantText;
+  if (!text || text.length < 20) return;
+  // Run now — the model already stopped, there's no more output coming.
+  runClassifyNow(cs, sessionName);
+}
+// to know "what task is running" and "what's the current status" WHILE the
+// agent is still working. This does exactly that:
+// ── Closed-loop task model ─────────────────────────────────────────────────
+// The goal starts as a synchronous brief fallback (zero-latency first frame) and
+// is refined by the in-progress classify loop every 60s.
 function newCurrentTask(goal) {
   return {
     goal: goal || '新任务',
@@ -7077,59 +6959,15 @@ function newCurrentTask(goal) {
   };
 }
 
-// Ask the aux AI for a stable, noun-phrase closed-loop goal based on the recent
-// user messages + the current one. Fire-and-forget; on resolve, if the session
-// is still on the same turn, swap goal in. Best-effort: any failure leaves the
-// synchronous briefTaskDescription fallback in place.
-function generateTaskGoal(cs, sessionName, userText) {
-  if (!cs || !cs.currentTask) return;
-  const recentUserMsgs = getRecentUserMessages(sessionName, 3);
-  const ctx = recentUserMsgs.length > 0
-    ? recentUserMsgs.map((m, i) => `${i + 1}. ${m.slice(0, 300)}`).join('\n')
-    : '（无历史）';
-  const priorGoal = cs.currentTask.goal || '';
-  const prompt = `你是任务目标提炼器。根据用户最近几轮消息，提炼出「当前正在做的这个闭环任务的目标」，要求：
-- 用不超过 25 个汉字的名词性短语描述任务目标（如"把发送按钮改成主色调蓝并适配深色模式""给目录卡片加事件时间线并默认折叠"），动词或名词开头均可，但必须是一个完整任务目标，不是某个具体动作
-- 如果最近几轮消息围绕的是同一个任务，请保持与已有目标一致（可微调措辞，但不要换任务）
-- 不要输出"修改CSS样式""运行测试"这种脱离目标的动作片段
-- 严格忽略反问、确认、推进类消息（如"你这是已经改完了吗""做到哪了""继续"），这些不是任务目标，不要把它们提炼成目标
-- 只输出目标这一句，不要解释、不要前缀、不要引号
-
-已有目标（若有，请保持一致）：${priorGoal || '（无）'}
-
-最近几轮用户消息：
-${ctx}
-
-当前这轮用户消息：
-${(userText || '').slice(0, 500)}
-
-请直接输出任务目标：`;
-  const turnSeq = cs.currentTask.turnSeq;
-  if (auxQueue.isUnhealthy()) return;  // ④ degraded: keep the brief fallback goal
-  auxQueue.enqueue({ type: 'task_goal', prompt, meta: { sessionName } })
-    .then(result => {
-      // Only accept if the session hasn't moved on to a new task/turn.
-      if (!cs.currentTask || cs.currentTask.turnSeq !== turnSeq) return;
-      let goal = (result && result.text || '').trim().replace(/^[\s"'']+|[\s"'']+$/g, '');
-      goal = goal.replace(/^(任务目标[:：]|目标[:：])\s*/, '');
-      // Reject garbage goals: API errors, auto-recovery banners, bare status
-      // text that the aux AI sometimes echoes when the recent context is full
-      // of errors rather than real task content. Keep the brief fallback.
-      const _g = goal.toLowerCase();
-      const _garbage = /api\s*error|insufficient\s*balance|自动恢复|异常中断|claude exited|status[_= ]?5\d\d|\b40[0-9]\b|\b50[0-9]\b/.test(_g)
-        || /\berror\b/.test(_g) && goal.length < 12;
-      if (_garbage) {
-        console.warn(`[multicc/aux] Task goal for ${sessionName} rejected as garbage: ${goal}`);
-      } else if (goal && goal !== '-' && goal !== '—' && goal.length <= 40) {
-        cs.currentTask.goal = goal;
-        setTaskState(sessionName, { goal });  // persist refined goal for restart reconcile
-        if (cs.isStreaming) {
-          emitRunningNotify(sessionName, `处理中：${goal}`);
-        }
-        console.log(`[multicc/aux] Task goal for ${sessionName}: ${goal}`);
-      }
-    })
-    .catch(e => console.warn(`[multicc/aux] Task goal ${sessionName} failed: ${e.message}`));
+// Synchronous, zero-latency fallback goal derived from the user's message.
+// Trims whitespace, strips the 【goal-mode】 wrapper, and caps length so the
+// dashboard/chat can show "what's running" instantly before the classify loop
+// refines it into a stable noun-phrase goal.
+function briefTaskDescription(text) {
+  let brief = (text || '').trim().replace(/\s+/g, ' ');
+  brief = brief.replace(/^【[^】]*】\s*/, '');
+  if (brief.length > 40) brief = brief.slice(0, 40) + '…';
+  return brief || '新任务';
 }
 
 function scheduleTaskGoal(cs, sessionName, userText) {
@@ -7156,10 +6994,8 @@ function cancelTaskGoal(cs) {
 
 // Ensure cs.currentTask exists for this turn. Continuation heuristic: prior task
 // exists, started < 10 min ago, not done → bump turnSeq, keep the goal (the async
-// generateTaskGoal prompt already asks the model to keep the goal stable across
-// turns of the same task, giving continuity cheaply without a per-turn model call
 // to decide continuity). Otherwise start a fresh task object with a synchronous
-// fallback goal that generateTaskGoal will refine async.
+// fallback goal that the in-progress classify loop will refine async.
 function ensureCurrentTask(cs, sessionName, userText) {
   if (!cs) return;
   const now = Date.now();
@@ -7264,86 +7100,6 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
   }
 }
 
-function startProgressSummary(cs, sessionName) {
-  cancelProgressSummary(cs);
-  cs.progressSummaryTimer = setTimeout(() => {
-    cs.progressSummaryTimer = null;
-    if (!cs.isStreaming) return;
-
-    const text = cs.currentAssistantText;
-    // Not enough output yet — wait another cycle.
-    if (!text || text.length < 50) {
-      cs.progressSummaryTimer = setTimeout(() => startProgressSummary(cs, sessionName), PROGRESS_SUMMARY_INTERVAL_MS);
-      return;
-    }
-
-    const tail = text.slice(-1500);
-    const taskName = (cs.currentTask && cs.currentTask.goal) || cs.currentTaskName || '未知任务';
-    if (auxQueue.isUnhealthy()) {
-      // ④ degraded: aux is down — show a rule-based label with no "phase: progress"
-      // detail, and keep rescheduling so we recover automatically when aux heals.
-      emitRunningNotify(sessionName, `处理中：${taskName}`);
-      if (cs.isStreaming) cs.progressSummaryTimer = setTimeout(() => startProgressSummary(cs, sessionName), PROGRESS_SUMMARY_INTERVAL_MS);
-      return;
-    }
-    auxQueue.enqueue({
-      type: 'progress_summary',
-      prompt: `当前闭环任务目标：「${taskName}」
-
-请用一句话概括这个任务当前进展到哪个阶段、刚做了什么，格式为「{阶段}：{进展}」。
-- 阶段必须是以下之一：规划中 / 实现中 / 验证中 / 收尾中
-- 进展要带上与任务目标的关系，例如「实现中：已改发送按钮 color，正在处理深色模式适配」「验证中：跑了 build 通过，正在查深色模式渲染」
-- 禁止只输出「修改CSS样式」「运行单元测试」这种脱离目标的动词片段
-- 总长不超过 25 个汉字，只输出这一句，不要解释、不要前缀、不要引号
-
-回复内容：
-${tail}`,
-      meta: { sessionName },
-    }).then(result => {
-      if (result.cancelled) return;
-      if (!cs.isStreaming) return; // turn finished while we were asking
-      const subAction = (result.text || '').trim().replace(/^["'']|["'']$/g, '').slice(0, 40);
-      // Parse the phase prefix (e.g. "实现中：...") back into currentTask.phase
-      // so the closed-loop task object tracks where we are, not just the latest verb.
-      if (cs.currentTask) {
-        const pm = subAction.match(/^(规划中|实现中|验证中|收尾中)/);
-        if (pm) {
-          const phaseMap = { '规划中': 'planning', '实现中': 'implementing', '验证中': 'verifying', '收尾中': 'wrapping' };
-          cs.currentTask.phase = phaseMap[pm[1]] || cs.currentTask.phase;
-        }
-      }
-      if (subAction && subAction !== '-' && subAction !== '—') {
-        const taskName = (cs.currentTask && cs.currentTask.goal) || cs.currentTaskName || '新任务';
-        const label = `处理中：${taskName} · ${subAction}`;
-        emitRunningNotify(sessionName, label);
-        console.log(`[multicc/aux] Progress summary for ${sessionName}: ${label}`);
-      }
-      // Reschedule for the next cycle
-      if (cs.isStreaming) {
-        cs.progressSummaryTimer = setTimeout(() => startProgressSummary(cs, sessionName), PROGRESS_SUMMARY_INTERVAL_MS);
-      }
-    }).catch(() => {
-      // Reschedule even on failure
-      if (cs.isStreaming) {
-        cs.progressSummaryTimer = setTimeout(() => startProgressSummary(cs, sessionName), PROGRESS_SUMMARY_INTERVAL_MS);
-      }
-    });
-  }, PROGRESS_SUMMARY_INTERVAL_MS);
-}
-
-function cancelProgressSummary(cs) {
-  cancelTaskGoal(cs);
-  if (cs.progressSummaryTimer) {
-    clearTimeout(cs.progressSummaryTimer);
-    cs.progressSummaryTimer = null;
-  }
-}
-
-// Run one chat turn end-to-end: build prompt → spawn the CLI → stream events to
-// clients → persist the assistant message. Extracted from the WS handler so the
-// dispatch path can drive a session with no connected client. opts.isFirstTurn
-// forces first-turn spawn semantics; opts.originDispatchId, when set, pushes the
-// final assistant text back to WeChat once the turn completes (auto-回流).
 // ── Folder-based session memory ────────────────────────────────────────────
 // Each session gets its own on-disk memory folder, plus a shared folder scoped
 // to the owning directory (the "mother folder"). Stored OUTSIDE user repos
@@ -7695,7 +7451,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
     // (flagged just above) falls back to 'idle'. The close/finalize handler has
     // the final say and corrects this if the process then dies abnormally.
     setSessionStatus(sessionName, { status: cs._sawApiError ? 'idle' : 'completed', currentFile: null });
-    scheduleIntentClassify(cs, sessionName);
+    classifyTurnEnd(cs, sessionName);
     // Anti-pattern guard (E): if this turn launched a run_in_background Bash and
     // Decoupled via the bus so chat doesn't depend on the triggers domain.
     bus.emit('chat:turn-complete', sessionName, cs);
@@ -7740,39 +7496,14 @@ function runChatTurn(sessionName, text, opts = {}) {
       currentCost: null,
       isStreaming: false,
       streamReplay: [],
-      recentClientMsgIds: [],
-      recentClientMsgIdSet: new Set(),
-      pendingClassifyTimer: null,
-      pendingClassifyTaskId: null,
-      taskGoalTimer: null,
-      progressSummaryTimer: null,
+      _classifyTimer: null,
+      _classifyTaskId: null,
     };
     chatSessions.set(sessionName, cs);
   }
 
-  if (!cs.recentClientMsgIds) cs.recentClientMsgIds = [];
-  if (!cs.recentClientMsgIdSet) cs.recentClientMsgIdSet = new Set(cs.recentClientMsgIds);
-  if (clientMsgId && cs.recentClientMsgIdSet.has(clientMsgId)) {
-    console.warn(`[multicc/chat] [${sessionName}] dropped duplicate client message id=${clientMsgId}`);
-    return false;
-  }
-  const busySameText = !originContinue && !originTrigger && !originDispatchId &&
-    (cs.isStreaming || cs.claudeProc) && cs.currentUserText === text;
-  if (busySameText) {
-    console.warn(`[multicc/chat] [${sessionName}] dropped duplicate in-flight user message (${text.length} chars)`);
-    return false;
-  }
-  if (clientMsgId) {
-    cs.recentClientMsgIds.push(clientMsgId);
-    cs.recentClientMsgIdSet.add(clientMsgId);
-    while (cs.recentClientMsgIds.length > 80) {
-      const old = cs.recentClientMsgIds.shift();
-      if (old) cs.recentClientMsgIdSet.delete(old);
-    }
-  }
-
-  cancelPendingClassify(cs);
-  cancelProgressSummary(cs);
+  cancelClassify(cs);
+  cancelClassify(cs);
   // Kill previous process if still running
   if (cs.claudeProc) {
     console.log(`[multicc/chat] [${sessionName}] New user_message while claude pid=${cs.claudeProc.pid} still running, killing previous turn`);
@@ -7820,9 +7551,8 @@ function runChatTurn(sessionName, text, opts = {}) {
   // Reset accumulators
   cs.currentAssistantText = '';
   cs.currentUserText = text;          // store user message for summary context
-  // Closed-loop task model: ensure a currentTask object for this turn. The goal
-  // starts as a synchronous brief fallback (zero-latency first frame) and is
-  // refined async by generateTaskGoal into a stable noun-phrase task goal.
+  // Synchronous task goal fallback (zero-latency first frame); the in-progress
+  // classify loop will refine it to a stable noun-phrase goal within 60s.
   ensureCurrentTask(cs, sessionName, text);
   cs.currentTaskName = cs.currentTask ? cs.currentTask.goal : briefTaskDescription(text); // compat for legacy callers
   cs.currentToolCalls = [];
@@ -7842,11 +7572,10 @@ function runChatTurn(sessionName, text, opts = {}) {
 
   // Task start: immediately stamp a brief description so the dashboard / chat
   // shows "what's running" the instant the turn begins — no AI call, zero
-  // latency. The in-progress aux-AI summary will refine it ~45s later.
-  cancelProgressSummary(cs);
-  scheduleTaskGoal(cs, sessionName, text);
+  // latency. The in-progress classify loop will refine it every 60s.
+  cancelClassify(cs);
   emitRunningNotify(sessionName, `处理中：${(cs.currentTask && cs.currentTask.goal) || cs.currentTaskName || '新任务'}`);
-  startProgressSummary(cs, sessionName);
+  scheduleClassifyLoop(cs, sessionName);
   // Marks this turn as initiated by an auto-trigger, so post-turn triggers
   // don't recurse on their own output (see firePostTurnTriggers).
   cs._originTrigger = !!originTrigger;
@@ -8102,7 +7831,7 @@ function runChatTurn(sessionName, text, opts = {}) {
           // turn.completed only fires on a clean codex turn (errors emit
           // 'error'/'turn.failed'), so this rests at 'completed'.
           setSessionStatus(sessionName, { status: 'completed', currentFile: null });
-          scheduleIntentClassify(cs, sessionName);
+          classifyTurnEnd(cs, sessionName);
           return;
         }
         // ── Codex error / turn failure ──
@@ -8311,11 +8040,16 @@ function runChatTurn(sessionName, text, opts = {}) {
       if (killReason) {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       } else if (sawApi || hadCodexError || kind === 'nonzero_exit' || kind === 'signaled') {
-        // Don't immediately stamp "出现异常" — retry classify with linear backoff
-        // so transient network blips don't leave permanent error labels.
-        retryClassifyAfterError(cs, sessionName, 0);
+        // Transient API error — classify will re-assess from whatever text we got.
+        // If aux is unhealthy, classifyTurnEnd is a no-op (gate ⑦), so we fall
+        // through to idle.
+        classifyTurnEnd(cs, sessionName);
+        if (auxQueue.isUnhealthy()) {
+          setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+        }
       } else if (kind === 'normal') {
-        emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
+        // Clean exit — classifyTurnEnd is the single decider of C/W/B.
+        classifyTurnEnd(cs, sessionName);
       } else {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       }
@@ -8540,7 +8274,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
 function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
   cs.isStreaming = false;
-  cancelProgressSummary(cs);
+  cancelClassify(cs);
   cs.streamReplay = [];
   // applyClaudeChatEvent already saved on the `result` event (cs._resultSaved);
   // this only fires for an interrupted/aborted turn that has partial output.
@@ -8568,7 +8302,7 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   // Resting status: API/transport error → error ('出现异常', alerts); a clean
   // result → completed ('任务完成'); an aborted/partial turn → idle.
   if (sawApi) {
-    cancelPendingClassify(cs);
+    cancelClassify(cs);
     emitTurnOutcome(sessionName, { status: 'error', notifyState: 'error', message: '出现异常', alert: true });
   } else if (completedOk) {
     emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
@@ -8641,12 +8375,8 @@ function handleChatWs(ws, req, urlObj) {
       currentCost: null,
       isStreaming: false,
       streamReplay: [],
-      recentClientMsgIds: [],
-      recentClientMsgIdSet: new Set(),
-      pendingClassifyTimer: null,
-      pendingClassifyTaskId: null,
-      taskGoalTimer: null,
-      progressSummaryTimer: null,
+      _classifyTimer: null,
+      _classifyTaskId: null,
     };
     chatSessions.set(sessionName, cs);
   }
@@ -8761,13 +8491,12 @@ function handleChatWs(ws, req, urlObj) {
 
       // Typing signal: user is composing → cancel pending intent classify
       if (msg.type === 'typing') {
-        cancelPendingClassify(cs);
+        cancelClassify(cs);
         return;
       }
 
       if (msg.type === 'cancel') {
-        cancelPendingClassify(cs);
-        cancelProgressSummary(cs);
+        cancelClassify(cs);
         if (persisted.streaming && cs.cli === 'claude' && chatStream.isAlive(sessionName)) {
           console.log(`[multicc/chat] [${sessionName}] (streaming) cancel requested by user`);
           cs._killReason = 'user_cancel';
@@ -9531,9 +9260,6 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
       syncSharedSkills();                           // periodic forward sync
     }, 5 * 60 * 1000).unref();
     reconcileAllTriggers();
-    // ②: re-judge tasks that were running when the server crashed/restarted.
-    // Delay 5s so aux warms up and WS clients reconnect before we broadcast.
-    setTimeout(() => reconcileTasksAfterRestart(), 5000);
     artifacts.cleanup();
     setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
     // Liveness probe (⑤): nudge sessions whose task stalled after the turn ended.
