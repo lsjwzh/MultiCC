@@ -6824,7 +6824,11 @@ const CLASSIFY_INTERVAL_MS = 60000; // in-progress cadence
 
 function cancelClassify(cs) {
   if (cs._classifyTimer) { clearTimeout(cs._classifyTimer); cs._classifyTimer = null; }
-  if (cs._classifyTaskId) { auxQueue.cancel(cs._classifyTaskId); cs._classifyTaskId = null; }
+  // Don't cancel an in-flight classify — let it finish so its result (goal/phase)
+  // lands even if a new turn starts while it's running. Only clear the taskId so
+  // the next enqueue doesn't stomp on the same id. The in-flight one will resolve
+  // naturally and its .then() will see cs._classifyTaskId !== its id and skip.
+  cs._classifyTaskId = null;
 }
 
 // Parse the unified 3-line CHAT classify output (distinct from parseClassifyResult
@@ -6935,6 +6939,7 @@ function runClassifyNow(cs, sessionName) {
     prompt: buildClassifyPrompt({ priorGoal, userContext, userMsg, reply }),
     meta: { sessionName, sessionId },
   }).then(result => {
+    if (cs._classifyTaskId !== taskId) return; // superseded by a newer classify
     cs._classifyTaskId = null;
     if (result.cancelled) return;
     const res = parseTaskClassify(result.text);
