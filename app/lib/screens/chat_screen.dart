@@ -26,6 +26,11 @@ import 'file_browser_screen.dart';
 import 'settings_screen.dart';
 import 'share_messages_screen.dart';
 
+const double _chatDesktopBreakpoint = 760;
+const double _chatMaxContentWidth = 980;
+const double _chatMobileSidePadding = 12;
+const double _chatDesktopSidePadding = 16;
+
 /// Reusable chat view — expects a ChatProvider in the widget tree
 /// (provided by MainShell via ChangeNotifierProvider.value).
 class ChatView extends StatefulWidget {
@@ -183,7 +188,7 @@ class _ChatViewState extends State<ChatView> {
                 onSync: () => _syncWorktree(provider.sessionName),
               ),
             Expanded(child: _MessageList(scrollCtrl: _scrollCtrl)),
-            _CostBar(),
+            const _CenteredChatLane(child: _CostBar()),
             if (mergeReady)
               _MergeReadyBanner(
                 text: _mergeStatusText(_mergeStatus),
@@ -194,13 +199,43 @@ class _ChatViewState extends State<ChatView> {
                   sessionId: provider.sessionName,
                 ),
               ),
-            InputBar(
-              onPickSubagent: () => openAIConfigSheet(context,
-                  settings: widget.settings, sessionId: provider.sessionName),
+            _CenteredChatLane(
+              child: InputBar(
+                onPickSubagent: () => openAIConfigSheet(
+                  context,
+                  settings: widget.settings,
+                  sessionId: provider.sessionName,
+                ),
+              ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _CenteredChatLane extends StatelessWidget {
+  final Widget child;
+  const _CenteredChatLane({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final viewportWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width;
+        final laneWidth =
+            viewportWidth >= _chatDesktopBreakpoint &&
+                viewportWidth > _chatMaxContentWidth
+            ? _chatMaxContentWidth
+            : viewportWidth;
+        return Align(
+          alignment: Alignment.center,
+          child: SizedBox(width: laneWidth, child: child),
+        );
+      },
     );
   }
 }
@@ -3052,62 +3087,80 @@ class _MessageListState extends State<_MessageList> {
 
     _scrollToBottom();
 
-    return Stack(
-      children: [
-        ListView.builder(
-          controller: widget.scrollCtrl,
-          padding: const EdgeInsets.all(12),
-          itemCount: messages.length + (showThinking ? 1 : 0),
-          itemBuilder: (_, i) {
-            if (i == messages.length) return const ThinkingIndicator();
-            final msg = messages[i];
-            // WeChat-style time separator: show a centered time label only when
-            // this message is the first, or its gap from the previous message
-            // exceeds the threshold — so back-to-back turns stay uncluttered.
-            final prev = i > 0 ? messages[i - 1] : null;
-            final showTime =
-                prev == null ||
-                msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
-                    _timeSeparatorGapMinutes;
-            if (!showTime) return MessageBubble(message: msg);
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _TimeSeparator(time: msg.timestamp),
-                MessageBubble(message: msg),
-              ],
-            );
-          },
-        ),
-        if (_userScrolled)
-          Positioned(
-            bottom: 8,
-            right: 8,
-            child: GestureDetector(
-              onTap: () {
-                setState(() => _userScrolled = false);
-                _scrollToBottom();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final viewportWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width;
+        final desktop = viewportWidth >= _chatDesktopBreakpoint;
+        final contentWidth =
+            desktop && viewportWidth > _chatMaxContentWidth
+                ? _chatMaxContentWidth
+                : viewportWidth;
+        final sidePadding =
+            ((viewportWidth - contentWidth) / 2) +
+            (desktop ? _chatDesktopSidePadding : _chatMobileSidePadding);
+
+        return Stack(
+          children: [
+            ListView.builder(
+              controller: widget.scrollCtrl,
+              padding: EdgeInsets.fromLTRB(sidePadding, 12, sidePadding, 12),
+              itemCount: messages.length + (showThinking ? 1 : 0),
+              itemBuilder: (_, i) {
+                if (i == messages.length) return const ThinkingIndicator();
+                final msg = messages[i];
+                // WeChat-style time separator: show a centered time label only when
+                // this message is the first, or its gap from the previous message
+                // exceeds the threshold — so back-to-back turns stay uncluttered.
+                final prev = i > 0 ? messages[i - 1] : null;
+                final showTime =
+                    prev == null ||
+                    msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
+                        _timeSeparatorGapMinutes;
+                if (!showTime) return MessageBubble(message: msg);
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _TimeSeparator(time: msg.timestamp),
+                    MessageBubble(message: msg),
+                  ],
+                );
               },
-              child: Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF22ab9c),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Icon(
-                  Icons.keyboard_arrow_down,
-                  color: Colors.white,
-                  size: 20,
+            ),
+            if (_userScrolled)
+              Positioned(
+                bottom: 8,
+                right: 8,
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() => _userScrolled = false);
+                    _scrollToBottom();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF22ab9c),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Icon(
+                      Icons.keyboard_arrow_down,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-      ],
+          ],
+        );
+      },
     );
   }
 }
 
 class _CostBar extends StatelessWidget {
+  const _CostBar();
+
   @override
   Widget build(BuildContext context) {
     final costText = context.watch<ChatProvider>().costText;

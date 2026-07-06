@@ -5593,7 +5593,7 @@ const PROVIDER_PRESETS = [
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
   { key: 'codex-official', label: 'OpenAI（Codex 官方）', appType: 'codex', baseUrl: '', model: 'gpt-5.5', models: 'gpt-5.5\ngpt-5.4\ngpt-5.4-mini\ngpt-5.3-codex-spark', note: '走 ChatGPT 登录；Provider 是 OpenAI，模型在 Model 层选择' },
-  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopdeepseekv4pro', models: 'xopdeepseekv4pro\nxopglm52', useChatResponsesProxy: false, note: '直连 responses 协议；Provider 是讯飞，模型在 DeepSeek/GLM 间选择，档位在会话里选' },
+  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopdeepseekv4pro', models: 'xopdeepseekv4pro\nxopglm52', useChatResponsesProxy: true, note: '走本地 Codex 兼容代理；Provider 是讯飞，模型在 DeepSeek/GLM 间选择，档位在会话里选' },
 ];
 
 function providerModelList(primary, raw) {
@@ -5851,7 +5851,7 @@ function renderProviderList() {
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
-        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · chat→responses' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
+        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
@@ -5978,7 +5978,7 @@ function editProvider(appType, id) {
       ${textarea('模型列表', (p.modelOptions || []).join('\n'), '每行一个模型；留空则只使用 Model')}
       ${aliasSection}
       ${appType === 'codex' ? `<label style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;margin-bottom:10px">
-        <input id="ep-chat-proxy" type="checkbox" ${p.useChatResponsesProxy ? 'checked' : ''}> OpenAI chat 协议转 response 协议
+        <input id="ep-chat-proxy" type="checkbox" ${p.useChatResponsesProxy ? 'checked' : ''}> Codex 兼容代理
       </label>` : ''}
       ${keyField('', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置')}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">

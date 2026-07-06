@@ -593,6 +593,10 @@ let _reconnectTimer = null;
 let _historyLoaded = false;  // prevent duplicate history render across reconnects
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
+let _isDisconnected = false;
+let _disconnectEpisodeId = 0;
+let _lastReconnectNoticeEpisode = 0;
+let _lastInitInfoLine = '';
 let _hiddenAt = 0;
 
 function connect() {
@@ -622,8 +626,12 @@ function connect() {
     if (_disconnectBannerEl) {
       _disconnectBannerEl.remove();
       _disconnectBannerEl = null;
-      addSystemMsg('✓ 已重新连接');
+      if (_disconnectEpisodeId !== _lastReconnectNoticeEpisode) {
+        _lastReconnectNoticeEpisode = _disconnectEpisodeId;
+        addSystemMsg('✓ 已重新连接');
+      }
     }
+    _isDisconnected = false;
     _wasConnected = true;
     // Show thinking while we wait for server's init message (which tells us real streaming state)
     if (isStreaming) showThinking();
@@ -640,6 +648,10 @@ function connect() {
 
   ws.onclose = (e) => {
     dbg('ws', `onclose — code=${e.code} (isStreaming=${isStreaming})`);
+    if (_wasConnected && !_isDisconnected) {
+      _isDisconnected = true;
+      _disconnectEpisodeId++;
+    }
     // Don't reset isStreaming here — server may still be running.
     // UI stays in streaming state so user sees "reconnecting" rather than a broken state.
     updateUI();
@@ -656,6 +668,12 @@ function connect() {
   };
 
   ws.onerror = () => {};
+}
+
+function isRecoverableCodexReconnectErrorText(text) {
+  const s = String(text || '');
+  return /^Codex 出错：Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(s)
+    && /stream disconnected before completion|response\.completed/i.test(s);
 }
 
 /* ── Event handler ── */
@@ -700,7 +718,11 @@ function handleEvent(msg) {
         if (sessionId) parts.push(`Session: ${sessionId.slice(0, 8)}...`);
         if (msg.cli) parts.push(msg.cli);
         if (msg.model) parts.push(msg.model);
-        if (parts.length) addSystemMsg(parts.join(' | '));
+        const initInfoLine = parts.join(' | ');
+        if (initInfoLine && initInfoLine !== _lastInitInfoLine) {
+          _lastInitInfoLine = initInfoLine;
+          addSystemMsg(initInfoLine);
+        }
         if (msg.effort !== undefined) {
           _sessionEffort = msg.effort || '';
           _sessionEffectiveEffort = msg.effectiveEffort || _sessionEffort || 'medium';
@@ -903,6 +925,10 @@ function handleEvent(msg) {
     }
 
     case 'error':
+      if (isRecoverableCodexReconnectErrorText(msg.error || '')) {
+        console.warn('[multicc/chat] suppressed recoverable codex reconnect:', msg.error);
+        break;
+      }
       addSystemMsg(`Error: ${msg.error || JSON.stringify(msg)}`);
       isStreaming = false;
       finishStreaming();

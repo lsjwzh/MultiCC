@@ -371,7 +371,7 @@ class _ProviderCard extends StatelessWidget {
             Text(
               [
                 if (models.length > 1) '${models.length} models' else if (model.isNotEmpty) model,
-                if (proxied) 'chat→responses',
+                if (proxied) 'Codex proxy',
                 if (tokenMask.isNotEmpty) tokenMask,
               ].join(' · '),
               style: const TextStyle(color: AppColors.faint, fontSize: 11.5, fontFamily: 'monospace'),
@@ -608,7 +608,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
                 dense: true,
                 value: _useChatResponsesProxy,
                 activeColor: AppColors.accent,
-                title: const Text('OpenAI chat 协议转 response 协议',
+                title: const Text('Codex 兼容代理',
                     style: TextStyle(color: AppColors.text, fontSize: 13.5)),
                 subtitle: const Text('勾选后运行时使用本地代理；列表中仍显示你填写的 Base URL。',
                     style: TextStyle(color: AppColors.faint, fontSize: 12)),

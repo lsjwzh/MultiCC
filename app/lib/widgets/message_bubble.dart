@@ -229,29 +229,36 @@ class _UserBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerRight,
-      child: GestureDetector(
-        onLongPress: () => _showMessageActions(context, message),
-        child: Container(
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: const BoxDecoration(
-            color: Color(0xFF22ab9c),
-            borderRadius: BorderRadius.only(
-              topLeft: Radius.circular(12),
-              topRight: Radius.circular(12),
-              bottomLeft: Radius.circular(12),
-              bottomRight: Radius.circular(4),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final laneWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width;
+        return Align(
+          alignment: Alignment.centerRight,
+          child: GestureDetector(
+            onLongPress: () => _showMessageActions(context, message),
+            child: Container(
+              constraints: BoxConstraints(maxWidth: laneWidth * 0.85),
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: const BoxDecoration(
+                color: Color(0xFF22ab9c),
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(12),
+                  topRight: Radius.circular(12),
+                  bottomLeft: Radius.circular(12),
+                  bottomRight: Radius.circular(4),
+                ),
+              ),
+              child: Text(
+                message.content,
+                style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.5),
+              ),
             ),
           ),
-          child: Text(
-            message.content,
-            style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.5),
-          ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -265,48 +272,55 @@ class _AssistantBubble extends StatelessWidget {
     final hasText = message.content.trim().isNotEmpty;
     final hasTools = message.toolCalls.isNotEmpty;
 
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: GestureDetector(
-        onLongPress: () => _showMessageActions(context, message),
-        child: Container(
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.92),
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0f1115),
-            border: Border.all(color: const Color(0xFF20242b)),
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(12),
-              topRight: Radius.circular(12),
-              bottomRight: Radius.circular(12),
-              bottomLeft: Radius.circular(4),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final laneWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width;
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: GestureDetector(
+            onLongPress: () => _showMessageActions(context, message),
+            child: Container(
+              constraints: BoxConstraints(maxWidth: laneWidth * 0.92),
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0f1115),
+                border: Border.all(color: const Color(0xFF20242b)),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(12),
+                  topRight: Radius.circular(12),
+                  bottomRight: Radius.circular(12),
+                  bottomLeft: Radius.circular(4),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (hasText)
+                    _MarkdownContent(
+                      text: message.content,
+                      isStreaming: message.isStreaming,
+                    ),
+                  if (hasTools) ToolCallGroup(toolCalls: message.toolCalls),
+                  if (!hasText && !hasTools && message.isStreaming)
+                    const _StreamingDot(),
+                  // Token usage line
+                  if (message.usage != null && !message.usage!.isEmpty)
+                    _TokenUsageLine(usage: message.usage!),
+                  // Timing line: reply timestamp + task duration
+                  if (message.durationMs != null)
+                    _TimingLine(
+                      timestamp: message.timestamp,
+                      durationMs: message.durationMs,
+                    ),
+                ],
+              ),
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (hasText)
-                _MarkdownContent(
-                  text: message.content,
-                  isStreaming: message.isStreaming,
-                ),
-              if (hasTools) ToolCallGroup(toolCalls: message.toolCalls),
-              if (!hasText && !hasTools && message.isStreaming)
-                const _StreamingDot(),
-              // Token usage line
-              if (message.usage != null && !message.usage!.isEmpty)
-                _TokenUsageLine(usage: message.usage!),
-              // Timing line: reply timestamp + task duration
-              if (message.durationMs != null)
-                _TimingLine(
-                  timestamp: message.timestamp,
-                  durationMs: message.durationMs,
-                ),
-            ],
-          ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
