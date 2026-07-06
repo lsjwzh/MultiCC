@@ -7042,7 +7042,10 @@ function ensureCurrentTask(cs, sessionName, userText) {
   }
   // No rule-based goal from userText — the classify loop (fired right after this
   // at turn start)提炼 the real goal, ignoring greetings / injected system text.
-  cs.currentTask = newCurrentTask('');
+  // If the prior task has a classify-refined goal, carry it forward so the "新任务"
+  // placeholder doesn't overwrite a valid goal before classify has a chance to run.
+  const carryGoal = (prev && prev.goal && prev.goal !== '新任务' && !isInjectedOrJunkGoal(prev.goal)) ? prev.goal : '';
+  cs.currentTask = newCurrentTask(carryGoal);
   cs.currentTask.turnSeq = 1;
   // Persist the new task snapshot so a mid-task restart can reconcile it (②).
   setTaskState(sessionName, {
