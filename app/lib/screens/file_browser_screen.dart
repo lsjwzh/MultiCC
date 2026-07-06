@@ -225,7 +225,7 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
       list.add(const Padding(
         padding: EdgeInsets.all(32),
         child: Center(
-          child: Text('目录为空',
+          child: Text('Fleet为空',
               style: TextStyle(color: Color(0xFF5b616c), fontSize: 13)),
         ),
       ));

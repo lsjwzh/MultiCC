@@ -109,7 +109,7 @@ class _CronScreenState extends State<CronScreen> {
 
   Future<void> _openEditor({CronTask? task}) async {
     if (_dirs.isEmpty) {
-      _snack('请先在 App 首页创建至少一个目录');
+      _snack('请先在 App 首页创建至少一个Fleet');
       return;
     }
     final saved = await showModalBottomSheet<bool>(
@@ -161,7 +161,7 @@ class _CronScreenState extends State<CronScreen> {
                           _EmptyView(
                             icon: Icons.alarm_off_rounded,
                             title: '暂无定时任务',
-                            subtitle: '点右下角「新建」，到点会自动唤起目录里的会话执行你写的指令。',
+                            subtitle: '点右下角「新建」，到点会自动唤起Fleet里的会话执行你写的指令。',
                           ),
                         ])
                       : ListView.separated(
@@ -424,7 +424,7 @@ class _CronEditorState extends State<_CronEditor> {
             const _FieldLabel('任务名'),
             _input(_name, hint: '例如：每天早报'),
             const SizedBox(height: 14),
-            const _FieldLabel('目标目录'),
+            const _FieldLabel('目标Fleet'),
             Container(
               decoration: BoxDecoration(
                 color: AppColors.panel2,

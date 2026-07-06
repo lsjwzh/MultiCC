@@ -3552,7 +3552,7 @@ class SessionCard extends StatelessWidget {
                           ),
                         _menuItem('diff', Icons.difference_outlined, '查看 Diff'),
                         _menuItem('rebase', Icons.call_merge_rounded, 'Rebase 解决冲突'),
-                        _menuItem('relocate', Icons.drive_file_move_outline, '迁移到其他目录'),
+                        _menuItem('relocate', Icons.drive_file_move_outline, '迁移到其他Fleet'),
                         _menuItem('note', Icons.mail_outline_rounded, '留言'),
                         if (session.isTerminal)
                           _menuItem(
@@ -3662,7 +3662,7 @@ class SessionCard extends StatelessWidget {
     if (siblings.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('该目录下没有其他会话可留言')));
+      ).showSnackBar(const SnackBar(content: Text('该Fleet下没有其他会话可留言')));
       return;
     }
     final messenger = ScaffoldMessenger.of(context);
@@ -3937,7 +3937,7 @@ class SessionCard extends StatelessWidget {
     final candidates = mgr.directories.where((d) => d.id != session.dirId).toList();
     if (candidates.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('没有其他目录可迁移')));
+          const SnackBar(content: Text('没有其他Fleet可迁移')));
       return;
     }
     String targetId = candidates.first.id;
@@ -3946,14 +3946,14 @@ class SessionCard extends StatelessWidget {
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF0f1115),
-          title: const Text('迁移到其他目录',
+          title: const Text('迁移到其他Fleet',
               style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7))),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                '在目标目录创建新 worktree，删除当前 worktree。会话 ID 与历史保留。',
+                '在目标Fleet创建新 worktree，删除当前 worktree。会话 ID 与历史保留。',
                 style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
               ),
               const SizedBox(height: 10),
@@ -3994,7 +3994,7 @@ class SessionCard extends StatelessWidget {
       final result = await SessionService(settings: settings)
           .relocateSession(session.id, targetId);
       final msg = result['ok'] == true
-          ? '✓ 已迁移到目标目录'
+          ? '✓ 已迁移到目标Fleet'
           : '迁移失败：${result['error'] ?? ''}';
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text(msg)));
@@ -4531,7 +4531,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
               controller: _roleCtrl,
               maxLines: 3,
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(hint: '可选，留空继承目录默认'),
+              decoration: _inputDec(hint: '可选，留空继承Fleet默认'),
             ),
             const SizedBox(height: 12),
             // ── Provider ──

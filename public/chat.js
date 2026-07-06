@@ -319,7 +319,7 @@ async function openMemo() {
 
   if (!dirId) {
     const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '无法确定目录ID，会话可能没有归属目录';
+    if (statusEl) statusEl.textContent = '无法确定FleetID，会话可能没有归属Fleet';
     mm.classList.add('open');
     return;
   }
@@ -411,7 +411,7 @@ async function memoOpenPicker() {
       .filter(s => s.dirId === dirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
     if (!sessions.length) {
       const statusEl = document.getElementById('memo-status');
-      if (statusEl) statusEl.textContent = '该目录还没有 chat 会话，请先新建一个';
+      if (statusEl) statusEl.textContent = '该Fleet还没有 chat 会话，请先新建一个';
       return;
     }
     const preview = document.getElementById('memo-picker-preview');
@@ -2279,7 +2279,7 @@ async function requestMerge() {
       refreshMergeStatus();
     } else if (res.status === 409) {
       addSystemMsg('⚠️ 合并冲突，已 abort，基分支未改动。冲突文件：' + (data.conflicts || []).join(', '));
-      addSystemMsg('请打开一个该目录的终端会话手动解决冲突。');
+      addSystemMsg('请打开一个该Fleet的终端会话手动解决冲突。');
     } else {
       addSystemMsg('合并失败：' + (data.error || `HTTP ${res.status}`));
     }
@@ -3024,7 +3024,7 @@ function showRolePromptEditor(current) {
 
     const hint = document.createElement('div');
     hint.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
-    hint.textContent = '留空＝清除（会话将继承目录默认角色）。Ctrl/⌘+Enter 保存。';
+    hint.textContent = '留空＝清除（会话将继承Fleet默认角色）。Ctrl/⌘+Enter 保存。';
     box.appendChild(hint);
 
     const row = document.createElement('div');
@@ -3073,7 +3073,7 @@ roleBtn?.addEventListener('click', async () => {
     updateRoleBtn();
     addSystemMsg(_sessionRole
       ? '✓ 角色提示词已更新，下一轮对话生效'
-      : '✓ 已清除会话角色（继承目录默认），下一轮对话生效');
+      : '✓ 已清除会话角色（继承Fleet默认），下一轮对话生效');
   } catch (e) {
     addSystemMsg('角色保存失败：' + e.message);
   }

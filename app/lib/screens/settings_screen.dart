@@ -700,7 +700,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _NavTile(
                 icon: Icons.history,
                 title: '活动记录',
-                subtitle: '查看目录级事件流（完成 / 合并 / 推送 等）',
+                subtitle: '查看Fleet级事件流（完成 / 合并 / 推送 等）',
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute<void>(

@@ -35,7 +35,7 @@ async function openMemo() {
 
   if (!dirId) {
     const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '无法确定目录ID，会话可能没有归属目录';
+    if (statusEl) statusEl.textContent = '无法确定FleetID，会话可能没有归属Fleet';
     mm.style.display = 'flex';
     return;
   }
@@ -126,7 +126,7 @@ async function memoOpenPicker() {
       .filter(s => s.dirId === dirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
     if (!sessions.length) {
       const statusEl = document.getElementById('memo-status');
-      if (statusEl) statusEl.textContent = '该目录还没有 chat 会话，请先新建一个';
+      if (statusEl) statusEl.textContent = '该Fleet还没有 chat 会话，请先新建一个';
       return;
     }
     const preview = document.getElementById('memo-picker-preview');
@@ -1391,7 +1391,7 @@ relocateInput.addEventListener('keydown', (e) => {
 relocateConfirm.addEventListener('click', async () => {
   const newCwd = relocateInput.value.trim();
   if (!newCwd) {
-    relocateError.textContent = '请输入目录路径';
+    relocateError.textContent = '请输入Fleet路径';
     relocateError.style.display = 'block';
     return;
   }
@@ -1413,7 +1413,7 @@ relocateConfirm.addEventListener('click', async () => {
     relocateError.style.display = 'block';
   } finally {
     relocateConfirm.disabled = false;
-    relocateConfirm.textContent = '切换目录';
+    relocateConfirm.textContent = '切换Fleet';
   }
 });
 
@@ -1490,7 +1490,7 @@ function renderFiles({ path: dir, parent, files }) {
   }
 
   if (files.length === 0) {
-    filesList.innerHTML += '<div style="padding:16px 12px; font-size:12px; color:#6e7681;">目录为空</div>';
+    filesList.innerHTML += '<div style="padding:16px 12px; font-size:12px; color:#6e7681;">Fleet为空</div>';
     return;
   }
 
@@ -1656,7 +1656,7 @@ let _initAllDirs     = []; // full directory list for filtering
 let _initParent      = ''; // parent path for ".." entry
 
 function showInitCwdPicker() {
-  setStatus('disconnected', '请选择工作目录');
+  setStatus('disconnected', '请选择工作Fleet');
   if (!initCwdModal) { console.error('[multicc] init-cwd-modal not found'); connect(); return; }
   // Show modal FIRST, before anything that might throw
   initCwdModal.style.display = 'flex';
@@ -1698,7 +1698,7 @@ function renderInitDirs(dirs) {
       <span style="font-size:12px;color:#79c0ff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.name}</span>
     </div>`;
   }
-  if (!dirs.length && !_initParent) html = '<div style="padding:12px;font-size:12px;color:#8b949e;">无匹配目录</div>';
+  if (!dirs.length && !_initParent) html = '<div style="padding:12px;font-size:12px;color:#8b949e;">无匹配Fleet</div>';
   initCwdBrowser.innerHTML = html;
   initCwdBrowser.querySelectorAll('.file-item').forEach(el => {
     el.addEventListener('click', () => loadInitDirs(el.dataset.path));

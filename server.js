@@ -564,6 +564,15 @@ const CODEX_ARGS = process.env.CODEX_ARGS ? process.env.CODEX_ARGS.split(' ') : 
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 console.log(`[multicc] Using codex: ${CODEX_CMD}`);
 
+// ── Global default CLI for auxiliary AI (intent classify, task summary, etc.) ──
+// Let (not const): hot-reloadable via POST /api/settings/default-cli (persists to
+// .env). 'claude' or 'codex'. Switching to codex means the aux queue, S2S confirm,
+// voice refine etc. run through the Codex CLI (which may reach a different provider).
+let DEFAULT_CLI = (process.env.DEFAULT_CLI || 'claude').trim().toLowerCase();
+if (DEFAULT_CLI !== 'claude' && DEFAULT_CLI !== 'codex') DEFAULT_CLI = 'claude';
+console.log(`[multicc] Default CLI for aux: ${DEFAULT_CLI}`);
+function auxCliCmd() { return DEFAULT_CLI === 'codex' ? CODEX_CMD : CLAUDE_CMD; }
+
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh']);
 function normalizeEffort(v) {
@@ -1125,30 +1134,25 @@ const persistedSessions = _state.persistedSessions;
 // they are migrated over. saveDirectories() remains as a delegate for them.
 const { createDirectoryModule } = require('./src/directory');
 
-// Seed a default Agent Commander chat session for a newly-registered directory
-// (session-domain logic, exposed to the directory domain via its session port).
+// Seed TWO default Agent Commander chat sessions for a newly-registered directory
+// (session-domain logic, exposed to the directory domain via its session port):
+// one under Claude, one under Codex — so every fleet has both CLI commanders.
 function seedCommanderSession(dir) {
-  const commander = agentCommanderPreset();
-  if (commander && commander.prompt) {
-    const enriched = enrichAgentPresetDefaults(commander);
-    const r = createSessionRecord({
-      dir,
-      cli: enriched.defaultCli === 'claude' ? 'claude' : 'codex',
-      kind: 'chat',
-      label: '🫡 Agent Commander',
-      provider: enriched.defaultProviderId || undefined,
-      model: enriched.defaultModel || null,
-      effort: enriched.defaultEffort || null,
-    });
+  const commander = agentCommanderPrompt();
+  if (!commander) {
+    console.warn('[multicc] Agent Commander preset not found; skipping seed sessions for new dir');
+    return;
+  }
+  for (const cli of ['claude', 'codex']) {
+    const label = cli === 'codex' ? '🫡 Agent Commander (Codex)' : '🫡 Agent Commander';
+    const r = createSessionRecord({ dir, cli, kind: 'chat', label });
     if (r.ok) {
       r.session.rolePrompt = commander.prompt;
       savePersistedSessions();
       appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
     } else {
-      console.warn(`[multicc] seed commander session failed for dir ${dir.id}: ${r.error}`);
+      console.warn(`[multicc] seed ${cli} commander session failed for dir ${dir.id}: ${r.error}`);
     }
-  } else {
-    console.warn('[multicc] Agent Commander preset not found; skipping seed session for new dir');
   }
 }
 
@@ -4386,6 +4390,25 @@ app.post('/api/settings/notify', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Global default CLI for auxiliary AI (Claude vs Codex) ──
+// Readable anywhere; POST is localhost-only. The `DEFAULT_CLI` variable is
+// hot-reloaded so the aux queue picks it up immediately.
+app.get('/api/settings/default-cli', (req, res) => {
+  res.json({ defaultCli: DEFAULT_CLI });
+});
+
+app.post('/api/settings/default-cli', (req, res) => {
+  if (!isLocalRequest(req)) return res.status(403).json({ error: '仅可在本机修改' });
+  const v = (req.body && req.body.defaultCli || '').toString().trim().toLowerCase();
+  if (v !== 'claude' && v !== 'codex') {
+    return res.status(400).json({ error: 'defaultCli 必须是 claude 或 codex' });
+  }
+  DEFAULT_CLI = v;
+  writeEnvFile({ DEFAULT_CLI: v });
+  console.log(`[multicc] Default CLI for aux switched to: ${DEFAULT_CLI}`);
+  res.json({ ok: true, defaultCli: DEFAULT_CLI });
+});
+
 // ── External tunnel monitor (花生壳 / Tailscale) ──
 app.get('/api/settings/tunnel', (req, res) => {
   res.json(tunnel.getStatus());
@@ -4940,23 +4963,32 @@ const auxQueue = {
       // re-applies only the chosen provider's env — so a leaked global override
       // (e.g. ANTHROPIC_DEFAULT_HAIKU_MODEL=DeepSeek-V4-pro from a cc-switch)
       // can't silently redirect the `haiku` alias and break every aux task.
-      const auxSession = { cli: 'claude', provider: auxConfig.providerId || null };
+      const useCodex = DEFAULT_CLI === 'codex';
+      const auxCli = useCodex ? 'codex' : 'claude';
+      const auxSession = { cli: auxCli, provider: auxConfig.providerId || null };
       const built = providers.buildChildEnv(process.env, auxSession, { TERM: 'dumb', NO_COLOR: '1' });
-      providers.applyClaudeProxyEnv(built.env, {
-        providerId: auxConfig.providerId || null, sessionId: 'aux',
-        port: PORT, enabled: CLAUDE_PROXY_ENABLED,
-        officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
-      });
+      if (!useCodex) {
+        // Claude path: route through the proxy if enabled (Codex uses its own upstream).
+        providers.applyClaudeProxyEnv(built.env, {
+          providerId: auxConfig.providerId || null, sessionId: 'aux',
+          port: PORT, enabled: CLAUDE_PROXY_ENABLED,
+          officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
+        });
+      }
       // Model precedence: explicit aux config wins; else if the provider routes
-      // elsewhere (custom base_url) let its own ANTHROPIC_MODEL decide (omit
-      // --model); else fall back to haiku on the default login.
-      const model = auxConfig.model || (built.skipDefaultModel ? null : 'haiku');
+      // elsewhere (custom base_url) let its own model env decide (omit --model);
+      // else fall back to haiku (Claude) or the Codex default (no --model needed).
+      let model = auxConfig.model || null;
+      if (!model && !built.skipDefaultModel) {
+        model = useCodex ? null : 'haiku';   // codex has its own default; Claude needs haiku
+      }
+      const cliCmd = auxCliCmd();
       const args = ['-p', '--output-format', 'stream-json', '--max-turns', '1', '--verbose'];
       if (model) args.splice(1, 0, '--model', model);
       const effort = cliEffortLevel({ cli: 'claude', effort: auxConfig.effort });
       if (effort) args.push('--effort', effort);
       args.push(task.prompt);
-      const proc = spawn(CLAUDE_CMD, args, {
+      const proc = spawn(cliCmd, args, {
         cwd: __dirname,
         env: built.env,
         stdio: ['ignore', 'pipe', 'pipe'],

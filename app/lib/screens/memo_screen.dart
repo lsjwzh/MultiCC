@@ -89,7 +89,7 @@ class _MemoScreenState extends State<MemoScreen> {
         .where((s) => s.dirId == widget.directory.id && s.kind == SessionKind.chat)
         .toList();
     if (sessions.isEmpty) {
-      setState(() => _status = '该目录还没有 chat 会话，请先新建一个');
+      setState(() => _status = '该Fleet还没有 chat 会话，请先新建一个');
       return;
     }
     final picked = await showModalBottomSheet<Session>(

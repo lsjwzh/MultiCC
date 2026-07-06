@@ -621,7 +621,7 @@
     <span id="status-label">Connecting…</span>
     <span id="session-label"></span>
     <div id="header-actions">
-      <button id="save-cwd-btn" class="hdr-btn" title="更改工作目录" style="display:none">📂</button>
+      <button id="save-cwd-btn" class="hdr-btn" title="更改工作Fleet" style="display:none">📂</button>
       <button id="files-btn" class="hdr-btn" title="文件浏览器">📁</button>
       <button id="notify-btn" class="hdr-btn" title="语音通知 (点击开启/关闭)">🔔</button>
       <a href="/wechat" class="hdr-btn" title="WeChat Bridge">💬</a>
@@ -673,12 +673,12 @@
   <!-- Initial directory picker modal (shown for new sessions) -->
   <div id="init-cwd-modal" style="display:none; position:fixed; inset:0; background:#000000cc; z-index:15000; align-items:center; justify-content:center;">
     <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; padding:24px; width:540px; max-width:92vw; box-shadow:0 16px 48px #00000099;">
-      <div style="font-size:16px; font-weight:700; color:#f0f6fc; margin-bottom:6px;">选择工作目录</div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:16px;">Claude Code 将在此目录中启动，请选择项目所在的目录</div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">目录路径</div>
+      <div style="font-size:16px; font-weight:700; color:#f0f6fc; margin-bottom:6px;">选择工作Fleet</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:16px;">Claude Code 将在此Fleet中启动，请选择项目所在的Fleet</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">Fleet路径</div>
       <input id="init-cwd-input" type="text"
         style="width:100%; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; font-size:13px; font-family:monospace; padding:8px 12px; outline:none; margin-bottom:8px; box-sizing:border-box;"
-        placeholder="输入目录路径，支持 ~ 和绝对路径…"
+        placeholder="输入Fleet路径，支持 ~ 和绝对路径…"
         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <div id="init-cwd-browser" style="max-height:240px; overflow-y:auto; border:1px solid #21262d; border-radius:6px; background:#0d1117; margin-bottom:12px;"></div>
       <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">Session ID（留空自动生成）</div>
@@ -697,18 +697,18 @@
   <!-- Relocate directory modal -->
   <div id="relocate-modal" style="display:none; position:fixed; inset:0; background:#00000099; z-index:10000; align-items:center; justify-content:center;">
     <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; padding:24px; width:500px; max-width:92vw; box-shadow:0 16px 48px #00000099;">
-      <div style="font-size:15px; font-weight:600; color:#f0f6fc; margin-bottom:16px;">更改工作目录</div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:4px;">当前目录</div>
+      <div style="font-size:15px; font-weight:600; color:#f0f6fc; margin-bottom:16px;">更改工作Fleet</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:4px;">当前Fleet</div>
       <div id="relocate-current" style="font-family:monospace; font-size:12px; color:#58a6ff; margin-bottom:16px; word-break:break-all; padding:6px 10px; background:#0d1117; border-radius:6px; border:1px solid #21262d;"></div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">新目录路径</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">新Fleet路径</div>
       <input id="relocate-input" type="text"
         style="width:100%; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; font-size:13px; font-family:monospace; padding:8px 12px; outline:none; margin-bottom:16px; box-sizing:border-box;"
-        placeholder="输入目录路径，支持 ~ 和相对路径…"
+        placeholder="输入Fleet路径，支持 ~ 和相对路径…"
         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <div id="relocate-error" style="font-size:12px; color:#f85149; margin-bottom:12px; display:none;"></div>
       <div style="display:flex; justify-content:flex-end; gap:10px;">
         <button id="relocate-cancel" style="padding:7px 16px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; font-size:13px; cursor:pointer;">取消</button>
-        <button id="relocate-confirm" style="padding:7px 16px; border-radius:6px; border:1px solid #2ea043; background:#238636; color:#fff; font-size:13px; font-weight:600; cursor:pointer;">切换目录</button>
+        <button id="relocate-confirm" style="padding:7px 16px; border-radius:6px; border:1px solid #2ea043; background:#238636; color:#fff; font-size:13px; font-weight:600; cursor:pointer;">切换Fleet</button>
       </div>
     </div>
   </div>
@@ -750,7 +750,7 @@
           <div id="memo-title" style="font-size:14px;font-weight:600;color:#f0f6fc;">📝 备忘</div>
           <div id="memo-subtitle" style="font-size:11px;color:#8b949e;font-family:monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="hdr-btn" id="memo-send-btn" title="把光标所在行发到该目录的某个 chat 会话">→ 发送当前行</button>
+        <button class="hdr-btn" id="memo-send-btn" title="把光标所在行发到该Fleet的某个 chat 会话">→ 发送当前行</button>
         <button class="hdr-btn" id="memo-save-btn" title="保存 (Ctrl/Cmd+S)" style="background:#238636;border-color:#2ea043;color:#fff;">保存</button>
         <button class="hdr-btn" id="memo-close-btn">关闭</button>
       </div>

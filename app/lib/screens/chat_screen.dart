@@ -1311,7 +1311,7 @@ Future<void> _editRoleFromSession(
       SnackBar(
         content: Text(
           picked.trim().isEmpty
-              ? '✓ 已清除会话角色（继承目录默认），下一轮对话生效'
+              ? '✓ 已清除会话角色（继承Fleet默认），下一轮对话生效'
               : '✓ 角色提示词已更新，下一轮对话生效',
         ),
       ),
@@ -2089,7 +2089,7 @@ class _RolePromptEditorDialogState extends State<_RolePromptEditorDialog> {
               ),
             ),
             const Text(
-              '留空＝清除（会话将继承目录默认角色）',
+              '留空＝清除（会话将继承Fleet默认角色）',
               style: TextStyle(color: AppColors.muted, fontSize: 11),
             ),
           ],
@@ -2181,7 +2181,7 @@ void _openMemoFromSession(BuildContext context, String sessionId) {
   if (d == null) {
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('找不到对应目录')));
+    ).showSnackBar(const SnackBar(content: Text('找不到对应Fleet')));
     return;
   }
   Navigator.push(

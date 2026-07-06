@@ -1276,7 +1276,7 @@ function renderTaskProgressScroller(sessions) {
            onclick="event.stopPropagation(); openSessionInline('${escapeHtml(task.sessionId)}')">
         <!-- 状态指示灯 -->
         <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};box-shadow:0 0 6px ${statusColor};flex-shrink:0;"></span>
-        <!-- 会话标签（+所属目录） -->
+        <!-- 会话标签（+所属Fleet） -->
         <span style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;flex-shrink:0;">${escapeHtml(task.label)}${task.dirName ? `<span style="color:var(--faint);font-weight:400;"> · ${escapeHtml(task.dirName)}</span>` : ''}</span>
         <!-- 状态标签 -->
         <span style="padding:3px 8px;font-size:10px;color:${statusColor};background:${statusColor}33;border:1px solid ${statusColor}55;border-radius:4px;flex-shrink:0;">${escapeHtml(info.text)}</span>
@@ -1516,7 +1516,7 @@ async function pushDirectory(id) {
     return;
   }
   if (!state.hasRemote) {
-    showToast('该目录未设置 Git remote', true);
+    showToast('该Fleet未设置 Git remote', true);
     return;
   }
   if (!state.ahead) {
@@ -1894,7 +1894,7 @@ function memoSendCurrentLine() {
   const sessions = (_cachedSessions || [])
     .filter(s => s.dirId === _memoDirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
   if (!sessions.length) {
-    statusEl.textContent = '该目录还没有 chat 会话，请先新建一个';
+    statusEl.textContent = '该Fleet还没有 chat 会话，请先新建一个';
     return;
   }
   const preview = text.length > 120 ? text.slice(0, 120) + '…' : text;
@@ -1942,7 +1942,7 @@ async function memoConfirmSend(sessionId) {
 async function renameDirectory(id) {
   const dir = _cachedDirectories.find(d => d.id === id);
   if (!dir) return;
-  const next = await showPrompt('重命名目录', dir.name || '');
+  const next = await showPrompt('重命名Fleet', dir.name || '');
   if (next === null) return;
   const name = next.trim();
   if (!name) { showToast('名称不能为空', true); return; }
@@ -2356,7 +2356,7 @@ function showCreateSessionDialog({ cli, kind, providers = [], defaultProviderId 
     });
 
     const roleInput = document.createElement('textarea');
-    roleInput.placeholder = '留空则继承目录默认角色';
+    roleInput.placeholder = '留空则继承Fleet默认角色';
     roleInput.rows = 3;
     roleInput.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;resize:vertical;font-family:inherit;box-sizing:border-box;';
     box.appendChild(roleInput);
@@ -2527,7 +2527,7 @@ function showRoleEditor({ title, current = '', placeholder = '' } = {}) {
 
     const hint = document.createElement('div');
     hint.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
-    hint.textContent = '留空＝清除（会话将继承目录默认角色）。Ctrl/⌘+Enter 保存。';
+    hint.textContent = '留空＝清除（会话将继承Fleet默认角色）。Ctrl/⌘+Enter 保存。';
     box.appendChild(hint);
 
     const row = document.createElement('div');
@@ -2580,7 +2580,7 @@ async function changeSessionRole(id) {
     });
     if (!res.ok) { const err = await res.json(); showToast(`Error: ${err.error}`, true); return; }
     const hint = (sess.cli || 'claude') === 'codex' ? '（Codex 仅新会话首轮生效）' : '（下一轮对话生效）';
-    showToast(`${next.trim() ? '角色已更新' : '已清除会话角色（继承目录默认）'} ${hint}`);
+    showToast(`${next.trim() ? '角色已更新' : '已清除会话角色（继承Fleet默认）'} ${hint}`);
     loadDashboard();
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
@@ -2591,9 +2591,9 @@ async function changeDirectoryRole(id) {
   const dir = (_cachedDirectories || []).find(d => d.id === id);
   if (!dir) return;
   const next = await showRoleEditor({
-    title: `目录默认角色 — ${dir.name}`,
+    title: `Fleet默认角色 — ${dir.name}`,
     current: dir.rolePrompt || '',
-    placeholder: '该目录下所有会话的默认角色。单个会话可在「角色提示词」里单独覆盖。',
+    placeholder: '该Fleet下所有会话的默认角色。单个会话可在「角色提示词」里单独覆盖。',
   });
   if (next === null) return;
   try {
@@ -2603,7 +2603,7 @@ async function changeDirectoryRole(id) {
       body: JSON.stringify({ rolePrompt: next }),
     });
     if (!res.ok) { const err = await res.json(); showToast(`Error: ${err.error}`, true); return; }
-    showToast(`${next.trim() ? '目录默认角色已更新' : '已清除目录默认角色'}（对未单独设角色的会话下一轮生效）`);
+    showToast(`${next.trim() ? 'Fleet默认角色已更新' : '已清除Fleet默认角色'}（对未单独设角色的会话下一轮生效）`);
     loadDashboard();
   } catch (err) {
     showToast(`Error: ${err.message}`, true);
@@ -3305,7 +3305,7 @@ function openNoteModal(fromId) {
   if (!from) return;
   const siblings = _cachedSessions.filter(s =>
     s.dirId === from.dirId && s.id !== fromId && s.type !== 'aux');
-  if (!siblings.length) { showToast('该目录下没有其他会话可留言', true); return; }
+  if (!siblings.length) { showToast('该Fleet下没有其他会话可留言', true); return; }
 
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#000000bb;z-index:20000;display:flex;align-items:center;justify-content:center;';
@@ -3313,7 +3313,7 @@ function openNoteModal(fromId) {
     `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label || s.id)} (${escapeHtml(s.cli)}/${escapeHtml(s.kind)})</option>`).join('');
   overlay.innerHTML = `
     <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px;width:440px;max-width:92vw;">
-      <div style="font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:4px;">给同目录 agent 留言</div>
+      <div style="font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:4px;">给同Fleet agent 留言</div>
       <div style="font-size:11px;color:#8b949e;margin-bottom:12px;">来自 ${escapeHtml(from.label || from.id)}。留言会在对方下一轮对话开始时送达。</div>
       <select id="note-target" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;margin-bottom:10px;">${opts}</select>
       <textarea id="note-body" rows="4" placeholder="留言内容…" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;resize:vertical;outline:none;"></textarea>

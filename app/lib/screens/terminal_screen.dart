@@ -280,7 +280,7 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
   }
   if (d == null) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('找不到对应目录')),
+      const SnackBar(content: Text('找不到对应Fleet')),
     );
     return;
   }

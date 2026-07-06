@@ -61,7 +61,7 @@
       <div id="title-name">📝 备忘</div>
       <div id="title-path">加载中…</div>
     </div>
-    <button class="btn" id="send-btn" title="把光标所在行发到该目录的 chat 会话">→ 发送当前行</button>
+    <button class="btn" id="send-btn" title="把光标所在行发到该Fleet的 chat 会话">→ 发送当前行</button>
     <button class="btn btn-primary" id="save-btn" title="保存 (Ctrl/Cmd+S)">保存</button>
     <button class="btn" onclick="window.close()">关闭</button>
   </div>
@@ -104,7 +104,7 @@
             if (found) _dirId = found.dirId || '';
           }
         }
-        if (!_dirId) { setStatus('缺少 dirId / sessionId 参数，或会话没有目录归属'); return; }
+        if (!_dirId) { setStatus('缺少 dirId / sessionId 参数，或会话没有Fleet归属'); return; }
         await loadMemo();
       } catch (e) { setStatus('初始化失败：' + e.message); }
     }
@@ -166,7 +166,7 @@
         const all = await (await fetch(`/api/sessions${tokenQS('?')}`)).json();
         const sessions = (Array.isArray(all) ? all : [])
           .filter(s => s.dirId === _dirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
-        if (!sessions.length) { setStatus('该目录还没有 chat 会话，请先新建一个'); return; }
+        if (!sessions.length) { setStatus('该Fleet还没有 chat 会话，请先新建一个'); return; }
         $('picker-preview').textContent = text.length > 200 ? text.slice(0, 200) + '…' : text;
         $('picker-list').innerHTML = sessions.map(s => {
           const label = s.label && s.label !== s.id
