@@ -1263,28 +1263,64 @@ function buildTimingLine(m) {
 // conversation context is not rewritten). The button lives on the outer .msg
 // element so renderCurrentText()'s .msg-content rebuilds can't wipe it.
 
-// ── Iframe bridge: ask the parent page to show a confirm dialog / open a tab ──
-// When this chat page is embedded in an iframe (manage session modal), native
-// confirm()/alert()/window.open() are clipped or blocked.  We post a message
-// to the parent (manage.html) which handles the UI in its own DOM and posts
-// back the result.  Falls back to native when not in an iframe.
-function _inIframe() {
-  try { return window !== window.parent; } catch (_) { return false; }
+// ── In-page dialog helpers (replaces native confirm/alert which browsers
+// often suppress inside iframes) ──
+function _chatConfirm(message, opts = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:360px;max-width:90vw;';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;white-space:pre-wrap;margin-bottom:12px;';
+    msg.textContent = message;
+    box.appendChild(msg);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn'; cancelBtn.textContent = opts.cancelText || '取消';
+    const okBtn = document.createElement('button');
+    okBtn.className = 'btn ' + (opts.danger ? 'btn-danger' : 'btn-green');
+    okBtn.textContent = opts.okText || '确认';
+    row.appendChild(cancelBtn); row.appendChild(okBtn);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = (result) => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(result); };
+    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(false); } }
+    okBtn.onclick = () => close(true);
+    cancelBtn.onclick = () => close(false);
+    overlay.onclick = (e) => { if (e.target === overlay) close(false); };
+    document.addEventListener('keydown', onKey, true);
+    setTimeout(() => okBtn.focus(), 0);
+  });
 }
-function _callParent(method, args) {
-  // Generate a unique request-id so multiple concurrent requests don't mix.
-  const id = 'mb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-  window.parent.postMessage({ src: 'multicc-chat', method, args, id }, '*');
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('parent response timed out')), 30000);
-    function onMsg(e) {
-      if (!e.data || e.data.src !== 'multicc-manage' || e.data.id !== id) return;
-      clearTimeout(timer);
-      window.removeEventListener('message', onMsg);
-      if (e.data.error) reject(new Error(e.data.error));
-      else resolve(e.data.result);
-    }
-    window.addEventListener('message', onMsg);
+function _chatAlert(message, opts = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:360px;max-width:90vw;';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:14px;color:' + (opts.danger ? '#f85149' : '#c9d1d9') + ';line-height:1.6;white-space:pre-wrap;margin-bottom:12px;';
+    msg.textContent = message;
+    box.appendChild(msg);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const okBtn = document.createElement('button');
+    okBtn.className = 'btn btn-green'; okBtn.textContent = opts.okText || '知道了';
+    row.appendChild(okBtn);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = () => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(); };
+    function onKey(e) { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); close(); } }
+    okBtn.onclick = close;
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+    document.addEventListener('keydown', onKey, true);
+    setTimeout(() => okBtn.focus(), 0);
   });
 }
 
@@ -1296,14 +1332,7 @@ function attachDeleteButton(msgEl) {
   btn.innerHTML = '&#10005;';
   btn.onclick = async (e) => {
     e.stopPropagation();
-    let go;
-    if (_inIframe()) {
-      // Parent page shows the confirm in its own DOM (not clipped by iframe).
-      try { go = await _callParent('confirm', { message: '删除这条消息？仅从聊天记录移除，不可恢复。', danger: true }); }
-      catch (_) { go = confirm('删除这条消息？仅从聊天记录移除，不可恢复。'); }
-    } else {
-      go = confirm('删除这条消息？仅从聊天记录移除，不可恢复。');
-    }
+    const go = await _chatConfirm('删除这条消息？仅从聊天记录移除，不可恢复。', { danger: true, okText: '删除' });
     if (!go) return;
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
@@ -1311,14 +1340,10 @@ function attachDeleteButton(msgEl) {
         msgEl.remove();  // server also broadcasts chat_msg_deleted; removal is idempotent
       } else {
         const err = await r.json().catch(() => null);
-        const msg = '删除失败：' + ((err && err.error) || r.status);
-        if (_inIframe()) _callParent('alert', { message: msg }).catch(() => {});
-        else alert(msg);
+        _chatAlert('删除失败：' + ((err && err.error) || r.status), { danger: true });
       }
     } catch (err) {
-      const msg = '删除失败：' + err.message;
-      if (_inIframe()) _callParent('alert', { message: msg }).catch(() => {});
-      else alert(msg);
+      _chatAlert('删除失败：' + err.message, { danger: true });
     }
   };
   msgEl.appendChild(btn);
@@ -1342,13 +1367,7 @@ function attachForkButton(msgEl) {
   btn.onclick = async (e) => {
     e.stopPropagation();
     const prompt = '从此条消息处分叉出新会话？\n新会话将继承到该点的对话上下文与会话记忆，并在新标签页打开。';
-    let go;
-    if (_inIframe()) {
-      try { go = await _callParent('confirm', { message: prompt }); }
-      catch (_) { go = confirm(prompt); }
-    } else {
-      go = confirm(prompt);
-    }
+    const go = await _chatConfirm(prompt, { okText: '分叉' });
     if (!go) return;
     btn.disabled = true;
     const orig = btn.innerHTML;
@@ -1364,17 +1383,11 @@ function attachForkButton(msgEl) {
       const n = d.replayedMessages || 0;
       // Open the forked session's chat page in a new tab; keep the original open.
       const url = `${location.pathname}?session=${encodeURIComponent(newId)}${location.hash}`;
-      if (_inIframe()) {
-        _callParent('openTab', { url }).catch(() => window.open(url, '_blank'));
-      } else {
-        window.open(url, '_blank');
-      }
+      window.open(url, '_blank');
       // Lightweight in-place toast via the existing debug-log channel.
       dbg('chat', `已分叉: ${newId} (replay ${n} 条) → 新标签页已打开`);
     } catch (err) {
-      const msg = '分叉失败：' + err.message;
-      if (_inIframe()) _callParent('alert', { message: msg }).catch(() => {});
-      else alert(msg);
+      _chatAlert('分叉失败：' + err.message, { danger: true });
     } finally {
       btn.disabled = false;
       btn.innerHTML = orig;

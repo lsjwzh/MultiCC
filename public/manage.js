@@ -1,35 +1,5 @@
 'use strict';
 
-// ── Iframe bridge: handle requests from iframe-embedded pages ──
-// chat.html (loaded in session modal iframes) posts messages of shape
-// { src:'multicc-chat', method, args, id } when it needs the parent page
-// to show a confirm/alert or open a tab — actions that are clipped or
-// blocked inside the iframe sandbox.
-window.addEventListener('message', (ev) => {
-  const d = ev.data;
-  if (!d || d.src !== 'multicc-chat' || !d.id) return;
-  const reply = (result, error) => {
-    ev.source.postMessage({ src: 'multicc-manage', id: d.id, result, error }, '*');
-  };
-  const args = d.args || {};
-  switch (d.method) {
-    case 'confirm':
-      showConfirm(args.message || '', { danger: args.danger, okText: args.okText })
-        .then(reply).catch(e => reply(null, e.message));
-      break;
-    case 'alert':
-      showToast(args.message || '', !!args.danger);
-      reply(true);
-      break;
-    case 'openTab':
-      try { window.open(args.url, '_blank'); reply(true); }
-      catch (e) { reply(null, e.message); }
-      break;
-    default:
-      reply(null, 'unknown method: ' + d.method);
-  }
-});
-
 let autoRefreshTimer = null;
 let _cachedSessions = [];
 let _focusedSessionId = null;
