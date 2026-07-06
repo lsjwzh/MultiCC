@@ -80,6 +80,99 @@ function labelize(key) {
     .join(' ');
 }
 
+function defaultModelForPreset(preset) {
+  const id = String(preset.id || '').toLowerCase();
+  const cat = String(preset.category || '').toLowerCase();
+  const name = String(preset.name || '').toLowerCase();
+  const desc = String(preset.description || '').toLowerCase();
+  const text = [id, cat, name, desc].join(' ');
+  const has = (re) => re.test(text);
+  const openai = (model = 'gpt-5.5', effort = 'xhigh', note = 'high-judgment or high-risk role') => ({
+    defaultCli: 'codex',
+    defaultProviderKey: 'openai-codex',
+    defaultModel: model,
+    defaultEffort: effort,
+    defaultModelNote: note,
+  });
+  const xf = (model, effort = 'xhigh', note = 'provider-routed specialist role') => ({
+    defaultCli: 'codex',
+    defaultProviderKey: 'xf-maas-coding',
+    defaultModel: model,
+    defaultEffort: effort,
+    defaultModelNote: note,
+  });
+
+  if (id === 'specialized__agent-commander') {
+    return openai('gpt-5.5', 'xhigh', 'fleet commander; needs strongest planning, routing and QA judgment');
+  }
+  if (has(/security|appsec|privacy|compliance|legal|law|healthcare|medical|hospital|patient|tax|investment|financial|finance|cfo|chief financial|loan|billing|government|classified|cryptographic|incident|sre|reliability|production|accessibility|reality checker|evidence collector|model qa|smart contract|solidity|civil engineer|structural/)) {
+    return openai('gpt-5.5', 'xhigh', 'high-risk domain; prefer GPT for judgment and final correctness');
+  }
+  if (cat === 'academic') return xf('xopglm52', 'xhigh', 'research and writing role');
+  if (cat === 'finance') return openai('gpt-5.5', 'xhigh', 'finance role; prefer strongest judgment');
+  if (cat === 'marketing' || cat === 'paid-media' || cat === 'sales') {
+    return xf('xopglm52', 'xhigh', 'business writing and outreach role');
+  }
+  if (cat === 'product' || cat === 'project-management') {
+    return openai('gpt-5.5', 'xhigh', 'product/project role; planning and tradeoff quality matter');
+  }
+  if (cat === 'design') {
+    if (has(/ui designer|ux architect|ux researcher|persona walkthrough/)) {
+      return openai('gpt-5.4', 'high', 'design judgment role; use GPT balanced high reasoning');
+    }
+    return xf('xopglm52', 'xhigh', 'visual/brand creative role');
+  }
+  if (cat === 'engineering') {
+    if (has(/technical writer|prompt engineer|email intelligence|codebase onboarding/)) {
+      return xf('xopglm52', 'xhigh', 'documentation/research-oriented engineering support');
+    }
+    if (has(/code reviewer|minimal change|backend architect|software architect|database optimizer|multi-agent systems architect/)) {
+      return openai('gpt-5.5', 'xhigh', 'engineering review/architecture role; needs conservative judgment');
+    }
+    return xf('xopdeepseekv4pro', 'xhigh', 'coding implementation role; DeepSeek V4 Pro is the default code worker');
+  }
+  if (cat === 'testing') {
+    if (has(/api|performance|test results|tool evaluator|workflow optimizer/)) {
+      return xf('xopdeepseekv4pro', 'xhigh', 'technical QA execution role');
+    }
+    return openai('gpt-5.5', 'xhigh', 'QA judgment role; needs strict evidence and risk assessment');
+  }
+  if (cat === 'game-development') {
+    if (has(/engineer|developer|scripter|shader|addon|multiplayer|unity|unreal|godot|roblox|blender|audio/)) {
+      return xf('xopdeepseekv4pro', 'xhigh', 'game technical implementation role');
+    }
+    return xf('xopglm52', 'xhigh', 'game design/narrative role');
+  }
+  if (cat === 'gis' || cat === 'spatial-computing') {
+    if (has(/engineer|developer|data|pipeline|gis|arcgis|qgis|spatial|geospatial|mapping/)) {
+      return xf('xopdeepseekv4pro', 'xhigh', 'spatial/GIS technical role');
+    }
+    return xf('xopglm52', 'xhigh', 'spatial planning/research role');
+  }
+  if (cat === 'support') {
+    if (has(/legal|compliance|finance|infrastructure/)) {
+      return openai('gpt-5.5', 'xhigh', 'support role with risk/compliance impact');
+    }
+    return xf('xopglm52', 'xhigh', 'support writing and operations role');
+  }
+  if (cat === 'specialized') {
+    if (has(/data extraction|data consolidation|report distribution|identity graph|lsp|index|mcp builder|document generator|salesforce/)) {
+      return xf('xopdeepseekv4pro', 'xhigh', 'technical specialized role');
+    }
+    if (has(/translator|customer|hospitality|retail|hr|recruitment|study abroad|personal growth|grant writer|training|developer advocate|cultural|french|korean|zk steward|language/)) {
+      return xf('xopglm52', 'xhigh', 'communication/research specialized role');
+    }
+    if (has(/architect|architecture|chief of staff|strategy|strategist|operations manager|workflow architect|business model|pricing analyst|ma integration|m&a|change management|organizational psychologist|supply chain/)) {
+      return openai('gpt-5.5', 'xhigh', 'specialized advisory role; default to strongest judgment');
+    }
+    return xf('xopglm52', 'xhigh', 'general specialized role');
+  }
+  if (has(/architect|architecture|commander|strategy|strategist|business model/)) {
+    return openai('gpt-5.5', 'xhigh', 'cross-system planning and decision quality matter most');
+  }
+  return xf('xopglm52', 'xhigh', 'general role default');
+}
+
 function main() {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agency-agents-'));
   log('temp dir:', tmpRoot);
@@ -115,7 +208,7 @@ function main() {
         const baseName = path.basename(file, path.extname(file));
         const id = `${division}__${baseName}`;
         const name = (meta.name && meta.name.trim()) || labelize(baseName);
-        presets.push({
+        const preset = {
           id,
           name,
           description: meta.description || '',
@@ -124,7 +217,8 @@ function main() {
           emoji: meta.emoji || '',
           vibe: meta.vibe || '',
           prompt: body,
-        });
+        };
+        presets.push({ ...preset, ...defaultModelForPreset(preset) });
         added++;
       }
       if (added > 0) categoryCounts[division] = added;

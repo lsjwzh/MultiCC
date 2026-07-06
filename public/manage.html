@@ -661,13 +661,9 @@
                     <option value="claude-qwen">Qwen 通义千问</option>
                     <option value="claude-openrouter">OpenRouter</option>
                   </optgroup>
-                  <optgroup label="Codex（OpenAI 兼容）">
-                    <option value="codex-official">Codex 官方</option>
-                    <option value="codex-deepseek">DeepSeek</option>
-                    <option value="codex-glm">智谱 GLM</option>
-                    <option value="codex-qwen">Qwen 通义千问</option>
-                    <option value="codex-minimax">MiniMax</option>
-                    <option value="codex-openrouter">OpenRouter</option>
+                  <optgroup label="Codex">
+                    <option value="codex-official">OpenAI（Codex 官方）</option>
+                    <option value="codex-xf-maas">讯飞 MaaS Coding</option>
                   </optgroup>
                 </select></div>
               <div class="setting-row"><label>类型</label>
@@ -1312,12 +1308,23 @@
         <button class="btn btn-sm" onclick="closeAuxModal()">关闭</button>
       </div>
       <div class="setting-row" style="align-items:flex-start;">
+        <label style="padding-top:8px;">CLI</label>
+        <select id="aux-cli" onchange="refreshAuxProviderOptions()" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </div>
+      <div class="setting-row" style="align-items:flex-start;">
         <label style="padding-top:8px;">Provider</label>
         <select id="aux-provider" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;"></select>
       </div>
       <div class="setting-row" style="align-items:flex-start;">
         <label style="padding-top:8px;">Model</label>
-        <input id="aux-model" type="text" placeholder="留空默认 haiku" autocomplete="off" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:var(--mono);padding:8px 10px;outline:none;" />
+        <input id="aux-model" type="text" placeholder="留空使用 provider 默认" autocomplete="off" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:var(--mono);padding:8px 10px;outline:none;" />
+      </div>
+      <div class="setting-row" style="align-items:flex-start;">
+        <label style="padding-top:8px;">参数档位</label>
+        <select id="aux-effort" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;"></select>
       </div>
       <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:16px;">
         <span class="status-text" id="aux-modal-status" style="margin-right:auto;"></span>

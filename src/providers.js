@@ -162,6 +162,14 @@ const DOMESTIC_PROXY_MAP = [
   { hostRe: /^api\.minimax/i, target: 'https://api.minimaxi.com/v1/chat/completions' },
 ];
 
+// Providers that expose /responses but need a local compatibility hop for Codex
+// streaming. XFYun MaaS Coding returns a Responses-shaped stream, but long Codex
+// turns can close before Codex observes response.completed; the proxy keeps the
+// wire stable and injects only the missing terminal event.
+const RESPONSES_COMPAT_PROXY_MAP = [
+  { host: 'maas-coding-api.cn-huabei-1.xf-yun.com', target: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses' },
+];
+
 // If baseUrl points at a domestic chat-only service, return the real
 // /chat/completions URL the proxy should fetch. Otherwise null (直连).
 function detectDomesticTarget(baseUrl) {
@@ -173,6 +181,24 @@ function detectDomesticTarget(baseUrl) {
     if (m.hostRe && m.hostRe.test(host)) return m.target;
   }
   return null;
+}
+
+function detectResponsesCompatTarget(baseUrl) {
+  if (!baseUrl) return null;
+  let host;
+  try { host = new URL(baseUrl).host; } catch (_) { return null; }
+  for (const m of RESPONSES_COMPAT_PROXY_MAP) {
+    if (m.host && host === m.host) return m.target;
+    if (m.hostRe && m.hostRe.test(host)) return m.target;
+  }
+  return null;
+}
+
+function codexProxyTarget(baseUrl) {
+  const responseCompat = detectResponsesCompatTarget(baseUrl);
+  if (responseCompat) return { baseUrl: responseCompat, mode: 'responses-compat' };
+  const chatTarget = chatCompletionsTarget(baseUrl);
+  return chatTarget ? { baseUrl: chatTarget, mode: 'chat-to-responses' } : null;
 }
 
 function chatCompletionsTarget(baseUrl) {
@@ -245,14 +271,6 @@ function applyAliasMapToEnv(env, aliasMap) {
   }
 }
 
-function withTomlModel(toml, model) {
-  if (!model) return toml || '';
-  if (/(^|\n)\s*model\s*=/.test(toml || '')) {
-    return (toml || '').replace(/(^|\n)(\s*model\s*=\s*)"[^"]*"/, `$1$2"${model}"`);
-  }
-  return `model = "${model}"\n` + (toml || '');
-}
-
 // Build a cc-switch-shaped settingsConfig from simple fields.
 function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, useChatResponsesProxy, aliasMap }) {
   const modelOptions = parseModelList(models, model);
@@ -278,9 +296,9 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
   // For domestic services, config.toml's base_url is rewritten to the local
   // proxy; the real /chat/completions URL + apiKey are stored in
   // settingsConfig.proxyTarget for src/codex-proxy.js to read.
-  const realTarget = useChatResponsesProxy ? chatCompletionsTarget(baseUrl) : null;
+  const proxySpec = useChatResponsesProxy ? codexProxyTarget(baseUrl) : null;
   const port = process.env.PORT || 3000;
-  const proxyBaseUrl = (realTarget && providerId)
+  const proxyBaseUrl = (proxySpec && providerId)
     ? `http://127.0.0.1:${port}/codex-proxy/${providerId}`
     : baseUrl;
   const lines = [
@@ -297,12 +315,12 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
     config: lines.join('\n') + '\n',
     modelCatalog: { models: modelOptions.map(m => ({ model: m })) },
   };
-  if (realTarget) {
+  if (proxySpec) {
     cfg.proxyTarget = {
-      baseUrl: realTarget,
+      baseUrl: proxySpec.baseUrl,
       apiKey: authToken || '',
       originalBaseUrl: baseUrl || '',
-      mode: 'chat-to-responses',
+      mode: proxySpec.mode,
     };
   }
   return cfg;
@@ -365,7 +383,7 @@ function summarize(p) {
     modelOptions,
     aliasOnly,
     aliasMap,
-    useChatResponsesProxy: !!(cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses'),
+    useChatResponsesProxy: !!cfg.proxyTarget,
     tokenMask: maskToken(token),
     hasToken: !!token,
     isOfficial: !baseUrl, // no custom base url -> default login / subscription
@@ -431,7 +449,7 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
     const currentBaseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
     const nextProxy = useChatResponsesProxy !== undefined
       ? !!useChatResponsesProxy
-      : !!(cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses');
+      : !!cfg.proxyTarget;
     const rebuilt = buildSettingsConfig('codex', {
       baseUrl: baseUrl !== undefined ? baseUrl : currentBaseUrl,
       authToken: authToken || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
@@ -652,7 +670,17 @@ function resolveSpawnEnv(session) {
   try {
     const home = path.join(CODEX_HOMES_DIR, providerId);
     fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
-    if (cfg.auth) fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify(cfg.auth, null, 2));
+    if (cfg.auth) {
+      fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify(cfg.auth, null, 2));
+    } else {
+      const baseUrl = tomlValue(cfg.config, 'base_url');
+      if (!baseUrl) {
+        const globalAuth = path.join(os.homedir(), '.codex', 'auth.json');
+        const authPath = path.join(home, 'auth.json');
+        if (fs.existsSync(globalAuth)) fs.copyFileSync(globalAuth, authPath);
+        else if (fs.existsSync(authPath)) fs.rmSync(authPath, { force: true });
+      }
+    }
     if (cfg.config) {
       // cc-switch 导入的 config 可能带 model_catalog_json 指向 cc-switch 自己目录里的
       // 文件（codex home 里没有），导致 codex 启动时 "config could not be loaded" → exit 1。
@@ -660,7 +688,6 @@ function resolveSpawnEnv(session) {
       let toml = cfg.config;
       toml = toml.replace(/^model_catalog_json\s*=.*$/gm, '').replace(/\n{3,}/g, '\n\n');
       toml = toml.replace(/\[model_providers\]\s*\n\[model_providers\.custom\]/, '[model_providers.custom]');
-      toml = withTomlModel(toml, session.model);
       fs.writeFileSync(path.join(home, 'config.toml'), toml);
     }
     return { env: { CODEX_HOME: home }, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: p.name, codexHome: home };

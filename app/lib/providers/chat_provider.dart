@@ -6,6 +6,11 @@ import '../services/chat_service.dart';
 import '../services/notification_service.dart';
 import '../services/settings_service.dart';
 
+bool _isRecoverableCodexReconnectErrorText(String text) {
+  return RegExp(r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(').hasMatch(text) &&
+      (text.contains('stream disconnected before completion') || text.contains('response.completed'));
+}
+
 class ChatProvider extends ChangeNotifier {
   final SettingsService settings;
   final String sessionName;
@@ -228,9 +233,11 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'error':
-        _addSystemMsg('Error: ${evt.payload}');
+        final errorText = evt.payload.toString();
+        if (_isRecoverableCodexReconnectErrorText(errorText)) break;
+        _addSystemMsg('Error: $errorText');
         _finishStreaming();
-        _maybeNotify('错误', evt.payload.toString());
+        _maybeNotify('错误', errorText);
         notifyListeners();
         break;
 

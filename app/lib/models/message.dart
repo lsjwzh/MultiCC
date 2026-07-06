@@ -201,7 +201,9 @@ String modelDisplayName(SessionCli cli, String? model, {Map? aliasMap}) {
 }
 
 String effortShortNameForCli(SessionCli cli, String? effort) {
-  final v = (effort == null || effort.isEmpty) ? 'medium' : effort;
+  final v = (effort == null || effort.isEmpty)
+      ? (cli == SessionCli.codex ? 'xhigh' : 'medium')
+      : effort;
   if (cli == SessionCli.codex) {
     switch (v) {
       case 'low':

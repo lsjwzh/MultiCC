@@ -593,6 +593,10 @@ let _reconnectTimer = null;
 let _historyLoaded = false;  // prevent duplicate history render across reconnects
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
+let _isDisconnected = false;
+let _disconnectEpisodeId = 0;
+let _lastReconnectNoticeEpisode = 0;
+let _lastInitInfoLine = '';
 let _hiddenAt = 0;
 
 function connect() {
@@ -622,8 +626,12 @@ function connect() {
     if (_disconnectBannerEl) {
       _disconnectBannerEl.remove();
       _disconnectBannerEl = null;
-      addSystemMsg('✓ 已重新连接');
+      if (_disconnectEpisodeId !== _lastReconnectNoticeEpisode) {
+        _lastReconnectNoticeEpisode = _disconnectEpisodeId;
+        addSystemMsg('✓ 已重新连接');
+      }
     }
+    _isDisconnected = false;
     _wasConnected = true;
     // Show thinking while we wait for server's init message (which tells us real streaming state)
     if (isStreaming) showThinking();
@@ -640,6 +648,10 @@ function connect() {
 
   ws.onclose = (e) => {
     dbg('ws', `onclose — code=${e.code} (isStreaming=${isStreaming})`);
+    if (_wasConnected && !_isDisconnected) {
+      _isDisconnected = true;
+      _disconnectEpisodeId++;
+    }
     // Don't reset isStreaming here — server may still be running.
     // UI stays in streaming state so user sees "reconnecting" rather than a broken state.
     updateUI();
@@ -656,6 +668,12 @@ function connect() {
   };
 
   ws.onerror = () => {};
+}
+
+function isRecoverableCodexReconnectErrorText(text) {
+  const s = String(text || '');
+  return /^Codex 出错：Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(s)
+    && /stream disconnected before completion|response\.completed/i.test(s);
 }
 
 /* ── Event handler ── */
@@ -700,7 +718,11 @@ function handleEvent(msg) {
         if (sessionId) parts.push(`Session: ${sessionId.slice(0, 8)}...`);
         if (msg.cli) parts.push(msg.cli);
         if (msg.model) parts.push(msg.model);
-        if (parts.length) addSystemMsg(parts.join(' | '));
+        const initInfoLine = parts.join(' | ');
+        if (initInfoLine && initInfoLine !== _lastInitInfoLine) {
+          _lastInitInfoLine = initInfoLine;
+          addSystemMsg(initInfoLine);
+        }
         if (msg.effort !== undefined) {
           _sessionEffort = msg.effort || '';
           _sessionEffectiveEffort = msg.effectiveEffort || _sessionEffort || 'medium';
@@ -903,6 +925,10 @@ function handleEvent(msg) {
     }
 
     case 'error':
+      if (isRecoverableCodexReconnectErrorText(msg.error || '')) {
+        console.warn('[multicc/chat] suppressed recoverable codex reconnect:', msg.error);
+        break;
+      }
       addSystemMsg(`Error: ${msg.error || JSON.stringify(msg)}`);
       isStreaming = false;
       finishStreaming();
@@ -1683,6 +1709,10 @@ function hideThinking() {
 }
 
 /* ── Send ── */
+function newClientMsgId() {
+  return 'c' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
 function send(opts = {}) {
   // opts may be a DOM Event (when bound directly as a handler) — only a plain
   // object with goal:true marks this as a Goal-mode send.
@@ -1761,7 +1791,7 @@ function send(opts = {}) {
   if (ws?.readyState === WebSocket.OPEN) {
     dbg('state', `send() — WS ▶ user_message (${text.length} chars)${goalOpts ? ' [goal]' : ''}`);
     try {
-      const payload = { type: 'user_message', text };
+      const payload = { type: 'user_message', text, clientMsgId: newClientMsgId() };
       if (goalOpts) { payload.goal = true; payload.goalLimits = goalOpts.goalLimits || {}; }
       ws.send(JSON.stringify(payload));
       _pendingCancel = false;
@@ -1919,12 +1949,28 @@ inputEl.addEventListener('keydown', (e) => {
 });
 
 // Send button — works on both mobile and desktop
-sendBtn.addEventListener('click', send);
-sendBtn.addEventListener('touchend', (e) => { e.preventDefault(); send(); });
+let _lastSendTapAt = 0;
+function sendFromButton(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const now = Date.now();
+  if (now - _lastSendTapAt < 600) return;
+  _lastSendTapAt = now;
+  send();
+}
+sendBtn.addEventListener('click', sendFromButton);
+sendBtn.addEventListener('touchend', sendFromButton, { passive: false });
 
 // Cancel button
-cancelBtn.addEventListener('click', cancelStreaming);
-cancelBtn.addEventListener('touchend', (e) => { e.preventDefault(); cancelStreaming(); });
+let _lastCancelTapAt = 0;
+function cancelFromButton(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const now = Date.now();
+  if (now - _lastCancelTapAt < 600) return;
+  _lastCancelTapAt = now;
+  cancelStreaming();
+}
+cancelBtn.addEventListener('click', cancelFromButton);
+cancelBtn.addEventListener('touchend', cancelFromButton, { passive: false });
 
 function mergeStatusText(st) {
   if (!st || (!st.mergeReady && !(st.dirty || st.ahead > 0))) return tt('worktreeClean');
@@ -2404,6 +2450,10 @@ const CODEX_REASONING_OPTIONS = [
 let _sessionEffort = '';
 let _sessionEffectiveEffort = 'medium';
 
+function defaultEffortForCurrentCli() {
+  return _sessionCli === 'codex' ? 'xhigh' : 'medium';
+}
+
 function updateModelBtn() {
   if (!modelBtn) return;
   const shown = _sessionEffectiveModel || _sessionModel;
@@ -2417,13 +2467,14 @@ function updateModelBtn() {
 }
 
 function effortShortName(effort) {
+  const v = effort || defaultEffortForCurrentCli();
   if (_sessionCli === 'codex') {
-    if (effort === 'xhigh') return 'Extra high';
-    if (effort === 'low') return 'Low';
-    if (effort === 'medium') return 'Medium';
-    if (effort === 'high') return 'High';
+    if (v === 'xhigh') return 'Extra high';
+    if (v === 'low') return 'Low';
+    if (v === 'medium') return 'Medium';
+    if (v === 'high') return 'High';
   }
-  return effort || 'medium';
+  return v;
 }
 
 function updateEffortBtn() {
@@ -2451,7 +2502,7 @@ function showEffortPicker(current) {
     overlay.appendChild(box);
     document.body.appendChild(overlay);
     const select = box.querySelector('#effort-select');
-    select.value = EFFORT_OPTIONS.some(o => o.value === current) ? current : 'medium';
+    select.value = EFFORT_OPTIONS.some(o => o.value === current) ? current : defaultEffortForCurrentCli();
     const close = (r) => { overlay.remove(); resolve(r); };
     box.querySelector('#effort-ok').onclick = () => close(select.value);
     box.querySelector('#effort-cancel').onclick = () => close(null);
@@ -2460,8 +2511,9 @@ function showEffortPicker(current) {
 }
 
 function providerModelOptions(providerId) {
-  if (!providerId) return [];
-  const p = _providerList.find(o => o.id === providerId);
+  const effectiveProviderId = effectiveProviderIdForChoices(providerId);
+  if (!effectiveProviderId) return [];
+  const p = _providerList.find(o => o.id === effectiveProviderId);
   return (p && Array.isArray(p.modelOptions)) ? p.modelOptions.filter(Boolean) : [];
 }
 
@@ -2469,8 +2521,9 @@ function providerModelOptions(providerId) {
 // model per tier, e.g. iFlytek opus/sonnet/haiku/fable → astron-code-latest).
 // Returned shape matches the server summary: { opus:{model,name}, sonnet:{...}, ... }.
 function providerAliasMap(providerId) {
-  if (!providerId) return null;
-  const p = _providerList.find(o => o.id === providerId);
+  const effectiveProviderId = effectiveProviderIdForChoices(providerId);
+  if (!effectiveProviderId) return null;
+  const p = _providerList.find(o => o.id === effectiveProviderId);
   if (!p || !p.aliasMap) return null;
   const entries = Object.entries(p.aliasMap).filter(([, v]) => v && v.model);
   return entries.length ? Object.fromEntries(entries) : null;
@@ -2507,16 +2560,14 @@ function buildModelChoices(providerId) {
 
 function modelChoiceLabel(v, providerId) {
   // Alias tier option: "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id).
-  if (providerId) {
-    const map = providerAliasMap(providerId);
-    if (map && map[v] && map[v].model) {
-      const m = map[v];
-      return formatAliasTierLabel(v, m);
-    }
+  const map = providerAliasMap(providerId);
+  if (map && map[v] && map[v].model) {
+    const m = map[v];
+    return formatAliasTierLabel(v, m);
   }
+  if (v === '') return _sessionCli === 'codex' ? '默认（跟随 Provider）' : tt('default');
   const named = CLAUDE_MODEL_OPTIONS.find(o => o.value === v);
   if (named) return named.labelKey ? tt(named.labelKey) : named.label;
-  if (v === '') return tt('default');
   if (v === '__custom__') return tt('custom');
   return v;
 }
@@ -2595,7 +2646,7 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
       opt.textContent = o.desc ? `${o.label} — ${o.desc}` : o.label;
       effortSel.appendChild(opt);
     }
-    effortSel.value = effortOptions.some(o => o.value === effort) ? effort : 'medium';
+    effortSel.value = effortOptions.some(o => o.value === effort) ? effort : defaultEffortForCurrentCli();
 
     // ── 子任务 (subagent) provider+model cascade — reuses the main helpers ──
     const subProviderSel = box.querySelector('#ai-sub-provider');
@@ -2696,7 +2747,7 @@ async function loadSessionModel() {
     _sessionModel = info.model || '';
     _sessionEffectiveModel = info.effectiveModel || info.model || '';
     _sessionEffort = info.effort || '';
-    _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || 'medium';
+    _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
     updateModelBtn();
     updateEffortBtn();
     if ((info.cli || 'claude') !== 'claude') {
@@ -2720,7 +2771,7 @@ modelBtn?.addEventListener('click', async () => {
   const picked = await showAIConfigPicker({
     provider: _sessionProvider,
     model: _sessionModel,
-    effort: _sessionEffectiveEffort || _sessionEffort || 'medium',
+    effort: _sessionEffectiveEffort || _sessionEffort || defaultEffortForCurrentCli(),
     subagent: _sessionSubagent,
   });
   if (picked === null) return;
@@ -2738,7 +2789,7 @@ modelBtn?.addEventListener('click', async () => {
     _sessionModel = data.model || '';
     _sessionEffectiveModel = data.effectiveModel || data.model || '';
     _sessionEffort = data.effort || '';
-    _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || 'medium';
+    _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
     updateModelBtn();
     const _savedModel = _sessionEffectiveModel || _sessionModel;
     addSystemMsg(`✓ AI 配置已保存：${providerShortName(_sessionProvider)} | ${_savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default')} | ${effortShortName(_sessionEffectiveEffort)}，下一轮对话生效`);
@@ -2748,7 +2799,7 @@ modelBtn?.addEventListener('click', async () => {
 });
 
 effortBtn?.addEventListener('click', async () => {
-  const picked = await showEffortPicker(_sessionEffectiveEffort || _sessionEffort || 'medium');
+  const picked = await showEffortPicker(_sessionEffectiveEffort || _sessionEffort || defaultEffortForCurrentCli());
   if (picked === null) return;
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
@@ -2759,7 +2810,7 @@ effortBtn?.addEventListener('click', async () => {
     const data = await res.json();
     if (!res.ok) { addSystemMsg('努力程度切换失败：' + (data.error || `HTTP ${res.status}`)); return; }
     _sessionEffort = data.effort || '';
-    _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || 'medium';
+    _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
     updateEffortBtn();
     addSystemMsg(`✓ 努力程度已切换为 ${effortShortName(_sessionEffectiveEffort)}，下一轮对话生效`);
   } catch (e) {
@@ -2774,6 +2825,11 @@ let _sessionSubagent = null;     // {providerId, model} for Task-tool subagent (
 let _sessionProviderDisplayName = '';  // 实际生效 provider 的显示名（init 兜底；_sessionProvider 为空或 _providerList 未加载时用）
 let _sessionCli = 'claude';
 let _providerList = [];           // cached [{id,appType,name,baseUrl,model,isOfficial}]
+let _providerDefaults = { claude: null, codex: null };
+
+function effectiveProviderIdForChoices(providerId) {
+  return providerId || _providerDefaults[_sessionCli] || '';
+}
 
 function providerShortName(id) {
   if (!id) return tt('default');
@@ -2793,6 +2849,7 @@ async function ensureProviderList(appType) {
     if (!res.ok) return [];
     const d = await res.json();
     _providerList = d.providers || [];
+    _providerDefaults = d.defaults || _providerDefaults;
     return _providerList;
   } catch (_) { return []; }
 }

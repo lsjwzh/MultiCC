@@ -341,6 +341,18 @@ const CLAUDE_CHAT_DISALLOWED_TOOLS = (process.env.CLAUDE_CHAT_DISALLOWED_TOOLS ?
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+
+// Codex chat runs non-interactively (codex exec --json --dangerously-bypass-approvals-and-sandbox).
+// In this mode the request_user_input tool is unavailable (Codex replies "is unavailable in Default mode"),
+// and the model can loop calling it repeatedly, stalling the turn. Prepend a short constraint on the
+// first turn so the model asks questions as plain assistant text instead. Toggle via env if needed.
+const CODEX_NO_ASK_TOOL_HINT = process.env.CODEX_NO_ASK_TOOL_HINT ?? '1';
+const CODEX_ENV_CONSTRAINT = CODEX_NO_ASK_TOOL_HINT === '0' ? '' : [
+  '[MultiCC 环境约束]',
+  '- 当前是非交互执行环境，request_user_input / AskUserQuestion 等向用户提问的工具不可用。',
+  '- 需要向用户提问或请求确认时，直接把问题作为普通文本回复发出，不要调用任何提问类工具。',
+  '[MultiCC 环境约束结束]',
+].join('\n');
 // Default-on toggle for the per-session/per-role claude proxy (src/claude-proxy.js).
 // `let`: hot-reloadable at runtime via POST /api/settings/proxy (persists to .env).
 // Set CLAUDE_PROXY_ENABLED=0 in .env to bypass and route claude directly to the provider.
@@ -511,6 +523,21 @@ function providerDefaultModel(appType, providerId) {
 // ── Codex CLI binary resolution (mirrors claude lookup) ──
 function resolveCodex() {
   if (process.env.CODEX_CMD) return process.env.CODEX_CMD;
+  if (isWindows && process.env.LOCALAPPDATA) {
+    const local = path.join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
+    try {
+      const localCandidates = fs.readdirSync(local, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => {
+          const exe = path.join(local, d.name, 'codex.exe');
+          try { return fs.existsSync(exe) ? { exe, mtimeMs: fs.statSync(exe).mtimeMs } : null; }
+          catch (_) { return null; }
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      if (localCandidates.length) return localCandidates[0].exe;
+    } catch (_) {}
+  }
   const candidates = [
     '/opt/homebrew/bin/codex', '/usr/local/bin/codex',
     path.join(os.homedir(), '.local', 'bin', 'codex'),
@@ -570,6 +597,29 @@ function codexReasoningConfigArg(session) {
   const level = codexReasoningLevel(session);
   return level ? `model_reasoning_effort="${level}"` : null;
 }
+function codexModelConfigArg(session) {
+  const model = session && session.model ? String(session.model).trim() : '';
+  return model ? `model="${model}"` : null;
+}
+function isCodexResponseCompletedDisconnect(message) {
+  const s = String(message || '');
+  return /stream disconnected before completion/i.test(s) && /response\.completed/i.test(s);
+}
+function isCodexRecoverableReconnectError(message) {
+  const s = String(message || '');
+  return /^Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(s) && isCodexResponseCompletedDisconnect(s);
+}
+const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
+function codexStreamDisconnectContinuePrompt() {
+  return [
+    '上一轮因为传输连接中断提前停了，已有部分输出已经显示给用户。',
+    '请不要重复已经完成或已经输出的内容，从中断处继续完成原任务。',
+    '如果原任务其实已经全部完成，只用一句话确认完成；否则继续执行必要步骤，直到可以交付。',
+  ].join('\n');
+}
+function isGlm52Session(session) {
+  return String(session?.model || '').toLowerCase() === 'xopglm52';
+}
 function effortLabel(e) {
   return e || claudeDefaultEffort();
 }
@@ -599,7 +649,7 @@ function codexDefaultReasoningLevel() {
       if (effort && CODEX_REASONING_LEVELS.has(effort)) return effort;
     } catch (_) { /* fall through */ }
   }
-  return 'medium';
+  return 'xhigh';
 }
 
 // ── CLI provider abstraction ──
@@ -739,9 +789,10 @@ const cliProviders = {
     buildTerminalCmd(session) {
       const baseArgs = CODEX_ARGS.length ? ' ' + CODEX_ARGS.join(' ') : '';
       const effortArg = codexReasoningConfigArg(session);
-      const effortArgs = effortArg ? ` -c '${effortArg}'` : '';
-      if (session.cliSessionId) return `${CODEX_CMD}${baseArgs}${effortArgs} resume ${session.cliSessionId}`;
-      return `${CODEX_CMD}${baseArgs}${effortArgs}`;
+      const modelArg = codexModelConfigArg(session);
+      const configArgs = [effortArg, modelArg].filter(Boolean).map(a => ` -c '${a}'`).join('');
+      if (session.cliSessionId) return `${CODEX_CMD}${baseArgs}${configArgs} resume ${session.cliSessionId}`;
+      return `${CODEX_CMD}${baseArgs}${configArgs}`;
     },
     // Chat-mode spawn args: `exec --json [--skip-git-repo-check] [--dangerously-bypass-approvals-and-sandbox] [resume <id>] <prompt>`
     buildChatSpawnArgs(session, prompt, opts) {
@@ -750,19 +801,29 @@ const cliProviders = {
       // into the prompt text — only on the first turn, since `exec resume` keeps
       // the earlier context (re-sending every turn would just waste tokens).
       let p = prompt;
-      if (opts.isFirstTurn && opts.rolePrompt) {
-        p = `[角色设定]\n${opts.rolePrompt}\n[角色设定结束]\n\n${prompt}`;
+      if (opts.isFirstTurn) {
+        const promptPrefixes = [];
+        // MultiCC runs codex non-interactively; request_user_input is unavailable here.
+        // Prepend an env constraint on the first turn so the model asks questions as
+        // plain text instead of looping on the unavailable tool.
+        if (CODEX_ENV_CONSTRAINT) promptPrefixes.push(CODEX_ENV_CONSTRAINT);
+        if (opts.rolePrompt) promptPrefixes.push(`[角色设定]\n${opts.rolePrompt}\n[角色设定结束]`);
+        if (promptPrefixes.length) p = `${promptPrefixes.join('\n\n')}\n\n${prompt}`;
       }
       if (opts.isFirstTurn) {
         args.push('exec');
         const effortArg = codexReasoningConfigArg(session);
         if (effortArg) args.push('-c', effortArg);
+        const modelArg = codexModelConfigArg(session);
+        if (modelArg) args.push('-c', modelArg);
         args.push('--json', '--skip-git-repo-check',
           '--dangerously-bypass-approvals-and-sandbox', p);
       } else {
         args.push('exec');
         const effortArg = codexReasoningConfigArg(session);
         if (effortArg) args.push('-c', effortArg);
+        const modelArg = codexModelConfigArg(session);
+        if (modelArg) args.push('-c', modelArg);
         args.push('resume', session.cliSessionId, '--json',
           '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', p);
       }
@@ -967,6 +1028,10 @@ function isNewSchema(arr) {
   return arr.some(s => s.dirId !== undefined || s.kind !== undefined);
 }
 
+function hasMigratableOldSessions(arr) {
+  return arr.some(s => !(s.id === '__aux__' || s.type === 'aux') && s.dirId === undefined && s.kind === undefined);
+}
+
 // One-shot migration: old paired sessions → directories + split sessions.
 function migrateOldSchema(oldList) {
   const newDirs = new Map();
@@ -1024,7 +1089,7 @@ function loadPersistedState() {
 
   const dirMap = loadDirectories();
 
-  if (rawSessions.length > 0 && !isNewSchema(rawSessions)) {
+  if (rawSessions.length > 0 && !isNewSchema(rawSessions) && hasMigratableOldSessions(rawSessions)) {
     console.log('[multicc] Migrating sessions.json to directory-based schema...');
     const { newDirs, newSessions, chatHistoryRenames } = migrateOldSchema(rawSessions);
     // Rename chat_history files (old paired id → new chat session id)
@@ -1082,7 +1147,7 @@ function seedCommanderSession(dir) {
     const label = cli === 'codex' ? '🫡 Agent Commander (Codex)' : '🫡 Agent Commander';
     const r = createSessionRecord({ dir, cli, kind: 'chat', label });
     if (r.ok) {
-      r.session.rolePrompt = commander;
+      r.session.rolePrompt = commander.prompt;
       savePersistedSessions();
       appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
     } else {
@@ -1711,6 +1776,9 @@ function createSession(id) {
   if (!persisted) {
     throw new Error(`Session ${id} has no persisted record. Create it via /api/directories/:id/sessions first.`);
   }
+  if (persisted.type === 'aux' || persisted.type === 'gateway') {
+    throw new Error(`Session ${id} is a system session, not a terminal`);
+  }
   if (persisted.kind && persisted.kind !== 'terminal') {
     throw new Error(`Session ${id} is kind=${persisted.kind}, not a terminal`);
   }
@@ -2182,9 +2250,43 @@ function loadAgentPresets() {
 // Prompt of the bundled "Agent Commander" preset — used to seed a default
 // commander session in every newly-created directory. Returns null if missing.
 const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
-function agentCommanderPrompt() {
+function resolveAgentPresetProviderId(preset) {
+  const cli = preset && preset.defaultCli === 'claude' ? 'claude' : 'codex';
+  const key = String((preset && preset.defaultProviderKey) || '').toLowerCase();
+  const model = String((preset && preset.defaultModel) || '').trim();
+  const list = providers.listProviders(cli);
+  if (key === 'openai-codex') {
+    const byName = list.find(p => /openai|codex\s*官方|官方/i.test(p.name || ''));
+    if (byName) return byName.id;
+    const byModel = list.find(p => (p.modelOptions || []).includes('gpt-5.5') || (p.modelOptions || []).some(m => /^gpt-/i.test(m)));
+    return byModel ? byModel.id : null;
+  }
+  if (key === 'xf-maas-coding') {
+    const byModel = list.find(p => model && (p.modelOptions || []).includes(model));
+    if (byModel) return byModel.id;
+    const byName = list.find(p => /讯飞|xf|maas/i.test(p.name || ''));
+    return byName ? byName.id : null;
+  }
+  return null;
+}
+
+function enrichAgentPresetDefaults(preset) {
+  if (!preset || typeof preset !== 'object') return preset;
+  const defaultProviderId = resolveAgentPresetProviderId(preset);
+  const cli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
+  const defaultProviderName = defaultProviderId
+    ? (providers.getProviderSummary(cli, defaultProviderId)?.name || defaultProviderId)
+    : null;
+  return { ...preset, defaultProviderId, defaultProviderName };
+}
+
+function agentCommanderPreset() {
   const data = loadAgentPresets();
   const p = data && (data.presets || []).find(x => x.id === AGENT_COMMANDER_PRESET_ID);
+  return p || null;
+}
+function agentCommanderPrompt() {
+  const p = agentCommanderPreset();
   return (p && p.prompt) ? p.prompt : null;
 }
 
@@ -2192,7 +2294,10 @@ app.get('/api/agent-presets', (req, res) => {
   const data = loadAgentPresets();
   if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
   // Strip the prompt field from the list to keep the payload small.
-  const presets = (data.presets || []).map(({ prompt, ...meta }) => meta);
+  const presets = (data.presets || []).map(p => {
+    const { prompt, ...meta } = enrichAgentPresetDefaults(p);
+    return meta;
+  });
   res.json({
     source: data.source,
     version: data.version,
@@ -2208,7 +2313,7 @@ app.get('/api/agent-presets/:id', (req, res) => {
   if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
   const preset = (data.presets || []).find(p => p.id === req.params.id);
   if (!preset) return res.status(404).json({ error: 'not found' });
-  res.json(preset);
+  res.json(enrichAgentPresetDefaults(preset));
 });
 
 app.get('/api/agent-resources/claude-sessions', (req, res) => {
@@ -2365,6 +2470,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
   const effortLevel = normalizeEffort(effort);
   if (effortLevel === undefined) return { ok: false, error: 'invalid effort' };
   if (!validEffortForCli(cli, effortLevel)) return { ok: false, error: 'invalid reasoning level' };
+  const sessionEffort = effortLevel || (cli === 'codex' ? codexDefaultReasoningLevel() : null);
   const rp = rolePrompt == null ? null : String(rolePrompt).trim();
   if (rp && rp.length > 40000) return { ok: false, error: 'rolePrompt too long (max 40000)' };
   // Provider override (cc-switch). An explicit value is validated; when omitted
@@ -2399,7 +2505,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
     label,
     model: model || null, // null = follow default/provider model
-    effort: effortLevel || null, // null = follow Claude Code/provider default
+    effort: sessionEffort || null, // null = follow Claude Code/provider default
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     autoCommit: true,      // default: auto-commit & merge after task completion
     autoDispatch: false,   // default: do NOT inject dispatch context prompt unless user opts in
@@ -4685,20 +4791,27 @@ function triggerPush(sessionId, type, message) {
 
 // ── AuxQueue: stateless claude -p AI service (intent classification, etc.) ──
 const AUX_SESSION_ID = '__aux__';
-const AUX_TIMEOUT_MS = 30000;
+const AUX_TIMEOUT_MS = Math.max(10000, parseInt(process.env.AUX_TIMEOUT_MS || '90000', 10) || 90000);
 const AUX_HISTORY_MAX = 200;
 
 // Aux model config (persisted in aux-config.json). The aux helper runs short,
-// stateless single-turn tasks (intent classify, summary, voice refine) — Haiku
-// on the OAuth subscription is the cheap default, but it's configurable so the
-// user can point it at any claude provider (e.g. a self-hosted/relay model) and
-// model. providerId=null → default OAuth login; model=null → 'haiku'.
+// stateless single-turn tasks (intent classify, summary, voice refine). It can
+// use either Claude providers or Codex providers; providerId=null follows the
+// selected CLI's default login, model=null follows that provider's default.
 const AUX_CONFIG_FILE = path.join(__dirname, 'aux-config.json');
-let auxConfig = { providerId: null, model: null };
+let auxConfig = { cli: 'claude', providerId: null, model: null, effort: null };
+function normalizeAuxCli(v) {
+  return String(v || '').toLowerCase() === 'codex' ? 'codex' : 'claude';
+}
 function loadAuxConfig() {
   try {
     const c = JSON.parse(fs.readFileSync(AUX_CONFIG_FILE, 'utf8'));
-    auxConfig = { providerId: c.providerId || null, model: (c.model && String(c.model).trim()) || null };
+    auxConfig = {
+      cli: normalizeAuxCli(c.cli),
+      providerId: c.providerId || null,
+      model: (c.model && String(c.model).trim()) || null,
+      effort: normalizeEffort(c.effort) || null,
+    };
   } catch (_) { /* no config yet → defaults */ }
 }
 function saveAuxConfig() {
@@ -4872,6 +4985,11 @@ const auxQueue = {
   },
 
   execute(task) {
+    if (auxConfig.cli === 'codex') return this.executeCodex(task);
+    return this.executeClaude(task);
+  },
+
+  executeClaude(task) {
     return new Promise((resolve, reject) => {
       // Cold-spawn per task: prompt passed as a CLI argument, stdin ignored
       // (/dev/null → immediate EOF). No prewarm, no stdin race. Single-turn,
@@ -4982,6 +5100,108 @@ const auxQueue = {
     });
   },
 
+  executeCodex(task) {
+    return new Promise((resolve, reject) => {
+      // Codex aux calls are stateless one-shot requests. Keep them read-only
+      // and approval-free so internal classifier/summary prompts never stall.
+      const auxSession = {
+        cli: 'codex',
+        provider: auxConfig.providerId || null,
+        model: auxConfig.model || null,
+        effort: auxConfig.effort || null,
+      };
+      const built = providers.buildChildEnv(process.env, auxSession, {
+        TERM: 'dumb',
+        NO_COLOR: '1',
+      });
+      const args = ['exec'];
+      const effortArg = codexReasoningConfigArg(auxSession);
+      if (effortArg) args.push('-c', effortArg);
+      const modelArg = codexModelConfigArg(auxSession);
+      if (modelArg) args.push('-c', modelArg);
+      args.push(
+        '-c', 'sandbox_mode="read-only"',
+        '-c', 'approval_policy="never"',
+        '--json',
+        '--skip-git-repo-check',
+        task.prompt,
+      );
+      const proc = spawn(CODEX_CMD, args, {
+        cwd: __dirname,
+        env: built.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let assistantText = '';
+      let lineBuf = '';
+      let stderrBuf = '';
+      let codexError = '';
+
+      const timeout = setTimeout(() => {
+        try { proc.kill('SIGTERM'); } catch (_) {}
+        reject(new Error('timeout'));
+      }, AUX_TIMEOUT_MS);
+
+      const collectText = (text) => {
+        if (!text) return;
+        assistantText += (assistantText ? '\n\n' : '') + text;
+      };
+
+      const handleLine = (line) => {
+        let evt;
+        try { evt = JSON.parse(line); } catch (_) { return; }
+        if (evt.type === 'item.completed') {
+          const it = evt.item || {};
+          if (it.type === 'agent_message') collectText(it.text || '');
+          if (it.type === 'message' && Array.isArray(it.content)) {
+            collectText(it.content.map(c => c.text || '').join(''));
+          }
+          return;
+        }
+        if (evt.type === 'error' || evt.type === 'turn.failed') {
+          codexError = (evt.message || (evt.error && evt.error.message) || 'codex failed').toString();
+          if (evt.type === 'error' && isCodexResponseCompletedDisconnect(codexError) && assistantText) {
+            codexError = '';
+          }
+          return;
+        }
+        if (evt.type === 'response.output_text.delta' && evt.delta) {
+          assistantText += evt.delta;
+        }
+      };
+
+      proc.stdout.on('data', (chunk) => {
+        lineBuf += chunk.toString();
+        const lines = lineBuf.split('\n');
+        lineBuf = lines.pop();
+        for (const line of lines) {
+          if (line.trim()) handleLine(line);
+        }
+      });
+
+      proc.stderr.on('data', (chunk) => { stderrBuf += chunk.toString(); });
+
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        if (lineBuf.trim()) handleLine(lineBuf);
+        if (assistantText) {
+          resolve(assistantText);
+        } else if (codexError) {
+          reject(new Error(codexError));
+        } else if (code !== 0) {
+          reject(new Error(`codex exited ${code}: ${stderrBuf.slice(0, 300)}`));
+        } else {
+          resolve('');
+        }
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+  },
+
   broadcast(payload) {
     broadcastTo(this.clients, payload);
   },
@@ -5021,25 +5241,36 @@ app.post('/api/aux/enqueue', (req, res) => {
     .catch(err => res.json({ ok: false, error: err?.message || 'cancelled' }));
 });
 
-// Aux model config: which claude provider + model the aux helper uses.
-// GET also returns the list of claude providers so the UI can render a picker.
+// Aux model config: which CLI/provider/model the aux helper uses.
+// GET also returns provider lists so the UI can render a picker.
 app.get('/api/aux/config', (req, res) => {
+  const cli = normalizeAuxCli(auxConfig.cli);
   res.json({
+    cli,
     providerId: auxConfig.providerId,
     model: auxConfig.model,
-    providers: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name })),
+    effort: auxConfig.effort,
+    providers: providers.listProviders(cli).map(p => ({ id: p.id, name: p.name })),
+    claudeProviders: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name })),
+    codexProviders: providers.listProviders('codex').map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
   });
 });
 app.post('/api/aux/config', (req, res) => {
   const { providerId, model } = req.body || {};
-  if (providerId && !providers.getProvider('claude', String(providerId))) {
-    return res.status(400).json({ ok: false, error: '未知的 claude provider' });
+  const cli = normalizeAuxCli((req.body || {}).cli);
+  const effort = normalizeEffort((req.body || {}).effort);
+  if (effort === undefined) return res.status(400).json({ ok: false, error: 'invalid effort' });
+  if (!validEffortForCli(cli, effort)) return res.status(400).json({ ok: false, error: 'invalid reasoning level' });
+  if (providerId && !providers.getProvider(cli, String(providerId))) {
+    return res.status(400).json({ ok: false, error: `未知的 ${cli} provider` });
   }
+  auxConfig.cli = cli;
   auxConfig.providerId = providerId ? String(providerId) : null;
   auxConfig.model = (model && String(model).trim()) || null;
+  auxConfig.effort = effort || null;
   saveAuxConfig();
-  console.log(`[multicc/aux] config updated: provider=${auxConfig.providerId || 'default'} model=${auxConfig.model || 'haiku'}`);
-  res.json({ ok: true, providerId: auxConfig.providerId, model: auxConfig.model });
+  console.log(`[multicc/aux] config updated: cli=${auxConfig.cli} provider=${auxConfig.providerId || 'default'} model=${auxConfig.model || (auxConfig.cli === 'claude' ? 'haiku' : 'provider-default')} effort=${auxConfig.effort || 'default'}`);
+  res.json({ ok: true, cli: auxConfig.cli, providerId: auxConfig.providerId, model: auxConfig.model, effort: auxConfig.effort });
 });
 
 // ── Goal-mode precheck ──
@@ -5460,6 +5691,13 @@ app.put('/api/provider-defaults', (req, res) => {
 
 // Root → manage page (unless ?id= is specified, which means a terminal session)
 app.get('/', (req, res, next) => {
+  if (req.query.id === '__aux__') {
+    const params = new URLSearchParams();
+    if (req.query.token) params.set('token', String(req.query.token));
+    params.set('focus', 'aux');
+    res.redirect(`/manage.html?${params.toString()}`);
+    return;
+  }
   if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
   res.redirect('/manage');
 });
@@ -7333,6 +7571,9 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
 
 function runChatTurn(sessionName, text, opts = {}) {
   const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits } = opts;
+  const clientMsgId = typeof opts.clientMsgId === 'string' ? opts.clientMsgId.trim().slice(0, 128) : '';
+  text = String(text || '').trim();
+  if (!text) return false;
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
@@ -7411,6 +7652,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // Save user message to history
   appendChatMessage(sessionName, {
     role: 'user', content: text, ts: Date.now(),
+    clientMsgId: clientMsgId || undefined,
   });
 
   // Reset accumulators
@@ -7430,6 +7672,10 @@ function runChatTurn(sessionName, text, opts = {}) {
   // onUsage hook. A new user turn starts a fresh "本轮" window, so stale subagent
   // totals from the previous turn must not bleed into the new one.
   roleRuntime.delete(sessionName);
+  cs._codexRecoveredDisconnect = false;
+  cs._codexPendingStreamError = '';
+  cs._codexPendingStreamErrorCount = 0;
+  cs._codexStreamContinuationCount = 0;
 
   // Task start: show a neutral placeholder instantly, then fire classify RIGHT
   // AWAY (based on the user message) to提炼 the real goal — no rule-based截取,
@@ -7631,6 +7877,31 @@ function runChatTurn(sessionName, text, opts = {}) {
             }
             return;
           }
+          // Degradation: the model called an ask/user-input tool (request_user_input,
+          // AskUserQuestion, ...) which is unavailable in non-interactive codex exec.
+          // Codex already replies "is unavailable in Default mode" and the model may
+          // loop. Surface the question text to the user as plain assistant text so the
+          // turn stays observable instead of silently churning.
+          if (it.type === 'function_call' && /^(request_user_input|AskUserQuestion)$/i.test(it.name || '')) {
+            let questionText = '';
+            try {
+              const parsed = JSON.parse(it.arguments || '{}');
+              const qs = Array.isArray(parsed.questions) ? parsed.questions : [];
+              questionText = qs.map(q => {
+                const h = q.header || q.title || '';
+                const body = q.question || q.text || '';
+                const opts = Array.isArray(q.options) ? q.options.map(o => '  - ' + (o.label || o.text || '') + (o.description ? '：' + o.description : '')).join('\n') : '';
+                return (h ? `**${h}**\n` : '') + body + (opts ? `\n${opts}` : '');
+              }).join('\n\n');
+            } catch (_) { questionText = String(it.arguments || ''); }
+            const surfaced = questionText ? `\n\n> [提问工具 ${it.name} 在非交互环境不可用，已转为文本透传]\n${questionText}\n` : '';
+            if (surfaced) {
+              cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + surfaced;
+              forward({ type: 'assistant', message: { content: [{ type: 'text', text: surfaced }] } });
+              console.warn(`[multicc/chat] [${sessionName}] codex ask-tool ${it.name} degraded to text`);
+            }
+            return;
+          }
           if (it.type === 'agent_message') {
             const text = it.text || '';
             cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + text;
@@ -7681,6 +7952,14 @@ function runChatTurn(sessionName, text, opts = {}) {
         // and flag the turn so the pointless retry is skipped.
         if (evt.type === 'error' || evt.type === 'turn.failed') {
           const emsg = (evt.message || (evt.error && evt.error.message) || '未知错误').toString();
+          if (isCodexResponseCompletedDisconnect(emsg)) {
+            cs._codexPendingStreamError = emsg;
+            cs._codexPendingStreamErrorCount = (cs._codexPendingStreamErrorCount || 0) + 1;
+            const hasOutput = !!(cs.currentAssistantText || cs.currentToolCalls.length || cs._resultSaved);
+            if (hasOutput) cs._codexRecoveredDisconnect = true;
+            console.warn(`[multicc/chat] [${sessionName}] pending codex response.completed disconnect${hasOutput ? ' after output' : ''} #${cs._codexPendingStreamErrorCount}: ${emsg}`);
+            return;
+          }
           cs._codexError = emsg;
           forward({ type: 'error', error: `Codex 出错：${emsg}` });
           return;
@@ -7725,9 +8004,21 @@ function runChatTurn(sessionName, text, opts = {}) {
         console.log(`[multicc/chat] [${sessionName}] stale proc pid=${proc.pid} closed after replacement (code=${code}, signal=${signal || ''})`);
         return;
       }
+      if (cs.lineBuf.trim()) {
+        try { handleLine(cs.lineBuf); } catch (_) {}
+      }
+      cs.lineBuf = '';
       const durMs = Date.now() - spawnTs;
       const killReason = cs._killReason || null;
       cs._killReason = null;
+      const pendingStreamError = cs._codexPendingStreamError || '';
+      const pendingStreamErrorCount = cs._codexPendingStreamErrorCount || 0;
+      const hasTurnOutput = !!(cs._resultSaved || cs.currentAssistantText || cs.currentToolCalls.length);
+      if (pendingStreamError && !hasTurnOutput && !cs._codexError) {
+        cs._codexError = pendingStreamError;
+        chatBroadcast(sessionName, { type: 'error', error: `Codex 出错：${pendingStreamError}` });
+      }
+      const recoveredCodexDisconnect = (!!cs._codexRecoveredDisconnect || !!pendingStreamError) && hasTurnOutput;
       const diag = {
         session: sessionName, cli: cs.cli, pid: proc.pid, code, signal, durMs, killReason,
         resultSaved: !!cs._resultSaved,
@@ -7735,18 +8026,47 @@ function runChatTurn(sessionName, text, opts = {}) {
         toolCalls: cs.currentToolCalls.length,
         liveClients: cs.clients.size,
         isRetry: !!isRetry,
+        recoveredCodexDisconnect,
+        pendingStreamErrorCount,
         stderrTail: stderrBuf.slice(-300).trim(),
       };
       let kind = 'normal';
       if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
-      else if (code !== 0) kind = 'nonzero_exit';
-      else if (!cs._resultSaved && !cs.currentAssistantText) kind = 'empty_exit';
+      else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
+      else if (!cs._resultSaved && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
       console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
-
-      if (cs.lineBuf.trim()) {
-        try { handleLine(cs.lineBuf); } catch (_) {}
+      if (
+        cs.cli === 'codex' &&
+        pendingStreamError &&
+        hasTurnOutput &&
+        !cs._resultSaved &&
+        !killReason &&
+        persisted.cliSessionId &&
+        (cs._codexStreamContinuationCount || 0) < CODEX_STREAM_DISCONNECT_CONTINUE_MAX
+      ) {
+        cs._codexStreamContinuationCount = (cs._codexStreamContinuationCount || 0) + 1;
+        cs._codexRecoveredDisconnect = false;
+        cs._codexPendingStreamError = '';
+        cs._codexPendingStreamErrorCount = 0;
+        cs.isStreaming = true;
+        const continuePrompt = codexStreamDisconnectContinuePrompt();
+        const continueArgs = provider.buildChatSpawnArgs(persisted, continuePrompt, {
+          isFirstTurn: false,
+          rolePrompt,
+          maxTurns: goalMaxTurns,
+          skipDefaultModel: provEnv.skipDefaultModel,
+          providerModel: provEnv.providerModel,
+          providerModels: provEnv.providerModels,
+        });
+        const msg = isGlm52Session(persisted)
+          ? `正在使用 GLM-5.2 最高档：检测到连接中断，正在自动续跑剩余任务（${cs._codexStreamContinuationCount}/${CODEX_STREAM_DISCONNECT_CONTINUE_MAX}）。`
+          : `检测到 Codex 连接中断，正在自动续跑剩余任务（${cs._codexStreamContinuationCount}/${CODEX_STREAM_DISCONNECT_CONTINUE_MAX}）。`;
+        chatBroadcast(sessionName, { type: 'system', subtype: 'warning', message: msg });
+        setSessionStatus(sessionName, { status: 'running', currentFile: null });
+        console.warn(`[multicc/chat] [${sessionName}] auto-continuing codex after response.completed disconnect #${cs._codexStreamContinuationCount}`);
+        cs.claudeProc = spawnChat(continueArgs, true);
+        return;
       }
-      cs.lineBuf = '';
       cs.isStreaming = false;
       cs.streamReplay = [];
 
@@ -7754,7 +8074,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       // once with a fresh session id (covers resume-failed / session-id conflict cases).
       // A reported codex error (cs._codexError) is a real provider failure, not a
       // resume glitch — retrying would just hit the same wall, so skip it.
-      if (!isRetry && !cs.currentAssistantText && !killReason && !cs._codexError) {
+      if (!isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._codexError) {
         const stderrTail = stderrBuf.slice(-300).trim();
         const reason = stderrTail.includes('already in use') ? 'session-id conflict'
           : stderrTail.includes('No conversation found') || stderrTail.includes('session not found') ? 'resume target missing'
@@ -7776,7 +8096,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         return;
       }
 
-      if (isRetry && !cs.currentAssistantText) {
+      if (isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length) {
         const stderrTail = stderrBuf.slice(-300).trim();
         chatBroadcast(sessionName, {
           type: 'error',
@@ -7786,6 +8106,7 @@ function runChatTurn(sessionName, text, opts = {}) {
 
       cs.claudeProc = null;
 
+      let savedInClose = false;
       if (!cs._resultSaved && (cs.currentAssistantText || cs.currentToolCalls.length)) {
         appendChatMessage(sessionName, {
           role: 'assistant', content: cs.currentAssistantText,
@@ -7793,12 +8114,27 @@ function runChatTurn(sessionName, text, opts = {}) {
           cost: cs.currentCost, ts: Date.now(),
         });
         cs.chatTurnCount++;
+        savedInClose = true;
+      }
+      if (recoveredCodexDisconnect && (savedInClose || cs._resultSaved)) {
+        chatBroadcast(sessionName, {
+          type: 'result',
+          total_cost_usd: null,
+          usage: {},
+          durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
+          num_turns: cs.chatTurnCount,
+        });
+        scheduleIntentClassify(cs, sessionName);
       }
       const finalText = cs.currentAssistantText;
       cs.currentAssistantText = '';
       cs.currentToolCalls = [];
       cs._resultSaved = false;
-      const hadCodexError = !!cs._codexError; cs._codexError = null;
+      const hadCodexError = !!cs._codexError && !recoveredCodexDisconnect; cs._codexError = null;
+      cs._codexRecoveredDisconnect = false;
+      cs._codexPendingStreamError = '';
+      cs._codexPendingStreamErrorCount = 0;
+      cs._codexStreamContinuationCount = 0;
       // Guard F: resume (capped) if this turn died on an API/transport error,
       // else reset the consecutive-error counter. Skip user-initiated kills.
       const sawApi = cs._sawApiError; cs._sawApiError = false;
@@ -8334,6 +8670,9 @@ function handleChatWs(ws, req, urlObj) {
         // Goal mode: client flags the message; server applies the configured
         // round/budget limits (per-send override merged over the global config).
         const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};
+        if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) {
+          turnOpts.clientMsgId = msg.clientMsgId;
+        }
         runChatTurn(sessionName, msg.text, turnOpts);
         return;
       }
