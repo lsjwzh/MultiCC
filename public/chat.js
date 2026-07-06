@@ -1262,6 +1262,32 @@ function buildTimingLine(m) {
 // removes the entry from chat_history (display history only — the CLI's own
 // conversation context is not rewritten). The button lives on the outer .msg
 // element so renderCurrentText()'s .msg-content rebuilds can't wipe it.
+
+// ── Iframe bridge: ask the parent page to show a confirm dialog / open a tab ──
+// When this chat page is embedded in an iframe (manage session modal), native
+// confirm()/alert()/window.open() are clipped or blocked.  We post a message
+// to the parent (manage.html) which handles the UI in its own DOM and posts
+// back the result.  Falls back to native when not in an iframe.
+function _inIframe() {
+  try { return window !== window.parent; } catch (_) { return false; }
+}
+function _callParent(method, args) {
+  // Generate a unique request-id so multiple concurrent requests don't mix.
+  const id = 'mb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  window.parent.postMessage({ src: 'multicc-chat', method, args, id }, '*');
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('parent response timed out')), 30000);
+    function onMsg(e) {
+      if (!e.data || e.data.src !== 'multicc-manage' || e.data.id !== id) return;
+      clearTimeout(timer);
+      window.removeEventListener('message', onMsg);
+      if (e.data.error) reject(new Error(e.data.error));
+      else resolve(e.data.result);
+    }
+    window.addEventListener('message', onMsg);
+  });
+}
+
 function attachDeleteButton(msgEl) {
   if (!msgEl || !msgEl.dataset.msgId || msgEl.querySelector('.msg-del')) return;
   const btn = document.createElement('button');
@@ -1270,17 +1296,29 @@ function attachDeleteButton(msgEl) {
   btn.innerHTML = '&#10005;';
   btn.onclick = async (e) => {
     e.stopPropagation();
-    if (!confirm('删除这条消息？仅从聊天记录移除，不可恢复。')) return;
+    let go;
+    if (_inIframe()) {
+      // Parent page shows the confirm in its own DOM (not clipped by iframe).
+      try { go = await _callParent('confirm', { message: '删除这条消息？仅从聊天记录移除，不可恢复。', danger: true }); }
+      catch (_) { go = confirm('删除这条消息？仅从聊天记录移除，不可恢复。'); }
+    } else {
+      go = confirm('删除这条消息？仅从聊天记录移除，不可恢复。');
+    }
+    if (!go) return;
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
       if (r.ok) {
         msgEl.remove();  // server also broadcasts chat_msg_deleted; removal is idempotent
       } else {
         const err = await r.json().catch(() => null);
-        alert('删除失败：' + ((err && err.error) || r.status));
+        const msg = '删除失败：' + ((err && err.error) || r.status);
+        if (_inIframe()) _callParent('alert', { message: msg }).catch(() => {});
+        else alert(msg);
       }
     } catch (err) {
-      alert('删除失败：' + err.message);
+      const msg = '删除失败：' + err.message;
+      if (_inIframe()) _callParent('alert', { message: msg }).catch(() => {});
+      else alert(msg);
     }
   };
   msgEl.appendChild(btn);
@@ -1303,7 +1341,14 @@ function attachForkButton(msgEl) {
   btn.innerHTML = '&#9741;';   // ⧉ branch symbol
   btn.onclick = async (e) => {
     e.stopPropagation();
-    const go = confirm('从此条消息处分叉出新会话？\n新会话将继承到该点的对话上下文与会话记忆，并在新标签页打开。');
+    const prompt = '从此条消息处分叉出新会话？\n新会话将继承到该点的对话上下文与会话记忆，并在新标签页打开。';
+    let go;
+    if (_inIframe()) {
+      try { go = await _callParent('confirm', { message: prompt }); }
+      catch (_) { go = confirm(prompt); }
+    } else {
+      go = confirm(prompt);
+    }
     if (!go) return;
     btn.disabled = true;
     const orig = btn.innerHTML;
@@ -1319,11 +1364,17 @@ function attachForkButton(msgEl) {
       const n = d.replayedMessages || 0;
       // Open the forked session's chat page in a new tab; keep the original open.
       const url = `${location.pathname}?session=${encodeURIComponent(newId)}${location.hash}`;
-      window.open(url, '_blank');
+      if (_inIframe()) {
+        _callParent('openTab', { url }).catch(() => window.open(url, '_blank'));
+      } else {
+        window.open(url, '_blank');
+      }
       // Lightweight in-place toast via the existing debug-log channel.
       dbg('chat', `已分叉: ${newId} (replay ${n} 条) → 新标签页已打开`);
     } catch (err) {
-      alert('分叉失败：' + err.message);
+      const msg = '分叉失败：' + err.message;
+      if (_inIframe()) _callParent('alert', { message: msg }).catch(() => {});
+      else alert(msg);
     } finally {
       btn.disabled = false;
       btn.innerHTML = orig;
