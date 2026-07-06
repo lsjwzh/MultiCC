@@ -371,7 +371,10 @@ function createHandler({ getProvider, onUsage }) {
     // here for both, otherwise an alias-mapped relay gets 'opus' and rejects it.
     const tierKey = String(ccfw ? ccfw.realModel : model).toLowerCase();
     if (TIERS.includes(tierKey) && creds.aliasMap[tierKey]) {
-      outBody = rewriteModel(outBody, creds.aliasMap[tierKey]);
+      const alias = creds.aliasMap[tierKey];
+      // aliasMap values can be {model, name} objects or plain strings
+      const realModel = (typeof alias === 'string') ? alias : (alias.model || alias.name || '');
+      if (realModel) outBody = rewriteModel(outBody, realModel);
     }
 
     // forward
