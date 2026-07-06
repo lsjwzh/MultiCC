@@ -87,6 +87,14 @@ const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
 
 const APP_TYPES = ['claude', 'codex'];
 
+// Map a session's cli to its provider pool (appType). codex owns its own pool;
+// every other cli (claude, opencode, zcode, …) shares the Anthropic-compatible
+// 'claude' pool. opencode/zcode honor ANTHROPIC_* env when using an anthropic
+// provider, so a chosen claude-pool provider routes correctly for them.
+function appTypeForCli(cli) {
+  return cli === 'codex' ? 'codex' : 'claude';
+}
+
 // Safe wire model used when a provider is "alias-only" — it declares only
 // ANTHROPIC_DEFAULT_*_MODEL alias targets (no canonical ANTHROPIC_MODEL). Such
 // relays serve their OWN real model ids through the tier vars (e.g. iFlytek's
@@ -583,8 +591,12 @@ const CLAUDE_ROUTING_KEYS = [...ANTHROPIC_ROUTING_KEYS, 'CLAUDE_CODE_SIMPLE'];
 // inherited env is left untouched aside from the provider's CODEX_HOME.
 function buildChildEnv(base, session, extra = {}) {
   const env = { ...base };
-  const appType = (session && session.cli === 'codex') ? 'codex' : 'claude';
-  if (appType === 'claude') {
+  const appType = appTypeForCli(session && session.cli);
+  // Only the claude CLI itself needs inherited ANTHROPIC_* routing keys stripped
+  // (so the chosen provider is authoritative). opencode/zcode carry their own
+  // native config (opencode.json / auth.json) and codex routes via CODEX_HOME —
+  // for all of them the inherited env is left untouched, matching codex's behavior.
+  if (session && session.cli === 'claude') {
     for (const k of CLAUDE_ROUTING_KEYS) delete env[k];
   }
   const spawn = resolveSpawnEnv(session);
@@ -607,7 +619,7 @@ function buildChildEnv(base, session, extra = {}) {
 function resolveSpawnEnv(session) {
   const providerId = session && session.provider;
   if (!providerId) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
-  const appType = (session.cli === 'codex') ? 'codex' : 'claude';
+  const appType = appTypeForCli(session.cli);
   const p = getProvider(appType, providerId);
   if (!p) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const cfg = parseConfig(p.settingsConfig);
@@ -926,6 +938,8 @@ function applyClaudeProxyEnv(env, { providerId, sessionId, subagent, port, enabl
 
 module.exports = {
   ccSwitchAvailable,
+  appTypeForCli,
+  APP_TYPES,
   listProviders,
   getProvider,
   getProviderSummary,
