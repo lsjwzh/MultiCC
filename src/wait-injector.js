@@ -263,38 +263,7 @@ function bgCheck(session, opts = {}) {
 // Reset the bgCheck counter — call on a real user message.
 function resetBg(session) { bgState.delete(session); }
 
-// ── API/transport error retry guard (F) ──
-// Chat-only. Called at a turn boundary when the turn ended on a transport/API
-// error (connection dropped mid-response, etc.) instead of a clean completion —
-// the visible answer is truncated and nothing will resume it on its own. We
-// inject a short "继续" nudge after a brief delay so the model picks up where it
-// was cut off. Capped at MAX_API_RETRY *consecutive* attempts: resetApi() is
-// called on every clean turn (and every real user message), so the counter only
-// climbs while errors happen back-to-back; once it hits the cap we stop and
-// leave it to the user. Skipped when an explicit A/B wait already covers the
-// session (don't fight a registered wait).
-function apiRetry(session, opts = {}) {
-  if (hasWait(session)) { _log(`[wait] apiRetry skip ${session}: explicit wait pending`); return false; }
-  const st = apiState.get(session) || { count: 0 };
-  if (st.count >= MAX_API_RETRY) {
-    _log(`[wait] apiRetry cap reached for ${session} (${st.count}) — giving up, leaving it to the user`);
-    return false;
-  }
-  st.count++;
-  apiState.set(session, st);
-  const nudge = opts.nudge ||
-    `[自动恢复 ${st.count}/${MAX_API_RETRY}] 刚才异常中断（API/连接错误，回答可能被截断），请从中断处继续。`;
-  _log(`[wait] apiRetry ${session} (#${st.count}/${MAX_API_RETRY})`);
-  const d = Number(opts.delayMs);
-  const delayMs = Number.isFinite(d) ? Math.max(0, d) : API_RETRY_DELAY_MS;
-  injectSystemMsg(session, nudge, delayMs);
-  return true;
-}
-
-// Reset the apiRetry counter — call on any clean turn boundary or real user message.
-function resetApi(session) { apiState.delete(session); }
-
-// Universal prefix for all system-injected messages (autoContinue, apiRetry,
+// Universal prefix for all system-injected messages (autoContinue,
 // bgCheck). Recognition side (server.js) matches this single token to skip
 // injected text during classify/reconcile, replacing the old per-language regex.
 const SYS_PREFIX = '🔇';
@@ -326,7 +295,7 @@ function injectSystemMsg(session, text, delayMs) {
 }
 
 function stats() {
-  return { waits: waits.size, autoSessions: autoState.size, bgSessions: bgState.size, apiSessions: apiState.size };
+  return { waits: waits.size, autoSessions: autoState.size, bgSessions: bgState.size };
 }
 
 // Busy-safe delivery of arbitrary text into a session as a new turn. Reuses the
@@ -339,7 +308,7 @@ function safeInject(session, text) { fireInject(session, text); }
 module.exports = {
   init, register, resolve, cancel, cancelForSession,
   listForSession, hasWait, tick, autoContinue, resetAuto,
-  bgCheck, resetBg, apiRetry, resetApi, stats, safeInject,
+  bgCheck, resetBg, stats, safeInject,
   injectSystemMsg, SYS_PREFIX,
   _waits: waits, // for tests
 };
