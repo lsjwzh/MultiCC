@@ -87,3 +87,6 @@ provider-defaults.json
 
 # Local-only scripts (not for git)
 scripts/bigmodel-snatch/
+
+# 讯飞 503 对比测试脚本（含 API key，仅本地）
+test_xf_503.sh
