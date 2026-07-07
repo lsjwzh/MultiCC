@@ -5989,6 +5989,15 @@ function renderProviderList() {
       (_providerData.available ? '在下方新增。' : 'cc-switch 不可用。') + '</span>';
     return;
   }
+  if (!_providerLatency) _providerLatency = {};
+  const latencyBadge = (id) => {
+    const r = _providerLatency[id];
+    if (!r) return '';
+    const color = r.ok ? (r.ms < 1000 ? '#3fb950' : r.ms < 3000 ? '#d29922' : '#f85149') : '#f85149';
+    const label = r.ok ? r.ms + 'ms' : 'ERR';
+    const title = r.error ? ` title="${escapeHtml(r.error)}"` : '';
+    return `<span style="color:${color};font-size:10px;font-weight:600;margin-left:4px;"${title}>${label}</span>`;
+  };
   const cardHtml = (p) => {
     const stat = (_providerData.stats || []).find(s => s.providerId === p.id);
     let statHtml = '';
@@ -6006,27 +6015,70 @@ function renderProviderList() {
       parts.push(`累计 <b>${formatTokens(stat.totalTokens)}</b>（${stat.turnCount}轮/${stat.sessionCount}会话）`);
       statHtml = parts.join(' · ');
     }
+    const latBadge = latencyBadge(p.id);
     return `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span></div>
+        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span>${latBadge}</div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
         <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">测速</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
     </div>`;
   };
+  const groupSpeedTestBtn = (label, providers) => {
+    if (!providers.length) return '';
+    return `<button class="btn" style="padding:2px 8px;font-size:11px;margin-left:8px" onclick="speedTestGroup(this,'${escapeHtml(providers.map(p => p.appType + '|' + p.id).join(','))}')">全部测速</button>`;
+  };
   const groupHtml = (label, emoji, providers) => {
     if (!providers.length) return '';
     return `<div style="margin-bottom:12px;">
-      <div style="font-size:12px;color:var(--muted);font-weight:600;margin-bottom:6px;padding:0 2px">${emoji} ${label} <span style="color:var(--faint);font-weight:400">(${providers.length})</span></div>
+      <div style="display:flex;align-items:center;font-size:12px;color:var(--muted);font-weight:600;margin-bottom:6px;padding:0 2px">${emoji} ${label} <span style="color:var(--faint);font-weight:400">(${providers.length})</span>${groupSpeedTestBtn(label, providers)}</div>
       <div style="display:flex;flex-direction:column;gap:8px;">${providers.map(cardHtml).join('')}</div>
     </div>`;
   };
   const claudeProvs = _providerData.providers.filter(p => p.appType !== 'codex');
   const codexProvs = _providerData.providers.filter(p => p.appType === 'codex');
   box.innerHTML = groupHtml('Claude', '🤖', claudeProvs) + groupHtml('Codex', '⚡', codexProvs);
+}
+
+// ── Provider speed-test ──────────────────────────────────────────────
+let _providerLatency = {};
+
+async function speedTestProvider(appType, id, btn) {
+  if (btn) { btn.textContent = '测速中…'; btn.disabled = true; }
+  try {
+    const res = await fetch('/api/providers/' + encodeURIComponent(appType) + '/' + encodeURIComponent(id) + '/speedtest' + tokenQS('?'), { method: 'POST' });
+    const d = await res.json();
+    _providerLatency[id] = d;
+  } catch (e) {
+    _providerLatency[id] = { ok: false, ms: 0, error: e.message };
+  }
+  if (btn) { btn.textContent = '测速'; btn.disabled = false; }
+  renderProviderList();
+}
+
+async function speedTestGroup(btn, idList) {
+  const ids = idList.split(',').filter(Boolean);
+  if (!ids.length) return;
+  if (btn) { btn.textContent = '测速中…'; btn.disabled = true; }
+  // Run all in parallel
+  await Promise.all(ids.map(s => {
+    const [appType, id] = s.split('|');
+    return (async () => {
+      try {
+        const res = await fetch('/api/providers/' + encodeURIComponent(appType) + '/' + encodeURIComponent(id) + '/speedtest' + tokenQS('?'), { method: 'POST' });
+        const d = await res.json();
+        _providerLatency[id] = d;
+      } catch (e) {
+        _providerLatency[id] = { ok: false, ms: 0, error: e.message };
+      }
+    })();
+  }));
+  if (btn) { btn.textContent = '全部测速'; btn.disabled = false; }
+  renderProviderList();
 }
 
 async function saveProviderDefaults() {
