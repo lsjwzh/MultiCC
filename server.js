@@ -5135,10 +5135,11 @@ const auxQueue = {
     try { cfg = JSON.parse(p.settingsConfig || '{}'); } catch (_) {}
     const hasBase = !!(cfg.env && cfg.env.ANTHROPIC_BASE_URL);
     const hasKey = !!(cfg.env && cfg.env.ANTHROPIC_API_KEY);
-    // Can direct HTTP if: has baseUrl + API key, and is NOT the official OAuth provider
+    // Can direct HTTP if: has baseUrl + API key; OR is the official OAuth provider
+    // (ccfw proxy handles Keychain OAuth token replay).
     const isOfficial = auxConfig.providerId === 'claude-official';
-    this._canDirectHttp = hasBase && hasKey && !isOfficial;
-    if (this._canDirectHttp) console.log('[multicc/aux] direct HTTP mode (no CLI spawn)');
+    this._canDirectHttp = (hasBase && hasKey) || (isOfficial && CLAUDE_OFFICIAL_VIA_PROXY);
+    if (this._canDirectHttp) console.log('[multicc/aux] direct HTTP mode (no CLI spawn)' + (isOfficial ? ' via OAuth' : ''));
     return this._canDirectHttp;
   },
 
