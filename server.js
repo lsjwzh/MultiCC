@@ -6607,8 +6607,7 @@ function reclassifySessionsWithMissingGoals() {
   for (const { sid, lastText, userMsg } of candidates) {
     const prompt = buildClassifyPrompt({
       priorGoal: '',
-      userContext: buildUserContext(sid),
-      userMsg,
+      sessionName: sid,
       reply: lastText,
     });
     auxQueue.enqueue({ type: 'recovery_reclassify', prompt, meta: { sessionName: sid } })
@@ -6694,8 +6693,7 @@ function reconcileOneOnStartup(sid, ts, opts = {}) {
   // Never feed an injected/junk prior goal back into the prompt — it biases classify
   // and, if classify returns '—', we'd keep the junk. Treat junk as no prior goal.
   const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
-  const userContext = buildUserContext(sid);
-  const prompt = buildClassifyPrompt({ priorGoal: cleanPrior, userContext, userMsg, reply });
+  const prompt = buildClassifyPrompt({ priorGoal: cleanPrior, sessionName: sid, reply });
   auxQueue.enqueue({ type: 'intent_classify', prompt, meta: { sid, startup: true } })
     .then(result => {
       if (result.cancelled) return;
@@ -7167,17 +7165,39 @@ function parseTaskClassify(text) {
   return { goal: goalOk ? goal : '', phase, state, background };
 }
 
-// Build the unified 3-line classify prompt. Shared by the live turn path
-// (runClassifyNow) and the startup reconcile path (reconcileOneOnStartup) so
-// there is exactly ONE classify prompt in the codebase.
-function buildClassifyPrompt({ priorGoal, userContext, userMsg, reply }) {
-  const tail = (reply || '').slice(-1500);
-  // The AI reply may be empty (turn just started — AI hasn't output yet). Classify
-  // still提炼 goal from the user message and marks state P (processing).
-  const replyBlock = tail
-    ? `AI 助手的回复：\n${tail}`
-    : `AI 助手的回复：（暂无——AI 刚开始处理这条消息，还没有输出内容）`;
-  return `你是任务状态分析器。结合"用户最新消息"和"AI 助手的回复"，判断当前闭环任务的状态。请严格输出三行。
+// Build the classify prompt. Feeds the last ~3000 chars of the full conversation
+// (user + assistant interleaved, most recent first) so the model sees real dialogue
+// structure, not isolated user-message fragments. Shared by live turn and startup
+// reconcile paths.
+const CLASSIFY_MAX_CONTEXT_CHARS = 3000;
+
+function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
+  // Collect recent conversation turns (user + assistant interleaved) from
+  // chat_history, newest first, up to CLASSIFY_MAX_CONTEXT_CHARS total.
+  const history = loadChatHistory(sessionName);
+  let parts = [];
+  let chars = 0;
+  for (let i = history.length - 1; i >= 0 && chars < CLASSIFY_MAX_CONTEXT_CHARS; i--) {
+    const m = history[i];
+    if (!m || !m.content) continue;
+    if (m.role !== 'user' && m.role !== 'assistant') continue;
+    // Skip system-injected noise (🔇 prefix)
+    if (isSystemInjectedMsg(m.content)) continue;
+    const label = m.role === 'user' ? '用户' : '助手';
+    const snippet = String(m.content).slice(-600); // keep tail of each message
+    parts.unshift(`${label}：${snippet}`);
+    chars += snippet.length;
+  }
+
+  // If the current turn has live assistant output not yet in chat_history, append it.
+  const liveReply = (reply || '').slice(-1500);
+  if (liveReply) {
+    parts.push(`助手：${liveReply}`);
+  }
+
+  const conversationBlock = parts.join('\n\n');
+
+  return `你是任务状态分析器。结合以下对话记录，判断当前闭环任务的状态。请严格输出三行。
 
 第1行：当前闭环任务的目标，用一个简短的名词性短语。
        语言跟随对话语言：中文用中文（≤20 汉字，如"memo图片更换""给目录卡片加 git 状态行"）；英文用英文（≤10 words, e.g. "Fix login page styling"）。
@@ -7197,20 +7217,10 @@ function buildClassifyPrompt({ priorGoal, userContext, userMsg, reply }) {
 
 判断第3行时站在「对话本身」的角度思考。一段回复可能先汇报结果、再抛反问——后半句反问说明 AI 还在等用户，应判 W。回复为空时判 P。
 
-只输出这三行。不要加序号、解释、引号、空行。${userContext}
+只输出这三行。不要加序号、解释、引号、空行。
 
-用户最新消息：
-${String(userMsg || '').slice(0, 500)}
-
-${replyBlock}`;
-}
-
-// Build the "recent user messages" context block (shared by live + startup paths).
-function buildUserContext(sessionName) {
-  const recent = getRecentUserMessages(sessionName, 3);
-  return recent.length > 0
-    ? `\n最近几轮用户消息（用于理解整体任务）：\n${recent.map((m, i) => `${i + 1}. ${String(m).slice(0, 200)}`).join('\n')}`
-    : '';
+对话记录：
+${conversationBlock}`;
 }
 
 function runClassifyNow(cs, sessionName) {
@@ -7224,11 +7234,10 @@ function runClassifyNow(cs, sessionName) {
 
   const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
   const priorGoal = cs.currentTask?.goal || '';
-  const userContext = buildUserContext(sessionName);
 
   auxQueue.enqueue({
     type: 'intent_classify',
-    prompt: buildClassifyPrompt({ priorGoal, userContext, userMsg, reply }),
+    prompt: buildClassifyPrompt({ priorGoal, sessionName, reply }),
     meta: { sessionName, sessionId },
   }).then(result => {
     if (result.cancelled) return;
