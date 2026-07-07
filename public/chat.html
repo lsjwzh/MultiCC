@@ -701,6 +701,32 @@
     }
     #worktree-sync-btn:hover { background: #f2cc60; }
     #worktree-sync-btn:disabled { opacity: 0.6; cursor: default; }
+    /* ── AI assistant classify bar: what aux thinks this session is doing ── */
+    #aux-classify-bar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      font-size: 11px;
+      color: #8a909b;
+      background: #0a0c0f;
+      border-bottom: 1px solid #14171c;
+    }
+    #aux-classify-bar.show { display: flex; }
+    #aux-classify-bar .ac-icon { flex: none; opacity: .85; }
+    #aux-classify-bar .ac-goal {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: #adbac7;
+    }
+    #aux-classify-bar .ac-phase {
+      flex: none; padding: 1px 8px; border-radius: 9px; font-size: 10px; font-weight: 600;
+      background: #16202b; color: #6cb6ff; border: 1px solid #1f6feb33;
+    }
+    /* lifecycle tints */
+    #aux-classify-bar.lc-running  .ac-phase { color: #6cb6ff; border-color: #1f6feb55; }
+    #aux-classify-bar.lc-completed .ac-phase { color: #56d364; border-color: #23863655; background: #0f2417; }
+    #aux-classify-bar.lc-waiting  .ac-phase { color: #e3b341; border-color: #e3b34155; background: #241c08; }
+    #aux-classify-bar.lc-interrupted .ac-phase { color: #f85149; border-color: #da363355; background: #2a1213; }
     .worktree-conflict-bar {
       display: flex; align-items: center; gap: 8px;
       padding: 6px 12px; font-size: 12px;
@@ -1270,6 +1296,13 @@
 
   <!-- Worktree branch + behind-base indicator (populated by applyBehindStatus) -->
   <div id="worktree-bar"></div>
+
+  <!-- AI assistant classify bar: what aux thinks this session's goal/phase is -->
+  <div id="aux-classify-bar" title="AI 助手对当前会话的理解（目标 · 阶段），由辅助模型自动判断">
+    <span class="ac-icon">🎯</span>
+    <span class="ac-goal" id="ac-goal"></span>
+    <span class="ac-phase" id="ac-phase"></span>
+  </div>
 
   <!-- Messages -->
   <div id="messages">
