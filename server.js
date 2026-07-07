@@ -6060,6 +6060,10 @@ app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
           'Authorization': `multicc-speedtest`,
           'anthropic-version': '2023-06-01',
           'x-api-key': 'multicc-speedtest',
+          // OAuth token recognized only when x-app: cli signals official CLI
+          // origin — without it, even a correct system block + Bearer token
+          // still hits anti-abuse 429 (Anthropic sees a script, not a CLI).
+          ...(isOfficialOAuth ? { 'x-app': 'cli' } : {}),
         },
       }, (hRes) => {
         let data = '';
