@@ -180,6 +180,12 @@ class _ChatViewState extends State<ChatView> {
               onMerge: () => _mergeCurrent(context, provider.sessionName),
             ),
             _CwdBar(mergeStatus: _mergeStatus),
+            if (provider.hasClassify)
+              _AuxClassifyBar(
+                goal: provider.classifyGoal,
+                phase: provider.classifyPhase,
+                lifecycle: provider.classifyLifecycle,
+              ),
             if (_behindCount() > 0)
               _BehindMainBanner(
                 behind: _behindCount(),
@@ -2834,6 +2840,88 @@ class _BehindMainBanner extends StatelessWidget {
               syncing ? '同步中…' : '同步',
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AuxClassifyBar extends StatelessWidget {
+  final String goal;
+  final String phase;
+  final String lifecycle;
+  const _AuxClassifyBar({required this.goal, required this.phase, required this.lifecycle});
+
+  static const _phaseLabels = {
+    'idle': '空闲', 'planning': '规划中', 'running': '进行中', 'editing': '编辑中',
+    'verifying': '验证中', 'waiting': '等待中', 'blocked': '受阻', 'reviewing': '复查中',
+    'completed': '已完成', 'done': '已完成', 'interrupted': '已中断',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    // lifecycle tint — running/completed/waiting/interrupted
+    final lc = lifecycle.toLowerCase();
+    final Color phaseColor;
+    final Color phaseBg;
+    final Color phaseBorder;
+    switch (lc) {
+      case 'running':
+        phaseColor = const Color(0xFF6cb6ff);
+        phaseBg = const Color(0xFF0d1a2e);
+        phaseBorder = const Color(0x551f6feb);
+        break;
+      case 'completed':
+        phaseColor = const Color(0xFF56d364);
+        phaseBg = const Color(0xFF0f2417);
+        phaseBorder = const Color(0x55238636);
+        break;
+      case 'waiting':
+        phaseColor = const Color(0xFFe3b341);
+        phaseBg = const Color(0xFF241c08);
+        phaseBorder = const Color(0x55e3b341);
+        break;
+      case 'interrupted':
+        phaseColor = const Color(0xFFf85149);
+        phaseBg = const Color(0xFF2a1213);
+        phaseBorder = const Color(0x55da3633);
+        break;
+      default:
+        phaseColor = const Color(0xFF8a909b);
+        phaseBg = const Color(0xFF0f1115);
+        phaseBorder = const Color(0xFF20242b);
+    }
+    final phaseLabel = _phaseLabels[phase] ?? phase;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0a0c0f),
+        border: Border(bottom: BorderSide(color: Color(0xFF14171c))),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.auto_awesome_outlined, size: 14, color: Color(0xFF5b616c)),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Tooltip(
+              message: goal,
+              child: Text(goal,
+                  style: const TextStyle(color: Color(0xFFc9ced6), fontSize: 12, height: 1.3),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: phaseBg,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: phaseBorder),
+            ),
+            child: Text(phaseLabel,
+                style: TextStyle(color: phaseColor, fontSize: 11, fontWeight: FontWeight.w600)),
           ),
         ],
       ),

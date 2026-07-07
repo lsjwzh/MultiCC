@@ -78,6 +78,18 @@ class ChatProvider extends ChangeNotifier {
   /// Whether the entire app is in the background.
   bool isInBackground = false;
 
+  /// aux classify verdict for THIS session — what the helper AI thinks the
+  /// current goal/phase is. Updated by the `task_state` WS event; rendered as
+  /// a status bar at the top of the chat (mirrors web #aux-classify-bar).
+  /// `goal` empty => not classified yet => bar hidden.
+  String _classifyGoal = '';
+  String get classifyGoal => _classifyGoal;
+  String _classifyPhase = '';
+  String get classifyPhase => _classifyPhase;
+  String _classifyLifecycle = '';
+  String get classifyLifecycle => _classifyLifecycle;
+  bool get hasClassify => _classifyGoal.trim().isNotEmpty;
+
   ChatProvider({
     required this.settings,
     required this.sessionName,
@@ -272,6 +284,18 @@ class ChatProvider extends ChangeNotifier {
         final p = evt.payload as Map<String, dynamic>;
         final id = p['id']?.toString();
         if (id != null && id.isNotEmpty) removeMessageById(id);
+        break;
+      }
+
+      case 'task_state': {
+        // aux classify verdict for this session: {goal, phase, lifecycle}.
+        // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
+        // renderAuxClassify.
+        final p = evt.payload as Map<String, dynamic>;
+        _classifyGoal = (p['goal'] ?? '').toString().trim();
+        _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
+        _classifyLifecycle = (p['lifecycle'] ?? '').toString().toLowerCase();
+        notifyListeners();
         break;
       }
     }
