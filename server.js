@@ -6181,6 +6181,35 @@ function newChatMsgId() {
   return 'm' + Date.now().toString(36) + '-' + (_chatMsgIdSeq++).toString(36);
 }
 
+// Incremental save: flush the in-progress assistant message to chat_history
+// while the turn is still running. Throttled to at most once per 5s per session
+// so we don't hammer the disk. The final save in the close handler overwrites
+// this interim version with the complete message.
+const _incrSaveTimers = new Map(); // sessionName → setTimeout
+
+function scheduleIncrementalSave(sessionName, cs) {
+  if (_incrSaveTimers.has(sessionName)) return; // already scheduled
+  _incrSaveTimers.set(sessionName, setTimeout(() => {
+    _incrSaveTimers.delete(sessionName);
+    if (!cs.currentAssistantText || cs.currentAssistantText.length < 20) return;
+    const history = loadChatHistory(sessionName);
+    // Replace the last in-progress entry or append a new one
+    const last = history[history.length - 1];
+    const interimMsg = {
+      role: 'assistant', content: cs.currentAssistantText,
+      tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+      ts: Date.now(), _interim: true,
+    };
+    if (last && last.role === 'assistant' && last._interim) {
+      history[history.length - 1] = interimMsg;
+    } else {
+      if (!interimMsg.id) interimMsg.id = newChatMsgId();
+      history.push(interimMsg);
+    }
+    saveChatHistory(sessionName);
+  }, 5000));
+}
+
 function appendChatMessage(sessionName, msg) {
   const history = loadChatHistory(sessionName);
   if (!msg.id) msg.id = newChatMsgId();
@@ -7681,6 +7710,9 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
       if (block.type === 'text') {
         cs.currentAssistantText += block.text;
         setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+        // Incremental save: flush the in-progress assistant message to disk
+        // every 5s so a crash/restart mid-turn doesn't lose the whole reply.
+        scheduleIncrementalSave(sessionName, cs);
       }
       if (block.type === 'tool_use') {
         cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
@@ -8396,6 +8428,10 @@ function runChatTurn(sessionName, text, opts = {}) {
       }
 
       cs.claudeProc = null;
+
+      // Clear any pending incremental save timer — the full message is saved below.
+      const incrTimer = _incrSaveTimers.get(sessionName);
+      if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
 
       let savedInClose = false;
       if (!cs._resultSaved && (cs.currentAssistantText || cs.currentToolCalls.length)) {
