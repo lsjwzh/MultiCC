@@ -7145,12 +7145,23 @@ function parseTaskClassify(text) {
   else if (first === 'B') { state = 'waiting'; background = true; }
   else state = 'completed';
 
-  // Garbage filter for goal
-  let goalOk = goal.length >= 2 && goal.length <= 60;
+  // Garbage filter for goal — block model regurgitation of system prompts,
+  // classify-template phrases, API errors, and other non-task noise.
+  let goalOk = goal.length >= 2 && goal.length <= 80;
   if (goalOk) {
     const _g = goal.toLowerCase();
-    const _garbage = /api\s*error|insufficient\s*balance|自动恢复|异常中断|claude exited|status[_= ]?5\d\d|\b40[0-9]\b|\b50[0-9]\b|available skills|<.parameter>|claude code built-in|skills are from/i.test(_g)
-      || (/\berror\b/.test(_g) && goal.length < 12);
+    const _garbage =
+      // API / system error signatures
+      /api\s*error|insufficient\s*balance|自动恢复|异常中断|claude exited|status[_= ]?5\d\d|\b40[0-9]\b|\b50[0-9]\b|(<.parameter>)/i.test(_g)
+      || (/\berror\b/.test(_g) && goal.length < 12)
+      // Model regurgitating classify prompt template phrases
+      || /^(第[123]行|当前.*任务.*目标|任务状态分析|对话主动权|闭环任务|判断当前)/.test(goal)
+      || /^(user|assistant|system)[\s:：]/.test(_g)
+      // Model regurgitating Claude Code system prompt fragments
+      || /available (agent types|skills|workflow)|do not (use|send)|claude code built-in|skills are from/i.test(_g)
+      || /^(the|this|that|you|we|i|it|he|she|they|a |an )\b/.test(_g) && goal.length > 50  // overly long English sentence fragment
+      // Model outputting prompt instructions instead of goal
+      || /^(第\d行|输出|严格|只输出|不要加|请严格)/.test(goal);
     if (_garbage) goalOk = false;
   }
   return { goal: goalOk ? goal : '', phase, state, background };
