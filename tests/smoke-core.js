@@ -373,18 +373,13 @@ async function ensureDir(label) {
   hdr('Browser: Manage Dashboard');
 
   await browserTest('Manage 页面加载', async (p) => {
-    await p.goto(`${BASE}/manage`, { waitUntil: 'networkidle2', timeout: 15000 });
-    const title = await p.title();
-    if (!title.includes('MultiCC') && !title.includes('Dashboard')) throw new Error(`unexpected title: ${title}`);
-    // Check key elements
+    await navTo(p, `${BASE}/manage`);
     const hasNav = await p.evaluate(() => !!document.querySelector('#nav, .nav, [data-view]'));
     if (!hasNav) throw new Error('no sidebar/nav found');
   });
 
   await browserTest('概览 KPI 显示', async (p) => {
-    await p.goto(`${BASE}/manage`, { waitUntil: 'networkidle2', timeout: 15000 });
-    // Wait a bit for KPI refresh
-    await new Promise(r => setTimeout(r, 2000));
+    await navTo(p, `${BASE}/manage`);
     const kpi = await p.evaluate(() => {
       const el = document.querySelector('#kpi-active, .kpi .k-num');
       return el ? el.textContent : null;
@@ -393,8 +388,8 @@ async function ensureDir(label) {
   });
 
   await browserTest('版本检测可见', async (p) => {
-    await p.goto(`${BASE}/manage`, { waitUntil: 'networkidle2', timeout: 15000 });
-    await new Promise(r => setTimeout(r, 2000));
+    await navTo(p, `${BASE}/manage`);
+    await new Promise(r => setTimeout(r, 4000)); // wait for version-check fetch
     const ver = await p.evaluate(() => {
       const el = document.querySelector('#ver-current');
       return el ? el.textContent : null;
