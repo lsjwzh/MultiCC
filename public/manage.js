@@ -532,7 +532,32 @@ function refreshAuxProviderOptions() {
     + list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
   const current = _auxConfig?.cli === cli ? (_auxConfig?.providerId || '') : '';
   sel.value = current;
+  refreshAuxModelOptions();
   refreshAuxEffortOptions();
+}
+// Provider → Model linkage (mirrors session settings): populate the model
+// dropdown from the selected provider's modelOptions. Falls back to a small
+// built-in list so the field is never empty. "留空使用默认" keeps the
+// provider's own default model.
+const _AUX_CLAUDE_MODEL_FALLBACK = ['haiku', 'sonnet', 'opus', 'fable'];
+function refreshAuxModelOptions() {
+  const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
+  const provId = document.getElementById('aux-provider')?.value || '';
+  const sel = document.getElementById('aux-model');
+  if (!sel) return;
+  const list = cli === 'codex'
+    ? (_auxConfig?.codexProviders || [])
+    : (_auxConfig?.claudeProviders || _auxConfig?.providers || []);
+  const prov = list.find(p => p.id === provId);
+  let models = (prov && Array.isArray(prov.modelOptions)) ? prov.modelOptions.slice() : [];
+  // No provider selected (默认登录) or provider without a model list → fall back
+  // to the built-in tier aliases for claude; codex has no universal fallback.
+  if (!models.length && cli === 'claude') models = _AUX_CLAUDE_MODEL_FALLBACK.slice();
+  sel.innerHTML = '<option value="">默认</option>'
+    + models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+  // Preserve the saved model if it's still valid; else leave on 默认.
+  const saved = _auxConfig?.model || '';
+  sel.value = models.includes(saved) ? saved : '';
 }
 function refreshAuxEffortOptions() {
   const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
@@ -542,14 +567,26 @@ function refreshAuxEffortOptions() {
   sel.innerHTML = opts.map(v => `<option value="${v}">${escapeHtml(v)}</option>`).join('');
   const current = _auxConfig?.effort || (cli === 'codex' ? 'xhigh' : 'medium');
   sel.value = opts.includes(current) ? current : opts[0];
+  // aux runs as a single-shot direct-HTTP call for API-key providers — effort/
+  // reasoning level isn't sent in that path. Hint the user it only applies when
+  // aux falls back to a CLI spawn (OAuth codex / default login).
+  const row = sel.closest('.setting-row');
+  if (row) {
+    let hint = row.querySelector('.aux-effort-hint');
+    if (!hint) {
+      hint = document.createElement('span');
+      hint.className = 'aux-effort-hint';
+      hint.style.cssText = 'font-size:10px;color:var(--faint);margin-left:8px;';
+      sel.parentElement?.appendChild(hint);
+    }
+    hint.textContent = '仅 CLI 回退模式生效';
+  }
 }
 async function openAuxModal() {
   await loadAuxConfig();
   const cliSel = document.getElementById('aux-cli');
   if (cliSel) cliSel.value = (_auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
-  refreshAuxProviderOptions();
-  const inp = document.getElementById('aux-model');
-  if (inp) inp.value = _auxConfig?.model || '';
+  refreshAuxProviderOptions();   // → also refreshes model + effort
   const st = document.getElementById('aux-modal-status');
   if (st) st.textContent = '';
   document.getElementById('aux-modal')?.classList.add('visible');
