@@ -5501,9 +5501,14 @@ function auxConnect() {
       } else if (msg.type === 'aux_health') {
         handleAuxHealth(msg.health || {});
       } else if (msg.type === 'aux_event') {
-        // Real-time task event — append to history display
+        // Real-time task event — refresh history on completion
         if (msg.status === 'done' || msg.status === 'error') {
-          // Refresh history from full data on next render
+          // Fetch latest history from API so _auxHistory stays current
+          fetch('/api/aux/history').then(r => r.json()).then(data => {
+            _auxHistory = (data && data.messages) ? data.messages : _auxHistory;
+            if (_focusedSessionId === '__aux__') renderAuxPanel();
+            if (_auxModalOpen()) renderAuxModal();
+          }).catch(() => {});
           loadSessions();
         }
         if (_focusedSessionId === '__aux__') renderAuxTaskEvent(msg);
@@ -5560,7 +5565,7 @@ function renderAuxModal() {
     }
   }
   tasks.reverse();
-  body.innerHTML = tasks.map(t => {
+  body.innerHTML = tasks.map((t, idx) => {
     const time = new Date(t.input.ts);
     const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
     const taskType = t.input.taskType || 'unknown';
@@ -5578,15 +5583,26 @@ function renderAuxModal() {
       if (t.output.durationMs) durationHtml = `<span style="color:#484f58;margin-left:8px;">${(t.output.durationMs / 1000).toFixed(1)}s</span>`;
     }
     const promptPreview = escapeHtml((t.input.content || '').split('\n').pop().slice(0, 80));
+    const detailId = 'aux-modal-detail-' + idx;
+    // Build detail HTML inline
+    const inputFull = escapeHtml(t.input.content || '');
+    const outputFull = t.output ? escapeHtml(t.output.content || '') : '';
+    const detailHtml = `<div style="margin-top:8px;padding:8px;background:#0d1117;border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;">
+        <div style="color:#58a6ff;font-weight:600;margin-bottom:4px;">📥 Input</div>
+        <div style="color:#c9d1d9;margin-bottom:10px;">${inputFull}</div>
+        <div style="color:#3fb950;font-weight:600;margin-bottom:4px;">📤 Output</div>
+        <div style="color:#c9d1d9;">${outputFull || '<span style="color:#484f58;">(no output yet)</span>'}</div>
+      </div>`;
     return `
-      <div style="border-left:2px solid #8957e5;padding:6px 10px;margin-bottom:8px;background:#161b22;border-radius:0 6px 6px 0;">
+      <div id="${detailId}-card" style="border-left:2px solid #8957e5;padding:6px 10px;margin-bottom:8px;background:#161b22;border-radius:0 6px 6px 0;cursor:pointer;" onclick="var d=document.getElementById('${detailId}');var c=document.getElementById('${detailId}-card');if(d.style.display==='none'){d.style.display='';c.style.background='#1c2128';}else{d.style.display='none';c.style.background='#161b22';}">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
           <span style="color:#484f58;">${timeStr}</span>
           <span style="color:#d2a8ff;font-weight:600;">${escapeHtml(taskType)}</span>
           <span style="color:#6e7681;">${metaStr}</span>
           <span style="margin-left:auto;">${resultHtml}${durationHtml}</span>
         </div>
-        <div style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(t.input.content || '')}">${promptPreview}</div>
+        <div style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${promptPreview}</div>
+        <div id="${detailId}" style="display:none;">${detailHtml}</div>
       </div>`;
   }).join('');
 }
@@ -5645,7 +5661,7 @@ function renderAuxPanel() {
   // Reverse to show newest first
   tasks.reverse();
 
-  const html = tasks.map(t => {
+  const html = tasks.map((t, idx) => {
     const time = new Date(t.input.ts);
     const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
     const taskType = t.input.taskType || 'unknown';
@@ -5666,16 +5682,26 @@ function renderAuxPanel() {
 
     // Truncated prompt preview
     const promptPreview = escapeHtml((t.input.content || '').split('\n').pop().slice(0, 80));
+    const detailId = 'aux-panel-detail-' + idx;
+    const inputFull = escapeHtml(t.input.content || '');
+    const outputFull = t.output ? escapeHtml(t.output.content || '') : '';
+    const detailHtml = `<div style="margin-top:8px;padding:8px;background:#0d1117;border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;">
+        <div style="color:#58a6ff;font-weight:600;margin-bottom:4px;">📥 Input</div>
+        <div style="color:#c9d1d9;margin-bottom:10px;">${inputFull}</div>
+        <div style="color:#3fb950;font-weight:600;margin-bottom:4px;">📤 Output</div>
+        <div style="color:#c9d1d9;">${outputFull || '<span style="color:#484f58;">(no output yet)</span>'}</div>
+      </div>`;
 
     return `
-      <div style="border-left:2px solid #8957e5;padding:6px 10px;margin-bottom:8px;background:#161b22;border-radius:0 6px 6px 0;">
+      <div id="${detailId}-card" style="border-left:2px solid #8957e5;padding:6px 10px;margin-bottom:8px;background:#161b22;border-radius:0 6px 6px 0;cursor:pointer;" onclick="var d=document.getElementById('${detailId}');var c=document.getElementById('${detailId}-card');if(d.style.display==='none'){d.style.display='';c.style.background='#1c2128';}else{d.style.display='none';c.style.background='#161b22';}">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
           <span style="color:#484f58;">${timeStr}</span>
           <span style="color:#d2a8ff;font-weight:600;">${escapeHtml(taskType)}</span>
           <span style="color:#6e7681;">${metaStr}</span>
           <span style="margin-left:auto;">${resultHtml}${durationHtml}</span>
         </div>
-        <div style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(t.input.content || '')}">${promptPreview}</div>
+        <div style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${promptPreview}</div>
+        <div id="${detailId}" style="display:none;">${detailHtml}</div>
       </div>`;
   }).join('');
 
