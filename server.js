@@ -4814,9 +4814,13 @@ function classifyTerminalIdle(sessionId, tail) {
     type: 'intent_classify',
     prompt: `你是一个意图分析器。下面是一个命令行 AI 编码助手(Claude Code / Codex)终端会话的最近输出。请严格输出两行：
 第1行：仅一个字母，表示当前状态——
-  C = 任务已完成或回到空闲提示符，不需要用户操作（注意：反问句让用户做选择、“你定”“你选”等，必须判 W 而非 C）
+  C = 任务已完成或回到空闲提示符，不需要用户操作（注意：反问句让用户做选择、”你定””你选”等，必须判 W 而非 C）
   W = 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
   B = 正在等待后台任务/子进程/外部数据返回后才能继续，无需用户操作（例如：Monitor 监控进度、nohup 后台跑、等部署/API）
+
+重要：如果输出末尾出现以下任一类错误信息，说明AI并非正常完成而是被API故障中断，必须判 B（后台等待，让系统自动重试）：
+  · API Error: Connection closed / mid-response / Overloaded / Internal server error / 503
+  · “The system is busy, please try again later”
 
 终端输出（尾部）：
 ${tail}`,
@@ -7469,9 +7473,10 @@ function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
        P = AI 还在处理中（回复为空、或明显话没说完，还没到判断主动权的时候）
        W = 在用户手里（AI 在等用户回复、确认、决策；末尾有反问/选项/征求意见）
        B = 在等外部系统/后台任务（AI 没法继续，用户也帮不上忙；在等 build/部署/API/子进程）
+          重要：如果助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等API故障信息，说明回答被截断而非真正完成，必须判 B（让系统自动重试）
        C = 在 AI 手里（任务闭环完成，用户不需要再做任何事）
 
-判断第3行时站在「对话本身」的角度思考。一段回复可能先汇报结果、再抛反问——后半句反问说明 AI 还在等用户，应判 W。回复为空时判 P。
+判断第3行时站在「对话本身」的角度思考。一段回复可能先汇报结果、再抛反问——后半句反问说明 AI 还在等用户，应判 W。回复为空时判 P。API故障导致截断的回复判 B。
 
 只输出这三行。不要加序号、解释、引号、空行。
 
@@ -7955,24 +7960,14 @@ function getRelevantMemoryEntries(query, entries, maxChars = 2000) {
   return result;
 }
 
-// Signature of a transport/API failure that ends a turn with a truncated answer
-// instead of a real completion (e.g. the CLI's "API Error: Connection closed
-// mid-response. The response above may be incomplete."). Anchored to the tail
-// because a genuine mid-response cutoff puts the error as the very last thing —
-// this avoids matching a turn that merely *quotes* such a string mid-answer.
-const API_ERROR_RE = /API Error:[^\n]{0,200}(Connection closed|mid-response|response above may be incomplete|terminated|Overloaded|Internal server error|Request was aborted|ECONNRESET|socket hang up)/i;
+// (API_ERROR_RE removed — classify prompt now handles API error recognition)
 
-// Turn-boundary hook for guard F (see wait-injector). If the just-finished turn
-// died on an API/transport error, schedule a capped "继续" retry; otherwise the
-// turn completed cleanly, so reset the consecutive-error counter. Called from
-// BOTH end-of-turn paths (per-turn proc close + streaming finalize). The
-// `sawApiError` flag captures result-event errors that never reach the text.
+// Turn-boundary hook for guard F (REMOVED — now handled by classify prompt).
+// API Error / 503 / connection drops are recognized by the classify AI and
+// judged as state B (background wait), which triggers autoContinue naturally.
+// No separate retry guard needed.
 function handleApiErrorBoundary(sessionName, finalText, sawApiError) {
-  const hit = sawApiError || API_ERROR_RE.test((finalText || '').slice(-300));
-  if (!hit) { waitInjector.resetApi(sessionName); return; }
-  if (waitInjector.hasWait(sessionName)) return; // an explicit wait already covers it
-  console.log(`[multicc/chat] [${sessionName}] turn ended on API/transport error → scheduling retry nudge`);
-  waitInjector.apiRetry(sessionName);
+  // No-op: classify prompt now handles API errors → state B → autoContinue.
 }
 
 // Apply one claude-shaped stream-json event to chat session state, then forward
@@ -8020,8 +8015,8 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
   }
   if (evt.type === 'result') {
     cs.currentCost = evt.total_cost_usd || null;
-    // Flag transport/API failures so the turn-boundary hook (guard F) can resume:
-    // claude reports them as is_error + a non-"success" subtype on the result event.
+    // Flag transport/API failures — classify prompt recognizes these and
+    // judges state B (background wait) → autoContinue picks up naturally.
     if (evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype))) {
       cs._sawApiError = true;
       recordApiError(evt.subtype || 'api_error');
@@ -8050,10 +8045,8 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
     // (user submit) to this result — "模型接到消息到输出完成的耗时".
     const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
     forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs, num_turns: cs.chatTurnCount });
-    // A clean result rests at 'completed' (turn finished); an errored result
-    // (flagged just above) falls back to 'idle'. The close/finalize handler has
-    // the final say and corrects this if the process then dies abnormally.
-    setSessionStatus(sessionName, { status: cs._sawApiError ? 'idle' : 'completed', currentFile: null });
+    // Let classify decide the final status; default to 'completed' until then.
+    setSessionStatus(sessionName, { status: 'completed', currentFile: null });
     classifyTurnEnd(cs, sessionName);
     // Anti-pattern guard (E): if this turn launched a run_in_background Bash and
     // Decoupled via the bus so chat doesn't depend on the triggers domain.
@@ -8077,7 +8070,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
-  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetApi(sessionName); }
+  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
   let cs = chatSessions.get(sessionName);
   if (!cs) {
@@ -8740,30 +8733,21 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs._codexPendingStreamError = '';
       cs._codexPendingStreamErrorCount = 0;
       cs._codexStreamContinuationCount = 0;
-      // Guard F: resume (capped) if this turn died on an API/transport error,
-      // else reset the consecutive-error counter. Skip user-initiated kills.
+      // Guard F: classify prompt now recognizes API errors and judges
+      // state B (background wait) → autoContinue picks up naturally.
       const sawApi = cs._sawApiError; cs._sawApiError = false;
       if (!killReason) handleApiErrorBoundary(sessionName, finalText, sawApi);
 
-      // Resting status (status board + notify fan-out):
-      //   • user-initiated stop  → idle (no alert)
-      //   • API error / non-zero / signaled exit / codex provider error
-      //     → retry classify with linear backoff (10s/20s/40s), then error if all fail
-      //   • clean exit with output (kind 'normal') → completed ('任务完成')
-      //   • empty / unclassified exit → idle
+      // Resting status — classifyTurnEnd is the single decider of C/W/B.
+      // API errors / non-zero / signaled exits all get classified; the AI
+      // decides whether the text it sees means "done", "waiting", or "retry".
       if (killReason) {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-      } else if (sawApi || hadCodexError || kind === 'nonzero_exit' || kind === 'signaled') {
-        // Transient API error — classify will re-assess from whatever text we got.
-        // If aux is unhealthy, classifyTurnEnd is a no-op (gate ⑦), so we fall
-        // through to idle.
+      } else if (kind === 'normal' || sawApi || hadCodexError || kind === 'nonzero_exit' || kind === 'signaled') {
         classifyTurnEnd(cs, sessionName);
         if (auxQueue.isUnhealthy()) {
           setSessionStatus(sessionName, { status: 'idle', currentFile: null });
         }
-      } else if (kind === 'normal') {
-        // Clean exit — classifyTurnEnd is the single decider of C/W/B.
-        classifyTurnEnd(cs, sessionName);
       } else {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       }
@@ -9007,17 +8991,14 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   // dropped turn lands here without it. Capture before the reset below.
   const completedOk = cs._resultSaved;
   cs._resultSaved = false;
-  // Guard F: a streaming turn that dropped mid-response (connection closed) lands
-  // here via the stream .catch with partial text + the API-error tail. Resume
-  // (capped) or reset the consecutive-error counter. A user-initiated interrupt
-  // bumps _streamTurnSeq, so this only runs for turns that ended on their own.
+  // Guard F: classify prompt now handles API errors → state B → autoContinue.
   const sawApi = cs._sawApiError; cs._sawApiError = false;
   handleApiErrorBoundary(sessionName, finalText, sawApi);
-  // Resting status: API/transport error → error ('出现异常', alerts); a clean
-  // result → completed ('任务完成'); an aborted/partial turn → idle.
+  // Resting status: let classify decide. If sawApi and completedOk both true
+  // (rare: API error reported but CLI still produced a clean exit), defer to
+  // classify; otherwise emit the obvious outcome.
   if (sawApi) {
-    cancelClassify(cs);
-    emitTurnOutcome(sessionName, { status: 'error', notifyState: 'error', message: '出现异常', alert: true });
+    classifyTurnEnd(cs, sessionName);
   } else if (completedOk) {
     emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
   } else {
