@@ -5123,9 +5123,77 @@ const auxQueue = {
     this.drain(); // process next
   },
 
+  // Whether aux can use direct HTTP instead of CLI spawn: needs a provider with
+  // baseUrl + API key (not OAuth-only like claude-official without key).
+  _canDirectHttp: null,
+  canDirectHttp() {
+    if (this._canDirectHttp !== null) return this._canDirectHttp;
+    if (!auxConfig.providerId) { this._canDirectHttp = false; return false; }
+    const p = providers.getProvider('claude', auxConfig.providerId);
+    if (!p) { this._canDirectHttp = false; return false; }
+    let cfg = {};
+    try { cfg = JSON.parse(p.settingsConfig || '{}'); } catch (_) {}
+    const hasBase = !!(cfg.env && cfg.env.ANTHROPIC_BASE_URL);
+    const hasKey = !!(cfg.env && cfg.env.ANTHROPIC_API_KEY);
+    // Can direct HTTP if: has baseUrl + API key, and is NOT the official OAuth provider
+    const isOfficial = auxConfig.providerId === 'claude-official';
+    this._canDirectHttp = hasBase && hasKey && !isOfficial;
+    if (this._canDirectHttp) console.log('[multicc/aux] direct HTTP mode (no CLI spawn)');
+    return this._canDirectHttp;
+  },
+
   execute(task) {
     if (auxConfig.cli === 'codex') return this.executeCodex(task);
+    // If aux has a direct API provider (non-OAuth, has baseUrl), skip CLI spawn
+    // and use HTTP directly via the proxy — faster, no OAuth dependency.
+    if (this.canDirectHttp()) return this.executeDirectHttp(task);
     return this.executeClaude(task);
+  },
+
+  // Direct HTTP execution: POST /v1/messages via the ccfw proxy, no CLI spawn.
+  // Works when aux has a provider with baseUrl + API key (not OAuth).
+  executeDirectHttp(task) {
+    return new Promise((resolve, reject) => {
+      const model = auxConfig.model || 'haiku';
+      const body = JSON.stringify({
+        model,
+        max_tokens: 128,
+        messages: [{ role: 'user', content: task.prompt }],
+      });
+      const req = require('http').request({
+        hostname: '127.0.0.1',
+        port: PORT,
+        path: `/claude-proxy/${auxConfig.providerId}/aux/v1/messages?beta=true`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `multicc-aux`,
+          'anthropic-version': '2023-06-01',
+          'x-api-key': 'multicc-aux',
+        },
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            let text = '';
+            if (Array.isArray(parsed.content)) {
+              text = parsed.content.filter(b => b.type === 'text').map(b => b.text).join(' ');
+            } else if (parsed.error) {
+              throw new Error(parsed.error.message || parsed.error);
+            }
+            resolve(text);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+      req.write(body);
+      req.end();
+    });
   },
 
   executeClaude(task) {
