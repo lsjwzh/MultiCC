@@ -5994,8 +5994,11 @@ function renderProviderList() {
     const r = _providerLatency[id];
     if (!r) return '';
     const color = r.ok ? (r.ms < 1000 ? '#3fb950' : r.ms < 3000 ? '#d29922' : '#f85149') : '#f85149';
-    const label = r.ok ? r.ms + 'ms' : 'ERR';
-    const title = r.error ? ` title="${escapeHtml(r.error)}"` : '';
+    // On failure show the HTTP status code (429/404/401…) so 限流/额度 is
+    // distinguishable from a real misconfig at a glance; timeout/network errors
+    // carry no status → fall back to ERR. Full message stays in the hover title.
+    const label = r.ok ? r.ms + 'ms' : (r.status ? String(r.status) : 'ERR');
+    const title = (r.error || r.status) ? ` title="${escapeHtml([r.status ? 'HTTP ' + r.status : '', r.error || ''].filter(Boolean).join(' · '))}"` : '';
     return `<span style="color:${color};font-size:10px;font-weight:600;margin-left:4px;"${title}>${label}</span>`;
   };
   const cardHtml = (p) => {
