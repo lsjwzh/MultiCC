@@ -895,6 +895,12 @@ function handleEvent(msg) {
       }
       break;
 
+    case 'task_state':
+      // aux classify result: what the assistant thinks this session's goal/phase
+      // is. Render into the classify bar under the header.
+      renderAuxClassify(msg.goal, msg.phase, msg.lifecycle);
+      break;
+
     case 'rate_limit_event':
       break;
 
@@ -1394,6 +1400,31 @@ function attachForkButton(msgEl) {
     }
   };
   msgEl.appendChild(btn);
+}
+
+// ── AI assistant classify bar ──
+// Renders what aux thinks this session's goal/phase is into #aux-classify-bar.
+// Hidden entirely when there's no goal (never occupies space unnecessarily).
+const _AC_PHASE_LABELS = {
+  idle: '空闲', planning: '规划中', running: '进行中', editing: '编辑中',
+  verifying: '验证中', waiting: '等待中', blocked: '受阻', reviewing: '复查中',
+  completed: '已完成', done: '已完成', interrupted: '已中断',
+};
+function renderAuxClassify(goal, phase, lifecycle) {
+  const bar = document.getElementById('aux-classify-bar');
+  if (!bar) return;
+  const g = (goal || '').trim();
+  if (!g) { bar.classList.remove('show'); return; }
+  const goalEl = document.getElementById('ac-goal');
+  const phaseEl = document.getElementById('ac-phase');
+  if (goalEl) { goalEl.textContent = g; goalEl.title = g; }
+  const ph = (phase || 'idle').toLowerCase();
+  if (phaseEl) phaseEl.textContent = _AC_PHASE_LABELS[ph] || ph;
+  // lifecycle tint (running/completed/waiting/interrupted)
+  bar.classList.remove('lc-running', 'lc-completed', 'lc-waiting', 'lc-interrupted');
+  const lc = (lifecycle || '').toLowerCase();
+  if (lc) bar.classList.add('lc-' + lc);
+  bar.classList.add('show');
 }
 
 // Attach (or refresh) the usage line on a given assistant bubble element.

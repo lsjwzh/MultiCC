@@ -6512,6 +6512,17 @@ function setTaskState(sessionId, patch, opts = {}) {
   const next = { ...cur, ...patch };
   persisted.taskState = next;
   if (opts.save !== false) savePersistedSessions();
+  // Push the aux classify result to the chat client so it can show what the
+  // assistant currently thinks this session's goal/phase is. Cheap; only fires
+  // when a chat WS is connected for this session.
+  try {
+    chatBroadcast(sessionId, {
+      type: 'task_state',
+      goal: next.goal || '',
+      phase: next.phase || 'idle',
+      lifecycle: next.lifecycle || 'idle',
+    });
+  } catch (_) {}
   return next;
 }
 
@@ -8985,6 +8996,14 @@ function handleChatWs(ws, req, urlObj) {
   const sessionTokenUsage = tokenUsage[sessionName] || null;
   if (replayMessages.length > 0 || sessionTokenUsage) {
     ws.send(JSON.stringify({ type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage }));
+    // Seed the aux classify bar with the current task snapshot on connect, so
+    // the goal/phase shows immediately (not only after the next classify).
+    try {
+      const ts0 = getTaskState(persistedSessions.get(sessionName));
+      if (ts0 && (ts0.goal || (ts0.phase && ts0.phase !== 'idle'))) {
+        ws.send(JSON.stringify({ type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', lifecycle: ts0.lifecycle || 'idle' }));
+      }
+    } catch (_) {}
     // If chat_history already includes the in-progress assistant message
     // (appended just above), skip the streamReplay so the client doesn't
     // receive duplicate events that would create a second bubble.
