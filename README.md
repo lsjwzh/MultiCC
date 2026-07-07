@@ -445,7 +445,7 @@ A single operational surface for everything:
 ### Stable Release (recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.7.8/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.7.9/install.sh | bash
 ```
 
 This installs the latest **stable release**. The script auto-detects your OS,
