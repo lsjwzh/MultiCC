@@ -7250,34 +7250,31 @@ function parseTaskClassify(text) {
   return { goal: goalOk ? goal : '', phase, state, background };
 }
 
-// Build the classify prompt. Feeds the last ~3000 chars of the full conversation
-// (user + assistant interleaved, most recent first) so the model sees real dialogue
-// structure, not isolated user-message fragments. Shared by live turn and startup
-// reconcile paths.
-const CLASSIFY_MAX_CONTEXT_CHARS = 3000;
-
+// Build the classify prompt. Simply feeds the last N conversation turns
+// (user + assistant interleaved) from chat_history, each truncated to a
+// reasonable length. Same data source the chat page uses — no magic.
 function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
-  // Collect recent conversation turns (user + assistant interleaved) from
-  // chat_history, newest first, up to CLASSIFY_MAX_CONTEXT_CHARS total.
   const history = loadChatHistory(sessionName);
-  let parts = [];
-  let chars = 0;
-  for (let i = history.length - 1; i >= 0 && chars < CLASSIFY_MAX_CONTEXT_CHARS; i--) {
+  const MAX_TURNS = 20;
+  const MAX_PER_MSG = 400;
+  const parts = [];
+
+  // Walk backwards, collect up to MAX_TURNS user+assistant messages.
+  let count = 0;
+  for (let i = history.length - 1; i >= 0 && count < MAX_TURNS; i--) {
     const m = history[i];
     if (!m || !m.content) continue;
     if (m.role !== 'user' && m.role !== 'assistant') continue;
-    // Skip system-injected noise (🔇 prefix)
     if (isSystemInjectedMsg(m.content)) continue;
     const label = m.role === 'user' ? '用户' : '助手';
-    const snippet = String(m.content).slice(-600); // keep tail of each message
+    const snippet = String(m.content).slice(0, MAX_PER_MSG);
     parts.unshift(`${label}：${snippet}`);
-    chars += snippet.length;
+    count++;
   }
 
-  // If the current turn has live assistant output not yet in chat_history, append it.
-  const liveReply = (reply || '').slice(-1500);
-  if (liveReply) {
-    parts.push(`助手：${liveReply}`);
+  // Live assistant output not yet in chat_history.
+  if (reply) {
+    parts.push(`助手：${String(reply).slice(0, MAX_PER_MSG)}`);
   }
 
   const conversationBlock = parts.join('\n\n');
