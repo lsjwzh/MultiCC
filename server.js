@@ -6487,7 +6487,7 @@ function reclassifySessionsWithMissingGoals() {
     // Only sessions that completed a turn but have no goal (or garbage goal)
     if (ts.lifecycle !== 'completed' && ts.lifecycle !== 'waiting') continue;
     const goal = ts.goal || '';
-    if (goal && goal.length >= 2 && !isGarbageGoal(goal)) continue;
+    if (goal && goal.length >= 2 && !isInjectedOrJunkGoal(goal)) continue;
     // Has chat history with a real assistant reply to classify
     const hist = loadChatHistory(sid);
     if (!hist || !hist.length) continue;
@@ -6540,8 +6540,8 @@ const STARTUP_RECONCILE_WINDOW_MS = 12 * 60 * 60 * 1000;
 // rule-based fallback; they must never be fed back into classify nor kept.
 function isInjectedOrJunkGoal(goal) {
   const g = String(goal || '').trim();
-  if (!g) return false;
-  return g.startsWith(waitInjector.SYS_PREFIX);
+  if (!g) return true;  // empty goal is junk — classify never ran or failed
+  return g.startsWith(waitInjector.SYS_PREFIX) || g.startsWith('<') || g.startsWith('"<');
 }
 
 // Whether a user message is system-injected (autoContinue / apiRetry / bgCheck).
