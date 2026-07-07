@@ -4812,15 +4812,16 @@ function classifyTerminalIdle(sessionId, tail) {
   }
   auxQueue.enqueue({
     type: 'intent_classify',
-    prompt: `你是一个意图分析器。下面是一个命令行 AI 编码助手(Claude Code / Codex)终端会话的最近输出。请严格输出两行：
-第1行：仅一个字母，表示当前状态——
-  C = 任务已完成或回到空闲提示符，不需要用户操作（注意：反问句让用户做选择、”你定””你选”等，必须判 W 而非 C）
+    prompt: `你是一个意图分析器。下面是一个命令行 AI 编码助手(Claude Code / Codex)终端会话的最近输出。请严格输出三行：
+第1行：当前任务目标，用一个简短的名词性短语（中文≤20字，英文≤10词）。如果没有任务则输出「—」。
+第2行：当前阶段，必须是以下五个词之一：规划中 / 实现中 / 验证中 / 收尾中 / 已完成
+第3行：仅一个字母，表示当前状态——
+  C = 任务已完成或回到空闲提示符，不需要用户操作（反问句让用户做选择、\”你定\”\”你选\”等，必须判 W 而非 C）
   W = 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
-  B = 正在等待后台任务/子进程/外部数据返回后才能继续，无需用户操作（例如：Monitor 监控进度、nohup 后台跑、等部署/API）
+  B = 正在等待后台任务/子进程/外部数据返回后才能继续（如 Monitor 监控进度、nohup 后台跑、等部署/API）
+  E = API 异常中断（输出末尾出现 “API Error”、503、”Connection closed”、”Overloaded”、”Internal server error”、”The system is busy” 等错误信息，说明 AI 并非正常完成而是被故障截断）
 
-重要：如果输出末尾出现以下任一类错误信息，说明AI并非正常完成而是被API故障中断，必须判 B（后台等待，让系统自动重试）：
-  · API Error: Connection closed / mid-response / Overloaded / Internal server error / 503
-  · “The system is busy, please try again later”
+只输出这三行。不要加序号、解释、引号、空行。
 
 终端输出（尾部）：
 ${tail}`,
@@ -4828,15 +4829,12 @@ ${tail}`,
   }).then(result => {
     if (mon) mon.classifyPending = false;
     if (result.cancelled) return;
-    const { state, summary } = parseClassifyResult(result.text);
-    const doneMsg = summary ? `任务完成：${summary}` : '任务完成';
-    const msg = state === 'waiting' ? '等待交互' : doneMsg;
-    triggerPush(sessionId, state, msg);
-    terminalBroadcast(sessionId, { type: 'notify', state, message: msg });
-    const dirId = persistedSessions.get(sessionId)?.dirId;
-    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state, message: msg });
-    setSessionSummary(sessionId, summary);
-    console.log(`[multicc/aux] Terminal classify for ${sessionId}: ${state}${summary ? ` · ${summary}` : ''}`);
+    const res = parseClassifyResult(result.text);
+    // Resolve sessionName for dispatch — terminal sessions use sessionId as the key.
+    const sessionName = sessionId;
+    const cs = chatSessions.get(sessionName);
+    dispatchStateAction(res, { sessionName, sessionId: sessionId, cs, isTerminal: true });
+    console.log(`[multicc/aux] Terminal classify for ${sessionId}: ${res.state}${res.goal ? ' · ' + res.goal : ''}${res.error ? ' (API error)' : ''}`);
   }).catch(() => { if (mon) mon.classifyPending = false; });
 }
 
@@ -4856,6 +4854,8 @@ function pushOnOutput(sessionId, rawData) {
   if (mon.recentText.length > 3000) mon.recentText = mon.recentText.slice(-2000);
 
   if (printable.length > 0) {
+    // Bump bg idle timer — session is active, not idle.
+    bumpBgActivity(sessionId);
     mon.chars += printable.length;
     if (mon.state === 'idle') mon.state = 'active';
   }
@@ -6635,21 +6635,197 @@ for (const [sid, p] of persistedSessions) {
   }
 }
 
-// Parse an aux-AI intent_classify reply: line 1 = state letter (C/W),
-// line 2 = optional short task summary. Tolerant of blank/extra lines.
+// ── Unified classify result parser ─────────────────────────────────────────
+// Both terminal (classifyTerminalIdle) and chat (runClassifyNow/reconcile) use
+// the same 3-line format: goal / phase / state. This parser normalises both and
+// returns a canonical { state, goal, phase, background, error } shape.
+//
+// State letters:
+//   C = completed, W = waiting on user, B = waiting on background/external,
+//   E = API error (truncated reply), P = still processing (mid-turn only)
 function parseClassifyResult(text) {
-  const lines = String(text || '').trim().split('\n').map(l => l.trim()).filter(Boolean);
-  const first = (lines[0] || '').toUpperCase();
-  // B = waiting on a background task/external data (no user action needed) — the
-  // auto-continue (D) trigger. For notify purposes B still counts as 'waiting'
-  // so a session with auto-continue OFF still surfaces to the user.
-  const background = first.startsWith('B');
-  const state = (first.startsWith('W') || background) ? 'waiting' : 'completed';
-  let summary = lines.slice(1).join(' ').trim();
-  // Strip a leading bullet/label the model sometimes adds, and cap length.
-  summary = summary.replace(/^(第?2?行[:：]?|摘要[:：]?|总结[:：]?|[-*·]\s*)/, '').trim();
-  if (summary.length > 40) summary = summary.slice(0, 40);
-  return { state, summary, background };
+  // DeepSeek thinking-block guard: strip everything before the marker.
+  let clean = String(text || '');
+  const thinkEnd = clean.indexOf('<｜end▁of▁thinking｜>');
+  if (thinkEnd !== -1) clean = clean.slice(thinkEnd + '<｜end▁of▁thinking｜>'.length);
+  clean = clean.replace(/<\/?think>/g, '').replace(/^[\s\n]*/, '');
+
+  const lines = clean.trim().split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Goal (line 1). Cap at 60 chars; strip leading labels the model may emit.
+  const goal = (lines[0] || '')
+    .replace(/^(第1行[:：]|目标[:：]|goal[:：]?)\s*/i, '')
+    .slice(0, 60);
+
+  // Phase (line 2). Chinese codes preferred, English synonyms tolerated.
+  const phaseRaw = (lines[1] || '')
+    .replace(/^(第2行[:：]|阶段[:：]|phase[:：]?)\s*/i, '')
+    .trim();
+  const phaseMap = {
+    '规划中': 'planning', '实现中': 'implementing', '验证中': 'verifying', '收尾中': 'wrapping', '已完成': 'done',
+    'planning': 'planning', 'implementing': 'implementing', 'verifying': 'verifying', 'wrapping': 'wrapping', 'done': 'done',
+  };
+  const phase = phaseMap[phaseRaw] || phaseMap[phaseRaw.toLowerCase()] || null;
+
+  // State (line 3). Single letter: C/W/B/E/P.
+  const stateRaw = (lines[2] || '')
+    .toUpperCase()
+    .replace(/^(第3行[:：]|状态[:：]|state[:：]?)\s*/i, '')
+    .trim();
+  const first = stateRaw.slice(0, 1);
+
+  let state, background = false, error = false;
+  if (first === 'P') state = 'running';
+  else if (first === 'W') state = 'waiting';
+  else if (first === 'B') { state = 'waiting'; background = true; }
+  else if (first === 'E') { state = 'waiting'; error = true; }
+  else state = 'completed';
+
+  // Garbage filter for goal — block model regurgitation of system prompts,
+  // classify-template phrases, API errors, and other non-task noise.
+  let goalOk = goal.length >= 2 && goal.length <= 80;
+  if (goalOk) {
+    const _g = goal.toLowerCase();
+    const _garbage =
+      /api\s*error|insufficient\s*balance|自动恢复|异常中断|claude exited|status[_= ]?5\d\d|\b40[0-9]\b|\b50[0-9]\b|(<.parameter>)/i.test(_g)
+      || (/\berror\b/.test(_g) && goal.length < 12)
+      || /^(第[123]行|当前.*任务.*目标|任务状态分析|对话主动权|闭环任务|判断当前)/.test(goal);
+    if (_garbage) goalOk = false;
+  }
+  const finalGoal = goalOk ? goal : '';
+
+  return { state, goal: finalGoal, phase, background, error };
+}
+
+// ── Unified state-action dispatcher ────────────────────────────────────────
+// Every classify result flows through here. The dispatcher maps state letters
+// to plugin handlers — classify only judges, this layer executes.
+//
+//   C → complete   (set completed, broadcast)
+//   W → waitUser   (set waiting, broadcast)
+//   B → waitBg     (idle timer → inject "继续" after 3 min of silence)
+//   E → apiError   (replace-style retry inject [第N次重试], cap 3)
+//   P → running    (no-op for now — mid-turn, let the next classify refine)
+//
+// Context object carries everything the handlers need (varies by caller):
+//   { sessionName, sessionId, cs?, mon?, isTerminal?, cwd?, opts? }
+
+const API_RETRY_MAX = 3;
+const API_RETRY_DELAY_MS = 4000;
+const BG_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 min — must be no new output for this long
+
+// Per-session state for E/B handlers (not persisted across restarts).
+const _apiRetryState = new Map();   // sessionName → { count, lastInjectMsgId }
+const _bgIdleTimers = new Map();    // sessionName → { timer, lastActivity }
+
+function clearBgIdleTimer(sessionName) {
+  const s = _bgIdleTimers.get(sessionName);
+  if (s) { clearTimeout(s.timer); _bgIdleTimers.delete(sessionName); }
+}
+
+function bumpBgActivity(sessionName) {
+  const s = _bgIdleTimers.get(sessionName);
+  if (s) s.lastActivity = Date.now();
+}
+
+function dispatchStateAction(result, ctx) {
+  const { state, goal, phase, background, error } = result;
+  const { sessionName, sessionId, cs, isTerminal } = ctx;
+
+  // ── Common: persist goal + phase ────────────────────────────────────
+  if (cs && cs.currentTask) {
+    cs.currentTask.goal = (goal && goal !== '—') ? goal : '';
+    if (phase) cs.currentTask.phase = phase;
+  }
+  const finalGoal = (cs && cs.currentTask) ? cs.currentTask.goal : goal;
+  if (sessionName) setTaskState(sessionName, { goal: finalGoal || '' });
+  if (sessionId && finalGoal) setSessionSummary(sessionId, finalGoal);
+
+  // ── Dispatch per state ──────────────────────────────────────────────
+  if (state === 'running') {
+    // P — mid-turn, just refresh labels. Don't finalize.
+    if (cs && cs.isStreaming) {
+      const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[phase] || '';
+      const label = finalGoal ? `处理中：${finalGoal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
+      emitRunningNotify(sessionName, label);
+    }
+    return;
+  }
+
+  if (state === 'completed') {
+    // C — task finished.
+    clearBgIdleTimer(sessionName);
+    _apiRetryState.delete(sessionName);
+    const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
+    if (isTerminal) {
+      triggerPush(sessionId, 'completed', msg);
+      terminalBroadcast(sessionId, { type: 'notify', state: 'completed', message: msg });
+    } else {
+      triggerPush(sessionId, 'completed', `[Chat] ${msg}`);
+      chatBroadcast(sessionName, { type: 'notify', state: 'completed', message: msg });
+    }
+    const dirId = persistedSessions.get(sessionName)?.dirId;
+    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', message: msg });
+    setSessionStatus(sessionName, { status: 'completed' });
+    setTaskState(sessionName, { lifecycle: 'completed', endedAt: Date.now() }, { save: false });
+    waitInjector.resetAuto(sessionName);
+    return;
+  }
+
+  // ── W / B / E all → waiting (user-facing) ───────────────────────────
+
+  // E: API error → inject retry nudge (replace-style, capped)
+  if (error) {
+    const st = _apiRetryState.get(sessionName) || { count: 0 };
+    if (st.count < API_RETRY_MAX) {
+      st.count++;
+      _apiRetryState.set(sessionName, st);
+      // Clear any pending bg idle timer — retry is about to fire a new turn.
+      clearBgIdleTimer(sessionName);
+      const nudge = `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
+      console.log(`[multicc/classify] ${sessionName} API error → retry #${st.count}/${API_RETRY_MAX}`);
+      // Use safeInject so it queues behind any in-flight turn.
+      setTimeout(() => waitInjector.safeInject(sessionName, nudge), API_RETRY_DELAY_MS);
+    } else {
+      console.log(`[multicc/classify] ${sessionName} API retry cap (${API_RETRY_MAX}) reached — giving up`);
+      _apiRetryState.delete(sessionName);
+    }
+  }
+
+  // B: background wait → start idle timer (3 min silence → inject "继续")
+  if (background) {
+    clearBgIdleTimer(sessionName);
+    const timer = setTimeout(() => {
+      if (waitInjector.hasWait(sessionName)) return; // explicit wait covers it
+      const s = _bgIdleTimers.get(sessionName);
+      if (!s) return;
+      const elapsed = Date.now() - (s.lastActivity || Date.now());
+      if (elapsed < BG_IDLE_TIMEOUT_MS - 1000) return; // activity happened since
+      console.log(`[multicc/classify] ${sessionName} B idle timeout (${(elapsed / 1000).toFixed(0)}s) → injecting continue`);
+      waitInjector.safeInject(sessionName, '继续：上次在等待的后台任务/外部结果，可以推进就继续。');
+      _bgIdleTimers.delete(sessionName);
+    }, BG_IDLE_TIMEOUT_MS);
+    _bgIdleTimers.set(sessionName, { timer, lastActivity: Date.now() });
+  }
+
+  // Common waiting-state broadcast
+  const waitMsg = finalGoal ? `等待：${finalGoal}` : (error ? 'API 异常，等待重试…' : '等待交互');
+  if (isTerminal) {
+    triggerPush(sessionId, 'waiting', waitMsg);
+    terminalBroadcast(sessionId, { type: 'notify', state: 'waiting', message: waitMsg });
+  } else {
+    triggerPush(sessionId, 'waiting', `[Chat] ${waitMsg}`);
+    chatBroadcast(sessionName, { type: 'notify', state: 'waiting', message: waitMsg });
+  }
+  const dirId2 = persistedSessions.get(sessionName)?.dirId;
+  if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: 'waiting', message: waitMsg });
+  setSessionStatus(sessionName, { status: 'waiting' });
+  setTaskState(sessionName, { lifecycle: 'waiting', endedAt: Date.now() }, { save: false });
+  // Reset auto-continue guard on W (user is in charge now). B/E keep their own flow.
+  if (state === 'waiting' && !background && !error) {
+    waitInjector.resetAuto(sessionName);
+    _apiRetryState.delete(sessionName);
+  }
 }
 
 // ── Task state persistence (step ①) ───────────────────────────────────────────
@@ -6869,7 +7045,7 @@ function reclassifySessionsWithMissingGoals() {
     auxQueue.enqueue({ type: 'recovery_reclassify', prompt, meta: { sessionName: sid } })
       .then(result => {
         if (result.cancelled) return;
-        const res = parseTaskClassify(result.text);
+        const res = parseClassifyResult(result.text);
         if (res.goal && res.goal !== '—' && res.goal.length >= 2) {
           setTaskState(sid, { goal: res.goal, lastSummaryAt: Date.now() });
           setSessionSummary(sid, res.goal);
@@ -6953,22 +7129,22 @@ function reconcileOneOnStartup(sid, ts, opts = {}) {
   auxQueue.enqueue({ type: 'intent_classify', prompt, meta: { sid, startup: true } })
     .then(result => {
       if (result.cancelled) return;
-      const res = parseTaskClassify(result.text);
+      const res = parseClassifyResult(result.text);
       // '—' → no concrete task. If classify can't find a real task from the history,
       // leave goal empty rather than retaining a stale placeholder ("新任务") or junk.
       const goal = (res.goal && res.goal !== '—') ? res.goal : '';
-      // Turn is long over → finalize. P (still-processing) is treated as completed.
-      const lifecycle = res.state === 'waiting' ? 'waiting' : 'completed';
+      const lifecycle = (res.state === 'completed') ? 'completed' : 'waiting';
       setTaskState(sid, { goal, phase: res.phase || ts.phase, lifecycle, endedAt: Date.now() }, { save });
       setSessionSummary(sid, goal);
       setSessionStatus(sid, { status: lifecycle });
       const dirId = persistedSessions.get(sid)?.dirId;
       const label = lifecycle === 'waiting'
-        ? (goal ? `等待交互：${goal}` : '等待交互')
+        ? (goal ? `等待交互：${goal}` : (res.error ? 'API 异常' : '等待交互'))
         : (goal ? `任务完成：${goal}` : '任务完成');
       // Display-only broadcast — no triggerPush (avoid a notification storm).
+      // No cs/chatSession → skip dispatchStateAction (which needs live chat state).
       if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId: sid, state: lifecycle, message: label });
-      console.log(`[multicc/reconcile] ${opts.manual ? 'manual' : 'startup'} ${sid}: ${lifecycle} · ${goal || '(no goal)'}`);
+      console.log(`[multicc/reconcile] ${opts.manual ? 'manual' : 'startup'} ${sid}: ${lifecycle} · ${goal || '(no goal)'}${res.error ? ' (API error)' : ''}`);
     })
     .catch(e => { if (e && e.cancelled) return; console.warn(`[multicc/reconcile] reclassify ${sid} failed: ${e.message}`); });
 }
@@ -7375,62 +7551,6 @@ function cancelClassify(cs) {
 // Line 2: phase ∈ 规划中|实现中|验证中|收尾中|已完成 (Chinese codes; EN synonyms tolerated)
 // Line 3: P | C | W | B
 // Tolerant of blank lines, prefixes, and model cruft.
-function parseTaskClassify(text) {
-  // DeepSeek dirty fix: the model sometimes emits a thinking block delimited by
-  // <｜end▁of▁thinking｜> — the real output is everything after that marker.
-  let clean = String(text || '');
-  const thinkEnd = clean.indexOf('<｜end▁of▁thinking｜>');
-  if (thinkEnd !== -1) {
-    clean = clean.slice(thinkEnd + ' response'.length);
-  }
-  clean = clean.replace(/<\/?think>/g, '').replace(/^[\s\n]*/, '');
-  const lines = clean.trim().split('\n').map(l => l.trim()).filter(Boolean);
-  // Goal may be English (≤10 words ≈ 60 chars) or Chinese (≤20 chars) → cap at 60.
-  const goal    = (lines[0] || '').replace(/^(第1行[:：]|目标[:：]|goal[:：]?)\s*/i, '').slice(0, 60);
-  const phaseRaw = (lines[1] || '').replace(/^(第2行[:：]|阶段[:：]|phase[:：]?)\s*/i, '').trim();
-  const stateRaw = (lines[2] || '').toUpperCase().replace(/^(第3行[:：]|状态[:：]|state[:：]?)\s*/i, '').trim();
-
-  // Phase normalisation — Chinese codes preferred, English synonyms tolerated.
-  const phaseMap = {
-    '规划中': 'planning', '实现中': 'implementing', '验证中': 'verifying', '收尾中': 'wrapping', '已完成': 'done',
-    'planning': 'planning', 'implementing': 'implementing', 'verifying': 'verifying', 'wrapping': 'wrapping', 'done': 'done',
-  };
-  const phase = phaseMap[phaseRaw] || phaseMap[phaseRaw.toLowerCase()] || null;
-
-  // State normalisation. P = still processing (used at turn-start / mid-turn when
-  // there is no AI reply yet or the turn hasn't closed); W/B = waiting; C = done.
-  const first = stateRaw.slice(0, 1);
-  let state, background = false;
-  if (first === 'P') state = 'running';
-  else if (first === 'W') state = 'waiting';
-  else if (first === 'B') { state = 'waiting'; background = true; }
-  else state = 'completed';
-
-  // Garbage filter for goal — block model regurgitation of system prompts,
-  // classify-template phrases, API errors, and other non-task noise.
-  let goalOk = goal.length >= 2 && goal.length <= 80;
-  if (goalOk) {
-    const _g = goal.toLowerCase();
-    const _garbage =
-      // API / system error signatures
-      /api\s*error|insufficient\s*balance|自动恢复|异常中断|claude exited|status[_= ]?5\d\d|\b40[0-9]\b|\b50[0-9]\b|(<.parameter>)/i.test(_g)
-      || (/\berror\b/.test(_g) && goal.length < 12)
-      // Model regurgitating classify prompt template phrases
-      || /^(第[123]行|当前.*任务.*目标|任务状态分析|对话主动权|闭环任务|判断当前)/.test(goal)
-      || /^(user|assistant|system)[\s:：]/.test(_g)
-      // Model regurgitating Claude Code system prompt fragments
-      || /available (agent types|skills|workflow)|do not (use|send)|claude code built-in|skills are from/i.test(_g)
-      || /^(the|this|that|you|we|i|it|he|she|they|a |an )\b/.test(_g) && goal.length > 50  // overly long English sentence fragment
-      // Model outputting prompt instructions instead of goal
-      || /^(第\d行|输出|严格|只输出|不要加|请严格)/.test(goal);
-    if (_garbage) goalOk = false;
-  }
-  return { goal: goalOk ? goal : '', phase, state, background };
-}
-
-// Build the classify prompt. Simply feeds the last N conversation turns
-// (user + assistant interleaved) from chat_history, each truncated to a
-// reasonable length. Same data source the chat page uses — no magic.
 function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
   const history = loadChatHistory(sessionName);
   const MAX_TURNS = 20;
@@ -7473,10 +7593,10 @@ function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
        P = AI 还在处理中（回复为空、或明显话没说完，还没到判断主动权的时候）
        W = 在用户手里（AI 在等用户回复、确认、决策；末尾有反问/选项/征求意见）
        B = 在等外部系统/后台任务（AI 没法继续，用户也帮不上忙；在等 build/部署/API/子进程）
-          重要：如果助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等API故障信息，说明回答被截断而非真正完成，必须判 B（让系统自动重试）
+       E = API 异常中断（助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等故障信息，回答被截断而非正常完成——注意与正常等后台的 B 区分）
        C = 在 AI 手里（任务闭环完成，用户不需要再做任何事）
 
-判断第3行时站在「对话本身」的角度思考。一段回复可能先汇报结果、再抛反问——后半句反问说明 AI 还在等用户，应判 W。回复为空时判 P。API故障导致截断的回复判 B。
+判断第3行时站在「对话本身」的角度思考。一段回复可能先汇报结果、再抛反问——后半句反问说明 AI 还在等用户，应判 W。回复为空时判 P。API故障导致截断的回复判 E（不是 B）。
 
 只输出这三行。不要加序号、解释、引号、空行。
 
@@ -7502,51 +7622,27 @@ function runClassifyNow(cs, sessionName) {
     meta: { sessionName, sessionId },
   }).then(result => {
     if (result.cancelled) return;
-    const res = parseTaskClassify(result.text);
+    const res = parseClassifyResult(result.text);
 
-    // ── Always apply the latest classify result; never skip because goal hasn't changed.
-    // If classify returned a concrete goal, use it; if '—' (no task), clear to empty.
-    // This is the single source of truth — let the model decide, don't second-guess it.
-    if (cs.currentTask) {
-      cs.currentTask.goal = (res.goal && res.goal !== '—') ? res.goal : '';
-      if (res.phase) cs.currentTask.phase = res.phase;
-    }
-    const goal = cs.currentTask?.goal || '';
-
-    // Persist goal to taskState so it survives restarts.
-    setTaskState(sessionName, { goal });
-
-    const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[cs.currentTask?.phase] || '';
-
-    // While the turn is still streaming (start / mid), NEVER finalize C/W/B or
-    // fire autoContinue — just refresh the in-progress label.
+    // While still streaming: only refresh in-progress labels, don't finalize.
+    // dispatchStateAction handles the P state naturally (it returns early).
     if (cs.isStreaming) {
+      if (cs.currentTask) {
+        cs.currentTask.goal = (res.goal && res.goal !== '—') ? res.goal : '';
+        if (res.phase) cs.currentTask.phase = res.phase;
+      }
+      setTaskState(sessionName, { goal: cs.currentTask?.goal || '' });
+      const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[cs.currentTask?.phase] || '';
+      const goal = cs.currentTask?.goal || '';
       const label = goal ? `处理中：${goal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
       emitRunningNotify(sessionName, label);
       console.log(`[multicc/aux] Classify in-progress for ${sessionName}: goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
       return;
     }
 
-    // Turn is over — finalize based on C/W/B (P shouldn't occur post-turn; treat as completed).
-    const persistedRec = persistedSessions.get(sessionName);
-    if (res.background && persistedRec?.autoContinue && !waitInjector.hasWait(sessionName)) {
-      setSessionSummary(sessionId, goal);
-      console.log(`[multicc/aux] Classify for ${sessionName}: background → auto-continue`);
-      waitInjector.autoContinue(sessionName, { cwd: cs.cwd });
-      return;
-    }
-    waitInjector.resetAuto(sessionName);
-    const finalState = (res.state === 'running') ? 'completed' : res.state;
-    const doneMsg = goal ? `任务完成：${goal}` : '任务完成';
-    const msg = finalState === 'waiting' ? '等待交互' : doneMsg;
-    triggerPush(sessionId, finalState, `[Chat] ${msg}`);
-    chatBroadcast(sessionName, { type: 'notify', state: finalState, message: msg });
-    const dirId = persistedSessions.get(sessionName)?.dirId;
-    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: finalState, message: msg });
-    setSessionSummary(sessionId, goal);
-    setSessionStatus(sessionName, { status: finalState });
-    setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now(), lifecycle: finalState === 'waiting' ? 'waiting' : 'completed' }, { save: false });
-    console.log(`[multicc/aux] Classify RESULT for ${sessionName}: state=${finalState} goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
+    // Turn over — dispatch state action.
+    dispatchStateAction(res, { sessionName, sessionId, cs, isTerminal: false, cwd: cs.cwd });
+    console.log(`[multicc/aux] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.error ? ' (API error)' : ''}`);
   }).catch((e) => {
     // A cancelled task (new turn started / user typing) rejects with {cancelled:true}
     // and no .message — that's normal churn, not a failure. Don't log it as FAILED.
@@ -7960,15 +8056,9 @@ function getRelevantMemoryEntries(query, entries, maxChars = 2000) {
   return result;
 }
 
-// (API_ERROR_RE removed — classify prompt now handles API error recognition)
-
-// Turn-boundary hook for guard F (REMOVED — now handled by classify prompt).
-// API Error / 503 / connection drops are recognized by the classify AI and
-// judged as state B (background wait), which triggers autoContinue naturally.
-// No separate retry guard needed.
-function handleApiErrorBoundary(sessionName, finalText, sawApiError) {
-  // No-op: classify prompt now handles API errors → state B → autoContinue.
-}
+// Turn-boundary hook for guard F (REMOVED — classify prompt + dispatchStateAction
+// now handle API errors via state E → retry inject). The two call sites still
+// set/reset _sawApiError for classify to reference.
 
 // Apply one claude-shaped stream-json event to chat session state, then forward
 // it to clients. Shared by the per-turn spawn path (handleLine) and the
@@ -8070,7 +8160,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
-  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); }
+  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); clearBgIdleTimer(sessionName); _apiRetryState.delete(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
   let cs = chatSessions.get(sessionName);
   if (!cs) {
@@ -8733,14 +8823,10 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs._codexPendingStreamError = '';
       cs._codexPendingStreamErrorCount = 0;
       cs._codexStreamContinuationCount = 0;
-      // Guard F: classify prompt now recognizes API errors and judges
-      // state B (background wait) → autoContinue picks up naturally.
-      const sawApi = cs._sawApiError; cs._sawApiError = false;
-      if (!killReason) handleApiErrorBoundary(sessionName, finalText, sawApi);
+      // classify prompt + dispatchStateAction handles API errors via state E.
+      cs._sawApiError = false;
 
-      // Resting status — classifyTurnEnd is the single decider of C/W/B.
-      // API errors / non-zero / signaled exits all get classified; the AI
-      // decides whether the text it sees means "done", "waiting", or "retry".
+      // Resting status — classifyTurnEnd is the single decider of C/W/B/E.
       if (killReason) {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       } else if (kind === 'normal' || sawApi || hadCodexError || kind === 'nonzero_exit' || kind === 'signaled') {
@@ -8991,11 +9077,9 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   // dropped turn lands here without it. Capture before the reset below.
   const completedOk = cs._resultSaved;
   cs._resultSaved = false;
-  // Guard F: classify prompt now handles API errors → state B → autoContinue.
+  // classify prompt + dispatchStateAction handles API errors via state E → retry.
   const sawApi = cs._sawApiError; cs._sawApiError = false;
-  handleApiErrorBoundary(sessionName, finalText, sawApi);
-  // Resting status: let classify decide. If sawApi and completedOk both true
-  // (rare: API error reported but CLI still produced a clean exit), defer to
+  // Let classify decide the final status. If sawApi, always defer to classify.
   // classify; otherwise emit the obvious outcome.
   if (sawApi) {
     classifyTurnEnd(cs, sessionName);
