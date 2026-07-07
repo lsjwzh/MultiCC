@@ -7269,7 +7269,27 @@ function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
     // Skip system-injected noise (🔇 prefix)
     if (isSystemInjectedMsg(m.content)) continue;
     const label = m.role === 'user' ? '用户' : '助手';
-    const snippet = String(m.content).slice(-600); // keep tail of each message
+    const text = String(m.content);
+    let snippet;
+    if (m.role === 'user') {
+      // User messages may have system preamble appended by the frontend.
+      // The real user input is at the START — take the first 300 chars.
+      // But if the message is short, just use it as-is.
+      snippet = text.length > 600 ? text.slice(0, 300) : text;
+    } else {
+      // Assistant messages: tail matters most (conclusions, next steps).
+      snippet = text.slice(-600);
+    }
+    // Strip common system-preamble noise (Memory, Environment, gitStatus blocks)
+    // that may appear inside user messages copied from the Claude chat interface.
+    snippet = snippet
+      .replace(/# (Memory|Harness|Environment|Context management|Session-specific guidance)\b[\s\S]*?(?=\n#|\n\n[^\n]{5,}|$)/g, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/gitStatus:[\s\S]*?Recent commits:[\s\S]*?(?=\n\n|$)/, '')
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
+      .trim();
+    if (!snippet) continue;
     parts.unshift(`${label}：${snippet}`);
     chars += snippet.length;
   }
