@@ -6025,9 +6025,14 @@ app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
       return res.json({ ok: false, ms: Date.now() - t0, error: isOfficial ? 'OAuth 订阅型 provider 不支持测速（开启 CLAUDE_OFFICIAL_VIA_PROXY 可测速）' : '缺少 API Key 或 Base URL' });
     }
 
-    // Resolve model: modelOptions first, then env overrides, then fallback
-    let model = (p.modelOptions && p.modelOptions[0]) || p.model || '';
-    if (!model) model = env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_HAIKU_MODEL || 'haiku';
+    // Resolve a real wire model id to POST. The provider's own model wins
+    // (canonical ANTHROPIC_MODEL, else its haiku-tier target — e.g. iFlytek's
+    // xopdeepseekv4flash). OAuth-subscription providers (claude-official) declare
+    // no model of their own, so fall back to WIRE_DEFAULT_MODEL — the same safe
+    // wire name the spawn path stamps for alias-only providers. Never fall back
+    // to a CLI-only alias like 'haiku': the raw /v1/messages endpoint bypasses the
+    // CLI's alias resolution and rejects it with 404 model-not-found.
+    const model = env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_HAIKU_MODEL || providers.WIRE_DEFAULT_MODEL;
 
     const body = JSON.stringify({
       model,
