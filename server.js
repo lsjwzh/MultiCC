@@ -5957,6 +5957,121 @@ app.post('/api/providers/:appType/:id/probe', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Speed-test: fire a minimal API call through the provider's real relay and
+// measure round-trip latency.  Returns { ok, ms, status, model, error? }.
+app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const p = providers.getProvider(req.params.appType, req.params.id);
+    if (!p) return res.status(404).json({ ok: false, ms: Date.now() - t0, error: 'provider not found' });
+    const cfg = typeof p.settingsConfig === 'string' ? JSON.parse(p.settingsConfig) : (p.settingsConfig || {});
+    const env = (cfg && cfg.env) || {};
+    const appType = req.params.appType;
+
+    // ── Codex providers ──────────────────────────────────────────────
+    if (appType === 'codex') {
+      const cx = providers.resolveCodexDirectHttp(req.params.id);
+      if (!cx.canDirect) {
+        return res.json({ ok: false, ms: Date.now() - t0, error: cx.reason || 'OAuth 订阅型 provider 不支持测速' });
+      }
+      const model = (cx.modelOptions && cx.modelOptions[0]) || cx.model || 'gpt-4o-mini';
+      const body = JSON.stringify({
+        model,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      let urlObj;
+      try { urlObj = new URL(cx.url); } catch (e) {
+        return res.json({ ok: false, ms: Date.now() - t0, error: 'bad url: ' + cx.url });
+      }
+      const isHttps = urlObj.protocol === 'https:';
+      const lib = isHttps ? require('https') : require('http');
+      await new Promise((resolve, reject) => {
+        const hReq = lib.request({
+          hostname: urlObj.hostname,
+          port: urlObj.port || (isHttps ? 443 : 80),
+          path: urlObj.pathname + urlObj.search,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cx.apiKey}` },
+        }, (hRes) => {
+          let data = '';
+          hRes.on('data', chunk => data += chunk);
+          hRes.on('end', () => {
+            const ms = Date.now() - t0;
+            if (hRes.statusCode >= 200 && hRes.statusCode < 300) {
+              res.json({ ok: true, ms, status: hRes.statusCode, model });
+            } else {
+              let err = `HTTP ${hRes.statusCode}`;
+              try { const pe = JSON.parse(data); if (pe.error) err = (pe.error.message || JSON.stringify(pe.error)); } catch (_) {}
+              res.json({ ok: false, ms, status: hRes.statusCode, model, error: err });
+            }
+            resolve();
+          });
+        });
+        hReq.on('error', (e) => { res.json({ ok: false, ms: Date.now() - t0, error: e.message }); resolve(); });
+        hReq.setTimeout(15000, () => { hReq.destroy(); res.json({ ok: false, ms: Date.now() - t0, error: 'timeout' }); });
+        hReq.write(body);
+        hReq.end();
+      });
+      return;
+    }
+
+    // ── Claude providers ─────────────────────────────────────────────
+    const hasKey = !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
+    const isOfficial = req.params.id === 'claude-official';
+    const canDirect = (env.ANTHROPIC_BASE_URL && hasKey) || (isOfficial && CLAUDE_OFFICIAL_VIA_PROXY);
+
+    if (!canDirect) {
+      return res.json({ ok: false, ms: Date.now() - t0, error: isOfficial ? 'OAuth 订阅型 provider 不支持测速（开启 CLAUDE_OFFICIAL_VIA_PROXY 可测速）' : '缺少 API Key 或 Base URL' });
+    }
+
+    // Resolve model: modelOptions first, then env overrides, then fallback
+    let model = (p.modelOptions && p.modelOptions[0]) || p.model || '';
+    if (!model) model = env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_HAIKU_MODEL || 'haiku';
+
+    const body = JSON.stringify({
+      model,
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    await new Promise((resolve) => {
+      const hReq = require('http').request({
+        hostname: '127.0.0.1',
+        port: PORT,
+        path: `/claude-proxy/${req.params.id}/speedtest/v1/messages?beta=true`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `multicc-speedtest`,
+          'anthropic-version': '2023-06-01',
+          'x-api-key': 'multicc-speedtest',
+        },
+      }, (hRes) => {
+        let data = '';
+        hRes.on('data', chunk => data += chunk);
+        hRes.on('end', () => {
+          const ms = Date.now() - t0;
+          if (hRes.statusCode >= 200 && hRes.statusCode < 300) {
+            res.json({ ok: true, ms, status: hRes.statusCode, model });
+          } else {
+            let err = `HTTP ${hRes.statusCode}`;
+            try { const pe = JSON.parse(data); if (pe.error) err = (pe.error.message || JSON.stringify(pe.error)); } catch (_) {}
+            res.json({ ok: false, ms, status: hRes.statusCode, model, error: err });
+          }
+          resolve();
+        });
+      });
+      hReq.on('error', (e) => { res.json({ ok: false, ms: Date.now() - t0, error: e.message }); resolve(); });
+      hReq.setTimeout(15000, () => { hReq.destroy(); res.json({ ok: false, ms: Date.now() - t0, error: 'timeout' }); });
+      hReq.write(body);
+      hReq.end();
+    });
+  } catch (e) {
+    res.json({ ok: false, ms: Date.now() - t0, error: e.message });
+  }
+});
+
 // Get / set the global default provider per CLI.
 app.get('/api/provider-defaults', (req, res) => res.json(providerDefaults));
 app.put('/api/provider-defaults', (req, res) => {
