@@ -1501,6 +1501,20 @@
     </div>
   </div>
 
+  <!-- AI Assistant (aux) history — simple popup modal, no side panel -->
+  <div id="aux-history-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeAuxHistoryModal()">
+    <div class="modal-card" style="width:min(96vw,720px);max-height:88vh;display:flex;flex-direction:column;background:var(--bg);">
+      <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;">
+        <span style="font-weight:680;font-size:14px;color:#d2a8ff;">🤖 AI 助手历史</span>
+        <span style="font-size:11px;color:var(--muted);flex:1;">AuxQueue — 意图分类服务</span>
+        <button class="btn btn-sm" onclick="closeAuxHistoryModal()">关闭</button>
+      </div>
+      <div id="aux-modal-body" style="flex:1;overflow:auto;padding:12px 16px;font-size:12px;font-family:var(--mono);line-height:1.5;">
+        加载中…
+      </div>
+    </div>
+  </div>
+
   <style>
     .git-commit{padding:6px 0;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:8px;}
     .git-commit:hover{background:rgba(58,214,197,.04);}

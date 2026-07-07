@@ -477,7 +477,7 @@ function renderAuxCard(s, isFocused) {
   const warmDot = aux.warmReady ? '<span title="进程已预热" style="color:#3fb950;">●</span>' : '<span title="进程未就绪" style="color:#484f58;">○</span>';
 
   return `
-    <div class="session-card${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="focusAux()" style="border-color:#8957e5;">
+    <div class="session-card${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openAuxHistoryModal()" style="border-color:#8957e5;">
       <div class="card-top">
         <span class="session-id" style="color:#d2a8ff;">AI Assistant</span>
         <span class="status-badge ${statusClass}">${statusText}</span>
@@ -496,7 +496,7 @@ function renderAuxCard(s, isFocused) {
         <span class="client-count" style="color:#d2a8ff;" title="辅助 AI 当前模型">${escapeHtml(_auxModelLabel())}</span>
         <span style="display:flex;gap:6px;">
           <button class="btn btn-sm" onclick="event.stopPropagation(); openAuxModal()">模型</button>
-          <button class="btn btn-sm" onclick="event.stopPropagation(); focusAux()">History</button>
+          <button class="btn btn-sm" onclick="event.stopPropagation(); openAuxHistoryModal()">History</button>
         </span>
       </div>
     </div>`;
@@ -5435,6 +5435,7 @@ function auxConnect() {
       if (msg.type === 'aux_history') {
         _auxHistory = msg.messages || [];
         if (_focusedSessionId === '__aux__') renderAuxPanel();
+        if (_auxModalOpen()) renderAuxModal();
       } else if (msg.type === 'aux_init') {
         // status info on connect — will be refreshed via /api/sessions
         if (msg.health) handleAuxHealth(msg.health);
@@ -5447,6 +5448,7 @@ function auxConnect() {
           loadSessions();
         }
         if (_focusedSessionId === '__aux__') renderAuxTaskEvent(msg);
+        if (_auxModalOpen()) renderAuxModal();
       }
     } catch (_) {}
   };
@@ -5456,6 +5458,78 @@ function auxConnect() {
     setTimeout(auxConnect, 5000);
   };
   _auxWs.onerror = () => {};
+}
+
+// ── AI Assistant (aux) history — simple popup modal ──
+// Replaces the old focus-panel side view: just pops a modal and renders the
+// aux task history straight into it. No iframe, no panel juggling.
+function openAuxHistoryModal() {
+  acknowledgeSession('__aux__');
+  const modal = document.getElementById('aux-history-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  auxConnect();                 // ensure the /ws/aux socket is live for updates
+  renderAuxModal();             // paint whatever history we already have
+}
+
+function closeAuxHistoryModal() {
+  const modal = document.getElementById('aux-history-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function _auxModalOpen() {
+  const m = document.getElementById('aux-history-modal');
+  return m && m.style.display !== 'none';
+}
+
+// Render the aux task history into the modal body (newest first).
+function renderAuxModal() {
+  const body = document.getElementById('aux-modal-body');
+  if (!body) return;
+  if (_auxHistory.length === 0) {
+    body.innerHTML = '<div style="text-align:center;color:#484f58;padding:40px 0;">暂无任务记录</div>';
+    return;
+  }
+  const tasks = [];
+  for (let i = 0; i < _auxHistory.length; i++) {
+    const msg = _auxHistory[i];
+    if (msg.role === 'user' && i + 1 < _auxHistory.length && _auxHistory[i + 1].role === 'assistant') {
+      tasks.push({ input: msg, output: _auxHistory[i + 1] });
+      i++;
+    } else if (msg.role === 'user') {
+      tasks.push({ input: msg, output: null });
+    }
+  }
+  tasks.reverse();
+  body.innerHTML = tasks.map(t => {
+    const time = new Date(t.input.ts);
+    const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
+    const taskType = t.input.taskType || 'unknown';
+    const meta = t.input.meta || {};
+    const metaStr = meta.sessionName ? `session=${escapeHtml(meta.sessionName)}` : '';
+    let resultHtml = '<span style="color:#d29922;">pending...</span>';
+    let durationHtml = '';
+    if (t.output) {
+      const isErr = t.output.error;
+      const isCancelled = t.output.cancelled;
+      const text = escapeHtml((t.output.content || '').trim());
+      const color = isErr ? '#f85149' : isCancelled ? '#d29922' : '#3fb950';
+      const label = isErr ? 'ERR' : isCancelled ? 'CANCELLED' : text;
+      resultHtml = `<span style="color:${color};font-weight:600;">${label}</span>`;
+      if (t.output.durationMs) durationHtml = `<span style="color:#484f58;margin-left:8px;">${(t.output.durationMs / 1000).toFixed(1)}s</span>`;
+    }
+    const promptPreview = escapeHtml((t.input.content || '').split('\n').pop().slice(0, 80));
+    return `
+      <div style="border-left:2px solid #8957e5;padding:6px 10px;margin-bottom:8px;background:#161b22;border-radius:0 6px 6px 0;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+          <span style="color:#484f58;">${timeStr}</span>
+          <span style="color:#d2a8ff;font-weight:600;">${escapeHtml(taskType)}</span>
+          <span style="color:#6e7681;">${metaStr}</span>
+          <span style="margin-left:auto;">${resultHtml}${durationHtml}</span>
+        </div>
+        <div style="color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(t.input.content || '')}">${promptPreview}</div>
+      </div>`;
+  }).join('');
 }
 
 function focusAux() {
@@ -6034,7 +6108,7 @@ async function deleteProvider(appType, id, name) {
 
 /* ── Init ── */
 loadDashboard().then(() => {
-  if (new URLSearchParams(location.search).get('focus') === 'aux') focusAux();
+  if (new URLSearchParams(location.search).get('focus') === 'aux') openAuxHistoryModal();
 });
 loadProviders();
 loadVoiceSettings();
