@@ -6034,9 +6034,18 @@ app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
     // CLI's alias resolution and rejects it with 404 model-not-found.
     const model = env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_HAIKU_MODEL || providers.WIRE_DEFAULT_MODEL;
 
+    // OAuth subscription tokens (claude-official) require the Claude Code
+    // identity assertion in the first system block. Without it, Anthropic
+    // treats the bare request as token probing and returns 429 rate_limit
+    // (anti-abuse). The CLI always sends this block; normal CLI requests
+    // forwarded through the proxy carry it naturally, but speedtest generates
+    // a synthetic body — so we inject it here. Mirrors ensureClaudeIdentity()
+    // in claude-proxy.js.
+    const isOfficialOAuth = isOfficial && !hasKey;
     const body = JSON.stringify({
       model,
       max_tokens: 1,
+      ...(isOfficialOAuth ? { system: [{ type: 'text', text: 'You are Claude Code, Anthropic\'s official CLI for Claude.' }] } : {}),
       messages: [{ role: 'user', content: 'hi' }],
     });
 
