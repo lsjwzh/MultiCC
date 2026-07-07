@@ -5144,11 +5144,78 @@ const auxQueue = {
   },
 
   execute(task) {
-    if (auxConfig.cli === 'codex') return this.executeCodex(task);
+    if (auxConfig.cli === 'codex') {
+      // Codex direct-HTTP: API-key providers POST straight to /chat/completions,
+      // no CLI spawn (symmetric with the claude path). OAuth codex → CLI.
+      const cx = this.canDirectHttpCodex();
+      if (cx.canDirect) return this.executeDirectHttpCodex(task, cx);
+      return this.executeCodex(task);
+    }
     // If aux has a direct API provider (non-OAuth, has baseUrl), skip CLI spawn
     // and use HTTP directly via the proxy — faster, no OAuth dependency.
     if (this.canDirectHttp()) return this.executeDirectHttp(task);
     return this.executeClaude(task);
+  },
+
+  // Codex direct-HTTP capability (cached). Resolves the provider's real
+  // /chat/completions target; canDirect=false for OAuth-only codex providers.
+  _canDirectHttpCodex: null,
+  canDirectHttpCodex() {
+    if (this._canDirectHttpCodex !== null) return this._canDirectHttpCodex;
+    if (!auxConfig.providerId) { this._canDirectHttpCodex = { canDirect: false, reason: 'no provider (default login → CLI)' }; return this._canDirectHttpCodex; }
+    const r = providers.resolveCodexDirectHttp(auxConfig.providerId);
+    this._canDirectHttpCodex = r;
+    if (r.canDirect) console.log(`[multicc/aux] codex direct HTTP mode (no CLI spawn) → ${r.url}`);
+    else console.log(`[multicc/aux] codex uses CLI spawn (${r.reason})`);
+    return r;
+  },
+
+  // Direct HTTP execution for codex providers: POST OpenAI /chat/completions,
+  // no CLI spawn. Mirrors executeDirectHttp (claude) but in OpenAI wire format.
+  executeDirectHttpCodex(task, cx) {
+    return new Promise((resolve, reject) => {
+      const model = auxConfig.model || cx.model || (cx.modelOptions && cx.modelOptions[0]) || '';
+      if (!model) { reject(new Error('codex direct HTTP: no model resolved')); return; }
+      const body = JSON.stringify({
+        model,
+        max_tokens: 256,
+        messages: [{ role: 'user', content: task.prompt }],
+      });
+      let urlObj;
+      try { urlObj = new URL(cx.url); } catch (e) { reject(new Error('bad codex url: ' + cx.url)); return; }
+      const isHttps = urlObj.protocol === 'https:';
+      const lib = isHttps ? require('https') : require('http');
+      const req = lib.request({
+        hostname: urlObj.hostname,
+        port: urlObj.port || (isHttps ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cx.apiKey}`,
+        },
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+            // OpenAI chat/completions shape: choices[0].message.content
+            const text = parsed.choices && parsed.choices[0] && parsed.choices[0].message
+              ? (parsed.choices[0].message.content || '')
+              : '';
+            resolve(typeof text === 'string' ? text : JSON.stringify(text));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+      req.write(body);
+      req.end();
+    });
   },
 
   // Direct HTTP execution: POST /v1/messages via the ccfw proxy, no CLI spawn.
@@ -5458,8 +5525,11 @@ app.get('/api/aux/config', (req, res) => {
     providerId: auxConfig.providerId,
     model: auxConfig.model,
     effort: auxConfig.effort,
-    providers: providers.listProviders(cli).map(p => ({ id: p.id, name: p.name })),
-    claudeProviders: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name })),
+    // Every provider list carries modelOptions so the settings UI can drive a
+    // consistent provider → model linkage (pick provider ⇒ its models populate
+    // the model dropdown) for BOTH claude and codex, exactly like session settings.
+    providers: providers.listProviders(cli).map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
+    claudeProviders: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
     codexProviders: providers.listProviders('codex').map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
   });
 });
@@ -5476,6 +5546,10 @@ app.post('/api/aux/config', (req, res) => {
   auxConfig.providerId = providerId ? String(providerId) : null;
   auxConfig.model = (model && String(model).trim()) || null;
   auxConfig.effort = effort || null;
+  // Invalidate the direct-HTTP capability caches: provider/cli may have changed,
+  // so whether aux can skip CLI spawn must be re-evaluated on the next task.
+  auxQueue._canDirectHttp = null;
+  auxQueue._canDirectHttpCodex = null;
   saveAuxConfig();
   console.log(`[multicc/aux] config updated: cli=${auxConfig.cli} provider=${auxConfig.providerId || 'default'} model=${auxConfig.model || (auxConfig.cli === 'claude' ? 'haiku' : 'provider-default')} effort=${auxConfig.effort || 'default'}`);
   res.json({ ok: true, cli: auxConfig.cli, providerId: auxConfig.providerId, model: auxConfig.model, effort: auxConfig.effort });

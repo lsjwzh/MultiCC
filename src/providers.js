@@ -415,6 +415,56 @@ function getProviderSummary(appType, id) {
   return p ? summarize(p) : null;
 }
 
+// Resolve a codex provider's direct-HTTP target (OpenAI /chat/completions),
+// so aux can POST straight to it without spawning the codex CLI — the codex
+// analogue of the claude direct-HTTP path.
+//
+// Three provider shapes (see providers.json):
+//   1. proxyTarget present → { baseUrl: ".../chat/completions", apiKey } is the
+//      real upstream (domestic providers bridged through codex-proxy). Use it
+//      directly and skip the local proxy hop entirely.
+//   2. real base_url in config.toml + OPENAI_API_KEY → hit <base_url>/chat/completions.
+//   3. OAuth (auth_mode=chatgpt, OPENAI_API_KEY=null) → cannot key-auth a plain
+//      POST; canDirect=false so the caller falls back to CLI spawn.
+function resolveCodexDirectHttp(providerId) {
+  const p = getProvider('codex', providerId);
+  if (!p) return { canDirect: false, reason: 'provider not found' };
+  const cfg = parseConfig(p.settingsConfig);
+  const auth = cfg.auth || {};
+  const apiKey = auth.OPENAI_API_KEY || '';
+  const model = tomlValue(cfg.config, 'model') || '';
+  const modelOptions = (cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models))
+    ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean)
+    : (model ? [model] : []);
+
+  // Shape 1: codex-proxy target carries the real /chat/completions URL + key.
+  if (cfg.proxyTarget && cfg.proxyTarget.baseUrl) {
+    const key = cfg.proxyTarget.apiKey || apiKey;
+    if (!key) return { canDirect: false, reason: 'proxyTarget without apiKey' };
+    return { canDirect: true, url: cfg.proxyTarget.baseUrl, apiKey: key, model, modelOptions };
+  }
+
+  // Shape 3: OAuth-only (no usable API key) → must use the CLI.
+  if (!apiKey) return { canDirect: false, reason: 'OAuth provider (no API key) — CLI only' };
+
+  // Shape 2: real upstream base_url from config.toml. Normalize to a
+  // /chat/completions endpoint (append if the base_url is a bare host/prefix).
+  let base = tomlValue(cfg.config, 'base_url') || '';
+  if (!base) return { canDirect: false, reason: 'no base_url in config' };
+  // A base_url pointing back at our own local codex-proxy but WITHOUT a
+  // proxyTarget is unusable for direct HTTP (we'd loop through the responses
+  // bridge). Treat as CLI-only.
+  if (/127\.0\.0\.1|localhost/.test(base)) {
+    return { canDirect: false, reason: 'base_url is local proxy without proxyTarget — CLI only' };
+  }
+  let url = base.replace(/\/+$/, '');
+  if (!/\/chat\/completions$/.test(url)) {
+    // base_url like "https://host/v1" → "https://host/v1/chat/completions"
+    url = url + '/chat/completions';
+  }
+  return { canDirect: true, url, apiKey, model, modelOptions };
+}
+
 function createProvider({ appType, name, baseUrl, authToken, model, models, useChatResponsesProxy, settingsConfig, aliasMap }) {
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
@@ -943,6 +993,7 @@ module.exports = {
   listProviders,
   getProvider,
   getProviderSummary,
+  resolveCodexDirectHttp,
   createProvider,
   updateProvider,
   deleteProvider,

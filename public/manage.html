@@ -1317,11 +1317,11 @@
       </div>
       <div class="setting-row" style="align-items:flex-start;">
         <label style="padding-top:8px;">Provider</label>
-        <select id="aux-provider" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;"></select>
+        <select id="aux-provider" onchange="refreshAuxModelOptions()" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;"></select>
       </div>
       <div class="setting-row" style="align-items:flex-start;">
         <label style="padding-top:8px;">Model</label>
-        <input id="aux-model" type="text" placeholder="留空使用 provider 默认" autocomplete="off" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:var(--mono);padding:8px 10px;outline:none;" />
+        <select id="aux-model" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:var(--mono);padding:8px 10px;outline:none;"></select>
       </div>
       <div class="setting-row" style="align-items:flex-start;">
         <label style="padding-top:8px;">参数档位</label>
