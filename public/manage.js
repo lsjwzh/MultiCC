@@ -5584,7 +5584,6 @@ function renderAuxModal() {
     }
     const promptPreview = escapeHtml((t.input.content || '').split('\n').pop().slice(0, 80));
     const detailId = 'aux-modal-detail-' + idx;
-    // Build detail HTML inline
     const inputFull = escapeHtml(t.input.content || '');
     const outputFull = t.output ? escapeHtml(t.output.content || '') : '';
     const detailHtml = `<div style="margin-top:8px;padding:8px;background:#0d1117;border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;">
