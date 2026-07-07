@@ -616,6 +616,28 @@ async function saveAuxConfig() {
     if (st) st.textContent = '保存失败：' + (e?.message || e);
   }
 }
+// Re-judge EVERY non-system session's goal/phase with the current aux model.
+// Uses the existing /api/reclassify-all endpoint with onlyJunk:false (all
+// sessions, not just the ones with junk goals). Results arrive async via WS.
+async function reclassifyAllSessions() {
+  const st = document.getElementById('aux-modal-status');
+  const btn = document.getElementById('aux-reclassify-btn');
+  if (btn) btn.disabled = true;
+  if (st) st.textContent = '重跑中…';
+  try {
+    const res = await fetch('/api/reclassify-all' + tokenQS('?'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ onlyJunk: false }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) { if (st) st.textContent = data.error || '重跑失败'; return; }
+    if (st) st.textContent = `已重跑 ${data.count} 个会话，结果稍后异步更新 ✓`;
+  } catch (e) {
+    if (st) st.textContent = '重跑失败：' + (e?.message || e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 function renderSessions(sessions) {
   // Back-compat: rerender using the cached directory list (status updates etc.)

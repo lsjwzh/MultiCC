@@ -1327,8 +1327,10 @@
         <label style="padding-top:8px;">参数档位</label>
         <select id="aux-effort" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;"></select>
       </div>
-      <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:16px;">
-        <span class="status-text" id="aux-modal-status" style="margin-right:auto;"></span>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:16px;">
+        <button class="btn btn-sm" id="aux-reclassify-btn" onclick="reclassifyAllSessions()"
+          title="用当前 AI 助手模型，重新判定所有会话的目标与阶段">🔄 重跑所有会话</button>
+        <span class="status-text" id="aux-modal-status" style="margin-left:auto;"></span>
         <button class="btn" onclick="closeAuxModal()">取消</button>
         <button class="btn btn-green" onclick="saveAuxConfig()">保存</button>
       </div>
