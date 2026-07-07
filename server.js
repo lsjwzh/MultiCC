@@ -5132,9 +5132,9 @@ const auxQueue = {
     const p = providers.getProvider('claude', auxConfig.providerId);
     if (!p) { this._canDirectHttp = false; return false; }
     let cfg = {};
-    try { cfg = JSON.parse(p.settingsConfig || '{}'); } catch (_) {}
+    try { cfg = (p.settingsConfig && typeof p.settingsConfig === 'object') ? p.settingsConfig : JSON.parse(p.settingsConfig || '{}'); } catch (_) {}
     const hasBase = !!(cfg.env && cfg.env.ANTHROPIC_BASE_URL);
-    const hasKey = !!(cfg.env && cfg.env.ANTHROPIC_API_KEY);
+    const hasKey = !!(cfg.env && (cfg.env.ANTHROPIC_API_KEY || cfg.env.ANTHROPIC_AUTH_TOKEN));
     // Can direct HTTP if: has baseUrl + API key; OR is the official OAuth provider
     // (ccfw proxy handles Keychain OAuth token replay).
     const isOfficial = auxConfig.providerId === 'claude-official';
