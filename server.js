@@ -7081,11 +7081,8 @@ const CLASSIFY_INTERVAL_MS = 60000; // in-progress cadence
 
 function cancelClassify(cs) {
   if (cs._classifyTimer) { clearTimeout(cs._classifyTimer); cs._classifyTimer = null; }
-  // Don't cancel an in-flight classify — let it finish so its result (goal/phase)
-  // lands even if a new turn starts while it's running. Only clear the taskId so
-  // the next enqueue doesn't stomp on the same id. The in-flight one will resolve
-  // naturally and its .then() will see cs._classifyTaskId !== its id and skip.
-  cs._classifyTaskId = null;
+  // Don't cancel an in-flight classify — let it finish so its result lands.
+  // The .then() handler now always applies the latest result unconditionally.
 }
 
 // Parse the unified 3-line CHAT classify output (distinct from parseClassifyResult
@@ -7186,31 +7183,28 @@ function runClassifyNow(cs, sessionName) {
 
   const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
   const priorGoal = cs.currentTask?.goal || '';
-  const taskId = crypto.randomUUID();
-  cs._classifyTaskId = taskId;
-
   const userContext = buildUserContext(sessionName);
 
   auxQueue.enqueue({
-    id: taskId,
     type: 'intent_classify',
     prompt: buildClassifyPrompt({ priorGoal, userContext, userMsg, reply }),
     meta: { sessionName, sessionId },
   }).then(result => {
-    if (cs._classifyTaskId !== taskId) return; // superseded by a newer classify
-    cs._classifyTaskId = null;
     if (result.cancelled) return;
     const res = parseTaskClassify(result.text);
 
-    // ── Update goal (skip '—' = no concrete task; keep prior goal) ──
-    if (res.goal && res.goal !== '—' && cs.currentTask && res.goal !== (cs.currentTask.goal || '')) {
-      cs.currentTask.goal = res.goal;
-      setTaskState(sessionName, { goal: res.goal });
+    // ── Always apply the latest classify result; never skip because goal hasn't changed.
+    // If classify returned a concrete goal, use it; if '—' (no task), clear to empty.
+    // This is the single source of truth — let the model decide, don't second-guess it.
+    if (cs.currentTask) {
+      cs.currentTask.goal = (res.goal && res.goal !== '—') ? res.goal : '';
+      if (res.phase) cs.currentTask.phase = res.phase;
     }
-    // ── Update phase ──
-    if (res.phase && cs.currentTask) cs.currentTask.phase = res.phase;
-
     const goal = cs.currentTask?.goal || '';
+
+    // Persist goal to taskState so it survives restarts.
+    setTaskState(sessionName, { goal });
+
     const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[cs.currentTask?.phase] || '';
 
     // While the turn is still streaming (start / mid), NEVER finalize C/W/B or
@@ -7218,7 +7212,7 @@ function runClassifyNow(cs, sessionName) {
     if (cs.isStreaming) {
       const label = goal ? `处理中：${goal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
       emitRunningNotify(sessionName, label);
-      console.log(`[multicc/aux] Classify in-progress for ${sessionName}: goal=”${goal}” phase=${cs.currentTask?.phase || '?'}`);
+      console.log(`[multicc/aux] Classify in-progress for ${sessionName}: goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
       return;
     }
 
@@ -7241,9 +7235,8 @@ function runClassifyNow(cs, sessionName) {
     setSessionSummary(sessionId, goal);
     setSessionStatus(sessionName, { status: finalState });
     setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now(), lifecycle: finalState === 'waiting' ? 'waiting' : 'completed' }, { save: false });
-    console.log(`[multicc/aux] Classify RESULT for ${sessionName}: state=${finalState} goal=”${goal}” phase=${cs.currentTask?.phase || '?'}`);
+    console.log(`[multicc/aux] Classify RESULT for ${sessionName}: state=${finalState} goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
   }).catch((e) => {
-    cs._classifyTaskId = null;
     // A cancelled task (new turn started / user typing) rejects with {cancelled:true}
     // and no .message — that's normal churn, not a failure. Don't log it as FAILED.
     if (e && e.cancelled) return;
