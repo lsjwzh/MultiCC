@@ -4985,6 +4985,7 @@ const auxQueue = {
   // Record a successful task. Any success clears the unhealthy flag.
   recordSuccess() {
     const h = this.health;
+    const wasUnhealthy = h.unhealthy;
     if (h.consecutiveFails || h.unhealthy) {
       h.consecutiveFails = 0;
       if (h.unhealthy) {
@@ -4995,6 +4996,12 @@ const auxQueue = {
       }
     }
     recordApiSuccess();  // ⑥A: aux success means the upstream API is reachable again
+    // Recovery hook: aux just healed — reclassify sessions whose goal was never
+    // set (stuck at '新任务') because classify was failing during the outage.
+    if (wasUnhealthy) {
+      console.log('[multicc/aux] recovery: reclassifying sessions with missing goals after aux outage');
+      reclassifySessionsWithMissingGoals();
+    }
     return h;
   },
   isUnhealthy() { return !!(this.health && this.health.unhealthy); },
@@ -6468,6 +6475,56 @@ function auxHealthProbe() {
   }).then(result => {
     if (result && !result.cancelled) auxQueue.recordSuccess();
   }).catch(() => { /* recordFail already called inside drain */ });
+}
+
+// Recovery hook: aux just healed → reclassify sessions whose goal was never set
+// (stuck at '新任务') because classify was failing during the outage.
+function reclassifySessionsWithMissingGoals() {
+  const candidates = [];
+  for (const [sid, p] of persistedSessions) {
+    if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
+    const ts = p.taskState || {};
+    // Only sessions that completed a turn but have no goal (or garbage goal)
+    if (ts.lifecycle !== 'completed' && ts.lifecycle !== 'waiting') continue;
+    const goal = ts.goal || '';
+    if (goal && goal.length >= 2 && !isGarbageGoal(goal)) continue;
+    // Has chat history with a real assistant reply to classify
+    const hist = loadChatHistory(sid);
+    if (!hist || !hist.length) continue;
+    let lastText = '';
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const m = hist[i];
+      if (m.role !== 'assistant') continue;
+      if (typeof m.content === 'string') { lastText = m.content; break; }
+      if (Array.isArray(m.content)) {
+        lastText = m.content.filter(b => b.type === 'text').map(b => b.text).join(' ');
+        break;
+      }
+    }
+    if (!lastText || lastText.length < 20) continue;
+    candidates.push({ sid, lastText, userMsg: getRecentUserMessages(sid, 1)[0] || '' });
+  }
+  if (!candidates.length) return;
+  console.log(`[multicc/aux] recovery: found ${candidates.length} session(s) with missing/garbage goals → reclassifying`);
+  for (const { sid, lastText, userMsg } of candidates) {
+    const prompt = buildClassifyPrompt({
+      priorGoal: '',
+      userContext: buildUserContext(sid),
+      userMsg,
+      reply: lastText,
+    });
+    auxQueue.enqueue({ type: 'recovery_reclassify', prompt, meta: { sessionName: sid } })
+      .then(result => {
+        if (result.cancelled) return;
+        const res = parseTaskClassify(result.text);
+        if (res.goal && res.goal !== '—' && res.goal.length >= 2) {
+          setTaskState(sid, { goal: res.goal, lastSummaryAt: Date.now() });
+          setSessionSummary(sid, res.goal);
+          console.log(`[multicc/aux] recovery reclassify ${sid}: goal="${res.goal}"`);
+        }
+      })
+      .catch(e => console.warn(`[multicc/aux] recovery reclassify ${sid} failed: ${e.message}`));
+  }
 }
 
 // ── Startup reconcile + manual reclassify ───────────────────────────────────
