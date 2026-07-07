@@ -46,7 +46,6 @@ let _log = () => {};
 const waits = new Map();        // waitId -> wait spec/state
 const autoState = new Map();    // session -> { count, lastHash }
 const bgState = new Map();      // session -> { count }  — run_in_background guard (E)
-const apiState = new Map();     // session -> { count }  — API/transport error retry guard (F)
 let ticker = null;
 
 const TICK_MS = 1000;
@@ -55,8 +54,6 @@ const MIN_INTERVAL_SEC = 3;
 const MAX_AUTO_CONTINUE = 5;     // consecutive auto-continues before giving up
 const MAX_BG_CHECK = 6;          // consecutive run_in_background nudges before giving up
 const BG_CHECK_DELAY_MS = 25000; // wait ~25s after a bg-launching turn, then nudge
-const MAX_API_RETRY = 3;         // consecutive API-error retries before giving up
-const API_RETRY_DELAY_MS = 4000; // wait a few seconds (let a transient blip pass) then resume
 
 function genId() { return 'w_' + crypto.randomBytes(6).toString('hex'); }
 function genToken() { return crypto.randomBytes(16).toString('hex'); }
@@ -156,7 +153,6 @@ function cancelForSession(session) {
   for (const [id, w] of waits) if (w.session === session) { waits.delete(id); n++; }
   autoState.delete(session);
   bgState.delete(session);
-  apiState.delete(session);
   return n;
 }
 

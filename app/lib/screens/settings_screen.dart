@@ -13,6 +13,7 @@ import '../services/update_service.dart';
 import '../theme.dart';
 import '../widgets/model_picker.dart';
 import 'agent_resources_screen.dart';
+import 'aux_screen.dart';
 import 'cron_screen.dart';
 import 'dashboard_screen.dart';
 import 'events_screen.dart';
@@ -604,6 +605,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context,
                   MaterialPageRoute<void>(
                     builder: (_) => ProviderScreen(settings: widget.settings),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              _NavTile(
+                icon: Icons.auto_awesome_outlined,
+                title: 'AI 助手',
+                subtitle: '助手模型配置、健康状态、重跑所有会话、任务历史',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => AuxScreen(settings: widget.settings),
                   ),
                 ),
               ),

@@ -236,6 +236,123 @@ class ManageService {
     if (res.statusCode >= 400) _throw(res);
   }
 
+  // ── Aux (AI assistant) ─────────────────────────────────────────────────────
+  // Mirrors the /api/aux/* + /api/reclassify-* endpoints the web dashboard
+  // drives. The aux helper is a side-channel AI that classifies each session's
+  // goal/phase and runs background tasks; these methods cover its config,
+  // task history, health, and the reclassify triggers.
+
+  /// Aux task history (newest last). Each entry is a chat_history message
+  /// `{role:'user'|'assistant', content, ts, taskType?, meta?, error?, ...}`.
+  Future<List<Map<String, dynamic>>> fetchAuxHistory({int limit = 50}) async {
+    final res = await http
+        .get(Uri.parse(_url('/api/aux/history?limit=$limit')), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) _throw(res);
+    final list = jsonDecode(utf8.decode(res.bodyBytes));
+    if (list is! List) return [];
+    return list
+        .map((e) => (e as Map).cast<String, dynamic>())
+        .toList();
+  }
+
+  /// Aux config + provider lists for the pickers.
+  /// `{cli, providerId?, model?, effort?, providers, claudeProviders, codexProviders}`.
+  Future<Map<String, dynamic>> fetchAuxConfig() async {
+    final res = await http
+        .get(Uri.parse(_url('/api/aux/config')), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// Save aux config. Returns the normalized config `{ok, cli, providerId, model, effort}`.
+  Future<Map<String, dynamic>> saveAuxConfig({
+    required String cli,
+    String providerId = '',
+    String model = '',
+    String effort = '',
+  }) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/aux/config')),
+            headers: _headers,
+            body: jsonEncode({
+              'cli': cli,
+              'providerId': providerId,
+              'model': model,
+              'effort': effort,
+            }))
+        .timeout(const Duration(seconds: 10));
+    try {
+      final j = (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+          .cast<String, dynamic>();
+      if (res.statusCode >= 400 && j['ok'] != true) {
+        throw Exception(j['error']?.toString() ?? 'HTTP ${res.statusCode}');
+      }
+      return j;
+    } catch (e) {
+      if (e is Exception) rethrow;
+      _throw(res);
+    }
+  }
+
+  /// Reclassify all sessions. `onlyJunk:true` (default server-side) only
+  /// re-runs sessions whose goal looks like junk/injected preamble; `false`
+  /// re-runs every session. Returns `{ok, count, ids, onlyJunk}`.
+  Future<Map<String, dynamic>> reclassifyAll({bool onlyJunk = false}) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/reclassify-all')),
+            headers: _headers, body: jsonEncode({'onlyJunk': onlyJunk}))
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// Reclassify a single session by id.
+  Future<Map<String, dynamic>> reclassifySession(String sessionId) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/sessions/$sessionId/reclassify')),
+            headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// Aux health: `{health:{unhealthy, consecutiveFails, lastFailMsg?, sinceAt?}}`.
+  Future<Map<String, dynamic>> fetchAuxHealth() async {
+    final res = await http
+        .get(Uri.parse(_url('/api/aux/health')), headers: _headers)
+        .timeout(const Duration(seconds: 8));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// Speed-test one provider. Returns `{ok, ms, status?, model?, error?}` —
+  /// mirrors POST /api/providers/:appType/:id/speedtest. On failure `status`
+  /// carries the upstream HTTP code (429/404/401…) so the UI can distinguish
+  /// rate-limit / quota / misconfig at a glance; timeout/network errors carry
+  /// no status.
+  Future<Map<String, dynamic>> speedtestProvider(String appType, String id) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/providers/$appType/$id/speedtest')),
+            headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    // The endpoint always returns 200 with a JSON body describing the probe
+    // result (ok:false + error for upstream failures), so parse the body
+    // rather than the HTTP status.
+    try {
+      return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+          .cast<String, dynamic>();
+    } catch (_) {
+      if (res.statusCode >= 400) _throw(res);
+      return {'ok': false, 'ms': 0, 'error': 'HTTP ${res.statusCode}'};
+    }
+  }
+
   Future<void> setProviderDefaults({String? claude, String? codex}) async {
     final body = <String, dynamic>{};
     if (claude != null) body['claude'] = claude;

@@ -275,6 +275,13 @@ class ChatService {
         _emit('chat_msg_deleted', msg);
         break;
 
+      case 'task_state':
+        // aux classify result: what the assistant thinks this session's
+        // goal/phase is. Carries {goal, phase, lifecycle}. Rendered into the
+        // classify bar at the top of the chat (mirrors web renderAuxClassify).
+        _emit('task_state', msg);
+        break;
+
       default:
         break;
     }

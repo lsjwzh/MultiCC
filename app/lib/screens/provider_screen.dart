@@ -200,6 +200,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
               padding: const EdgeInsets.only(bottom: 10),
               child: _ProviderCard(
                 p: p,
+                manage: _manage,
                 onEdit: () => _openEditor(provider: p),
                 onDelete: () => _delete(p),
               ),
@@ -321,14 +322,78 @@ String _providerLabel(Map<String, dynamic> p) {
 
 // ── Provider card ────────────────────────────────────────────────────────────
 
-class _ProviderCard extends StatelessWidget {
+class _ProviderCard extends StatefulWidget {
   final Map<String, dynamic> p;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
-  const _ProviderCard({required this.p, required this.onEdit, required this.onDelete});
+  final ManageService manage;
+  const _ProviderCard({required this.p, required this.onEdit, required this.onDelete, required this.manage});
+
+  @override
+  State<_ProviderCard> createState() => _ProviderCardState();
+}
+
+class _ProviderCardState extends State<_ProviderCard> {
+  // Speed-test result. null = not tested; {ok, ms, status?, error?} otherwise.
+  Map<String, dynamic>? _latency;
+  bool _testing = false;
+
+  Future<void> _speedTest() async {
+    setState(() => _testing = true);
+    try {
+      final r = await widget.manage
+          .speedtestProvider(widget.p['appType'] as String, widget.p['id'] as String);
+      if (!mounted) return;
+      setState(() {
+        _latency = r;
+        _testing = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _latency = {'ok': false, 'ms': 0, 'error': '$e'};
+        _testing = false;
+      });
+    }
+  }
+
+  // Latency badge mirroring the web latencyBadge: green <1s, amber <3s, red
+  // otherwise; on failure show the HTTP status code (429/404/401…) so a rate
+  // limit is distinguishable from a misconfig at a glance; timeout/network
+  // errors with no status fall back to ERR. Full message in the tooltip.
+  Widget? get _latencyBadge {
+    final r = _latency;
+    if (r == null || _testing) return null;
+    final ok = r['ok'] == true;
+    final ms = (r['ms'] as num?)?.toInt() ?? 0;
+    final status = r['status'];
+    final error = r['error']?.toString() ?? '';
+    final Color color;
+    String label;
+    if (ok) {
+      color = ms < 1000 ? const Color(0xFF3fb950) : ms < 3000 ? const Color(0xFFd29922) : const Color(0xFFf85149);
+      label = '${ms}ms';
+    } else {
+      color = const Color(0xFFf85149);
+      label = (status != null && status.toString().isNotEmpty) ? status.toString() : 'ERR';
+    }
+    final title = [
+      if (status != null && status.toString().isNotEmpty) 'HTTP $status',
+      if (error.isNotEmpty) error,
+    ].join(' · ');
+    return Tooltip(
+      message: title.isEmpty ? label : title,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: Text(label,
+            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600, fontFamily: 'monospace')),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final p = widget.p;
     final official = p['isOfficial'] == true;
     final baseUrl = p['baseUrl'] as String? ?? '';
     final model = p['model'] as String? ?? '';
@@ -356,6 +421,7 @@ class _ProviderCard extends StatelessWidget {
                     style: const TextStyle(color: AppColors.textBright, fontWeight: FontWeight.w700, fontSize: 15),
                     overflow: TextOverflow.ellipsis),
               ),
+              if (_latencyBadge != null) _latencyBadge!,
               Text(source == 'ccswitch' ? '来自 cc-switch' : '本地',
                   style: const TextStyle(color: AppColors.faint, fontSize: 11)),
             ],
@@ -383,12 +449,20 @@ class _ProviderCard extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton.icon(
-                onPressed: onEdit,
+                onPressed: _testing ? null : _speedTest,
+                icon: _testing
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent))
+                    : const Icon(Icons.speed_rounded, size: 17, color: AppColors.accent),
+                label: Text(_testing ? '测速中' : '测速',
+                    style: const TextStyle(color: AppColors.accent, fontSize: 13)),
+              ),
+              TextButton.icon(
+                onPressed: widget.onEdit,
                 icon: const Icon(Icons.edit_outlined, size: 17, color: AppColors.blue),
                 label: const Text('编辑', style: TextStyle(color: AppColors.blue, fontSize: 13)),
               ),
               IconButton(
-                onPressed: onDelete,
+                onPressed: widget.onDelete,
                 icon: const Icon(Icons.delete_outline_rounded, size: 19, color: AppColors.danger),
                 tooltip: '删除',
               ),
