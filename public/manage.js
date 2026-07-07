@@ -1034,6 +1034,8 @@ function renderDirSessionGroups(dirSessions) {
   const groups = {
     claude_terminal: [], claude_chat: [],
     codex_terminal: [], codex_chat: [],
+    opencode_terminal: [], opencode_chat: [],
+    zcode_terminal: [], zcode_chat: [],
   };
   for (const s of dirSessions) {
     const key = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;
@@ -1041,7 +1043,7 @@ function renderDirSessionGroups(dirSessions) {
   }
   const renderGroup = (cli, kind, label) => {
     const ss = groups[`${cli}_${kind}`];
-    if (!ss.length) return '';
+    if (!ss || !ss.length) return '';
     const rows = ss.map(s => renderSessionRow(s)).join('');
     return `
       <div class="sess-group ${cli}">
@@ -3342,8 +3344,11 @@ function handleAuxHealth(h) {
   const prev = _auxHealth;
   _auxHealth = h || null;
   const unhealthy = !!(h && h.unhealthy);
-  renderAuxHealthBanner(unhealthy ? h : null);
   if (unhealthy) {
+    // Toast once per transition (not every 5s — the 5-min recurring timer handles re-remind).
+    if (!prev || !prev.unhealthy) {
+      showToast(`⚠️ 摘要服务异常（${h.consecutiveFails || 0} 次失败）：${(h.lastFailMsg || '未知错误').slice(0, 50)} — 状态判定暂停，修复后自动恢复`, true);
+    }
     // Start the recurring reminder if not already running.
     if (!_auxToastTimer) {
       const remind = () => {
@@ -3362,20 +3367,6 @@ function handleAuxHealth(h) {
     if (_auxToastTimer) { clearTimeout(_auxToastTimer); _auxToastTimer = null; }
     showToast('摘要服务已恢复', false);
   }
-}
-
-function renderAuxHealthBanner(h) {
-  let el = document.getElementById('aux-health-banner');
-  if (!h) { if (el) el.remove(); return; }
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'aux-health-banner';
-    el.style.cssText = 'position:sticky;top:0;z-index:9000;background:#5d0f0f;color:#ffd0d0;font-size:13px;padding:6px 14px;border-bottom:1px solid #8b2020;display:flex;align-items:center;gap:10px;box-shadow:0 2px 6px rgba(0,0,0,.4);';
-    document.body.prepend(el);
-  }
-  const fails = h.consecutiveFails || 0;
-  const msg = (h.lastFailMsg || '未知错误').slice(0, 80);
-  el.innerHTML = '<span>⚠️ <b>摘要服务异常</b>（连续失败 ' + fails + ' 次）：' + escapeHtml(msg) + ' — 已切换规则判定，状态可能不准，请检查 aux 配置/上游模型后修复</span>';
 }
 
 function showToast(msg, isError = false) {

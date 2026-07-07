@@ -6970,7 +6970,8 @@ function cancelClassify(cs) {
 // Line 3: P | C | W | B
 // Tolerant of blank lines, prefixes, and model cruft.
 function parseTaskClassify(text) {
-  const lines = String(text || '').trim().split('\n').map(l => l.trim()).filter(Boolean);
+  const clean = String(text || '').replace(/<\/?think>/g, '').replace(/^[\s\n]*/, '');
+  const lines = clean.trim().split('\n').map(l => l.trim()).filter(Boolean);
   // Goal may be English (≤10 words ≈ 60 chars) or Chinese (≤20 chars) → cap at 60.
   const goal    = (lines[0] || '').replace(/^(第1行[:：]|目标[:：]|goal[:：]?)\s*/i, '').slice(0, 60);
   const phaseRaw = (lines[1] || '').replace(/^(第2行[:：]|阶段[:：]|phase[:：]?)\s*/i, '').trim();
