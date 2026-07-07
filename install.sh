@@ -2,12 +2,12 @@
 # ============================================================================
 # MultiCC — One-Click Install Script
 # ============================================================================
-# MultiCC version  0.7.8
+# MultiCC version  0.7.9
 # Release channel  stable — see https://github.com/lsjwzh/MultiCC/releases
 # ============================================================================
 # Usage:
 #   Stable release:
-#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.7.8/install.sh | bash
+#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.7.9/install.sh | bash
 #   Latest (main branch, may be ahead of the latest stable release):
 #     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 #
@@ -105,7 +105,7 @@ banner() {
 }
 
 # MultiCC version — keep in sync with package.json when cutting a release
-INSTALLER_VERSION="0.7.8"
+INSTALLER_VERSION="0.7.9"
 
 # ── Parse flags ──────────────────────────────────────────────────────────
 INSTALL_DIR=""
