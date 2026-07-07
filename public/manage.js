@@ -5505,7 +5505,7 @@ function auxConnect() {
         if (msg.status === 'done' || msg.status === 'error') {
           // Fetch latest history from API so _auxHistory stays current
           fetch('/api/aux/history').then(r => r.json()).then(data => {
-            _auxHistory = (data && data.messages) ? data.messages : _auxHistory;
+            _auxHistory = Array.isArray(data) ? data : _auxHistory;
             if (_focusedSessionId === '__aux__') renderAuxPanel();
             if (_auxModalOpen()) renderAuxModal();
           }).catch(() => {});
