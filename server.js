@@ -5198,6 +5198,23 @@ const auxQueue = {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
+          // Check HTTP status before trying to parse JSON — 503, 502, etc.
+          // often return non-JSON error pages.
+          if (res.statusCode >= 500) {
+            reject(new Error(`HTTP ${res.statusCode} (upstream error): ${String(data).slice(0, 200).replace(/\n/g, ' ')}`));
+            return;
+          }
+          if (res.statusCode >= 400) {
+            let errMsg = `HTTP ${res.statusCode}`;
+            try {
+              const pe = JSON.parse(data);
+              if (pe.error) errMsg = pe.error.message || JSON.stringify(pe.error);
+            } catch (_) {
+              errMsg = `HTTP ${res.statusCode}: ${String(data).slice(0, 200).replace(/\n/g, ' ')}`;
+            }
+            reject(new Error(errMsg));
+            return;
+          }
           try {
             const parsed = JSON.parse(data);
             if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
@@ -5243,6 +5260,23 @@ const auxQueue = {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
+          // Check HTTP status before trying to parse JSON — 503, 502, etc.
+          // often return non-JSON error pages.
+          if (res.statusCode >= 500) {
+            reject(new Error(`HTTP ${res.statusCode} (upstream error): ${String(data).slice(0, 200).replace(/\n/g, ' ')}`));
+            return;
+          }
+          if (res.statusCode >= 400) {
+            let errMsg = `HTTP ${res.statusCode}`;
+            try {
+              const pe = JSON.parse(data);
+              if (pe.error) errMsg = pe.error.message || JSON.stringify(pe.error);
+            } catch (_) {
+              errMsg = `HTTP ${res.statusCode}: ${String(data).slice(0, 200).replace(/\n/g, ' ')}`;
+            }
+            reject(new Error(errMsg));
+            return;
+          }
           try {
             const parsed = JSON.parse(data);
             let text = '';
