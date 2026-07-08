@@ -5100,6 +5100,17 @@ const auxQueue = {
     }
   },
 
+  // Whether a task for this session is already queued or in-flight (dedup).
+  hasPendingFor(sessionName) {
+    if (!sessionName) return false;
+    const match = (t) => {
+      const m = (t && t.meta) || {};
+      return m.sessionName === sessionName || m.sid === sessionName;
+    };
+    if (this.currentTask && match(this.currentTask)) return true;
+    return this.queue.some(match);
+  },
+
   async drain() {
     if (this.processing || this.queue.length === 0) return;
     this.processing = true;
@@ -7207,30 +7218,45 @@ function isSystemInjectedMsg(msg) {
   return String(msg || '').trim().startsWith(waitInjector.SYS_PREFIX);
 }
 
-function reconcileTasksOnStartup() {
-  if (auxQueue.isUnhealthy()) {
-    console.log('[multicc/reconcile] aux unhealthy — skip startup reconcile');
+// ── Periodic scan (replaces the old startup-only reconcile) ────────────────
+// Every minute, sweep sessions that still need judging: non-terminal lifecycle
+// (running/interrupted) or a junk goal. Dedup against the queue, throttle ones
+// judged very recently (live classify already covers them), and bail if the
+// queue is backed up. On restart the first tick handles what the old startup
+// reconcile did - no special boot logic needed.
+const SCAN_INTERVAL_MS = 60 * 1000;
+const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
+const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
+
+function scanAndReclassify() {
+  if (auxQueue.isUnhealthy()) return;
+  if (auxQueue.queue.length >= SCAN_MAX_QUEUE) {
+    console.log(`[multicc/scan] queue backed up (${auxQueue.queue.length}) - skip this round`);
     return;
   }
   const now = Date.now();
-  const candidates = [];
+  let enqueued = 0;
   for (const [sid, p] of persistedSessions) {
     if (!p || p.type === 'aux' || p.type === 'gateway') continue;
     const ts = getTaskState(p);
-    // Re-judge non-terminal lifecycles, OR any session whose goal is junk (so a
-    // completed/waiting session carrying injected text gets cleaned on boot too).
     const nonTerminal = ts.lifecycle === 'running' || ts.lifecycle === 'interrupted';
     if (!nonTerminal && !isInjectedOrJunkGoal(ts.goal)) continue;
     const ref = ts.lastTurnEndedAt || ts.lastSummaryAt
       || (p.lastActivity ? new Date(p.lastActivity).getTime() : 0);
     if (ref && (now - ref) > STARTUP_RECONCILE_WINDOW_MS) continue;
-    candidates.push({ sid, ts });
+    // throttle: live classify already judges active turns every 60s
+    const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
+    const lastAt = hist.length ? hist[hist.length - 1].at : 0;
+    if (lastAt && (now - lastAt) < SCAN_RETHROTTLE_MS) continue;
+    // dedup: already queued or in-flight
+    if (auxQueue.hasPendingFor(sid)) continue;
+    // backlog guard (re-check as we add)
+    if (auxQueue.queue.length >= SCAN_MAX_QUEUE) break;
+    reconcileOneOnStartup(sid, ts, { save: true });
+    enqueued++;
   }
-  if (!candidates.length) return;
-  console.log(`[multicc/reconcile] startup: re-judging ${candidates.length} session(s) via classify`);
-  for (const { sid, ts } of candidates) reconcileOneOnStartup(sid, ts, { save: true });
+  if (enqueued) console.log(`[multicc/scan] enqueued ${enqueued} session(s) for re-judge`);
 }
-
 // Re-judge one session's task state via classify, from its persisted history.
 // opts.save — persist the result (manual API / startup); opts.manual — log tag.
 function reconcileOneOnStartup(sid, ts, opts = {}) {
@@ -10211,9 +10237,11 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
       syncSharedSkills();                           // periodic forward sync
     }, 5 * 60 * 1000).unref();
     reconcileAllTriggers();
-    // Re-judge non-terminal sessions from the last 12h via classify (delay 6s so
-    // aux warms up and WS clients reconnect before we broadcast fresh states).
-    setTimeout(() => reconcileTasksOnStartup(), 6000);
+    // Periodic scan: re-judge non-terminal/junk sessions every minute. First
+    // tick delayed 6s so aux warms up and WS clients reconnect. Replaces the
+    // old one-shot startup reconcile - restart just means the first tick runs.
+    setTimeout(() => scanAndReclassify(), 6000);
+    setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS).unref();
     artifacts.cleanup();
     setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
