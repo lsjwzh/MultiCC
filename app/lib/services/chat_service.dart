@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:http/http.dart' as http;
 
+import '../models/message.dart';
 import 'settings_service.dart';
 
 enum ChatConnectionState { disconnected, connecting, connected }
@@ -220,7 +222,12 @@ class ChatService {
       case 'chat_history':
         final messages = msg['messages'];
         if (messages is List) {
-          _emit('chat_history', messages);
+          // Carry hasMore so the provider knows whether older history can be
+          // fetched on scroll-up (paginated /history endpoint).
+          _emit('chat_history', {
+            'messages': messages,
+            'hasMore': msg['hasMore'] == true,
+          });
         }
         break;
 
@@ -396,6 +403,54 @@ class ChatService {
     if (!_controller.isClosed) {
       _controller.add(ChatEvent(type, payload));
     }
+  }
+
+  // ── HTTP helpers (paginated history) ──────────────────────────────────────
+  Map<String, String> get _headers {
+    final h = <String, String>{'Content-Type': 'application/json'};
+    if (settings.token.isNotEmpty) {
+      h['X-Access-Token'] = settings.token;
+    }
+    return h;
+  }
+
+  String _url(String path) => settings.buildHttpUrl(path);
+
+  /// Fetch one page of older history (strictly older than [beforeId]) from
+  /// GET /api/sessions/:id/history?before={id}&limit={n}. Returns the parsed
+  /// messages and whether even older history exists. Mirrors the web client's
+  /// scroll-back pagination.
+  Future<({List<ChatMessage> messages, bool hasMore})> fetchHistoryPage({
+    required String? beforeId,
+    int limit = 30,
+  }) async {
+    final qs = <String, String>{'limit': limit.toString()};
+    if (beforeId != null && beforeId.isNotEmpty) qs['before'] = beforeId;
+    final query = qs.entries
+        .map((e) => '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+        .join('&');
+    final res = await http
+        .get(Uri.parse(_url('/api/sessions/${Uri.encodeComponent(sessionName)}/history?$query')),
+            headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) {
+      throw Exception('history fetch failed: ${res.statusCode}');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final list = data['messages'];
+    final parsed = (list is List)
+        ? list
+            .map((m) {
+              try {
+                return ChatMessage.fromHistory(m as Map<String, dynamic>);
+              } catch (_) {
+                return null;
+              }
+            })
+            .whereType<ChatMessage>()
+            .toList()
+        : <ChatMessage>[];
+    return (messages: parsed, hasMore: data['hasMore'] == true);
   }
 
   void dispose() {
