@@ -999,7 +999,7 @@ function handleStreamEvent(evt) {
       if (evt.delta?.type === 'text_delta' && evt.delta.text) {
         currentTextContent += evt.delta.text;
         renderCurrentText();
-        scrollToBottom();
+        maybeScrollToBottom();
       } else if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
         const tc = currentToolCards.get(evt.index);
         if (tc) {
@@ -1047,7 +1047,7 @@ function handleToolResult(msg) {
       }
     }
   }
-  scrollToBottom();
+  maybeScrollToBottom();
 
   // Speak the assistant's response if TTS is enabled
   if (textForTts && _ttsEnabled && !_voiceOutputInstance) {
@@ -1082,7 +1082,7 @@ function finalizeAssistantMsg(message) {
       }
       textForTts += block.text;
       renderCurrentText();
-      scrollToBottom();
+      maybeScrollToBottom();
     } else if (currentCli === 'codex' && block.type === 'tool_use' && block.id) {
       if (!currentMsgEl) currentMsgEl = createAssistantBubble();
       let tc = findCurrentToolCardById(block.id);
@@ -1100,7 +1100,7 @@ function finalizeAssistantMsg(message) {
         tc.inputJson = JSON.stringify(block.input);
       }
       updateToolInput(tc);
-      scrollToBottom();
+      maybeScrollToBottom();
     }
   }
 }
@@ -1134,7 +1134,7 @@ function createAssistantBubble() {
   div.className = 'msg assistant';
   div.innerHTML = '<div class="msg-content streaming-dot"></div>';
   messagesEl.appendChild(div);
-  scrollToBottom();
+  maybeScrollToBottom();
   return div;
 }
 
@@ -1549,7 +1549,7 @@ function addUserMsg(text) {
   // Per-message auto-commit checkbox lives under the user's own message.
   attachAutoCommitCheck(div, _sessionAutoCommit);
   _lastUserBubble = div;
-  scrollToBottom();
+  forceScrollToBottom();
   return div;
 }
 
@@ -1562,7 +1562,7 @@ function addAgentNotes(notes) {
   div.textContent = '已注入跨 agent 留言到本轮上下文：\n' + lines;
   div.style.whiteSpace = 'pre-wrap';
   messagesEl.appendChild(div);
-  scrollToBottom();
+  maybeScrollToBottom();
 }
 
 function addSystemMsg(text) {
@@ -1570,7 +1570,7 @@ function addSystemMsg(text) {
   div.className = 'msg system-msg';
   div.textContent = text;
   messagesEl.appendChild(div);
-  scrollToBottom();
+  maybeScrollToBottom();
 }
 
 function showDisconnectBanner(secs) {
@@ -1581,7 +1581,7 @@ function showDisconnectBanner(secs) {
     messagesEl.appendChild(_disconnectBannerEl);
   }
   _disconnectBannerEl.textContent = `⚠️ 连接断开，${secs}s 后自动重连（点此立即重试）`;
-  scrollToBottom();
+  maybeScrollToBottom();
 }
 
 /* ── Replay saved history ── */
@@ -1942,9 +1942,91 @@ function updateContextBar(usage, modelUsage) {
   if (parts.length) costBar.innerHTML = parts.join('');
 }
 
+/* ── Scroll state machine ──
+ * The chat auto-follows the latest message ONLY when the user is already at
+ * the bottom. The moment the user scrolls up to read history, auto-follow
+ * stops (userPinnedAway=true) so the view stays put while new tokens stream
+ * in. A floating "↓ N new" pill then appears; clicking it (or scrolling back
+ * to the bottom) resumes auto-follow. This stops the view from being yanked
+ * to the bottom on every streaming token while the user is reading history. */
+const SCROLL_BOTTOM_THRESHOLD = 48;  // px from bottom counts as "at bottom"
+let _userPinnedAway = false;         // user scrolled up, don't auto-follow
+let _unreadCount = 0;                // new messages accumulated while pinned away
+let _newMsgPillEl = null;
+
+function isAtBottom() {
+  return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < SCROLL_BOTTOM_THRESHOLD;
+}
+
 function scrollToBottom() {
   requestAnimationFrame(() => { messagesEl.scrollTop = messagesEl.scrollHeight; });
 }
+
+// Always scroll to bottom AND reset the pinned-away state (used after the
+// user's own actions: sending a message, first load / reconnect).
+function forceScrollToBottom() {
+  _userPinnedAway = false;
+  _unreadCount = 0;
+  hideNewMsgPill();
+  scrollToBottom();
+}
+
+// Auto-follow only if already at the bottom. Otherwise stay put and bump the
+// unread counter so the pill reflects new messages waiting. Used by every
+// passive content event (streaming tokens, tool results, system msgs, ...).
+function maybeScrollToBottom() {
+  if (!_userPinnedAway && isAtBottom()) {
+    scrollToBottom();
+  } else {
+    // Don't bump unread on every streaming frame - only count it once per
+    // "pinned-away episode" via _streamUnreadArmed, re-armed when the turn
+    // ends or the pill is dismissed. See bumpUnread().
+    bumpUnread();
+  }
+}
+
+let _streamUnreadArmed = true;  // armed at turn start; one bump per turn while away
+function bumpUnread() {
+  if (!_userPinnedAway) return;
+  if (!_streamUnreadArmed) return;
+  _streamUnreadArmed = false;
+  _unreadCount++;
+  showNewMsgPill();
+}
+// Re-arm so the next assistant turn (or next discrete new message) can bump again.
+function rearmUnread() { _streamUnreadArmed = true; }
+
+function showNewMsgPill() {
+  if (!_newMsgPillEl) {
+    _newMsgPillEl = document.createElement('button');
+    _newMsgPillEl.id = 'new-msg-pill';
+    _newMsgPillEl.className = 'new-msg-pill';
+    _newMsgPillEl.innerHTML = '<span class="new-msg-pill-text">↓ 新消息</span>';
+    _newMsgPillEl.onclick = () => { forceScrollToBottom(); };
+    // Insert into the #messages container (pill is position:absolute within it)
+    messagesEl.appendChild(_newMsgPillEl);
+  }
+  _newMsgPillEl.querySelector('.new-msg-pill-text').textContent =
+    _unreadCount > 0 ? `↓ ${_unreadCount} 条新消息` : '↓ 新消息';
+  _newMsgPillEl.classList.add('show');
+}
+
+function hideNewMsgPill() {
+  if (_newMsgPillEl) _newMsgPillEl.classList.remove('show');
+}
+
+// Track the user's scroll position to drive userPinnedAway.
+messagesEl.addEventListener('scroll', () => {
+  if (isAtBottom()) {
+    // User scrolled back to the bottom -> resume auto-follow, clear unread.
+    _userPinnedAway = false;
+    _unreadCount = 0;
+    hideNewMsgPill();
+  } else {
+    _userPinnedAway = true;
+  }
+}, { passive: true });
+
 
 function escHtml(s) {
   const d = document.createElement('div');

@@ -2979,10 +2979,36 @@ app.delete('/api/sessions/:id/share/:token', (req, res) => {
 });
 
 // Chat history (admin) — used by the "share selected messages" picker.
+// Paginate chat_history for scroll-back. Returns the newest `limit` messages
+// (when `before` is omitted) or the `limit` messages older than the entry with
+// id `before`. `hasMore` tells the client there's even older history to fetch.
+// Used by both the HTTP /history route and the initial WS chat_history push.
+function paginateChatHistory(history, { before, limit } = {}) {
+  const lim = Math.max(1, Math.min(100, parseInt(limit, 10) || CHAT_HISTORY_PAGE));
+  let end = history.length;
+  if (before) {
+    const idx = history.findIndex(m => m && m.id === before);
+    if (idx === -1) {
+      // `before` not found (deleted/unknown): return empty page, hasMore=false
+      // so the client stops paginating instead of looping.
+      return { messages: [], hasMore: false };
+    }
+    end = idx;
+  }
+  const start = Math.max(0, end - lim);
+  const messages = history.slice(start, end);
+  return { messages, hasMore: start > 0 };
+}
+
 app.get('/api/sessions/:id/history', (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  res.json({ messages: loadChatHistory(req.params.id) });
+  const history = loadChatHistory(req.params.id);
+  const page = paginateChatHistory(history, {
+    before: req.query.before && String(req.query.before),
+    limit: req.query.limit && String(req.query.limit),
+  });
+  res.json(page);
 });
 
 // Create a read-only snapshot share of selected messages (by index into history).
@@ -6247,7 +6273,16 @@ app.use(express.static(path.join(__dirname, 'public'), {
 // ── Chat mode: message history ──
 const CHAT_HISTORY_DIR = path.join(__dirname, 'chat_history');
 try { fs.mkdirSync(CHAT_HISTORY_DIR, { recursive: true }); } catch (_) {}
-const MAX_CHAT_MESSAGES = 50;  // keep last N messages per session
+const MAX_CHAT_MESSAGES = 50;  // legacy rolling window (kept for reference)
+// Soft cap for full-history retention. chat_history is display-only (never fed
+// to the CLI - the CLI uses its own transcript via --resume), so we keep the
+// full conversation for pagination/scroll-back and only distill-into-memory at
+// this large backstop to bound disk/memory in pathological sessions.
+const CHAT_HISTORY_SOFT_CAP = 10000;
+// How many messages the initial WS `chat_history` push sends (the newest page).
+// Older messages are fetched on demand via GET /history?before=<id>&limit=N as
+// the user scrolls up.
+const CHAT_HISTORY_PAGE = 30;
 
 // ── Per-session token usage accumulator ──
 // chat_history has a rolling window (50 messages), so older usage data gets
@@ -6504,7 +6539,9 @@ function appendChatMessage(sessionName, msg) {
       msg.durationMs = Math.max(0, at.getTime() - cs.turnStartedAt);
     }
   }
-  const limit = sessionName === AUX_SESSION_ID ? AUX_HISTORY_MAX : MAX_CHAT_MESSAGES;
+  // Full-history retention: only trim at the large soft cap (display-only data,
+  // not CLI context). Aux/gateway keep their own smaller rolling window.
+  const limit = sessionName === AUX_SESSION_ID ? AUX_HISTORY_MAX : CHAT_HISTORY_SOFT_CAP;
   const isAux = sessionName === AUX_SESSION_ID;
   while (history.length > limit) {
     const dropped = history.shift();
@@ -9335,11 +9372,15 @@ function handleChatWs(ws, req, urlObj) {
     providerTokenWindows: provWindows,
   }));
 
-  // Replay saved history + in-progress assistant response (if any)
+  // Replay saved history + in-progress assistant response (if any).
+  // Send only the newest page over WS on connect; older messages are fetched
+  // on demand via GET /history?before=<id> as the user scrolls up.
   const history = loadChatHistory(sessionName);
-  const replayMessages = [...history];
+  const hasInProgress = !!(cs.currentAssistantText || cs.currentToolCalls.length);
+  const page = paginateChatHistory(history, { limit: CHAT_HISTORY_PAGE });
+  const replayMessages = [...page.messages];
   // Append unsaved in-progress response so reconnecting clients see current state
-  if (cs.currentAssistantText || cs.currentToolCalls.length) {
+  if (hasInProgress) {
     replayMessages.push({
       role: 'assistant',
       content: cs.currentAssistantText,
@@ -9354,7 +9395,7 @@ function handleChatWs(ws, req, urlObj) {
   const tokenUsage = getTokenUsage();
   const sessionTokenUsage = tokenUsage[sessionName] || null;
   if (replayMessages.length > 0 || sessionTokenUsage) {
-    ws.send(JSON.stringify({ type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage }));
+    ws.send(JSON.stringify({ type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore }));
     // Seed the aux classify bar with the current task snapshot on connect, so
     // the goal/phase shows immediately (not only after the next classify).
     try {
