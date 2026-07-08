@@ -6717,16 +6717,15 @@ function parseClassifyResult(text) {
 // Context object carries everything the handlers need (varies by caller):
 //   { sessionName, sessionId, cs?, mon?, isTerminal?, cwd?, opts? }
 
-const API_RETRY_MAX = 3;
-// Retry fires immediately — classify itself already runs ~60s apart, so a
-// delay here would just stack on top of that.  The first retry is a plain
-// "continue" without a retry-count label; the 2nd+ get "[第N次重试]".
+// Retry fires immediately - classify itself already runs ~60s apart, so a
+// delay here would just stack on top of that. Retries are uncapped: as long
+// as the aux service is up (so classify can judge E), we keep nudging. When
+// aux goes down, classify stops running and the retry loop stops naturally.
 const API_RETRY_DELAY_MS = 0;
-const BG_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 min — must be no new output for this long
+const BG_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 min - must be no new output for this long
 
-// Per-session state for E/B handlers (not persisted across restarts).
-const _apiRetryState = new Map();   // sessionName → { count, lastInjectMsgId }
-const _bgIdleTimers = new Map();    // sessionName → { timer, lastActivity }
+// Per-session state for B handler (not persisted across restarts).
+const _bgIdleTimers = new Map();    // sessionName -> { timer, lastActivity }
 
 function clearBgIdleTimer(sessionName) {
   const s = _bgIdleTimers.get(sessionName);
@@ -6736,6 +6735,44 @@ function clearBgIdleTimer(sessionName) {
 function bumpBgActivity(sessionName) {
   const s = _bgIdleTimers.get(sessionName);
   if (s) s.lastActivity = Date.now();
+}
+
+// Detect an assistant message that is pure API/transport error noise (empty,
+// or short and made up of error keywords). Used to prune retry churn so the
+// chat history isn't polluted with [nudge, error-reply, nudge, error-reply, …]
+// pairs when the upstream API is flapping.
+function isPureErrorMessage(text) {
+  const t = String(text || '').trim();
+  if (!t) return true;                       // empty reply = the turn produced nothing usable
+  if (t.length > 200) return false;          // long reply has real content even if it ends in an error
+  return /api\s*error|503|connection\s*(closed|reset|refused)|overloaded|internal\s*server\s*error|the system is busy|timeout|timed?\s*out|rate\s*limit|insufficient\s*balance|authorization\s*failed|exit\s*code|nonzero/i.test(t);
+}
+
+// Remove trailing [system-injected nudge, error assistant reply] pairs from the
+// chat history. Stops at the first pair that isn't of this shape, so the real
+// user message and the first error reply (whose trigger is the real user msg,
+// NOT a nudge) are preserved. Called before injecting the next retry nudge.
+function pruneErrorTurnPairs(sessionName) {
+  const history = loadChatHistory(sessionName);
+  if (!Array.isArray(history) || history.length < 2) return 0;
+  let removed = 0;
+  while (history.length >= 2) {
+    const last = history[history.length - 1];
+    const prev = history[history.length - 2];
+    if (last && last.role === 'assistant' && isPureErrorMessage(last.content)
+        && prev && prev.role === 'user' && isSystemInjectedMsg(prev.content)) {
+      history.pop();
+      history.pop();
+      removed++;
+    } else {
+      break;
+    }
+  }
+  if (removed > 0) {
+    saveChatHistory(sessionName);
+    console.log(`[multicc/classify] ${sessionName} pruned ${removed} error+nudge pair(s)`);
+  }
+  return removed;
 }
 
 function dispatchStateAction(result, ctx) {
@@ -6779,7 +6816,6 @@ function dispatchStateAction(result, ctx) {
   if (state === 'completed') {
     // C — task finished.
     clearBgIdleTimer(sessionName);
-    _apiRetryState.delete(sessionName);
     const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
     if (isTerminal) {
       triggerPush(sessionId, 'completed', msg);
@@ -6798,26 +6834,18 @@ function dispatchStateAction(result, ctx) {
 
   // ── W / B / E all → waiting (user-facing) ───────────────────────────
 
-  // E: API error → inject retry nudge (replace-style, capped)
+  // E: API error -> inject retry nudge. Uncapped - keeps retrying as long
+  // as aux (classify) is healthy. Before injecting, prune trailing
+  // [nudge, error-reply] pairs so the history doesn't fill with retry churn.
   if (error) {
-    const st = _apiRetryState.get(sessionName) || { count: 0 };
-    if (st.count < API_RETRY_MAX) {
-      st.count++;
-      _apiRetryState.set(sessionName, st);
-      clearBgIdleTimer(sessionName);
-      // First retry is a plain continue; 2nd+ carry the retry-count label.
-      const nudge = st.count <= 1
-        ? '刚才因 API 异常中断，回答可能不完整，请从中断处继续。'
-        : `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
-      console.log(`[multicc/classify] ${sessionName} API error → retry #${st.count}/${API_RETRY_MAX}`);
-      if (API_RETRY_DELAY_MS > 0) {
-        setTimeout(() => waitInjector.safeInject(sessionName, nudge), API_RETRY_DELAY_MS);
-      } else {
-        waitInjector.safeInject(sessionName, nudge);
-      }
+    clearBgIdleTimer(sessionName);
+    pruneErrorTurnPairs(sessionName);
+    const nudge = '刚才因 API 异常中断，回答可能不完整，请从中断处继续。';
+    console.log(`[multicc/classify] ${sessionName} API error -> retry (uncapped)`);
+    if (API_RETRY_DELAY_MS > 0) {
+      setTimeout(() => waitInjector.safeInject(sessionName, nudge), API_RETRY_DELAY_MS);
     } else {
-      console.log(`[multicc/classify] ${sessionName} API retry cap (${API_RETRY_MAX}) reached — giving up`);
-      _apiRetryState.delete(sessionName);
+      waitInjector.safeInject(sessionName, nudge);
     }
   }
 
@@ -6853,7 +6881,6 @@ function dispatchStateAction(result, ctx) {
   // Reset auto-continue guard on W (user is in charge now). B/E keep their own flow.
   if (state === 'waiting' && !background && !error) {
     waitInjector.resetAuto(sessionName);
-    _apiRetryState.delete(sessionName);
   }
 }
 
@@ -8221,7 +8248,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
-  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); clearBgIdleTimer(sessionName); _apiRetryState.delete(sessionName); }
+  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); clearBgIdleTimer(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
   let cs = chatSessions.get(sessionName);
   if (!cs) {
