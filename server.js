@@ -5294,6 +5294,7 @@ const auxQueue = {
             } else if (parsed.error) {
               throw new Error(parsed.error.message || parsed.error);
             }
+            console.log('[multicc/aux] directHTTP resp: stop=' + parsed.stop_reason + ' blocks=' + (Array.isArray(parsed.content) ? parsed.content.map(b => b.type).join(',') : '?') + ' textlen=' + text.length + ' out=' + ((parsed.usage || {}).output_tokens));
             resolve(text);
           } catch (e) {
             reject(e);
