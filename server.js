@@ -5093,10 +5093,12 @@ const auxQueue = {
       appendChatMessage(AUX_SESSION_ID, {
         role: 'user', content: task.prompt, ts: task.ts,
         taskType: task.type, taskId: task.id, meta: task.meta,
+        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
       });
       appendChatMessage(AUX_SESSION_ID, {
         role: 'assistant', content: resultText, ts: Date.now(),
         taskId: task.id, durationMs, cancelled: task.cancelled,
+        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
       });
 
       if (task.cancelled) {
@@ -5114,10 +5116,12 @@ const auxQueue = {
       appendChatMessage(AUX_SESSION_ID, {
         role: 'user', content: task.prompt, ts: task.ts,
         taskType: task.type, taskId: task.id, meta: task.meta,
+        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
       });
       appendChatMessage(AUX_SESSION_ID, {
         role: 'assistant', content: `[ERROR] ${errMsg}`, ts: Date.now(),
         taskId: task.id, durationMs, error: true,
+        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
       });
       task.reject(err);
       this.broadcast({ type: 'aux_event', status: 'error', task: { id: task.id, type: task.type }, error: errMsg, durationMs });
@@ -5134,9 +5138,9 @@ const auxQueue = {
   _canDirectHttp: null,
   canDirectHttp() {
     if (this._canDirectHttp !== null) return this._canDirectHttp;
-    if (!auxConfig.providerId) { this._canDirectHttp = false; return false; }
+    if (!auxConfig.providerId) { console.log('[multicc/aux] canDirectHttp=false (no providerId)'); this._canDirectHttp = false; return false; }
     const p = providers.getProvider('claude', auxConfig.providerId);
-    if (!p) { this._canDirectHttp = false; return false; }
+    if (!p) { console.log(`[multicc/aux] canDirectHttp=false (provider ${auxConfig.providerId} not found)`); this._canDirectHttp = false; return false; }
     let cfg = {};
     try { cfg = (p.settingsConfig && typeof p.settingsConfig === 'object') ? p.settingsConfig : JSON.parse(p.settingsConfig || '{}'); } catch (_) {}
     const hasBase = !!(cfg.env && cfg.env.ANTHROPIC_BASE_URL);
@@ -5145,7 +5149,7 @@ const auxQueue = {
     // (ccfw proxy handles Keychain OAuth token replay).
     const isOfficial = auxConfig.providerId === 'claude-official';
     this._canDirectHttp = (hasBase && hasKey) || (isOfficial && CLAUDE_OFFICIAL_VIA_PROXY);
-    if (this._canDirectHttp) console.log('[multicc/aux] direct HTTP mode (no CLI spawn)' + (isOfficial ? ' via OAuth' : ''));
+    console.log(`[multicc/aux] canDirectHttp=${this._canDirectHttp} provider=${auxConfig.providerId} hasBase=${hasBase} hasKey=${hasKey} envKeys=${cfg.env ? Object.keys(cfg.env).join(',') : 'none'}`);
     return this._canDirectHttp;
   },
 
@@ -5154,13 +5158,13 @@ const auxQueue = {
       // Codex direct-HTTP: API-key providers POST straight to /chat/completions,
       // no CLI spawn (symmetric with the claude path). OAuth codex → CLI.
       const cx = this.canDirectHttpCodex();
-      if (cx.canDirect) return this.executeDirectHttpCodex(task, cx);
-      return this.executeCodex(task);
+      if (cx.canDirect) { task._transport = 'directHttp'; return this.executeDirectHttpCodex(task, cx); }
+      task._transport = 'cli'; return this.executeCodex(task);
     }
     // If aux has a direct API provider (non-OAuth, has baseUrl), skip CLI spawn
     // and use HTTP directly via the proxy — faster, no OAuth dependency.
-    if (this.canDirectHttp()) return this.executeDirectHttp(task);
-    return this.executeClaude(task);
+    if (this.canDirectHttp()) { task._transport = 'directHttp'; return this.executeDirectHttp(task); }
+    task._transport = 'cli'; return this.executeClaude(task);
   },
 
   // Codex direct-HTTP capability (cached). Resolves the provider's real
@@ -5184,6 +5188,7 @@ const auxQueue = {
       if (!model) { reject(new Error('codex direct HTTP: no model resolved')); return; }
       const body = JSON.stringify({
         model,
+        max_tokens: 128000,
         messages: [{ role: 'user', content: task.prompt }],
       });
       let urlObj;
@@ -5252,6 +5257,7 @@ const auxQueue = {
       messages.push({ role: 'user', content: task.prompt });
       const body = JSON.stringify({
         model,
+        max_tokens: 128000,
         messages,
       });
       const req = require('http').request({
