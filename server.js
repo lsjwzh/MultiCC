@@ -6775,6 +6775,16 @@ function pruneErrorTurnPairs(sessionName) {
   return removed;
 }
 
+// Attempt an auto-continue nudge. Respects the user's autoContinue toggle and
+// waitInjector's own per-session count cap (MAX_AUTO_CONTINUE). Returns true
+// if a nudge was injected, false if suppressed (off / capped / wait pending).
+function tryAutoContinue(sessionName, cs, cwd, nudge) {
+  const p = persistedSessions.get(sessionName);
+  if (!p || !p.autoContinue) return false;
+  if (waitInjector.hasWait(sessionName)) return false;
+  return waitInjector.autoContinue(sessionName, { cwd: cwd || (cs && cs.cwd), nudge });
+}
+
 function dispatchStateAction(result, ctx) {
   const { state, goal, phase, background, error } = result;
   const { sessionName, sessionId, cs, isTerminal } = ctx;
@@ -6809,8 +6819,14 @@ function dispatchStateAction(result, ctx) {
       const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[phase] || '';
       const label = finalGoal ? `处理中：${finalGoal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
       emitRunningNotify(sessionName, label);
+      return;
     }
-    return;
+    // Turn ended but AI didn't finish (premature stop) -> drive it forward.
+    if (tryAutoContinue(sessionName, cs, ctx.cwd, '继续：上一轮似乎还没处理完，请接着完成。')) {
+      console.log(`[multicc/classify] ${sessionName} P (premature stop) -> auto-continue`);
+      return;
+    }
+    // autoContinue off / capped -> fall through to the waiting broadcast below.
   }
 
   if (state === 'completed') {
@@ -6849,8 +6865,13 @@ function dispatchStateAction(result, ctx) {
     }
   }
 
-  // B: background wait → start idle timer (3 min silence → inject "继续")
+  // B: background wait -> auto-continue if enabled; idle timer as fallback.
   if (background) {
+    if (tryAutoContinue(sessionName, cs, ctx.cwd)) {
+      console.log(`[multicc/classify] ${sessionName} B (background) -> auto-continue`);
+      return;
+    }
+    // autoContinue off / capped -> idle timer (3 min silence -> inject "继续")
     clearBgIdleTimer(sessionName);
     const timer = setTimeout(() => {
       if (waitInjector.hasWait(sessionName)) return; // explicit wait covers it
@@ -7702,13 +7723,21 @@ function runClassifyNow(cs, sessionName) {
 
   const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
   const priorGoal = cs.currentTask?.goal || '';
+  // Supersede any in-flight classify: a newer call (e.g. classifyTurnEnd while
+  // the 60s loop's classify is still running) overwrites this id, so the stale
+  // result is discarded instead of finalizing a wrong state over the fresh one.
+  const taskId = crypto.randomUUID();
+  cs._classifyTaskId = taskId;
 
   auxQueue.enqueue({
+    id: taskId,
     type: 'intent_classify',
     systemPrompt: buildClassifySystemPrompt(priorGoal),
     prompt: buildClassifyConversation(sessionName, reply),
     meta: { sessionName, sessionId },
   }).then(result => {
+    if (cs._classifyTaskId !== taskId) return; // superseded by a newer classify
+    cs._classifyTaskId = null;
     if (result.cancelled) return;
     const res = parseClassifyResult(result.text);
 
@@ -7732,6 +7761,7 @@ function runClassifyNow(cs, sessionName) {
     dispatchStateAction(res, { sessionName, sessionId, cs, isTerminal: false, cwd: cs.cwd });
     console.log(`[multicc/aux] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.error ? ' (API error)' : ''}`);
   }).catch((e) => {
+    if (cs._classifyTaskId === taskId) cs._classifyTaskId = null;
     // A cancelled task (new turn started / user typing) rejects with {cancelled:true}
     // and no .message — that's normal churn, not a failure. Don't log it as FAILED.
     if (e && e.cancelled) return;
