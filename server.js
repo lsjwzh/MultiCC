@@ -6713,7 +6713,10 @@ function parseClassifyResult(text) {
 //   { sessionName, sessionId, cs?, mon?, isTerminal?, cwd?, opts? }
 
 const API_RETRY_MAX = 3;
-const API_RETRY_DELAY_MS = 4000;
+// Retry fires immediately — classify itself already runs ~60s apart, so a
+// delay here would just stack on top of that.  The first retry is a plain
+// "continue" without a retry-count label; the 2nd+ get "[第N次重试]".
+const API_RETRY_DELAY_MS = 0;
 const BG_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 min — must be no new output for this long
 
 // Per-session state for E/B handlers (not persisted across restarts).
@@ -6782,12 +6785,17 @@ function dispatchStateAction(result, ctx) {
     if (st.count < API_RETRY_MAX) {
       st.count++;
       _apiRetryState.set(sessionName, st);
-      // Clear any pending bg idle timer — retry is about to fire a new turn.
       clearBgIdleTimer(sessionName);
-      const nudge = `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
+      // First retry is a plain continue; 2nd+ carry the retry-count label.
+      const nudge = st.count <= 1
+        ? '刚才因 API 异常中断，回答可能不完整，请从中断处继续。'
+        : `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
       console.log(`[multicc/classify] ${sessionName} API error → retry #${st.count}/${API_RETRY_MAX}`);
-      // Use safeInject so it queues behind any in-flight turn.
-      setTimeout(() => waitInjector.safeInject(sessionName, nudge), API_RETRY_DELAY_MS);
+      if (API_RETRY_DELAY_MS > 0) {
+        setTimeout(() => waitInjector.safeInject(sessionName, nudge), API_RETRY_DELAY_MS);
+      } else {
+        waitInjector.safeInject(sessionName, nudge);
+      }
     } else {
       console.log(`[multicc/classify] ${sessionName} API retry cap (${API_RETRY_MAX}) reached — giving up`);
       _apiRetryState.delete(sessionName);
@@ -7053,8 +7061,55 @@ function reclassifySessionsWithMissingGoals() {
           setSessionSummary(sid, res.goal);
           console.log(`[multicc/aux] recovery reclassify ${sid}: goal="${res.goal}"`);
         }
+        // If classify detected an API error during recovery, trigger retry.
+        if (res.error) {
+          const st = _apiRetryState.get(sid) || { count: 0 };
+          if (st.count < API_RETRY_MAX) {
+            st.count++;
+            _apiRetryState.set(sid, st);
+            const nudge = st.count <= 1
+              ? '刚才因 API 异常中断，回答可能不完整，请从中断处继续。'
+              : `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
+            console.log(`[multicc/aux] recovery API retry ${sid} #${st.count}/${API_RETRY_MAX}`);
+            waitInjector.safeInject(sid, nudge);
+          }
+        }
       })
       .catch(e => console.warn(`[multicc/aux] recovery reclassify ${sid} failed: ${e.message}`));
+  }
+
+  // Also: sessions that had pending API retries when aux went down — their
+  // last assistant reply may still be the truncated one. Reclassify them so
+  // the retry nudge fires now that aux is back.
+  for (const [sid, st] of _apiRetryState) {
+    if (st.count >= API_RETRY_MAX) continue;
+    const p = persistedSessions.get(sid);
+    if (!p || p.type === 'aux' || p.kind !== 'chat') continue;
+    const hist = loadChatHistory(sid);
+    if (!hist || !hist.length) continue;
+    let lastText = '';
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const m = hist[i];
+      if (m.role !== 'assistant') continue;
+      if (typeof m.content === 'string') { lastText = m.content; break; }
+      if (Array.isArray(m.content)) { lastText = m.content.filter(b => b.type === 'text').map(b => b.text).join(' '); break; }
+    }
+    if (!lastText || lastText.length < 20) continue;
+    const prompt = buildClassifyPrompt({ priorGoal: '', sessionName: sid, reply: lastText });
+    auxQueue.enqueue({ type: 'recovery_reclassify', prompt, meta: { sessionName: sid } })
+      .then(result => {
+        if (result.cancelled) return;
+        const res = parseClassifyResult(result.text);
+        if (res.error) {
+          st.count++;
+          const nudge = st.count <= 1
+            ? '刚才因 API 异常中断，回答可能不完整，请从中断处继续。'
+            : `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
+          console.log(`[multicc/aux] recovery API retry (pending) ${sid} #${st.count}/${API_RETRY_MAX}`);
+          waitInjector.safeInject(sid, nudge);
+        }
+      })
+      .catch(e => console.warn(`[multicc/aux] recovery pending retry ${sid} failed: ${e.message}`));
   }
 }
 
