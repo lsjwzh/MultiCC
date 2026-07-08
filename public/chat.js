@@ -591,6 +591,14 @@ updateCwdDisplay(_cwd);
 let _reconnectAttempt = 0;
 let _reconnectTimer = null;
 let _historyLoaded = false;  // prevent duplicate history render across reconnects
+// Lazy history pagination state. The initial WS chat_history push sends only
+// the newest page; older messages are fetched via GET /history?before=<id> as
+// the user scrolls to the top.
+let _historyHasMore = false;     // server says there's older history to fetch
+let _historyLoading = false;     // a pagination request is in flight
+let _historyExhausted = false;   // fetched everything; stop hitting the endpoint
+let _oldestLoadedMsgId = null;   // id of the oldest message currently rendered (pagination cursor)
+let _loadingOlderSentinel = null; // DOM node inserted at top while loading, also scroll anchor
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
 let _isDisconnected = false;
@@ -891,7 +899,7 @@ function handleEvent(msg) {
         _historyLoaded = true;
         // Prefer server's authoritative token_usage.json accumulator over
         // reconstructing from the rolling chat_history window.
-        replayHistory(msg.messages, msg.tokenUsage || null);
+        replayHistory(msg.messages, msg.tokenUsage || null, !!msg.hasMore);
       }
       break;
 
@@ -1126,6 +1134,12 @@ function finishStreaming() {
   currentMsgEl = null;
   currentTextContent = '';
   currentToolCards = new Map();
+  // A turn just ended. Re-arm the unread counter so the NEXT turn (or next
+  // discrete new message) can bump the "N new" pill again while the user is
+  // pinned away reading history. Also nudge the view once more so the final
+  // rendered bubble is visible when the user is following along.
+  rearmUnread();
+  maybeScrollToBottom();
 }
 
 /* ── Rendering ── */
@@ -1584,8 +1598,70 @@ function showDisconnectBanner(secs) {
   maybeScrollToBottom();
 }
 
+/* ── Build a single assistant message DOM node from a history entry ── */
+/* Shared by replayHistory (initial page) and lazy scroll-back (older pages)
+ * so both render tool cards / usage / timing identically. */
+function renderHistoryAssistantNode(m) {
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  const contentEl = document.createElement('div');
+  contentEl.className = 'msg-content';
+
+  if (m.content?.trim()) {
+    contentEl.innerHTML = renderMarkdown(m.content);
+    fixupLocalImages(contentEl);
+    highlightCodeBlocks(contentEl);
+  }
+
+  if (m.tools?.length) {
+    const stack = getToolStack(contentEl);
+    for (const tc of m.tools) {
+      const card = document.createElement('div');
+      card.className = 'tool-card';
+      const icons = { Bash:'>',Read:'&#128196;',Edit:'&#9998;',Write:'&#128190;',Glob:'&#128269;',Grep:'&#128270;',Agent:'&#129302;' };
+      const desc = tc.input?.description || tc.input?.command || tc.input?.pattern || tc.input?.file_path || '';
+      const status = tc.is_error ? 'failed' : (tc.result !== undefined ? 'done' : '?');
+      card.innerHTML =
+        `<div class="tool-header">` +
+          `<span class="tool-icon">${icons[tc.name]||'&#9881;'}</span>` +
+          `<span class="tool-name">${escHtml(tc.name)}</span>` +
+          `<span class="tool-desc">${escHtml(truncate(desc, 60) || status)}</span>` +
+          `<span class="tool-arrow">&#9654;</span>` +
+        `</div>` +
+        `<div class="tool-body">` +
+          `<pre class="tool-input">${escHtml(JSON.stringify(tc.input, null, 2))}</pre>` +
+          (tc.result !== undefined ?
+            `<div class="tool-result-label${tc.is_error ? ' error' : ''}">${tc.is_error ? 'Error:' : 'Result:'}</div>` +
+            `<pre>${escHtml(tc.result)}</pre>` : '') +
+        `</div>`;
+      card.querySelector('.tool-header').onclick = () => card.classList.toggle('open');
+      stack.appendChild(card);
+    }
+  }
+
+  if (m.cancelled) {
+    const tag = document.createElement('div');
+    tag.className = 'msg system-msg';
+    tag.style.cssText = 'font-size:11px;color:#f85149;padding:2px 0;';
+    tag.textContent = '(cancelled)';
+    contentEl.appendChild(tag);
+  }
+
+  if (m.usage) {
+    const usageLine = buildUsageLine(m.usage);
+    if (usageLine) contentEl.appendChild(usageLine);
+  }
+
+  const timing = buildTimingLine(m);
+  if (timing) contentEl.appendChild(timing);
+
+  div.appendChild(contentEl);
+  if (m.id) { div.dataset.msgId = m.id; attachDeleteButton(div); attachForkButton(div); }
+  return div;
+}
+
 /* ── Replay saved history ── */
-function replayHistory(messages, serverTokenUsage) {
+function replayHistory(messages, serverTokenUsage, hasMore) {
   if (!messages || !messages.length) {
     // Even without messages, serverTokenUsage may carry accumulated totals
     // from token_usage.json (e.g. all chat_history entries were trimmed).
@@ -1602,70 +1678,8 @@ function replayHistory(messages, serverTokenUsage) {
       const div = addUserMsg(m.content);
       if (m.id) { div.dataset.msgId = m.id; attachDeleteButton(div); attachForkButton(div); }
     } else if (m.role === 'assistant') {
-      const div = document.createElement('div');
-      div.className = 'msg assistant';
-      const contentEl = document.createElement('div');
-      contentEl.className = 'msg-content';
-
-      // Render text as markdown
-      if (m.content?.trim()) {
-        contentEl.innerHTML = renderMarkdown(m.content);
-        fixupLocalImages(contentEl);
-        highlightCodeBlocks(contentEl);
-      }
-
-      // Render tool calls as collapsed cards inside a bounded scroll stack
-      if (m.tools?.length) {
-        const stack = getToolStack(contentEl);
-        for (const tc of m.tools) {
-          const card = document.createElement('div');
-          card.className = 'tool-card';
-          const icons = { Bash:'>',Read:'&#128196;',Edit:'&#9998;',Write:'&#128190;',Glob:'&#128269;',Grep:'&#128270;',Agent:'&#129302;' };
-          const desc = tc.input?.description || tc.input?.command || tc.input?.pattern || tc.input?.file_path || '';
-          const status = tc.is_error ? 'failed' : (tc.result !== undefined ? 'done' : '?');
-          card.innerHTML =
-            `<div class="tool-header">` +
-              `<span class="tool-icon">${icons[tc.name]||'&#9881;'}</span>` +
-              `<span class="tool-name">${escHtml(tc.name)}</span>` +
-              `<span class="tool-desc">${escHtml(truncate(desc, 60) || status)}</span>` +
-              `<span class="tool-arrow">&#9654;</span>` +
-            `</div>` +
-            `<div class="tool-body">` +
-              `<pre class="tool-input">${escHtml(JSON.stringify(tc.input, null, 2))}</pre>` +
-              (tc.result !== undefined ?
-                `<div class="tool-result-label${tc.is_error ? ' error' : ''}">${tc.is_error ? 'Error:' : 'Result:'}</div>` +
-                `<pre>${escHtml(tc.result)}</pre>` : '') +
-            `</div>`;
-          card.querySelector('.tool-header').onclick = () => card.classList.toggle('open');
-          stack.appendChild(card);
-        }
-      }
-
-      // Cancelled / cost indicator
-      if (m.cancelled) {
-        const tag = document.createElement('div');
-        tag.className = 'msg system-msg';
-        tag.style.cssText = 'font-size:11px;color:#f85149;padding:2px 0;';
-        tag.textContent = '(cancelled)';
-        contentEl.appendChild(tag);
-      }
-
-      // Per-message token usage line (input / output / cache read / cache write)
-      if (m.usage) {
-        const usageLine = buildUsageLine(m.usage);
-        if (usageLine) contentEl.appendChild(usageLine);
-      }
-
-      // Per-message timing: reply clock time + interaction latency.
-      if (m.role === 'assistant') {
-        const timing = buildTimingLine(m);
-        if (timing) contentEl.appendChild(timing);
-      }
-
-      div.appendChild(contentEl);
+      const div = renderHistoryAssistantNode(m);
       messagesEl.appendChild(div);
-      // In-progress replay tails (streaming:true) carry no id — not deletable yet.
-      if (m.id) { div.dataset.msgId = m.id; attachDeleteButton(div); attachForkButton(div); }
     }
     } catch (err) {
       console.warn('[multicc] replayHistory: skipped message', mi, err.message);
@@ -1714,8 +1728,16 @@ function replayHistory(messages, serverTokenUsage) {
     }
   }
 
-  scrollToBottom();
-  setTimeout(scrollToBottom, 300);
+  // Record the oldest rendered message id as the pagination cursor, and whether
+  // the server says there's older history to fetch on scroll-up.
+  const oldest = messages.find(m => m && m.id) || (messages[0] && messages[0].id ? messages[0] : null);
+  if (oldest && oldest.id) _oldestLoadedMsgId = oldest.id;
+  _historyHasMore = !!hasMore;
+  _historyExhausted = !_historyHasMore;
+
+  // First load / reconnect: jump to the newest message and reset pinned state.
+  forceScrollToBottom();
+  setTimeout(forceScrollToBottom, 300);
 }
 
 /* ── Thinking bubble ── */
@@ -1727,7 +1749,7 @@ function showThinking() {
   thinkingEl.className = 'thinking-bubble';
   thinkingEl.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div> Thinking...';
   messagesEl.appendChild(thinkingEl);
-  scrollToBottom();
+  maybeScrollToBottom();
   dbg('think', 'showThinking() — 气泡已显示');
 }
 
@@ -2024,6 +2046,113 @@ messagesEl.addEventListener('scroll', () => {
     hideNewMsgPill();
   } else {
     _userPinnedAway = true;
+  }
+}, { passive: true });
+
+/* ── Lazy history: fetch older messages when the user scrolls to the top ── */
+const HISTORY_PAGE_SIZE = 30;
+const HISTORY_LOAD_THRESHOLD = 80;  // px from top triggers a fetch
+
+function _renderHistoryPageBefore(messages) {
+  // Render `messages` (older than what's shown) and prepend them to the top of
+  // #messages, preserving the user's current scroll position so the view
+  // doesn't jump. Returns the count actually inserted.
+  if (!messages || !messages.length) return 0;
+  const firstChild = messagesEl.firstElementChild;
+  const prevScrollHeight = messagesEl.scrollHeight;
+  const prevScrollTop = messagesEl.scrollTop;
+
+  // Build the new nodes by walking the page in chronological order and
+  // reusing the same per-role render path as replayHistory (DOM built in
+  // reverse then inserted before firstChild).
+  const frag = document.createDocumentFragment();
+  for (const m of messages) {
+    let node = null;
+    if (m.role === 'user') {
+      // Minimal user bubble for history (no auto-commit checkbox needed for
+      // old messages). Defer to the same styling by reusing addUserMsg would
+      // append at the end; instead build inline to prepend in order.
+      node = document.createElement('div');
+      node.className = 'msg user';
+      node.textContent = m.content;
+      if (m.id) { node.dataset.msgId = m.id; attachDeleteButton(node); attachForkButton(node); }
+    } else if (m.role === 'assistant') {
+      // Delegate to a lightweight renderer to avoid duplicating the big
+      // replayHistory assistant block. We reuse renderHistoryAssistantNode if
+      // available; otherwise fall back to a plain text bubble.
+      node = (typeof renderHistoryAssistantNode === 'function')
+        ? renderHistoryAssistantNode(m)
+        : null;
+      if (!node) {
+        node = document.createElement('div');
+        node.className = 'msg assistant';
+        const c = document.createElement('div');
+        c.className = 'msg-content';
+        c.innerHTML = m.content ? renderMarkdown(m.content) : '';
+        node.appendChild(c);
+      }
+      if (m.id) { node.dataset.msgId = m.id; }
+    } else {
+      node = document.createElement('div');
+      node.className = 'msg system-msg';
+      node.textContent = m.content || '';
+    }
+    if (node) frag.appendChild(node);
+  }
+
+  messagesEl.insertBefore(frag, firstChild);
+  // Compensate scroll so the user stays on the same message.
+  const added = messagesEl.scrollHeight - prevScrollHeight;
+  messagesEl.scrollTop = prevScrollTop + added;
+  return messages.length;
+}
+
+async function loadOlderHistory() {
+  if (_historyLoading || _historyExhausted || !_oldestLoadedMsgId) return;
+  _historyLoading = true;
+  // Show a loading hint at the very top.
+  if (!_loadingOlderSentinel) {
+    _loadingOlderSentinel = document.createElement('div');
+    _loadingOlderSentinel.className = 'msg system-msg history-loading-hint';
+    _loadingOlderSentinel.textContent = '… 加载更早的消息';
+  }
+  if (!_loadingOlderSentinel.parentNode) {
+    messagesEl.insertBefore(_loadingOlderSentinel, messagesEl.firstElementChild);
+  }
+  try {
+    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?before=${encodeURIComponent(_oldestLoadedMsgId)}&limit=${HISTORY_PAGE_SIZE}`);
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    const older = d.messages || [];
+    const inserted = _renderHistoryPageBefore(older);
+    if (inserted && older[0] && older[0].id) _oldestLoadedMsgId = older[0].id;
+    if (!d.hasMore || !inserted) {
+      _historyExhausted = true;
+      _historyHasMore = false;
+    } else {
+      _historyHasMore = true;
+    }
+  } catch (e) {
+    dbg('history', `loadOlderHistory failed: ${e.message}`);
+    // Don't mark exhausted on a transient error - let the user retry by scrolling.
+  } finally {
+    _historyLoading = false;
+    if (_loadingOlderSentinel && _loadingOlderSentinel.parentNode) {
+      _loadingOlderSentinel.remove();
+    }
+    if (_historyExhausted && !messagesEl.querySelector('.history-start-hint')) {
+      const hint = document.createElement('div');
+      hint.className = 'msg system-msg history-start-hint';
+      hint.textContent = '— 已是最早消息 —';
+      messagesEl.insertBefore(hint, messagesEl.firstElementChild);
+    }
+  }
+}
+
+messagesEl.addEventListener('scroll', () => {
+  if (messagesEl.scrollTop <= HISTORY_LOAD_THRESHOLD) {
+    loadOlderHistory();
   }
 }, { passive: true });
 

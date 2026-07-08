@@ -210,10 +210,49 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      position: relative;
       -webkit-overflow-scrolling: touch;
     }
     #messages::-webkit-scrollbar { width: 6px; }
     #messages::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+
+    /* "↓ N new messages" pill: floats at the bottom of the chat viewport while
+       the user has scrolled up to read history. Sticky inside #messages so it
+       tracks the viewport bottom without covering the input bar. */
+    .new-msg-pill {
+      position: sticky;
+      bottom: 12px;
+      align-self: center;
+      z-index: 20;
+      display: none;
+      margin: 0 auto;
+      padding: 7px 16px;
+      background: #1f6feb;
+      color: #fff;
+      border: 1px solid #388bfd;
+      border-radius: 999px;
+      font-size: 13px;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,.45);
+      transition: opacity .15s ease, transform .15s ease;
+      opacity: 0;
+      transform: translateY(6px);
+      max-width: 90%;
+    }
+    .new-msg-pill.show { display: block; opacity: 1; transform: translateY(0); }
+    .new-msg-pill:hover { background: #388bfd; }
+
+    /* Lazy history load hint / "earliest" marker */
+    .history-loading-hint, .history-start-hint {
+      align-self: center;
+      font-size: 12px;
+      color: #8b949e;
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 999px;
+      padding: 4px 14px;
+      text-align: center;
+    }
 
     .msg {
       max-width: 92%;
