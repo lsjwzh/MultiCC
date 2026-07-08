@@ -12,9 +12,30 @@ const { execFileSync } = require('child_process');
 
 const WORKTREE_SUBDIR = '.multicc-worktrees';
 
+// Hard ceiling for any single synchronous git invocation. Because gitRun uses
+// execFileSync, it blocks the whole Node event loop for its entire duration —
+// so a git command that hangs (unreachable remote, a credential prompt, a stuck
+// lock) freezes the ENTIRE multicc server: it keeps accept()ing TCP but never
+// runs any JS, so every URL (local + tunnels) returns HTTP 000. The timeout is
+// the backstop that guarantees the loop always gets unblocked.
+const GIT_TIMEOUT_MS = 20000;
+
+// Env that makes git fail fast instead of blocking forever on interactive
+// credential/passphrase prompts (stdin is /dev/null here, so any prompt would
+// hang until the timeout — this turns those into an immediate error instead).
+const GIT_NONINTERACTIVE_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',   // never prompt for username/password on the terminal
+  GIT_ASKPASS: '/usr/bin/false', // no GUI/helper askpass
+  SSH_ASKPASS: '/usr/bin/false',
+  GIT_SSH_COMMAND: 'ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new -oConnectTimeout=10',
+};
+
 function gitRun(cwd, args) {
   return execFileSync('git', args, {
     cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+    env: GIT_NONINTERACTIVE_ENV, maxBuffer: 32 * 1024 * 1024,
   }).trim();
 }
 
@@ -212,7 +233,9 @@ function checkMergedJsSyntax(dirPath, fromRef, toRef) {
     const abs = path.join(dirPath, rel);
     if (!fs.existsSync(abs)) continue;          // deleted/renamed-away — nothing to parse
     try {
-      execFileSync(process.execPath, ['--check', abs], { stdio: ['ignore', 'ignore', 'pipe'] });
+      execFileSync(process.execPath, ['--check', abs], {
+        stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+      });
     } catch (e) {
       const out = (e.stderr ? String(e.stderr) : e.message || '');
       const line = out.split('\n').map(l => l.trim()).find(l => /SyntaxError|Error:/.test(l)) || 'parse failed';
@@ -299,6 +322,7 @@ function gitMergeBack(dir, session) {
       try {
         conflictDiff = execFileSync('git', ['diff', '--no-color', '--diff-filter=U'], {
           cwd: dirPath, encoding: 'utf8', maxBuffer: maxDiff + 16 * 1024,
+          timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', env: GIT_NONINTERACTIVE_ENV,
         });
         if (conflictDiff.length > maxDiff) {
           conflictDiff = conflictDiff.slice(0, maxDiff);
