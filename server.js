@@ -6741,11 +6741,6 @@ function parseClassifyResult(text) {
   else if (first === 'E') { state = 'waiting'; error = true; }
   else state = 'completed';
 
-  // phase=done means the task is finished - 'still processing' (P) is a
-  // contradiction, usually because the assistant reply was truncated
-  // mid-sentence in the prompt. Trust phase here.
-  if (phase === 'done' && state === 'running' && !error) state = 'completed';
-
   // Garbage filter for goal — block model regurgitation of system prompts,
   // classify-template phrases, API errors, and other non-task noise.
   let goalOk = goal.length >= 2 && goal.length <= 80;
@@ -7753,6 +7748,7 @@ function buildClassifyConversation(sessionName, reply) {
   const history = loadChatHistory(sessionName);
   const MAX_TURNS = 20;
   const MAX_PER_MSG = 400;
+  const RECENT_NO_TRUNC = 5;  // keep the most recent N messages in full
   const parts = [];
 
   // Walk backwards, collect up to MAX_TURNS user+assistant messages.
@@ -7765,8 +7761,12 @@ function buildClassifyConversation(sessionName, reply) {
     if (!m || !m.content) continue;
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     if (isSystemInjectedMsg(m.content)) continue;
-    const snippet = String(m.content).slice(0, MAX_PER_MSG);
-    // Skip if same role + identical content as the previous entry (dedup)
+    // Don't truncate the most recent few messages - the model needs the full
+    // latest reply to judge state. A truncated reply looks mid-sentence and
+    // gets misjudged as P (still processing).
+    const snippet = count < RECENT_NO_TRUNC
+      ? String(m.content)
+      : String(m.content).slice(0, MAX_PER_MSG);
     if (m.role === 'assistant' && snippet === lastContent) continue;
     lastContent = snippet;
     const label = m.role === 'user' ? '用户' : '助手';
@@ -7774,9 +7774,9 @@ function buildClassifyConversation(sessionName, reply) {
     count++;
   }
 
-  // Live assistant output not yet in chat_history.
+  // Live assistant output not yet in chat_history (the newest - keep full).
   if (reply) {
-    const liveSnippet = String(reply).slice(0, MAX_PER_MSG);
+    const liveSnippet = String(reply);
     if (liveSnippet !== lastContent) {
       parts.push(`助手：${liveSnippet}`);
     }
