@@ -159,10 +159,18 @@ class _MainShellState extends State<MainShell> {
     // Home (multi-session dashboard) is ALWAYS mounted underneath. Opening a
     // session slides a draggable bottom sheet up over it (3/4 height, draggable
     // to fullscreen, draggable down to collapse back home). No page swap.
+    final fleetOpen = mgr.activeFleetDirId != null;
     return PopScope(
-      canPop: active == null,
+      // Only let the OS pop (exit) when nothing is layered on the dashboard.
+      canPop: active == null && !fleetOpen,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && active != null) mgr.goToSessionList();
+        if (didPop) return;
+        // Back priority: close the active chat first, then the fleet panel.
+        if (active != null) {
+          mgr.goToSessionList();
+        } else if (fleetOpen) {
+          mgr.closeFleetDir();
+        }
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF070809),
@@ -173,6 +181,16 @@ class _MainShellState extends State<MainShell> {
         body: Stack(
           children: [
             _DirectoryListBody(settings: widget.settings),
+            // Fleet (directory) detail panel - lives in the Stack UNDER the chat
+            // sheet. Opening a session from it overlays the chat on top; closing
+            // the chat returns here (not to the bare dashboard).
+            if (mgr.activeFleetDirId != null)
+              _FleetDetailSheet(
+                key: ValueKey('fleet-${mgr.activeFleetDirId}'),
+                settings: widget.settings,
+                mgr: mgr,
+                dirId: mgr.activeFleetDirId!,
+              ),
             if (active != null)
               _ChatSheet(
                 key: ValueKey(mgr.activeSessionId),
@@ -1344,6 +1362,323 @@ void _showSessionSheet(
 //  PROJECT CARD — one per directory, expanded by default
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Fleet (directory) detail panel rendered as a Stack layer over the dashboard,
+/// UNDER the chat sheet. Opening a session from here overlays the chat on top;
+/// closing the chat returns here instead of the bare dashboard. Replaces the
+/// old showModalBottomSheet version (which popped itself on open, losing the
+/// panel).
+class _FleetDetailSheet extends StatefulWidget {
+  final SettingsService settings;
+  final SessionManager mgr;
+  final String dirId;
+  const _FleetDetailSheet({
+    super.key,
+    required this.settings,
+    required this.mgr,
+    required this.dirId,
+  });
+
+  @override
+  State<_FleetDetailSheet> createState() => _FleetDetailSheetState();
+}
+
+class _FleetDetailSheetState extends State<_FleetDetailSheet> {
+  late final WorkspaceService _workspace;
+  List<Map<String, dynamic>> _providers = const [];
+
+  Directory get _dir {
+    for (final d in widget.mgr.directories) {
+      if (d.id == widget.dirId) return d;
+    }
+    // Fall back to whatever was captured at open time.
+    return widget.mgr.directories.firstWhere(
+      (d) => d.id == widget.dirId,
+      orElse: () => widget.mgr.directories.first,
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _workspace = WorkspaceService(settings: widget.settings, dirId: widget.dirId);
+    _workspace.onNotify = widget.mgr.handleWorkspaceNotify;
+    _workspace.connect();
+    _loadProviders();
+  }
+
+  Future<void> _loadProviders() async {
+    try {
+      final data = await ManageService(settings: widget.settings).fetchProviders();
+      if (!mounted) return;
+      setState(() {
+        _providers = (data['providers'] as List? ?? [])
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList();
+      });
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _workspace.dispose();
+    super.dispose();
+  }
+
+  void _openSession(Session session) {
+    if (session.isChat) {
+      widget.mgr.openSession(session);
+      widget.mgr.switchToSession(session.id);
+    } else {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) =>
+              TerminalScreen(settings: widget.settings, session: session),
+        ),
+      );
+    }
+  }
+
+  Future<void> _createSession(SessionCli cli, SessionKind kind) async {
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final appType = cli == SessionCli.codex ? 'codex' : 'claude';
+    List<Map<String, dynamic>> providers = [];
+    String? defaultProviderId;
+    try {
+      final d = await ManageService(settings: widget.settings).fetchProviders(appType);
+      providers = (d['providers'] as List? ?? [])
+          .map((e) => (e as Map).cast<String, dynamic>())
+          .toList();
+      final defaults = d['defaults'];
+      if (defaults is Map && defaults[appType] != null) {
+        defaultProviderId = defaults[appType].toString();
+      }
+    } catch (_) {}
+    if (!mounted) return;
+
+    final result = await showDialog<_CreateSessionResult>(
+      context: context,
+      builder: (ctx) => _CreateSessionDialog(
+        cli: cli,
+        kind: kind,
+        providers: providers,
+        defaultProviderId: defaultProviderId,
+        settings: widget.settings,
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    try {
+      final s = await widget.mgr.createSessionInDir(
+        dirId: widget.dirId,
+        cli: cli,
+        kind: kind,
+        label: result.label,
+        model: result.model,
+        provider: result.provider,
+        effort: result.effort,
+        rolePrompt: result.rolePrompt,
+      );
+      if (!mounted) return;
+      if (s.isChat) {
+        widget.mgr.openSession(s);
+        widget.mgr.switchToSession(s.id);
+      } else {
+        navigator.push(
+          MaterialPageRoute(
+            builder: (_) =>
+                TerminalScreen(settings: widget.settings, session: s),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Failed: $e'),
+            backgroundColor: const Color(0xFFff6b63)),
+      );
+    }
+  }
+
+  Future<void> _pushDirectory(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(content: Text(t('pushing')),
+        duration: const Duration(seconds: 30)));
+    try {
+      final r = await widget.mgr.service.pushDirectory(widget.dirId);
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      if (r['ok'] == true) {
+        final before = (r['before'] as Map?) ?? const {};
+        final ahead = before['ahead'] ?? 0;
+        final remote = before['remote'] ?? 'origin';
+        final branch = before['remoteBranch'] ?? '';
+        final msg = r['pushed'] == true
+            ? t('pushed', {'n': '$ahead', 'remote': '$remote', 'branch': '$branch'})
+            : t('nothingToPush');
+        messenger.showSnackBar(SnackBar(content: Text(msg)));
+        await widget.mgr.loadDashboard();
+      } else {
+        messenger.showSnackBar(SnackBar(
+          content: Text(t('pushFailed', {'error': '${r['error'] ?? 'unknown'}'})),
+          backgroundColor: AppColors.danger,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(
+        content: Text(t('pushFailed', {'error': '$e'})),
+        backgroundColor: AppColors.danger,
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    return SafeArea(
+      child: Container(
+        height: mq.size.height * 0.9,
+        decoration: const BoxDecoration(
+          color: AppColors.panel,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        child: AnimatedBuilder(
+          animation: Listenable.merge([_workspace, widget.mgr]),
+          builder: (context, _) {
+            final dir = _dir;
+            final groups = widget.mgr.sessionsByCliKind(dir.id);
+            final hasSessions = dir.totalSessions > 0;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 8, 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(dir.name,
+                                style: const TextStyle(
+                                    color: AppColors.textBright,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w700),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                            const SizedBox(height: 3),
+                            Text(dir.path,
+                                style: const TextStyle(
+                                    color: AppColors.blue,
+                                    fontSize: 11,
+                                    fontFamily: 'monospace'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: t('projectMemo'),
+                        onPressed: () {
+                          Navigator.of(context).push(MaterialPageRoute<void>(
+                            builder: (_) =>
+                                MemoScreen(directory: dir, mgr: widget.mgr),
+                          ));
+                        },
+                        icon: const Icon(Icons.sticky_note_2_outlined,
+                            size: 20, color: AppColors.muted),
+                        constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
+                      ),
+                      _DirectoryPushButton(
+                        directory: dir,
+                        onPressed: () => _pushDirectory(context),
+                      ),
+                      IconButton(
+                        tooltip: t('close'),
+                        onPressed: () => widget.mgr.closeFleetDir(),
+                        icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                        constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1, color: AppColors.line),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
+                    children: [
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          _AddSessionChip(label: '+ Claude Term', color: _kClaudeColor,
+                              onTap: () => _createSession(SessionCli.claude, SessionKind.terminal)),
+                          _AddSessionChip(label: '+ Claude Chat', color: _kClaudeColor,
+                              onTap: () => _createSession(SessionCli.claude, SessionKind.chat)),
+                          _AddSessionChip(label: '+ Codex Term', color: _kCodexColor,
+                              onTap: () => _createSession(SessionCli.codex, SessionKind.terminal)),
+                          _AddSessionChip(label: '+ Codex Chat', color: _kCodexColor,
+                              onTap: () => _createSession(SessionCli.codex, SessionKind.chat)),
+                        ],
+                      ),
+                      EventTimeline(
+                        events: _workspace.events,
+                        initiallyOpen: false,
+                        maxEvents: 3,
+                        maxExpandedHeight: 120,
+                      ),
+                      if (!hasSessions)
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.fromLTRB(0, 12, 0, 14),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                          decoration: BoxDecoration(
+                            color: AppColors.bg.withValues(alpha: 0.65),
+                            border: Border.all(color: AppColors.line),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(t('noSessions'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: AppColors.faint, fontSize: 12)),
+                        )
+                      else ...[
+                        _SessionGroup(title: t('claudeTerminals'), color: _kClaudeColor,
+                            sessions: groups['claude_terminal']!, mgr: widget.mgr,
+                            settings: widget.settings, statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes, providers: _providers,
+                            onOpen: _openSession),
+                        _SessionGroup(title: t('claudeChats'), color: _kClaudeColor,
+                            sessions: groups['claude_chat']!, mgr: widget.mgr,
+                            settings: widget.settings, statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes, providers: _providers,
+                            onOpen: _openSession),
+                        _SessionGroup(title: t('codexTerminals'), color: _kCodexColor,
+                            sessions: groups['codex_terminal']!, mgr: widget.mgr,
+                            settings: widget.settings, statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes, providers: _providers,
+                            onOpen: _openSession),
+                        _SessionGroup(title: t('codexChats'), color: _kCodexColor,
+                            sessions: groups['codex_chat']!, mgr: widget.mgr,
+                            settings: widget.settings, statuses: _workspace.statuses,
+                            pendingNotes: _workspace.pendingNotes, providers: _providers,
+                            onOpen: _openSession),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class _DirectoryCard extends StatefulWidget {
   final Directory directory;
   final SettingsService settings;
@@ -1363,19 +1698,8 @@ class _DirectoryCard extends StatefulWidget {
   State<_DirectoryCard> createState() => _DirectoryCardState();
 }
 
-class _DirectoryDetailAction {
-  final Session? session;
-  final SessionCli? cli;
-  final SessionKind? kind;
-
-  const _DirectoryDetailAction.open(this.session) : cli = null, kind = null;
-
-  const _DirectoryDetailAction.create(this.cli, this.kind) : session = null;
-}
-
 class _DirectoryCardState extends State<_DirectoryCard> {
   late final WorkspaceService _workspace;
-  List<Map<String, dynamic>> _providers = [];
 
   @override
   void initState() {
@@ -1387,22 +1711,8 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     _workspace.onNotify = widget.mgr.handleWorkspaceNotify;
     _workspace.addListener(_onStatusChange);
     _workspace.connect();
-    _loadProviders();
   }
 
-  Future<void> _loadProviders() async {
-    try {
-      final data = await ManageService(
-        settings: widget.settings,
-      ).fetchProviders();
-      if (!mounted) return;
-      setState(() {
-        _providers = (data['providers'] as List? ?? [])
-            .map((e) => (e as Map).cast<String, dynamic>())
-            .toList();
-      });
-    } catch (_) {}
-  }
 
   @override
   void dispose() {
@@ -1603,7 +1913,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
               ],
             ),
             child: InkWell(
-              onTap: () => _showDirectoryDetail(context),
+              onTap: () => widget.mgr.openFleetDir(widget.directory.id),
               borderRadius: BorderRadius.circular(8),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
@@ -1891,338 +2201,6 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     );
   }
 
-  Future<void> _showDirectoryDetail(BuildContext context) async {
-    final action = await showModalBottomSheet<_DirectoryDetailAction>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.panel,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-      ),
-      builder: (sheetCtx) => SafeArea(
-        child: SizedBox(
-          height: MediaQuery.of(sheetCtx).size.height * 0.88,
-          child: AnimatedBuilder(
-            animation: Listenable.merge([_workspace, widget.mgr]),
-            builder: (context, _) {
-              Directory dir = widget.directory;
-              for (final d in widget.mgr.directories) {
-                if (d.id == widget.directory.id) {
-                  dir = d;
-                  break;
-                }
-              }
-              final groups = widget.mgr.sessionsByCliKind(dir.id);
-              final hasSessions = dir.totalSessions > 0;
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 14, 8, 12),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                dir.name,
-                                style: const TextStyle(
-                                  color: AppColors.textBright,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                dir.path,
-                                style: const TextStyle(
-                                  color: AppColors.blue,
-                                  fontSize: 11,
-                                  fontFamily: 'monospace',
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: t('projectMemo'),
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) =>
-                                    MemoScreen(directory: dir, mgr: widget.mgr),
-                              ),
-                            );
-                          },
-                          icon: const Icon(
-                            Icons.sticky_note_2_outlined,
-                            size: 20,
-                            color: AppColors.muted,
-                          ),
-                          constraints: const BoxConstraints(
-                            minWidth: 40,
-                            minHeight: 44,
-                          ),
-                        ),
-                        _DirectoryPushButton(
-                          directory: dir,
-                          onPressed: () => _pushDirectory(context),
-                        ),
-                        IconButton(
-                          tooltip: t('close'),
-                          onPressed: () => Navigator.of(sheetCtx).pop(),
-                          icon: const Icon(
-                            Icons.close_rounded,
-                            color: AppColors.muted,
-                          ),
-                          constraints: const BoxConstraints(
-                            minWidth: 44,
-                            minHeight: 44,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1, color: AppColors.line),
-                  Expanded(
-                    child: ListView(
-                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
-                      children: [
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: [
-                            _AddSessionChip(
-                              label: '+ Claude Term',
-                              color: _kClaudeColor,
-                              onTap: () => Navigator.of(sheetCtx).pop(
-                                const _DirectoryDetailAction.create(
-                                  SessionCli.claude,
-                                  SessionKind.terminal,
-                                ),
-                              ),
-                            ),
-                            _AddSessionChip(
-                              label: '+ Claude Chat',
-                              color: _kClaudeColor,
-                              onTap: () => Navigator.of(sheetCtx).pop(
-                                const _DirectoryDetailAction.create(
-                                  SessionCli.claude,
-                                  SessionKind.chat,
-                                ),
-                              ),
-                            ),
-                            _AddSessionChip(
-                              label: '+ Codex Term',
-                              color: _kCodexColor,
-                              onTap: () => Navigator.of(sheetCtx).pop(
-                                const _DirectoryDetailAction.create(
-                                  SessionCli.codex,
-                                  SessionKind.terminal,
-                                ),
-                              ),
-                            ),
-                            _AddSessionChip(
-                              label: '+ Codex Chat',
-                              color: _kCodexColor,
-                              onTap: () => Navigator.of(sheetCtx).pop(
-                                const _DirectoryDetailAction.create(
-                                  SessionCli.codex,
-                                  SessionKind.chat,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        EventTimeline(
-                          events: _workspace.events,
-                          initiallyOpen: false,
-                          maxEvents: 3,
-                          maxExpandedHeight: 120,
-                        ),
-                        if (!hasSessions)
-                          Container(
-                            width: double.infinity,
-                            margin: const EdgeInsets.fromLTRB(0, 12, 0, 14),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 16,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.bg.withValues(alpha: 0.65),
-                              border: Border.all(color: AppColors.line),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              t('noSessions'),
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                color: AppColors.faint,
-                                fontSize: 12,
-                              ),
-                            ),
-                          )
-                        else ...[
-                          _SessionGroup(
-                            title: t('claudeTerminals'),
-                            color: _kClaudeColor,
-                            sessions: groups['claude_terminal']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: (s) => Navigator.of(
-                              sheetCtx,
-                            ).pop(_DirectoryDetailAction.open(s)),
-                          ),
-                          _SessionGroup(
-                            title: t('claudeChats'),
-                            color: _kClaudeColor,
-                            sessions: groups['claude_chat']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: (s) => Navigator.of(
-                              sheetCtx,
-                            ).pop(_DirectoryDetailAction.open(s)),
-                          ),
-                          _SessionGroup(
-                            title: t('codexTerminals'),
-                            color: _kCodexColor,
-                            sessions: groups['codex_terminal']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: (s) => Navigator.of(
-                              sheetCtx,
-                            ).pop(_DirectoryDetailAction.open(s)),
-                          ),
-                          _SessionGroup(
-                            title: t('codexChats'),
-                            color: _kCodexColor,
-                            sessions: groups['codex_chat']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: (s) => Navigator.of(
-                              sheetCtx,
-                            ).pop(_DirectoryDetailAction.open(s)),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-        ),
-      ),
-    );
-    if (!mounted || action == null) return;
-    final session = action.session;
-    if (session != null) {
-      _openSession(session);
-    } else {
-      await _createSession(action.cli!, action.kind!);
-    }
-  }
-
-  void _openSession(Session session) {
-    if (session.isChat) {
-      widget.mgr.openSession(session);
-      widget.mgr.switchToSession(session.id);
-    } else {
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) =>
-              TerminalScreen(settings: widget.settings, session: session),
-        ),
-      );
-    }
-  }
-
-  Future<void> _createSession(SessionCli cli, SessionKind kind) async {
-    final navigator = Navigator.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-
-    // Fetch providers for the picker
-    final appType = cli == SessionCli.codex ? 'codex' : 'claude';
-    List<Map<String, dynamic>> providers = [];
-    String? defaultProviderId;
-    try {
-      final d = await ManageService(
-        settings: widget.settings,
-      ).fetchProviders(appType);
-      providers = (d['providers'] as List? ?? [])
-          .map((e) => (e as Map).cast<String, dynamic>())
-          .toList();
-      final defaults = d['defaults'];
-      if (defaults is Map && defaults[appType] != null) {
-        defaultProviderId = defaults[appType].toString();
-      }
-    } catch (_) {}
-
-    final result = await showDialog<_CreateSessionResult>(
-      context: context,
-      builder: (ctx) => _CreateSessionDialog(
-        cli: cli,
-        kind: kind,
-        providers: providers,
-        defaultProviderId: defaultProviderId,
-        settings: widget.settings,
-      ),
-    );
-    if (result == null) return;
-    if (!mounted) return;
-
-    try {
-      final s = await widget.mgr.createSessionInDir(
-        dirId: widget.directory.id,
-        cli: cli,
-        kind: kind,
-        label: result.label,
-        model: result.model,
-        provider: result.provider,
-        effort: result.effort,
-        rolePrompt: result.rolePrompt,
-      );
-      if (!mounted) return;
-      // Auto-open the freshly created session
-      if (s.isChat) {
-        widget.mgr.openSession(s);
-        widget.mgr.switchToSession(s.id);
-      } else {
-        navigator.push(
-          MaterialPageRoute(
-            builder: (_) =>
-                TerminalScreen(settings: widget.settings, session: s),
-          ),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('Failed: $e'),
-          backgroundColor: const Color(0xFFff6b63),
-        ),
-      );
-    }
-  }
-
   Future<void> _confirmRenameDirectory(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     final ctrl = TextEditingController(text: widget.directory.name);
@@ -2279,57 +2257,6 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     }
   }
 
-  Future<void> _pushDirectory(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(t('pushing')),
-        duration: const Duration(seconds: 30),
-      ),
-    );
-    try {
-      final r = await widget.mgr.service.pushDirectory(widget.directory.id);
-      if (!mounted) return;
-      messenger.hideCurrentSnackBar();
-      if (r['ok'] == true) {
-        final before = (r['before'] as Map?) ?? const {};
-        final ahead = before['ahead'] ?? 0;
-        final remote = before['remote'] ?? 'origin';
-        final branch = before['remoteBranch'] ?? '';
-        final msg = r['pushed'] == true
-            ? t('pushed', {
-                'n': '$ahead',
-                'remote': '$remote',
-                'branch': '$branch',
-              })
-            : t('nothingToPush');
-        messenger.showSnackBar(SnackBar(content: Text(msg)));
-        await widget.mgr.loadDashboard();
-      } else {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(
-              t('pushFailed', {'error': '${r['error'] ?? 'unknown'}'}),
-            ),
-            backgroundColor: AppColors.danger,
-          ),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(t('pushFailed', {'error': '$e'})),
-          backgroundColor: AppColors.danger,
-        ),
-      );
-    }
-  }
-
-  /// Show the directory's uncommitted files in a dialog, with a quick
-  /// "commit all" affordance. A dirty main tangles session worktree merges
-  /// with unrelated local edits, so this lets the user clear it first.
   Future<void> _showUncommittedFiles(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     final svc = widget.mgr.service;
@@ -4294,13 +4221,6 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
     return _isClaude ? kClaudeModelOptions : const [];
   }
 
-  String _providerName(String? id) {
-    if (id == null || id.isEmpty) return '';
-    for (final p in widget.providers) {
-      if (p['id'] == id) return p['name']?.toString() ?? id;
-    }
-    return id;
-  }
 
   String _providerIdForPresetDefault(AgentPreset preset) {
     final declared = preset.defaultProviderId ?? '';

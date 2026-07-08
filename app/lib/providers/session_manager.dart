@@ -24,6 +24,21 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   ChatProvider? get activeProvider =>
       _activeSessionId != null ? _providers[_activeSessionId] : null;
 
+  /// Currently open fleet (directory) detail panel, or null when none is open.
+  /// The fleet panel lives in the main_shell Stack UNDER the chat sheet, so
+  /// opening a session from it overlays the chat on top; closing the chat
+  /// returns to the fleet panel instead of the bare dashboard.
+  String? _activeFleetDirId;
+  String? get activeFleetDirId => _activeFleetDirId;
+  void openFleetDir(String dirId) {
+    _activeFleetDirId = dirId;
+    notifyListeners();
+  }
+  void closeFleetDir() {
+    _activeFleetDirId = null;
+    notifyListeners();
+  }
+
   /// Session list from REST API.
   List<Session> _sessions = [];
   List<Session> get sessions => List.unmodifiable(_sessions);
