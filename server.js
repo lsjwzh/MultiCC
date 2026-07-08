@@ -5246,10 +5246,15 @@ const auxQueue = {
   executeDirectHttp(task) {
     return new Promise((resolve, reject) => {
       const model = auxConfig.model || 'haiku';
+      const messages = [];
+      if (task.systemPrompt) {
+        messages.push({ role: 'system', content: task.systemPrompt });
+      }
+      messages.push({ role: 'user', content: task.prompt });
       const body = JSON.stringify({
         model,
         max_tokens: 128,
-        messages: [{ role: 'user', content: task.prompt }],
+        messages,
       });
       const req = require('http').request({
         hostname: '127.0.0.1',
@@ -7070,8 +7075,7 @@ function reclassifySessionsWithMissingGoals() {
   if (!candidates.length) return;
   console.log(`[multicc/aux] recovery: reclassifying ${candidates.length} session(s) with unfinished work`);
   for (const { sid, lastText, priorGoal } of candidates) {
-    const prompt = buildClassifyPrompt({ priorGoal, sessionName: sid, reply: lastText });
-    auxQueue.enqueue({ type: 'recovery_reclassify', prompt, meta: { sessionName: sid } })
+    auxQueue.enqueue({ type: 'recovery_reclassify', systemPrompt: buildClassifySystemPrompt(priorGoal), prompt: buildClassifyConversation(sid, lastText), meta: { sessionName: sid } })
       .then(result => {
         if (result.cancelled) return;
         const res = parseClassifyResult(result.text);
@@ -7160,8 +7164,7 @@ function reconcileOneOnStartup(sid, ts, opts = {}) {
   // Never feed an injected/junk prior goal back into the prompt — it biases classify
   // and, if classify returns '—', we'd keep the junk. Treat junk as no prior goal.
   const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
-  const prompt = buildClassifyPrompt({ priorGoal: cleanPrior, sessionName: sid, reply });
-  auxQueue.enqueue({ type: 'intent_classify', prompt, meta: { sid, startup: true } })
+  auxQueue.enqueue({ type: 'intent_classify', systemPrompt: buildClassifySystemPrompt(cleanPrior), prompt: buildClassifyConversation(sid, reply), meta: { sid, startup: true } })
     .then(result => {
       if (result.cancelled) return;
       const res = parseClassifyResult(result.text);
@@ -7586,7 +7589,37 @@ function cancelClassify(cs) {
 // Line 2: phase ∈ 规划中|实现中|验证中|收尾中|已完成 (Chinese codes; EN synonyms tolerated)
 // Line 3: P | C | W | B
 // Tolerant of blank lines, prefixes, and model cruft.
-function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
+// Build the classify system prompt (instructions only, no data).
+function buildClassifySystemPrompt(priorGoal) {
+  return `你是任务状态分析器。结合对话记录，判断当前闭环任务的状态。请严格输出三行。
+
+第1行：当前闭环任务的目标，用一个简短的名词性短语。
+       语言跟随对话语言：中文用中文（≤20 汉字，如"memo图片更换""给目录卡片加 git 状态行"）；英文用英文（≤10 words, e.g. "Fix login page styling"）。
+       严格忽略招呼、反问、确认、推进类消息（如"hi""你好""如何了""做到哪了""继续""好了吗" / "hi", "how is it going", "continue"），以及任何以"检测到任务""[自动恢复""继续："开头的系统自动注入消息——这些都不是任务目标。
+       已有目标「${priorGoal || '无'}」，如仍围绕同一任务请保持一致。
+       如果没有任何具体任务（纯招呼/闲聊/系统消息），输出「—」。
+       ⚠️ 重要：如果最新一条用户消息开启了一个与前文不同的新任务，则以新任务为准。不要因为对话中某个旧任务已经结束就认为整体已完成。
+
+第2行：当前任务的阶段，必须原样输出以下五个中文词之一（无论对话语言）：
+       规划中 / 实现中 / 验证中 / 收尾中 / 已完成
+       AI 在等用户回复时不应判为「已完成」；只有把所有用户要求都做完了才判「已完成」。
+       ⚠️ 重要：最新用户消息如果提出了新的具体需求，即使 AI 还没开始做，也应判「规划中」而非「已完成」。
+
+第3行：仅一个字母，对话主动权判断：
+       C = AI 应继续（用户发来新需求、纠错、认可、确认、继续执行等推进类消息；AI 不需要等用户做决定）
+       W = 等用户（助手在反问、征求意见、让用户做选择；或用户表达了犹豫需要时间考虑）
+       B = 在等外部系统/后台任务（AI 没法继续，用户也帮不上忙；在等 build/部署/API/子进程）
+       E = API 异常中断（助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等故障信息，回答被截断而非正常完成）
+       P = AI 还在处理中（回复为空、或明显话没说完，还没到判断主动权的时候）
+
+判断 C/W 时看对话整体走向，不是看最后一句有没有问号。用户最新消息如果是推进/确认/新指令 → C。助手明确在等用户做选择 → W。回复为空时判 P。API故障导致截断的回复判 E。
+
+只输出这三行。不要加序号、解释、引号、空行。`;
+}
+
+// Build the classify user prompt (conversation data only, no instructions).
+// Returns the conversation block as a plain string of labelled turns.
+function buildClassifyConversation(sessionName, reply) {
   const history = loadChatHistory(sessionName);
   const MAX_TURNS = 20;
   const MAX_PER_MSG = 400;
@@ -7619,35 +7652,7 @@ function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
     }
   }
 
-  const conversationBlock = parts.join('\n\n');
-
-  return `你是任务状态分析器。结合以下对话记录，判断当前闭环任务的状态。请严格输出三行。
-
-第1行：当前闭环任务的目标，用一个简短的名词性短语。
-       语言跟随对话语言：中文用中文（≤20 汉字，如"memo图片更换""给目录卡片加 git 状态行"）；英文用英文（≤10 words, e.g. "Fix login page styling"）。
-       严格忽略招呼、反问、确认、推进类消息（如"hi""你好""如何了""做到哪了""继续""好了吗" / "hi", "how is it going", "continue"），以及任何以"检测到任务""[自动恢复""继续："开头的系统自动注入消息——这些都不是任务目标。
-       已有目标「${priorGoal || '无'}」，如仍围绕同一任务请保持一致。
-       如果没有任何具体任务（纯招呼/闲聊/系统消息），输出「—」。
-       ⚠️ 重要：如果最新一条用户消息开启了一个与前文不同的新任务，则以新任务为准。不要因为对话中某个旧任务已经结束就认为整体已完成。
-
-第2行：当前任务的阶段，必须原样输出以下五个中文词之一（无论对话语言）：
-       规划中 / 实现中 / 验证中 / 收尾中 / 已完成
-       AI 在等用户回复时不应判为「已完成」；只有把所有用户要求都做完了才判「已完成」。
-       ⚠️ 重要：最新用户消息如果提出了新的具体需求，即使 AI 还没开始做，也应判「规划中」而非「已完成」。
-
-第3行：仅一个字母，对话主动权判断：
-       C = AI 应继续（用户发来新需求、纠错、认可、确认、继续执行等推进类消息；AI 不需要等用户做决定）
-       W = 等用户（助手在反问、征求意见、让用户做选择；或用户表达了犹豫需要时间考虑）
-       B = 在等外部系统/后台任务（AI 没法继续，用户也帮不上忙；在等 build/部署/API/子进程）
-       E = API 异常中断（助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等故障信息，回答被截断而非正常完成）
-       P = AI 还在处理中（回复为空、或明显话没说完，还没到判断主动权的时候）
-
-判断 C/W 时看对话整体走向，不是看最后一句有没有问号。用户最新消息如果是推进/确认/新指令 → C。助手明确在等用户做选择 → W。回复为空时判 P。API故障导致截断的回复判 E。
-
-只输出这三行。不要加序号、解释、引号、空行。
-
-对话记录：
-${conversationBlock}`;
+  return `对话记录：\n${parts.join('\n\n')}`;
 }
 
 function runClassifyNow(cs, sessionName) {
@@ -7664,7 +7669,8 @@ function runClassifyNow(cs, sessionName) {
 
   auxQueue.enqueue({
     type: 'intent_classify',
-    prompt: buildClassifyPrompt({ priorGoal, sessionName, reply }),
+    systemPrompt: buildClassifySystemPrompt(priorGoal),
+    prompt: buildClassifyConversation(sessionName, reply),
     meta: { sessionName, sessionId },
   }).then(result => {
     if (result.cancelled) return;
