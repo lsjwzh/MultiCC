@@ -12,11 +12,21 @@ const TMUX_PREFIX = 'multicc-';
 const TMUX_FIFO_DIR = path.join(os.tmpdir(), 'multicc-fifos');
 try { fs.mkdirSync(TMUX_FIFO_DIR, { recursive: true }); } catch (_) {}
 
+// Every call below runs tmux/mkfifo synchronously via execSync/execFileSync,
+// which blocks the whole Node event loop for its full duration. tmux is a local
+// op that should return in milliseconds, but a wedged tmux server (stuck pane,
+// socket contention, a blocked client) would otherwise hang forever and freeze
+// the entire multicc server — same failure mode as the unbounded git calls.
+// This ceiling guarantees the loop always gets unblocked. Spread into every
+// exec below (SIGKILL so the timeout actually kills a hung tmux child).
+const TMUX_TIMEOUT_MS = 5000;
+const TMUX_EXEC_OPTS = { timeout: TMUX_TIMEOUT_MS, killSignal: 'SIGKILL' };
+
 function tmuxSessionName(id) { return `${TMUX_PREFIX}${id}`; }
 
 function tmuxHasSession(id) {
   try {
-    execSync(`tmux has-session -t ${tmuxSessionName(id)} 2>/dev/null`);
+    execSync(`tmux has-session -t ${tmuxSessionName(id)} 2>/dev/null`, TMUX_EXEC_OPTS);
     return true;
   } catch { return false; }
 }
@@ -41,13 +51,13 @@ function tmuxCreateSession(id, cwd, cols, rows, cmd, envExtra) {
   // set-option remain-on-exit off so the session disappears when CLI exits
   execSync(
     `tmux new-session -d -s "${name}"${eArgs} -x ${cols} -y ${rows} -c "${cwd}" "${cmd}"`,
-    { env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } }
+    { ...TMUX_EXEC_OPTS, env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } }
   );
 }
 
 function tmuxResize(id, cols, rows) {
   try {
-    execSync(`tmux resize-window -t "${tmuxSessionName(id)}" -x ${cols} -y ${rows} 2>/dev/null`);
+    execSync(`tmux resize-window -t "${tmuxSessionName(id)}" -x ${cols} -y ${rows} 2>/dev/null`, TMUX_EXEC_OPTS);
   } catch (_) {}
 }
 
@@ -70,29 +80,29 @@ function applyMaxClientSize(session) {
 }
 
 function tmuxKillSession(id) {
-  try { execSync(`tmux kill-session -t "${tmuxSessionName(id)}" 2>/dev/null`); } catch (_) {}
+  try { execSync(`tmux kill-session -t "${tmuxSessionName(id)}" 2>/dev/null`, TMUX_EXEC_OPTS); } catch (_) {}
 }
 
 function tmuxCapturePane(id) {
   try {
-    return execSync(`tmux capture-pane -t "${tmuxSessionName(id)}" -p -S -500 2>/dev/null`, { encoding: 'utf8' });
+    return execSync(`tmux capture-pane -t "${tmuxSessionName(id)}" -p -S -500 2>/dev/null`, { ...TMUX_EXEC_OPTS, encoding: 'utf8' });
   } catch { return ''; }
 }
 
 function tmuxPaneTty(id) {
-  return execSync(`tmux display-message -t "${tmuxSessionName(id)}" -p "#{pane_tty}"`, { encoding: 'utf8' }).trim();
+  return execSync(`tmux display-message -t "${tmuxSessionName(id)}" -p "#{pane_tty}"`, { ...TMUX_EXEC_OPTS, encoding: 'utf8' }).trim();
 }
 
 function tmuxPaneCwd(id) {
   try {
-    return execSync(`tmux display-message -t "${tmuxSessionName(id)}" -p "#{pane_current_path}"`, { encoding: 'utf8' }).trim();
+    return execSync(`tmux display-message -t "${tmuxSessionName(id)}" -p "#{pane_current_path}"`, { ...TMUX_EXEC_OPTS, encoding: 'utf8' }).trim();
   } catch { return os.homedir(); }
 }
 
 function tmuxWriteInput(id, data) {
   if (!data) return;
   try {
-    execFileSync('tmux', ['send-keys', '-t', tmuxSessionName(id), '-l', '--', data]);
+    execFileSync('tmux', ['send-keys', '-t', tmuxSessionName(id), '-l', '--', data], TMUX_EXEC_OPTS);
   } catch (e) {
     console.error('[multicc] tmuxWriteInput error:', e.message);
   }
@@ -106,10 +116,10 @@ function startOutputCapture(id) {
   const fifoPath = fifoPathForSession(id);
   // Clean up any stale FIFO
   try { fs.unlinkSync(fifoPath); } catch (_) {}
-  execSync(`mkfifo "${fifoPath}"`);
+  execSync(`mkfifo "${fifoPath}"`, TMUX_EXEC_OPTS);
 
   // Tell tmux to pipe pane output into our FIFO (no -o: always replace existing pipe)
-  execSync(`tmux pipe-pane -t "${tmuxSessionName(id)}" "cat > '${fifoPath}'"`);
+  execSync(`tmux pipe-pane -t "${tmuxSessionName(id)}" "cat > '${fifoPath}'"`, TMUX_EXEC_OPTS);
 
   // Open FIFO with O_RDWR | O_NONBLOCK, wrap in net.Socket:
   // - O_RDWR prevents spurious EOF (always has a potential writer)
@@ -127,7 +137,7 @@ function stopOutputCapture(session) {
   }
   if (session.fifoPath) {
     // Stop tmux pipe-pane
-    try { execSync(`tmux pipe-pane -t "${tmuxSessionName(session.id)}" 2>/dev/null`); } catch (_) {}
+    try { execSync(`tmux pipe-pane -t "${tmuxSessionName(session.id)}" 2>/dev/null`, TMUX_EXEC_OPTS); } catch (_) {}
     try { fs.unlinkSync(session.fifoPath); } catch (_) {}
     session.fifoPath = null;
   }
