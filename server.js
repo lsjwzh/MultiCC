@@ -7593,21 +7593,30 @@ function buildClassifyPrompt({ priorGoal, sessionName, reply }) {
   const parts = [];
 
   // Walk backwards, collect up to MAX_TURNS user+assistant messages.
+  // Skip consecutive duplicates (chat_history may have _interim + final copies
+  // of the same assistant message from incremental saves).
   let count = 0;
+  let lastContent = '';
   for (let i = history.length - 1; i >= 0 && count < MAX_TURNS; i--) {
     const m = history[i];
     if (!m || !m.content) continue;
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     if (isSystemInjectedMsg(m.content)) continue;
-    const label = m.role === 'user' ? '用户' : '助手';
     const snippet = String(m.content).slice(0, MAX_PER_MSG);
+    // Skip if same role + identical content as the previous entry (dedup)
+    if (m.role === 'assistant' && snippet === lastContent) continue;
+    lastContent = snippet;
+    const label = m.role === 'user' ? '用户' : '助手';
     parts.unshift(`${label}：${snippet}`);
     count++;
   }
 
   // Live assistant output not yet in chat_history.
   if (reply) {
-    parts.push(`助手：${String(reply).slice(0, MAX_PER_MSG)}`);
+    const liveSnippet = String(reply).slice(0, MAX_PER_MSG);
+    if (liveSnippet !== lastContent) {
+      parts.push(`助手：${liveSnippet}`);
+    }
   }
 
   const conversationBlock = parts.join('\n\n');
