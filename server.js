@@ -5265,7 +5265,7 @@ const auxQueue = {
         });
       });
       req.on('error', reject);
-      req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+      req.setTimeout(AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
       req.write(body);
       req.end();
     });
@@ -5334,7 +5334,7 @@ const auxQueue = {
         });
       });
       req.on('error', reject);
-      req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+      req.setTimeout(AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
       req.write(body);
       req.end();
     });
