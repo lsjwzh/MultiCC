@@ -1985,11 +1985,16 @@ function scrollToBottom() {
 }
 
 // Always scroll to bottom AND reset the pinned-away state (used after the
-// user's own actions: sending a message, first load / reconnect).
+// user's own actions: sending a message, first load / reconnect). Sets a brief
+// settling window so the scroll events fired DURING this programmatic scroll
+// don't get misread as the user scrolling away (which would falsely arm the
+// unread pill on initial load / reconnect stream replay).
+let _scrollSettlingUntil = 0;
 function forceScrollToBottom() {
   _userPinnedAway = false;
   _unreadCount = 0;
   hideNewMsgPill();
+  _scrollSettlingUntil = Date.now() + 250;
   scrollToBottom();
 }
 
@@ -2009,6 +2014,7 @@ function maybeScrollToBottom() {
 
 let _streamUnreadArmed = true;  // armed at turn start; one bump per turn while away
 function bumpUnread() {
+  if (Date.now() < _scrollSettlingUntil) return;  // ignore noise during programmatic scroll-to-bottom
   if (!_userPinnedAway) return;
   if (!_streamUnreadArmed) return;
   _streamUnreadArmed = false;
@@ -2039,6 +2045,10 @@ function hideNewMsgPill() {
 
 // Track the user's scroll position to drive userPinnedAway.
 messagesEl.addEventListener('scroll', () => {
+  // Ignore scroll events fired while we're programmatically scrolling to the
+  // bottom (initial load / reconnect / after user sends) - they'd otherwise
+  // mark the user as "pinned away" mid-scroll and arm the unread pill.
+  if (Date.now() < _scrollSettlingUntil) return;
   if (isAtBottom()) {
     // User scrolled back to the bottom -> resume auto-follow, clear unread.
     _userPinnedAway = false;
