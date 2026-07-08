@@ -3132,6 +3132,7 @@ class _MessageList extends StatefulWidget {
 
 class _MessageListState extends State<_MessageList> {
   bool _userScrolled = false;
+  bool _loadingOlder = false;
 
   @override
   void initState() {
@@ -3143,15 +3144,59 @@ class _MessageListState extends State<_MessageList> {
     if (!widget.scrollCtrl.hasClients) return;
     final pos = widget.scrollCtrl.position;
     final atBottom = pos.pixels >= pos.maxScrollExtent - 60;
+    final settling = _scrollSettlingUntil != null &&
+        DateTime.now().isBefore(_scrollSettlingUntil!);
     if (atBottom && _userScrolled) {
       setState(() => _userScrolled = false);
-    } else if (!atBottom && !_userScrolled) {
+    } else if (!atBottom && !_userScrolled && !settling) {
+      // Ignore "scrolled away" during a programmatic scroll-to-bottom.
       setState(() => _userScrolled = true);
+    }
+    // Sync pinned/unread state to the provider (drives the "↓ N new" pill),
+    // but skip while settling so initial positioning doesn't arm the pill.
+    if (!settling) {
+      final provider = context.read<ChatProvider>();
+      provider.onUserScroll(atBottom: atBottom);
+    }
+    // Scroll near the top -> fetch one older page of history.
+    if (pos.pixels <= 80) {
+      _maybeLoadOlder();
     }
   }
 
+  Future<void> _maybeLoadOlder() async {
+    if (_loadingOlder) return;
+    final provider = context.read<ChatProvider>();
+    if (provider.historyExhausted || provider.historyLoading) return;
+    setState(() => _loadingOlder = true);
+    // Capture scroll geometry BEFORE the prepend so we can re-anchor.
+    double? beforePixels;
+    double? beforeMax;
+    if (widget.scrollCtrl.hasClients) {
+      beforePixels = widget.scrollCtrl.position.pixels;
+      beforeMax = widget.scrollCtrl.position.maxScrollExtent;
+    }
+    final inserted = await provider.loadOlderHistory();
+    if (inserted > 0 && beforePixels != null && beforeMax != null) {
+      // Re-anchor: keep the message that was at the top of the viewport in place.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!widget.scrollCtrl.hasClients) return;
+        final newMax = widget.scrollCtrl.position.maxScrollExtent;
+        final delta = newMax - beforeMax!;
+        widget.scrollCtrl.jumpTo(beforePixels! + delta);
+      });
+    }
+    if (mounted) setState(() => _loadingOlder = false);
+  }
+
+  // Brief window after a programmatic scroll-to-bottom during which _onScroll
+  // should NOT mark the user as scrolled-away (the animateTo fires intermediate
+  // scroll positions that would otherwise falsely arm the unread pill).
+  DateTime? _scrollSettlingUntil;
+
   void _scrollToBottom() {
     if (!widget.scrollCtrl.hasClients || _userScrolled) return;
+    _scrollSettlingUntil = DateTime.now().add(const Duration(milliseconds: 350));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.scrollCtrl.hasClients) {
         widget.scrollCtrl.animateTo(
@@ -3216,25 +3261,104 @@ class _MessageListState extends State<_MessageList> {
                 );
               },
             ),
+            // Lazy-history top hint: "loading older…" while fetching, or a
+            // persistent "- earliest -" marker once everything is loaded.
+            if (provider.historyExhausted && messages.length > 3)
+              Positioned(
+                top: 6,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF161b22),
+                      border: Border.all(color: const Color(0xFF21262d)),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Text(
+                      '- 已是最早消息 -',
+                      style: TextStyle(color: Color(0xFF8b949e), fontSize: 12),
+                    ),
+                  ),
+                ),
+              )
+            else if (_loadingOlder || provider.historyLoading)
+              Positioned(
+                top: 6,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF161b22),
+                      border: Border.all(color: const Color(0xFF21262d)),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Color(0xFF8b949e)),
+                        ),
+                        SizedBox(width: 6),
+                        Text('加载更早的消息…',
+                            style: TextStyle(
+                                color: Color(0xFF8b949e), fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             if (_userScrolled)
               Positioned(
-                bottom: 8,
-                right: 8,
-                child: GestureDetector(
-                  onTap: () {
-                    setState(() => _userScrolled = false);
-                    _scrollToBottom();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF22ab9c),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Icon(
-                      Icons.keyboard_arrow_down,
-                      color: Colors.white,
-                      size: 20,
+                bottom: 10,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: GestureDetector(
+                    onTap: () {
+                      provider.jumpToBottom();
+                      setState(() => _userScrolled = false);
+                      _scrollToBottom();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1f6feb),
+                        border: Border.all(color: const Color(0xFF388bfd)),
+                        borderRadius: BorderRadius.circular(999),
+                        boxShadow: const [
+                          BoxShadow(
+                              color: Color(0x66000000),
+                              blurRadius: 12,
+                              offset: Offset(0, 3)),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.keyboard_arrow_down,
+                              color: Colors.white, size: 18),
+                          const SizedBox(width: 4),
+                          Text(
+                            provider.unreadCount > 0
+                                ? '${provider.unreadCount} 条新消息'
+                                : '回到底部',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

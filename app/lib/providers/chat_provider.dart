@@ -63,6 +63,14 @@ class ChatProvider extends ChangeNotifier {
   int _reconnectAttempt = 0;
   bool _historyApplied = false;
 
+  // Lazy history pagination state. The initial WS chat_history push carries
+  // only the newest page; older messages are fetched on scroll-up via
+  // ChatService.fetchHistoryPage (GET /history?before=<id>&limit=<n>).
+  bool _historyHasMore = false;
+  bool _historyLoading = false;
+  bool _historyExhausted = false;
+  String? _oldestLoadedMsgId;
+
   /// True once we've successfully connected at least once, so we can tell a
   /// fresh first connect apart from a (service-driven) reconnect.
   bool _hasConnectedOnce = false;
@@ -189,13 +197,20 @@ class ChatProvider extends ChangeNotifier {
       case 'chat_history':
         if (!_historyApplied) {
           _historyApplied = true;
-          final history = evt.payload as List;
+          final p = evt.payload as Map;
+          final history = p['messages'] as List;
+          final hasMore = p['hasMore'] == true;
           if (_replaceHistoryOnReconnect) {
             _replaceHistoryOnReconnect = false;
             _replaceHistory(history);
           } else {
             _replayHistory(history);
           }
+          // Seed lazy-pagination cursor + hasMore from this initial page.
+          _historyHasMore = hasMore;
+          _historyExhausted = !hasMore;
+          _oldestLoadedMsgId = _firstLoadedMsgId();
+          notifyListeners();
         }
         break;
 
@@ -320,6 +335,10 @@ class ChatProvider extends ChangeNotifier {
       _currentMsg = ChatMessage(role: MessageRole.assistant, isStreaming: true);
       _messages.add(_currentMsg!);
       _activeTools.clear();
+      // A new assistant turn started. If the user is up reading history, count
+      // it as one unread new message (drives the "↓ N new" pill). One bump per
+      // turn since subsequent steps reuse this same bubble.
+      bumpUnread();
     }
   }
 
@@ -460,6 +479,91 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// id of the oldest message currently held in [_messages] (pagination cursor).
+  String? _firstLoadedMsgId() {
+    for (final m in _messages) {
+      if (m.id != null && m.id!.isNotEmpty) return m.id;
+    }
+    return null;
+  }
+
+  // ── Lazy history: public state + scroll-back fetch ────────────────────────
+  bool get historyHasMore => _historyHasMore;
+  bool get historyLoading => _historyLoading;
+  bool get historyExhausted => _historyExhausted;
+
+  /// Number of NEW messages received while the user was scrolled up reading
+  /// history (drives the "↓ N new" pill). Reset when the user jumps to bottom.
+  int _unreadCount = 0;
+  int get unreadCount => _unreadCount;
+  bool _userPinnedAway = false;
+  bool get userPinnedAway => _userPinnedAway;
+
+  /// Called by the chat screen's scroll listener. [atBottom] is whether the
+  /// viewport is currently parked at the latest message. Only notifies when the
+  /// pinned/unread state actually changes (scroll fires every frame).
+  void onUserScroll({required bool atBottom}) {
+    if (atBottom) {
+      if (_userPinnedAway || _unreadCount != 0) {
+        _userPinnedAway = false;
+        _unreadCount = 0;
+        notifyListeners();
+      }
+    } else {
+      if (!_userPinnedAway) {
+        _userPinnedAway = true;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Mark one new message as arrived while the user is pinned away (bumps the
+  /// unread count so the pill shows "↓ N new"). Called from the streaming
+  /// paths when a new assistant/user/system message lands.
+  void bumpUnread() {
+    if (!_userPinnedAway) return;
+    _unreadCount++;
+    notifyListeners();
+  }
+
+  /// Reset pinned/unread state and signal the screen to scroll to bottom.
+  void jumpToBottom() {
+    _userPinnedAway = false;
+    _unreadCount = 0;
+    notifyListeners();
+  }
+
+  /// Fetch the next older page of history and prepend it. Returns the count
+  /// inserted (0 if nothing more to load or fetch failed). The screen is
+  /// responsible for preserving scroll offset across the prepend.
+  Future<int> loadOlderHistory({int limit = 30}) async {
+    if (_historyLoading || _historyExhausted) return 0;
+    final cursor = _oldestLoadedMsgId;
+    if (cursor == null) return 0;
+    _historyLoading = true;
+    notifyListeners();
+    try {
+      final page = await _service.fetchHistoryPage(beforeId: cursor, limit: limit);
+      if (page.messages.isEmpty) {
+        _historyExhausted = true;
+        _historyHasMore = false;
+        return 0;
+      }
+      // Prepend in chronological order (server returns oldest-first within page).
+      _messages.insertAll(0, page.messages);
+      _oldestLoadedMsgId = page.messages.first.id ?? cursor;
+      _historyHasMore = page.hasMore;
+      _historyExhausted = !page.hasMore;
+      return page.messages.length;
+    } catch (e) {
+      // Transient error: leave exhausted=false so the user can retry by scrolling.
+      return 0;
+    } finally {
+      _historyLoading = false;
+      notifyListeners();
+    }
+  }
+
   void _addSystemMsg(String text) {
     _messages.add(ChatMessage(role: MessageRole.system, content: text));
     notifyListeners();
@@ -487,6 +591,10 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
     _messages.add(ChatMessage(role: MessageRole.user, content: t));
+    // User just sent a message -> resume auto-follow at the bottom, clear any
+    // unread pill (mirrors the web client's forceScrollToBottom on send).
+    _userPinnedAway = false;
+    _unreadCount = 0;
     notifyListeners();
   }
 
