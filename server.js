@@ -6741,6 +6741,11 @@ function parseClassifyResult(text) {
   else if (first === 'E') { state = 'waiting'; error = true; }
   else state = 'completed';
 
+  // phase=done means the task is finished - 'still processing' (P) is a
+  // contradiction, usually because the assistant reply was truncated
+  // mid-sentence in the prompt. Trust phase here.
+  if (phase === 'done' && state === 'running' && !error) state = 'completed';
+
   // Garbage filter for goal — block model regurgitation of system prompts,
   // classify-template phrases, API errors, and other non-task noise.
   let goalOk = goal.length >= 2 && goal.length <= 80;
