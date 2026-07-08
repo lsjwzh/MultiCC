@@ -6737,6 +6737,20 @@ function dispatchStateAction(result, ctx) {
   const { state, goal, phase, background, error } = result;
   const { sessionName, sessionId, cs, isTerminal } = ctx;
 
+  // ── Classify history (persisted, last 7 days) ────────────────────────
+  const now = Date.now();
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  const entry = { at: now, goal: goal || '', phase: phase || '', state, error: !!error };
+  const persisted = persistedSessions.get(sessionName);
+  if (persisted) {
+    const ts = persisted.taskState || {};
+    const hist = (Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [])
+      .filter(e => e.at > now - SEVEN_DAYS_MS);
+    hist.push(entry);
+    ts.classifyHistory = hist;
+    persisted.taskState = ts;
+  }
+
   // ── Common: persist goal + phase ────────────────────────────────────
   if (cs && cs.currentTask) {
     cs.currentTask.goal = (goal && goal !== '—') ? goal : '';
@@ -6846,12 +6860,14 @@ function dispatchStateAction(result, ctx) {
 //
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
-//     lastTurnEndedAt, lifecycle, pendingDispatches }
+//     lastTurnEndedAt, lifecycle, pendingDispatches, classifyHistory }
 //   lifecycle ∈ running | completed | waiting | interrupted
+//   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
 const TASK_STATE_DEFAULTS = {
   goal: '', phase: 'idle', startedAt: null, endedAt: null,
   lastSummary: '', lastSummaryAt: null, lastTurnEndedAt: null,
   lifecycle: 'idle', pendingDispatches: [],
+  classifyHistory: [],
 };
 
 function getTaskState(persisted) {
@@ -7020,71 +7036,25 @@ function auxHealthProbe() {
 // Recovery hook: aux just healed → reclassify sessions whose goal was never set
 // (stuck at '新任务') because classify was failing during the outage.
 function reclassifySessionsWithMissingGoals() {
+  const now = Date.now();
+  const STALE_MS = 5 * 60 * 1000; // 5 min since last classify → re-judge
   const candidates = [];
   for (const [sid, p] of persistedSessions) {
     if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
-    const ts = p.taskState || {};
-    // Only sessions that completed a turn but have no goal (or garbage goal)
-    if (ts.lifecycle !== 'completed' && ts.lifecycle !== 'waiting') continue;
-    const goal = ts.goal || '';
-    if (goal && goal.length >= 2 && !isInjectedOrJunkGoal(goal)) continue;
-    // Has chat history with a real assistant reply to classify
-    const hist = loadChatHistory(sid);
-    if (!hist || !hist.length) continue;
-    let lastText = '';
-    for (let i = hist.length - 1; i >= 0; i--) {
-      const m = hist[i];
-      if (m.role !== 'assistant') continue;
-      if (typeof m.content === 'string') { lastText = m.content; break; }
-      if (Array.isArray(m.content)) {
-        lastText = m.content.filter(b => b.type === 'text').map(b => b.text).join(' ');
-        break;
-      }
-    }
-    if (!lastText || lastText.length < 20) continue;
-    candidates.push({ sid, lastText, userMsg: getRecentUserMessages(sid, 1)[0] || '' });
-  }
-  if (!candidates.length) return;
-  console.log(`[multicc/aux] recovery: found ${candidates.length} session(s) with missing/garbage goals → reclassifying`);
-  for (const { sid, lastText, userMsg } of candidates) {
-    const prompt = buildClassifyPrompt({
-      priorGoal: '',
-      sessionName: sid,
-      reply: lastText,
-    });
-    auxQueue.enqueue({ type: 'recovery_reclassify', prompt, meta: { sessionName: sid } })
-      .then(result => {
-        if (result.cancelled) return;
-        const res = parseClassifyResult(result.text);
-        if (res.goal && res.goal !== '—' && res.goal.length >= 2) {
-          setTaskState(sid, { goal: res.goal, lastSummaryAt: Date.now() });
-          setSessionSummary(sid, res.goal);
-          console.log(`[multicc/aux] recovery reclassify ${sid}: goal="${res.goal}"`);
-        }
-        // If classify detected an API error during recovery, trigger retry.
-        if (res.error) {
-          const st = _apiRetryState.get(sid) || { count: 0 };
-          if (st.count < API_RETRY_MAX) {
-            st.count++;
-            _apiRetryState.set(sid, st);
-            const nudge = st.count <= 1
-              ? '刚才因 API 异常中断，回答可能不完整，请从中断处继续。'
-              : `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
-            console.log(`[multicc/aux] recovery API retry ${sid} #${st.count}/${API_RETRY_MAX}`);
-            waitInjector.safeInject(sid, nudge);
-          }
-        }
-      })
-      .catch(e => console.warn(`[multicc/aux] recovery reclassify ${sid} failed: ${e.message}`));
-  }
+    const ts = getTaskState(p);
 
-  // Also: sessions that had pending API retries when aux went down — their
-  // last assistant reply may still be the truncated one. Reclassify them so
-  // the retry nudge fires now that aux is back.
-  for (const [sid, st] of _apiRetryState) {
-    if (st.count >= API_RETRY_MAX) continue;
-    const p = persistedSessions.get(sid);
-    if (!p || p.type === 'aux' || p.kind !== 'chat') continue;
+    // Only sessions with unfinished work: lifecycle running/interrupted/waiting.
+    // completed/idle sessions don't need reclassify.
+    if (ts.lifecycle !== 'running' && ts.lifecycle !== 'interrupted' && ts.lifecycle !== 'waiting') continue;
+
+    // Skip if classify was recent enough (within STALE_MS).  If no classify
+    // history at all, always re-judge.
+    const lastEntry = (Array.isArray(ts.classifyHistory) && ts.classifyHistory.length > 0)
+      ? ts.classifyHistory[ts.classifyHistory.length - 1]
+      : null;
+    if (lastEntry && lastEntry.at > now - STALE_MS) continue;
+
+    // Has chat history with a real assistant reply to classify
     const hist = loadChatHistory(sid);
     if (!hist || !hist.length) continue;
     let lastText = '';
@@ -7095,22 +7065,30 @@ function reclassifySessionsWithMissingGoals() {
       if (Array.isArray(m.content)) { lastText = m.content.filter(b => b.type === 'text').map(b => b.text).join(' '); break; }
     }
     if (!lastText || lastText.length < 20) continue;
-    const prompt = buildClassifyPrompt({ priorGoal: '', sessionName: sid, reply: lastText });
+    candidates.push({ sid, lastText, priorGoal: ts.goal || '' });
+  }
+  if (!candidates.length) return;
+  console.log(`[multicc/aux] recovery: reclassifying ${candidates.length} session(s) with unfinished work`);
+  for (const { sid, lastText, priorGoal } of candidates) {
+    const prompt = buildClassifyPrompt({ priorGoal, sessionName: sid, reply: lastText });
     auxQueue.enqueue({ type: 'recovery_reclassify', prompt, meta: { sessionName: sid } })
       .then(result => {
         if (result.cancelled) return;
         const res = parseClassifyResult(result.text);
-        if (res.error) {
-          st.count++;
-          const nudge = st.count <= 1
-            ? '刚才因 API 异常中断，回答可能不完整，请从中断处继续。'
-            : `[第${st.count}次重试] 刚才因 API 异常中断，回答可能不完整，请从中断处继续。`;
-          console.log(`[multicc/aux] recovery API retry (pending) ${sid} #${st.count}/${API_RETRY_MAX}`);
-          waitInjector.safeInject(sid, nudge);
-        }
+        const stateMap = { running: 'P', waiting: 'W', completed: 'C' };
+        const stateLetter = stateMap[res.state] || res.state;
+        console.log(`[multicc/aux] recovery reclassify ${sid}: state=${stateLetter} goal="${res.goal}"${res.error ? ' (API error)' : ''}`);
+        // Let dispatchStateAction handle the result — it knows what to do
+        // (set goal, E→retry inject, C→mark done, W/B→start idle timer, etc.)
+        const cs = chatSessions.get(sid);
+        const sessionId = persistedSessions.get(sid)?.id || sid;
+        dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
       })
-      .catch(e => console.warn(`[multicc/aux] recovery pending retry ${sid} failed: ${e.message}`));
+      .catch(e => console.warn(`[multicc/aux] recovery reclassify ${sid} failed: ${e.message}`));
   }
+
+  // No more E-specific handling — classify's own dispatchStateAction handles
+  // E→retry inject, W→waiting, B→background idle timer, C→complete.
 }
 
 // ── Startup reconcile + manual reclassify ───────────────────────────────────
