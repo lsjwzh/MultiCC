@@ -5184,7 +5184,7 @@ const auxQueue = {
       if (!model) { reject(new Error('codex direct HTTP: no model resolved')); return; }
       const body = JSON.stringify({
         model,
-        max_tokens: 256,
+        max_tokens: 2048,
         messages: [{ role: 'user', content: task.prompt }],
       });
       let urlObj;
@@ -5253,7 +5253,7 @@ const auxQueue = {
       messages.push({ role: 'user', content: task.prompt });
       const body = JSON.stringify({
         model,
-        max_tokens: 128,
+        max_tokens: 2048,
         messages,
       });
       const req = require('http').request({
