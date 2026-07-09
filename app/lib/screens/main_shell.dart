@@ -226,7 +226,7 @@ class _ChatSheetState extends State<_ChatSheet>
   late final AnimationController _anim;
   bool _collapsing = false;
 
-  static const double _snapHalf = 0.75; // default opened height
+  static const double _snapHalf = 0.9; // default opened height (matches fleet panel)
   static const double _dismissBelow = 0.5; // drag below this → collapse home
 
   @override
