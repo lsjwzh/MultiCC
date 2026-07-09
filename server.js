@@ -6982,14 +6982,16 @@ function dispatchStateAction(result, ctx) {
       emitRunningNotify(sessionName, label);
       return;
     }
-    // Turn ended but the conversation says "keep going" → drive AI forward.
+    // Turn ended but the conversation says "keep going" -> drive AI forward.
+    // C is a real "keep going" verdict (user pushed/confirmed), not an optional
+    // relay - so it ignores the autoContinue toggle (that's for B). autoContinue
+    // itself is uncapped + hasWait-guarded.
     clearBgIdleTimer(sessionName);
-    if (tryAutoContinue(sessionName, cs, ctx.cwd, '继续：请接着完成当前任务。')) {
+    if (waitInjector.autoContinue(sessionName, { nudge: '继续：请接着完成当前任务。' })) {
       console.log(`[multicc/classify] ${sessionName} C (continue) -> auto-continue`);
       return;
     }
-    // autoContinue off / capped → fall through to the waiting broadcast so the
-    // user can nudge manually (rests as 等待, not 完成).
+    // explicit wait pending -> fall through to the waiting broadcast.
   }
 
   // ── C(no auto-continue) / W / B / E all → waiting (user-facing) ─────────
