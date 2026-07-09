@@ -6736,13 +6736,25 @@ for (const [mount, bridge] of [
 const workspaceStatus = new Map();   // sessionId → { status, currentFile, lastActivity }
 const workspaceClients = new Map();  // dirId → Set<ws>
 const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI "最近任务" one-liner
-// Hydrate from persisted summaries so the dashboard shows each session's last
-// known "上下文特点" immediately after a restart (was lost when memory-only).
-  // Sessions that were mid-flight (classifyState='P') when the server died will
-  // be picked up by the first scanAndReclassify sweep and re-judged via classify.
+// Hydrate the dashboard from persisted state so a restart doesn't blank every
+// card. Two runtime-only Maps are lost on restart and must be rebuilt from the
+// durable taskState:
+//   • sessionSummaries — the "最近任务" one-liner
+//   • workspaceStatus  — the card's display status. Rebuilt from the persisted
+//     classifyState (D/C/W/B/E/P) so the board shows the real state immediately,
+//     NOT 'idle'. Without this, D/W sessions would stay idle forever (scan skips
+//     them) and C/B/E/P would show idle until the first 60s scan re-judges.
   for (const [sid, p] of persistedSessions) {
     if (!p) continue;
     if (p.summary) sessionSummaries.set(sid, { summary: p.summary, ts: p.summaryTs || Date.now() });
+    if (p.type === 'aux' || p.type === 'gateway') continue;
+    const cls = p.taskState && p.taskState.classifyState;
+    if (cls) {
+      // D → completed (terminal). C/W/B/E/P are all "not done" → waiting; the
+      // scan re-judges C/B/E/P within 60s, while D/W stay as the accurate value.
+      const status = cls === 'D' ? 'completed' : 'waiting';
+      workspaceStatus.set(sid, { status, currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null });
+    }
   }
 
 // ── Unified classify result parser ─────────────────────────────────────────
