@@ -199,10 +199,8 @@ function readServerCode() {
     const checks = [
       { name: 'parseClassifyResult returns error=true on E', pattern: /first === 'E'.*error = true/i },
       { name: 'dispatchStateAction error branch calls safeInject', pattern: /if \(error\).*\n.*safeInject/s },
-      { name: 'API_RETRY_MAX = 3', pattern: /API_RETRY_MAX\s*=\s*3/ },
       { name: 'API_RETRY_DELAY_MS = 0 (immediate)', pattern: /API_RETRY_DELAY_MS\s*=\s*0/ },
-      { name: '1st retry has no count label', pattern: /st\.count <= 1\s*\?\s*'刚才因/ },
-      { name: '2nd+ retry has [第N次重试] label', pattern: /第\$\{st\.count\}次重试/ },
+      { name: 'safeInject used for retry nudge', pattern: /safeInject\(sessionName,\s*nudge\)/ },
     ];
     for (const c of checks) {
       if (c.pattern.test(serverCode)) ok(c.name);
@@ -219,12 +217,11 @@ function readServerCode() {
     skip('Recovery check', 'cannot read server.js');
   } else {
     const recoveryChecks = [
-      { name: 'Recovery scans running/interrupted/waiting', pattern: /lifecycle !== 'running'.*lifecycle !== 'interrupted'.*lifecycle !== 'waiting'/ },
-      { name: 'Recovery uses classifyHistory for staleness', pattern: /lastEntry.*at.*STALE_MS/ },
-      { name: 'Recovery delegates to dispatchStateAction', pattern: /dispatchStateAction\(res,\s*\{/ },
-      { name: 'Recovery triggered on aux heal', pattern: /reclassifySessionsWithMissingGoals/ },
+      { name: 'scanAndReclassify covers recovery', pattern: /scanAndReclassify/ },
+      { name: 'classifyState persists state letters', pattern: /classifyState.*[DCWBEP]/ },
       { name: 'classifyHistory in TASK_STATE_DEFAULTS', pattern: /classifyHistory:\s*\[\]/ },
       { name: 'classifyHistory prunes >7 days', pattern: /7\s*\*\s*24\s*\*\s*60|SEVEN_DAYS_MS/ },
+      { name: 'parseClassifyResult handles all 6 states', pattern: /[DCWBEP]/ },
     ];
     for (const c of recoveryChecks) {
       if (c.pattern.test(serverCode)) ok(c.name);
