@@ -4891,12 +4891,13 @@ function classifyTerminalIdle(sessionId, tail) {
 第1行：当前任务目标，用一个简短的名词性短语（中文≤20字，英文≤10词）。如果没有任务则输出「—」。
 第2行：当前阶段，必须是以下五个词之一：规划中 / 实现中 / 验证中 / 收尾中 / 已完成
 第3行：仅一个字母，表示当前状态——
-  C = AI 应继续（终端回到空闲提示符或正常完成输出，不需要用户操作；没有反问/等待迹象）
+  D = 任务已完成（终端回到空闲提示符、汇报结果后正常收尾，不需要用户操作、也不需要再继续）
+  C = AI 应继续（任务还没做完，但可以直接接着跑，不需要用户操作；没有反问/等待迹象）
   W = 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
   B = 正在等待后台任务/子进程/外部数据返回后才能继续（如 Monitor 监控进度、nohup 后台跑、等部署/API）
   E = API 异常中断（输出末尾出现 “API Error”、503、”Connection closed”、”Overloaded”、”Internal server error”、”The system is busy” 等错误信息，说明 AI 并非正常完成而是被故障截断）
 
-判断 C/W 时看整体走向：终端输出如果是完成态（回到提示符、汇报结果后没有反问）→ C；有明确反问/让用户选 → W。
+判断时看整体走向：终端回到提示符、汇报结果后没有反问 → D（完成）；任务没做完但能接着跑 → C；有明确反问/让用户选 → W。
 
 只输出这三行。不要加序号、解释、引号、空行。
 
@@ -6749,9 +6750,14 @@ const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI
 // the same 3-line format: goal / phase / state. This parser normalises both and
 // returns a canonical { state, goal, phase, background, error } shape.
 //
-// State letters:
-//   C = completed, W = waiting on user, B = waiting on background/external,
-//   E = API error (truncated reply), P = still processing (mid-turn only)
+// State letters (line 3):
+//   D = done          → state 'completed'  (task closed; notify user)
+//   C = continue      → state 'continue'   (user pushed/confirmed; AI should keep going)
+//   W = wait on user  → state 'waiting'
+//   B = wait on bg    → state 'waiting' + background
+//   E = API error     → state 'waiting' + error (truncated reply → retry)
+//   P = processing    → state 'running'    (mid-turn only; refresh label)
+//   unknown           → state 'waiting'    (safe default; never falsely 'completed')
 function parseClassifyResult(text) {
   // DeepSeek thinking-block guard: strip everything before the marker.
   let clean = String(text || '');
@@ -6785,10 +6791,14 @@ function parseClassifyResult(text) {
 
   let state, background = false, error = false;
   if (first === 'P') state = 'running';
+  else if (first === 'C') state = 'continue';
   else if (first === 'W') state = 'waiting';
   else if (first === 'B') { state = 'waiting'; background = true; }
   else if (first === 'E') { state = 'waiting'; error = true; }
-  else state = 'completed';
+  else if (first === 'D') state = 'completed';
+  // Unknown/unparseable → safe default: wait for user. NEVER default to
+  // 'completed' — an unparseable verdict must not falsely mark a task done.
+  else state = 'waiting';
 
   // Garbage filter for goal — block model regurgitation of system prompts,
   // classify-template phrases, API errors, and other non-task noise.
@@ -6810,11 +6820,15 @@ function parseClassifyResult(text) {
 // Every classify result flows through here. The dispatcher maps state letters
 // to plugin handlers — classify only judges, this layer executes.
 //
-//   C → complete   (set completed, broadcast)
-//   W → waitUser   (set waiting, broadcast)
-//   B → waitBg     (idle timer → inject "继续" after 3 min of silence)
-//   E → apiError   (replace-style retry inject [第N次重试], cap 3)
-//   P → running    (no-op for now — mid-turn, let the next classify refine)
+//   D → complete   (set completed, notify user, classifyState='D' → scan skips)
+//   C → continue   (AI should keep going → auto-continue; classifyState='C')
+//   W → waitUser   (set waiting, broadcast; classifyState='W')
+//   B → waitBg     (idle timer → inject "继续" after 3 min of silence; 'B')
+//   E → apiError   (retry inject; classifyState='E')
+//   P → running    (mid-turn refresh label; or premature-stop → auto-continue)
+//
+// Only D is terminal — every other state is non-terminal and will be re-judged
+// by the periodic scan until the task genuinely completes (D).
 //
 // Context object carries everything the handlers need (varies by caller):
 //   { sessionName, sessionId, cs?, mon?, isTerminal?, cwd?, opts? }
@@ -6932,7 +6946,7 @@ function dispatchStateAction(result, ctx) {
   }
 
   if (state === 'completed') {
-    // C — task finished.
+    // D — task genuinely finished. This is the ONLY terminal state.
     clearBgIdleTimer(sessionName);
     const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
     if (isTerminal) {
@@ -6945,12 +6959,34 @@ function dispatchStateAction(result, ctx) {
     const dirId = persistedSessions.get(sessionName)?.dirId;
     if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', message: msg });
     setSessionStatus(sessionName, { status: 'completed' });
-    setTaskState(sessionName, { classifyState: 'C', endedAt: Date.now() }, { save: false });
+    setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() }, { save: false });
     waitInjector.resetAuto(sessionName);
     return;
   }
 
-  // ── W / B / E all → waiting (user-facing) ───────────────────────────
+  if (state === 'continue') {
+    // C — user pushed / confirmed / gave a new instruction; task NOT done, AI
+    // should keep going. Persist 'C' (non-terminal → scan will re-judge).
+    setTaskState(sessionName, { classifyState: 'C', endedAt: Date.now() }, { save: false });
+    // A turn already in progress will carry the continuation itself — just
+    // refresh the in-progress label, don't inject or finalize.
+    if (cs && cs.isStreaming) {
+      const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[phase] || '';
+      const label = finalGoal ? `处理中：${finalGoal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
+      emitRunningNotify(sessionName, label);
+      return;
+    }
+    // Turn ended but the conversation says "keep going" → drive AI forward.
+    clearBgIdleTimer(sessionName);
+    if (tryAutoContinue(sessionName, cs, ctx.cwd, '继续：请接着完成当前任务。')) {
+      console.log(`[multicc/classify] ${sessionName} C (continue) -> auto-continue`);
+      return;
+    }
+    // autoContinue off / capped → fall through to the waiting broadcast so the
+    // user can nudge manually (rests as 等待, not 完成).
+  }
+
+  // ── C(no auto-continue) / W / B / E all → waiting (user-facing) ─────────
 
   // E: API error -> inject retry nudge. Uncapped - keeps retrying as long
   // as aux (classify) is healthy. Before injecting, prune trailing
@@ -7000,8 +7036,11 @@ function dispatchStateAction(result, ctx) {
   const dirId2 = persistedSessions.get(sessionName)?.dirId;
   if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: 'waiting', message: waitMsg });
   setSessionStatus(sessionName, { status: 'waiting' });
-  setTaskState(sessionName, { classifyState: 'W', endedAt: Date.now() }, { save: false });
-  // Reset auto-continue guard on W (user is in charge now). B/E keep their own flow.
+  // Persist the accurate letter for observability (E/B/W or a fell-through C).
+  // None of these are terminal — the scan re-judges everything except 'D'.
+  const cls = error ? 'E' : background ? 'B' : (state === 'continue' ? 'C' : 'W');
+  setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() }, { save: false });
+  // Reset auto-continue guard on a plain W (user is in charge now). B/E/C keep their own flow.
   if (state === 'waiting' && !background && !error) {
     waitInjector.resetAuto(sessionName);
   }
@@ -7016,7 +7055,7 @@ function dispatchStateAction(result, ctx) {
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
 //     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory }
-//   classifyState ∈ P | C | W | B | null  (null = not yet classified)
+//   classifyState ∈ D | C | W | B | E | P | null  (D=done terminal; null=never classified)
 //   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
 const TASK_STATE_DEFAULTS = {
   goal: '', phase: 'idle', startedAt: null, endedAt: null,
@@ -7188,19 +7227,28 @@ function auxHealthProbe() {
   }).catch(() => { /* recordFail already called inside drain */ });
 }
 
-// Recovery hook: aux just healed → reclassify sessions whose goal was never set
-// (stuck at '新任务') because classify was failing during the outage.
-
-
 // ── Periodic scan (replaces the old startup-only reconcile) ────────────────
-// Every minute, sweep sessions whose classifyState is not 'C' (i.e. still
-// P/W/B or never classified) and enqueue them for re-judging. Dedup against
-// the queue, throttle recently-judged sessions, and bail if the queue is
-// backed up. On restart the first tick picks up everything that isn't
-// definitively done — no special boot logic needed.
+// Every minute, sweep sessions whose classifyState is not 'D' (i.e. still
+// C/W/B/E/P or never classified) and enqueue them for re-judging. 'D' (done)
+// is the only terminal state. Dedup against the queue, throttle recently-judged
+// sessions, and bail if the queue is backed up. On restart the first tick picks
+// up everything that isn't definitively done — no special boot logic needed.
 const SCAN_INTERVAL_MS = 60 * 1000;
 const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
 const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
+
+// A goal is junk if it's empty (classify never ran or failed) or is really a
+// system-injected message / raw tool payload rather than a user-authored goal.
+function isInjectedOrJunkGoal(goal) {
+  const g = String(goal || '').trim();
+  if (!g) return true;  // empty goal is junk — classify never ran or failed
+  return g.startsWith(waitInjector.SYS_PREFIX) || g.startsWith('<') || g.startsWith('"<');
+}
+
+// Whether a user message is system-injected (autoContinue / apiRetry / bgCheck).
+function isSystemInjectedMsg(msg) {
+  return String(msg || '').trim().startsWith(waitInjector.SYS_PREFIX);
+}
 
 function scanAndReclassify() {
   if (auxQueue.isUnhealthy()) return;
@@ -7216,9 +7264,9 @@ function scanAndReclassify() {
     if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
     const ts = getTaskState(p);
 
-    // Only sessions not definitively complete (C = done).
-    // null = never classified -> needs judging. P/W/B -> may need re-judging.
-    if (ts.classifyState === 'C') continue;
+    // Only sessions not definitively complete. 'D' (done) is terminal.
+    // null = never classified → needs judging. C/W/B/E/P → may need re-judging.
+    if (ts.classifyState === 'D') continue;
 
     // throttle: live classify already judges active turns every 60s
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
@@ -7675,7 +7723,7 @@ function cancelClassify(cs) {
 // above, which is the terminal-mode 2-line parser).
 // Line 1: goal — noun-phrase in the conversation's language (中文 ≤20 字 / EN ≤10 words)
 // Line 2: phase ∈ 规划中|实现中|验证中|收尾中|已完成 (Chinese codes; EN synonyms tolerated)
-// Line 3: P | C | W | B
+// Line 3: D(done) | C(continue) | W(wait user) | B(wait bg) | E(api error) | P(processing)
 // Tolerant of blank lines, prefixes, and model cruft.
 // Build the classify system prompt (instructions only, no data).
 function buildClassifySystemPrompt(priorGoal) {
@@ -7700,16 +7748,22 @@ function buildClassifySystemPrompt(priorGoal) {
        AI 在等用户回复时不应判为「已完成」；只有把当前任务所有要求都做完了才判「已完成」。
        最新用户消息如果提出了新的具体需求，即使 AI 还没开始做，也应判「规划中」而非「已完成」。
 
-第3行：仅一个字母，对话主动权判断（仅针对当前任务段）：
-       C = AI 应继续（用户发来新需求、纠错、认可、确认、继续执行等推进类消息；AI 不需要等用户做决定）
+第3行：仅一个字母，判断【当前任务段】接下来该谁行动：
+       D = 任务已完成（助手把当前任务的所有要求都做完了，正常收尾、没有反问、也不需要再继续；用户可以验收）
+       C = AI 应继续（用户发来新需求、纠错、认可、确认、继续执行等推进类消息，任务还没做完，AI 应接着做；AI 不需要等用户做决定）
        W = 等用户（助手在反问、征求意见、让用户做选择；或用户表达了犹豫需要时间考虑）
        B = 在等外部系统/后台任务（AI 没法继续，用户也帮不上忙；在等 build/部署/API/子进程）
        E = API 异常中断（助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等故障信息，回答被截断而非正常完成）
-       P = AI 还在处理中（回复为空、或明显话没说完，还没到判断主动权的时候）
+       P = AI 还在处理中（回复为空、或明显话没说完，还没到判断的时候）
 
-判断 C/W 时看当前任务段的整体走向，不是看最后一句有没有问号。用户最新消息如果是推进/确认/新指令 -> C。助手明确在等用户做选择 -> W。回复为空时判 P。API故障导致截断的回复判 E。
+关键区分 D vs C：
+  · 助手已把任务做完、正常收尾、没有后续动作 → D（完成）
+  · 任务还没做完，且用户/对话在推动继续（新指令、纠错、"继续""再试试"、确认后要接着做）→ C（应继续）
+  · 最新一条是用户的推进消息、AI 还没回应 → 这是 C（AI 该继续干），绝不是 D
+判断时看当前任务段的整体走向，不是看最后一句有没有问号。助手明确在等用户做选择 -> W。回复为空/话没说完判 P。API故障截断判 E。
 
-⚠️ 若对话明显还在进行中（最后是助手消息且话没说完、或助手正在执行操作），第3行直接判 P，不要硬猜 C/W。
+⚠️ 若对话明显还在进行中（最后是助手消息且话没说完、或助手正在执行操作），第3行直接判 P，不要硬猜。
+⚠️ 只有真正做完当前任务才判 D；AI 在等用户回复、或任务还没收尾，都不能判 D。
 
 只输出这三行结果。不要输出分组过程、不要加序号、解释、引号、空行。`;
 }
