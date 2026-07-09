@@ -5179,6 +5179,7 @@ const auxQueue = {
         role: 'assistant', content: resultText, ts: Date.now(),
         taskId: task.id, durationMs, cancelled: task.cancelled,
         cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
+        enqueuedAt: task.ts, startedAt: startTime, queueMs: startTime - task.ts,
       });
 
       if (task.cancelled) {
@@ -5202,6 +5203,7 @@ const auxQueue = {
         role: 'assistant', content: `[ERROR] ${errMsg}`, ts: Date.now(),
         taskId: task.id, durationMs, error: true,
         cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
+        enqueuedAt: task.ts, startedAt: startTime, queueMs: startTime - task.ts,
       });
       task.reject(err);
       this.broadcast({ type: 'aux_event', status: 'error', task: { id: task.id, type: task.type }, error: errMsg, durationMs });
