@@ -6891,9 +6891,10 @@ function pruneErrorTurnPairs(sessionName) {
   return removed;
 }
 
-// Attempt an auto-continue nudge. Respects the user's autoContinue toggle and
-// waitInjector's own per-session count cap (MAX_AUTO_CONTINUE). Returns true
-// if a nudge was injected, false if suppressed (off / capped / wait pending).
+// Attempt an auto-continue nudge (C/B states). Respects the user's autoContinue
+// toggle; the underlying waitInjector.autoContinue is UNCAPPED (only 'D' is
+// terminal). Returns true if a nudge was injected, false if suppressed
+// (toggle off / explicit wait pending).
 function tryAutoContinue(sessionName, cs, cwd, nudge) {
   const p = persistedSessions.get(sessionName);
   if (!p || !p.autoContinue) return false;
@@ -6930,19 +6931,24 @@ function dispatchStateAction(result, ctx) {
 
   // ── Dispatch per state ──────────────────────────────────────────────
   if (state === 'running') {
-    // P — mid-turn, just refresh labels. Don't finalize.
+    // P — still processing. Two sub-cases:
     if (cs && cs.isStreaming) {
+      // (1) Genuinely mid-turn (a turn IS in flight) — just refresh labels.
       const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[phase] || '';
       const label = finalGoal ? `处理中：${finalGoal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
       emitRunningNotify(sessionName, label);
       return;
     }
-    // Turn ended but AI didn't finish (premature stop) -> drive it forward.
-    if (tryAutoContinue(sessionName, cs, ctx.cwd, '继续：上一轮似乎还没处理完，请接着完成。')) {
-      console.log(`[multicc/classify] ${sessionName} P (premature stop) -> auto-continue`);
+    // (2) P but no turn in flight — the CLI process / event stream already ended
+    // while classify still reads the reply as incomplete. That's an unknown
+    // interruption (network drop, crashed CLI, truncated stream), NOT real
+    // "still processing". Recover it like a fault (E-class): resume regardless of
+    // the autoContinue toggle, capped to avoid an infinite drop-loop.
+    if (waitInjector.resumeInterrupted(sessionName)) {
+      console.log(`[multicc/classify] ${sessionName} P + no turn in flight → 未知中断, resume`);
       return;
     }
-    // autoContinue off / capped -> fall through to the waiting broadcast below.
+    // resume capped / explicit wait pending -> fall through to the waiting broadcast.
   }
 
   if (state === 'completed') {
@@ -8376,7 +8382,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
-  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); clearBgIdleTimer(sessionName); }
+  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); clearBgIdleTimer(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
   let cs = chatSessions.get(sessionName);
   if (!cs) {
@@ -9040,7 +9046,8 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs._codexPendingStreamErrorCount = 0;
       cs._codexStreamContinuationCount = 0;
       // classify prompt + dispatchStateAction handles API errors via state E.
-      cs._sawApiError = false;
+      // Capture the flag before resetting so the branch below can reference it.
+      const sawApi = cs._sawApiError; cs._sawApiError = false;
 
       // Resting status — classifyTurnEnd is the single decider of C/W/B/E.
       if (killReason) {

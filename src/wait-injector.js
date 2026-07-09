@@ -11,10 +11,10 @@
 //   B. poll      — the model gives a shell command or URL + a match condition;
 //                  we poll on an interval and inject the output once it matches.
 //   D. auto      — fallback with NO explicit registration: when a turn ends in a
-//                  "waiting on background (not on the user)" state, nudge the
-//                  session to continue. Guarded: capped consecutive count,
-//                  reset by any real user message, skipped if an explicit
-//                  wait (A/B) is already pending for that session.
+//                  "waiting on background (B)" or "should continue (C)" state,
+//                  nudge the session to continue. UNCAPPED (only 'D' is terminal;
+//                  the scan is the backstop), skipped if an explicit wait (A/B)
+//                  is already pending for that session.
 //   E. bgCheck   — chat-only anti-pattern guard: a turn launched a Bash tool with
 //                  run_in_background:true. In a chat session that background
 //                  process gets reaped at turn/context boundary, so the model's
@@ -25,11 +25,16 @@
 //   F. apiRetry  — chat-only resilience guard: a turn ended on a transport/API
 //                  error (e.g. "API Error: Connection closed mid-response") rather
 //                  than a real completion, so the assistant's answer is truncated
-//                  and the turn is effectively dead. We auto-inject "刚才异常中断，
-//                  请继续" to resume. Capped at MAX_API_RETRY *consecutive* tries:
-//                  the counter is reset the moment any turn finishes cleanly (or a
-//                  real user message arrives), so "3 in a row" means 3 failures
-//                  back-to-back, after which we stop nagging and leave it to the user.
+//                  and the turn is effectively dead. server.js injects "刚才因 API
+//                  异常中断…请继续" via safeInject — UNCAPPED, retrying as long as
+//                  aux (classify) stays healthy; when aux goes down classify stops
+//                  running and the retry loop stops naturally.
+//   G. resumeInterrupted — classify judged P (still processing) but the CLI
+//                  process / event stream has ALREADY ended: the turn died
+//                  mid-flight (network drop, crashed CLI, truncated stream). We
+//                  inject "【判定未知中断】请继续刚才未完成的任务" to resume.
+//                  Fault recovery, so it does NOT respect the autoContinue toggle
+//                  (same as F) and is UNCAPPED — only 'D' (done) is terminal.
 //
 // All three converge on inject() → runChatTurn(session, text), which for a
 // streaming session feeds the warm process (queued if a turn is mid-flight) and
@@ -46,12 +51,17 @@ let _log = () => {};
 const waits = new Map();        // waitId -> wait spec/state
 const autoState = new Map();    // session -> { count, lastHash }
 const bgState = new Map();      // session -> { count }  — run_in_background guard (E)
+const interruptState = new Map(); // session -> { count }  — unknown-interruption resume (G)
 let ticker = null;
 
 const TICK_MS = 1000;
 const DEFAULTS = { intervalSec: 15, maxChecks: 40, timeoutSec: 1800 };
 const MIN_INTERVAL_SEC = 3;
-const MAX_AUTO_CONTINUE = 5;     // consecutive auto-continues before giving up
+// autoContinue (D/C→continue) and resumeInterrupted (G) are UNCAPPED — only the
+// classify verdict 'D' (done) is terminal, so the loop keeps pushing until the
+// task is genuinely complete (scan is the backstop). No MAX_AUTO_CONTINUE /
+// MAX_RESUME_INTERRUPTED give-up caps. bgCheck keeps its cap: it is a one-off
+// anti-pattern correction (run_in_background misuse), not task progression.
 const MAX_BG_CHECK = 6;          // consecutive run_in_background nudges before giving up
 const BG_CHECK_DELAY_MS = 25000; // wait ~25s after a bg-launching turn, then nudge
 
@@ -153,6 +163,7 @@ function cancelForSession(session) {
   for (const [id, w] of waits) if (w.session === session) { waits.delete(id); n++; }
   autoState.delete(session);
   bgState.delete(session);
+  interruptState.delete(session);
   return n;
 }
 
@@ -210,20 +221,19 @@ function matches(w, out) {
 }
 
 // ── Auto-continue fallback (D) ──
-// Called from the post-turn classifier when state === 'background'. Guarded so a
-// session can't auto-loop forever. Skipped if an explicit wait already covers it.
+// Called from the post-turn classifier when state === 'background' (B) or
+// 'continue' (C). UNCAPPED — only 'D' (done) is terminal, so we keep nudging the
+// session forward until classify judges it complete; the periodic scan is the
+// backstop. Skipped only if an explicit wait (A/B) already covers the session.
+// The count is kept purely for observability (log "#N"), not as a give-up cap.
 function autoContinue(session, opts = {}) {
   if (hasWait(session)) { _log(`[wait] auto skip ${session}: explicit wait pending`); return false; }
   const st = autoState.get(session) || { count: 0, lastHash: null };
-  if (st.count >= MAX_AUTO_CONTINUE) {
-    _log(`[wait] auto cap reached for ${session} (${st.count})`);
-    return false;
-  }
   st.count++;
   autoState.set(session, st);
   const nudge = opts.nudge ||
     '继续：你上一轮提到的在等待的外部结果，如果已经可以推进就继续完成任务；如果确实还需要等待，请用 multicc 的 /wait 接口注册轮询或回调，而不要直接停下。';
-  _log(`[wait] auto-continue ${session} (#${st.count})`);
+  _log(`[wait] auto-continue ${session} (#${st.count}, uncapped)`);
   const d = Number(opts.delayMs);
   const delayMs = Number.isFinite(d) ? Math.max(0, d) : 2000;
   injectSystemMsg(session, nudge, delayMs);
@@ -233,6 +243,32 @@ function autoContinue(session, opts = {}) {
 // Reset the auto-continue counter — call on a real user message, or when the
 // turn ends "done" / "waiting on user".
 function resetAuto(session) { autoState.delete(session); }
+
+// ── Unknown-interruption resume (G) ──
+// Called when classify judged P (still processing) but the CLI process / event
+// stream has ALREADY ended — i.e. the turn died mid-flight (network drop,
+// crashed CLI, truncated event stream) rather than genuinely still running.
+// A dropped turn is a fault to recover, same class as apiRetry (F): it does NOT
+// respect the autoContinue toggle, and is UNCAPPED — only 'D' (done) is terminal,
+// so we keep nudging until the task actually completes; the periodic scan is the
+// backstop. Count is kept purely for observability. Skipped if an explicit wait
+// already covers the session.
+function resumeInterrupted(session, opts = {}) {
+  if (hasWait(session)) { _log(`[wait] resumeInterrupted skip ${session}: explicit wait pending`); return false; }
+  const st = interruptState.get(session) || { count: 0 };
+  st.count++;
+  interruptState.set(session, st);
+  const nudge = opts.nudge || '【判定未知中断】请继续刚才未完成的任务';
+  _log(`[wait] resumeInterrupted ${session} (#${st.count}, uncapped)`);
+  const d = Number(opts.delayMs);
+  const delayMs = Number.isFinite(d) ? Math.max(0, d) : 2000;
+  injectSystemMsg(session, nudge, delayMs);
+  return true;
+}
+
+// Reset the interruption-resume counter — call on a real user message or a
+// clean (non-P) turn end.
+function resetInterrupted(session) { interruptState.delete(session); }
 
 // ── run_in_background anti-pattern guard (E) ──
 // Chat-only. Called at a turn boundary when that turn launched a Bash tool with
@@ -295,7 +331,7 @@ function injectSystemMsg(session, text, delayMs) {
 }
 
 function stats() {
-  return { waits: waits.size, autoSessions: autoState.size, bgSessions: bgState.size };
+  return { waits: waits.size, autoSessions: autoState.size, bgSessions: bgState.size, interruptSessions: interruptState.size };
 }
 
 // Busy-safe delivery of arbitrary text into a session as a new turn. Reuses the
@@ -308,7 +344,7 @@ function safeInject(session, text) { fireInject(session, text); }
 module.exports = {
   init, register, resolve, cancel, cancelForSession,
   listForSession, hasWait, tick, autoContinue, resetAuto,
-  bgCheck, resetBg, stats, safeInject,
+  bgCheck, resetBg, resumeInterrupted, resetInterrupted, stats, safeInject,
   injectSystemMsg, SYS_PREFIX,
   _waits: waits, // for tests
 };
