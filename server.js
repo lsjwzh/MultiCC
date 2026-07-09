@@ -7270,9 +7270,14 @@ function scanAndReclassify() {
     if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
     const ts = getTaskState(p);
 
-    // Only sessions not definitively complete. 'D' (done) is terminal.
-    // null = never classified → needs judging. C/W/B/E/P → may need re-judging.
-    if (ts.classifyState === 'D') continue;
+    // Skip states that only change on NEW USER INPUT — re-judging the same
+    // history just re-derives the same verdict (waste, and can't self-correct):
+    //   D = done (terminal)      W = waiting on user
+    // A real user message flips classifyState to 'P' (ensureCurrentTask) and
+    // re-enters the turn flow, so W naturally leaves without scan's help.
+    // Only C/B/E/P/null need re-judging — those advance on SYSTEM-side events
+    // (auto-continue, background done, API recovered, interrupted resume).
+    if (ts.classifyState === 'D' || ts.classifyState === 'W') continue;
 
     // throttle: live classify already judges active turns every 60s
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
