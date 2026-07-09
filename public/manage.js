@@ -5547,6 +5547,17 @@ function _auxModalOpen() {
 }
 
 // Render the aux task history into the modal body (newest first).
+// Manual refresh of aux history (no WS push for the detail panel).
+function refreshAuxHistory() {
+  fetch('/api/aux/history?limit=100').then(r => r.json()).then(data => {
+    if (Array.isArray(data)) {
+      _auxHistory = data;
+      if (_focusedSessionId === '__aux__') renderAuxPanel();
+      if (_auxModalOpen()) renderAuxModal();
+    }
+  }).catch(() => {});
+}
+
 function renderAuxModal() {
   const body = document.getElementById('aux-modal-body');
   if (!body) return;
@@ -5565,7 +5576,8 @@ function renderAuxModal() {
     }
   }
   tasks.reverse();
-  body.innerHTML = tasks.map((t, idx) => {
+  const refreshBtn = '<div style=\'margin-bottom:10px;text-align:right;\'><button onclick=\'refreshAuxHistory()\' style=\'background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:12px;\'>🔄 刷新</button></div>';
+  body.innerHTML = refreshBtn + tasks.map((t, idx) => {
     const time = new Date(t.input.ts);
     const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
     const taskType = t.input.taskType || 'unknown';
@@ -5586,7 +5598,23 @@ function renderAuxModal() {
     const detailId = 'aux-modal-detail-' + idx;
     const inputFull = escapeHtml(t.input.content || '');
     const outputFull = t.output ? escapeHtml(t.output.content || '') : '';
+    const o = t.output || {};
+    const _fmt = (ms) => { if (!ms) return '-'; const d = new Date(ms); const p = (n,l=2) => String(n).padStart(l,'0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(),3)}`; };
+    const _sec = (ms) => (ms == null) ? '-' : (ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`);
+    const tlCli = o.cli || t.input.cli || '';
+    const tlTrans = o.transport || t.input.transport || '';
+    const timeline = `<div style="color:#8b949e;margin-bottom:10px;font-size:11px;line-height:1.7;">
+        <span style="color:#58a6ff;font-weight:600;">⏱ Timeline</span><br>
+        入队: <span style="color:#c9d1d9;">${_fmt(o.enqueuedAt || t.input.ts)}</span> ·
+        开始: <span style="color:#c9d1d9;">${_fmt(o.startedAt)}</span> ·
+        完毕: <span style="color:#c9d1d9;">${_fmt(o.ts)}</span><br>
+        排队: <span style="color:#d29922;">${_sec(o.queueMs)}</span> ·
+        执行: <span style="color:#3fb950;">${_sec(o.durationMs)}</span>` +
+        (tlCli ? ` · cli: <span style="color:#d2a8ff;">${escapeHtml(tlCli)}</span>` : '') +
+        (tlTrans ? ` · transport: <span style="color:#d2a8ff;">${escapeHtml(tlTrans)}</span>` : '') + `
+      </div>`;
     const detailHtml = `<div style="margin-top:8px;padding:8px;background:#0d1117;border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;">
+        ${timeline}
         <div style="color:#58a6ff;font-weight:600;margin-bottom:4px;">📥 Input</div>
         <div style="color:#c9d1d9;margin-bottom:10px;">${inputFull}</div>
         <div style="color:#3fb950;font-weight:600;margin-bottom:4px;">📤 Output</div>
