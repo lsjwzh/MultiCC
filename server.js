@@ -7209,13 +7209,15 @@ function scanAndReclassify() {
     return;
   }
   const now = Date.now();
-  let enqueued = 0;
+  // Collect candidates first, then sort newest-first before enqueueing so
+  // active sessions get judged before stale ones.
+  const candidates = [];
   for (const [sid, p] of persistedSessions) {
     if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
     const ts = getTaskState(p);
 
-    // Only sessions not definitively complete.
-    // null = never classified → needs judging. P/W/B → may need re-judging.
+    // Only sessions not definitively complete (C = done).
+    // null = never classified -> needs judging. P/W/B -> may need re-judging.
     if (ts.classifyState === 'C') continue;
 
     // throttle: live classify already judges active turns every 60s
@@ -7225,8 +7227,6 @@ function scanAndReclassify() {
 
     // dedup: already queued or in-flight
     if (auxQueue.hasPendingFor(sid)) continue;
-    // backlog guard (re-check as we add)
-    if (auxQueue.queue.length >= SCAN_MAX_QUEUE) break;
 
     // Pull last assistant reply from chat history to classify against
     let reply = '';
@@ -7241,7 +7241,19 @@ function scanAndReclassify() {
     } catch (_) {}
     if (reply.length < 20) continue;
 
+    // last activity time - used to order newest-first
+    const ref = ts.lastTurnEndedAt || ts.lastSummaryAt
+      || (p.lastActivity ? new Date(p.lastActivity).getTime() : 0) || lastAt || 0;
     const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
+    candidates.push({ sid, cleanPrior, reply, ref });
+  }
+  // Newest first: most recently active sessions are judged before stale ones.
+  candidates.sort((a, b) => (b.ref || 0) - (a.ref || 0));
+
+  let enqueued = 0;
+  for (const c of candidates) {
+    if (auxQueue.queue.length >= SCAN_MAX_QUEUE) break;
+    const { sid, cleanPrior, reply } = c;
     auxQueue.enqueue({
       type: 'intent_classify',
       systemPrompt: buildClassifySystemPrompt(cleanPrior),
@@ -7260,7 +7272,7 @@ function scanAndReclassify() {
     });
     enqueued++;
   }
-  if (enqueued) console.log(`[multicc/scan] enqueued ${enqueued} session(s) for re-judge`);
+  if (enqueued) console.log(`[multicc/scan] enqueued ${enqueued} session(s) for re-judge (newest first)`);
 }
 
 // Store an aux-AI task summary for a session and push it to the workspace board.
