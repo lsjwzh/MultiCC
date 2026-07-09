@@ -5155,18 +5155,18 @@ const auxQueue = {
     return this.queue.some(match);
   },
 
-  // Cancel every pending/in-flight intent_classify for one session, so a fresh
-  // classify supersedes stale ones instead of piling up. A session only ever
-  // needs its single latest classify — this keeps the queue from accumulating
-  // near-duplicate judgements (which also cause frequent .then() supersede-drops
-  // that lose the real verdict). Called by runClassifyNow before it enqueues.
+  // Cancel every still-QUEUED intent_classify for one session, so a fresh
+  // classify supersedes stale queued ones instead of piling up. A session only
+  // ever needs its single latest judgement.
+  // NOTE: we do NOT cancel an in-flight classify — it already fired its upstream
+  // HTTP request and will return within ~90s; cancelling it just marks the
+  // result for discard while the worker stays busy (double waste: the request
+  // ran + the new one re-runs). Let the in-flight one land instead.
   cancelClassifyFor(sessionKey) {
     if (!sessionKey) return;
     const isClassify = (t) => t && t.type === 'intent_classify' &&
       t.meta && (t.meta.sessionName === sessionKey || t.meta.sid === sessionKey);
-    // queued (not yet running) → removed; in-flight → marked cancelled.
     for (const t of [...this.queue]) if (isClassify(t)) this.cancel(t.id);
-    if (isClassify(this.currentTask)) this.cancel(this.currentTask.id);
   },
 
   async drain() {
@@ -7309,7 +7309,13 @@ function scanAndReclassify() {
     // (auto-continue, background done, API recovered, interrupted resume).
     if (ts.classifyState === 'D' || ts.classifyState === 'W') continue;
 
-    // throttle: live classify already judges active turns every 60s
+    // Skip a session with a turn in flight — classifyTurnEnd will judge it the
+    // moment the turn ends. Judging now (against the mid-stream, incomplete
+    // reply) would be unreliable AND would race the turn-end classify.
+    const liveCs = chatSessions.get(sid);
+    if (liveCs && liveCs.isStreaming) continue;
+
+    // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
     const lastAt = hist.length ? hist[hist.length - 1].at : 0;
     if (lastAt && (now - lastAt) < SCAN_RETHROTTLE_MS) continue;
@@ -7745,14 +7751,13 @@ function purgeNotesForSession(sessionId) {
 }
 
 // ── Unified classify — the single source of truth for task state ────────────
-// All three facets (goal, phase, C/W/B) come from ONE aux call per invocation.
-// Call sites:
-//   · turn-in-progress: every CLASSIFY_INTERVAL_MS while streaming
-//   · turn-end:          immediately (no 30s delay) to finalise C/W/B
-//   · reconcile/retry:   removed — classify manages its own retry
-// On aux unhealthy: classify calls are suppressed; the last-known goal/phase
-// is frozen and the dashboard banner warns the user.
-const CLASSIFY_INTERVAL_MS = 60000; // in-progress cadence
+// goal/phase/C/D/W/B all come from ONE aux call per invocation. Call sites:
+//   · turn-end:   immediately after a turn ends to finalise goal + C/W/B/D
+//   · scan:       every 60s, re-judges any session not yet D/W (system-side
+//                 events: auto-continue, background done, API recovered, resume)
+// No in-turn loop — while streaming the output is incomplete and a mid-turn
+// verdict would be unreliable. On aux unhealthy: classify is suppressed; the
+// last-known goal/phase is frozen and the dashboard banner warns the user.
 
 function cancelClassify(cs) {
   if (cs._classifyTimer) { clearTimeout(cs._classifyTimer); cs._classifyTimer = null; }
@@ -7914,24 +7919,13 @@ function runClassifyNow(cs, sessionName) {
   });
 }
 
-// Schedule the in-progress classify loop. Called once at turn start; re-arms
-// itself every CLASSIFY_INTERVAL_MS while the session is still streaming.
-function scheduleClassifyLoop(cs, sessionName) {
-  cancelClassify(cs);
-  cs._classifyTimer = setTimeout(() => {
-    cs._classifyTimer = null;
-    if (!cs.isStreaming) return; // stop — turn finished
-    runClassifyNow(cs, sessionName);
-    // Re-arm for the next cycle
-    if (cs.isStreaming) scheduleClassifyLoop(cs, sessionName);
-  }, CLASSIFY_INTERVAL_MS);
-}
-
-// Fire classify immediately after a turn ends (no delay — classify is the ONLY
-// decider of C/W/B, so we want the answer as fast as possible). runClassifyNow
-// handles the empty-reply case itself (falls back to the user message).
+// Fire classify immediately after a turn ends — classify is the ONLY decider of
+// C/W/B/D. No in-turn loop: while streaming the output is still changing so a
+// mid-turn verdict would be judged against an incomplete reply. We judge once at
+// turn end (definitive) and the periodic scan re-judges anything not yet D/W.
+// runClassifyNow handles the empty-reply case itself (falls back to user msg).
 function classifyTurnEnd(cs, sessionName) {
-  cancelClassify(cs); // stop the in-progress loop
+  cancelClassify(cs);
   runClassifyNow(cs, sessionName);
 }
 // to know "what task is running" and "what's the current status" WHILE the
@@ -8518,14 +8512,12 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs._codexPendingStreamErrorCount = 0;
   cs._codexStreamContinuationCount = 0;
 
-  // Task start: show a neutral placeholder instantly, then fire classify RIGHT
-  // AWAY (based on the user message) to提炼 the real goal — no rule-based截取,
-  // so greetings / injected system text never become the goal. The loop then
-  // re-checks every 60s while streaming.
+  // Task start: show a neutral placeholder instantly. We do NOT classify here —
+  // the turn's output hasn't been produced yet, so a mid-turn verdict would be
+  // judged against an empty/partial reply. The real goal + C/W/B/D are decided
+  // once at turn end (classifyTurnEnd); the periodic scan re-judges non-D/W.
   cancelClassify(cs);
   emitRunningNotify(sessionName, `处理中：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
-  runClassifyNow(cs, sessionName);       // immediate goal提炼 from the user message
-  scheduleClassifyLoop(cs, sessionName); // 60s in-progress cadence
   // Marks this turn as initiated by an auto-trigger, so post-turn triggers
   // don't recurse on their own output (see firePostTurnTriggers).
   cs._originTrigger = !!originTrigger;
