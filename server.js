@@ -6518,6 +6518,17 @@ function appendChatMessage(sessionName, msg) {
   const history = loadChatHistory(sessionName);
   if (!msg.id) msg.id = newChatMsgId();
 
+  // A final assistant save (non-interim) supersedes any trailing interim
+  // entries from the same turn - drop them so they don't pile up as
+  // duplicate near-identical messages in the history.
+  if (msg.role === 'assistant' && !msg._interim) {
+    while (history.length > 0) {
+      const last = history[history.length - 1];
+      if (last && last.role === 'assistant' && last._interim) history.pop();
+      else break;
+    }
+  }
+
   // Dedup: skip if the last message in history is an assistant with identical
   // content and tools (guards against double-saves from stream-replay races).
   if (msg.role === 'assistant' && history.length > 0) {
