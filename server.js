@@ -2318,14 +2318,39 @@ app.get('/api/dashboard/stats', (req, res) => {
 });
 
 // POST /api/sessions/:id/reclassify — manually re-judge one session's task state
-// via classify (from its persisted history). Works on ANY lifecycle, cleans junk
-// goals. Async: state updates arrive over WS a few seconds later.
+// via classify. Enqueues an intent_classify task; state updates arrive over WS.
 app.post('/api/sessions/:id/reclassify', (req, res) => {
   const p = persistedSessions.get(req.params.id);
   if (!p) return res.status(404).json({ error: 'session not found' });
   if (p.type === 'aux' || p.type === 'gateway') return res.status(400).json({ error: 'not a chat session' });
   if (auxQueue.isUnhealthy()) return res.status(503).json({ error: 'aux 服务不可用，无法重判' });
-  reconcileOneOnStartup(req.params.id, getTaskState(p), { save: true, manual: true });
+  // Pull last assistant reply and enqueue directly — same as scanAndReclassify
+  const sid = req.params.id;
+  const ts = getTaskState(p);
+  let reply = '';
+  try {
+    const history = loadChatHistory(sid);
+    for (let i = history.length - 1; i >= 0; i--) {
+      const m = history[i];
+      if (m.role === 'assistant' && typeof m.content === 'string' && m.content.length >= 20) {
+        reply = m.content; break;
+      }
+    }
+  } catch (_) {}
+  if (reply.length < 20) return res.status(400).json({ error: 'no assistant reply to classify against' });
+  const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
+  auxQueue.enqueue({
+    type: 'intent_classify',
+    systemPrompt: buildClassifySystemPrompt(cleanPrior),
+    prompt: buildClassifyConversation(sid, reply),
+    meta: { sid, manual: true }
+  }).then(result => {
+    if (result.cancelled) return;
+    const res = parseClassifyResult(result.text);
+    const cs = chatSessions.get(sid);
+    const sessionId = persistedSessions.get(sid)?.id || sid;
+    dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
+  }).catch(e => { if (e && e.cancelled) return; });
   res.json({ ok: true, note: 'reclassify enqueued; 状态更新会通过 WS 异步到达' });
 });
 
@@ -2340,7 +2365,31 @@ app.post('/api/reclassify-all', (req, res) => {
     if (!p || p.type === 'aux' || p.type === 'gateway') continue;
     const ts = getTaskState(p);
     if (onlyJunk && !isInjectedOrJunkGoal(ts.goal)) continue;
-    reconcileOneOnStartup(sid, ts, { save: true, manual: true });
+    // Enqueue directly — same as scanAndReclassify
+    let reply = '';
+    try {
+      const history = loadChatHistory(sid);
+      for (let i = history.length - 1; i >= 0; i--) {
+        const m = history[i];
+        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.length >= 20) {
+          reply = m.content; break;
+        }
+      }
+    } catch (_) {}
+    if (reply.length < 20) continue;
+    const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
+    auxQueue.enqueue({
+      type: 'intent_classify',
+      systemPrompt: buildClassifySystemPrompt(cleanPrior),
+      prompt: buildClassifyConversation(sid, reply),
+      meta: { sid, manual: true }
+    }).then(result => {
+      if (result.cancelled) return;
+      const res = parseClassifyResult(result.text);
+      const cs = chatSessions.get(sid);
+      const sessionId = persistedSessions.get(sid)?.id || sid;
+      dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
+    }).catch(e => { if (e && e.cancelled) return; });
     ids.push(sid);
   }
   res.json({ ok: true, count: ids.length, ids, onlyJunk });
@@ -2922,7 +2971,7 @@ app.get('/api/debug/classify-test-cases', (req, res) => {
     cases.push({
       sessionId: sid,
       label: p.label || '',
-      lifecycle: ts.lifecycle || 'unknown',
+      classifyState: ts.classifyState || null,
       goal: ts.goal || '',
       summary: p.summary || '',
       lastAssistantTail300: tail.slice(-300),
@@ -5017,7 +5066,6 @@ const auxQueue = {
   // Record a successful task. Any success clears the unhealthy flag.
   recordSuccess() {
     const h = this.health;
-    const wasUnhealthy = h.unhealthy;
     if (h.consecutiveFails || h.unhealthy) {
       h.consecutiveFails = 0;
       if (h.unhealthy) {
@@ -5028,12 +5076,7 @@ const auxQueue = {
       }
     }
     recordApiSuccess();  // ⑥A: aux success means the upstream API is reachable again
-    // Recovery hook: aux just healed — reclassify sessions whose goal was never
-    // set (stuck at '新任务') because classify was failing during the outage.
-    if (wasUnhealthy) {
-      console.log('[multicc/aux] recovery: reclassifying sessions with missing goals after aux outage');
-      reclassifySessionsWithMissingGoals();
-    }
+    // Recovery hook removed — scanAndReclassify covers all cases.
     return h;
   },
   isUnhealthy() { return !!(this.health && this.health.unhealthy); },
@@ -6692,19 +6735,12 @@ const workspaceClients = new Map();  // dirId → Set<ws>
 const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI "最近任务" one-liner
 // Hydrate from persisted summaries so the dashboard shows each session's last
 // known "上下文特点" immediately after a restart (was lost when memory-only).
-// Also mark any task that was 'running' right before the restart as
-// 'interrupted' — its turn never ended cleanly, so ② reconcile will re-judge it
-// (and ⑤ may nudge it). This stops the board from falsely showing idle for a
-// task that was actually mid-flight when the server died.
-for (const [sid, p] of persistedSessions) {
-  if (!p) continue;
-  if (p.summary) sessionSummaries.set(sid, { summary: p.summary, ts: p.summaryTs || Date.now() });
-  const st = p.taskState;
-  if (st && st.lifecycle === 'running') {
-    st.lifecycle = 'interrupted';
-    // persistedSessions is about to be saved anyway on first change; mark dirty.
+  // Sessions that were mid-flight (classifyState='P') when the server died will
+  // be picked up by the first scanAndReclassify sweep and re-judged via classify.
+  for (const [sid, p] of persistedSessions) {
+    if (!p) continue;
+    if (p.summary) sessionSummaries.set(sid, { summary: p.summary, ts: p.summaryTs || Date.now() });
   }
-}
 
 // ── Unified classify result parser ─────────────────────────────────────────
 // Both terminal (classifyTerminalIdle) and chat (runClassifyNow/reconcile) use
@@ -6907,7 +6943,7 @@ function dispatchStateAction(result, ctx) {
     const dirId = persistedSessions.get(sessionName)?.dirId;
     if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', message: msg });
     setSessionStatus(sessionName, { status: 'completed' });
-    setTaskState(sessionName, { lifecycle: 'completed', endedAt: Date.now() }, { save: false });
+    setTaskState(sessionName, { classifyState: 'C', endedAt: Date.now() }, { save: false });
     waitInjector.resetAuto(sessionName);
     return;
   }
@@ -6962,7 +6998,7 @@ function dispatchStateAction(result, ctx) {
   const dirId2 = persistedSessions.get(sessionName)?.dirId;
   if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: 'waiting', message: waitMsg });
   setSessionStatus(sessionName, { status: 'waiting' });
-  setTaskState(sessionName, { lifecycle: 'waiting', endedAt: Date.now() }, { save: false });
+  setTaskState(sessionName, { classifyState: 'W', endedAt: Date.now() }, { save: false });
   // Reset auto-continue guard on W (user is in charge now). B/E keep their own flow.
   if (state === 'waiting' && !background && !error) {
     waitInjector.resetAuto(sessionName);
@@ -6977,13 +7013,13 @@ function dispatchStateAction(result, ctx) {
 //
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
-//     lastTurnEndedAt, lifecycle, pendingDispatches, classifyHistory }
-//   lifecycle ∈ running | completed | waiting | interrupted
+//     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory }
+//   classifyState ∈ P | C | W | B | null  (null = not yet classified)
 //   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
 const TASK_STATE_DEFAULTS = {
   goal: '', phase: 'idle', startedAt: null, endedAt: null,
   lastSummary: '', lastSummaryAt: null, lastTurnEndedAt: null,
-  lifecycle: 'idle', pendingDispatches: [],
+  classifyState: null, pendingDispatches: [],
   classifyHistory: [],
 };
 
@@ -7010,7 +7046,7 @@ function setTaskState(sessionId, patch, opts = {}) {
       type: 'task_state',
       goal: next.goal || '',
       phase: next.phase || 'idle',
-      lifecycle: next.lifecycle || 'idle',
+      classifyState: next.classifyState || null,
     });
   } catch (_) {}
   return next;
@@ -7152,89 +7188,14 @@ function auxHealthProbe() {
 
 // Recovery hook: aux just healed → reclassify sessions whose goal was never set
 // (stuck at '新任务') because classify was failing during the outage.
-function reclassifySessionsWithMissingGoals() {
-  const now = Date.now();
-  const STALE_MS = 5 * 60 * 1000; // 5 min since last classify → re-judge
-  const candidates = [];
-  for (const [sid, p] of persistedSessions) {
-    if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
-    const ts = getTaskState(p);
 
-    // Only sessions with unfinished work: lifecycle running/interrupted/waiting.
-    // completed/idle sessions don't need reclassify.
-    if (ts.lifecycle !== 'running' && ts.lifecycle !== 'interrupted' && ts.lifecycle !== 'waiting') continue;
-
-    // Skip if classify was recent enough (within STALE_MS).  If no classify
-    // history at all, always re-judge.
-    const lastEntry = (Array.isArray(ts.classifyHistory) && ts.classifyHistory.length > 0)
-      ? ts.classifyHistory[ts.classifyHistory.length - 1]
-      : null;
-    if (lastEntry && lastEntry.at > now - STALE_MS) continue;
-
-    // Has chat history with a real assistant reply to classify
-    const hist = loadChatHistory(sid);
-    if (!hist || !hist.length) continue;
-    let lastText = '';
-    for (let i = hist.length - 1; i >= 0; i--) {
-      const m = hist[i];
-      if (m.role !== 'assistant') continue;
-      if (typeof m.content === 'string') { lastText = m.content; break; }
-      if (Array.isArray(m.content)) { lastText = m.content.filter(b => b.type === 'text').map(b => b.text).join(' '); break; }
-    }
-    if (!lastText || lastText.length < 20) continue;
-    candidates.push({ sid, lastText, priorGoal: ts.goal || '' });
-  }
-  if (!candidates.length) return;
-  console.log(`[multicc/aux] recovery: reclassifying ${candidates.length} session(s) with unfinished work`);
-  for (const { sid, lastText, priorGoal } of candidates) {
-    auxQueue.enqueue({ type: 'recovery_reclassify', systemPrompt: buildClassifySystemPrompt(priorGoal), prompt: buildClassifyConversation(sid, lastText), meta: { sessionName: sid } })
-      .then(result => {
-        if (result.cancelled) return;
-        const res = parseClassifyResult(result.text);
-        const stateMap = { running: 'P', waiting: 'W', completed: 'C' };
-        const stateLetter = stateMap[res.state] || res.state;
-        console.log(`[multicc/aux] recovery reclassify ${sid}: state=${stateLetter} goal="${res.goal}"${res.error ? ' (API error)' : ''}`);
-        // Let dispatchStateAction handle the result — it knows what to do
-        // (set goal, E→retry inject, C→mark done, W/B→start idle timer, etc.)
-        const cs = chatSessions.get(sid);
-        const sessionId = persistedSessions.get(sid)?.id || sid;
-        dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
-      })
-      .catch(e => console.warn(`[multicc/aux] recovery reclassify ${sid} failed: ${e.message}`));
-  }
-
-  // No more E-specific handling — classify's own dispatchStateAction handles
-  // E→retry inject, W→waiting, B→background idle timer, C→complete.
-}
-
-// ── Startup reconcile + manual reclassify ───────────────────────────────────
-// On boot, re-judge every session left in a non-terminal lifecycle (running /
-// interrupted) with activity in the last 12h, using the SAME unified classify
-// prompt as the live path — clears zombie states so the reconcile doesn't
-// nag them. A manual API (reconcileOneOnStartup with {save:true}) can re-judge
-// ANY session on demand and洗掉 injected/junk goals. Skipped when aux unhealthy.
-const STARTUP_RECONCILE_WINDOW_MS = 12 * 60 * 60 * 1000;
-
-// A "goal" that is really injected system text (nudge / API-recovery
-// resume / auto-continue prompt), NOT a task. These leaked into goals via the old
-// rule-based fallback; they must never be fed back into classify nor kept.
-function isInjectedOrJunkGoal(goal) {
-  const g = String(goal || '').trim();
-  if (!g) return true;  // empty goal is junk — classify never ran or failed
-  return g.startsWith(waitInjector.SYS_PREFIX) || g.startsWith('<') || g.startsWith('"<');
-}
-
-// Whether a user message is system-injected (autoContinue / apiRetry / bgCheck).
-function isSystemInjectedMsg(msg) {
-  return String(msg || '').trim().startsWith(waitInjector.SYS_PREFIX);
-}
 
 // ── Periodic scan (replaces the old startup-only reconcile) ────────────────
-// Every minute, sweep sessions that still need judging: non-terminal lifecycle
-// (running/interrupted) or a junk goal. Dedup against the queue, throttle ones
-// judged very recently (live classify already covers them), and bail if the
-// queue is backed up. On restart the first tick handles what the old startup
-// reconcile did - no special boot logic needed.
+// Every minute, sweep sessions whose classifyState is not 'C' (i.e. still
+// P/W/B or never classified) and enqueue them for re-judging. Dedup against
+// the queue, throttle recently-judged sessions, and bail if the queue is
+// backed up. On restart the first tick picks up everything that isn't
+// definitively done — no special boot logic needed.
 const SCAN_INTERVAL_MS = 60 * 1000;
 const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
 const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
@@ -7248,70 +7209,56 @@ function scanAndReclassify() {
   const now = Date.now();
   let enqueued = 0;
   for (const [sid, p] of persistedSessions) {
-    if (!p || p.type === 'aux' || p.type === 'gateway') continue;
+    if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
     const ts = getTaskState(p);
-    const nonTerminal = ts.lifecycle === 'running' || ts.lifecycle === 'interrupted';
-    if (!nonTerminal && !isInjectedOrJunkGoal(ts.goal)) continue;
-    const ref = ts.lastTurnEndedAt || ts.lastSummaryAt
-      || (p.lastActivity ? new Date(p.lastActivity).getTime() : 0);
-    if (ref && (now - ref) > STARTUP_RECONCILE_WINDOW_MS) continue;
+
+    // Only sessions not definitively complete.
+    // null = never classified → needs judging. P/W/B → may need re-judging.
+    if (ts.classifyState === 'C') continue;
+
     // throttle: live classify already judges active turns every 60s
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
     const lastAt = hist.length ? hist[hist.length - 1].at : 0;
     if (lastAt && (now - lastAt) < SCAN_RETHROTTLE_MS) continue;
+
     // dedup: already queued or in-flight
     if (auxQueue.hasPendingFor(sid)) continue;
     // backlog guard (re-check as we add)
     if (auxQueue.queue.length >= SCAN_MAX_QUEUE) break;
-    reconcileOneOnStartup(sid, ts, { save: true });
+
+    // Pull last assistant reply from chat history to classify against
+    let reply = '';
+    try {
+      const history = loadChatHistory(sid);
+      for (let i = history.length - 1; i >= 0; i--) {
+        const m = history[i];
+        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.length >= 20) {
+          reply = m.content; break;
+        }
+      }
+    } catch (_) {}
+    if (reply.length < 20) continue;
+
+    const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
+    auxQueue.enqueue({
+      type: 'intent_classify',
+      systemPrompt: buildClassifySystemPrompt(cleanPrior),
+      prompt: buildClassifyConversation(sid, reply),
+      meta: { sid, startup: true }
+    }).then(result => {
+      if (result.cancelled) return;
+      const res = parseClassifyResult(result.text);
+      const cs = chatSessions.get(sid);
+      const sessionId = persistedSessions.get(sid)?.id || sid;
+      dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
+      console.log(`[multicc/scan] classify ${sid}: state=${res.state} goal="${res.goal || ''}"${res.error ? ' (API error)' : ''}`);
+    }).catch(e => {
+      if (e && e.cancelled) return;
+      console.warn(`[multicc/scan] classify ${sid} failed: ${e.message}`);
+    });
     enqueued++;
   }
   if (enqueued) console.log(`[multicc/scan] enqueued ${enqueued} session(s) for re-judge`);
-}
-// Re-judge one session's task state via classify, from its persisted history.
-// opts.save — persist the result (manual API / startup); opts.manual — log tag.
-function reconcileOneOnStartup(sid, ts, opts = {}) {
-  const save = opts.save === true;
-  // Pull the last user + assistant messages from persisted history.
-  let userMsg = '', reply = '';
-  try {
-    const history = loadChatHistory(sid);
-    for (let i = history.length - 1; i >= 0 && (!reply || !userMsg); i--) {
-      const m = history[i];
-      if (!reply && m.role === 'assistant') reply = String(m.content || '');
-      // Skip system-injected messages — they are noise that drowns real user
-      // intent. Only real user input counts. Language-agnostic SYS_PREFIX.
-      if (!userMsg && m.role === 'user' && !isSystemInjectedMsg(m.content)) {
-        userMsg = String(m.content || '').trim();
-      }
-    }
-  } catch (_) {}
-  if (userMsg.length < 1 && reply.length < 20) return; // nothing to judge
-
-  // Never feed an injected/junk prior goal back into the prompt — it biases classify
-  // and, if classify returns '—', we'd keep the junk. Treat junk as no prior goal.
-  const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
-  auxQueue.enqueue({ type: 'intent_classify', systemPrompt: buildClassifySystemPrompt(cleanPrior), prompt: buildClassifyConversation(sid, reply), meta: { sid, startup: true } })
-    .then(result => {
-      if (result.cancelled) return;
-      const res = parseClassifyResult(result.text);
-      // '—' → no concrete task. If classify can't find a real task from the history,
-      // leave goal empty rather than retaining a stale placeholder ("新任务") or junk.
-      const goal = (res.goal && res.goal !== '—') ? res.goal : '';
-      const lifecycle = (res.state === 'completed') ? 'completed' : 'waiting';
-      setTaskState(sid, { goal, phase: res.phase || ts.phase, lifecycle, endedAt: Date.now() }, { save });
-      setSessionSummary(sid, goal);
-      setSessionStatus(sid, { status: lifecycle });
-      const dirId = persistedSessions.get(sid)?.dirId;
-      const label = lifecycle === 'waiting'
-        ? (goal ? `等待交互：${goal}` : (res.error ? 'API 异常' : '等待交互'))
-        : (goal ? `任务完成：${goal}` : '任务完成');
-      // Display-only broadcast — no triggerPush (avoid a notification storm).
-      // No cs/chatSession → skip dispatchStateAction (which needs live chat state).
-      if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId: sid, state: lifecycle, message: label });
-      console.log(`[multicc/reconcile] ${opts.manual ? 'manual' : 'startup'} ${sid}: ${lifecycle} · ${goal || '(no goal)'}${res.error ? ' (API error)' : ''}`);
-    })
-    .catch(e => { if (e && e.cancelled) return; console.warn(`[multicc/reconcile] reclassify ${sid} failed: ${e.message}`); });
 }
 
 // Store an aux-AI task summary for a session and push it to the workspace board.
@@ -7900,9 +7847,9 @@ function ensureCurrentTask(cs, sessionName, userText) {
   const prev = cs.currentTask;
   if (prev && prev.phase !== 'done' && prev.startedAt && (now - prev.startedAt) < 10 * 60 * 1000) {
     prev.turnSeq = (prev.turnSeq || 0) + 1;
-    // Refresh persisted lifecycle: a continued turn means the closed-loop task
-    // is still running (the prior turn may have rested at completed/waiting).
-    setTaskState(sessionName, { lifecycle: 'running' });
+    // Refresh persisted state: a continued turn means the closed-loop task
+    // is still running (classify will refine shortly).
+    setTaskState(sessionName, { classifyState: 'P' });
     return prev;
   }
   // No rule-based goal from userText — the classify loop (fired right after this
@@ -7916,7 +7863,7 @@ function ensureCurrentTask(cs, sessionName, userText) {
   setTaskState(sessionName, {
     goal: cs.currentTask.goal, phase: cs.currentTask.phase,
     startedAt: cs.currentTask.startedAt, endedAt: null,
-    lifecycle: 'running',
+    classifyState: 'P',
   });
   return cs.currentTask;
 }
@@ -7986,12 +7933,11 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
   }
 
   setSessionStatus(sessionName, { status, currentFile: null });
-  // Persist turn-end lifecycle so reconcile
-  // know this task's turn ended at this moment. status completed/error →
-  // lifecycle completed; waiting stays waiting. (intent_classify may refine.)
+  // Record turn-end timestamp. classifyTurnEnd / classify loop owns the
+  // C/W/B/P decision — we don't set classifyState here.
   {
-    const lc = (status === 'error') ? 'completed' : (status === 'waiting' ? 'waiting' : 'completed');
-    setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now(), lifecycle: lc }, { save: false });
+    // Don't set classifyState here — classifyTurnEnd / classify loop owns the C/W/B/P decision.
+    setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now() }, { save: false });
   }
   setSessionSummary(sessionId, message);
   if (alert) {
@@ -9013,7 +8959,7 @@ function runChatTurn(sessionName, text, opts = {}) {
           durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
           num_turns: cs.chatTurnCount,
         });
-        scheduleIntentClassify(cs, sessionName);
+        // intent_classify will be triggered by classifyTurnEnd below
       }
       const finalText = cs.currentAssistantText;
       cs.currentAssistantText = '';
@@ -9443,7 +9389,7 @@ function handleChatWs(ws, req, urlObj) {
     try {
       const ts0 = getTaskState(persistedSessions.get(sessionName));
       if (ts0 && (ts0.goal || (ts0.phase && ts0.phase !== 'idle'))) {
-        ws.send(JSON.stringify({ type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', lifecycle: ts0.lifecycle || 'idle' }));
+        ws.send(JSON.stringify({ type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null }));
       }
     } catch (_) {}
     // If chat_history already includes the in-progress assistant message
