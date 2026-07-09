@@ -5155,6 +5155,20 @@ const auxQueue = {
     return this.queue.some(match);
   },
 
+  // Cancel every pending/in-flight intent_classify for one session, so a fresh
+  // classify supersedes stale ones instead of piling up. A session only ever
+  // needs its single latest classify — this keeps the queue from accumulating
+  // near-duplicate judgements (which also cause frequent .then() supersede-drops
+  // that lose the real verdict). Called by runClassifyNow before it enqueues.
+  cancelClassifyFor(sessionKey) {
+    if (!sessionKey) return;
+    const isClassify = (t) => t && t.type === 'intent_classify' &&
+      t.meta && (t.meta.sessionName === sessionKey || t.meta.sid === sessionKey);
+    // queued (not yet running) → removed; in-flight → marked cancelled.
+    for (const t of [...this.queue]) if (isClassify(t)) this.cancel(t.id);
+    if (isClassify(this.currentTask)) this.cancel(this.currentTask.id);
+  },
+
   async drain() {
     if (this.processing || this.queue.length === 0) return;
     this.processing = true;
@@ -6938,7 +6952,9 @@ function dispatchStateAction(result, ctx) {
     if (phase) cs.currentTask.phase = phase;
   }
   const finalGoal = (cs && cs.currentTask) ? cs.currentTask.goal : goal;
-  if (sessionName) setTaskState(sessionName, { goal: finalGoal || '' });
+  const finalPhase = (cs && cs.currentTask) ? cs.currentTask.phase : phase;
+  // Persist BOTH goal and phase (was goal-only, leaving phase stale).
+  if (sessionName) setTaskState(sessionName, finalPhase ? { goal: finalGoal || '', phase: finalPhase } : { goal: finalGoal || '' });
   if (sessionId && finalGoal) setSessionSummary(sessionId, finalGoal);
 
   // ── Dispatch per state ──────────────────────────────────────────────
@@ -7847,9 +7863,11 @@ function runClassifyNow(cs, sessionName) {
 
   const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
   const priorGoal = cs.currentTask?.goal || '';
-  // Supersede any in-flight classify: a newer call (e.g. classifyTurnEnd while
-  // the 60s loop's classify is still running) overwrites this id, so the stale
-  // result is discarded instead of finalizing a wrong state over the fresh one.
+  // Dedup: drop this session's older queued/in-flight classify before enqueuing
+  // the fresh one — a session only needs its single latest judgement. Without
+  // this, rapid turns pile up near-duplicate classifies that then supersede each
+  // other's .then() and drop the real verdict (goal/state never persist).
+  auxQueue.cancelClassifyFor(sessionName);
   const taskId = crypto.randomUUID();
   cs._classifyTaskId = taskId;
 
@@ -7872,7 +7890,10 @@ function runClassifyNow(cs, sessionName) {
         cs.currentTask.goal = (res.goal && res.goal !== '—') ? res.goal : '';
         if (res.phase) cs.currentTask.phase = res.phase;
       }
-      setTaskState(sessionName, { goal: cs.currentTask?.goal || '' });
+      // Persist BOTH goal and phase — persisting goal alone left phase stuck at
+      // the ensureCurrentTask placeholder ('planning'), so the card showed
+      // "新任务 规划中" even after classify judged the real goal/phase.
+      setTaskState(sessionName, { goal: cs.currentTask?.goal || '', phase: cs.currentTask?.phase || 'planning' });
       const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[cs.currentTask?.phase] || '';
       const goal = cs.currentTask?.goal || '';
       const label = goal ? `处理中：${goal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
