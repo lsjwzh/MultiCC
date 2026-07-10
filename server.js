@@ -8634,6 +8634,13 @@ function runChatTurn(sessionName, text, opts = {}) {
     if (note) promptText = note + promptText;
   }
 
+  // ultracode 模式：在用户消息末尾追加触发词，激活 Claude Code 官方 dynamic workflow。
+  // 实测 --settings {"ultracode":true} 单独不触发（A 组 0 次 Workflow），user prompt 必须
+  // 出现 "ultracode" keyword（B/C/D 组均触发）。不依赖 autoDispatch，仅看 effort。
+  if (persisted.type !== 'aux' && normalizeEffort(persisted.effort) === 'ultracode') {
+    promptText = promptText + '\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]';
+  }
+
   const rolePrompt = resolveRolePrompt(persisted);
 
   // ── Streaming path (flag-gated, claude only) ──
