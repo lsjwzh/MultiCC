@@ -488,6 +488,7 @@
     <button class="nav-item" data-view="tunnel" onclick="setView('tunnel')"><span class="ic">🌐</span> 外网穿透</button>
     <button class="nav-item" data-view="bridges" onclick="setView('bridges')"><span class="ic">🌉</span> 消息桥接 Bridges</button>
     <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> Agent 资源</button>
+    <button class="nav-item" data-view="skillsync" onclick="setView('skillsync')"><span class="ic">⟳</span> 技能同步 <span class="badge" id="nav-skillsync-count">0</span></button>
     <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> 临时上传</button>
 
     <!-- Version check: shown at the bottom of the sidebar, always visible -->
@@ -1159,6 +1160,41 @@
           </div>
         </section>
 
+        <!-- ─── Skill Sync ─── -->
+        <section class="view" data-view="skillsync">
+          <div class="sec-head"><h2>技能同步</h2><div class="line"></div></div>
+          <p class="sec-desc">Skills 以 <code>~/.agents/skills</code> 为唯一权威源，自动同步到 Claude / Codex / Hermes 三端：Claude 直接软链，Codex / Hermes 经 skill-converter 转换后软链。启动时、每 5 分钟、以及监听到目录变化时自动运行。</p>
+
+          <div class="settings-card">
+            <div class="sc-header">同步状态 <span id="skillsync-summary" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
+            <div class="sc-body">
+              <div class="setting-row"><label>上次同步</label><span id="ss-last" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>共享技能</label><span id="ss-shared-count" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label>本轮结果</label><span id="ss-run" style="font-size:12px;color:var(--muted);font-family:var(--mono);">—</span></div>
+              <div class="setting-row"><label>AI 转换队列</label><span id="ss-queue" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row" id="ss-error-row" style="display:none;"><label>错误</label><span id="ss-error" style="font-size:12px;color:var(--danger);word-break:break-all;">—</span></div>
+            </div>
+            <div class="sc-footer">
+              <button class="btn btn-green" id="ss-run-btn" onclick="runSkillSync()">立即同步</button>
+              <button class="btn" onclick="loadSkillSyncStatus()">刷新</button>
+              <span class="status-text" id="ss-status"></span>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <div class="sc-header">三端分发 Providers</div>
+            <div id="ss-providers" class="resource-list"><div class="resource-empty">Loading…</div></div>
+          </div>
+
+          <div class="settings-card">
+            <div class="sc-header">共享技能 <span id="ss-list-count" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
+            <div class="resource-toolbar">
+              <input id="ss-filter" type="search" placeholder="按名称过滤" oninput="renderSkillSyncSkills()" />
+            </div>
+            <div id="ss-skills-list" class="resource-list"><div class="resource-empty">Loading…</div></div>
+          </div>
+        </section>
+
         <!-- ─── Temp Uploads ─── -->
         <section class="view" data-view="storage">
           <div class="sec-head"><h2>临时上传</h2><div class="line"></div></div>
@@ -1431,6 +1467,7 @@
         tunnel: ['外网穿透', '花生壳 / Tailscale 自动监控'],
         bridges: ['消息桥接', '微信 / 飞书 / Telegram / Discord / Slack 入口'],
         resources: ['Agent 资源', 'Skills 与历史会话'],
+        skillsync: ['技能同步', 'Skills 跨 Provider 同步状态'],
         storage: ['临时上传', '上传文件缓存'],
       };
       window.setView = function (v) {

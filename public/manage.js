@@ -5398,6 +5398,119 @@ function renderSkills() {
     </div>`).join('');
 }
 
+/* ── Skill sync status (技能同步 panel) ── */
+let _skillSyncData = null;
+
+function _ssRelTime(ts) {
+  if (!ts) return '未同步';
+  const diff = Date.now() - ts;
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  return `${Math.floor(diff / 86400000)} 天前`;
+}
+
+async function loadSkillSyncStatus() {
+  try {
+    const res = await fetch('/api/skill-sync/status' + tokenQS('?'));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    _skillSyncData = data;
+    renderSkillSyncStatus();
+  } catch (err) {
+    const provEl = document.getElementById('ss-providers');
+    if (provEl) provEl.innerHTML = `<div class="resource-empty">Load failed: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderSkillSyncStatus() {
+  const d = _skillSyncData;
+  if (!d) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+
+  set('ss-last', d.ts ? `${new Date(d.ts).toLocaleString()} · ${_ssRelTime(d.ts)}` : '尚未同步');
+  set('ss-shared-count', `${d.sharedSkillCount || 0} 个技能`);
+  set('ss-run', `+${d.linkCount || 0} 软链 · ${d.skipCount || 0} 跳过 · ${d.convCount || 0} 转换 · 反向导入 ${d.reverseImportCount || 0}`);
+  const q = d.aiQueue || {};
+  set('ss-queue', (q.queueLength || 0) === 0 ? '空闲' : `${q.queueLength} 个待转换${q.timerActive ? '（批处理中…）' : ''}`);
+
+  const summary = document.getElementById('skillsync-summary');
+  if (summary) summary.textContent = `${d.sharedSkillCount || 0} 共享 · ${_ssRelTime(d.ts)}`;
+  const navBadge = document.getElementById('nav-skillsync-count');
+  if (navBadge) navBadge.textContent = String(d.sharedSkillCount || 0);
+
+  const errRow = document.getElementById('ss-error-row');
+  if (errRow) {
+    if (d.error) { errRow.style.display = ''; set('ss-error', d.error); }
+    else errRow.style.display = 'none';
+  }
+
+  // Per-provider breakdown
+  const provEl = document.getElementById('ss-providers');
+  if (provEl) {
+    const provs = d.providers || {};
+    const order = ['claude', 'codex', 'hermes'];
+    const keys = order.filter(k => provs[k]).concat(Object.keys(provs).filter(k => !order.includes(k)));
+    provEl.innerHTML = keys.length
+      ? keys.map(k => {
+          const p = provs[k] || {};
+          const badgeCls = k === 'claude' ? 'claude' : (k === 'codex' ? 'codex' : 'protected');
+          return `<div class="resource-row">
+            <span class="resource-badge ${badgeCls}">${escapeHtml(k)}</span>
+            <div class="resource-main">
+              <div class="resource-title">${escapeHtml(k)}</div>
+              <div class="resource-meta">${p.linked || 0} 软链 · ${p.skipped || 0} 跳过 · ${p.converted || 0} 转换</div>
+            </div>
+          </div>`;
+        }).join('')
+      : '<div class="resource-empty">暂无同步数据</div>';
+  }
+
+  const lc = document.getElementById('ss-list-count');
+  if (lc) lc.textContent = `${d.sharedSkillCount || 0} 个`;
+  renderSkillSyncSkills();
+}
+
+function renderSkillSyncSkills() {
+  const list = document.getElementById('ss-skills-list');
+  if (!list) return;
+  const d = _skillSyncData;
+  const names = (d && d.sharedSkillNames) || [];
+  const query = (document.getElementById('ss-filter')?.value || '').trim().toLowerCase();
+  const filtered = names.filter(n => !query || n.toLowerCase().includes(query));
+  if (!filtered.length) {
+    list.innerHTML = `<div class="resource-empty">${names.length ? 'No matching skills' : '暂无共享技能'}</div>`;
+    return;
+  }
+  const queued = new Set((((d || {}).aiQueue || {}).items || []).map(i => i.skillName));
+  list.innerHTML = filtered.map(n => `
+    <div class="resource-row">
+      <span class="resource-badge">skill</span>
+      <div class="resource-main">
+        <div class="resource-title">${escapeHtml(n)}${queued.has(n) ? ' <span style="color:var(--muted);font-size:10px;font-weight:400;">· AI 转换中</span>' : ''}</div>
+      </div>
+    </div>`).join('');
+}
+
+async function runSkillSync() {
+  const btn = document.getElementById('ss-run-btn');
+  const status = document.getElementById('ss-status');
+  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  if (status) { status.className = 'status-text'; status.textContent = ''; }
+  try {
+    const res = await fetch('/api/skill-sync/run' + tokenQS('?'), { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    _skillSyncData = data.result;
+    renderSkillSyncStatus();
+    if (status) { status.className = 'status-text ok'; status.textContent = '同步完成'; }
+  } catch (err) {
+    if (status) { status.className = 'status-text err'; status.textContent = '同步失败: ' + err.message; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '立即同步'; }
+  }
+}
+
 async function loadClaudeHistory() {
   const list = document.getElementById('claude-history-list');
   if (!list) return;
@@ -6325,6 +6438,7 @@ loadNotifySettings();
 loadTunnelSettings();
 loadApkInfo();
 loadAgentSkills();
+loadSkillSyncStatus();
 loadClaudeHistory();
 loadUploadStats();
 wechatLoadConfig();
