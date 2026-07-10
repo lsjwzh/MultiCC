@@ -2327,6 +2327,14 @@ app.post('/api/sessions/:id/reclassify', (req, res) => {
   // Pull last assistant reply and enqueue directly — same as scanAndReclassify
   const sid = req.params.id;
   const ts = getTaskState(p);
+  // D/W guard — mirror scanAndReclassify (L7407). D(done, terminal) and W(waiting
+  // on user) only change on new user input; re-judging the same history re-derives
+  // the same verdict at best, or misjudges D→C and wakes a finished task at worst.
+  // ?force=true lets an operator override to correct a genuine misclassification.
+  if ((ts.classifyState === 'D' || ts.classifyState === 'W') && req.query.force !== 'true') {
+    return res.json({ ok: true, skipped: true, classifyState: ts.classifyState,
+      note: `会话状态为 ${ts.classifyState}，跳过重判（需用户发新消息触发，或 ?force=true 强制）` });
+  }
   let reply = '';
   try {
     const history = loadChatHistory(sid);
@@ -2364,6 +2372,9 @@ app.post('/api/reclassify-all', (req, res) => {
   for (const [sid, p] of persistedSessions) {
     if (!p || p.type === 'aux' || p.type === 'gateway') continue;
     const ts = getTaskState(p);
+    // D/W guard — mirror scanAndReclassify (L7407); skip terminal/waiting BEFORE
+    // the junk filter so D/W are never re-judged regardless of goal text.
+    if (ts.classifyState === 'D' || ts.classifyState === 'W') continue;
     if (onlyJunk && !isInjectedOrJunkGoal(ts.goal)) continue;
     // Enqueue directly — same as scanAndReclassify
     let reply = '';
@@ -2973,6 +2984,12 @@ app.post('/api/debug/classify/:id', (req, res) => {
   const tail = lastText.slice(-1500);
   const cs = chatSessions.get(sessionName);
   if (!cs) return res.status(400).json({ error: 'session not active' });
+  // D/W guard — mirror scanAndReclassify (L7407). Debug endpoint keeps a ?force=true
+  // escape hatch so an operator can still observe classify output on a D/W session.
+  const _dbgTs = getTaskState(persistedSessions.get(sessionName));
+  if ((_dbgTs.classifyState === 'D' || _dbgTs.classifyState === 'W') && req.query.force !== 'true') {
+    return res.status(409).json({ error: `session is ${_dbgTs.classifyState}; use ?force=true to override`, classifyState: _dbgTs.classifyState });
+  }
   cs.currentAssistantText = lastText;
   // runClassifyNow is fire-and-forget: it enqueues an aux task and resolves the
   // result asynchronously (logging the RESULT), so there's no callback to await.
@@ -4927,6 +4944,15 @@ function terminalBroadcast(sessionId, payload) {
 // source of truth, same as chat), then fan the verdict out to every surface:
 // push channels, the terminal's own WS clients, and the workspace board.
 function classifyTerminalIdle(sessionId, tail) {
+  // D/W guard — terminal sessions aren't covered by scanAndReclassify (it filters
+  // kind==='chat'), so this idle-triggered classify needs its own skip: a done or
+  // waiting-on-user terminal shouldn't be re-judged just because a background
+  // log/watch process emitted a stray line. Only new user input should move D/W.
+  const _tp = persistedSessions.get(sessionId);
+  if (_tp) {
+    const _tts = getTaskState(_tp);
+    if (_tts.classifyState === 'D' || _tts.classifyState === 'W') return;
+  }
   const mon = pushMonitors.get(sessionId);
   if (mon) {
     if (mon.classifyPending) return; // one classification already in flight
@@ -7062,15 +7088,14 @@ function dispatchStateAction(result, ctx) {
   if (sessionId && finalGoal) setSessionSummary(sessionId, finalGoal);
 
   // ── In-flight guard: turn 还在跑(isStreaming)时的 reclassify（通常来自 scan）只作观察 ──
-  // 对不完整回复的判定可能误判，且 inject/autoContinue/push 会干扰当前 turn。只持久化
-  // 状态，不触发副作用；turn 结束 classifyTurnEnd(isStreaming=false) 会重新判定并执行动作。
-  // D(完成)不持久化——turn 还在跑不该标完成，留给 turn 结束判定。
+  // 判定基于不完整回复，可能误判；inject/autoContinue/push 会干扰当前 turn。纯观察：
+  // 不改 classifyState、不触发副作用，直接返回。turn 结束 classifyTurnEnd(isStreaming=false)
+  // 会用完整回复重新判定并执行动作。
+  // 【关键】不要在这里写 classifyState：那既是"副作用"（本 guard 声称要避免的），又会污染
+  // scan 的跳过逻辑（L7407 读 classifyState）——曾导致误判的 W/C 落入内存后被 scan 反复重判。
+  // stuck-isStreaming（进程挂起但 isStreaming 没复位）由 scan 的看门狗兜底，不在此处理。
   if (cs && cs.isStreaming && state !== 'running') {
-    if (state !== 'completed') {
-      const cls = error ? 'E' : background ? 'B' : (state === 'continue' ? 'C' : 'W');
-      setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() }, { save: false });
-    }
-    console.log(`[multicc/scan] ${sessionName} reclassify in-flight (isStreaming): state=${state}, 跳过副作用（等 turn 结束重判）`);
+    console.log(`[multicc/scan] ${sessionName} reclassify in-flight (isStreaming): state=${state}, 纯观察跳过（等 turn 结束重判）`);
     return;
   }
 
@@ -7110,7 +7135,11 @@ function dispatchStateAction(result, ctx) {
     const dirId = persistedSessions.get(sessionName)?.dirId;
     if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', classifyState: 'D', message: msg });
     setSessionStatus(sessionName, { status: 'completed' });
-    setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() }, { save: false });
+    // D is the ONLY terminal state and triggers no follow-up action to persist it
+    // later — so it must flush to disk NOW. Otherwise a crash before the next
+    // save:true op loses the D; restart hydrates a stale non-D letter and scan
+    // (L7407 only skips D/W) re-judges it → possible false wake. save:true (default).
+    setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() });
     waitInjector.resetAuto(sessionName);
     return;
   }
@@ -7128,11 +7157,13 @@ function dispatchStateAction(result, ctx) {
       return;
     }
     // Turn ended but the conversation says "keep going" -> drive AI forward.
-    // C is a real "keep going" verdict (user pushed/confirmed), not an optional
-    // relay - so it ignores the autoContinue toggle (that's for B). autoContinue
-    // itself is uncapped + hasWait-guarded.
+    // C IS gated by the autoContinue toggle (via tryAutoContinue, same as B): the
+    // toggle means "don't auto-drive this session", and an unsolicited "继续"
+    // injection is exactly that. This also closes the D→C misjudge wake path — a
+    // session mislabelled C can no longer be auto-nudged when the user opted out.
+    // tryAutoContinue is uncapped + hasWait-guarded + checks p.autoContinue.
     clearBgIdleTimer(sessionName);
-    if (waitInjector.autoContinue(sessionName, { nudge: '继续：请接着完成当前任务。' })) {
+    if (tryAutoContinue(sessionName, cs, ctx.cwd, '继续：请接着完成当前任务。')) {
       console.log(`[multicc/classify] ${sessionName} C (continue) -> auto-continue`);
       return;
     }
@@ -7164,6 +7195,8 @@ function dispatchStateAction(result, ctx) {
     // autoContinue off / capped -> idle timer (3 min silence -> inject "继续")
     clearBgIdleTimer(sessionName);
     const timer = setTimeout(() => {
+      const _p = persistedSessions.get(sessionName);
+      if (!_p || !_p.autoContinue) return; // toggle off → user opted out of auto-drive (mirror tryAutoContinue)
       if (waitInjector.hasWait(sessionName)) return; // explicit wait covers it
       const s = _bgIdleTimers.get(sessionName);
       if (!s) return;
@@ -7398,6 +7431,10 @@ function auxHealthProbe() {
 const SCAN_INTERVAL_MS = 60 * 1000;
 const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
 const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
+// Watchdog: a turn whose isStreaming never reset (process hung/crashed) would skip
+// scan forever. Force-reset if no live stream event for this long. Generous so a
+// slow-but-alive turn (a long tool/subagent that still emits events) is never killed.
+const STUCK_STREAM_MS = 10 * 60 * 1000;    // 10 min of total stream silence = stuck
 
 // A goal is junk if it's empty (classify never ran or failed) or is really a
 // system-injected message / raw tool payload rather than a user-authored goal.
@@ -7436,15 +7473,25 @@ function scanAndReclassify() {
     if (ts.classifyState === 'D' || ts.classifyState === 'W') continue;
 
     // Skip a session with a turn in flight — classifyTurnEnd will judge it the
-    // moment the turn ends. Judging now (against the mid-stream, incomplete
-    // reply) would be unreliable AND would race the turn-end classify.
-    // [B-fix] Only skip in-flight when last verdict was P(running): a turn genuinely
-    // still processing; classifyTurnEnd judges on end. A non-P + isStreaming session
-    // is an anomaly (isStreaming never reset, crashed/hung turn): DON'T skip, let
-    // scan reclassify. dispatchStateAction's in-flight guard prevents inject/autoContinue
-    // from disturbing the (stuck) turn.
+    // moment the turn ends. Judging now (against the mid-stream, incomplete reply)
+    // is unreliable AND races the turn-end classify. Skip ALL isStreaming sessions
+    // (not just P): the in-flight guard no longer persists a tentative letter, so
+    // there's no benefit to re-judging a streaming session — only the risk of a
+    // bad mid-stream verdict. Exception: a genuinely stuck stream (process hung,
+    // isStreaming never reset) would skip forever → watchdog force-resets it after
+    // STUCK_STREAM_MS of stream silence, letting the next tick recover it through
+    // the normal !isStreaming path (P + no turn → resumeInterrupted).
     const liveCs = chatSessions.get(sid);
-    if (liveCs && liveCs.isStreaming && ts.classifyState === 'P') continue;
+    if (liveCs && liveCs.isStreaming) {
+      const lastStream = liveCs.lastStreamAt || liveCs.turnStartedAt || 0;
+      if (lastStream && (now - lastStream) > STUCK_STREAM_MS) {
+        console.log(`[multicc/scan] ${sid} stuck-isStreaming: ${((now - lastStream) / 1000).toFixed(0)}s 无流事件 → 强制复位 isStreaming，本轮按 !isStreaming 重判`);
+        liveCs.isStreaming = false;
+        // fall through to reclassify now via the normal (non-streaming) path below
+      } else {
+        continue;
+      }
+    }
 
     // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
@@ -9050,6 +9097,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     };
 
     const forward = (evt) => {
+      cs.lastStreamAt = Date.now();  // watchdog: last live stream activity (stuck-isStreaming detection)
       cs.streamReplay.push(evt);
       if (cs.streamReplay.length > 500) cs.streamReplay.shift();
       chatBroadcast(sessionName, evt);
@@ -9438,6 +9486,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
   const mySeq = cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1;
 
   const forward = (evt) => {
+    cs.lastStreamAt = Date.now();  // watchdog: last live stream activity (stuck-isStreaming detection)
     cs.streamReplay.push(evt);
     if (cs.streamReplay.length > 500) cs.streamReplay.shift();
     chatBroadcast(sessionName, evt);
