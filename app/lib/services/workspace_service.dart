@@ -21,6 +21,17 @@ class SessionStatus {
   final String? summary;
   final int summaryTs;
 
+  /// Live classify/task state from the aux-AI intent classifier, broadcast by
+  /// the server over /ws/workspace (snapshot fields + `task_state` events).
+  /// classifyState ∈ D=done · C=continue · W=wait-user · B=wait-bg · E=error · P=processing.
+  final String? classifyState;
+
+  /// The aux-AI's current guess at this session's task goal (一句话目标).
+  final String? goal;
+
+  /// Coarse phase key (planning/coding/testing/…) — server-normalised.
+  final String? phase;
+
   /// Task run-time window (ms epoch, 0 = none). [runStartedAt] is stamped when a
   /// turn begins (user sent a message); [runEndedAt] freezes when it ends. While
   /// the agent is mid-run [runEndedAt] is 0 and the elapsed time keeps growing.
@@ -38,6 +49,9 @@ class SessionStatus {
     this.baseBranch,
     this.summary,
     this.summaryTs = 0,
+    this.classifyState,
+    this.goal,
+    this.phase,
     this.runStartedAt = 0,
     this.runEndedAt = 0,
   });
@@ -53,6 +67,9 @@ class SessionStatus {
     String? baseBranch,
     String? summary,
     int? summaryTs,
+    String? classifyState,
+    String? goal,
+    String? phase,
     int? runStartedAt,
     int? runEndedAt,
   }) {
@@ -67,6 +84,9 @@ class SessionStatus {
       baseBranch: baseBranch ?? this.baseBranch,
       summary: summary ?? this.summary,
       summaryTs: summaryTs ?? this.summaryTs,
+      classifyState: classifyState ?? this.classifyState,
+      goal: goal ?? this.goal,
+      phase: phase ?? this.phase,
       runStartedAt: runStartedAt ?? this.runStartedAt,
       runEndedAt: runEndedAt ?? this.runEndedAt,
     );
@@ -157,6 +177,14 @@ class WorkspaceService extends ChangeNotifier {
           ? rawSummary
           : prev?.summary,
       summaryTs: (m['summaryTs'] as num?)?.toInt() ?? prev?.summaryTs ?? 0,
+      // Classify fields: `status`/`merge_status` ticks don't re-send these, so
+      // carry the previous value forward (same reason as summary above) — else
+      // the classify badge would blink off on every status update.
+      classifyState: (m['classifyState'] as String?) ?? prev?.classifyState,
+      goal: (m['goal'] is String && (m['goal'] as String).isNotEmpty)
+          ? m['goal'] as String
+          : prev?.goal,
+      phase: (m['phase'] as String?) ?? prev?.phase,
       runStartedAt: (m['runStartedAt'] as num?)?.toInt() ?? prev?.runStartedAt ?? 0,
       runEndedAt: (m['runEndedAt'] as num?)?.toInt() ?? prev?.runEndedAt ?? 0,
     );
@@ -243,9 +271,33 @@ class WorkspaceService extends ChangeNotifier {
         pendingNotes[id] = (msg['count'] ?? 0) as int;
         notifyListeners();
       }
+    } else if (type == 'task_state') {
+      // Live classify-state update (aux-AI intent classifier). Carries only
+      // {sessionId, classifyState, goal, phase} — no status/currentFile — so
+      // patch the existing entry via copyWith rather than _parse() (which would
+      // reset it to an idle stub).
+      final id = msg['sessionId'];
+      if (id is String) {
+        final prev = statuses[id] ?? const SessionStatus(status: 'idle');
+        final g = msg['goal']?.toString();
+        statuses[id] = prev.copyWith(
+          classifyState: msg['classifyState']?.toString(),
+          goal: (g != null && g.isNotEmpty) ? g : prev.goal,
+          phase: msg['phase']?.toString(),
+        );
+        notifyListeners();
+      }
     } else if (type == 'notify') {
       final id = msg['sessionId'];
       if (id is String) {
+        // notify now carries the terminal classify letter (D on completion,
+        // W/B/E on wait) — reflect it on the card immediately.
+        final cls = msg['classifyState']?.toString();
+        if (cls != null && cls.isNotEmpty) {
+          final prev = statuses[id] ?? const SessionStatus(status: 'idle');
+          statuses[id] = prev.copyWith(classifyState: cls);
+          notifyListeners();
+        }
         onNotify?.call(
           id,
           (msg['state'] ?? 'completed').toString(),
