@@ -7032,6 +7032,19 @@ function dispatchStateAction(result, ctx) {
   if (sessionName) setTaskState(sessionName, finalPhase ? { goal: finalGoal || '', phase: finalPhase } : { goal: finalGoal || '' });
   if (sessionId && finalGoal) setSessionSummary(sessionId, finalGoal);
 
+  // ── In-flight guard: turn 还在跑(isStreaming)时的 reclassify（通常来自 scan）只作观察 ──
+  // 对不完整回复的判定可能误判，且 inject/autoContinue/push 会干扰当前 turn。只持久化
+  // 状态，不触发副作用；turn 结束 classifyTurnEnd(isStreaming=false) 会重新判定并执行动作。
+  // D(完成)不持久化——turn 还在跑不该标完成，留给 turn 结束判定。
+  if (cs && cs.isStreaming && state !== 'running') {
+    if (state !== 'completed') {
+      const cls = error ? 'E' : background ? 'B' : (state === 'continue' ? 'C' : 'W');
+      setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() }, { save: false });
+    }
+    console.log(`[multicc/scan] ${sessionName} reclassify in-flight (isStreaming): state=${state}, 跳过副作用（等 turn 结束重判）`);
+    return;
+  }
+
   // ── Dispatch per state ──────────────────────────────────────────────
   if (state === 'running') {
     // P — still processing. Two sub-cases:
@@ -7396,8 +7409,13 @@ function scanAndReclassify() {
     // Skip a session with a turn in flight — classifyTurnEnd will judge it the
     // moment the turn ends. Judging now (against the mid-stream, incomplete
     // reply) would be unreliable AND would race the turn-end classify.
+    // [B-fix] Only skip in-flight when last verdict was P(running): a turn genuinely
+    // still processing; classifyTurnEnd judges on end. A non-P + isStreaming session
+    // is an anomaly (isStreaming never reset, crashed/hung turn): DON'T skip, let
+    // scan reclassify. dispatchStateAction's in-flight guard prevents inject/autoContinue
+    // from disturbing the (stuck) turn.
     const liveCs = chatSessions.get(sid);
-    if (liveCs && liveCs.isStreaming) continue;
+    if (liveCs && liveCs.isStreaming && ts.classifyState === 'P') continue;
 
     // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
