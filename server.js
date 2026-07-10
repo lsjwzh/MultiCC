@@ -2819,6 +2819,16 @@ app.patch('/api/sessions/:id', (req, res) => {
     const appType = (s.cli === 'codex') ? 'codex' : 'claude';
     if (req.body.model === undefined) {
       s.model = providerDefaultModel(appType, v.value) || null;
+    } else if (!providers.modelValidForProvider(appType, v.value, s.model)) {
+      // The same PATCH carried a model (the AI-config dialog always submits
+      // provider+model together), but the new provider doesn't serve it — a
+      // stale value from the previous provider. Replace it with the new
+      // provider's primary model instead of letting every subsequent spawn
+      // 400/10404 against a model the provider never had.
+      const stale = s.model;
+      s.model = providerDefaultModel(appType, v.value) || null;
+      appendEvent(s.dirId, 'session_model_changed',
+        `${s.label || s.id} → ${s.model || '默认'}（${stale} 与新 Provider 不兼容，已自动替换）`, s.id);
     }
     // Chat sessions pick it up on the next per-turn spawn; a warm streaming
     // process must be torn down so it relaunches with the new env.
@@ -7089,11 +7099,10 @@ function dispatchStateAction(result, ctx) {
     pruneErrorTurnPairs(sessionName);
     const nudge = '刚才因 API 异常中断，回答可能不完整，请从中断处继续。';
     console.log(`[multicc/classify] ${sessionName} API error -> retry (uncapped)`);
-    if (API_RETRY_DELAY_MS > 0) {
-      setTimeout(() => waitInjector.safeInject(sessionName, nudge), API_RETRY_DELAY_MS);
-    } else {
-      waitInjector.safeInject(sessionName, nudge);
-    }
+    // injectSystemMsg (NOT safeInject): it prepends SYS_PREFIX, which is what
+    // pruneErrorTurnPairs keys on to collapse retry churn — a bare safeInject
+    // here left every [nudge, error] pair in the history (prune never matched).
+    waitInjector.injectSystemMsg(sessionName, nudge, API_RETRY_DELAY_MS);
   }
 
   // B: background wait -> auto-continue if enabled; idle timer as fallback.

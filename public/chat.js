@@ -2836,12 +2836,34 @@ function normalizeModelForProvider(providerId, model) {
 function buildModelChoices(providerId) {
   // Alias-mapped relays: offer the tiers directly so each option can read
   // "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id).
+  // Provider-backed lists deliberately have NO "默认" option: a blank model
+  // used to silently keep whatever the previous provider left behind — the
+  // picker now always commits a concrete choice for the selected provider.
   const tiers = providerAliasTiers(providerId);
-  if (tiers.length) return ['', ...tiers.map(([t]) => t), '__custom__'];
+  if (tiers.length) return [...tiers.map(([t]) => t), '__custom__'];
   const opts = providerModelOptions(providerId);
-  if (opts.length) return ['', ...opts, '__custom__'];
+  if (opts.length) return [...opts, '__custom__'];
   if (_sessionCli === 'claude') return CLAUDE_MODEL_OPTIONS.map(o => o.value);
   return ['', '__custom__'];
+}
+
+// "[1M]"-style context suffix is cosmetic for comparison purposes.
+function stripModelSuffixUi(m) { return String(m || '').replace(/\[[^\]]*\]$/, '').trim(); }
+
+// The choice to auto-select when the user switches provider (联动): the tier
+// that maps to the provider's primary model (else the first tier), or the
+// provider's primary model / first declared model for plain lists.
+function defaultModelChoiceForProvider(providerId) {
+  const effId = effectiveProviderIdForChoices(providerId);
+  const p = effId ? _providerList.find(o => o.id === effId) : null;
+  const tiers = providerAliasTiers(providerId);
+  if (tiers.length) {
+    const primary = p ? stripModelSuffixUi(p.model) : '';
+    const hit = primary && tiers.find(([, m]) => stripModelSuffixUi(m.model) === primary);
+    return (hit || tiers[0])[0];
+  }
+  const opts = providerModelOptions(providerId);
+  return (p && p.model) || opts[0] || '';
 }
 
 function modelChoiceLabel(v, providerId) {
@@ -2955,15 +2977,18 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
       const choices = buildModelChoices(pid);
       subModelSel.innerHTML = '';
       for (const v of choices) { const o = document.createElement('option'); o.value = v; o.textContent = modelChoiceLabel(v, pid); subModelSel.appendChild(o); }
+      if (!pref) pref = defaultModelChoiceForProvider(pid); // 联动：换 provider 自动选它自己的主模型
       const isKnown = choices.includes(pref);
-      subModelSel.value = isKnown ? pref : '__custom__';
+      subModelSel.value = isKnown ? pref : (pref ? '__custom__' : choices[0]);
       subCustom.value = isKnown ? '' : pref;
       syncSubCustom();
     }
     function refreshSubUI() {
       const pid = subProviderSel.value;
       subModelSel.disabled = !pid; subCustom.disabled = !pid;
-      if (pid) rebuildSubModels(pid, initSub ? initSub.model : '');
+      // Only carry the saved sub-model when still on the provider it was
+      // saved for — switching provider must re-link to the new one's models.
+      if (pid) rebuildSubModels(pid, (initSub && pid === initSub.providerId) ? initSub.model : '');
       else { subModelSel.innerHTML = '<option value="">（随主）</option>'; subModelSel.value = ''; syncSubCustom(); }
     }
     refreshSubUI();
@@ -2982,8 +3007,12 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
         opt.textContent = modelChoiceLabel(v, nextProvider);
         modelSel.appendChild(opt);
       }
+      // No preferred model (fresh provider switch) → auto-select the new
+      // provider's own primary model so a concrete, compatible choice is
+      // always committed — never a blank/stale one.
+      if (!preferredModel) preferredModel = defaultModelChoiceForProvider(nextProvider);
       const isKnown = choices.includes(preferredModel);
-      modelSel.value = isKnown ? preferredModel : '__custom__';
+      modelSel.value = isKnown ? preferredModel : (preferredModel ? '__custom__' : choices[0]);
       custom.value = isKnown ? '' : preferredModel;
       syncCustom();
     }

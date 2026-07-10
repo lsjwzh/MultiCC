@@ -259,6 +259,43 @@ function resolveSessionWireModel(sessionModel, { providerModel = null, providerM
   return (sessionModel && (ALIAS_TIER_REGEX.test(sessionModel) || served.includes(sessionModel))) ? sessionModel : providerModel;
 }
 
+// Strip a "[1m]"-style context suffix for model comparison —
+// "ark-code-latest[1M]" and "ark-code-latest" are the same wire model.
+function stripModelSuffix(m) {
+  return String(m || '').replace(/\[[^\]]*\]$/, '').trim();
+}
+
+// PATCH-time guard: can this per-session model value work on that provider?
+// Mirrors resolveSessionWireModel's spawn-time rule (tier alias or a served
+// model), and additionally covers official/default-login providers — the spawn
+// path passes the session model through VERBATIM there, so a relay id left
+// over from a previous provider (e.g. "astron-code-latest") would 404 against
+// api.anthropic.com. Used by the session PATCH to auto-replace stale models
+// when switching provider (the AI-config dialog always submits provider+model
+// together, which skips the model-snapshot branch).
+function modelValidForProvider(appType, providerId, model) {
+  if (!model) return true; // 默认 → provider/global default, always resolvable
+  const bare = stripModelSuffix(model);
+  const isTier = ALIAS_TIER_REGEX.test(model);
+  const p = providerId ? getProviderSummary(appType, providerId) : null;
+  if (appType === 'claude' && (!p || p.isOfficial)) {
+    // Default login or an official/OAuth provider entry: only real Anthropic
+    // models exist there.
+    return isTier || /^claude-/i.test(bare);
+  }
+  if (!p) return true; // unknown codex/default target — don't second-guess
+  if (isTier) {
+    // 'default' follows ANTHROPIC_MODEL; other tiers only work when the
+    // provider maps them (ANTHROPIC_DEFAULT_*_MODEL) — unmapped, the CLI
+    // resolves the tier to a claude-* wire name most relays reject.
+    if (/^default$/i.test(model)) return true;
+    const e = p.aliasMap && p.aliasMap[model.toLowerCase()];
+    return !!(e && e.model);
+  }
+  const served = (p.modelOptions || []).map(stripModelSuffix);
+  return served.length === 0 || served.includes(bare);
+}
+
 // Apply a { opus: {model, name}, sonnet: {...}, ... } map onto a claude env
 // object (in place), writing/clearing ANTHROPIC_DEFAULT_*_MODEL[_NAME]. Blank
 // model for a tier clears that tier's mapping.
@@ -1002,6 +1039,7 @@ module.exports = {
   buildChildEnv,
   applyClaudeProxyEnv,
   resolveSessionWireModel,
+  modelValidForProvider,
   getProviderUsageStats,
   readDailyWindows,
   CLAUDE_ROUTING_KEYS,
