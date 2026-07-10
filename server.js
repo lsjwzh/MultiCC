@@ -2750,6 +2750,15 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     autoCommit: true,      // default: auto-commit & merge after task completion
     autoDispatch: false,   // default: do NOT inject dispatch context prompt unless user opts in
+    // streaming (流式常驻) is now claude's default mode: keep the claude process
+    // alive across turns for faster, context-preserving continuation. Non-claude
+    // CLIs ignore this field. Only claude chat sessions default on.
+    streaming: cli === 'claude' && kind === 'chat',
+    // autoContinue is no longer a user-facing toggle (the picker keeps only the
+    // streaming option). The field stays true so tryAutoContinue / B idle-timer
+    // still auto-drive C/B states — classify's D/W guards + tryAutoContinue gate
+    // provide the safety rails; there's no reason to ever turn it off now.
+    autoContinue: true,
     createdAt: new Date().toISOString(),
     worktreePath,
     branch,
@@ -2848,11 +2857,11 @@ app.patch('/api/sessions/:id', (req, res) => {
     appendEvent(s.dirId, 'session_streaming_changed', `${s.label || s.id} → ${s.streaming ? '流式常驻' : '逐轮'}`, s.id);
   }
   if (req.body.autoContinue !== undefined) {
-    // D fallback: auto-nudge the session to continue when a turn ends only
-    // "waiting on a background task" (guarded; see wait-injector).
-    s.autoContinue = !!req.body.autoContinue;
-    if (!s.autoContinue) waitInjector.resetAuto(s.id);
-    appendEvent(s.dirId, 'session_autocontinue_changed', `${s.label || s.id} → ${s.autoContinue ? '自动接力' : '关闭'}`, s.id);
+    // autoContinue is no longer user-configurable (the streaming picker dropped
+    // this toggle). Accept the field for back-compat with older clients but pin
+    // it true — tryAutoContinue / B idle-timer rely on it, and classify's D/W
+    // guards + tryAutoContinue gate make "always on" safe.
+    s.autoContinue = true;
   }
   if (req.body.autoCommit !== undefined) {
     // Auto-commit and merge worktree back to base branch after task completion.
@@ -3621,8 +3630,15 @@ app.get('/api/sessions/:id', (req, res) => {
   // The session's own role override (null = inherits the directory default).
   const rolePrompt = persisted?.rolePrompt || null;
   const memory = persisted?.memory || null;  // distilled session memory
-  const streaming = !!persisted?.streaming;
-  const autoContinue = !!persisted?.autoContinue;
+  // streaming defaults on for claude chat sessions (createSessionRecord sets it,
+  // but older persisted sessions predate the default → treat undefined as on for
+  // claude chat so they pick up the new default on first load).
+  const isClaudeChat = persisted?.cli !== 'codex' && persisted?.cli !== 'opencode' && persisted?.cli !== 'zcode'
+    && persisted?.kind !== 'terminal';
+  const streaming = persisted?.streaming === undefined ? isClaudeChat : !!persisted.streaming;
+  // autoContinue is no longer user-facing; always true (classify gates the actual
+  // injection). undefined → true for legacy sessions that predate the pinned field.
+  const autoContinue = persisted?.autoContinue === undefined ? true : true;
   const autoCommit = !!persisted?.autoCommit;
   const autoDispatch = !!persisted?.autoDispatch;
   const provider = persisted?.provider || null;  // cc-switch provider id; null = default login
