@@ -966,7 +966,10 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
         modelLabel: _modelResultLabel(_provider, model),
         effortLabel: effortShortNameForCli(widget.cli, _effort),
         subagent: subagent,
-        streaming: _streaming,
+        // streaming is claude-only (server.js:2858 rejects it for codex with
+        // 400 "streaming is claude-only"). The toggle is hidden for non-claude,
+        // so send null there to keep the PATCH body clean.
+        streaming: _isClaude ? _streaming : null,
       ),
     );
   }

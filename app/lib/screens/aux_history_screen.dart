@@ -163,10 +163,13 @@ class _AuxTaskCardState extends State<_AuxTaskCard> {
     String fmtTime(int? ms) => ms == null
         ? '--'
         : DateTime.fromMillisecondsSinceEpoch(ms).toLocal().toString().substring(11, 19);
+    // ts (t.input['ts']) is the ENQUEUE time (= task.ts). The real completion
+    // time is the assistant message's ts (out['ts'] = Date.now() at finish).
+    final completedTs = (out?['ts'] as num?)?.toInt();
     final timelineParts = <String>[
       if (enqueuedAt != null) '入队 ${fmtTime(enqueuedAt)}',
       if (startedAt != null) '开始 ${fmtTime(startedAt)}',
-      if (ts != null) '完成 ${fmtTime(ts)}',
+      if (completedTs != null) '完成 ${fmtTime(completedTs)}',
       if (queueMs != null && queueMs > 0) '排队 ${(queueMs / 1000).toStringAsFixed(1)}s',
       if (durationMs != null && durationMs > 0) '执行 ${(durationMs / 1000).toStringAsFixed(1)}s',
     ];
