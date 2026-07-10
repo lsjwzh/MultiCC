@@ -336,6 +336,11 @@ function createHandler({ getProvider, onUsage }) {
       routeProviderId = ccfw.providerId;
       outBody = rewriteModel(bodyBuf, ccfw.realModel);
       role = 'sub';
+      // [diag] capture exactly what model a Task/Workflow subagent requested,
+      // and whether the sub provider differs from the session's main provider
+      // (mainProvider != subProvider ⇒ Workflow subagent inherited the main
+      // session model instead of the configured subagent override).
+      console.log(`[ccfw] sub-decode sess=${sessionId || '-'} mainProvider=${providerId} subProvider=${ccfw.providerId} realModel=${ccfw.realModel}`);
     }
 
     const provider = getProvider('claude', routeProviderId);
@@ -370,11 +375,19 @@ function createHandler({ getProvider, onUsage }) {
     // — the CLI only ever sees the opaque `ccfw:<pid>:opus` string — so map it
     // here for both, otherwise an alias-mapped relay gets 'opus' and rejects it.
     const tierKey = String(ccfw ? ccfw.realModel : model).toLowerCase();
-    if (TIERS.includes(tierKey) && creds.aliasMap[tierKey]) {
-      const alias = creds.aliasMap[tierKey];
-      // aliasMap values can be {model, name} objects or plain strings
-      const realModel = (typeof alias === 'string') ? alias : (alias.model || alias.name || '');
-      if (realModel) outBody = rewriteModel(outBody, realModel);
+    if (TIERS.includes(tierKey)) {
+      const alias = creds.aliasMap && creds.aliasMap[tierKey];
+      if (alias) {
+        // aliasMap values can be {model, name} objects or plain strings
+        const realModel = (typeof alias === 'string') ? alias : (alias.model || alias.name || '');
+        console.log(`[ccfw] sub-tier HIT sess=${sessionId || '-'} provider=${routeProviderId} tier=${tierKey} -> ${realModel}`);
+        if (realModel) outBody = rewriteModel(outBody, realModel);
+      } else {
+        // [diag] tier alias has no mapping on this provider — the raw tier
+        // literal (e.g. "fable") is about to be sent upstream and will almost
+        // certainly 404. Surfaced explicitly so the failure isn't silent.
+        console.log(`[ccfw] !! sub-tier UNMAPPED sess=${sessionId || '-'} provider=${routeProviderId} tier=${tierKey} aliasMapKeys=[${Object.keys(creds.aliasMap || {}).join(',')}] — sending RAW tier`);
+      }
     }
 
     // forward
