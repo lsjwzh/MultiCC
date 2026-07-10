@@ -2412,6 +2412,35 @@ app.get('/api/agent-resources/skills', (req, res) => {
   });
 });
 
+// ── Skill sync: status + manual trigger (drives the 技能同步 manage panel) ──
+// GET returns the latest sync run snapshot; POST forces a full sync cycle.
+// Both are gated by the same global auth middleware as the routes above.
+app.get('/api/skill-sync/status', (req, res) => {
+  res.json(_lastSkillSyncResult || {
+    ts: 0, status: 'never-synced', providers: null,
+    linkCount: 0, skipCount: 0, convCount: 0, reverseImportCount: 0, bundledInstallCount: 0,
+    sharedSkillCount: 0, sharedSkillNames: [],
+    aiQueue: { queueLength: 0, items: [], timerActive: false }, error: null,
+  });
+});
+
+app.post('/api/skill-sync/run', (req, res) => {
+  if (_skillSyncRunning) return res.status(409).json({ ok: false, error: 'sync already running' });
+  _skillSyncRunning = true;
+  try {
+    const bundled = installBundledSkills();          // bundled multicc skills → agents
+    const rev = skillConv.importAllProviderSkills(); // reverse-import providers → agents
+    syncSharedSkills();                              // forward sync → all providers (records providers)
+    _recordSkillSyncResult({ bundledInstallCount: bundled, reverseImportCount: (rev || []).length, error: null });
+    res.json({ ok: true, result: _lastSkillSyncResult });
+  } catch (e) {
+    try { _recordSkillSyncResult({ error: e.message }); } catch (_) {}
+    res.status(500).json({ ok: false, error: e.message });
+  } finally {
+    _skillSyncRunning = false;
+  }
+});
+
 // ── Agent presets (role prompt library, generated from agency-agents) ──
 // Lazily read public/agent-presets.json once and cache in memory.
 let _agentPresetsCache = null;
@@ -10184,6 +10213,45 @@ const SKILL_PROVIDERS = [
 ];
 const AGENTS_SKILLS_DIR = skillConv.AGENTS_ROOT;
 
+// ── Skill-sync status (surfaced by /api/skill-sync/status + the 技能同步 panel) ──
+// syncSharedSkills throws away its per-run counts after logging; capture the
+// latest run here so the manage UI can show live state. _skillSyncRunning guards
+// a manual /run against a concurrent timer/chokidar sync.
+let _lastSkillSyncResult = null;
+let _skillSyncRunning = false;
+
+function _listSharedSkillNames() {
+  try {
+    return fs.readdirSync(AGENTS_SKILLS_DIR)
+      .filter(n => !n.startsWith('.') && _isSkillDir(path.join(AGENTS_SKILLS_DIR, n)))
+      .sort();
+  } catch (_) { return []; }
+}
+
+// Merge a partial run summary into _lastSkillSyncResult, refreshing the
+// derived fields (shared skill list, AI-convert queue snapshot) each time.
+function _recordSkillSyncResult(partial) {
+  const prev = _lastSkillSyncResult || {};
+  const p = partial || {};
+  const sharedSkillNames = _listSharedSkillNames();
+  let aiQueue = { queueLength: 0, items: [], timerActive: false };
+  try { if (typeof skillConv.getAiQueueStatus === 'function') aiQueue = skillConv.getAiQueueStatus(); } catch (_) {}
+  _lastSkillSyncResult = {
+    ts: Date.now(),
+    providers: p.providers || prev.providers || null,
+    linkCount: p.linkCount != null ? p.linkCount : (prev.linkCount || 0),
+    skipCount: p.skipCount != null ? p.skipCount : (prev.skipCount || 0),
+    convCount: p.convCount != null ? p.convCount : (prev.convCount || 0),
+    reverseImportCount: p.reverseImportCount != null ? p.reverseImportCount : (prev.reverseImportCount || 0),
+    bundledInstallCount: p.bundledInstallCount != null ? p.bundledInstallCount : (prev.bundledInstallCount || 0),
+    sharedSkillCount: sharedSkillNames.length,
+    sharedSkillNames,
+    aiQueue,
+    error: p.error !== undefined ? p.error : (prev.error || null),
+  };
+  return _lastSkillSyncResult;
+}
+
 function _readSkillVer(dir) {
   try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); } catch (_) { return null; }
 }
@@ -10198,7 +10266,8 @@ function _isSkillDir(dir) {
 function installBundledSkills() {
   const srcRoot = path.join(__dirname, 'skills');
   let names;
-  try { names = fs.readdirSync(srcRoot); } catch (_) { return; }
+  try { names = fs.readdirSync(srcRoot); } catch (_) { return 0; }
+  let installed = 0;
   for (const name of names) {
     try {
       const src = path.join(srcRoot, name);
@@ -10211,11 +10280,13 @@ function installBundledSkills() {
       fs.rmSync(dest, { recursive: true, force: true });
       fs.cpSync(src, dest, { recursive: true });
       try { for (const f of fs.readdirSync(path.join(dest, 'bin'))) fs.chmodSync(path.join(dest, 'bin', f), 0o755); } catch (_) {}
+      installed++;
       console.log(`[multicc/skills] imported bundled -> ~/.agents/skills/${name}`);
     } catch (e) {
       console.warn(`[multicc/skills] install bundled ${name} failed: ${e.message}`);
     }
   }
+  return installed;
 }
 
 // (2) Symlink ~/.agents/skills/* into each provider's skill dir, using the
@@ -10223,14 +10294,17 @@ function installBundledSkills() {
 // stripped Codex frontmatter, Hermes metadata). Mechanical conversion runs
 // inline; AI-assisted deep conversion is queued for background processing.
 function syncSharedSkills() {
-  let linkCount = 0;
-  let skipCount = 0;
-  let convCount = 0;
+  // Per-provider tallies so the status UI can show a claude/codex/hermes
+  // breakdown, not just an aggregate. providers[name] = {linked,skipped,converted}.
+  const providers = {};
+  for (const prov of SKILL_PROVIDERS) providers[prov.name] = { linked: 0, skipped: 0, converted: 0 };
 
   let agentNames;
-  try { agentNames = fs.readdirSync(AGENTS_SKILLS_DIR); } catch (_) { return { linkCount: 0, skipCount: 0, convCount: 0 }; }
+  try { agentNames = fs.readdirSync(AGENTS_SKILLS_DIR); }
+  catch (_) { return _recordSkillSyncResult({ linkCount: 0, skipCount: 0, convCount: 0, providers }); }
 
   for (const prov of SKILL_PROVIDERS) {
+    const pc = providers[prov.name];
     fs.mkdirSync(prov.dir, { recursive: true });
     const protectedSet = new Set(prov.protectedSubdirs || []);
 
@@ -10243,7 +10317,7 @@ function syncSharedSkills() {
       // ── Run converter for this skill → target provider ──
       if (prov.name !== 'claude') {
         const convResult = skillConv.ensureSkillConverted(name);
-        if (convResult.mechanical.length > 0) convCount++;
+        if (convResult.mechanical.length > 0) pc.converted++;
       }
 
       // ── Determine link target ──
@@ -10268,24 +10342,28 @@ function syncSharedSkills() {
       if (fs.existsSync(dest) && !fs.lstatSync(dest).isSymbolicLink()) {
         if (_readSkillVer(dest) === null) continue;
         try { fs.rmSync(dest, { recursive: true, force: true }); }
-        catch (e) { skipCount++; continue; }
+        catch (e) { pc.skipped++; continue; }
       }
 
       // Remove broken/wrong symlink and create correct one.
       try { fs.unlinkSync(dest); } catch (_) {}
       try {
         fs.symlinkSync(linkSrc, dest);
-        linkCount++;
+        pc.linked++;
       } catch (e) {
         console.warn(`[multicc/skills] symlink ${prov.name} ← ${name}: ${e.message}`);
-        skipCount++;
+        pc.skipped++;
       }
     }
+  }
+  let linkCount = 0, skipCount = 0, convCount = 0;
+  for (const k of Object.keys(providers)) {
+    linkCount += providers[k].linked; skipCount += providers[k].skipped; convCount += providers[k].converted;
   }
   if (linkCount > 0 || skipCount > 0 || convCount > 0) {
     console.log(`[multicc/skills] shared sync: ${linkCount} linked, ${skipCount} skipped, ${convCount} converted`);
   }
-  return { linkCount, skipCount, convCount };
+  return _recordSkillSyncResult({ linkCount, skipCount, convCount, providers });
 }
 
 // ── AI-assisted skill conversion callback ──
@@ -10423,13 +10501,15 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
     seedTokenUsageFromHistory();
     backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
-    installBundledSkills();                         // bundled multicc skills → all providers
-    skillConv.importAllProviderSkills();            // reverse-import: Codex/Hermes → agents
-    syncSharedSkills();                             // forward sync: agents → all providers
+    const _bundled = installBundledSkills();        // bundled multicc skills → all providers
+    const _rev = skillConv.importAllProviderSkills(); // reverse-import: Codex/Hermes → agents
+    syncSharedSkills();                             // forward sync: agents → all providers (records providers)
+    _recordSkillSyncResult({ bundledInstallCount: _bundled, reverseImportCount: (_rev || []).length });
     watchSharedSkills();                            // real-time chokidar watch on ~/.agents/skills
     setInterval(() => {
-      skillConv.importAllProviderSkills();          // periodic reverse import
-      syncSharedSkills();                           // periodic forward sync
+      const rev = skillConv.importAllProviderSkills(); // periodic reverse import
+      syncSharedSkills();                           // periodic forward sync (records providers)
+      _recordSkillSyncResult({ reverseImportCount: (rev || []).length });
     }, 5 * 60 * 1000).unref();
     reconcileAllTriggers();
     // Periodic scan: re-judge non-terminal/junk sessions every minute. First

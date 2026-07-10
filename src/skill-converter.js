@@ -318,6 +318,16 @@ function conversionStatus(skillName) {
   return status;
 }
 
+// Snapshot of the pending AI-assisted conversion queue, for status UIs.
+// _aiConvertQueue is module-private; this is the read-only accessor.
+function getAiQueueStatus() {
+  return {
+    queueLength: _aiConvertQueue.length,
+    items: _aiConvertQueue.map(e => ({ skillName: e.skillName, provider: e.provider })),
+    timerActive: !!_aiConvertTimer,
+  };
+}
+
 // ── Reverse conversion: provider → canonical ──────────────────────────
 //
 // When a skill appears in a provider dir but NOT in ~/.agents/skills/,
@@ -575,6 +585,7 @@ module.exports = {
   onAiConvertNeeded,
   requestAiConvert,
   conversionStatus,
+  getAiQueueStatus,
   // Reverse conversion
   codexToCanonical,
   hermesSKillToCanonical,
