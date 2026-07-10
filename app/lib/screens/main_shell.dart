@@ -68,6 +68,57 @@ String _wbStatusLabel(String? status) {
   }
 }
 
+/// Live classify-state (aux-AI intent classifier) badge styling, aligned to the
+/// web fleet cards (manage.js _CLASSIFY_BADGE). Returns null for sessions with
+/// no classify verdict yet, so the badge is simply hidden.
+///   D=done · C=continue · W=wait-user · B=wait-bg · E=api-error · P=processing
+({Color color, String label, String emoji})? _classifyBadge(String? s) {
+  switch (s) {
+    case 'D':
+      return (color: const Color(0xFF3ad6c5), label: '已完成', emoji: '✅');
+    case 'C':
+      return (color: const Color(0xFF7fd49a), label: '继续中', emoji: '▶️');
+    case 'W':
+      return (color: const Color(0xFFf0936b), label: '等待你', emoji: '⏸️');
+    case 'B':
+      return (color: const Color(0xFFe3b341), label: '后台等待', emoji: '⏳');
+    case 'E':
+      return (color: const Color(0xFFff6b63), label: '接口异常', emoji: '⚠️');
+    case 'P':
+      return (color: const Color(0xFF6aa3ff), label: '处理中', emoji: '🔄');
+    default:
+      return null;
+  }
+}
+
+/// A small classify-state pill. Shows the state emoji (+ optional label) tinted
+/// by state, with the current task goal as a tooltip. Empty widget when the
+/// session has no classify verdict.
+Widget _classifyChip(SessionStatus? live, {bool showLabel = true}) {
+  final b = _classifyBadge(live?.classifyState);
+  if (b == null) return const SizedBox.shrink();
+  final goal = live?.goal;
+  final chip = Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      color: b.color.withValues(alpha: 0.15),
+      border: Border.all(color: b.color.withValues(alpha: 0.4)),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      showLabel ? '${b.emoji} ${b.label}' : b.emoji,
+      style: TextStyle(
+        color: b.color,
+        fontSize: 9.5,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+  return (goal != null && goal.isNotEmpty)
+      ? Tooltip(message: goal, child: chip)
+      : chip;
+}
+
 String _mergeReadyLabel(SessionStatus status) {
   final ahead = status.ahead;
   final dirty = status.dirty;
@@ -613,6 +664,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
             _HomeTaskScroller(
               sessions: mgr.sessions,
               directories: mgr.directories,
+              mgr: mgr,
               onSessionTap: (s) {
                 mgr.openSession(s);
                 mgr.switchToSession(s.id);
@@ -1200,6 +1252,11 @@ void _showSessionSheet(
                                     fontWeight: FontWeight.w700,
                                   ),
                                 ),
+                                if (_classifyBadge(live?.classifyState) !=
+                                    null) ...[
+                                  const SizedBox(width: 6),
+                                  _classifyChip(live),
+                                ],
                                 const Spacer(),
                                 if (runtime.isNotEmpty) ...[
                                   Text(
@@ -2517,11 +2574,13 @@ class _DirectoryPreview extends StatelessWidget {
 class _HomeTaskScroller extends StatefulWidget {
   final List<Session> sessions;
   final List<Directory> directories;
+  final SessionManager mgr;
   final void Function(Session session)? onSessionTap;
 
   const _HomeTaskScroller({
     required this.sessions,
     required this.directories,
+    required this.mgr,
     this.onSessionTap,
   });
 
@@ -2602,6 +2661,7 @@ class _HomeTaskScrollerState extends State<_HomeTaskScroller> {
           dirName: dirNames[s.dirId] ?? '',
           active: s.active,
           lastActivity: s.lastActivity,
+          live: widget.mgr.liveStatus(s.id),
         ),
       );
     }
@@ -2670,12 +2730,17 @@ class _ActiveTask {
   final bool active;
   final DateTime? lastActivity;
 
+  /// Live workspace status (carries classifyState/goal/runtime), null until the
+  /// directory's workspace socket has reported this session.
+  final SessionStatus? live;
+
   const _ActiveTask({
     required this.session,
     required this.label,
     required this.dirName,
     required this.active,
     required this.lastActivity,
+    this.live,
   });
 }
 
@@ -2696,13 +2761,21 @@ class _TaskProgressCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final Color statusColor = task.active
-        ? const Color(0xFF6aa3ff)
-        : const Color(0xFF5b616c);
-    final String statusLabel = task.active ? '运行中' : '空闲';
-    final String activityText = task.active
-        ? '⚙️ 正在运行'
-        : '🕘 ${_relativeTime(task.lastActivity)}';
+    // Prefer live workspace status (full 7-state + run-time) over the binary
+    // active/idle fallback used before the workspace socket reports in.
+    final live = task.live;
+    final Color statusColor = live != null
+        ? _wbStatusColor(live.status)
+        : (task.active
+              ? const Color(0xFF6aa3ff)
+              : const Color(0xFF5b616c));
+    final String statusLabel = live != null
+        ? _wbStatusLabel(live.status)
+        : (task.active ? '运行中' : '空闲');
+    final String runtime = _runTimeText(live);
+    final String activityText = runtime.isNotEmpty
+        ? '⏱ $runtime'
+        : (task.active ? '⚙️ 正在运行' : '🕘 ${_relativeTime(task.lastActivity)}');
 
     return InkWell(
       onTap: onTap,
@@ -2755,6 +2828,11 @@ class _TaskProgressCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
+            // 任务状态徽标（classify 状态：已完成/等待/处理中…）
+            if (_classifyBadge(live?.classifyState) != null) ...[
+              _classifyChip(live),
+              const SizedBox(width: 8),
+            ],
             // 状态标签
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -3211,6 +3289,10 @@ class SessionCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 7),
+                    if (_classifyBadge(live?.classifyState) != null) ...[
+                      _classifyChip(live, showLabel: false),
+                      const SizedBox(width: 6),
+                    ],
                     _MiniBadge(label: session.cli.name, color: cliColor),
                     const SizedBox(width: 6),
                     _MiniBadge(
