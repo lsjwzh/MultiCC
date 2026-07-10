@@ -9386,10 +9386,19 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
     extraArgs.push('--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(','));
   }
 
+  // Streaming uses a SEPARATE session UUID (stored on the persisted record as
+  // _streamSessionId) so the persistent process never collides with the per-turn
+  // spawn path which uses cliSessionId. Both paths share the same Claude project
+  // directory (keyed on cwd), and the streaming process is the single source of
+  // truth for streaming sessions — per-turn spawns are never used concurrently.
+  if (!persisted._streamSessionId) {
+    persisted._streamSessionId = crypto.randomUUID();
+    savePersistedSessions();
+  }
   chatStream.ensure(sessionName, {
     cmd: cliProviders.claude.cmd,
     cwd: cs.cwd,
-    sessionId: persisted.cliSessionId,
+    sessionId: persisted._streamSessionId,
     model, sysPrompt, extraArgs,
     env: childEnv,
   });
