@@ -6802,11 +6802,14 @@ function parseClassifyResult(text) {
   const phaseRaw = (lines[1] || '')
     .replace(/^(第2行[:：]|阶段[:：]|phase[:：]?)\s*/i, '')
     .trim();
-  const phaseMap = {
-    '规划中': 'planning', '实现中': 'implementing', '验证中': 'verifying', '收尾中': 'wrapping', '已完成': 'done',
-    'planning': 'planning', 'implementing': 'implementing', 'verifying': 'verifying', 'wrapping': 'wrapping', 'done': 'done',
-  };
-  const phase = phaseMap[phaseRaw] || phaseMap[phaseRaw.toLowerCase()] || null;
+  // Normalize phase: the classify prompt outputs either Chinese or English;
+  // normalise to the canonical English key used by PHASE_LABELS.
+  const phase = PHASE_LABELS[phaseRaw]
+    ? phaseRaw                                         // already an English key
+    : Object.entries(PHASE_LABELS).find(([, v]) => v === phaseRaw)?.[0]  // Chinese → key
+    || PHASE_LABELS[phaseRaw.toLowerCase()]            // case-insensitive
+    || Object.entries(PHASE_LABELS).find(([, v]) => v === phaseRaw.toLowerCase())?.[0]
+    || null;
 
   // State (line 3). Single letter: C/W/B/E/P.
   const stateRaw = (lines[2] || '')
@@ -6841,6 +6844,60 @@ function parseClassifyResult(text) {
 
   return { state, goal: finalGoal, phase, background, error };
 }
+
+// ── Unified classify display map ────────────────────────────────────────────
+// Single source of truth for how each classify-state LETTER (D/C/W/B/E/P)
+// renders across ALL channels: classify bar, push notification, voice/TTS,
+// toast, card status. Every display path MUST read from here — no inline maps.
+const CLASSIFY_DISPLAY = {
+  D: {  // Done — task genuinely finished (terminal)
+    label: '已完成',
+    pushType: 'completed', pushTitle: '完成',
+    voiceText: '任务已完成', ding: 'completed',
+    cardStatus: 'completed', barTint: 'completed',
+  },
+  C: {  // Continue — AI should keep going
+    label: '继续中',
+    pushType: null, pushTitle: null,
+    voiceText: null, ding: null,
+    cardStatus: 'running', barTint: 'running',
+  },
+  W: {  // Wait on user
+    label: '等待用户',
+    pushType: 'waiting', pushTitle: '等待操作',
+    voiceText: '等待你的操作', ding: 'waiting',
+    cardStatus: 'waiting', barTint: 'waiting',
+  },
+  B: {  // Wait on background task
+    label: '后台等待',
+    pushType: 'waiting', pushTitle: '等待操作',
+    voiceText: '等待后台任务', ding: 'waiting',
+    cardStatus: 'waiting', barTint: 'waiting',
+  },
+  E: {  // API error — truncated reply
+    label: 'API 异常',
+    pushType: 'error', pushTitle: '出现异常',
+    voiceText: 'API 异常中断，等待重试中', ding: 'error',
+    cardStatus: 'waiting', barTint: 'error',
+  },
+  P: {  // Processing — mid-turn only
+    label: '处理中',
+    pushType: null, pushTitle: null,
+    voiceText: null, ding: null,
+    cardStatus: 'running', barTint: 'running',
+  },
+};
+
+// Phase labels — centralized, used by both classify-in-progress path and
+// dispatchStateAction. Formerly repeated inline at L7008 and L7902.
+const PHASE_LABELS = {
+  planning: '规划中', implementing: '实现中', verifying: '验证中',
+  wrapping: '收尾中', done: '已完成',
+};
+
+// Helpers
+function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
+function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 
 // ── Unified state-action dispatcher ────────────────────────────────────────
 // Every classify result flows through here. The dispatcher maps state letters
@@ -6962,8 +7019,8 @@ function dispatchStateAction(result, ctx) {
     // P — still processing. Two sub-cases:
     if (cs && cs.isStreaming) {
       // (1) Genuinely mid-turn (a turn IS in flight) — just refresh labels.
-      const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[phase] || '';
-      const label = finalGoal ? `处理中：${finalGoal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
+      const ph = phaseLabel(phase);
+      const label = finalGoal ? `处理中：${finalGoal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
       emitRunningNotify(sessionName, label);
       return;
     }
@@ -6985,13 +7042,13 @@ function dispatchStateAction(result, ctx) {
     const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
     if (isTerminal) {
       triggerPush(sessionId, 'completed', msg);
-      terminalBroadcast(sessionId, { type: 'notify', state: 'completed', message: msg });
+      terminalBroadcast(sessionId, { type: 'notify', state: 'completed', classifyState: 'D', message: msg });
     } else {
       triggerPush(sessionId, 'completed', `[Chat] ${msg}`);
-      chatBroadcast(sessionName, { type: 'notify', state: 'completed', message: msg });
+      chatBroadcast(sessionName, { type: 'notify', state: 'completed', classifyState: 'D', message: msg });
     }
     const dirId = persistedSessions.get(sessionName)?.dirId;
-    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', message: msg });
+    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'completed', classifyState: 'D', message: msg });
     setSessionStatus(sessionName, { status: 'completed' });
     setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() }, { save: false });
     waitInjector.resetAuto(sessionName);
@@ -7005,8 +7062,8 @@ function dispatchStateAction(result, ctx) {
     // A turn already in progress will carry the continuation itself — just
     // refresh the in-progress label, don't inject or finalize.
     if (cs && cs.isStreaming) {
-      const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[phase] || '';
-      const label = finalGoal ? `处理中：${finalGoal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
+      const ph = phaseLabel(phase);
+      const label = finalGoal ? `处理中：${finalGoal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
       emitRunningNotify(sessionName, label);
       return;
     }
@@ -7060,21 +7117,23 @@ function dispatchStateAction(result, ctx) {
     _bgIdleTimers.set(sessionName, { timer, lastActivity: Date.now() });
   }
 
-  // Common waiting-state broadcast
+  // Common waiting-state broadcast — driven by classifyState letter
+  const cls = error ? 'E' : background ? 'B' : (state === 'continue' ? 'C' : 'W');
+  const disp = classifyDisplay(cls);
+  const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
   const waitMsg = finalGoal ? `等待：${finalGoal}` : (error ? 'API 异常，等待重试…' : '等待交互');
   if (isTerminal) {
-    triggerPush(sessionId, 'waiting', waitMsg);
-    terminalBroadcast(sessionId, { type: 'notify', state: 'waiting', message: waitMsg });
+    triggerPush(sessionId, pushType, waitMsg);
+    terminalBroadcast(sessionId, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
   } else {
-    triggerPush(sessionId, 'waiting', `[Chat] ${waitMsg}`);
-    chatBroadcast(sessionName, { type: 'notify', state: 'waiting', message: waitMsg });
+    triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`);
+    chatBroadcast(sessionName, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
   }
   const dirId2 = persistedSessions.get(sessionName)?.dirId;
-  if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: 'waiting', message: waitMsg });
+  if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: pushType, classifyState: cls, message: waitMsg });
   setSessionStatus(sessionName, { status: 'waiting' });
   // Persist the accurate letter for observability (E/B/W or a fell-through C).
   // None of these are terminal — the scan re-judges everything except 'D'.
-  const cls = error ? 'E' : background ? 'B' : (state === 'continue' ? 'C' : 'W');
   setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() }, { save: false });
   // Reset auto-continue guard on a plain W (user is in charge now). B/E/C keep their own flow.
   if (state === 'waiting' && !background && !error) {
@@ -7899,9 +7958,9 @@ function runClassifyNow(cs, sessionName) {
       // the ensureCurrentTask placeholder ('planning'), so the card showed
       // "新任务 规划中" even after classify judged the real goal/phase.
       setTaskState(sessionName, { goal: cs.currentTask?.goal || '', phase: cs.currentTask?.phase || 'planning' });
-      const phaseLabel = { planning: '规划中', implementing: '实现中', verifying: '验证中', wrapping: '收尾中', done: '已完成' }[cs.currentTask?.phase] || '';
+      const ph = phaseLabel(cs.currentTask?.phase);
       const goal = cs.currentTask?.goal || '';
-      const label = goal ? `处理中：${goal}${phaseLabel ? ' · ' + phaseLabel : ''}` : `处理中${phaseLabel ? '：' + phaseLabel : '…'}`;
+      const label = goal ? `处理中：${goal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
       emitRunningNotify(sessionName, label);
       console.log(`[multicc/aux] Classify in-progress for ${sessionName}: goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
       return;
