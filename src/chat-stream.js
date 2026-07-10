@@ -33,7 +33,7 @@ const { spawn } = require('child_process');
 //     started (bool: has this sessionId ever run a turn → use --resume),
 //     busy (bool: a turn is in flight), queue: [{text, onEvent, resolve, reject}],
 //     current: {onEvent, resolve, reject} | null,
-//     lineBuf, idleTimer, onExit }
+//     lineBuf, idleTimer, onExit, onNewSessionId }
 const sessions = new Map();
 
 const DEFAULT_IDLE_MS = 10 * 60 * 1000; // kill a warm-but-unused process after 10min
@@ -155,6 +155,25 @@ function onExit(name, code, signal, err) {
   s.proc = null;
   s.busy = false;
   s.current = null;
+
+  // Detect "Session ID already in use" — the CLI refuses to start because
+  // another process (or a stale lock) holds this session UUID. Generate a
+  // fresh UUID, re-queue the in-flight message, and retry the spawn.
+  const stderr = (s.stderrTail || '').trim();
+  if (/already in use/i.test(stderr)) {
+    const crypto = require('crypto');
+    s.sessionId = crypto.randomUUID();
+    s.started = false;
+    s.stderrTail = '';
+    if (typeof s.onNewSessionId === 'function') {
+      try { s.onNewSessionId(s.sessionId); } catch (_) {}
+    }
+    // If a message was in-flight, put it back so it re-runs with the new id.
+    if (cur) s.queue.unshift(cur);
+    setImmediate(() => pump(name));
+    return;
+  }
+
   // If a turn was in flight when the process died, reject it so the caller can
   // fall back / surface an error (the injector decides whether to retry).
   if (wasBusy && cur && typeof cur.reject === 'function') {
