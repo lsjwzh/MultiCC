@@ -157,6 +157,23 @@ class _AuxTaskCardState extends State<_AuxTaskCard> {
       resultLabel = (out['content']?.toString() ?? '').trim();
     }
     final durationMs = (out?['durationMs'] as num?)?.toInt();
+    final enqueuedAt = (out?['enqueuedAt'] as num?)?.toInt();
+    final startedAt = (out?['startedAt'] as num?)?.toInt();
+    final queueMs = (out?['queueMs'] as num?)?.toInt();
+    String fmtTime(int? ms) => ms == null
+        ? '--'
+        : DateTime.fromMillisecondsSinceEpoch(ms).toLocal().toString().substring(11, 19);
+    // ts (t.input['ts']) is the ENQUEUE time (= task.ts). The real completion
+    // time is the assistant message's ts (out['ts'] = Date.now() at finish).
+    final completedTs = (out?['ts'] as num?)?.toInt();
+    final timelineParts = <String>[
+      if (enqueuedAt != null) '入队 ${fmtTime(enqueuedAt)}',
+      if (startedAt != null) '开始 ${fmtTime(startedAt)}',
+      if (completedTs != null) '完成 ${fmtTime(completedTs)}',
+      if (queueMs != null && queueMs > 0) '排队 ${(queueMs / 1000).toStringAsFixed(1)}s',
+      if (durationMs != null && durationMs > 0) '执行 ${(durationMs / 1000).toStringAsFixed(1)}s',
+    ];
+    final timelineStr = timelineParts.join(' · ');
 
     final timeStr = ts == null
         ? ''
@@ -245,7 +262,10 @@ class _AuxTaskCardState extends State<_AuxTaskCard> {
                       if (durationMs != null && durationMs > 0)
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
-                          child: Text('${(durationMs / 1000).toStringAsFixed(1)}s',
+                          child: Text(
+                              queueMs != null && queueMs > 0
+                                  ? '⏳${(queueMs / 1000).toStringAsFixed(1)}s · ⚡${(durationMs / 1000).toStringAsFixed(1)}s'
+                                  : '${(durationMs / 1000).toStringAsFixed(1)}s',
                               style: const TextStyle(color: AppColors.faint, fontSize: 10)),
                         ),
                     ],
@@ -254,6 +274,20 @@ class _AuxTaskCardState extends State<_AuxTaskCard> {
               ],
             ),
           ),
+          if (_expanded && timelineStr.isNotEmpty)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.panel2,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.line),
+              ),
+              child: Text(timelineStr,
+                  style: const TextStyle(
+                      color: AppColors.faint, fontSize: 10, fontFamily: 'monospace', height: 1.5)),
+            ),
           if (_expanded && inContent.isNotEmpty)
             Container(
               width: double.infinity,

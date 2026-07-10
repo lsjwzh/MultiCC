@@ -256,6 +256,7 @@ class ChatService {
         _emit('notify', {
           'state': (msg['state'] ?? 'completed').toString(),
           'message': (msg['message'] ?? '').toString(),
+          'classifyState': msg['classifyState']?.toString(),
         });
         break;
 
@@ -284,7 +285,7 @@ class ChatService {
 
       case 'task_state':
         // aux classify result: what the assistant thinks this session's
-        // goal/phase is. Carries {goal, phase, lifecycle}. Rendered into the
+        // goal/phase is. Carries {goal, phase, classifyState}. Rendered into the
         // classify bar at the top of the chat (mirrors web renderAuxClassify).
         _emit('task_state', msg);
         break;

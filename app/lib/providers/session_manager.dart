@@ -537,6 +537,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     required String effort,
     SessionSubagent? subagent,
     bool clearSubagent = false,
+    bool? streaming,
   }) async {
     await _sessionService.updateSessionAIConfig(
       id,
@@ -545,6 +546,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       effort: effort,
       subagent: subagent,
       clearSubagent: clearSubagent,
+      streaming: streaming,
     );
     await loadDashboard();
   }
