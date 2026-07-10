@@ -904,9 +904,10 @@ function handleEvent(msg) {
       break;
 
     case 'task_state':
-      // aux classify result: what the assistant thinks this session's goal/phase
+      // aux classify result: what the assistant thinks this session's goal/phase/state
       // is. Render into the classify bar under the header.
-      renderAuxClassify(msg.goal, msg.phase, msg.lifecycle);
+      // classifyState is the D/C/W/B/E/P letter — drives the dominant tint.
+      renderAuxClassify(msg.goal, msg.phase, msg.classifyState);
       break;
 
     case 'rate_limit_event':
@@ -925,15 +926,22 @@ function handleEvent(msg) {
 
     case 'notify': {
       // Server-side aux-AI verdict that the turn finished / is waiting / running.
-      // This is the single source of truth for notifications — we no longer
-      // guess from `result` (which also fires between turns of an agent run).
-      if (msg.state === 'running') {
+      // classifyState (D/C/W/B/E/P) is the primary driver; msg.state is fallback.
+      const cls = msg.classifyState || null;
+      if (msg.state === 'running' || cls === 'P' || cls === 'C') {
         // In-progress summary: show a toast (even when tab is visible) but
         // don't play a sound — it's a status update, not an alert.
         showNotifyToast(msg.message || '任务进行中', 'running');
       } else {
-        const waiting = msg.state === 'waiting';
-        speakNotify(waiting ? '等待操作' : '任务已完成', waiting ? 'waiting' : 'completed');
+        // Terminal verdict — use classifyState to pick voice/ding text
+        const disp = _classifyDisp(cls);
+        if (disp.voice) {
+          speakNotify(disp.voice, disp.ding);
+        } else {
+          // Fallback: no classifyState → use old msg.state logic
+          const waiting = msg.state === 'waiting';
+          speakNotify(waiting ? '等待操作' : '任务已完成', waiting ? 'waiting' : 'completed');
+        }
       }
       break;
     }
@@ -1417,27 +1425,53 @@ function attachForkButton(msgEl) {
 }
 
 // ── AI assistant classify bar ──
-// Renders what aux thinks this session's goal/phase is into #aux-classify-bar.
-// Hidden entirely when there's no goal (never occupies space unnecessarily).
-const _AC_PHASE_LABELS = {
-  idle: '空闲', planning: '规划中', running: '进行中', editing: '编辑中',
-  verifying: '验证中', waiting: '等待中', blocked: '受阻', reviewing: '复查中',
-  completed: '已完成', done: '已完成', interrupted: '已中断',
+// ── Unified classify display maps (mirrors server.js CLASSIFY_DISPLAY) ──────
+// Keyed by classify-state LETTER (D/C/W/B/E/P) — single source of truth for
+// all frontend display: bar badge, voice, ding, toast.
+const _CLASSIFY_DISPLAY = {
+  D: { label: '已完成', barTint: 'completed', voice: '任务已完成', ding: 'completed' },
+  C: { label: '继续中', barTint: 'running',    voice: null,            ding: null },
+  W: { label: '等待用户', barTint: 'waiting',   voice: '等待你的操作',   ding: 'waiting' },
+  B: { label: '后台等待', barTint: 'waiting',   voice: '等待后台任务',   ding: 'waiting' },
+  E: { label: 'API 异常', barTint: 'error',     voice: 'API 异常中断，等待重试中', ding: 'error' },
+  P: { label: '处理中',   barTint: 'running',   voice: null,            ding: null },
 };
-function renderAuxClassify(goal, phase, lifecycle) {
+function _classifyDisp(cls) { return _CLASSIFY_DISPLAY[cls] || _CLASSIFY_DISPLAY['W']; }
+
+const _PHASE_LABELS = {
+  planning: '规划中', implementing: '实现中', verifying: '验证中',
+  wrapping: '收尾中', done: '已完成',
+};
+function _phaseLabel(ph) { return _PHASE_LABELS[ph] || ''; }
+
+// Renders what aux thinks this session's goal/phase/state is into #aux-classify-bar.
+// classifyState (D/C/W/B/E/P) drives the dominant tint; phase is secondary.
+// Hidden entirely when there's no goal.
+function renderAuxClassify(goal, phase, classifyState) {
   const bar = document.getElementById('aux-classify-bar');
   if (!bar) return;
   const g = (goal || '').trim();
   if (!g) { bar.classList.remove('show'); return; }
   const goalEl = document.getElementById('ac-goal');
   const phaseEl = document.getElementById('ac-phase');
+  const stateEl = document.getElementById('ac-state');
   if (goalEl) { goalEl.textContent = g; goalEl.title = g; }
-  const ph = (phase || 'idle').toLowerCase();
-  if (phaseEl) phaseEl.textContent = _AC_PHASE_LABELS[ph] || ph;
-  // lifecycle tint (running/completed/waiting/interrupted)
-  bar.classList.remove('lc-running', 'lc-completed', 'lc-waiting', 'lc-interrupted');
-  const lc = (lifecycle || '').toLowerCase();
-  if (lc) bar.classList.add('lc-' + lc);
+  // Phase badge (secondary, rightmost) — show only when phase is meaningful
+  const ph = (phase || '').toLowerCase();
+  if (phaseEl) {
+    phaseEl.textContent = _phaseLabel(ph) || '';
+    phaseEl.style.display = _phaseLabel(ph) ? '' : 'none';
+  }
+  // State badge (primary, left of phase) — driven by classifyState letter
+  const cls = classifyState || 'P';
+  const disp = _classifyDisp(cls);
+  bar.classList.remove('lc-running', 'lc-completed', 'lc-waiting', 'lc-interrupted',
+    'st-running', 'st-completed', 'st-waiting', 'st-error');
+  if (stateEl) {
+    stateEl.textContent = disp.label;
+    stateEl.style.display = '';
+  }
+  bar.classList.add('st-' + disp.barTint);
   bar.classList.add('show');
 }
 
@@ -4089,8 +4123,12 @@ function playDing(type) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     const ctx = new AC();
-    // completed: rising two-tone (C6 → G6); waiting: gentle single tone (E5)
-    const freqs = type === 'completed' ? [1046.5, 1567.98] : [659.25];
+    // completed: rising two-tone (C6 → G6)
+    // waiting: gentle single tone (E5)
+    // error: descending two-tone (G5 → Eb5) — alert but not alarming
+    const freqs = type === 'completed' ? [1046.5, 1567.98]
+      : type === 'error' ? [783.99, 622.25]
+      : [659.25];
     const t0 = ctx.currentTime;
     freqs.forEach((f, i) => {
       const osc = ctx.createOscillator();
