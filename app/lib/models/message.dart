@@ -262,6 +262,7 @@ class Session {
   final String? rolePrompt;
   final String? provider; // cc-switch provider id; null = default login
   final SessionSubagent? subagent; // Task-tool subagent provider+model override (claude-proxy)
+  final bool? streaming; // per-session stream mode (claude chat defaults true; server 2ad82ec)
   final String cwd;
   final DateTime createdAt;
   final bool active;
@@ -284,6 +285,7 @@ class Session {
     this.rolePrompt,
     this.provider,
     this.subagent,
+    this.streaming,
     this.cwd = '',
     required this.createdAt,
     this.active = false,
@@ -308,6 +310,7 @@ class Session {
       rolePrompt: json['rolePrompt']?.toString(),
       provider: json['provider']?.toString(),
       subagent: json['subagent'] == null ? null : SessionSubagent.fromJson(json['subagent']),
+      streaming: json['streaming'] == null ? null : json['streaming'] == true,
       cwd: (json['cwd'] ?? '').toString(),
       createdAt: json['createdAt'] != null
           ? DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()

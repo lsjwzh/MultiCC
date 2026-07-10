@@ -161,6 +161,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
       );
 
+  Widget? _dashboardClassifyChip(String? cls) {
+    if (cls == null || cls.isEmpty) return null;
+    final Color c;
+    final String emoji;
+    final String label;
+    switch (cls) {
+      case 'D':
+        c = const Color(0xFF56d364);
+        emoji = '✅';
+        label = '完成';
+        break;
+      case 'C':
+        c = const Color(0xFF6cb6ff);
+        emoji = '🔵';
+        label = '继续';
+        break;
+      case 'P':
+        c = const Color(0xFF6cb6ff);
+        emoji = '⚡';
+        label = '处理';
+        break;
+      case 'W':
+        c = const Color(0xFFe3b341);
+        emoji = '⏸';
+        label = '等用户';
+        break;
+      case 'B':
+        c = const Color(0xFFe3b341);
+        emoji = '⏳';
+        label = '等后台';
+        break;
+      case 'E':
+        c = const Color(0xFFf85149);
+        emoji = '⚠';
+        label = '异常';
+        break;
+      default:
+        return null;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: c.withValues(alpha: 0.3)),
+      ),
+      child: Text('$emoji $label',
+          style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w600)),
+    );
+  }
+
   Widget _sessionTile(Map<String, dynamic> s) {
     final active = s['active'] == true;
     final cli = (s['cli'] ?? 'claude') == 'codex' ? 'Codex' : 'Claude';
@@ -169,6 +220,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ? s['label'] as String
         : (s['id'] as String?) ?? '';
     final dot = active ? AppColors.accent : AppColors.faint;
+    final cls = s['classifyState']?.toString().toUpperCase();
+    final goal = s['goal']?.toString().trim();
+    final chip = _dashboardClassifyChip(cls);
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -202,9 +256,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(height: 2),
                 Text('$cli · $kind${active ? ' · 活跃' : ''}',
                     style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                if (goal != null && goal.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(goal,
+                      style: const TextStyle(color: AppColors.faint, fontSize: 11),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                ],
               ],
             ),
           ),
+          if (chip != null) ...[
+            const SizedBox(width: 8),
+            chip,
+          ],
         ],
       ),
     );
