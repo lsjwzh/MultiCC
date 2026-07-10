@@ -1715,6 +1715,7 @@ function renderSessionRow(s) {
   return `
     <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
       <span class="dot ${statusCls}" id="sess-status-${escapeHtml(s.id)}" title="${escapeHtml(statusText)}"></span>
+      <span class="classify-badge" id="sess-classify-${escapeHtml(s.id)}" style="display:none"></span>
       <div class="lean-main">
         <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
         <div class="lean-meta">
@@ -3079,9 +3080,20 @@ async function resolveRebase(id, action) {
 /* ── Workspace status board (live agent statuses per directory) ── */
 const _workspaceWs = new Map();        // dirId → WebSocket
 const _workspaceStatus = new Map();    // sessionId → { status, currentFile, lastActivity, mergeState }
+const _workspaceClassify = new Map();  // sessionId → { classifyState, goal, phase }
 const _workspaceEvents = new Map();    // dirId → event[]
 const _workspaceNotes = new Map();     // sessionId → pending note count
 const _workspaceSummaries = new Map(); // sessionId → { summary, ts } — 最近任务 one-liner
+
+// Mirrors server.js CLASSIFY_DISPLAY — one-letter state → display info
+const _CLASSIFY_BADGE = {
+  D: { label: '✅', tint: 'completed', title: '已完成' },
+  C: { label: '▶️', tint: 'running',   title: '继续中' },
+  W: { label: '⏸️', tint: 'waiting',   title: '等待用户' },
+  B: { label: '⏳', tint: 'waiting',   title: '后台等待' },
+  E: { label: '⚠️', tint: 'error',     title: 'API 异常' },
+  P: { label: '🔄', tint: 'running',   title: '处理中' },
+};
 
 function wbStatusInfo(status) {
   switch (status) {
@@ -3110,11 +3122,13 @@ function connectWorkspace(dirId) {
         _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity, runStartedAt: s.runStartedAt || null, runEndedAt: s.runEndedAt || null, mergeState: s.mergeState || null });
         _workspaceNotes.set(s.id, s.pendingNotes || 0);
         if (s.summary) _workspaceSummaries.set(s.id, { summary: s.summary, ts: s.summaryTs || 0 });
+        if (s.classifyState) _workspaceClassify.set(s.id, { classifyState: s.classifyState, goal: s.goal || '', phase: s.phase || 'idle' });
         updateSessionStatusDom(s.id);
         updateSessionNotesDom(s.id);
         updateSessionMergeDom(s.id);
         updateSessionSummaryDom(s.id);
         updateSessionRuntimeDom(s.id);
+        updateSessionClassifyDom(s.id);
       }
       _workspaceEvents.set(dirId, msg.events || []);
       updateEventTimelineDom(dirId);
@@ -3147,6 +3161,11 @@ function connectWorkspace(dirId) {
       updateSessionSummaryDom(msg.sessionId);
       updateDirPreviewForSession(msg.sessionId);
       updateGlobalTaskScroller();
+    } else if (msg.type === 'task_state') {
+      _workspaceClassify.set(msg.sessionId, { classifyState: msg.classifyState || null, goal: msg.goal || '', phase: msg.phase || 'idle' });
+      updateSessionClassifyDom(msg.sessionId);
+      // Also refresh summary — classify goal changes often mean the summary line should update too
+      updateSessionSummaryDom(msg.sessionId);
     }
   };
   ws.onclose = () => { if (_workspaceWs.get(dirId) === ws) _workspaceWs.delete(dirId); };
@@ -3252,6 +3271,24 @@ function updateSessionSummaryDom(sessionId) {
   el.textContent = text ? ico + ' ' + text : '';
   el.title = text ? `最近任务：${text}` : '';
   el.style.display = text ? '' : 'none';
+}
+
+// Update the classify state badge on a session card — shows the D/C/W/B/E/P
+// letter as an emoji badge with tint, driven by workspaceBroadcast('task_state').
+function updateSessionClassifyDom(sessionId) {
+  const el = document.getElementById(`sess-classify-${sessionId}`);
+  if (!el) return;
+  const c = _workspaceClassify.get(sessionId);
+  const cls = c && c.classifyState ? c.classifyState : null;
+  if (cls) {
+    const b = _CLASSIFY_BADGE[cls] || _CLASSIFY_BADGE['P'];
+    el.textContent = b.label;
+    el.title = b.title + (c.goal ? '：' + c.goal : '');
+    el.className = 'classify-badge classify-' + b.tint;
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+  }
 }
 
 // Refresh one session's run-time line from the live workspace status.
