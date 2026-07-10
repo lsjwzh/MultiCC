@@ -5045,18 +5045,22 @@ function pushOnOutput(sessionId, rawData) {
 
 function pushOnInput(sessionId) {
   const mon = pushMonitors.get(sessionId);
-  if (!mon) return;
-  mon.state = 'idle';
-  mon.chars = 0;
-  mon.recentText = '';
-  if (mon.idleTimer) {
-    clearTimeout(mon.idleTimer);
-    mon.idleTimer = null;
+  if (mon) {
+    mon.state = 'idle';
+    mon.chars = 0;
+    mon.recentText = '';
+    if (mon.idleTimer) {
+      clearTimeout(mon.idleTimer);
+      mon.idleTimer = null;
+    }
   }
   // Terminal recovery for the D/W guard in classifyTerminalIdle: terminals have no
   // ensureCurrentTask, so without this a parked D/W terminal would never re-classify
   // (the guard skips it forever, board stuck on "done"). New user input = a new
   // processing phase → flip D/W back to P so the next idle-classify runs again.
+  // MUST run even when mon is null: after a server restart pushMonitors (in-memory)
+  // is empty, but a persisted D/W terminal still needs to recover on user input — so
+  // this sits OUTSIDE the `if (mon)` block, not behind an early `if (!mon) return`.
   // Guarded to D/W only so ordinary keystrokes don't spam task_state broadcasts.
   const _tp = persistedSessions.get(sessionId);
   if (_tp) {
@@ -7173,8 +7177,10 @@ function dispatchStateAction(result, ctx) {
     // (L7407 only skips D/W) re-judges it → possible false wake. save:true (default).
     setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() });
     waitInjector.resetAuto(sessionName);
-    // Cancel any pending resume-interrupted marker so a watchdog-scheduled resume
-    // can't fire after we've concluded D and re-wake the finished task.
+    // Clear the resume-interrupted counter so any future P-misclassify restarts from
+    // count=1 rather than compounding on this concluded task. (Note: this clears the
+    // counter only — it can't cancel an already-scheduled inject setTimeout; that
+    // window is tiny and separate.)
     waitInjector.resetInterrupted(sessionName);
     return;
   }
@@ -9218,6 +9224,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs._codexPendingStreamError = '';
         cs._codexPendingStreamErrorCount = 0;
         cs.isStreaming = true;
+        cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the continuation spawn (turnStartedAt may be >10min old)
         const continuePrompt = codexStreamDisconnectContinuePrompt();
         const continueArgs = provider.buildChatSpawnArgs(persisted, continuePrompt, {
           isFirstTurn: false,
@@ -9255,6 +9262,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         savePersistedSessions();
         cs.chatTurnCount = 0;
         cs.isStreaming = true;
+        cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the retry spawn (turnStartedAt may be >10min old)
         cs.streamReplay = [];
         const fallbackArgs = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn: true, rolePrompt });
         chatBroadcast(sessionName, {
