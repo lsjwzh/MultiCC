@@ -200,7 +200,7 @@ function readServerCode() {
       { name: 'parseClassifyResult returns error=true on E', pattern: /first === 'E'.*error = true/i },
       { name: 'dispatchStateAction error branch calls safeInject', pattern: /if \(error\).*\n.*safeInject/s },
       { name: 'API_RETRY_DELAY_MS = 0 (immediate)', pattern: /API_RETRY_DELAY_MS\s*=\s*0/ },
-      { name: 'safeInject used for retry nudge', pattern: /safeInject\(sessionName,\s*nudge\)/ },
+      { name: 'safeInject used for retry/continue', pattern: /safeInject\(sessionName,\s*['"`]继续|safeInject\(sid,\s*resumeMsg\)/ },
     ];
     for (const c of checks) {
       if (c.pattern.test(serverCode)) ok(c.name);
