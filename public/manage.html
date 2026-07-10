@@ -441,6 +441,11 @@
     .lean .dot.waiting{background:#e3b341;box-shadow:0 0 0 3px rgba(227,179,65,.18)}
     .lean .dot.completed{background:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
     .lean .dot.error{background:var(--danger);box-shadow:0 0 0 3px rgba(255,107,99,.18)}
+    .classify-badge{flex:0 0 auto;font-size:14px;line-height:1;margin-right:6px;opacity:.85}
+    .classify-badge.classify-running{opacity:1}
+    .classify-badge.classify-completed{opacity:.8}
+    .classify-badge.classify-waiting{opacity:.9}
+    .classify-badge.classify-error{opacity:1}
     .lean-main{flex:1;min-width:0}
     .lean-name{font-weight:600;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
     .lean-meta{font-size:11px;color:var(--muted);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}

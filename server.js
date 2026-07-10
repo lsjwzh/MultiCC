@@ -2835,6 +2835,14 @@ app.patch('/api/sessions/:id', (req, res) => {
     if (s.streaming) chatStream.close(s.id);
     const pname = v.value ? (providers.getProviderSummary(s.cli === 'codex' ? 'codex' : 'claude', v.value)?.name || v.value) : '默认登录';
     appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
+    // Push current classify state to chat so the classify bar updates immediately
+    // (otherwise the chat page shows stale / blank until the next classify run).
+    try {
+      const ts = getTaskState(s);
+      if (ts && (ts.goal || ts.classifyState)) {
+        chatBroadcast(s.id, { type: 'task_state', goal: ts.goal || '', phase: ts.phase || 'idle', classifyState: ts.classifyState || null });
+      }
+    } catch (_) {}
   }
   if (req.body.subagent !== undefined) {
     // Per-session Task-tool subagent provider+model, routed via the claude-proxy
@@ -7186,14 +7194,22 @@ function setTaskState(sessionId, patch, opts = {}) {
   // Push the aux classify result to the chat client so it can show what the
   // assistant currently thinks this session's goal/phase is. Cheap; only fires
   // when a chat WS is connected for this session.
+  const classifyPayload = {
+    type: 'task_state',
+    goal: next.goal || '',
+    phase: next.phase || 'idle',
+    classifyState: next.classifyState || null,
+  };
   try {
-    chatBroadcast(sessionId, {
-      type: 'task_state',
-      goal: next.goal || '',
-      phase: next.phase || 'idle',
-      classifyState: next.classifyState || null,
-    });
+    chatBroadcast(sessionId, classifyPayload);
   } catch (_) {}
+  // Also broadcast to workspace subscribers so fleet cards / Active sessions
+  // reflect classify state changes in real time without a page refresh.
+  if (persisted.dirId) {
+    try {
+      workspaceBroadcast(persisted.dirId, { ...classifyPayload, sessionId });
+    } catch (_) {}
+  }
   return next;
 }
 
@@ -7694,6 +7710,7 @@ function workspaceSnapshot(dirId) {
     const active = sessions.get(s.id);
     const chat = chatSessions.get(s.id);
     const sum = sessionSummaries.get(s.id) || null;
+    const ts = getTaskState(s);
     out.push({
       id: s.id, label: s.label || null, cli: s.cli || 'claude', kind: s.kind || 'terminal',
       branch: s.branch || null, invalid: invalidSessions.get(s.id) || null,
@@ -7703,6 +7720,8 @@ function workspaceSnapshot(dirId) {
       pendingNotes: pendingNotesFor(s.id).length,
       mergeState: mergeStateCached(directories.get(s.dirId), s),
       summary: sum?.summary || null, summaryTs: sum?.ts || null,
+      classifyState: ts.classifyState || null,
+      goal: ts.goal || '', phase: ts.phase || 'idle',
     });
   }
   return out;
