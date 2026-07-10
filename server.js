@@ -2331,7 +2331,7 @@ app.post('/api/sessions/:id/reclassify', (req, res) => {
   // on user) only change on new user input; re-judging the same history re-derives
   // the same verdict at best, or misjudges D→C and wakes a finished task at worst.
   // ?force=true lets an operator override to correct a genuine misclassification.
-  if ((ts.classifyState === 'D' || ts.classifyState === 'W') && req.query.force !== 'true') {
+  if ((ts.classifyState === 'D' || ts.classifyState === 'W') && String(req.query.force).toLowerCase() !== 'true') {
     return res.json({ ok: true, skipped: true, classifyState: ts.classifyState,
       note: `会话状态为 ${ts.classifyState}，跳过重判（需用户发新消息触发，或 ?force=true 强制）` });
   }
@@ -2987,7 +2987,7 @@ app.post('/api/debug/classify/:id', (req, res) => {
   // D/W guard — mirror scanAndReclassify (L7407). Debug endpoint keeps a ?force=true
   // escape hatch so an operator can still observe classify output on a D/W session.
   const _dbgTs = getTaskState(persistedSessions.get(sessionName));
-  if ((_dbgTs.classifyState === 'D' || _dbgTs.classifyState === 'W') && req.query.force !== 'true') {
+  if ((_dbgTs.classifyState === 'D' || _dbgTs.classifyState === 'W') && String(req.query.force).toLowerCase() !== 'true') {
     return res.status(409).json({ error: `session is ${_dbgTs.classifyState}; use ?force=true to override`, classifyState: _dbgTs.classifyState });
   }
   cs.currentAssistantText = lastText;
@@ -5032,6 +5032,18 @@ function pushOnInput(sessionId) {
   if (mon.idleTimer) {
     clearTimeout(mon.idleTimer);
     mon.idleTimer = null;
+  }
+  // Terminal recovery for the D/W guard in classifyTerminalIdle: terminals have no
+  // ensureCurrentTask, so without this a parked D/W terminal would never re-classify
+  // (the guard skips it forever, board stuck on "done"). New user input = a new
+  // processing phase → flip D/W back to P so the next idle-classify runs again.
+  // Guarded to D/W only so ordinary keystrokes don't spam task_state broadcasts.
+  const _tp = persistedSessions.get(sessionId);
+  if (_tp) {
+    const _ts = getTaskState(_tp);
+    if (_ts.classifyState === 'D' || _ts.classifyState === 'W') {
+      setTaskState(sessionId, { classifyState: 'P' });
+    }
   }
 }
 
@@ -7141,6 +7153,9 @@ function dispatchStateAction(result, ctx) {
     // (L7407 only skips D/W) re-judges it → possible false wake. save:true (default).
     setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() });
     waitInjector.resetAuto(sessionName);
+    // Cancel any pending resume-interrupted marker so a watchdog-scheduled resume
+    // can't fire after we've concluded D and re-wake the finished task.
+    waitInjector.resetInterrupted(sessionName);
     return;
   }
 
@@ -7209,8 +7224,12 @@ function dispatchStateAction(result, ctx) {
     _bgIdleTimers.set(sessionName, { timer, lastActivity: Date.now() });
   }
 
-  // Common waiting-state broadcast — driven by classifyState letter
-  const cls = error ? 'E' : background ? 'B' : (state === 'continue' ? 'C' : 'W');
+  // Common waiting-state broadcast — driven by classifyState letter.
+  // A 'continue' reaching here = a C that couldn't auto-drive (toggle off / hasWait):
+  // persist it as W, not C. As W it's scan-skipped (no wasteful re-judge loop every
+  // ~2min that would never inject anyway) and the UI correctly shows "waiting" — the
+  // session now genuinely waits for the user (or the toggle), which is the truth.
+  const cls = error ? 'E' : background ? 'B' : 'W';
   const disp = classifyDisplay(cls);
   const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
   const waitMsg = finalGoal ? `等待：${finalGoal}` : (error ? 'API 异常，等待重试…' : '等待交互');
@@ -7224,8 +7243,8 @@ function dispatchStateAction(result, ctx) {
   const dirId2 = persistedSessions.get(sessionName)?.dirId;
   if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: pushType, classifyState: cls, message: waitMsg });
   setSessionStatus(sessionName, { status: 'waiting' });
-  // Persist the accurate letter for observability (E/B/W or a fell-through C).
-  // None of these are terminal — the scan re-judges everything except 'D'.
+  // Persist the accurate letter for observability (E/B, or W incl. a fell-through C).
+  // scan re-judges C/B/E/P but skips D/W — a fell-through C is now W, so it rests.
   setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() }, { save: false });
   // Reset auto-continue guard on a plain W (user is in charge now). B/E/C keep their own flow.
   if (state === 'waiting' && !background && !error) {
@@ -7483,7 +7502,10 @@ function scanAndReclassify() {
     // the normal !isStreaming path (P + no turn → resumeInterrupted).
     const liveCs = chatSessions.get(sid);
     if (liveCs && liveCs.isStreaming) {
-      const lastStream = liveCs.lastStreamAt || liveCs.turnStartedAt || 0;
+      // Math.max, NOT ||: lastStreamAt persists on cs across turns, so a fresh
+      // turn (turnStartedAt just now) whose stream hasn't emitted yet would else
+      // inherit the PRIOR turn's stale lastStreamAt and get force-killed on tick 1.
+      const lastStream = Math.max(liveCs.lastStreamAt || 0, liveCs.turnStartedAt || 0);
       if (lastStream && (now - lastStream) > STUCK_STREAM_MS) {
         console.log(`[multicc/scan] ${sid} stuck-isStreaming: ${((now - lastStream) / 1000).toFixed(0)}s 无流事件 → 强制复位 isStreaming，本轮按 !isStreaming 重判`);
         liveCs.isStreaming = false;
@@ -8682,6 +8704,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.currentCost = null;
   cs.isStreaming = true;
   cs.turnStartedAt = Date.now();  // for per-reply interaction latency (durationMs)
+  cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
   cs.streamReplay = [];
   cs._resultSaved = false;
   // Reset the per-turn role breakdown (main vs sub) collected by the claude-proxy
