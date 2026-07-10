@@ -94,8 +94,11 @@ class ChatProvider extends ChangeNotifier {
   String get classifyGoal => _classifyGoal;
   String _classifyPhase = '';
   String get classifyPhase => _classifyPhase;
-  String _classifyLifecycle = '';
-  String get classifyLifecycle => _classifyLifecycle;
+  /// Live classify-state letter (D/C/W/B/E/P) - drives the bar's tint.
+  /// Server sends this as `classifyState` in the task_state event (the old
+  /// `lifecycle` field was removed in 98c2674 / unified in 38bb6ce).
+  String _classifyState = '';
+  String get classifyState => _classifyState;
   bool get hasClassify => _classifyGoal.trim().isNotEmpty;
 
   ChatProvider({
@@ -250,11 +253,30 @@ class ChatProvider extends ChangeNotifier {
             notifyListeners();
           }
         } else {
-          final outcome = notifyState == 'waiting'
-              ? '等待交互'
-              : notifyState == 'error'
-                  ? '出现异常'
-                  : '任务完成';
+          // Prefer the precise classifyState letter (D/C/W/B/E/P) when the
+          // server provides it; fall back to the coarse notify state.
+          final cls = (p['classifyState'] ?? '').toString().toUpperCase();
+          String outcome;
+          switch (cls) {
+            case 'D':
+              outcome = '任务完成';
+              break;
+            case 'E':
+              outcome = 'API 异常';
+              break;
+            case 'W':
+              outcome = '等待操作';
+              break;
+            case 'B':
+              outcome = '等待后台';
+              break;
+            default:
+              outcome = notifyState == 'waiting'
+                  ? '等待交互'
+                  : notifyState == 'error'
+                      ? '出现异常'
+                      : '任务完成';
+          }
           _maybeNotify(outcome, notifyMsg);
         }
         break;
@@ -303,13 +325,13 @@ class ChatProvider extends ChangeNotifier {
       }
 
       case 'task_state': {
-        // aux classify verdict for this session: {goal, phase, lifecycle}.
+        // aux classify verdict for this session: {goal, phase, classifyState}.
         // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
         // renderAuxClassify.
         final p = evt.payload as Map<String, dynamic>;
         _classifyGoal = (p['goal'] ?? '').toString().trim();
         _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
-        _classifyLifecycle = (p['lifecycle'] ?? '').toString().toLowerCase();
+        _classifyState = (p['classifyState'] ?? '').toString().toUpperCase();
         notifyListeners();
         break;
       }

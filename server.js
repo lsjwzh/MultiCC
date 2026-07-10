@@ -2288,6 +2288,7 @@ app.get('/api/dashboard/sessions', (req, res) => {
         isActive = !!termSession;
         lastActivity = termSession ? termSession.lastActivity : null;
       }
+      const ts = getTaskState(p);
       return {
         id: p.id,
         label: p.label || null,
@@ -2296,6 +2297,9 @@ app.get('/api/dashboard/sessions', (req, res) => {
         active: isActive,
         createdAt: p.createdAt || null,
         lastActivity,
+        classifyState: ts.classifyState || null,
+        goal: ts.goal || '',
+        phase: ts.phase || 'idle',
       };
     })
     .filter(s => filterActive === null || s.active === filterActive);

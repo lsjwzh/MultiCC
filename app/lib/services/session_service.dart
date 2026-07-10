@@ -210,12 +210,14 @@ class SessionService {
     required String effort,
     SessionSubagent? subagent,
     bool clearSubagent = false,
+    bool? streaming,
   }) async {
     final body = <String, dynamic>{
       'provider': provider,
       'model': model,
       'effort': effort,
     };
+    if (streaming != null) body['streaming'] = streaming;
     if (clearSubagent) {
       body['subagent'] = null;
     } else if (subagent != null && !subagent.isEmpty) {
