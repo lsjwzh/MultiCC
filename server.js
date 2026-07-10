@@ -353,6 +353,22 @@ const CODEX_ENV_CONSTRAINT = CODEX_NO_ASK_TOOL_HINT === '0' ? '' : [
   '- 需要向用户提问或请求确认时，直接把问题作为普通文本回复发出，不要调用任何提问类工具。',
   '[MultiCC 环境约束结束]',
 ].join('\n');
+// Keep codex exec alive until ALL background tasks complete.
+// Codex exec exits when the model emits end_turn. Without explicit instruction,
+// the model often ends the turn early while Monitor / run_in_background tasks
+// are still running. This hint tells it to stay in the loop and poll until done.
+// Default-on; set CODEX_STAY_ALIVE_HINT=0 to disable.
+const CODEX_STAY_ALIVE_HINT = process.env.CODEX_STAY_ALIVE_HINT ?? '1';
+const CODEX_STAY_ALIVE_PROMPT = CODEX_STAY_ALIVE_HINT === '0' ? '' : [
+  '',
+  '[进程保活规则 — 你必须遵守]',
+  '- 当你启动了 Monitor（后台监控）、run_in_background 的 Bash 命令、或任何异步后台任务时，**不要立即结束你的回合（end_turn）**。',
+  '- 你必须一直轮询等待，直到所有后台任务都完成并产出最终结果。',
+  '- 轮询方式：每隔几秒用 Bash 检查任务状态（如 cat /tmp/xxx.done 2>/dev/null、ps aux | grep xxx 等），直到确认完成。',
+  '- 只有在**所有子任务都已完成，你已经汇总了最终结果并回复给用户之后**，才能结束回合。',
+  '- 如果你不确定子任务是否还在跑，宁可多等一轮也不要提前退出。',
+  '[进程保活规则结束]',
+].join('\n');
 // Default-on toggle for the per-session/per-role claude proxy (src/claude-proxy.js).
 // `let`: hot-reloadable at runtime via POST /api/settings/proxy (persists to .env).
 // Set CLAUDE_PROXY_ENABLED=0 in .env to bypass and route claude directly to the provider.
@@ -875,6 +891,10 @@ const cliProviders = {
         if (opts.rolePrompt) promptPrefixes.push(`[角色设定]\n${opts.rolePrompt}\n[角色设定结束]`);
         if (promptPrefixes.length) p = `${promptPrefixes.join('\n\n')}\n\n${prompt}`;
       }
+      // Per-turn stay-alive: appended to EVERY turn (not just the first) to
+      // prevent codex exec from end_turn-ing early while Monitor / background
+      // tasks are still running. Resumed sessions otherwise lose the constraint.
+      if (CODEX_STAY_ALIVE_PROMPT) p = p + '\n' + CODEX_STAY_ALIVE_PROMPT;
       if (opts.isFirstTurn) {
         args.push('exec');
         const effortArg = codexReasoningConfigArg(session);
