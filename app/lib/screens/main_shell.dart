@@ -75,17 +75,17 @@ String _wbStatusLabel(String? status) {
 ({Color color, String label, String emoji})? _classifyBadge(String? s) {
   switch (s) {
     case 'D':
-      return (color: const Color(0xFF3ad6c5), label: '已完成', emoji: '✅');
+      return (color: const Color(0xFF56d364), label: '已完成', emoji: '✅');
     case 'C':
-      return (color: const Color(0xFF7fd49a), label: '继续中', emoji: '▶️');
+      return (color: const Color(0xFF6cb6ff), label: '继续中', emoji: '▶️');
     case 'W':
-      return (color: const Color(0xFFf0936b), label: '等待你', emoji: '⏸️');
+      return (color: const Color(0xFFe3b341), label: '等待你', emoji: '⏸️');
     case 'B':
       return (color: const Color(0xFFe3b341), label: '后台等待', emoji: '⏳');
     case 'E':
-      return (color: const Color(0xFFff6b63), label: '接口异常', emoji: '⚠️');
+      return (color: const Color(0xFFf85149), label: '接口异常', emoji: '⚠️');
     case 'P':
-      return (color: const Color(0xFF6aa3ff), label: '处理中', emoji: '🔄');
+      return (color: const Color(0xFF6cb6ff), label: '处理中', emoji: '🔄');
     default:
       return null;
   }
