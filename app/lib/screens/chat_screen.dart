@@ -184,7 +184,7 @@ class _ChatViewState extends State<ChatView> {
               _AuxClassifyBar(
                 goal: provider.classifyGoal,
                 phase: provider.classifyPhase,
-                lifecycle: provider.classifyLifecycle,
+                classifyState: provider.classifyState,
               ),
             if (_behindCount() > 0)
               _BehindMainBanner(
@@ -695,6 +695,7 @@ class _ModelChipState extends State<_ModelChip> {
         effort: s.effectiveEffort ?? s.effort ?? 'medium',
         subProviderId: s.subagent?.providerId,
         subModel: s.subagent?.model,
+        streaming: s.streaming ?? true,
       ),
     );
     if (picked == null) return;
@@ -705,6 +706,7 @@ class _ModelChipState extends State<_ModelChip> {
         model: picked.model,
         effort: picked.effort,
         subagent: picked.subagent,
+        streaming: picked.streaming,
         clearSubagent: picked.subagent == null,
       );
       messenger.showSnackBar(
@@ -728,6 +730,7 @@ class _AIConfigResult {
   final String modelLabel;
   final String effortLabel;
   final SessionSubagent? subagent;
+  final bool? streaming;
   const _AIConfigResult({
     required this.provider,
     required this.model,
@@ -736,6 +739,7 @@ class _AIConfigResult {
     required this.modelLabel,
     required this.effortLabel,
     this.subagent,
+    this.streaming,
   });
 }
 
@@ -747,6 +751,7 @@ class _AIConfigSheet extends StatefulWidget {
   final String effort;
   final String? subProviderId;
   final String? subModel;
+  final bool streaming;
   const _AIConfigSheet({
     required this.cli,
     required this.providers,
@@ -755,6 +760,7 @@ class _AIConfigSheet extends StatefulWidget {
     required this.effort,
     this.subProviderId,
     this.subModel,
+    required this.streaming,
   });
 
   @override
@@ -765,6 +771,7 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
   late String _provider;
   late String _model;
   late String _effort;
+  late bool _streaming;
   bool _customModel = false;
   late final TextEditingController _customCtrl;
   // Sub-task (subagent) cascade — same shape as the main provider/model.
@@ -792,6 +799,7 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
     _provider = widget.provider;
     _model = _normalizeModel(widget.provider, widget.model);
     _effort = _validEfforts.contains(widget.effort) ? widget.effort : _defaultEffort;
+    _streaming = widget.streaming;
     final known = _modelChoices(_provider).contains(_model);
     _customModel = _model.isNotEmpty && !known;
     _customCtrl = TextEditingController(text: _customModel ? _model : '');
@@ -958,6 +966,7 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
         modelLabel: _modelResultLabel(_provider, model),
         effortLabel: effortShortNameForCli(widget.cli, _effort),
         subagent: subagent,
+        streaming: _streaming,
       ),
     );
   }
@@ -1178,6 +1187,18 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
                 ],
               ],
             ],
+            if (_isClaude) ...[
+              SwitchListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: const Text('流式输出',
+                    style: TextStyle(color: AppColors.text, fontSize: 13)),
+                subtitle: const Text('关闭后等整段结果再返回（弱网/调试可用），下一轮生效',
+                    style: TextStyle(color: AppColors.muted, fontSize: 11)),
+                value: _streaming,
+                onChanged: (v) => setState(() => _streaming = v),
+              ),
+            ],
             const SizedBox(height: 16),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -1245,6 +1266,7 @@ Future<void> openAIConfigSheet(
           (sess.cli == SessionCli.codex ? 'xhigh' : 'medium'),
       subProviderId: sess.subagent?.providerId,
       subModel: sess.subagent?.model,
+      streaming: sess.streaming ?? true,
     ),
   );
   if (picked == null) return;
@@ -1255,6 +1277,7 @@ Future<void> openAIConfigSheet(
       model: picked.model,
       effort: picked.effort,
       subagent: picked.subagent,
+      streaming: picked.streaming,
       clearSubagent: picked.subagent == null,
     );
     messenger.showSnackBar(SnackBar(
@@ -2850,8 +2873,10 @@ class _BehindMainBanner extends StatelessWidget {
 class _AuxClassifyBar extends StatelessWidget {
   final String goal;
   final String phase;
-  final String lifecycle;
-  const _AuxClassifyBar({required this.goal, required this.phase, required this.lifecycle});
+  /// Live classify-state letter (D/C/W/B/E/P). Drives the pill tint, aligned
+  /// with main_shell _classifyBadge and the web CLASSIFY_DISPLAY barTint.
+  final String classifyState;
+  const _AuxClassifyBar({required this.goal, required this.phase, required this.classifyState});
 
   static const _phaseLabels = {
     'idle': '空闲', 'planning': '规划中', 'running': '进行中', 'editing': '编辑中',
@@ -2861,36 +2886,45 @@ class _AuxClassifyBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // lifecycle tint — running/completed/waiting/interrupted
-    final lc = lifecycle.toLowerCase();
+    // classifyState letter (D/C/W/B/E/P) drives the tint - aligned with the
+    // workspace _classifyBadge and web CLASSIFY_DISPLAY barTint.
+    final cs = classifyState.toUpperCase();
     final Color phaseColor;
     final Color phaseBg;
     final Color phaseBorder;
-    switch (lc) {
-      case 'running':
+    final String stateEmoji;
+    switch (cs) {
+      case 'C': // continue
+      case 'P': // processing
         phaseColor = const Color(0xFF6cb6ff);
         phaseBg = const Color(0xFF0d1a2e);
         phaseBorder = const Color(0x551f6feb);
+        stateEmoji = cs == 'C' ? '🔵' : '⚡';
         break;
-      case 'completed':
+      case 'D': // done
         phaseColor = const Color(0xFF56d364);
         phaseBg = const Color(0xFF0f2417);
         phaseBorder = const Color(0x55238636);
+        stateEmoji = '✅';
         break;
-      case 'waiting':
+      case 'W': // wait-user
+      case 'B': // wait-bg
         phaseColor = const Color(0xFFe3b341);
         phaseBg = const Color(0xFF241c08);
         phaseBorder = const Color(0x55e3b341);
+        stateEmoji = cs == 'W' ? '⏸' : '⏳';
         break;
-      case 'interrupted':
+      case 'E': // error
         phaseColor = const Color(0xFFf85149);
         phaseBg = const Color(0xFF2a1213);
         phaseBorder = const Color(0x55da3633);
+        stateEmoji = '⚠';
         break;
       default:
         phaseColor = const Color(0xFF8a909b);
         phaseBg = const Color(0xFF0f1115);
         phaseBorder = const Color(0xFF20242b);
+        stateEmoji = '•';
     }
     final phaseLabel = _phaseLabels[phase] ?? phase;
     return Container(
@@ -2920,7 +2954,7 @@ class _AuxClassifyBar extends StatelessWidget {
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: phaseBorder),
             ),
-            child: Text(phaseLabel,
+            child: Text('$stateEmoji $phaseLabel',
                 style: TextStyle(color: phaseColor, fontSize: 11, fontWeight: FontWeight.w600)),
           ),
         ],
