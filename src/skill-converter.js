@@ -533,7 +533,7 @@ function importAllProviderSkills() {
   const results = [];
   // Don't import from Claude — Claude IS canonical format, and Claude-only
   // skills are user-installed and may not be intended for sharing.
-  for (const provName of ['codex', 'hermes']) {
+  for (const provName of ['claude', 'codex', 'hermes']) {
     const candidates = discoverProviderSkills(provName);
     for (const cand of candidates) {
       if (cand.canonicalText) {

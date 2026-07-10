@@ -10192,8 +10192,9 @@ function _isSkillDir(dir) {
   try { return fs.statSync(dir).isDirectory() && fs.existsSync(path.join(dir, 'SKILL.md')); } catch (_) { return false; }
 }
 
-// (1) Copy bundled multicc skills (./skills/) into each provider's skill dir.
-// Re-copies when .skill-version differs or is missing.
+// (1) Import bundled multicc skills (./skills/) into ~/.agents/skills - the
+// single authority source. Providers load from agents via syncSharedSkills.
+// Re-imports when .skill-version differs or is missing.
 function installBundledSkills() {
   const srcRoot = path.join(__dirname, 'skills');
   let names;
@@ -10202,15 +10203,15 @@ function installBundledSkills() {
     try {
       const src = path.join(srcRoot, name);
       if (!_isSkillDir(src)) continue;
-      for (const prov of SKILL_PROVIDERS) {
-        const dest = path.join(prov.dir, name);
-        if (fs.existsSync(dest) && _readSkillVer(dest) === _readSkillVer(src)) continue;
-        fs.mkdirSync(prov.dir, { recursive: true });
-        fs.rmSync(dest, { recursive: true, force: true });
-        fs.cpSync(src, dest, { recursive: true });
-        try { for (const f of fs.readdirSync(path.join(dest, 'bin'))) fs.chmodSync(path.join(dest, 'bin', f), 0o755); } catch (_) {}
-        console.log(`[multicc/skills] installed bundled → ~/.${prov.name}/skills/${name}`);
-      }
+      // Import into agents (authority). agents' stale reverse-import copy has
+      // no .skill-version -> overwritten on first run; later runs skip on match.
+      const dest = path.join(AGENTS_SKILLS_DIR, name);
+      if (fs.existsSync(dest) && _readSkillVer(dest) === _readSkillVer(src)) continue;
+      fs.mkdirSync(AGENTS_SKILLS_DIR, { recursive: true });
+      fs.rmSync(dest, { recursive: true, force: true });
+      fs.cpSync(src, dest, { recursive: true });
+      try { for (const f of fs.readdirSync(path.join(dest, 'bin'))) fs.chmodSync(path.join(dest, 'bin', f), 0o755); } catch (_) {}
+      console.log(`[multicc/skills] imported bundled -> ~/.agents/skills/${name}`);
     } catch (e) {
       console.warn(`[multicc/skills] install bundled ${name} failed: ${e.message}`);
     }
@@ -10261,9 +10262,13 @@ function syncSharedSkills() {
         }
       } catch (_) {}
 
-      // Real directory exists (user's own version)? Don't overwrite.
+      // Real directory exists. With .skill-version = stale bundled copy (from
+      // installBundledSkills' old behavior) -> replace with symlink to agents.
+      // Without .skill-version = user's own version -> leave it alone.
       if (fs.existsSync(dest) && !fs.lstatSync(dest).isSymbolicLink()) {
-        continue;
+        if (_readSkillVer(dest) === null) continue;
+        try { fs.rmSync(dest, { recursive: true, force: true }); }
+        catch (e) { skipCount++; continue; }
       }
 
       // Remove broken/wrong symlink and create correct one.
