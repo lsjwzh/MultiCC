@@ -686,6 +686,11 @@ function isCodexResponseCompletedDisconnect(message) {
   const s = String(message || '');
   return /stream disconnected before completion/i.test(s) && /response\.completed/i.test(s);
 }
+function isCodexTransportDisconnect(message) {
+  const s = String(message || '');
+  return /stream disconnected before completion/i.test(s) &&
+    (/error sending request/i.test(s) || /\/backend-api\/codex\/responses/i.test(s));
+}
 function isCodexRecoverableReconnectError(message) {
   const s = String(message || '');
   return /^Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(s) && isCodexResponseCompletedDisconnect(s);
@@ -1499,9 +1504,9 @@ function buildDispatchContextPrompt(sessionId) {
   return [
     ...intro,
     '格式：<<dispatch target="真实 session id">完整、自包含的任务说明</dispatch>>',
-    'target 必须逐字使用下面列表中的某个 id；不要使用 SID、SESSION_ID、<目标会话id> 等占位符。',
+    'target 必须逐字使用下面列表中的某个 id；不要使用 ...、SID、SESSION_ID、<目标会话id> 等占位符。',
     '如果要并行执行多个子任务，可以在同一回复中输出多个 dispatch 标记；系统会把结果自动回流给你。',
-    `等价方式（适合在回合中途派活）：curl -s -X POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch -H 'Content-Type: application/json' -d '{"target":"<session id>","message":"<自包含任务>"}'，结果同样自动回流。`,
+    '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id，结果同样自动回流。',
     `可用目标 sessions: ${JSON.stringify(targets)}`,
     ultra ? '[MultiCC Ultracode workflow end]' : '[MultiCC cross-session dispatch end]',
     '',
@@ -1566,7 +1571,7 @@ function buildGatewayPrompt(userText) {
     '你负责基于用户消息和可用 session 上下文判断如何回应：可以直接回答、追问澄清，或把任务分发给某个具体 session。',
     '当你判断需要某个 session 来处理任务时，在回复的最后单独输出一行分发标记：',
     '<<dispatch target="真实 session id">要交给该 session 执行的完整、自包含指令</dispatch>>',
-    '其中 target 必须逐字使用上面可见 sessions 列表里的某个 id；不要使用 SID、SESSION_ID、<目标会话id> 等占位符。dispatch 内的指令要完整到该 session 无需追问即可执行。',
+    '其中 target 必须逐字使用上面可见 sessions 列表里的某个 id；不要使用 ...、SID、SESSION_ID、<目标会话id> 等占位符。dispatch 内的指令要完整到该 session 无需追问即可执行。',
     '分发不会立即生效——系统会先向用户复述并等待用户回复「确认」后才真正投递，所以你可以在标记前用自然语言说明你打算交给谁、做什么。',
     '只有真的需要某个 session 干活时才输出该标记；纯聊天、答疑、澄清类回复不要输出标记。每条回复最多一个 dispatch 标记。',
     '当用户问 Gateway/Router/会话管理相关问题时，直接以 Gateway 身份回答，不要输出标记。',
@@ -1602,6 +1607,30 @@ function parseDispatchMarker(text) {
   return { target, message, cleanText };
 }
 
+function isDispatchPlaceholderTarget(targetId) {
+  const raw = String(targetId || '').trim();
+  if (!raw) return true;
+  const normalized = raw
+    .replace(/[“”"'`]/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+  if (/^(\.{2,}|…+)$/.test(normalized)) return true;
+  if (/^<[^>]+>$/.test(normalized)) return true;
+  return new Set([
+    'sid', 'session_id', 'session id', 'sessionid',
+    'target', 'target_id', 'target id',
+    'worker session id', 'worker-session-id',
+    '真实 session id', '真实sessionid',
+    '目标会话id', '目标 session id',
+  ]).has(normalized);
+}
+
+function dispatchTargetHintFor(sessionId) {
+  const targets = dispatchableSessionsFor(sessionId);
+  if (!targets.length) return '当前同目录没有可分发的目标 session';
+  return `可用目标 sessions: ${JSON.stringify(targets)}`;
+}
+
 // Push a server-originated assistant message into the gateway chat. Web clients
 // render it; the WeChat bridge (a gateway WS client) forwards it on `result`.
 function pushToGateway(text, { persist = true } = {}) {
@@ -1612,12 +1641,13 @@ function pushToGateway(text, { persist = true } = {}) {
 }
 
 // A dispatch target must be a real, non-system session.
-function validateDispatchTarget(targetId) {
-  if (/^(sid|session_id|target|目标会话id|<目标会话id>|<session_id>)$/i.test(String(targetId || '').trim())) {
-    return { ok: false, error: `「${targetId}」是占位符，不是真实 session id；请从本轮提示里的可用目标 sessions 中选择一个真实 id` };
+function validateDispatchTarget(targetId, fromSessionId = null) {
+  const hint = fromSessionId ? `；${dispatchTargetHintFor(fromSessionId)}` : '';
+  if (isDispatchPlaceholderTarget(targetId)) {
+    return { ok: false, error: `「${targetId}」是占位符，不是真实 session id；请从可用目标 sessions 中选择一个真实 id${hint}` };
   }
   const rec = persistedSessions.get(targetId);
-  if (!rec) return { ok: false, error: `目标 session「${targetId}」不存在` };
+  if (!rec) return { ok: false, error: `目标 session「${targetId}」不存在${hint}` };
   if (rec.type === 'aux' || rec.type === 'gateway') return { ok: false, error: `不能把任务分发给系统会话「${targetId}」` };
   return { ok: true, rec };
 }
@@ -1682,7 +1712,7 @@ function handleGatewayControl(rawText) {
 // Deliver a confirmed dispatch to its target session, creating an ephemeral chat
 // for terminal-only targets. Returns { ok, chatId } or { ok:false, error }.
 async function dispatchToSession(targetId, message, opts = {}) {
-  let v = validateDispatchTarget(targetId);
+  let v = validateDispatchTarget(targetId, opts.replyTo || null);
   // On-demand ultracode worker creation: if the target matches *-ultra-NN but
   // doesn't exist yet, auto-create it from the dispatcher's config. This replaces
   // the old eager ensureUltracodeWorkers() — workers are born only when the LLM
@@ -1703,7 +1733,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
             effort: 'xhigh',
             rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
           });
-          if (created.ok) v = validateDispatchTarget(targetId);
+          if (created.ok) v = validateDispatchTarget(targetId, opts.replyTo || null);
         }
       }
     }
@@ -1850,10 +1880,12 @@ function maybeNudgeUltracodeDispatch(dispatcherId, finalText) {
   if (now - (lastDispatchOutAt.get(dispatcherId) || 0) < 10 * 60 * 1000) return;
   if (now - (lastUltraNudgeAt.get(dispatcherId) || 0) < ULTRA_NUDGE_COOLDOWN_MS) return;
   lastUltraNudgeAt.set(dispatcherId, now);
+  const hint = dispatchTargetHintFor(dispatcherId);
   waitInjector.safeInject(dispatcherId,
     '⚠️ 你提到要把任务分发给 worker，但这轮既没有输出 <<dispatch>> 标记、也没有调用 dispatch API —— worker session 实际上什么都没收到（run-detached 只是后台 shell 命令，不等于派活）。' +
-    '若要真正派活：在回复文本末尾输出 <<dispatch target="worker session id">自包含任务说明</dispatch>>（可一次输出多个并行），' +
-    `或调用 curl -s -X POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch -H 'Content-Type: application/json' -d '{"target":"...","message":"..."}'。若你有意自己完成全部工作，忽略本提示继续即可。`);
+    '若要真正派活：target 必须逐字复制可用目标 sessions 里的真实 id，不要写 ...、worker session id 或 <目标会话id>。' +
+    `${hint}。` +
+    '可以在回复文本末尾输出 dispatch 标记，或 POST /api/sessions/$MULTICC_SESSION_ID/dispatch（JSON body 包含真实 target 和 message）。若你有意自己完成全部工作，忽略本提示继续即可。');
 }
 function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   const markers = parseAllDispatchMarkers(finalText);
@@ -1863,7 +1895,7 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   lastDispatchOutAt.set(dispatcherId, Date.now());
   for (const mk of markers) {
     if (mk.target === dispatcherId) continue;                       // no self-dispatch
-    const v = validateDispatchTarget(mk.target);
+    const v = validateDispatchTarget(mk.target, dispatcherId);
     if (!v.ok) { waitInjector.safeInject(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
     if (v.rec.dirId !== from.dirId) { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
@@ -4113,7 +4145,7 @@ app.post('/api/sessions/:id/dispatch', (req, res) => {
   const message = String((req.body && req.body.message) || '').trim();
   if (!target || !message) return res.status(400).json({ error: 'target 和 message 必填' });
   if (target === from.id) return res.status(400).json({ error: '不能把任务分发给自己' });
-  const v = validateDispatchTarget(target);
+  const v = validateDispatchTarget(target, from.id);
   if (!v.ok) return res.status(400).json({ error: v.error });
   if (v.rec.dirId !== from.dirId) return res.status(400).json({ error: '只能分发给同目录会话' });
   appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || target}`, from.id);
@@ -8745,6 +8777,8 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
     if (evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype))) {
       cs._sawApiError = true;
       recordApiError(evt.subtype || 'api_error');
+    } else {
+      recordApiSuccess();
     }
     // Hoisted out of the if-block below: forward() at the end of this branch
     // also needs it. Block-scoping it inside the if made the forward line throw
@@ -9062,6 +9096,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs._codexRecoveredDisconnect = false;
   cs._codexPendingStreamError = '';
   cs._codexPendingStreamErrorCount = 0;
+  cs._codexTransportError = '';
   cs._codexStreamContinuationCount = 0;
 
   // Task start: show a neutral placeholder instantly. We do NOT classify here —
@@ -9352,6 +9387,13 @@ function runChatTurn(sessionName, text, opts = {}) {
             console.warn(`[multicc/chat] [${sessionName}] pending codex response.completed disconnect${hasOutput ? ' after output' : ''} #${cs._codexPendingStreamErrorCount}: ${emsg}`);
             return;
           }
+          if (isCodexTransportDisconnect(emsg)) {
+            cs._codexTransportError = emsg;
+            cs._sawApiError = true;
+            recordApiError(emsg);
+            console.warn(`[multicc/chat] [${sessionName}] codex transport disconnect: ${emsg}`);
+            return;
+          }
           cs._codexError = emsg;
           forward({ type: 'error', error: `Codex 出错：${emsg}` });
           return;
@@ -9509,6 +9551,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       const killReason = cs._killReason || null;
       cs._killReason = null;
       const pendingStreamError = cs._codexPendingStreamError || '';
+      const pendingTransportError = cs._codexTransportError || '';
       const pendingStreamErrorCount = cs._codexPendingStreamErrorCount || 0;
       const hasTurnOutput = !!(cs._resultSaved || cs.currentAssistantText || cs.currentToolCalls.length);
       if (pendingStreamError && !hasTurnOutput && !cs._codexError) {
@@ -9524,6 +9567,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         liveClients: cs.clients.size,
         isRetry: !!isRetry,
         recoveredCodexDisconnect,
+        pendingTransportError: pendingTransportError.slice(0, 200),
         pendingStreamErrorCount,
         stderrTail: stderrBuf.slice(-300).trim(),
       };
@@ -9574,7 +9618,8 @@ function runChatTurn(sessionName, text, opts = {}) {
       // resume glitch — retrying would just hit the same wall, so skip it.
       if (!isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._codexError && !cs._opencodeError) {
         const stderrTail = stderrBuf.slice(-300).trim();
-        const reason = stderrTail.includes('already in use') ? 'session-id conflict'
+        const reason = pendingTransportError ? 'codex transport disconnected'
+          : stderrTail.includes('already in use') ? 'session-id conflict'
           : stderrTail.includes('No conversation found') || stderrTail.includes('session not found') ? 'resume target missing'
           : `exit ${code}${signal ? '/' + signal : ''}`;
         console.warn(`[multicc/chat] [${sessionName}] ${cs.cli} yielded no output (${reason}), retrying fresh. stderr: ${stderrTail.slice(0, 200)}`);
@@ -9586,6 +9631,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.isStreaming = true;
         cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the retry spawn (turnStartedAt may be >10min old)
         cs.streamReplay = [];
+        cs._codexTransportError = '';
         const fallbackArgs = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn: true, rolePrompt });
         chatBroadcast(sessionName, {
           type: 'system', subtype: 'warning',
@@ -9599,7 +9645,9 @@ function runChatTurn(sessionName, text, opts = {}) {
         const stderrTail = stderrBuf.slice(-300).trim();
         chatBroadcast(sessionName, {
           type: 'error',
-          error: stderrTail ? `${cs.cli} 无响应：${stderrTail}` : `${cs.cli} 无响应（exit ${code}${signal ? '/' + signal : ''}）`,
+          error: pendingTransportError
+            ? `Codex 出错：${pendingTransportError}`
+            : stderrTail ? `${cs.cli} 无响应：${stderrTail}` : `${cs.cli} 无响应（exit ${code}${signal ? '/' + signal : ''}）`,
         });
       }
 
@@ -9638,6 +9686,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs._codexRecoveredDisconnect = false;
       cs._codexPendingStreamError = '';
       cs._codexPendingStreamErrorCount = 0;
+      cs._codexTransportError = '';
       cs._codexStreamContinuationCount = 0;
       // classify prompt + dispatchStateAction handles API errors via state E.
       // Capture the flag before resetting so the branch below can reference it.
