@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
@@ -18,7 +21,9 @@ class _TokenUsageScreenState extends State<TokenUsageScreen> {
   late final ManageService _manage = ManageService(settings: widget.settings);
 
   Map<String, dynamic>? _data;
+  Map<String, dynamic>? _byRoleData;
   bool _loading = true;
+  bool _byRoleLoading = true;
   bool _refreshing = false;
   String? _error;
 
@@ -26,6 +31,7 @@ class _TokenUsageScreenState extends State<TokenUsageScreen> {
   void initState() {
     super.initState();
     _refresh(force: false);
+    _loadByRole();
   }
 
   Future<void> _refresh({required bool force}) async {
@@ -52,6 +58,7 @@ class _TokenUsageScreenState extends State<TokenUsageScreen> {
         _refreshing = false;
       });
     }
+    _loadByRole();
   }
 
   @override
@@ -82,11 +89,131 @@ class _TokenUsageScreenState extends State<TokenUsageScreen> {
                         padding: const EdgeInsets.all(12),
                         children: [
                           _summaryCard(),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 10),
+                          _saveMainModelCard(),
+                          const SizedBox(height: 10),
                           ..._windowSections(),
                         ],
                       ),
                     ),
+    );
+  }
+
+  Future<void> _loadByRole() async {
+    try {
+      final url = widget.settings.buildHttpUrl('/api/token-usage/by-role');
+      final headers = <String, String>{};
+      if (widget.settings.token.isNotEmpty) {
+        headers['X-Access-Token'] = widget.settings.token;
+      }
+      final res = await http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode >= 400) return;
+      if (!mounted) return;
+      final body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      setState(() {
+        _byRoleData = body;
+        _byRoleLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _byRoleLoading = false);
+    }
+  }
+
+  String _dateKey(DateTime dt) =>
+      '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+
+  Widget _saveMainModelCard() {
+    if (_byRoleLoading) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.panel,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: const Row(
+          children: [
+            Text('省主模型 Token',
+                style: TextStyle(color: AppColors.textBright, fontSize: 13, fontWeight: FontWeight.w600)),
+            SizedBox(width: 12),
+            SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 1.5)),
+          ],
+        ),
+      );
+    }
+    if (_byRoleData == null || _byRoleData!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final now = DateTime.now();
+    final todayKey = _dateKey(now);
+    final monday = now.subtract(Duration(days: now.weekday - 1));
+    final mondayKey = _dateKey(monday);
+    final monthStart = _dateKey(DateTime(now.year, now.month, 1));
+
+    int todayTotal = 0, weekTotal = 0, monthTotal = 0, allTotal = 0;
+
+    for (final entry in _byRoleData!.entries) {
+      final dateKey = entry.key;
+      final dayData = entry.value as Map<String, dynamic>?;
+      if (dayData == null) continue;
+      final subData = dayData['sub'] as Map<String, dynamic>?;
+      if (subData == null) continue;
+
+      int daySub = 0;
+      for (final p in subData.values) {
+        if (p is Map) {
+          daySub += (p['inputTokens'] as num?)?.toInt() ?? 0;
+          daySub += (p['outputTokens'] as num?)?.toInt() ?? 0;
+          daySub += (p['cacheWrite'] as num?)?.toInt() ?? 0;
+          daySub += (p['cacheRead'] as num?)?.toInt() ?? 0;
+        }
+      }
+
+      allTotal += daySub;
+      if (dateKey == todayKey) todayTotal += daySub;
+      if (dateKey.compareTo(mondayKey) >= 0) weekTotal += daySub;
+      if (dateKey.compareTo(monthStart) >= 0) monthTotal += daySub;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('省主模型 Token',
+              style: TextStyle(color: AppColors.textBright, fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 2),
+          const Text('子任务替主模型处理的 token 量（没派给子任务的话本要让主模型跑）',
+              style: TextStyle(color: AppColors.faint, fontSize: 10)),
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _stat('今天', _fmt(todayTotal), AppColors.accent),
+                const SizedBox(width: 20),
+                _stat('本周', _fmt(weekTotal), AppColors.accent),
+                const SizedBox(width: 20),
+                _stat('本月', _fmt(monthTotal), AppColors.accent),
+                const SizedBox(width: 20),
+                _stat('全部', _fmt(allTotal), AppColors.accent),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
