@@ -8711,6 +8711,81 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
   forward(evt);
 }
 
+// === Background task (Monitor / run_in_background) shadow tracking ===
+//
+// CC emits task_started/task_updated/task_notification/background_tasks_changed
+// as type:"system" stream-json events. The per-turn onEvent is cleared at the
+// turn's `result` (chat-stream finishTurn sets s.current=null), but a Monitor
+// is a session-lifetime process: the model starts it, ends its turn, and the
+// task keeps running - so its events arrive AFTER result and would be dropped.
+// chat-stream forwards them via onBackgroundEvent (independent of s.current),
+// which lands here.
+//
+// CC tee's a Monitor's stdout to a predictable file:
+//   <realpath(/tmp)>/claude-<uid>/<encoded-realpath>/<sessionId>/tasks/<taskId>.output
+// We shadow-tail it to surface live progress to the UI. The authoritative
+// output_file path arrives in the task_notification(completed) event; we use
+// that for the final full read (handles any path-mismatch fallback).
+function monitorOutputFilePath(sessionId, taskId) {
+  try {
+    const { realpathSync } = require('fs');
+    const tmpReal = realpathSync('/tmp');
+    const encoded = tmpReal.replace(/\//g, '-');
+    return `${tmpReal}/claude-${process.getuid()}/${encoded}/${sessionId}/tasks/${taskId}.output`;
+  } catch { return null; }
+}
+
+function startMonitorShadow(sessionName, cs, taskId, outputFile, desc) {
+  if (!cs._monitorShadows) cs._monitorShadows = new Map();
+  if (cs._monitorShadows.has(taskId) || !outputFile) return;
+  const { spawn } = require('child_process');
+  // -F (capital) retries while the file doesn't exist yet and follows
+  // rotation; task_started fires before CC creates the file, so -F is required.
+  const tail = spawn('tail', ['-n', '+1', '-F', outputFile], { stdio: ['ignore', 'pipe', 'ignore'] });
+  tail.stdout.on('data', (chunk) => {
+    for (const ln of chunk.toString().split('\n')) {
+      if (!ln) continue;
+      chatBroadcast(sessionName, { type: 'monitor_progress', task_id: taskId, line: ln, description: desc });
+    }
+  });
+  tail.on('error', () => {});
+  cs._monitorShadows.set(taskId, { tail, outputFile });
+}
+
+function stopMonitorShadow(cs, taskId) {
+  const sh = cs._monitorShadows && cs._monitorShadows.get(taskId);
+  if (!sh) return;
+  try { sh.tail.kill(); } catch {}
+  cs._monitorShadows.delete(taskId);
+}
+
+function handleBackgroundTaskEvent(sessionName, cs, evt) {
+  const sub = evt.subtype;
+  if (sub === 'task_started') {
+    const taskId = evt.task_id;
+    if (!taskId) return;
+    const outputFile = monitorOutputFilePath(evt.session_id || '', taskId);
+    const tu = cs.currentToolCalls && cs.currentToolCalls.find(t => t.id === evt.tool_use_id);
+    const cmd = (tu && tu.input && tu.input.command) || '';
+    chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd });
+    startMonitorShadow(sessionName, cs, taskId, outputFile, evt.description || '');
+  } else if (sub === 'task_notification') {
+    const taskId = evt.task_id;
+    stopMonitorShadow(cs, taskId);
+    // evt.output_file is CC's authoritative path; prefer it over our prediction.
+    const outputFile = evt.output_file || (taskId && evt.session_id ? monitorOutputFilePath(evt.session_id, taskId) : null);
+    let output = '';
+    if (outputFile) { try { output = require('fs').readFileSync(outputFile, 'utf8'); } catch {} }
+    const snippet = output.length > 2000 ? output.slice(-2000) : output;
+    chatBroadcast(sessionName, { type: 'monitor_done', task_id: taskId, status: evt.status, summary: evt.summary || '', output: snippet });
+    // v1: surface completion + full output to the UI. Continuation still flows
+    // through the existing wait-injector/classify state machine (bgCheck/D/auto).
+    // v2: drive a continuation inject from here once de-duped against classify.
+  } else if (sub === 'background_tasks_changed') {
+    chatBroadcast(sessionName, { type: 'background_tasks', tasks: evt.tasks || [] });
+  }
+}
+
 function runChatTurn(sessionName, text, opts = {}) {
   const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits } = opts;
   const clientMsgId = typeof opts.clientMsgId === 'string' ? opts.clientMsgId.trim().slice(0, 128) : '';
@@ -9607,6 +9682,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
     sessionId: persisted._streamSessionId,
     model, sysPrompt, extraArgs,
     env: childEnv,
+    onBackgroundEvent: (evt) => handleBackgroundTaskEvent(sessionName, cs, evt),
   });
 
   // An in-flight turn (if any) was already interrupted at the top of
