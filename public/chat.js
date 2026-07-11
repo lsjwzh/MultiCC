@@ -1195,6 +1195,7 @@ function buildUsageLine(usage, roleBreakdown) {
   const cr = (usage && usage.cache_read_input_tokens) || 0;
   const cw = (usage && usage.cache_creation_input_tokens) || 0;
   const n = x => x.toLocaleString('en-US');
+  const fs = v => v > 1e6 ? (v / 1e6).toFixed(2) + 'M' : v > 1e3 ? (v / 1e3).toFixed(1) + 'k' : v.toLocaleString('en-US');
 
   // ── Role-split mode (主/辅) ──
   if (roleBreakdown && (roleBreakdown.main || roleBreakdown.sub)) {
@@ -1219,6 +1220,7 @@ function buildUsageLine(usage, roleBreakdown) {
       for (const p of (roleBreakdown.subByProvider || [])) {
         tip += `    · ${p.name||p.providerId} / ${p.model||'?'}: ↑入 ${n(p.inputTokens||0)} ↓出 ${n(p.outputTokens||0)}\n`;
       }
+      tip += `省主模型 ≈ ${n(sb.t)}（子任务代劳）\n`;
     }
     el.title = tip.trim();
     // Headline: ↑入 / ↓出 with a 主/辅 split suffix when subagents ran.
@@ -1232,6 +1234,9 @@ function buildUsageLine(usage, roleBreakdown) {
       html += `<span class="u-role" title="主 ${n(mt)} · 辅 ${n(st)}">主 ${n(mt)} · 辅 ${n(st)}</span>`;
     } else if (mb) {
       html += `<span class="u-role" title="仅主循环">主 ${n(mb.t)}</span>`;
+    }
+    if (sb) {
+      html += `<span class="u-saved" title="子任务替主模型处理的 token 量（四桶总额，未走主模型）">↺省主 ${fs(sb.t)}</span>`;
     }
     el.innerHTML = html;
     return el;
