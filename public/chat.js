@@ -2919,6 +2919,7 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
       <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
       <label id="ai-effort-label" style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">${_sessionCli === 'codex' ? 'Reasoning Level' : 'Effort'}</label>
       <select id="ai-effort" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
+      <div id="ai-sub-section" style="${_sessionCli === 'codex' ? 'display:none;' : ''}">
       <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
       <div style="font-size:13px;font-weight:600;margin-bottom:2px;">子任务 (subagent)</div>
       <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:10px;">Task 工具派生的子 agent 走的 provider+model（经 claude-proxy 路由，与主进程隔离）。留空=随主。</div>
@@ -2927,6 +2928,7 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
       <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Model</label>
       <select id="ai-sub-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;"></select>
       <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;display:none;">
+      </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button id="ai-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">取消</button>
         <button id="ai-ok" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">保存</button>
@@ -3038,7 +3040,7 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
         provider: providerSel.value,
         model: pickedModel,
         effort: effortSel.value,
-        subagent: subPid && subModel ? { providerId: subPid, model: subModel } : null,
+        subagent: (_sessionCli === 'codex') ? null : (subPid && subModel ? { providerId: subPid, model: subModel } : null),
       });
     };
     box.querySelector('#ai-cancel').onclick = () => close(null);
@@ -3687,6 +3689,9 @@ function updateAutoDispatchCheck() {
 const subagentPill = document.getElementById('subagent-pill');
 function updateSubagentPill() {
   const el = document.getElementById('subagent-pill-label');
+  // subagent routing is claude-proxy-only (it decodes ccfw:<pid>:<model>); codex-proxy
+  // has no such decode, so the pill is a silent no-op there - hide it for codex.
+  if (subagentPill) subagentPill.style.display = (_sessionCli === 'codex') ? 'none' : '';
   if (!el) return;
   // Show the REAL wire model id that hits the server (effectiveModel), not the
   // stored tier alias (opus/sonnet/…). Falls back to the raw model, then 随主.

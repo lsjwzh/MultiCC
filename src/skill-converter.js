@@ -170,6 +170,20 @@ function isConverted(skillName, provider) {
   return fs.existsSync(path.join(cacheDir, 'SKILL.md'));
 }
 
+// Recursively copy a skill's bin/ helpers into the converted cache dir so the
+// target provider can still run helper scripts (e.g. multicc-artifact's bin/artifact).
+function copyBinHelpers(sourceDir, cacheDir) {
+  const srcBin = path.join(sourceDir, 'bin');
+  if (!fs.existsSync(srcBin)) return;
+  const destBin = path.join(cacheDir, 'bin');
+  try {
+    fs.cpSync(srcBin, destBin, { recursive: true });
+    for (const f of fs.readdirSync(destBin)) fs.chmodSync(path.join(destBin, f), 0o755);
+  } catch (e) {
+    console.warn(`[multicc/skills] copyBinHelpers ${srcBin} -> ${destBin}: ${e.message}`);
+  }
+}
+
 function writeConvertedCache(skillName, provider, files) {
   const cacheDir = convertedCachePath(skillName, provider);
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -178,6 +192,8 @@ function writeConvertedCache(skillName, provider, files) {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, content, 'utf8');
   }
+  // Copy bin/ helpers so converted skills can invoke their scripts on the target provider.
+  copyBinHelpers(path.join(AGENTS_ROOT, skillName), cacheDir);
   fs.writeFileSync(path.join(cacheDir, '.converter-version'), '1', 'utf8');
 }
 
