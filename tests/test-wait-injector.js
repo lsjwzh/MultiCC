@@ -84,6 +84,24 @@ const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✅', msg); } els
   wait.register({ session: 'sbg2', mode: 'callback' });
   ok(wait.bgCheck('sbg2') === false, 'bgCheck skipped when explicit wait pending');
 
+  // ── G: resumeInterrupted (P+no-turn resume, now capped) ──
+  console.log('G. resumeInterrupted (unknown-interruption resume)');
+  injected.length = 0;
+  let riStarted = 0;
+  for (let i = 0; i < 12; i++) if (wait.resumeInterrupted('sri', { delayMs: 0 })) riStarted++;
+  await sleep(20);
+  ok(riStarted === 10, `capped at 10 consecutive (got ${riStarted})`);
+  ok(injected.length === 10, 'exactly 10 resume nudges injected');
+  ok(injected[0].text.includes('未知中断'), 'nudge names the recovery intent');
+  wait.resetInterrupted('sri');
+  ok(wait.resumeInterrupted('sri', { delayMs: 0 }), 'resetInterrupted re-enables resume');
+  await sleep(20); // flush
+
+  // ── G: skipped if explicit wait pending ──
+  injected.length = 0;
+  wait.register({ session: 'sri2', mode: 'callback' });
+  ok(wait.resumeInterrupted('sri2') === false, 'resumeInterrupted skipped when explicit wait pending');
+
   // ── v2: bg-completion result de-dup (autoContinue + bgCheck skip) ──
   console.log('v2. bg-completion de-dup');
   injected.length = 0;
