@@ -883,7 +883,11 @@ const cliProviders = {
       // the earlier context (re-sending every turn would just waste tokens).
       let p = prompt;
       if (opts.isFirstTurn) {
-        const promptPrefixes = [];
+        // codex exec has no system-prompt flag, so prepend the same MultiCC
+        // interface hints claude gets via --append-system-prompt (inline image
+        // markdown, /wait, run-detached, cron, keep-alive). First turn only -
+        // exec resume keeps earlier context, so re-sending would waste tokens.
+        const promptPrefixes = [MULTICC_IMG_HINT];
         // MultiCC runs codex non-interactively; request_user_input is unavailable here.
         // Prepend an env constraint on the first turn so the model asks questions as
         // plain text instead of looping on the unavailable tool.
@@ -2881,7 +2885,45 @@ app.patch('/api/sessions/:id', (req, res) => {
     // Per-session cc-switch provider. '' / null clears the override → default login.
     const v = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
     if (!v.ok) return res.status(400).json({ error: 'invalid provider' });
+    const prevProvider = s.provider;
     s.provider = v.value;
+    // Codex keeps each provider's threads under its own CODEX_HOME
+    // (sessions/YYYY/MM/DD/rollout-<ts>-<cliSessionId>.jsonl). Switching provider
+    // repoints the next spawn at a different home, so `codex exec resume <id>`
+    // would no longer find this session's rollout and silently start a fresh
+    // thread. Carry the rollout over to the new home so resume keeps working.
+    if (s.cli === 'codex' && s.cliSessionId && prevProvider !== v.value) {
+      try {
+        const codexHomeFor = (pid) => pid
+          ? path.join(providers.CODEX_HOMES_DIR, pid)
+          : path.join(os.homedir(), '.codex');
+        const srcSessions = path.join(codexHomeFor(prevProvider), 'sessions');
+        let srcFile = null;
+        if (fs.existsSync(srcSessions)) {
+          const walk = (d) => {
+            if (srcFile) return;
+            let entries;
+            try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+            for (const e of entries) {
+              if (srcFile) return;
+              if (e.isDirectory()) walk(path.join(d, e.name));
+              else if (e.isFile() && e.name.endsWith(`-${s.cliSessionId}.jsonl`)) srcFile = path.join(d, e.name);
+            }
+          };
+          walk(srcSessions);
+        }
+        if (srcFile) {
+          const dstFile = path.join(codexHomeFor(v.value), 'sessions', path.relative(srcSessions, srcFile));
+          if (!fs.existsSync(dstFile)) {
+            fs.mkdirSync(path.dirname(dstFile), { recursive: true });
+            fs.copyFileSync(srcFile, dstFile);
+            console.log(`[multicc/provider] migrated codex rollout ${s.cliSessionId}: ${prevProvider || '默认'} -> ${v.value || '默认'}`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[multicc/provider] codex rollout migration failed for ${s.id}:`, e.message);
+      }
+    }
     // When switching provider the old session.model may hold a model that
     // only works with the previous backend (e.g. claude-opus-4-8 set while
     // on Anthropic Official, then switching to DeepSeek/GLM which don't
@@ -2920,6 +2962,11 @@ app.patch('/api/sessions/:id', (req, res) => {
   if (req.body.subagent !== undefined) {
     // Per-session Task-tool subagent provider+model, routed via the claude-proxy
     // (effective only for provider-backed claude sessions). null / '' / {} clears it.
+    // codex-proxy has no ccfw:<pid>:<model> decode, so an override is a silent
+    // no-op there - never persist one for codex (clears any stale value too).
+    if ((s.cli || 'claude') === 'codex') {
+      s.subagent = null;
+    } else {
     const sa = req.body.subagent;
     if (sa === null || sa === '' || (typeof sa === 'object' && Object.keys(sa).length === 0)) {
       s.subagent = null;
@@ -2940,6 +2987,7 @@ app.patch('/api/sessions/:id', (req, res) => {
       ? `${providers.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
       : '默认(随主)';
     appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
+    } // codex subagent is a no-op; only claude reaches here
   }
   savePersistedSessions();
   res.json({ ...s, subagent: serializeSubagent(s.subagent), effectiveModel: effectiveSessionModel(s), effectiveEffort: effectiveSessionEffort(s) });
@@ -10490,6 +10538,16 @@ function syncSharedSkills() {
 // When mechanical conversion is done, the converter queues deeper AI rewrites.
 // We spawn a one-shot background session to do the actual rewriting via Claude.
 skillConv.onAiConvertNeeded((batch) => {
+  // The detached conversion job needs a live session to host it (run-detached
+  // 404s on an unknown session id). Pick any non-aux claude session; the job
+  // writes to absolute paths so the host session's cwd is irrelevant.
+  const host = [...persistedSessions.values()].find(
+    s => s.id !== AUX_SESSION_ID && (s.cli || 'claude') !== 'codex'
+  );
+  if (!host) {
+    console.warn(`[multicc/skills] AI skill conversion skipped (${batch.length} skill(s)): no claude session to host the detached job`);
+    return;
+  }
   for (const { skillName, provider } of batch) {
     const spec = skillConv.buildAiConvertPrompt(skillName, provider);
     if (!spec) continue;
@@ -10503,13 +10561,13 @@ skillConv.onAiConvertNeeded((batch) => {
       spec.prompt,
       `CONVEOF`,
       // Let the agent do the conversion via claude
-      `"$CLAUDE_CMD" -p "$(cat /tmp/multicc-skillconv-${skillName}.txt)" --allowedTools "Bash,Read,Write,Edit" --output-format text --max-turns 3 2>&1`,
+      `"${CLAUDE_CMD}" -p "$(cat /tmp/multicc-skillconv-${skillName}.txt)" --allowedTools "Bash,Read,Write,Edit" --output-format text --max-turns 3 2>&1`,
     ].join(' && ');
 
-    const curlCmd = `curl -s ${process.env.MULTICC_BASE_URL || 'http://127.0.0.1:' + (process.env.PORT || 3000)}/api/sessions/${process.env.MULTICC_SESSION_ID || 'multicc-claude-chat-02'}/run-detached -H 'Content-Type: application/json' -d '${JSON.stringify({ command: cmd, label: `skillconv-${skillName}→${provider}` })}'`;
+    const curlCmd = `curl -s ${process.env.MULTICC_BASE_URL || 'http://127.0.0.1:' + (process.env.PORT || 3000)}/api/sessions/${host.id}/run-detached -H 'Content-Type: application/json' -d '${JSON.stringify({ command: cmd, label: `skillconv-${skillName}→${provider}` })}'`;
 
     console.log(`[multicc/skills] queued AI conversion: ${skillName} → ${provider}`);
-    try { require('child_process').execSync(curlCmd, { timeout: 5000 }); } catch (_) {}
+    try { require('child_process').execSync(curlCmd, { timeout: 5000 }); } catch (e) { console.warn(`[multicc/skills] AI conversion submit failed (${skillName}->${provider}): ${e.message}`); }
   }
 });
 
