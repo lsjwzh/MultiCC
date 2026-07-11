@@ -530,7 +530,7 @@ class _ModelChipState extends State<_ModelChip> {
   List<Map<String, dynamic>> _providers = [];
   bool _loaded = false;
 
-  String get _appType => widget.cli == SessionCli.codex ? 'codex' : 'claude';
+  String get _appType => widget.cli.appType;
 
   @override
   void initState() {
@@ -1246,7 +1246,7 @@ Future<void> openAIConfigSheet(
   final sess = found;
   List<Map<String, dynamic>> providers = const [];
   try {
-    final appType = sess.cli == SessionCli.codex ? 'codex' : 'claude';
+    final appType = sess.cli.appType;
     final d = await ManageService(settings: settings).fetchProviders(appType);
     providers =
         (d['providers'] as List? ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
@@ -1266,7 +1266,7 @@ Future<void> openAIConfigSheet(
       model: sess.model ?? '',
       effort: sess.effectiveEffort ??
           sess.effort ??
-          (sess.cli == SessionCli.codex ? 'xhigh' : 'medium'),
+          (sess.cli == SessionCli.claude ? 'medium' : 'xhigh'),
       subProviderId: sess.subagent?.providerId,
       subModel: sess.subagent?.model,
       streaming: sess.streaming ?? true,
@@ -3431,9 +3431,12 @@ class _ChatCliBadge extends StatelessWidget {
   const _ChatCliBadge({required this.cli});
   @override
   Widget build(BuildContext context) {
-    final color = cli == SessionCli.codex
-        ? const Color(0xFF7fd49a)
-        : const Color(0xFFf0936b);
+    final color = switch (cli) {
+      SessionCli.claude => const Color(0xFFf0936b),
+      SessionCli.codex => const Color(0xFF7fd49a),
+      SessionCli.opencode => const Color(0xFFa78bfa),
+      SessionCli.zcode => const Color(0xFF38bdf8),
+    };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
       decoration: BoxDecoration(

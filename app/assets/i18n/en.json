@@ -53,7 +53,10 @@
   "claudeChats": "CLAUDE CHATS",
   "codexTerminals": "CODEX TERMINALS",
   "codexChats": "CODEX CHATS",
-
+  "openCodeTerminals": "OPENCODE TERMINALS",
+  "openCodeChats": "OPENCODE CHATS",
+  "zCodeTerminals": "ZCODE TERMINALS",
+  "zCodeChats": "ZCODE CHATS",
   "noSessions": "No sessions yet",
   "mergeReadyLabel": "Uncommitted changes, ready to merge into {base}",
   "mergeReadyLabelAhead": "{n} commits ahead, ready to merge into {base}",

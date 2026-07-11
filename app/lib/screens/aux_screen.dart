@@ -57,10 +57,11 @@ class _AuxScreenState extends State<AuxScreen> {
       setState(() {
         _config = cfg;
         _health = hlt;
-        _cli = (cfg['cli']?.toString() ?? 'claude') == 'codex' ? 'codex' : 'claude';
+        final cliVal = cfg['cli']?.toString() ?? 'claude';
+        _cli = ['claude', 'codex', 'opencode', 'zcode'].contains(cliVal) ? cliVal : 'claude';
         _providerId = cfg['providerId']?.toString() ?? '';
         _model = cfg['model']?.toString() ?? '';
-        _effort = cfg['effort']?.toString() ?? (_cli == 'codex' ? 'xhigh' : 'medium');
+        _effort = cfg['effort']?.toString() ?? (_cli == 'claude' ? 'medium' : 'xhigh');
         _loading = false;
       });
     } catch (e) {
@@ -92,9 +93,9 @@ class _AuxScreenState extends State<AuxScreen> {
   }
 
   List<String> _effortOptsFor(String cli) {
-    return cli == 'codex'
-        ? const ['low', 'medium', 'high', 'xhigh']
-        : const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+    return cli == 'claude'
+        ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
+        : const ['low', 'medium', 'high', 'xhigh'];
   }
 
   Future<void> _save() async {
@@ -260,6 +261,10 @@ class _AuxScreenState extends State<AuxScreen> {
             _typeChoice('claude', 'Claude'),
             const SizedBox(width: 8),
             _typeChoice('codex', 'Codex'),
+            const SizedBox(width: 8),
+            _typeChoice('opencode', 'OpenCode'),
+            const SizedBox(width: 8),
+            _typeChoice('zcode', 'ZCode'),
           ]),
           const SizedBox(height: 14),
           // provider
@@ -371,7 +376,7 @@ class _AuxScreenState extends State<AuxScreen> {
           // provider/model may not exist for the other cli → reset
           _providerId = '';
           _model = '';
-          _effort = value == 'codex' ? 'xhigh' : 'medium';
+          _effort = value == 'claude' ? 'medium' : 'xhigh';
         }),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 11),

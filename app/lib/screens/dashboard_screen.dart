@@ -117,9 +117,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
             runSpacing: 6,
             children: [
               ...byCli.entries.map((e) => _chip(
-                  e.key == 'claude' ? 'Claude' : 'Codex',
+                  switch (e.key) {
+                    'codex' => 'Codex',
+                    'opencode' => 'OpenCode',
+                    'zcode' => 'ZCode',
+                    _ => 'Claude',
+                  },
                   '${e.value}',
-                  e.key == 'claude' ? AppColors.claude : AppColors.codex)),
+                  switch (e.key) {
+                    'codex' => AppColors.codex,
+                    'opencode' => AppColors.opencode,
+                    'zcode' => AppColors.zcode,
+                    _ => AppColors.claude,
+                  })),
               ...byKind.entries.map((e) => _chip(
                   e.key == 'chat' ? 'Chat' : 'Term', '${e.value}', AppColors.blue)),
             ],
@@ -214,7 +224,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _sessionTile(Map<String, dynamic> s) {
     final active = s['active'] == true;
-    final cli = (s['cli'] ?? 'claude') == 'codex' ? 'Codex' : 'Claude';
+    final cli = switch (s['cli'] ?? 'claude') {
+      'codex' => 'Codex',
+      'opencode' => 'OpenCode',
+      'zcode' => 'ZCode',
+      _ => 'Claude',
+    };
     final kind = (s['kind'] ?? 'terminal') == 'chat' ? 'Chat' : 'Term';
     final label = (s['label'] as String?)?.isNotEmpty == true
         ? s['label'] as String

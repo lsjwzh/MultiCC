@@ -68,7 +68,12 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
   // forks more than one git at a time.
   async function listAnnotated() {
     const list = await Promise.all(repo.list().map(async d => {
-      const counts = { claude_terminal: 0, claude_chat: 0, codex_terminal: 0, codex_chat: 0 };
+      const counts = {
+        claude_terminal: 0, claude_chat: 0,
+        codex_terminal: 0, codex_chat: 0,
+        opencode_terminal: 0, opencode_chat: 0,
+        zcode_terminal: 0, zcode_chat: 0,
+      };
       for (const s of sessions.listByDir(d.id)) {
         const k = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;
         if (counts[k] !== undefined) counts[k]++;
