@@ -7490,13 +7490,20 @@ function holdSession(sessionId, reason) {
 }
 
 // Resume all held sessions with a gentle prompt. Called when the API recovers.
-function resumeHeldSessions() {
+async function resumeHeldSessions() {
   const held = new Map(networkHealth.heldSessions);
   networkHealth.heldSessions.clear();
+  let i = 0;
   for (const [sid, info] of held) {
+    // Leak guard: drop sessions deleted while held (heldSessions is never
+    // .delete()'d on session removal — see DELETE /api/sessions/:id).
+    if (!persistedSessions.has(sid)) { console.log(`[multicc/net] skip resumed session ${sid}: gone`); i++; continue; }
     const resumeMsg = `上游 API 已恢复。之前因 API 异常暂挂的任务「${info.goal || '未命名'}」现在可以继续了。请确认当前状态并继续执行。`;
     try { waitInjector.safeInject(sid, resumeMsg); } catch (_) {}
     console.log(`[multicc/net] resumed session ${sid}: ${info.goal}`);
+    // Stagger: don't fire N concurrent turns at the freshly-recovered API
+    // (thundering herd → 3 fails → re-hold → oscillation).
+    if (++i < held.size) await new Promise(r => setTimeout(r, 2000));
   }
 }
 
@@ -7505,7 +7512,10 @@ function startNetworkProbe() {
   stopNetworkProbe();
   const probe = () => {
     if (!networkHealth.unhealthy) return;
-    // Use a short timeout so a truly dead API doesn't hang the probe.
+    // Dedup + backpressure: skip if a network_probe is already queued or in-flight.
+    // (Without this, probes pile up at 1/30s while each one times out.)
+    if (auxQueue.queue.some(t => t.type === 'network_probe') ||
+        (auxQueue.currentTask && auxQueue.currentTask.type === 'network_probe')) return;
     auxQueue.enqueue({
       type: 'network_probe',
       prompt: '回复 ok',
