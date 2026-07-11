@@ -21,7 +21,7 @@ logs/
 # Token 统计为运行时状态，服务持续改写；跟踪它们会让工作区永远 dirty、挡住 ./multicc update
 token_usage.json
 token_daily.json
-
+token_by_role.json
 # Local tool config
 .claude/
 push_subscriptions.json
