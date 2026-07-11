@@ -6037,6 +6037,7 @@ async function loadProviders() {
 
 // ── Global Claude Code token usage (from ~/.claude/projects transcripts) ──
 let _globalUsage = null;
+let _byRoleData = null;
 let _guWindow = 'month';
 
 async function loadGlobalUsage(force) {
@@ -6054,6 +6055,7 @@ async function loadGlobalUsage(force) {
     return;
   }
   renderGlobalUsage();
+  loadByRoleUsage();
 }
 
 function setGuWindow(w) { _guWindow = w; renderGlobalUsage(); }
@@ -6116,6 +6118,77 @@ function renderGlobalUsage() {
       新鲜 token（输入+输出，反映真实工作量）：<b style="color:var(--text)">${ft(fresh)}</b> · 含缓存总量：${ft(grand)} · ${tmsg} 次响应${gen ? ` · 扫描于 ${gen}` : ''}
     </div>
     ${renderGuTrend()}`;
+}
+
+// ── 省主模型 Token（从 /api/token-usage/by-role 聚合子任务用量）──
+
+function dateKey(dt) {
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+async function loadByRoleUsage() {
+  const body = document.getElementById('by-role-card-body');
+  if (!body) return;
+  try {
+    const url = '/api/token-usage/by-role' + tokenQS('?');
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _byRoleData = await res.json();
+  } catch (e) {
+    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(e.message)}</span>`;
+    return;
+  }
+  renderByRoleCard();
+}
+
+function renderByRoleCard() {
+  const body = document.getElementById('by-role-card-body');
+  if (!body || !_byRoleData || !Object.keys(_byRoleData).length) {
+    if (body) body.innerHTML = '<span style="color:var(--faint);font-size:13px">暂无数据</span>';
+    return;
+  }
+
+  const now = new Date();
+  const todayKey = dateKey(now);
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - (now.getDay() === 0 ? 6 : now.getDay() - 1));
+  const mondayKey = dateKey(monday);
+  const monthStart = dateKey(new Date(now.getFullYear(), now.getMonth(), 1));
+
+  let todayTotal = 0, weekTotal = 0, monthTotal = 0, allTotal = 0;
+
+  for (const [date, dayData] of Object.entries(_byRoleData)) {
+    if (!dayData || !dayData.sub) continue;
+    let daySub = 0;
+    for (const p of Object.values(dayData.sub)) {
+      daySub += (p.inputTokens || 0) + (p.outputTokens || 0) + (p.cacheWrite || 0) + (p.cacheRead || 0);
+    }
+    allTotal += daySub;
+    if (date === todayKey) todayTotal += daySub;
+    if (date >= mondayKey) weekTotal += daySub;
+    if (date >= monthStart) monthTotal += daySub;
+  }
+
+  const ft = formatTokens;
+  body.innerHTML = `
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px">
+      <div style="min-width:80px">
+        <div style="font-size:11px;color:var(--faint)">今天</div>
+        <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(todayTotal)}</div>
+      </div>
+      <div style="min-width:80px">
+        <div style="font-size:11px;color:var(--faint)">本周</div>
+        <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(weekTotal)}</div>
+      </div>
+      <div style="min-width:80px">
+        <div style="font-size:11px;color:var(--faint)">本月</div>
+        <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(monthTotal)}</div>
+      </div>
+      <div style="min-width:80px">
+        <div style="font-size:11px;color:var(--faint)">全部</div>
+        <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(allTotal)}</div>
+      </div>
+    </div>`;
 }
 
 async function importProviders() {

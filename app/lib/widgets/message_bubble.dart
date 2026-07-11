@@ -335,12 +335,28 @@ class _TokenUsageLine extends StatelessWidget {
     return n.toString();
   }
 
+  /// Format a token count for display: >1e6 → X.XXM, >1e3 → X.Xk,
+  /// else thousand-separated raw number.
+  static String _fmtSaved(int n) {
+    if (n >= 1000000) {
+      return '${(n / 1000000).toStringAsFixed(2)}M';
+    }
+    if (n >= 1000) {
+      return '${(n / 1000).toStringAsFixed(1)}k';
+    }
+    return n.toString().replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (m) => ',',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final i = usage.inputTokens;
     final o = usage.outputTokens;
     final cr = usage.cacheReadTokens;
     final cw = usage.cacheCreationTokens;
+    final saved = usage.savedMainTokens;
 
     return Padding(
       padding: const EdgeInsets.only(top: 6),
@@ -356,6 +372,14 @@ class _TokenUsageLine extends StatelessWidget {
           if (cw > 0) ...[
             const SizedBox(width: 6),
             _UsageBadge(label: '⏱写', value: _fmt(cw), color: const Color(0xFFa371f7)),
+          ],
+          if (saved != null && saved > 0) ...[
+            const SizedBox(width: 6),
+            _UsageBadge(
+              label: '省主≈',
+              value: _fmtSaved(saved),
+              color: const Color(0xFF2ea043),
+            ),
           ],
         ],
       ),
