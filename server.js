@@ -7460,6 +7460,10 @@ function recordApiSuccess() {
       h.unhealthy = false;
       const heldCount = h.heldSessions.size;
       console.log(`[multicc/net] recovered — resuming ${heldCount} held session(s)`);
+      // 【顺序不变量·勿颠倒】unhealthy 必须先置 false（上一行）再 resume。恢复注入走
+      // safeInject → runChatTurn({originContinue:true})，而 runChatTurn 入口的 degrade防线
+      // chokepoint 会拦 `originContinue && isNetworkUnhealthy()`——若先把 resume 挪到清标记
+      // 之前，恢复注入会被自己的防线拦下，held 会话永远接续不上（死锁）。
       resumeHeldSessions();
       stopNetworkProbe();
     }
@@ -7473,20 +7477,31 @@ function isNetworkUnhealthy() { return networkHealth.unhealthy; }
 // (if any) can finish naturally; we just prevent NEW turns from starting.
 // Callers should check isNetworkUnhealthy() BEFORE calling this — this is the
 // "actually put it on hold" step.
-function holdSession(sessionId, reason) {
+function holdSession(sessionId, reason, pendingText) {
   if (!networkHealth.unhealthy) return;
   const p = persistedSessions.get(sessionId);
   if (!p) return;
   const ts = getTaskState(p);
+  const prior = networkHealth.heldSessions.get(sessionId);
+  // Preserve the original heldAt across re-holds. pendingText = the suppressed
+  // inject's text, stashed so resumeHeldSessions can replay real data (dispatch
+  // result / bg-completion) that would otherwise be lost when the chokepoint drops
+  // the turn. scan-skip-held keeps classify nudges from re-holding an already-held
+  // session, so a later hold usually carries NEW real data — let it overwrite so
+  // the most recent suppressed payload is what resume replays.
   networkHealth.heldSessions.set(sessionId, {
     goal: ts.goal || (typeof p.summary === 'string' ? p.summary.slice(0, 40) : ''),
-    heldAt: Date.now(),
-    reason: reason || 'API 异常',
+    heldAt: prior ? prior.heldAt : Date.now(),
+    reason: reason || (prior ? prior.reason : 'API 异常'),
+    pendingText: pendingText != null ? pendingText : (prior ? prior.pendingText : null),
   });
-  // Push a one-shot notification so the user knows this session is on hold.
-  const dirId = p.dirId;
-  const note = `上游 API 异常，任务「${ts.goal || '未命名'}」已暂挂，恢复后自动接续`;
-  if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'waiting', message: note });
+  // One-shot notification: only when freshly held, so a long outage with later
+  // real-data re-holds doesn't spam "已暂挂" on every hold.
+  if (!prior) {
+    const dirId = p.dirId;
+    const note = `上游 API 异常，任务「${ts.goal || '未命名'}」已暂挂，恢复后自动接续`;
+    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'waiting', message: note });
+  }
 }
 
 // Resume all held sessions with a gentle prompt. Called when the API recovers.
@@ -7498,7 +7513,13 @@ async function resumeHeldSessions() {
     // Leak guard: drop sessions deleted while held (heldSessions is never
     // .delete()'d on session removal — see DELETE /api/sessions/:id).
     if (!persistedSessions.has(sid)) { console.log(`[multicc/net] skip resumed session ${sid}: gone`); i++; continue; }
-    const resumeMsg = `上游 API 已恢复。之前因 API 异常暂挂的任务「${info.goal || '未命名'}」现在可以继续了。请确认当前状态并继续执行。`;
+    // If a real payload (dispatch result / bg-completion) was suppressed while held,
+    // replay THAT so the model gets the actual data it was blocked on — otherwise the
+    // generic recovery nudge. Prefixed so the model knows the API recovered either way.
+    const recoveryNote = `上游 API 已恢复。之前因 API 异常暂挂的任务「${info.goal || '未命名'}」现在可以继续了。`;
+    const resumeMsg = info.pendingText
+      ? `${recoveryNote}（含暂挂期间被暂存的真实数据，请据此继续）\n${info.pendingText}`
+      : `${recoveryNote}请确认当前状态并继续执行。`;
     try { waitInjector.safeInject(sid, resumeMsg); } catch (_) {}
     console.log(`[multicc/net] resumed session ${sid}: ${info.goal}`);
     // Stagger: don't fire N concurrent turns at the freshly-recovered API
@@ -7594,6 +7615,14 @@ function scanAndReclassify() {
     // Only C/B/E/P/null need re-judging — those advance on SYSTEM-side events
     // (auto-continue, background done, API recovered, interrupted resume).
     if (ts.classifyState === 'D' || ts.classifyState === 'W') continue;
+
+    // Skip sessions parked by the degrade防线 (held for API recovery). Re-judging a
+    // held session every 60s is pure waste — its history hasn't changed (no new turn
+    // ran while held), so the verdict can't self-correct. Worse, a fresh classify
+    // nudge here would re-hit the chokepoint and overwrite the stashed pendingText
+    // with boilerplate, losing any real dispatch/bg payload held for replay on
+    // recovery. resumeHeldSessions owns these; leave them alone.
+    if (networkHealth.heldSessions.has(sid)) continue;
 
     // Skip a session with a turn in flight — classifyTurnEnd will judge it the
     // moment the turn ends. Judging now (against the mid-stream, incomplete reply)
@@ -8808,6 +8837,26 @@ function runChatTurn(sessionName, text, opts = {}) {
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
+    return false;
+  }
+  // ── Degrade防线 fail-loop 拦截（方案C）──────────────────────────────
+  // 上游 API 不健康时，所有「系统自动注入」起的新 turn 只会立刻失败，反过来喂大
+  // fail-loop（classify 判 E/B/C/P → 注入 → 失败 → recordApiError → 再 classify → 再注入…）。
+  // originContinue 由 waitInjector._inject wrapper 统一设置（见 waitInjector.init 调用处），
+  // 是「系统注入 vs 用户主动」的唯一可靠判别——SYS_PREFIX(🔇)文本前缀不可靠，因为
+  // safeInject 不加前缀（B idle-timer / resumeHeldSessions 都走 safeInject）。拦在这一个
+  // chokepoint = 覆盖全部注入源：classify 的 E-retry/C·B-autoContinue/P-resume/B-idle-timer
+  // 五点 + wait-injector 内 callback/poll/autoContinue/resumeInterrupted/bgCheck + bg-completion
+  // 结果回流 + dispatch 结果路由。用户主动消息（WS user_message / HTTP memo/send）不设
+  // originContinue → 放行；dispatch 启动 worker 有自己的 gate（见 dispatchToSession 的
+  // isNetworkUnhealthy 检查）。triggers / 全局 cron 直调 runChatTurn 不带 originContinue，
+  // 不在本 chokepoint 覆盖内（属另一改动）。
+  // 抑制时不注入、改为 holdSession，等 recordApiSuccess → resumeHeldSessions 恢复接续。
+  // 【顺序不变量】recordApiSuccess 必须先把 networkHealth.unhealthy 置 false 再调
+  // resumeHeldSessions——否则恢复注入会被本 gate 误拦、held 会话永远无法接续。
+  if (originContinue && isNetworkUnhealthy()) {
+    holdSession(sessionName, 'classify-inject', text);
+    console.log(`[multicc/net] ${sessionName}: suppress system inject (originContinue) — network unhealthy, held for recovery`);
     return false;
   }
   // A real (non-auto-continue) message means the user/trigger is driving again →
