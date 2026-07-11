@@ -8778,9 +8778,23 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     if (outputFile) { try { output = require('fs').readFileSync(outputFile, 'utf8'); } catch {} }
     const snippet = output.length > 2000 ? output.slice(-2000) : output;
     chatBroadcast(sessionName, { type: 'monitor_done', task_id: taskId, status: evt.status, summary: evt.summary || '', output: snippet });
-    // v1: surface completion + full output to the UI. Continuation still flows
-    // through the existing wait-injector/classify state machine (bgCheck/D/auto).
-    // v2: drive a continuation inject from here once de-duped against classify.
+    // v2: drive a continuation inject straight from the completion event. The
+    // event is a deterministic fact carrying the real result, so hand it to the
+    // model now rather than letting classify guess B/C and nudge with an empty
+    // "继续" (which can misjudge-stall, or make the model re-run finished work).
+    // De-duped vs classify via noteBgResultInjected: autoContinue (D) and bgCheck
+    // (E) skip their empty nudges within BG_RESULT_DEDUP_MS so we don't
+    // double-inject (result + empty nudge) on top of each other.
+    if (cs) {
+      const desc = evt.description || evt.summary || '后台任务';
+      const status = evt.status || 'completed';
+      const outLine = snippet
+        ? `\n以下是它的输出，请据此继续推进任务，不要重复已完成的步骤：\n${snippet}`
+        : '\n（无输出）请据此继续推进任务。';
+      const nudge = `【后台任务完成】你之前启动的后台任务（${desc}）已结束（状态：${status}）。${outLine}`;
+      waitInjector.noteBgResultInjected(sessionName);
+      waitInjector.injectSystemMsg(sessionName, nudge, 0);
+    }
   } else if (sub === 'background_tasks_changed') {
     chatBroadcast(sessionName, { type: 'background_tasks', tasks: evt.tasks || [] });
   }
@@ -8798,7 +8812,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
-  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); clearBgIdleTimer(sessionName); }
+  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); clearBgIdleTimer(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
   let cs = chatSessions.get(sessionName);
   if (!cs) {
