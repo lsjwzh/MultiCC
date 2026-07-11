@@ -8829,6 +8829,28 @@ function isTaskOutputAwaiting(taskId) {
   return true;
 }
 function consumeTaskOutputAwaiting(taskId) { if (taskId) _taskOutputAwaiting.delete(String(taskId)); }
+// De-dup vs sync Bash: a synchronous Bash tool_use (run_in_background !== true)
+// returns its result to the main session via tool_result. CC may still emit
+// task_started+task_notification for it; the notification would double-inject a
+// "后台任务完成" nudge on top of the tool_result the session already got. task_started
+// tags the task_id (via tool_use_id); task_notification suppresses. (Monitor /
+// run_in_background:true Bash outlive the turn and still notify.)
+const _syncBashTaskIds = new Map(); // taskId -> { at }
+const SYNC_BASH_TAG_TTL_MS = 5 * 60 * 1000;
+function tagSyncBashTask(taskId) {
+  if (!taskId) return;
+  const now = Date.now();
+  for (const [k, v] of _syncBashTaskIds) if (now - v.at > SYNC_BASH_TAG_TTL_MS) _syncBashTaskIds.delete(k);
+  _syncBashTaskIds.set(String(taskId), { at: now });
+}
+function isSyncBashTask(taskId) {
+  if (!taskId) return false;
+  const v = _syncBashTaskIds.get(String(taskId));
+  if (!v) return false;
+  if (Date.now() - v.at > SYNC_BASH_TAG_TTL_MS) { _syncBashTaskIds.delete(String(taskId)); return false; }
+  return true;
+}
+function consumeSyncBashTask(taskId) { if (taskId) _syncBashTaskIds.delete(String(taskId)); }
 function handleBackgroundTaskEvent(sessionName, cs, evt) {
   const sub = evt.subtype;
   if (sub === 'task_started') {
@@ -8837,10 +8859,15 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     const outputFile = monitorOutputFilePath(evt.session_id || '', taskId);
     const tu = cs.currentToolCalls && cs.currentToolCalls.find(t => t.id === evt.tool_use_id);
     const cmd = (tu && tu.input && tu.input.command) || '';
+    if (tu && tu.name === 'Bash' && !(tu.input && tu.input.run_in_background)) {
+      tagSyncBashTask(taskId);
+      console.log(`[multicc/bg] ${sessionName} task ${taskId} sync Bash (${cmd.slice(0, 60)}) -> will suppress completion nudge`);
+    }
     chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd });
     startMonitorShadow(sessionName, cs, taskId, outputFile, evt.description || '');
   } else if (sub === 'task_notification') {
     const taskId = evt.task_id;
+    console.log(`[multicc/bg-diag] ${sessionName} task_notification taskId=${taskId} hasToolUseId=${'tool_use_id' in evt} desc="${(evt.description || '').slice(0, 40)}"`);
     stopMonitorShadow(cs, taskId);
     // evt.output_file is CC's authoritative path; prefer it over our prediction.
     const outputFile = evt.output_file || (taskId && evt.session_id ? monitorOutputFilePath(evt.session_id, taskId) : null);
@@ -8859,6 +8886,11 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
       if (isTaskOutputAwaiting(taskId)) {
         console.log(`[multicc/bg] ${sessionName} task ${taskId} completed; main session pulling via TaskOutput -> suppress completion nudge (de-dup)`);
         consumeTaskOutputAwaiting(taskId);
+        return;
+      }
+      if (isSyncBashTask(taskId)) {
+        console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sync Bash) -> suppress completion nudge (de-dup vs tool_result)`);
+        consumeSyncBashTask(taskId);
         return;
       }
       const desc = evt.description || evt.summary || '后台任务';
