@@ -380,8 +380,15 @@ function createHandler({ getProvider, onUsage }) {
       if (alias) {
         // aliasMap values can be {model, name} objects or plain strings
         const realModel = (typeof alias === 'string') ? alias : (alias.model || alias.name || '');
-        console.log(`[ccfw] sub-tier HIT sess=${sessionId || '-'} provider=${routeProviderId} tier=${tierKey} -> ${realModel}`);
-        if (realModel) outBody = rewriteModel(outBody, realModel);
+        // Strip a "[1M]"-style context suffix: it is Claude Code CLI syntax
+        // (1M-context beta) that the CLI itself strips on the main route.
+        // This proxy rewrites body.model directly with NO CLI in the loop, so
+        // without this the raw "ark-code-latest[1M]" reaches the upstream and
+        // 404s on relays that don't understand the suffix (e.g. 火山 ark).
+        // Mirrors stripModelSuffix() in src/providers.js — keep in sync.
+        const wireModel = String(realModel).replace(/\[[^\]]*\]$/, '').trim() || String(realModel);
+        console.log(`[ccfw] sub-tier HIT sess=${sessionId || '-'} provider=${routeProviderId} tier=${tierKey} -> ${wireModel}${wireModel !== realModel ? ` (stripped '${realModel}')` : ''}`);
+        if (wireModel) outBody = rewriteModel(outBody, wireModel);
       } else {
         // [diag] tier alias has no mapping on this provider — the raw tier
         // literal (e.g. "fable") is about to be sent upstream and will almost
