@@ -7607,6 +7607,46 @@ function isSystemInjectedMsg(msg) {
   return String(msg || '').trim().startsWith(waitInjector.SYS_PREFIX);
 }
 
+// Whether classify has produced a real goal for this session. False for the
+// ensureCurrentTask placeholder ('新任务'), empty, or injected/junk goals -
+// i.e. classify hasn't named the task yet. scan uses this to decide whether a
+// streaming session still needs an in-progress classify (to extract the goal).
+function isGoalResolved(goal) {
+  const g = String(goal || '').trim();
+  if (!g || g === '新任务') return false;
+  return !isInjectedOrJunkGoal(g);
+}
+
+// Shared classify-result handler. Routes by isStreaming: while a turn is still
+// streaming, only refresh the in-progress goal/phase labels (a mid-stream state
+// verdict is unreliable and would race the turn-end classify); once the turn is
+// over, finalize via dispatchStateAction. Used by BOTH runClassifyNow (turn-end)
+// and scanAndReclassify (periodic) so the two enqueue paths can't diverge in how
+// they route a result. Previously only runClassifyNow had the isStreaming guard,
+// so scan had to skip ALL streaming sessions - including unnamed ones whose goal
+// it could safely have extracted - starving classify on long/hung turns.
+function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = {}) {
+  if (cs && cs.isStreaming) {
+    if (cs.currentTask) {
+      cs.currentTask.goal = (res.goal && res.goal !== '-') ? res.goal : '';
+      if (res.phase) cs.currentTask.phase = res.phase;
+    }
+    // Persist BOTH goal and phase - persisting goal alone left phase stuck at
+    // the ensureCurrentTask placeholder ('planning'), so the card showed
+    // "新任务 规划中" even after classify judged the real goal/phase.
+    setTaskState(sessionName, { goal: cs.currentTask?.goal || '', phase: cs.currentTask?.phase || 'planning' });
+    const ph = phaseLabel(cs.currentTask?.phase);
+    const goal = cs.currentTask?.goal || '';
+    const label = goal ? `处理中：${goal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
+    emitRunningNotify(sessionName, label);
+    console.log(`[${source}] Classify in-progress for ${sessionName}: goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
+    return;
+  }
+  // Turn over - dispatch state action.
+  dispatchStateAction(res, { sessionName, sessionId, cs, isTerminal: false, cwd });
+  console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.error ? ' (API error)' : ''}`);
+}
+
 function scanAndReclassify() {
   if (auxQueue.isUnhealthy()) return;
   if (auxQueue.queue.length >= SCAN_MAX_QUEUE) {
@@ -7638,15 +7678,20 @@ function scanAndReclassify() {
     // recovery. resumeHeldSessions owns these; leave them alone.
     if (networkHealth.heldSessions.has(sid)) continue;
 
-    // Skip a session with a turn in flight — classifyTurnEnd will judge it the
-    // moment the turn ends. Judging now (against the mid-stream, incomplete reply)
-    // is unreliable AND races the turn-end classify. Skip ALL isStreaming sessions
-    // (not just P): the in-flight guard no longer persists a tentative letter, so
-    // there's no benefit to re-judging a streaming session — only the risk of a
-    // bad mid-stream verdict. Exception: a genuinely stuck stream (process hung,
-    // isStreaming never reset) would skip forever → watchdog force-resets it after
-    // STUCK_STREAM_MS of stream silence, letting the next tick recover it through
-    // the normal !isStreaming path (P + no turn → resumeInterrupted).
+    // A session with a turn in flight: classifyTurnEnd judges it at turn end,
+    // and a mid-stream STATE verdict is unreliable + races the turn-end classify.
+    // So a streaming session whose goal is ALREADY known has no useful work for
+    // scan -> skip (turn-end owns the state verdict). BUT a streaming session
+    // with an UNRESOLVED goal (新任务/empty) is the one streaming case scan MUST
+    // handle: applyClassifyResult routes its result to the in-progress (goal-only)
+    // path, extracting the goal from the user message + partial reply so the card
+    // shows the real task name instead of "新任务" while the turn runs. Without
+    // this, a long/hung turn (e.g. upstream API hang) left a new task unnamed until
+    // turn-end or the E-state error path fired - classify was starved for the turn.
+    // Exception: a genuinely stuck stream (process hung, isStreaming never reset)
+    // would loop forever -> watchdog force-resets it after STUCK_STREAM_MS of
+    // stream silence, letting the next tick recover it through the normal
+    // !isStreaming path (P + no turn -> resumeInterrupted).
     const liveCs = chatSessions.get(sid);
     if (liveCs && liveCs.isStreaming) {
       // Math.max, NOT ||: lastStreamAt persists on cs across turns, so a fresh
@@ -7657,9 +7702,15 @@ function scanAndReclassify() {
         console.log(`[multicc/scan] ${sid} stuck-isStreaming: ${((now - lastStream) / 1000).toFixed(0)}s 无流事件 → 强制复位 isStreaming，本轮按 !isStreaming 重判`);
         liveCs.isStreaming = false;
         // fall through to reclassify now via the normal (non-streaming) path below
-      } else {
+      } else if (isGoalResolved(ts.goal)) {
+        // Streaming AND goal already known: scan has no useful work (state verdict
+        // waits for turn-end; re-judging would only re-confirm the same goal).
         continue;
       }
+      // else: streaming but goal UNRESOLVED (新任务/empty) -> fall through and
+      // enqueue. The result routes through applyClassifyResult's in-progress
+      // (goal-only) path, so the card shows the real task name instead of "新任务"
+      // while the turn runs - closing the classify starvation on long/hung turns.
     }
 
     // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS
@@ -7706,8 +7757,7 @@ function scanAndReclassify() {
       const res = parseClassifyResult(result.text);
       const cs = chatSessions.get(sid);
       const sessionId = persistedSessions.get(sid)?.id || sid;
-      dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
-      console.log(`[multicc/scan] classify ${sid}: state=${res.state} goal="${res.goal || ''}"${res.error ? ' (API error)' : ''}`);
+      applyClassifyResult(cs, sid, sessionId, res, { source: 'multicc/scan' });
     }).catch(e => {
       if (e && e.cancelled) return;
       console.warn(`[multicc/scan] classify ${sid} failed: ${e.message}`);
@@ -8237,29 +8287,7 @@ function runClassifyNow(cs, sessionName) {
     cs._classifyTaskId = null;
     if (result.cancelled) return;
     const res = parseClassifyResult(result.text);
-
-    // While still streaming: only refresh in-progress labels, don't finalize.
-    // dispatchStateAction handles the P state naturally (it returns early).
-    if (cs.isStreaming) {
-      if (cs.currentTask) {
-        cs.currentTask.goal = (res.goal && res.goal !== '—') ? res.goal : '';
-        if (res.phase) cs.currentTask.phase = res.phase;
-      }
-      // Persist BOTH goal and phase — persisting goal alone left phase stuck at
-      // the ensureCurrentTask placeholder ('planning'), so the card showed
-      // "新任务 规划中" even after classify judged the real goal/phase.
-      setTaskState(sessionName, { goal: cs.currentTask?.goal || '', phase: cs.currentTask?.phase || 'planning' });
-      const ph = phaseLabel(cs.currentTask?.phase);
-      const goal = cs.currentTask?.goal || '';
-      const label = goal ? `处理中：${goal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
-      emitRunningNotify(sessionName, label);
-      console.log(`[multicc/aux] Classify in-progress for ${sessionName}: goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
-      return;
-    }
-
-    // Turn over — dispatch state action.
-    dispatchStateAction(res, { sessionName, sessionId, cs, isTerminal: false, cwd: cs.cwd });
-    console.log(`[multicc/aux] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.error ? ' (API error)' : ''}`);
+    applyClassifyResult(cs, sessionName, sessionId, res, { cwd: cs.cwd, source: 'multicc/aux' });
   }).catch((e) => {
     if (cs._classifyTaskId === taskId) cs._classifyTaskId = null;
     // A cancelled task (new turn started / user typing) rejects with {cancelled:true}
