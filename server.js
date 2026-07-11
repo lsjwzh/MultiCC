@@ -5513,7 +5513,7 @@ const auxQueue = {
         });
       });
       req.on('error', reject);
-      req.setTimeout(AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
+      req.setTimeout((task.meta && task.meta.timeout) || AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
       req.write(body);
       req.end();
     });
@@ -5582,7 +5582,7 @@ const auxQueue = {
         });
       });
       req.on('error', reject);
-      req.setTimeout(AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
+      req.setTimeout((task.meta && task.meta.timeout) || AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
       req.write(body);
       req.end();
     });
@@ -5642,7 +5642,7 @@ const auxQueue = {
       const timeout = setTimeout(() => {
         try { proc.kill('SIGTERM'); } catch (_) {}
         reject(new Error('timeout'));
-      }, AUX_TIMEOUT_MS);
+      }, (task.meta && task.meta.timeout) || AUX_TIMEOUT_MS);
 
       proc.stdout.on('data', (chunk) => {
         lineBuf += chunk.toString();
@@ -5739,7 +5739,7 @@ const auxQueue = {
       const timeout = setTimeout(() => {
         try { proc.kill('SIGTERM'); } catch (_) {}
         reject(new Error('timeout'));
-      }, AUX_TIMEOUT_MS);
+      }, (task.meta && task.meta.timeout) || AUX_TIMEOUT_MS);
 
       const collectText = (text) => {
         if (!text) return;
