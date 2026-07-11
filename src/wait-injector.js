@@ -39,6 +39,16 @@
 // All three converge on inject() → runChatTurn(session, text), which for a
 // streaming session feeds the warm process (queued if a turn is mid-flight) and
 // for a default session does a --resume turn. So this works regardless of mode.
+//
+// ── v2: background-completion inject (de-dup vs classify) ──────────────────
+// A Monitor / run_in_background task's task_notification(completed) arrives
+// AFTER the turn's `result` (the task outlives the turn that launched it). v1
+// only surfaced it to the UI and let classify guess B/C → autoContinue nudge
+// with an empty "继续" (a misjudge stalls; or the model re-runs the finished
+// work because the nudge carries no result). v2 injects the REAL result straight
+// from the completion event. To keep classify from double-injecting an empty
+// nudge on top of it, noteBgResultInjected() opens a short de-dup window during
+// which autoContinue (D) and bgCheck (E) skip - the result inject subsumes both.
 
 const crypto = require('crypto');
 
@@ -52,6 +62,7 @@ const waits = new Map();        // waitId -> wait spec/state
 const autoState = new Map();    // session -> { count, lastHash }
 const bgState = new Map();      // session -> { count }  — run_in_background guard (E)
 const interruptState = new Map(); // session -> { count }  — unknown-interruption resume (G)
+const bgResultState = new Map();  // session -> { at }      - v2 bg-completion result just injected (de-dup window)
 let ticker = null;
 
 const TICK_MS = 1000;
@@ -64,6 +75,12 @@ const MIN_INTERVAL_SEC = 3;
 // anti-pattern correction (run_in_background misuse), not task progression.
 const MAX_BG_CHECK = 6;          // consecutive run_in_background nudges before giving up
 const BG_CHECK_DELAY_MS = 25000; // wait ~25s after a bg-launching turn, then nudge
+// v2 de-dup window: after a bg-completion result is injected, suppress the
+// classify-driven autoContinue (D) and bgCheck (E) empty nudges for this long so
+// they don't land on top of the real-result inject. Past the window classify's
+// normal nudge resumes (the 60s scan is the backstop). Resets on a real user
+// message (resetBgResult), same as resetAuto/resetBg.
+const BG_RESULT_DEDUP_MS = 60000;
 
 function genId() { return 'w_' + crypto.randomBytes(6).toString('hex'); }
 function genToken() { return crypto.randomBytes(16).toString('hex'); }
@@ -164,6 +181,7 @@ function cancelForSession(session) {
   autoState.delete(session);
   bgState.delete(session);
   interruptState.delete(session);
+  bgResultState.delete(session);
   return n;
 }
 
@@ -228,6 +246,7 @@ function matches(w, out) {
 // The count is kept purely for observability (log "#N"), not as a give-up cap.
 function autoContinue(session, opts = {}) {
   if (hasWait(session)) { _log(`[wait] auto skip ${session}: explicit wait pending`); return false; }
+  if (recentlyBgResultInjected(session)) { _log(`[wait] auto skip ${session}: bg-completion result just injected`); return false; }
   const st = autoState.get(session) || { count: 0, lastHash: null };
   st.count++;
   autoState.set(session, st);
@@ -280,6 +299,7 @@ function resetInterrupted(session) { interruptState.delete(session); }
 // skipped when an explicit A/B wait already covers the session.
 function bgCheck(session, opts = {}) {
   if (hasWait(session)) { _log(`[wait] bgCheck skip ${session}: explicit wait pending`); return false; }
+  if (recentlyBgResultInjected(session)) { _log(`[wait] bgCheck skip ${session}: bg-completion result just injected`); return false; }
   const st = bgState.get(session) || { count: 0 };
   if (st.count >= MAX_BG_CHECK) {
     _log(`[wait] bgCheck cap reached for ${session} (${st.count})`);
@@ -298,6 +318,23 @@ function bgCheck(session, opts = {}) {
 
 // Reset the bgCheck counter — call on a real user message.
 function resetBg(session) { bgState.delete(session); }
+
+// ── v2 bg-completion result de-dup ──
+// Called by server.js when a background task's task_notification(completed) is
+// injected as the real result. Opens the BG_RESULT_DEDUP_MS window during which
+// autoContinue (D) and bgCheck (E) skip their empty nudges - the result inject
+// already drives the continuation, an empty nudge on top would double-inject.
+function noteBgResultInjected(session) {
+  bgResultState.set(session, { at: Date.now() });
+  _log(`[wait] bg-result injected ${session} (de-dup window ${BG_RESULT_DEDUP_MS}ms)`);
+}
+// Reset the de-dup window - call on a real user message (alongside resetAuto /
+// resetBg): a user driving again means the bg-driven continuation is superseded.
+function resetBgResult(session) { bgResultState.delete(session); }
+function recentlyBgResultInjected(session) {
+  const st = bgResultState.get(session);
+  return !!(st && Date.now() - st.at < BG_RESULT_DEDUP_MS);
+}
 
 // Universal prefix for all system-injected messages (autoContinue,
 // bgCheck). Recognition side (server.js) matches this single token to skip
@@ -346,5 +383,6 @@ module.exports = {
   listForSession, hasWait, tick, autoContinue, resetAuto,
   bgCheck, resetBg, resumeInterrupted, resetInterrupted, stats, safeInject,
   injectSystemMsg, SYS_PREFIX,
+  noteBgResultInjected, resetBgResult,
   _waits: waits, // for tests
 };
