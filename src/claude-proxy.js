@@ -530,8 +530,8 @@ function createHandler({ getProvider, onUsage }) {
 }
 
 /** Mount on an express app: app.use('/claude-proxy', handler). */
-function mountClaudeProxy(app, { getProvider }) {
-  app.use('/claude-proxy', createHandler({ getProvider }));
+function mountClaudeProxy(app, { getProvider, onUsage }) {
+  app.use('/claude-proxy', createHandler({ getProvider, onUsage }));
 }
 
 module.exports = { mountClaudeProxy, createHandler, parseProxyUrl, decodeCcfwModel, resolveCreds, CCFW_PREFIX, ensureClaudeIdentity, readOfficialOAuthToken };
