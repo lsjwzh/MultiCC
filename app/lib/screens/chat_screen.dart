@@ -781,6 +781,7 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
   late final TextEditingController _subCustomCtrl;
 
   bool get _isClaude => widget.cli == SessionCli.claude;
+  bool get _isCodex => widget.cli == SessionCli.codex;
   String get _defaultEffort => _isClaude ? 'medium' : 'xhigh';
 
   static const _claudeEfforts = <String>[
@@ -791,7 +792,8 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
     'max',
     'ultracode',
   ];
-  static const _codexEfforts = <String>['low', 'medium', 'high', 'xhigh'];
+  static const _codexEfforts = <String>['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  static const _genericEfforts = <String>['low', 'medium', 'high', 'xhigh'];
 
   @override
   void initState() {
@@ -819,7 +821,8 @@ class _AIConfigSheetState extends State<_AIConfigSheet> {
     super.dispose();
   }
 
-  List<String> get _validEfforts => _isClaude ? _claudeEfforts : _codexEfforts;
+  List<String> get _validEfforts =>
+      _isClaude ? _claudeEfforts : (_isCodex ? _codexEfforts : _genericEfforts);
 
   Map<String, dynamic>? _providerMap(String id) {
     for (final p in widget.providers) {

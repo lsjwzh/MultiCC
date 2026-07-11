@@ -81,6 +81,7 @@ const state = require('./src/state');
 const artifacts = require('./src/artifacts');
 const providers = require('./src/providers');
 const tokenGlobal = require('./src/token-global');
+const { createCliAdapters } = require('./src/cli-adapters');
 const { mountCodexProxy } = require('./src/codex-proxy');
 const { mountClaudeProxy } = require('./src/claude-proxy');
 const app = express();
@@ -267,75 +268,6 @@ async function findAvailablePort(startPort) {
 const wss = new WebSocket.Server({ server });
 const isWindows = process.platform === 'win32';
 
-// Resolve the full path of the claude executable at startup
-function resolveClaude() {
-  if (process.env.CLAUDE_CMD) {
-    console.log(`[multicc] CLAUDE_CMD override: ${process.env.CLAUDE_CMD}`);
-    return process.env.CLAUDE_CMD;
-  }
-
-  const extraPaths = [
-    path.join(os.homedir(), '.local', 'bin'),
-    path.join(os.homedir(), '.local', 'share', 'claude', 'bin'),
-    path.join(os.homedir(), '.npm-global', 'bin'),
-    path.join(os.homedir(), '.npm', 'bin'),
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    '/opt/homebrew/sbin',
-  ];
-  const sep = isWindows ? ';' : ':';
-  const augmentedPath = [...new Set([...extraPaths, ...(process.env.PATH || '').split(sep)])].join(sep);
-  process.env.PATH = augmentedPath;
-
-  if (!isWindows) {
-    // Try login shell first — it sources ~/.zshrc / ~/.bashrc and sees the real PATH
-    const shells = ['/bin/zsh', '/bin/bash'];
-    for (const sh of shells) {
-      if (!fs.existsSync(sh)) continue;
-      try {
-        const result = execSync(`${sh} -l -c 'which claude 2>/dev/null'`, {
-          encoding: 'utf8',
-          timeout: 5000,
-        });
-        const found = result.trim().split(/\r?\n/)[0].trim();
-        if (found && fs.existsSync(found)) {
-          console.log(`[multicc] Found claude via ${sh}: ${found}`);
-          return found;
-        }
-      } catch (_) {}
-    }
-  }
-
-  // Try which/where with augmented PATH
-  try {
-    const result = execSync(isWindows ? 'where claude' : 'which claude', {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: augmentedPath },
-      timeout: 5000,
-    });
-    const lines = result.trim().split(/\r?\n/);
-    const exe = isWindows ? lines.find(l => l.endsWith('.exe')) || lines[0] : lines[0];
-    const found = exe.trim();
-    if (found) {
-      console.log(`[multicc] Found claude via which: ${found}`);
-      return found;
-    }
-  } catch (_) {}
-
-  // Direct file existence check
-  for (const dir of extraPaths) {
-    const candidate = path.join(dir, isWindows ? 'claude.exe' : 'claude');
-    if (fs.existsSync(candidate)) {
-      console.log(`[multicc] Found claude via direct check: ${candidate}`);
-      return candidate;
-    }
-  }
-
-  console.warn('[multicc] WARNING: Could not locate claude binary, falling back to "claude"');
-  return isWindows ? 'claude.exe' : 'claude';
-}
-
-const CLAUDE_CMD = resolveClaude();
 const CLAUDE_ARGS = process.env.CLAUDE_ARGS ? process.env.CLAUDE_ARGS.split(' ') : [];
 const CLAUDE_CHAT_DISALLOWED_TOOLS = (process.env.CLAUDE_CHAT_DISALLOWED_TOOLS ?? 'AskUserQuestion')
   .split(',')
@@ -380,7 +312,6 @@ let CLAUDE_PROXY_ENABLED = String(process.env.CLAUDE_PROXY_ENABLED ?? '1') !== '
 // (⚠️ replays subscription OAuth outside the official client — ToS + shared-Keychain
 // considerations; hot-reloadable via POST /api/settings/official-oauth, persisted).
 let CLAUDE_OFFICIAL_VIA_PROXY = String(process.env.CLAUDE_OFFICIAL_VIA_PROXY ?? '0') === '1';
-console.log(`[multicc] Using claude: ${CLAUDE_CMD}`);
 
 // Read the user's default model from ~/.claude/settings.json on every spawn so
 // chat-mode sessions (which `--resume` and would otherwise keep their original
@@ -536,105 +467,8 @@ function providerDefaultModel(appType, providerId) {
   } catch (_) { return null; }
 }
 
-// ── Codex CLI binary resolution (mirrors claude lookup) ──
-function resolveCodex() {
-  if (process.env.CODEX_CMD) return process.env.CODEX_CMD;
-  if (isWindows && process.env.LOCALAPPDATA) {
-    const local = path.join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
-    try {
-      const localCandidates = fs.readdirSync(local, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => {
-          const exe = path.join(local, d.name, 'codex.exe');
-          try { return fs.existsSync(exe) ? { exe, mtimeMs: fs.statSync(exe).mtimeMs } : null; }
-          catch (_) { return null; }
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.mtimeMs - a.mtimeMs);
-      if (localCandidates.length) return localCandidates[0].exe;
-    } catch (_) {}
-  }
-  const candidates = [
-    '/opt/homebrew/bin/codex', '/usr/local/bin/codex',
-    path.join(os.homedir(), '.local', 'bin', 'codex'),
-    path.join(os.homedir(), '.cargo', 'bin', 'codex'),
-  ];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  if (!isWindows) {
-    for (const sh of ['/bin/zsh', '/bin/bash']) {
-      if (!fs.existsSync(sh)) continue;
-      try {
-        const r = execSync(`${sh} -l -c 'which codex 2>/dev/null'`, { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
-        if (r && fs.existsSync(r)) return r;
-      } catch (_) {}
-    }
-  }
-  try {
-    const r = execSync(isWindows ? 'where codex' : 'which codex', { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
-    if (r) return r;
-  } catch (_) {}
-  return isWindows ? 'codex.exe' : 'codex';
-}
-const CODEX_CMD = resolveCodex();
 const CODEX_ARGS = process.env.CODEX_ARGS ? process.env.CODEX_ARGS.split(' ') : [];
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
-
-// ── opencode CLI binary resolution (mirrors claude/codex lookup) ──
-// opencode is the open-source AI coding agent (sst/opencode). Non-interactive
-// chat uses `opencode run --format json --auto`. Override the path with OPENCODE_CMD.
-function resolveOpencode() {
-  if (process.env.OPENCODE_CMD) return process.env.OPENCODE_CMD;
-  const candidates = [
-    path.join(os.homedir(), '.opencode', 'bin', 'opencode'),  // official curl installer
-    '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode',
-    path.join(os.homedir(), '.local', 'bin', 'opencode'),
-  ];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  if (!isWindows) {
-    for (const sh of ['/bin/zsh', '/bin/bash']) {
-      if (!fs.existsSync(sh)) continue;
-      try {
-        const r = execSync(`${sh} -l -c 'which opencode 2>/dev/null'`, { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
-        if (r && fs.existsSync(r)) return r;
-      } catch (_) {}
-    }
-  }
-  try {
-    const r = execSync(isWindows ? 'where opencode' : 'which opencode', { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
-    if (r) return r;
-  } catch (_) {}
-  return isWindows ? 'opencode.exe' : 'opencode';
-}
-const OPENCODE_CMD = resolveOpencode();
-
-// ── zcode CLI binary resolution ──
-// zcode (智谱 Z.ai ZCode) is primarily a desktop GUI; multicc drives its CLI
-// companion the same way as opencode when a `zcode` binary is on PATH.
-// Override the path with ZCODE_CMD. Flags mirror opencode's `run` interface.
-function resolveZcode() {
-  if (process.env.ZCODE_CMD) return process.env.ZCODE_CMD;
-  const candidates = [
-    '/opt/homebrew/bin/zcode', '/usr/local/bin/zcode',
-    path.join(os.homedir(), '.local', 'bin', 'zcode'),
-    path.join(os.homedir(), '.zcode', 'bin', 'zcode'),
-  ];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  if (!isWindows) {
-    for (const sh of ['/bin/zsh', '/bin/bash']) {
-      if (!fs.existsSync(sh)) continue;
-      try {
-        const r = execSync(`${sh} -l -c 'which zcode 2>/dev/null'`, { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
-        if (r && fs.existsSync(r)) return r;
-      } catch (_) {}
-    }
-  }
-  try {
-    const r = execSync(isWindows ? 'where zcode' : 'which zcode', { encoding: 'utf8', timeout: 5000 }).trim().split(/\r?\n/)[0].trim();
-    if (r) return r;
-  } catch (_) {}
-  return isWindows ? 'zcode.exe' : 'zcode';
-}
-const ZCODE_CMD = resolveZcode();
 
 // Map a cli name to its provider pool (appType). codex has its own pool; every
 // other cli (claude, opencode, zcode, …) shares the Anthropic-compatible 'claude'
@@ -643,7 +477,6 @@ const ZCODE_CMD = resolveZcode();
 function appTypeForCli(cli) {
   return cli === 'codex' ? 'codex' : 'claude';
 }
-console.log(`[multicc] Using codex: ${CODEX_CMD}`);
 
 // ── Global default CLI for auxiliary AI (intent classify, task summary, etc.) ──
 // Let (not const): hot-reloadable via POST /api/settings/default-cli (persists to
@@ -655,15 +488,15 @@ console.log(`[multicc] Default CLI for aux: ${DEFAULT_CLI}`);
 function auxCliCmd() { return DEFAULT_CLI === 'codex' ? CODEX_CMD : CLAUDE_CMD; }
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
-const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh']);
+const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 function normalizeEffort(v) {
   const s = (v == null ? '' : String(v)).trim().toLowerCase();
   if (!s) return null;
-  return EFFORT_LEVELS.has(s) ? s : undefined;
+  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) ? s : undefined;
 }
 function validEffortForCli(cli, effort) {
   if (!effort) return true;
-  return (cli === 'codex') ? CODEX_REASONING_LEVELS.has(effort) : true;
+  return (cli === 'codex') ? CODEX_REASONING_LEVELS.has(effort) : EFFORT_LEVELS.has(effort);
 }
 function cliEffortLevel(session) {
   const e = normalizeEffort(session?.effort);
@@ -810,194 +643,28 @@ function debugLogClaudeInvoke(session, args) {
   } catch (_) {}
 }
 
-const cliProviders = {
-  claude: {
-    name: 'claude',
-    cmd: CLAUDE_CMD,
-    // Interactive terminal: `claude --session-id <uuid>`
-    buildTerminalCmd(session) {
-      let cmd = `${CLAUDE_CMD}${CLAUDE_ARGS.length ? ' ' + CLAUDE_ARGS.join(' ') : ''}`;
-      if (session.model) cmd += ` --model ${session.model}`;
-      const effort = cliEffortLevel(session);
-      if (effort) cmd += ` --effort ${effort}`;
-      // Enable official ultracode (dynamic workflow orchestration) alongside --effort xhigh
-      if (normalizeEffort(session?.effort) === 'ultracode') {
-        cmd += ` --settings '{"ultracode":true}'`;
-      }
-      if (session.cliSessionId) cmd += ` --session-id ${session.cliSessionId}`;
-      return cmd;
-    },
-    // Chat-mode spawn args: `-p --output-format stream-json [--resume id | --session-id id] <prompt>`
-    buildChatSpawnArgs(session, prompt, opts) {
-      // Image hint is always present; the resolved role prompt (session > dir)
-      // is appended after it so the user's custom role rides every turn (--resume
-      // keeps the system prompt out, so we re-send it each turn on purpose).
-      const sysPrompt = opts.rolePrompt
-        ? `${MULTICC_IMG_HINT}\n\n${opts.rolePrompt}`
-        : MULTICC_IMG_HINT;
-      const args = [
-        '-p', '--output-format', 'stream-json', '--verbose',
-        '--include-partial-messages', '--dangerously-skip-permissions',
-        '--append-system-prompt', sysPrompt,
-      ];
-      // Resolve the wire model (single source of truth: providers.resolveSessionWireModel).
-      // An explicit per-session model is honored ONLY when it's an alias tier or a
-      // model the provider serves; otherwise fall back to the provider's canonical
-      // model, or the global /model default for the default login.
-      const model = providers.resolveSessionWireModel(session.model, {
-        providerModel: opts.providerModel, providerModels: opts.providerModels,
-        skipDefaultModel: opts.skipDefaultModel, defaultModel: claudeDefaultModel(),
-      });
-      if (model) args.push('--model', model);
-      const effort = cliEffortLevel(session);
-      if (effort) args.push('--effort', effort);
-      // Enable official ultracode (dynamic workflow orchestration) alongside --effort xhigh
-      if (normalizeEffort(session?.effort) === 'ultracode') {
-        args.push('--settings', '{"ultracode":true}');
-      }
-      if (CLAUDE_CHAT_DISALLOWED_TOOLS.length) {
-        args.push('--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(','));
-      }
-      // Goal mode round limit: cap the autonomous agent-turn loop for this spawn.
-      if (opts.maxTurns > 0) args.push('--max-turns', String(opts.maxTurns));
-      if (opts.isFirstTurn) args.push('--session-id', session.cliSessionId);
-      else args.push('--resume', session.cliSessionId);
-      args.push(prompt);
-      debugLogClaudeInvoke(session, args);
-      return args;
-    },
-    // Whether this provider needs the session id captured asynchronously after first launch
-    needsAsyncSessionIdCapture: false,
-  },
-  codex: {
-    name: 'codex',
-    cmd: CODEX_CMD,
-    // Interactive terminal: `codex` first time, `codex resume <id>` if id captured.
-    // Add `--dangerously-bypass-approvals-and-sandbox` to skip prompts (we run trusted local code).
-    buildTerminalCmd(session) {
-      const baseArgs = CODEX_ARGS.length ? ' ' + CODEX_ARGS.join(' ') : '';
-      const effortArg = codexReasoningConfigArg(session);
-      const modelArg = codexModelConfigArg(session);
-      const configArgs = [effortArg, modelArg].filter(Boolean).map(a => ` -c '${a}'`).join('');
-      if (session.cliSessionId) return `${CODEX_CMD}${baseArgs}${configArgs} resume ${session.cliSessionId}`;
-      return `${CODEX_CMD}${baseArgs}${configArgs}`;
-    },
-    // Chat-mode spawn args: `exec --json [--skip-git-repo-check] [--dangerously-bypass-approvals-and-sandbox] [resume <id>] <prompt>`
-    buildChatSpawnArgs(session, prompt, opts) {
-      const args = [];
-      // Codex `exec` has no system-prompt flag, so the role prompt is prepended
-      // into the prompt text — only on the first turn, since `exec resume` keeps
-      // the earlier context (re-sending every turn would just waste tokens).
-      let p = prompt;
-      if (opts.isFirstTurn) {
-        // codex exec has no system-prompt flag, so prepend the same MultiCC
-        // interface hints claude gets via --append-system-prompt (inline image
-        // markdown, /wait, run-detached, cron, keep-alive). First turn only -
-        // exec resume keeps earlier context, so re-sending would waste tokens.
-        const promptPrefixes = [MULTICC_IMG_HINT];
-        // MultiCC runs codex non-interactively; request_user_input is unavailable here.
-        // Prepend an env constraint on the first turn so the model asks questions as
-        // plain text instead of looping on the unavailable tool.
-        if (CODEX_ENV_CONSTRAINT) promptPrefixes.push(CODEX_ENV_CONSTRAINT);
-        if (opts.rolePrompt) promptPrefixes.push(`[角色设定]\n${opts.rolePrompt}\n[角色设定结束]`);
-        if (promptPrefixes.length) p = `${promptPrefixes.join('\n\n')}\n\n${prompt}`;
-      }
-      // Per-turn stay-alive: appended to EVERY turn (not just the first) to
-      // prevent codex exec from end_turn-ing early while Monitor / background
-      // tasks are still running. Resumed sessions otherwise lose the constraint.
-      if (CODEX_STAY_ALIVE_PROMPT) p = p + '\n' + CODEX_STAY_ALIVE_PROMPT;
-      if (opts.isFirstTurn) {
-        args.push('exec');
-        const effortArg = codexReasoningConfigArg(session);
-        if (effortArg) args.push('-c', effortArg);
-        const modelArg = codexModelConfigArg(session);
-        if (modelArg) args.push('-c', modelArg);
-        args.push('--json', '--skip-git-repo-check',
-          '--dangerously-bypass-approvals-and-sandbox', p);
-      } else {
-        args.push('exec');
-        const effortArg = codexReasoningConfigArg(session);
-        if (effortArg) args.push('-c', effortArg);
-        const modelArg = codexModelConfigArg(session);
-        if (modelArg) args.push('-c', modelArg);
-        args.push('resume', session.cliSessionId, '--json',
-          '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', p);
-      }
-      return args;
-    },
-    needsAsyncSessionIdCapture: true,  // capture from ~/.codex/sessions filename
-  },
-  opencode: {
-    name: 'opencode',
-    cmd: OPENCODE_CMD,
-    // Interactive TUI: `opencode` first time, `opencode --session <id>` to resume.
-    // opencode auto-manages its own session id, so terminal mode launches bare.
-    buildTerminalCmd(session) {
-      let cmd = OPENCODE_CMD;
-      if (session.model) cmd += ` --model ${session.model}`;
-      if (session.cliSessionId) cmd += ` --session ${session.cliSessionId}`;
-      return cmd;
-    },
-    // Chat-mode spawn args: `run --format json --auto [--model X] [--session id] <prompt>`
-    // --format json emits one NDJSON event per line (envelope {type,timestamp,sessionID,part});
-    // --auto auto-approves permissions (≈ --dangerously-skip-permissions / codex bypass).
-    buildChatSpawnArgs(session, prompt, opts) {
-      const args = ['run', '--format', 'json', '--auto'];
-      // opencode uses provider/model ids; only pass --model when one is explicitly set.
-      if (session.model) args.push('--model', session.model);
-      // opencode generates its own `ses_…` id; we capture it from the first stream
-      // event and reuse it on every subsequent turn via --session.
-      if (opts.isFirstTurn) {
-        // no --session → opencode creates a fresh session whose id we capture.
-      } else if (session.cliSessionId) {
-        args.push('--session', session.cliSessionId);
-      } else {
-        // No id captured yet (e.g. recovery) — continue the last session.
-        args.push('--continue');
-      }
-      // Role prompt: opencode `run` has no system-prompt flag, so prepend it into
-      // the prompt text on the first turn (resume keeps earlier context).
-      let p = prompt;
-      if (opts.isFirstTurn && opts.rolePrompt) {
-        p = `[角色设定]\n${opts.rolePrompt}\n[角色设定结束]\n\n${prompt}`;
-      }
-      args.push(p);
-      return args;
-    },
-    // sessionID is captured from the chat JSON stream directly (see handleLine),
-    // not via the codex-style ~/.codex/sessions filesystem scan.
-    needsAsyncSessionIdCapture: false,
-  },
-  zcode: {
-    name: 'zcode',
-    cmd: ZCODE_CMD,
-    // zcode (Z.ai ZCode) is driven opencode-style: same `run --format json` headless
-    // interface. The adapter is wired identically; a real `zcode` headless binary
-    // (or a symlink) makes it work end-to-end. Override the binary with ZCODE_CMD.
-    buildTerminalCmd(session) {
-      let cmd = ZCODE_CMD;
-      if (session.model) cmd += ` --model ${session.model}`;
-      if (session.cliSessionId) cmd += ` --session ${session.cliSessionId}`;
-      return cmd;
-    },
-    buildChatSpawnArgs(session, prompt, opts) {
-      const args = ['run', '--format', 'json', '--auto'];
-      if (session.model) args.push('--model', session.model);
-      if (!opts.isFirstTurn && session.cliSessionId) args.push('--session', session.cliSessionId);
-      else if (!opts.isFirstTurn) args.push('--continue');
-      let p = prompt;
-      if (opts.isFirstTurn && opts.rolePrompt) {
-        p = `[角色设定]\n${opts.rolePrompt}\n[角色设定结束]\n\n${prompt}`;
-      }
-      args.push(p);
-      return args;
-    },
-    needsAsyncSessionIdCapture: false,
-  },
-};
+const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
+  isWindows,
+  claudeArgs: CLAUDE_ARGS,
+  claudeChatDisallowedTools: CLAUDE_CHAT_DISALLOWED_TOOLS,
+  codexArgs: CODEX_ARGS,
+  codexEnvConstraint: CODEX_ENV_CONSTRAINT,
+  codexStayAlivePrompt: CODEX_STAY_ALIVE_PROMPT,
+  multiccImgHint: MULTICC_IMG_HINT,
+  providers,
+  claudeDefaultModel,
+  cliEffortLevel,
+  normalizeEffort,
+  codexReasoningConfigArg,
+  codexModelConfigArg,
+  debugLogClaudeInvoke,
+});
+const CLAUDE_CMD = cliCommands.claude;
+const CODEX_CMD = cliCommands.codex;
+const cliProviders = cliAdapterRegistry.providers;
 
 function providerFor(session) {
-  return cliProviders[session?.cli] || cliProviders.claude;
+  return cliAdapterRegistry.get(session?.cli);
 }
 
 // ── Codex session-id capture: scans ~/.codex/sessions for a JSONL with matching cwd whose
@@ -9111,7 +8778,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.originDispatchId = originDispatchId || null;
   setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
 
-  const provider = cliProviders[cs.cli] || cliProviders.claude;
+  const provider = providerFor(cs);
   // For claude: first turn → --session-id <uuid>, subsequent → --resume <uuid>.
   // For codex:  first turn → exec --json, subsequent → exec resume <id> --json.
   const isFirstTurn = (typeof forceFirstTurn === 'boolean') ? forceFirstTurn : (cs.chatTurnCount === 0 || !persisted.cliSessionId);

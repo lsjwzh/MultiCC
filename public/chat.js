@@ -2737,6 +2737,8 @@ const CODEX_REASONING_OPTIONS = [
   { value: 'medium', label: 'Medium', desc: 'Balances speed and reasoning depth for everyday tasks' },
   { value: 'high', label: 'High', desc: 'Greater reasoning depth for complex problems' },
   { value: 'xhigh', label: 'Extra high', desc: 'Extra high reasoning depth for complex problems' },
+  { value: 'max', label: 'Max', desc: 'Maximum single-agent reasoning depth' },
+  { value: 'ultra', label: 'Ultra', desc: 'Maximum reasoning with automatic task delegation when available' },
 ];
 let _sessionEffort = '';
 let _sessionEffectiveEffort = 'medium';
@@ -2764,6 +2766,8 @@ function effortShortName(effort) {
     if (v === 'low') return 'Low';
     if (v === 'medium') return 'Medium';
     if (v === 'high') return 'High';
+    if (v === 'max') return 'Max';
+    if (v === 'ultra') return 'Ultra';
   }
   return v;
 }

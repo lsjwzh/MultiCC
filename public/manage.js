@@ -563,7 +563,7 @@ function refreshAuxEffortOptions() {
   const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
   const sel = document.getElementById('aux-effort');
   if (!sel) return;
-  const opts = cli === 'codex' ? ['low', 'medium', 'high', 'xhigh'] : ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+  const opts = cli === 'codex' ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] : ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
   sel.innerHTML = opts.map(v => `<option value="${v}">${escapeHtml(v)}</option>`).join('');
   const current = _auxConfig?.effort || (cli === 'codex' ? 'xhigh' : 'medium');
   sel.value = opts.includes(current) ? current : opts[0];
@@ -2465,7 +2465,7 @@ function showCreateSessionDialog({ cli, kind, providers = [], defaultProviderId 
     effortSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
     const effortOptions = isClaude
       ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
-      : ['low', 'medium', 'high', 'xhigh'];
+      : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
     for (const v of effortOptions) {
       const opt = document.createElement('option');
       opt.value = v;
