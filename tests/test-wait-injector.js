@@ -48,14 +48,14 @@ const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✅', msg); } els
   await sleep(10);
   ok(injected.length === 1 && injected[0].text === '[回调]\nthe answer is 7', 'injected callback data');
 
-  // ── D: auto-continue guardrails ──
+  // ── D: auto-continue (UNCAPPED - only 'D' is terminal) ──
   console.log('D. auto-continue');
   injected.length = 0;
   let started = 0;
   for (let i = 0; i < 8; i++) if (wait.autoContinue('s4', { delayMs: 0 })) started++;
   await sleep(20);
-  ok(started === 5, `capped at 5 consecutive (got ${started})`);
-  ok(injected.length === 5, 'exactly 5 nudges injected');
+  ok(started === 8, `uncapped - all 8 accepted (got ${started})`);
+  ok(injected.length === 8, 'all 8 nudges injected (no give-up cap)');
   wait.resetAuto('s4');
   ok(wait.autoContinue('s4', { delayMs: 0 }), 'resetAuto re-enables auto-continue');
   await sleep(20); // flush the s4 nudge so it can't pollute later sections
@@ -84,23 +84,23 @@ const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✅', msg); } els
   wait.register({ session: 'sbg2', mode: 'callback' });
   ok(wait.bgCheck('sbg2') === false, 'bgCheck skipped when explicit wait pending');
 
-  // ── F: API-error retry nudge ──
-  console.log('F. apiRetry (API/transport error guard)');
+  // ── v2: bg-completion result de-dup (autoContinue + bgCheck skip) ──
+  console.log('v2. bg-completion de-dup');
   injected.length = 0;
-  let apiStarted = 0;
-  for (let i = 0; i < 6; i++) if (wait.apiRetry('sapi', { delayMs: 0 })) apiStarted++;
-  await sleep(20);
-  ok(apiStarted === 3, `capped at 3 consecutive (got ${apiStarted})`);
-  ok(injected.length === 3, 'exactly 3 api retry nudges injected');
-  ok(injected[0].text.includes('继续'), 'nudge asks the model to continue');
-  wait.resetApi('sapi');
-  ok(wait.apiRetry('sapi', { delayMs: 0 }), 'resetApi re-enables apiRetry');
+  // Before the de-dup window opens, both autoContinue and bgCheck inject.
+  ok(wait.autoContinue('sv2', { delayMs: 0 }), 'auto-continue injects before bg-result window');
+  ok(wait.bgCheck('sv2', { delayMs: 0 }), 'bgCheck injects before bg-result window');
+  await sleep(20); // flush
+  // Open the de-dup window: both must skip (no empty nudge on top of the result).
+  injected.length = 0;
+  wait.noteBgResultInjected('sv2');
+  ok(wait.autoContinue('sv2', { delayMs: 0 }) === false, 'auto-continue skipped while bg-result window open');
+  ok(wait.bgCheck('sv2', { delayMs: 0 }) === false, 'bgCheck skipped while bg-result window open');
+  ok(injected.length === 0, 'no empty nudge injected during de-dup window');
+  // resetBgResult (real user message) re-opens auto-continue.
+  wait.resetBgResult('sv2');
+  ok(wait.autoContinue('sv2', { delayMs: 0 }), 'auto-continue re-enabled after resetBgResult');
   await sleep(20); // flush so it can't pollute later sections
-
-  // ── F: skipped if explicit wait pending ──
-  injected.length = 0;
-  wait.register({ session: 'sapi2', mode: 'callback' });
-  ok(wait.apiRetry('sapi2') === false, 'apiRetry skipped when explicit wait pending');
 
   // ── inject defers while busy ──
   console.log('busy deferral');
