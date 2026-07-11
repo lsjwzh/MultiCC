@@ -28,6 +28,16 @@ import 'terminal_screen.dart';
 // Brand colors used to distinguish Claude vs Codex sessions.
 const _kClaudeColor = Color(0xFFf0936b);
 const _kCodexColor = Color(0xFF7fd49a);
+const _kOpenCodeColor = Color(0xFFa78bfa);
+const _kZCodeColor = Color(0xFF38bdf8);
+
+/// Brand color for a session's CLI.
+Color _cliColor(SessionCli cli) => switch (cli) {
+  SessionCli.claude => _kClaudeColor,
+  SessionCli.codex => _kCodexColor,
+  SessionCli.opencode => _kOpenCodeColor,
+  SessionCli.zcode => _kZCodeColor,
+};
 
 // Workspace status board: map a live agent status to a colour / label.
 Color _wbStatusColor(String? status) {
@@ -1167,9 +1177,7 @@ void _showSessionSheet(
                     final dir = dirName(s.dirId);
                     final live = mgr.liveStatus(s.id);
                     final st = statusInfo(s, live);
-                    final cliColor = s.cli == SessionCli.codex
-                        ? _kCodexColor
-                        : _kClaudeColor;
+                    final cliColor = _cliColor(s.cli);
                     final lastInteraction = _sessionLastInteractionAt(s, live);
                     final ago = timeago.format(
                       lastInteraction,
@@ -1500,7 +1508,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   Future<void> _createSession(SessionCli cli, SessionKind kind) async {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
-    final appType = cli == SessionCli.codex ? 'codex' : 'claude';
+    final appType = cli.appType;
     List<Map<String, dynamic>> providers = [];
     String? defaultProviderId;
     try {
@@ -1680,6 +1688,14 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                               onTap: () => _createSession(SessionCli.codex, SessionKind.terminal)),
                           _AddSessionChip(label: '+ Codex Chat', color: _kCodexColor,
                               onTap: () => _createSession(SessionCli.codex, SessionKind.chat)),
+                          _AddSessionChip(label: '+ OpenCode Term', color: _kOpenCodeColor,
+                              onTap: () => _createSession(SessionCli.opencode, SessionKind.terminal)),
+                          _AddSessionChip(label: '+ OpenCode Chat', color: _kOpenCodeColor,
+                              onTap: () => _createSession(SessionCli.opencode, SessionKind.chat)),
+                          _AddSessionChip(label: '+ ZCode Term', color: _kZCodeColor,
+                              onTap: () => _createSession(SessionCli.zcode, SessionKind.terminal)),
+                          _AddSessionChip(label: '+ ZCode Chat', color: _kZCodeColor,
+                              onTap: () => _createSession(SessionCli.zcode, SessionKind.chat)),
                         ],
                       ),
                       EventTimeline(
@@ -1723,6 +1739,30 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                             settings: widget.settings, statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes, providers: _providers,
                             onOpen: _openSession),
+                        if (groups['opencode_terminal']!.isNotEmpty)
+                          _SessionGroup(title: t('openCodeTerminals'), color: _kOpenCodeColor,
+                              sessions: groups['opencode_terminal']!, mgr: widget.mgr,
+                              settings: widget.settings, statuses: _workspace.statuses,
+                              pendingNotes: _workspace.pendingNotes, providers: _providers,
+                              onOpen: _openSession),
+                        if (groups['opencode_chat']!.isNotEmpty)
+                          _SessionGroup(title: t('openCodeChats'), color: _kOpenCodeColor,
+                              sessions: groups['opencode_chat']!, mgr: widget.mgr,
+                              settings: widget.settings, statuses: _workspace.statuses,
+                              pendingNotes: _workspace.pendingNotes, providers: _providers,
+                              onOpen: _openSession),
+                        if (groups['zcode_terminal']!.isNotEmpty)
+                          _SessionGroup(title: t('zCodeTerminals'), color: _kZCodeColor,
+                              sessions: groups['zcode_terminal']!, mgr: widget.mgr,
+                              settings: widget.settings, statuses: _workspace.statuses,
+                              pendingNotes: _workspace.pendingNotes, providers: _providers,
+                              onOpen: _openSession),
+                        if (groups['zcode_chat']!.isNotEmpty)
+                          _SessionGroup(title: t('zCodeChats'), color: _kZCodeColor,
+                              sessions: groups['zcode_chat']!, mgr: widget.mgr,
+                              settings: widget.settings, statuses: _workspace.statuses,
+                              pendingNotes: _workspace.pendingNotes, providers: _providers,
+                              onOpen: _openSession),
                       ],
                     ],
                   ),
@@ -1833,6 +1873,10 @@ class _DirectoryCardState extends State<_DirectoryCard> {
         widget.directory.claudeTerminalCount + widget.directory.claudeChatCount;
     final codexCount =
         widget.directory.codexTerminalCount + widget.directory.codexChatCount;
+    final opencodeCount =
+        widget.directory.opencodeTerminalCount + widget.directory.opencodeChatCount;
+    final zcodeCount =
+        widget.directory.zcodeTerminalCount + widget.directory.zcodeChatCount;
     final activeCount = groups.values
         .expand((s) => s)
         .where((s) => s.active)
@@ -2157,6 +2201,18 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                           value: codexCount.toString(),
                           color: _kCodexColor,
                         ),
+                        if (opencodeCount > 0)
+                          _ProjectStatPill(
+                            label: 'OpenCode',
+                            value: opencodeCount.toString(),
+                            color: _kOpenCodeColor,
+                          ),
+                        if (zcodeCount > 0)
+                          _ProjectStatPill(
+                            label: 'ZCode',
+                            value: zcodeCount.toString(),
+                            color: _kZCodeColor,
+                          ),
                       ],
                     ),
                     const SizedBox(height: 12),
@@ -3204,9 +3260,7 @@ class SessionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cliColor = session.cli == SessionCli.codex
-        ? _kCodexColor
-        : _kClaudeColor;
+    final cliColor = _cliColor(session.cli);
     final live = liveStatus;
     final lastInteraction = _sessionLastInteractionAt(session, live);
     final ago = timeago.format(lastInteraction, locale: 'en_short');
@@ -4344,10 +4398,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
   }
 
   void _applyPresetDefaults(AgentPreset preset) {
-    final presetCli =
-        preset.defaultCli.trim().toLowerCase() == 'claude'
-            ? SessionCli.claude
-            : SessionCli.codex;
+    final presetCli = parseCli(preset.defaultCli.trim().toLowerCase());
     if (presetCli != widget.cli) return;
 
     final providerId = _providerIdForPresetDefault(preset);
@@ -4484,7 +4535,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
     return AlertDialog(
       backgroundColor: const Color(0xFF0f1115),
       title: Text(
-        '新建 ${widget.cli == SessionCli.codex ? 'Codex' : 'Claude'} ${widget.kind == SessionKind.chat ? 'Chat' : 'Terminal'}',
+        '新建 ${widget.cli.displayName} ${widget.kind == SessionKind.chat ? 'Chat' : 'Terminal'}',
         style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
       ),
       content: SingleChildScrollView(
@@ -4653,7 +4704,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
                           child: Text(
                             _isClaude
                                 ? e
-                                : effortShortNameForCli(SessionCli.codex, e),
+                                : effortShortNameForCli(widget.cli, e),
                             style: const TextStyle(color: Color(0xFFe7eaee)),
                           ),
                         ),

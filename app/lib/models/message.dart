@@ -135,19 +135,42 @@ class ChatMessage {
   }
 }
 
-/// Which CLI binary this session drives. Claude Code or OpenAI Codex.
-enum SessionCli { claude, codex }
+/// Which CLI binary this session drives.
+enum SessionCli { claude, codex, opencode, zcode }
 
 /// Interactive TUI terminal, or stream-json chat.
 enum SessionKind { terminal, chat }
 
-SessionCli _parseCli(String? s) =>
-    s == 'codex' ? SessionCli.codex : SessionCli.claude;
+SessionCli parseCli(String? s) {
+  switch (s) {
+    case 'codex': return SessionCli.codex;
+    case 'opencode': return SessionCli.opencode;
+    case 'zcode': return SessionCli.zcode;
+    default: return SessionCli.claude;
+  }
+}
 SessionKind _parseKind(String? s) =>
     s == 'chat' ? SessionKind.chat : SessionKind.terminal;
 
 extension SessionCliX on SessionCli {
-  String get name => this == SessionCli.codex ? 'codex' : 'claude';
+  String get name => switch (this) {
+    SessionCli.codex => 'codex',
+    SessionCli.opencode => 'opencode',
+    SessionCli.zcode => 'zcode',
+    SessionCli.claude => 'claude',
+  };
+
+  /// Provider pool this CLI maps to. codex has its own pool;
+  /// claude/opencode/zcode share the Anthropic-compatible 'claude' pool.
+  String get appType => this == SessionCli.codex ? 'codex' : 'claude';
+
+  /// Human-readable label for UI display.
+  String get displayName => switch (this) {
+    SessionCli.claude => 'Claude',
+    SessionCli.codex => 'Codex',
+    SessionCli.opencode => 'OpenCode',
+    SessionCli.zcode => 'ZCode',
+  };
 }
 
 extension SessionKindX on SessionKind {
@@ -201,10 +224,12 @@ String modelDisplayName(SessionCli cli, String? model, {Map? aliasMap}) {
 }
 
 String effortShortNameForCli(SessionCli cli, String? effort) {
+  final isCodexLike = cli == SessionCli.codex ||
+      cli == SessionCli.opencode || cli == SessionCli.zcode;
   final v = (effort == null || effort.isEmpty)
-      ? (cli == SessionCli.codex ? 'xhigh' : 'medium')
+      ? (isCodexLike ? 'xhigh' : 'medium')
       : effort;
-  if (cli == SessionCli.codex) {
+  if (isCodexLike) {
     switch (v) {
       case 'low':
         return 'Low';
@@ -299,7 +324,7 @@ class Session {
     return Session(
       id: (json['id'] ?? '').toString(),
       dirId: json['dirId']?.toString(),
-      cli: _parseCli(json['cli']?.toString()),
+      cli: parseCli(json['cli']?.toString()),
       kind: _parseKind(json['kind']?.toString()),
       cliSessionId: json['cliSessionId']?.toString(),
       label: json['label']?.toString(),
@@ -347,6 +372,10 @@ class Directory {
   final int claudeChatCount;
   final int codexTerminalCount;
   final int codexChatCount;
+  final int opencodeTerminalCount;
+  final int opencodeChatCount;
+  final int zcodeTerminalCount;
+  final int zcodeChatCount;
   final DirectoryPushState? pushState;
 
   Directory({
@@ -358,6 +387,10 @@ class Directory {
     this.claudeChatCount = 0,
     this.codexTerminalCount = 0,
     this.codexChatCount = 0,
+    this.opencodeTerminalCount = 0,
+    this.opencodeChatCount = 0,
+    this.zcodeTerminalCount = 0,
+    this.zcodeChatCount = 0,
     this.pushState,
   });
 
@@ -374,6 +407,10 @@ class Directory {
       claudeChatCount: (counts['claude_chat'] as num?)?.toInt() ?? 0,
       codexTerminalCount: (counts['codex_terminal'] as num?)?.toInt() ?? 0,
       codexChatCount: (counts['codex_chat'] as num?)?.toInt() ?? 0,
+      opencodeTerminalCount: (counts['opencode_terminal'] as num?)?.toInt() ?? 0,
+      opencodeChatCount: (counts['opencode_chat'] as num?)?.toInt() ?? 0,
+      zcodeTerminalCount: (counts['zcode_terminal'] as num?)?.toInt() ?? 0,
+      zcodeChatCount: (counts['zcode_chat'] as num?)?.toInt() ?? 0,
       pushState: json['pushState'] is Map
           ? DirectoryPushState.fromJson(
               (json['pushState'] as Map).cast<String, dynamic>(),
@@ -386,7 +423,11 @@ class Directory {
       claudeTerminalCount +
       claudeChatCount +
       codexTerminalCount +
-      codexChatCount;
+      codexChatCount +
+      opencodeTerminalCount +
+      opencodeChatCount +
+      zcodeTerminalCount +
+      zcodeChatCount;
 }
 
 class DirectoryPushState {

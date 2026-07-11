@@ -173,9 +173,7 @@ class ChatProvider extends ChangeNotifier {
         if (sid != null && sid.isNotEmpty) _sessionId = sid;
         if (msg['cwd'] != null) _cwd = msg['cwd'].toString();
         if (msg['cli'] != null) {
-          _cli = msg['cli'].toString() == 'codex'
-              ? SessionCli.codex
-              : SessionCli.claude;
+          _cli = parseCli(msg['cli']?.toString());
         }
 
         final model = msg['model']?.toString();

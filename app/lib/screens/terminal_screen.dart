@@ -293,7 +293,12 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
 }
 
 Widget _cliBadge(SessionCli cli) {
-  final color = cli == SessionCli.codex ? const Color(0xFF7fd49a) : const Color(0xFFf0936b);
+  final color = switch (cli) {
+    SessionCli.claude => const Color(0xFFf0936b),
+    SessionCli.codex => const Color(0xFF7fd49a),
+    SessionCli.opencode => const Color(0xFFa78bfa),
+    SessionCli.zcode => const Color(0xFF38bdf8),
+  };
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
     decoration: BoxDecoration(

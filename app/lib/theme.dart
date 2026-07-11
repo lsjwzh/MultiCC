@@ -24,6 +24,8 @@ class AppColors {
   static const blue = Color(0xFF6aa3ff); // links / paths
   static const claude = Color(0xFFf0936b); // Claude brand
   static const codex = Color(0xFF7fd49a); // Codex brand
+  static const opencode = Color(0xFFa78bfa); // OpenCode brand (violet)
+  static const zcode = Color(0xFF38bdf8); // ZCode brand (sky blue)
   static const amber = Color(0xFFe3b341);
   static const danger = Color(0xFFff6b63);
 }

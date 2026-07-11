@@ -322,11 +322,15 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       'claude_chat': [],
       'codex_terminal': [],
       'codex_chat': [],
+      'opencode_terminal': [],
+      'opencode_chat': [],
+      'zcode_terminal': [],
+      'zcode_chat': [],
     };
     for (final s in _sessions) {
       if (s.dirId != dirId) continue;
       final key = '${s.cli.name}_${s.kind.name}';
-      groups[key]?.add(s);
+      groups.putIfAbsent(key, () => []).add(s);
     }
     int sessionTs(Session s) =>
         (s.lastActivity ?? s.createdAt).millisecondsSinceEpoch;

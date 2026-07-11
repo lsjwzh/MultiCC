@@ -56,6 +56,10 @@
   "claudeChats": "CLAUDE CHATS",
   "codexTerminals": "CODEX TERMINALS",
   "codexChats": "CODEX CHATS",
+  "openCodeTerminals": "OPENCODE TERMINALS",
+  "openCodeChats": "OPENCODE CHATS",
+  "zCodeTerminals": "ZCODE TERMINALS",
+  "zCodeChats": "ZCODE CHATS",
 
   "noSessions": "还没有会话",
   "mergeReadyLabel": "有未提交改动，可合并回 {base}",
