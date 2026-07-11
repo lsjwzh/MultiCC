@@ -34,7 +34,9 @@
 //                  mid-flight (network drop, crashed CLI, truncated stream). We
 //                  inject "【判定未知中断】请继续刚才未完成的任务" to resume.
 //                  Fault recovery, so it does NOT respect the autoContinue toggle
-//                  (same as F) and is UNCAPPED — only 'D' (done) is terminal.
+//                  (same as F); capped at MAX_RESUME_INTERRUPTED so a CLI that
+//                  keeps crashing (non-API, healthy upstream) can't loop forever
+//                  - after the cap it gives up and falls back to W (user intervenes).
 //
 // All three converge on inject() → runChatTurn(session, text), which for a
 // streaming session feeds the warm process (queued if a turn is mid-flight) and
@@ -68,12 +70,16 @@ let ticker = null;
 const TICK_MS = 1000;
 const DEFAULTS = { intervalSec: 15, maxChecks: 40, timeoutSec: 1800 };
 const MIN_INTERVAL_SEC = 3;
-// autoContinue (D/C→continue) and resumeInterrupted (G) are UNCAPPED — only the
-// classify verdict 'D' (done) is terminal, so the loop keeps pushing until the
-// task is genuinely complete (scan is the backstop). No MAX_AUTO_CONTINUE /
-// MAX_RESUME_INTERRUPTED give-up caps. bgCheck keeps its cap: it is a one-off
-// anti-pattern correction (run_in_background misuse), not task progression.
+// autoContinue (D/C→continue) is UNCAPPED — only the classify verdict 'D' (done)
+// is terminal, so the loop keeps pushing until the task is genuinely complete
+// (scan is the backstop). resumeInterrupted (G) now has MAX_RESUME_INTERRUPTED:
+// a CLI that keeps dying mid-flight via a NON-API crash (chokepoint only covers
+// API-unhealthy, not a crashed CLI with a healthy upstream) would otherwise loop
+// forever, so after the cap it gives up and falls back to W for user intervention.
+// bgCheck keeps its cap: it is a one-off anti-pattern correction
+// (run_in_background misuse), not task progression.
 const MAX_BG_CHECK = 6;          // consecutive run_in_background nudges before giving up
+const MAX_RESUME_INTERRUPTED = 10; // consecutive P+no-turn resumes before give-up -> W
 const BG_CHECK_DELAY_MS = 25000; // wait ~25s after a bg-launching turn, then nudge
 // v2 de-dup window: after a bg-completion result is injected, suppress the
 // classify-driven autoContinue (D) and bgCheck (E) empty nudges for this long so
@@ -275,10 +281,14 @@ function resetAuto(session) { autoState.delete(session); }
 function resumeInterrupted(session, opts = {}) {
   if (hasWait(session)) { _log(`[wait] resumeInterrupted skip ${session}: explicit wait pending`); return false; }
   const st = interruptState.get(session) || { count: 0 };
+  if (st.count >= MAX_RESUME_INTERRUPTED) {
+    _log(`[wait] resumeInterrupted cap reached for ${session} (${st.count}) -> give up, fall back to W`);
+    return false;
+  }
   st.count++;
   interruptState.set(session, st);
   const nudge = opts.nudge || '【判定未知中断】请继续刚才未完成的任务';
-  _log(`[wait] resumeInterrupted ${session} (#${st.count}, uncapped)`);
+  _log(`[wait] resumeInterrupted ${session} (#${st.count}/${MAX_RESUME_INTERRUPTED})`);
   const d = Number(opts.delayMs);
   const delayMs = Number.isFinite(d) ? Math.max(0, d) : 2000;
   injectSystemMsg(session, nudge, delayMs);
@@ -341,13 +351,19 @@ function recentlyBgResultInjected(session) {
 // injected text during classify/reconcile, replacing the old per-language regex.
 const SYS_PREFIX = '🔇';
 
-// Inject only when the session is free; if a turn is mid-flight, retry shortly
-// so we never interrupt the very work we are waiting on. (Streaming queues
-// internally too, but this keeps default sessions safe.)
+// Retry while a turn is mid-flight so we don't interrupt the work we're waiting
+// on. After BUSY_MAX_ATTEMPTS we force-inject anyway: a turn hung longer than
+// that would otherwise block a real-data inject (dispatch result / bg-completion)
+// forever. injectSystemMsg (classify nudges) has no such cap - nudges can wait,
+// real data must eventually land. (Streaming queues internally too.)
+const BUSY_MAX_ATTEMPTS = 300; // 5min @ 1s - generous; a live long turn never hits it
 function fireInject(session, text, attempt = 0) {
-  if (_isBusy(session) && attempt < 60) {
+  if (_isBusy(session) && attempt < BUSY_MAX_ATTEMPTS) {
     setTimeout(() => fireInject(session, text, attempt + 1), 1000);
     return;
+  }
+  if (attempt >= BUSY_MAX_ATTEMPTS) {
+    _log(`[wait] fireInject ${session}: still busy after ${BUSY_MAX_ATTEMPTS}s, force-injecting (turn may be hung)`);
   }
   Promise.resolve(_inject(session, text)).catch(e => _log(`[wait] inject failed for ${session}: ${e.message}`));
 }

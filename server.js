@@ -3691,8 +3691,9 @@ app.get('/api/sessions/:id', (req, res) => {
     && persisted?.kind !== 'terminal';
   const streaming = persisted?.streaming === undefined ? isClaudeChat : !!persisted.streaming;
   // autoContinue is no longer user-facing; always true (classify gates the actual
-  // injection). undefined → true for legacy sessions that predate the pinned field.
-  const autoContinue = persisted?.autoContinue === undefined ? true : true;
+  // injection). Legacy sessions that predate the pinned field default to true too,
+  // matching tryAutoContinue (which no longer reads this field).
+  const autoContinue = persisted?.autoContinue !== false;
   const autoCommit = !!persisted?.autoCommit;
   const autoDispatch = !!persisted?.autoDispatch;
   const provider = persisted?.provider || null;  // cc-switch provider id; null = default login
@@ -7153,13 +7154,14 @@ function pruneErrorTurnPairs(sessionName) {
   return removed;
 }
 
-// Attempt an auto-continue nudge (C/B states). Respects the user's autoContinue
-// toggle; the underlying waitInjector.autoContinue is UNCAPPED (only 'D' is
-// terminal). Returns true if a nudge was injected, false if suppressed
-// (toggle off / explicit wait pending).
+// Attempt an auto-continue nudge (C/B states). autoContinue is no longer a
+// toggle (always on - classify's D/W guards + the hasWait gate are the safety
+// rails), so we only check the session record exists. The underlying
+// waitInjector.autoContinue is UNCAPPED (only 'D' is terminal). Returns true if
+// a nudge was injected, false if suppressed (no record / explicit wait pending).
 function tryAutoContinue(sessionName, cs, cwd, nudge) {
   const p = persistedSessions.get(sessionName);
-  if (!p || !p.autoContinue) return false;
+  if (!p) return false;
   if (waitInjector.hasWait(sessionName)) return false;
   return waitInjector.autoContinue(sessionName, { cwd: cwd || (cs && cs.cwd), nudge });
 }
@@ -7268,11 +7270,9 @@ function dispatchStateAction(result, ctx) {
       return;
     }
     // Turn ended but the conversation says "keep going" -> drive AI forward.
-    // C IS gated by the autoContinue toggle (via tryAutoContinue, same as B): the
-    // toggle means "don't auto-drive this session", and an unsolicited "继续"
-    // injection is exactly that. This also closes the D→C misjudge wake path — a
-    // session mislabelled C can no longer be auto-nudged when the user opted out.
-    // tryAutoContinue is uncapped + hasWait-guarded + checks p.autoContinue.
+    // autoContinue is always on (no toggle), so tryAutoContinue drives C the same
+    // way it drives B; the hasWait guard is the only suppression. An unsolicited
+    // "继续" injection is exactly that. tryAutoContinue is uncapped + hasWait-guarded.
     clearBgIdleTimer(sessionName);
     if (tryAutoContinue(sessionName, cs, ctx.cwd, '继续：请接着完成当前任务。')) {
       console.log(`[multicc/classify] ${sessionName} C (continue) -> auto-continue`);
@@ -7307,7 +7307,7 @@ function dispatchStateAction(result, ctx) {
     clearBgIdleTimer(sessionName);
     const timer = setTimeout(() => {
       const _p = persistedSessions.get(sessionName);
-      if (!_p || !_p.autoContinue) return; // toggle off → user opted out of auto-drive (mirror tryAutoContinue)
+      if (!_p) return; // session gone {ARROW} nothing to nudge (autoContinue is always on)
       if (waitInjector.hasWait(sessionName)) return; // explicit wait covers it
       const s = _bgIdleTimers.get(sessionName);
       if (!s) return;
@@ -7479,6 +7479,18 @@ function isNetworkUnhealthy() { return networkHealth.unhealthy; }
 // (if any) can finish naturally; we just prevent NEW turns from starting.
 // Callers should check isNetworkUnhealthy() BEFORE calling this — this is the
 // "actually put it on hold" step.
+// Decide what pendingText to stash for a held session. Real data (dispatch result
+// / bg-completion via safeInject) has NO SYS_PREFIX; classify nudges (E/C/B via
+// injectSystemMsg) DO. A later nudge must NOT overwrite already-stashed real data
+// - the real payload is what resumeHeldSessions must replay. (A new real payload
+// still wins over a prior nudge; nudges overwrite nudges.)
+function mergeHeldPendingText(pendingText, prior) {
+  const SP = waitInjector.SYS_PREFIX;
+  const newIsNudge = typeof pendingText === 'string' && pendingText.startsWith(SP);
+  const priorIsReal = prior && prior.pendingText != null && !String(prior.pendingText).startsWith(SP);
+  if (newIsNudge && priorIsReal) return prior.pendingText;
+  return pendingText != null ? pendingText : (prior ? prior.pendingText : null);
+}
 function holdSession(sessionId, reason, pendingText) {
   if (!networkHealth.unhealthy) return;
   const p = persistedSessions.get(sessionId);
@@ -7495,7 +7507,7 @@ function holdSession(sessionId, reason, pendingText) {
     goal: ts.goal || (typeof p.summary === 'string' ? p.summary.slice(0, 40) : ''),
     heldAt: prior ? prior.heldAt : Date.now(),
     reason: reason || (prior ? prior.reason : 'API 异常'),
-    pendingText: pendingText != null ? pendingText : (prior ? prior.pendingText : null),
+    pendingText: mergeHeldPendingText(pendingText, prior),
   });
   // One-shot notification: only when freshly held, so a long outage with later
   // real-data re-holds doesn't spam "已暂挂" on every hold.
@@ -8672,6 +8684,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
       }
       if (block.type === 'tool_use') {
         cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
+        if (block.name === 'TaskOutput') markTaskOutputAwaiting(block.input);
         const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
         if (editTools.includes(block.name)) {
           setSessionStatus(sessionName, { status: 'editing', currentFile: block.input?.file_path || null });
@@ -8790,6 +8803,32 @@ function stopMonitorShadow(cs, taskId) {
   cs._monitorShadows.delete(taskId);
 }
 
+// De-dup vs TaskOutput: when the main session actively pulls a bg task's result
+// via TaskOutput(block=true), the task_notification(completed) event arriving
+// moments later would otherwise double-inject a "后台任务完成" nudge on top of the
+// result the session already pulled (esp. across an SDK-session switch, where the
+// new session has no TaskOutput context and gets a cold "task finished" nudge for
+// a task whose result the prior session already consumed). Track taskIds the main
+// session is awaiting via block=true; suppress the nudge for those.
+const _taskOutputAwaiting = new Map(); // taskId -> { at }
+const TASKOUTPUT_AWAIT_TTL_MS = 5 * 60 * 1000;
+function markTaskOutputAwaiting(input) {
+  try {
+    if (!input || !input.block || !input.task_id) return; // only block=true pulls consume the result
+    const tid = String(input.task_id);
+    const now = Date.now();
+    for (const [k, v] of _taskOutputAwaiting) if (now - v.at > TASKOUTPUT_AWAIT_TTL_MS) _taskOutputAwaiting.delete(k);
+    _taskOutputAwaiting.set(tid, { at: now });
+  } catch {}
+}
+function isTaskOutputAwaiting(taskId) {
+  if (!taskId) return false;
+  const v = _taskOutputAwaiting.get(String(taskId));
+  if (!v) return false;
+  if (Date.now() - v.at > TASKOUTPUT_AWAIT_TTL_MS) { _taskOutputAwaiting.delete(String(taskId)); return false; }
+  return true;
+}
+function consumeTaskOutputAwaiting(taskId) { if (taskId) _taskOutputAwaiting.delete(String(taskId)); }
 function handleBackgroundTaskEvent(sessionName, cs, evt) {
   const sub = evt.subtype;
   if (sub === 'task_started') {
@@ -8817,6 +8856,11 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     // (E) skip their empty nudges within BG_RESULT_DEDUP_MS so we don't
     // double-inject (result + empty nudge) on top of each other.
     if (cs) {
+      if (isTaskOutputAwaiting(taskId)) {
+        console.log(`[multicc/bg] ${sessionName} task ${taskId} completed; main session pulling via TaskOutput -> suppress completion nudge (de-dup)`);
+        consumeTaskOutputAwaiting(taskId);
+        return;
+      }
       const desc = evt.description || evt.summary || '后台任务';
       const status = evt.status || 'completed';
       const outLine = snippet
