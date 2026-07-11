@@ -384,6 +384,20 @@ function validEffortForCli(cli, effort) {
   // Track extra directories beyond the main one
   let extraDirs = [];
 
+  // Pre-sweep: delete any leftover cross-cli-* test sessions from prior runs
+  // that were killed before their cleanup (T1.18/T2.10) ran. Makes the test
+  // idempotent and prevents orphan accumulation in sessions.json.
+  try {
+    const sweep = await get('/api/sessions');
+    const all = Array.isArray(sweep.body) ? sweep.body : (sweep.body.sessions || []);
+    const orphans = all.filter(s => typeof s.id === 'string' && s.id.includes('cross-cli'));
+    if (orphans.length) {
+      console.log(`Pre-sweep: cleaning ${orphans.length} leftover cross-cli session(s)`);
+      for (const o of orphans) { try { await del(`/api/sessions/${o.id}`); } catch (_) {} }
+    }
+  } catch (_) { /* best-effort; non-fatal */ }
+
+
   // ════════════════════════════════════════════════════════════════════
   // Tier1 — 结构/API（无需 CLI 二进制，恒跑）
   // ════════════════════════════════════════════════════════════════════
