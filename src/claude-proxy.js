@@ -374,7 +374,12 @@ function createHandler({ getProvider, onUsage }) {
     // before sending), but the subagent/ccfw route carries the tier UNRESOLVED
     // — the CLI only ever sees the opaque `ccfw:<pid>:opus` string — so map it
     // here for both, otherwise an alias-mapped relay gets 'opus' and rejects it.
-    const tierKey = String(ccfw ? ccfw.realModel : model).toLowerCase();
+    // finalModel = the model actually sent upstream (post tier resolution).
+    // onUsage and the diagnostics log report THIS, so per-role billing and the
+    // model label match what the provider received — NOT the pre-resolution
+    // tier alias (e.g. "opus" rather than the wire "ark-code-latest").
+    let finalModel = ccfw ? ccfw.realModel : model;
+    const tierKey = String(finalModel).toLowerCase();
     if (TIERS.includes(tierKey)) {
       const alias = creds.aliasMap && creds.aliasMap[tierKey];
       if (alias) {
@@ -388,7 +393,7 @@ function createHandler({ getProvider, onUsage }) {
         // Mirrors stripModelSuffix() in src/providers.js — keep in sync.
         const wireModel = String(realModel).replace(/\[[^\]]*\]$/, '').trim() || String(realModel);
         console.log(`[ccfw] sub-tier HIT sess=${sessionId || '-'} provider=${routeProviderId} tier=${tierKey} -> ${wireModel}${wireModel !== realModel ? ` (stripped '${realModel}')` : ''}`);
-        if (wireModel) outBody = rewriteModel(outBody, wireModel);
+        if (wireModel) { outBody = rewriteModel(outBody, wireModel); finalModel = wireModel; }
       } else {
         // [diag] tier alias has no mapping on this provider — the raw tier
         // literal (e.g. "fable") is about to be sent upstream and will almost
@@ -447,7 +452,7 @@ function createHandler({ getProvider, onUsage }) {
     // just Zhipu, since no upstream should be relying on chunked here.
     headers['content-length'] = String(Buffer.byteLength(outBody));
     const lib = base.protocol === 'https:' ? https : http;
-    console.log(`[ccfw] sess=${sessionId || '-'} role=${role} provider=${creds.name || routeProviderId} model=${ccfw ? ccfw.realModel : (model || '(n/a)')} -> ${base.origin}${fullPath}`);
+    console.log(`[ccfw] sess=${sessionId || '-'} role=${role} provider=${creds.name || routeProviderId} model=${finalModel || '(n/a)'} -> ${base.origin}${fullPath}`);
     // Redact secrets before any diagnostic dump (never write the real Bearer /
     // API key to logs or /tmp capture — matters especially for the OAuth token).
     const safeHeaders = { ...headers };
@@ -502,7 +507,7 @@ function createHandler({ getProvider, onUsage }) {
                 // The real wire model the upstream saw (post-rewrite, post tier
                 // resolution) — ccfw.realModel for the sub route, else the
                 // request's model field.
-                model: ccfw ? ccfw.realModel : (model || ''),
+                model: finalModel || '',
                 isStream: tee.isSSE,
                 usage,
               });
