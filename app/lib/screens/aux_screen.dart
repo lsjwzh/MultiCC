@@ -93,9 +93,9 @@ class _AuxScreenState extends State<AuxScreen> {
   }
 
   List<String> _effortOptsFor(String cli) {
-    return cli == 'claude'
-        ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
-        : const ['low', 'medium', 'high', 'xhigh'];
+    if (cli == 'codex') return const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    if (cli == 'claude') return const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+    return const ['low', 'medium', 'high', 'xhigh'];
   }
 
   Future<void> _save() async {

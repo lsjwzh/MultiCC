@@ -4267,6 +4267,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
   final _customModelCtrl = TextEditingController();
 
   bool get _isClaude => widget.cli == SessionCli.claude;
+  bool get _isCodex => widget.cli == SessionCli.codex;
   String get _defaultEffort => _isClaude ? 'medium' : 'xhigh';
   bool get _hasConcreteDefaultProvider =>
       widget.defaultProviderId != null &&
@@ -4421,7 +4422,9 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
     final effort = preset.defaultEffort;
     final validEfforts = _isClaude
         ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
-        : const ['low', 'medium', 'high', 'xhigh'];
+        : (_isCodex
+            ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+            : const ['low', 'medium', 'high', 'xhigh']);
     if (validEfforts.contains(effort)) _pickedEffort = effort;
   }
 
@@ -4697,7 +4700,9 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
                               'max',
                               'ultracode',
                             ]
-                          : const ['low', 'medium', 'high', 'xhigh'])
+                          : (_isCodex
+                              ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+                              : const ['low', 'medium', 'high', 'xhigh']))
                       .map(
                         (e) => DropdownMenuItem(
                           value: e,

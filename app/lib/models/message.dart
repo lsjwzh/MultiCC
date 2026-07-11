@@ -246,6 +246,10 @@ String effortShortNameForCli(SessionCli cli, String? effort) {
         return 'High';
       case 'xhigh':
         return 'Extra high';
+      case 'max':
+        return 'Max';
+      case 'ultra':
+        return 'Ultra';
     }
   }
   return v;
