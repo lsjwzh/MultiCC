@@ -86,6 +86,11 @@ class ChatProvider extends ChangeNotifier {
   /// Whether the entire app is in the background.
   bool isInBackground = false;
 
+  /// Latest `role_token_stats` payload from the server (keyed by `role`).
+  /// Cached so `_onResult` can compute savedMainTokens even if this event
+  /// arrived before the result. See the WS timing note in `_onResult`.
+  Map<String, dynamic>? _lastRoleTokens;
+
   /// aux classify verdict for THIS session — what the helper AI thinks the
   /// current goal/phase is. Updated by the `task_state` WS event; rendered as
   /// a status bar at the top of the chat (mirrors web #aux-classify-bar).
@@ -333,6 +338,13 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         break;
       }
+
+      case 'role_token_stats':
+        // Server pushes per-role token accounting after each turn:
+        // payload.role = { main: {…}, sub: {…}|null, subByProvider: […] }
+        _lastRoleTokens = (evt.payload as Map<String, dynamic>)['role'] as Map<String, dynamic>?;
+        notifyListeners();
+        break;
     }
   }
 
@@ -406,6 +418,27 @@ class ChatProvider extends ChangeNotifier {
       if (msg['usage'] != null) {
         _currentMsg!.usage = MessageUsage.fromJson(msg['usage'] as Map<String, dynamic>);
       }
+
+      // Compute main-model tokens saved by offloading to sub-roles.
+      // See the WS timing note above: role_token_stats may arrive before or
+      // after result; _lastRoleTokens caches the latest value so we accept a
+      // one-turn lag in the rare case that result arrives first.
+      final roleTokens = _lastRoleTokens;
+      if (roleTokens != null) {
+        final sub = roleTokens['sub'];
+        if (sub is Map) {
+          int saved = 0;
+          saved += (sub['inputTokens'] as num?)?.toInt() ?? 0;
+          saved += (sub['outputTokens'] as num?)?.toInt() ?? 0;
+          saved += (sub['cacheWrite'] as num?)?.toInt() ?? 0;
+          saved += (sub['cacheRead'] as num?)?.toInt() ?? 0;
+          if (saved > 0) {
+            _currentMsg!.usage ??= MessageUsage();
+            _currentMsg!.usage!.savedMainTokens = saved;
+          }
+        }
+      }
+
       // Server-stamped wall-clock duration: user submit → AI reply complete.
       final dur = (msg['durationMs'] as num?)?.toInt();
       if (dur != null) _currentMsg!.durationMs = dur;

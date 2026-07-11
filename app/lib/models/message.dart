@@ -7,11 +7,18 @@ class MessageUsage {
   final int cacheReadTokens;
   final int cacheCreationTokens;
 
-  const MessageUsage({
+  /// Main-model tokens saved by offloading work to sub-roles (Task/Agent/Workflow).
+  /// Not carried in the server `usage` payload — computed by the provider from
+  /// the `role_token_stats` WS event and injected into the message after the
+  /// result arrives. Null until injected; absent when the turn had no sub-role work.
+  int? savedMainTokens;
+
+  MessageUsage({
     this.inputTokens = 0,
     this.outputTokens = 0,
     this.cacheReadTokens = 0,
     this.cacheCreationTokens = 0,
+    this.savedMainTokens,
   });
 
   int get total =>
