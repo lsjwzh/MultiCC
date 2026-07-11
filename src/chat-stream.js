@@ -123,6 +123,18 @@ function onStdout(name, chunk) {
       try { s.current.onEvent(evt); } catch (_) {}
     }
 
+    // Background task events (task_started/task_updated/task_notification/
+    // background_tasks_changed) outlive the turn: the model starts a Monitor,
+    // ends its turn (result below), and the task keeps running. The per-turn
+    // onEvent above is cleared at finishTurn (s.current = null), so these
+    // post-result events would be silently dropped. Forward them through a
+    // SEPARATE callback independent of s.current so the server can shadow-tail
+    // Monitor output and surface progress to the UI.
+    if (s.onBackgroundEvent && evt.type === 'system' &&
+        /^(task_started|task_progress|task_updated|task_notification|background_tasks_changed)$/.test(evt.subtype || '')) {
+      try { s.onBackgroundEvent(evt); } catch (_) {}
+    }
+
     // A `result` event marks the END of the current turn. The process stays
     // alive and ready for the next message.
     if (evt.type === 'result') {
@@ -245,6 +257,7 @@ function ensure(name, cfg) {
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       onExit: cfg.onExit || null,
+      onBackgroundEvent: cfg.onBackgroundEvent || null,
       proc: null, started: false, busy: false,
       queue: [], current: null, lineBuf: '', stderrTail: '',
       idleTimer: null,
@@ -255,6 +268,7 @@ function ensure(name, cfg) {
     if (cfg.model !== undefined) s.model = cfg.model;
     if (cfg.sysPrompt !== undefined) s.sysPrompt = cfg.sysPrompt;
     if (cfg.env !== undefined) s.env = cfg.env;
+    if (cfg.onBackgroundEvent !== undefined) s.onBackgroundEvent = cfg.onBackgroundEvent;
   }
   return s;
 }
