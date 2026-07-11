@@ -789,6 +789,31 @@ function resolveSpawnEnv(session) {
       toml = toml.replace(/\[model_providers\]\s*\n\[model_providers\.custom\]/, '[model_providers.custom]');
       fs.writeFileSync(path.join(home, 'config.toml'), toml);
     }
+    // Per-provider codex reads skills from $CODEX_HOME/skills, but
+    // syncSharedSkills only populates the global ~/.codex/skills, so mirror it
+    // via a symlink. Codex auto-seeds skills/.system here on first run
+    // (identical to the global copy), so replacing a bare dir or stale link is safe.
+    const skillsDir = path.join(home, 'skills');
+    const globalSkills = path.join(os.homedir(), '.codex', 'skills');
+    try {
+      if (fs.existsSync(globalSkills)) {
+        let needLink = true;
+        try {
+          const st = fs.lstatSync(skillsDir);
+          if (st.isSymbolicLink()) {
+            try { if (fs.realpathSync(skillsDir) === fs.realpathSync(globalSkills)) needLink = false; } catch (_) {}
+            if (needLink) fs.unlinkSync(skillsDir);
+          } else if (st.isDirectory()) {
+            // Only replace if it holds nothing user-added (.system is codex's own).
+            if (fs.readdirSync(skillsDir).every(n => n === '.system')) fs.rmSync(skillsDir, { recursive: true, force: true });
+            else needLink = false;
+          } else {
+            needLink = false;  // regular file etc., leave untouched
+          }
+        } catch (_) { /* skillsDir absent -> create link below */ }
+        if (needLink) fs.symlinkSync(globalSkills, skillsDir);
+      }
+    } catch (_) { /* best-effort: skills stay invisible but spawn still works */ }
     return { env: { CODEX_HOME: home }, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: p.name, codexHome: home };
   } catch (_) {
     return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: p.name };
