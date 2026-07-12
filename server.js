@@ -3645,6 +3645,39 @@ app.post('/api/sessions/:id/restart', (req, res) => {
   }
 });
 
+// ── Restart the whole multicc server (graceful) ──
+// A detached child re-launches us after we exit. Auth-gated (deliberately NOT
+// in the bypass allowlist at the top of this file), so shared view/operate
+// viewers cannot reach it. The child runs `./multicc restart`, whose do_stop
+// sends SIGINT → gracefulShutdown (drains in-flight turns + flushes partial
+// chats) before do_start brings up a fresh instance.
+app.post('/api/restart', (req, res) => {
+  if (_shuttingDown) return res.status(409).json({ error: 'restart already in progress' });
+  // Count sessions with a genuinely in-flight streaming turn (not a stale one)
+  // so the client can warn the user those turns will be interrupted — their
+  // partial output is flushed to disk by gracefulShutdown before exit.
+  let activeStreaming = 0;
+  for (const cs of chatSessions.values()) {
+    if (cs && cs.isStreaming && (Date.now() - (cs.lastStreamAt || 0)) < 600000) activeStreaming++;
+  }
+  // Respond BEFORE the process dies so the HTTP response actually flushes.
+  res.json({ ok: true, activeStreaming });
+  // detached + unref so the child survives our process.exit; stdio ignored so
+  // it doesn't keep our event loop alive. The 2s sleep lets our response flush
+  // and (once graceful shutdown completes) the port release.
+  setImmediate(() => {
+    try {
+      const child = spawn('/bin/sh', ['-c', 'sleep 2 && ./multicc restart'], {
+        cwd: __dirname, detached: true, stdio: 'ignore', env: process.env,
+      });
+      child.unref();
+      console.log('[multicc] /api/restart: detached graceful restart scheduled');
+    } catch (e) {
+      console.error('[multicc] /api/restart: spawn failed', e && e.message);
+    }
+  });
+});
+
 // ── Merge a session's worktree branch back into the directory's base branch ──
 app.post('/api/sessions/:id/merge', (req, res) => {
   const id = req.params.id;
@@ -8467,6 +8500,12 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
       broadcastRoleTokenStats(sessionName);
       cs.chatTurnCount++;
       cs._resultSaved = true;
+      // Cancel any pending incremental-save timer: the final message is now
+      // persisted, so a timer firing 0-5s later would append a stale _interim
+      // AFTER the final — a duplicate bubble on reconnect. Mirrors the cancel
+      // in the child-process close handler.
+      const incrTimer = _incrSaveTimers.get(sessionName);
+      if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
     }
     // Include durationMs + num_turns in the result broadcast so clients
     // (web + app) can display per-message task timing without client-side

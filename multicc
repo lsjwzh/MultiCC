@@ -80,9 +80,12 @@ do_stop() {
   fi
   local pid=$(get_pid)
   echo "Stopping MultiCC (PID $pid)..."
-  kill "$pid" 2>/dev/null
-  # Wait up to 5 seconds for graceful shutdown
-  for i in $(seq 1 10); do
+  # SIGINT triggers server.js gracefulShutdown (drain in-flight turns + flush
+  # partial chats). SIGTERM is deliberately ignored by the server, so we must
+  # send -INT here; the -9 below stays as a hard fallback if the drain overruns.
+  kill -INT "$pid" 2>/dev/null
+  # Wait up to ~65s for graceful shutdown (matches server SHUTDOWN_GRACE_MS=60s)
+  for i in $(seq 1 130); do
     if ! kill -0 "$pid" 2>/dev/null; then
       break
     fi
