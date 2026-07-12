@@ -237,7 +237,7 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
     // order 30: cross-agent notes (today server.js:9036-9054, including side effects).
     const pendingNotes = deps.pendingNotesFor(sessionName).slice(0, 10);
     if (pendingNotes.length) {
-      let block = '[multicc 跨 agent 留言 - 来自同目录下的其他 agent]\n';
+      let block = '[multicc 跨 agent 留言 — 来自同目录下的其他 agent]\n';
       for (const n of pendingNotes) block += `- 来自「${n.fromLabel}」：${n.body}\n`;
       block += '[留言结束]\n\n';
       if (block.length > 4000) block = block.slice(0, 4000) + '\n…(截断)\n\n';

@@ -1,5 +1,7 @@
 'use strict';
 
+const { renderPrompt } = require('../message-composer');
+
 function createCodexAdapter(deps) {
   const {
     cmd,
@@ -47,6 +49,19 @@ function createCodexAdapter(deps) {
         promptText,
       );
       return spawnArgs;
+    },
+    shape(env) {
+      const so = env.spawnOpts;
+      const session = { effort: so.rawEffort, model: so.rawModel };
+      const isFirstTurn = env.historyHandle.isFirstTurn;
+      const prompt = renderPrompt(env);
+      let payload = isFirstTurn ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt }) : prompt;
+      if (stayAlivePrompt) payload += `\n${stayAlivePrompt}`;
+      const args = ['exec'];
+      for (const arg of configArgsFor(session)) args.push('-c', arg);
+      if (!isFirstTurn) args.push('resume', env.historyHandle.cliSessionId);
+      args.push('--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox');
+      return { args, payload };
     },
     needsAsyncSessionIdCapture: true,
   };

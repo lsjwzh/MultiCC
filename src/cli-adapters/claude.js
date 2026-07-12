@@ -1,5 +1,7 @@
 'use strict';
 
+const { renderPrompt } = require('../message-composer');
+
 function createClaudeAdapter(deps) {
   const {
     cmd,
@@ -57,6 +59,52 @@ function createClaudeAdapter(deps) {
       spawnArgs.push(prompt);
       debugLogClaudeInvoke(session, spawnArgs);
       return spawnArgs;
+    },
+    shape(env) {
+      const so = env.spawnOpts;
+      const sysPrompt = env.systemPrompt;
+      const model = providers.resolveSessionWireModel(so.rawModel, {
+        providerModel: so.providerModel,
+        providerModels: so.providerModels,
+        skipDefaultModel: so.skipDefaultModel,
+        defaultModel: claudeDefaultModel(),
+      });
+      const effort = cliEffortLevel({ effort: so.rawEffort });
+      const payload = renderPrompt(env);
+
+      if (so.mode === 'streaming') {
+        const extraArgs = [];
+        if (effort) extraArgs.push('--effort', effort);
+        if (chatDisallowedTools.length) {
+          extraArgs.push('--disallowedTools', chatDisallowedTools.join(','));
+        }
+        const args = [
+          '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
+          '--verbose', '--include-partial-messages', '--dangerously-skip-permissions',
+          ...(model ? ['--model', model] : []),
+          ...(sysPrompt ? ['--append-system-prompt', sysPrompt] : []),
+          ...extraArgs,
+        ];
+        return { args, payload };
+      }
+
+      const args = [
+        '-p', '--output-format', 'stream-json', '--verbose',
+        '--include-partial-messages', '--dangerously-skip-permissions',
+        '--append-system-prompt', sysPrompt,
+      ];
+      if (model) args.push('--model', model);
+      if (effort) args.push('--effort', effort);
+      if (normalizeEffort(so.rawEffort) === 'ultracode') {
+        args.push('--settings', '{"ultracode":true}');
+      }
+      if (chatDisallowedTools.length) {
+        args.push('--disallowedTools', chatDisallowedTools.join(','));
+      }
+      if (so.maxTurns > 0) args.push('--max-turns', String(so.maxTurns));
+      if (env.historyHandle.isFirstTurn) args.push('--session-id', env.historyHandle.cliSessionId);
+      else args.push('--resume', env.historyHandle.cliSessionId);
+      return { args, payload };
     },
     needsAsyncSessionIdCapture: false,
   };
