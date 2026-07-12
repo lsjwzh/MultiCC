@@ -17,6 +17,7 @@ import '../theme.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/rainbow_border.dart';
+import '../widgets/session_badges.dart';
 import '../models/agent_preset.dart';
 import '../services/agent_preset_service.dart';
 import 'chat_screen.dart';
@@ -1242,9 +1243,9 @@ void _showSessionSheet(
                                   ),
                                 ),
                                 const SizedBox(width: 6),
-                                _MiniBadge(label: s.cli.name, color: cliColor),
+                                MiniBadge(label: s.cli.name, color: cliColor),
                                 const SizedBox(width: 5),
-                                _MiniBadge(
+                                MiniBadge(
                                   label: s.kind.name,
                                   color: const Color(0xFF8a909b),
                                   icon: s.isChat
@@ -1680,21 +1681,21 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                         spacing: 6,
                         runSpacing: 6,
                         children: [
-                          _AddSessionChip(label: '+ Claude Term', color: _kClaudeColor,
+                          AddSessionChip(label: '+ Claude Term', color: _kClaudeColor,
                               onTap: () => _createSession(SessionCli.claude, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ Claude Chat', color: _kClaudeColor,
+                          AddSessionChip(label: '+ Claude Chat', color: _kClaudeColor,
                               onTap: () => _createSession(SessionCli.claude, SessionKind.chat)),
-                          _AddSessionChip(label: '+ Codex Term', color: _kCodexColor,
+                          AddSessionChip(label: '+ Codex Term', color: _kCodexColor,
                               onTap: () => _createSession(SessionCli.codex, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ Codex Chat', color: _kCodexColor,
+                          AddSessionChip(label: '+ Codex Chat', color: _kCodexColor,
                               onTap: () => _createSession(SessionCli.codex, SessionKind.chat)),
-                          _AddSessionChip(label: '+ OpenCode Term', color: _kOpenCodeColor,
+                          AddSessionChip(label: '+ OpenCode Term', color: _kOpenCodeColor,
                               onTap: () => _createSession(SessionCli.opencode, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ OpenCode Chat', color: _kOpenCodeColor,
+                          AddSessionChip(label: '+ OpenCode Chat', color: _kOpenCodeColor,
                               onTap: () => _createSession(SessionCli.opencode, SessionKind.chat)),
-                          _AddSessionChip(label: '+ ZCode Term', color: _kZCodeColor,
+                          AddSessionChip(label: '+ ZCode Term', color: _kZCodeColor,
                               onTap: () => _createSession(SessionCli.zcode, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ ZCode Chat', color: _kZCodeColor,
+                          AddSessionChip(label: '+ ZCode Chat', color: _kZCodeColor,
                               onTap: () => _createSession(SessionCli.zcode, SessionKind.chat)),
                         ],
                       ),
@@ -3347,9 +3348,9 @@ class SessionCard extends StatelessWidget {
                       _classifyChip(live, showLabel: false),
                       const SizedBox(width: 6),
                     ],
-                    _MiniBadge(label: session.cli.name, color: cliColor),
+                    MiniBadge(label: session.cli.name, color: cliColor),
                     const SizedBox(width: 6),
-                    _MiniBadge(
+                    MiniBadge(
                       label: session.kind.name,
                       color: const Color(0xFF8a909b),
                       icon: session.isChat
@@ -4122,77 +4123,6 @@ class SessionCard extends StatelessWidget {
       ),
     );
     if (confirm == true) mgr.deleteSession(session.id);
-  }
-}
-
-class _MiniBadge extends StatelessWidget {
-  final String label;
-  final Color color;
-  final IconData? icon;
-  const _MiniBadge({required this.label, required this.color, this.icon});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        border: Border.all(color: color.withValues(alpha: 0.38)),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 10, color: color),
-            const SizedBox(width: 3),
-          ],
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AddSessionChip extends StatelessWidget {
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-  const _AddSessionChip({
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.1),
-          border: Border.all(color: color.withValues(alpha: 0.4)),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ),
-    );
   }
 }
 
