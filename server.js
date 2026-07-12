@@ -3651,8 +3651,13 @@ app.post('/api/sessions/:id/restart', (req, res) => {
 // viewers cannot reach it. The child runs `./multicc restart`, whose do_stop
 // sends SIGINT → gracefulShutdown (drains in-flight turns + flushes partial
 // chats) before do_start brings up a fresh instance.
+// Debounce flag distinct from _shuttingDown: gracefulShutdown short-circuits on
+// _shuttingDown, so reusing it here would abort the very shutdown we want. Once
+// a restart is scheduled we never reset it — the process is about to be replaced.
+let _restartScheduled = false;
 app.post('/api/restart', (req, res) => {
-  if (_shuttingDown) return res.status(409).json({ error: 'restart already in progress' });
+  if (_shuttingDown || _restartScheduled) return res.status(409).json({ error: 'restart already in progress' });
+  _restartScheduled = true;
   // Count sessions with a genuinely in-flight streaming turn (not a stale one)
   // so the client can warn the user those turns will be interrupted — their
   // partial output is flushed to disk by gracefulShutdown before exit.
@@ -3662,9 +3667,10 @@ app.post('/api/restart', (req, res) => {
   }
   // Respond BEFORE the process dies so the HTTP response actually flushes.
   res.json({ ok: true, activeStreaming });
-  // detached + unref so the child survives our process.exit; stdio ignored so
-  // it doesn't keep our event loop alive. The 2s sleep lets our response flush
-  // and (once graceful shutdown completes) the port release.
+  // detached + unref so the child survives our exit; stdio ignored so it
+  // doesn't keep our event loop alive. The 2s sleep only lets THIS response
+  // flush — the actual graceful stop (kill -INT → drain + flush) and port
+  // release happen inside the child's `./multicc restart` do_stop.
   setImmediate(() => {
     try {
       const child = spawn('/bin/sh', ['-c', 'sleep 2 && ./multicc restart'], {
