@@ -5270,6 +5270,28 @@ async function restartTunnel(provider) {
   }
 }
 
+// ── Restart the whole multicc service (moved here from the chat page header) ──
+// POSTs /api/restart; the server schedules a detached graceful `./multicc restart`
+// (drains in-flight messages, then relaunches). All sessions briefly disconnect
+// and auto-reconnect once the fresh instance is up.
+async function restartMulticcService() {
+  if (!(await showConfirm('确定要重启 multicc 服务吗？\n这会短暂断开所有会话，随后自动重连（在途消息会先保存）。', { danger: true, okText: '重启' }))) return;
+  const headers = { 'Content-Type': 'application/json' };
+  if (_urlToken) headers['X-Access-Token'] = _urlToken;
+  try {
+    const res = await fetch('/api/restart', { method: 'POST', headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast('重启失败：' + (data.error || 'HTTP ' + res.status), true); return; }
+    if (data.activeStreaming > 0) {
+      showToast('⚠️ 有 ' + data.activeStreaming + ' 个会话正在输出，其在途内容已保存、将被中断', true);
+    } else {
+      showToast('重启请求已发送，服务即将重启…');
+    }
+  } catch (e) {
+    showToast('重启请求失败：' + e.message, true);
+  }
+}
+
 // Read-only Funnel status text (tailscale funnel status output).
 async function loadFunnelStatus() {
   const el = document.getElementById('tnl-ts-funnelstatus');
