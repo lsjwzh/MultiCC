@@ -7500,10 +7500,18 @@ function scanAndReclassify() {
       // while the turn runs - closing the classify starvation on long/hung turns.
     }
 
-    // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS
+    // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS,
+    // BUT only within the same task. lastAt comes from classifyHistory (the prior
+    // verdict), which may belong to the PREVIOUS task; a brand-new task writes a
+    // later ts.startedAt via ensureCurrentTask. So gate the throttle on
+    // lastAt >= startedAt: same-task redundant re-judge → still throttled (anti-flush);
+    // cross-task boundary (lastAt < startedAt) → fall through, classify immediately so
+    // the goal card refreshes from "新任务" to the real name within seconds instead of
+    // waiting up to SCAN_RETHROTTLE_MS. startedAt null/0 (legacy) → lastAt >= 0 always
+    // true → degrades to the old wall-clock behaviour, zero regression.
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
     const lastAt = hist.length ? hist[hist.length - 1].at : 0;
-    if (lastAt && (now - lastAt) < SCAN_RETHROTTLE_MS) {
+    if (lastAt && (now - lastAt) < SCAN_RETHROTTLE_MS && lastAt >= (ts.startedAt || 0)) {
       note(sid, ts.classifyState, 'skipped-throttle', `judged ${((now - lastAt) / 1000).toFixed(0)}s ago (< ${SCAN_RETHROTTLE_MS / 1000}s)`);
       continue;
     }
