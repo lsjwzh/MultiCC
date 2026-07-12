@@ -7335,6 +7335,28 @@ const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
 // slow-but-alive turn (a long tool/subagent that still emits events) is never killed.
 const STUCK_STREAM_MS = 10 * 60 * 1000;    // 10 min of total stream silence = stuck
 
+// Bounded in-memory ring of recent scanAndReclassify passes, for debugging
+// "when did a scan run, what did it see, and which sessions did it enqueue vs
+// skip (and why)". Queryable via GET /api/scan/history. Never persisted — no fs
+// write on the 60s scan hot path; cleared on restart. Follows the networkHealth
+// in-memory diagnostic-state pattern (not chat_history/__aux__.json, which uses
+// synchronous fs writes and renders as chat bubbles).
+const SCAN_HISTORY_MAX_PASSES = 100;       // ~100 min of passes at 60s cadence
+const SCAN_HISTORY_MAX_DECISIONS = 400;    // per-pass cap on per-session records
+const scanHistory = {
+  seq: 0,
+  passes: [],
+  push(record) {
+    record.pass = ++this.seq;
+    if (record.decisions && record.decisions.length > SCAN_HISTORY_MAX_DECISIONS) {
+      record.decisions = record.decisions.slice(0, SCAN_HISTORY_MAX_DECISIONS);
+      record.decisionsTruncated = true;
+    }
+    this.passes.unshift(record);
+    if (this.passes.length > SCAN_HISTORY_MAX_PASSES) this.passes.pop();
+  },
+};
+
 // A goal is junk if it's empty (classify never ran or failed) or is really a
 // system-injected message / raw tool payload rather than a user-authored goal.
 function isInjectedOrJunkGoal(goal) {
@@ -7390,7 +7412,23 @@ function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = 
 
 function scanAndReclassify() {
   if (auxQueue.isUnhealthy()) return;
+  // Debug observability: record this pass (time, queue state, and every
+  // per-session enqueue/skip decision + reason) into the scanHistory ring.
+  const passRecord = {
+    ts: Date.now(),
+    queueLen: auxQueue.queue.length,
+    maxQueue: SCAN_MAX_QUEUE,
+    fullSkip: false,
+    considered: 0,
+    enqueued: 0,
+    decisions: [],
+  };
+  const note = (sid, cls, decision, reason) => passRecord.decisions.push(
+    reason ? { sid, classifyState: cls ?? null, decision, reason }
+           : { sid, classifyState: cls ?? null, decision });
   if (auxQueue.queue.length >= SCAN_MAX_QUEUE) {
+    passRecord.fullSkip = true;
+    scanHistory.push(passRecord);
     console.log(`[multicc/scan] queue backed up (${auxQueue.queue.length}) - skip this round`);
     return;
   }
@@ -7409,7 +7447,10 @@ function scanAndReclassify() {
     // re-enters the turn flow, so W naturally leaves without scan's help.
     // Only C/B/E/P/null need re-judging — those advance on SYSTEM-side events
     // (auto-continue, background done, API recovered, interrupted resume).
-    if (ts.classifyState === 'D' || ts.classifyState === 'W') continue;
+    if (ts.classifyState === 'D' || ts.classifyState === 'W') {
+      note(sid, ts.classifyState, 'skipped-DW-guard', ts.classifyState === 'D' ? 'done (terminal)' : 'waiting on user');
+      continue;
+    }
 
     // Skip sessions parked by the degrade防线 (held for API recovery). Re-judging a
     // held session every 60s is pure waste — its history hasn't changed (no new turn
@@ -7417,7 +7458,10 @@ function scanAndReclassify() {
     // nudge here would re-hit the chokepoint and overwrite the stashed pendingText
     // with boilerplate, losing any real dispatch/bg payload held for replay on
     // recovery. resumeHeldSessions owns these; leave them alone.
-    if (networkHealth.heldSessions.has(sid)) continue;
+    if (networkHealth.heldSessions.has(sid)) {
+      note(sid, ts.classifyState, 'skipped-held', 'held by degrade防线 (API recovery)');
+      continue;
+    }
 
     // A session with a turn in flight: classifyTurnEnd judges it at turn end,
     // and a mid-stream STATE verdict is unreliable + races the turn-end classify.
@@ -7440,12 +7484,14 @@ function scanAndReclassify() {
       // inherit the PRIOR turn's stale lastStreamAt and get force-killed on tick 1.
       const lastStream = Math.max(liveCs.lastStreamAt || 0, liveCs.turnStartedAt || 0);
       if (lastStream && (now - lastStream) > STUCK_STREAM_MS) {
+        note(sid, ts.classifyState, 'stuck-reset', `${((now - lastStream) / 1000).toFixed(0)}s stream silence → force-reset isStreaming`);
         console.log(`[multicc/scan] ${sid} stuck-isStreaming: ${((now - lastStream) / 1000).toFixed(0)}s 无流事件 → 强制复位 isStreaming，本轮按 !isStreaming 重判`);
         liveCs.isStreaming = false;
         // fall through to reclassify now via the normal (non-streaming) path below
       } else if (isGoalResolved(ts.goal)) {
         // Streaming AND goal already known: scan has no useful work (state verdict
         // waits for turn-end; re-judging would only re-confirm the same goal).
+        note(sid, ts.classifyState, 'skipped-streaming', 'isStreaming + goal already resolved');
         continue;
       }
       // else: streaming but goal UNRESOLVED (新任务/empty) -> fall through and
@@ -7457,10 +7503,16 @@ function scanAndReclassify() {
     // throttle: don't re-judge a session judged in the last SCAN_RETHROTTLE_MS
     const hist = Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [];
     const lastAt = hist.length ? hist[hist.length - 1].at : 0;
-    if (lastAt && (now - lastAt) < SCAN_RETHROTTLE_MS) continue;
+    if (lastAt && (now - lastAt) < SCAN_RETHROTTLE_MS) {
+      note(sid, ts.classifyState, 'skipped-throttle', `judged ${((now - lastAt) / 1000).toFixed(0)}s ago (< ${SCAN_RETHROTTLE_MS / 1000}s)`);
+      continue;
+    }
 
     // dedup: already queued or in-flight
-    if (auxQueue.hasPendingFor(sid)) continue;
+    if (auxQueue.hasPendingFor(sid)) {
+      note(sid, ts.classifyState, 'skipped-dedup', 'already queued or in-flight');
+      continue;
+    }
 
     // Pull last assistant reply from chat history to classify against
     let reply = '';
@@ -7473,20 +7525,27 @@ function scanAndReclassify() {
         }
       }
     } catch (_) {}
-    if (reply.length < 20) continue;
+    if (reply.length < 20) {
+      note(sid, ts.classifyState, 'skipped-no-reply', 'no assistant reply ≥ 20 chars');
+      continue;
+    }
 
     // last activity time - used to order newest-first
     const ref = ts.lastTurnEndedAt || ts.lastSummaryAt
       || (p.lastActivity ? new Date(p.lastActivity).getTime() : 0) || lastAt || 0;
     const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
-    candidates.push({ sid, cleanPrior, reply, ref });
+    candidates.push({ sid, cleanPrior, reply, ref, classifyState: ts.classifyState });
   }
   // Newest first: most recently active sessions are judged before stale ones.
   candidates.sort((a, b) => (b.ref || 0) - (a.ref || 0));
+  passRecord.considered = candidates.length;
 
   let enqueued = 0;
   for (const c of candidates) {
-    if (auxQueue.queue.length >= SCAN_MAX_QUEUE) break;
+    if (auxQueue.queue.length >= SCAN_MAX_QUEUE) {
+      note(c.sid, c.classifyState, 'skipped-queue-full', `SCAN_MAX_QUEUE (${SCAN_MAX_QUEUE}) reached mid-loop`);
+      continue;
+    }
     const { sid, cleanPrior, reply } = c;
     auxQueue.enqueue({
       type: 'intent_classify',
@@ -7503,10 +7562,21 @@ function scanAndReclassify() {
       if (e && e.cancelled) return;
       console.warn(`[multicc/scan] classify ${sid} failed: ${e.message}`);
     });
+    note(sid, c.classifyState, 'enqueued');
     enqueued++;
   }
+  passRecord.enqueued = enqueued;
+  scanHistory.push(passRecord);
   if (enqueued) console.log(`[multicc/scan] enqueued ${enqueued} session(s) for re-judge (newest first)`);
 }
+
+// GET /api/scan/history — debug: recent periodic-scan passes, newest first, each
+// with its per-session enqueue/skip decisions + reasons. In-memory ring only.
+//   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
+app.get('/api/scan/history', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 20, SCAN_HISTORY_MAX_PASSES);
+  res.json({ seq: scanHistory.seq, kept: scanHistory.passes.length, passes: scanHistory.passes.slice(0, limit) });
+});
 
 // Store an aux-AI task summary for a session and push it to the workspace board.
 function setSessionSummary(sessionId, summary) {
