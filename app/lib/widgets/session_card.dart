@@ -5,6 +5,7 @@ import 'package:timeago/timeago.dart' as timeago;
 
 import '../i18n.dart';
 import '../models/message.dart';
+import '../utils/session_status_helpers.dart';
 import '../providers/session_manager.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -14,110 +15,6 @@ import '../widgets/rainbow_border.dart';
 import '../widgets/session_badges.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../screens/terminal_screen.dart';
-
-// Brand colors used to distinguish Claude vs Codex sessions.
-const _kClaudeColor = Color(0xFFf0936b);
-const _kCodexColor = Color(0xFF7fd49a);
-const _kOpenCodeColor = Color(0xFFa78bfa);
-const _kZCodeColor = Color(0xFF38bdf8);
-
-/// Brand color for a session's CLI.
-Color _cliColor(SessionCli cli) => switch (cli) {
-  SessionCli.claude => _kClaudeColor,
-  SessionCli.codex => _kCodexColor,
-  SessionCli.opencode => _kOpenCodeColor,
-  SessionCli.zcode => _kZCodeColor,
-};
-
-// Workspace status board: map a live agent status to a colour / label.
-Color _wbStatusColor(String? status) {
-  switch (status) {
-    case 'thinking':
-      return const Color(0xFF6aa3ff);
-    case 'editing':
-      return const Color(0xFFe3b341);
-    case 'running':
-      return const Color(0xFF7fd49a);
-    case 'waiting':
-      return const Color(0xFFf0936b);
-    case 'completed':
-      return const Color(0xFF3ad6c5);
-    case 'error':
-      return const Color(0xFFff6b63);
-    default:
-      return const Color(0xFF5b616c);
-  }
-}
-
-String _wbStatusLabel(String? status) {
-  switch (status) {
-    case 'thinking':
-      return t('thinking');
-    case 'editing':
-      return t('editing');
-    case 'running':
-      return t('running');
-    case 'waiting':
-      return t('waiting');
-    case 'completed':
-      return t('completed');
-    case 'error':
-      return t('error');
-    default:
-      return t('idle');
-  }
-}
-
-/// Live classify-state (aux-AI intent classifier) badge styling, aligned to the
-/// web fleet cards (manage.js _CLASSIFY_BADGE). Returns null for sessions with
-/// no classify verdict yet, so the badge is simply hidden.
-///   D=done · C=continue · W=wait-user · B=wait-bg · E=api-error · P=processing
-({Color color, String label, String emoji})? _classifyBadge(String? s) {
-  switch (s) {
-    case 'D':
-      return (color: const Color(0xFF56d364), label: '已完成', emoji: '✅');
-    case 'C':
-      return (color: const Color(0xFF6cb6ff), label: '继续中', emoji: '▶️');
-    case 'W':
-      return (color: const Color(0xFFe3b341), label: '等待你', emoji: '⏸️');
-    case 'B':
-      return (color: const Color(0xFFe3b341), label: '后台等待', emoji: '⏳');
-    case 'E':
-      return (color: const Color(0xFFf85149), label: '接口异常', emoji: '⚠️');
-    case 'P':
-      return (color: const Color(0xFF6cb6ff), label: '处理中', emoji: '🔄');
-    default:
-      return null;
-  }
-}
-
-/// A small classify-state pill. Shows the state emoji (+ optional label) tinted
-/// by state, with the current task goal as a tooltip. Empty widget when the
-/// session has no classify verdict.
-Widget _classifyChip(SessionStatus? live, {bool showLabel = true}) {
-  final b = _classifyBadge(live?.classifyState);
-  if (b == null) return const SizedBox.shrink();
-  final goal = live?.goal;
-  final chip = Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(
-      color: b.color.withValues(alpha: 0.15),
-      border: Border.all(color: b.color.withValues(alpha: 0.4)),
-      borderRadius: BorderRadius.circular(4),
-    ),
-    child: Text(
-      showLabel ? '${b.emoji} ${b.label}' : b.emoji,
-      style: TextStyle(
-        color: b.color,
-        fontSize: 9.5,
-        fontWeight: FontWeight.w700,
-      ),
-    ),
-  );
-  return (goal != null && goal.isNotEmpty)
-      ? Tooltip(message: goal, child: chip)
-      : chip;
-}
 
 String _mergeReadyLabel(SessionStatus status) {
   final ahead = status.ahead;
@@ -130,51 +27,6 @@ String _mergeReadyLabel(SessionStatus status) {
     return t('mergeReadyLabelAhead', {'n': '$ahead', 'base': base});
   }
   return t('mergeReadyLabel', {'base': base});
-}
-
-DateTime _sessionLastInteractionAt(Session session, SessionStatus? live) {
-  var best = session.createdAt;
-  final saved = session.lastActivity;
-  if (saved != null && saved.isAfter(best)) best = saved;
-  final liveMs = live?.lastActivity ?? 0;
-  if (liveMs > 0) {
-    final liveAt = DateTime.fromMillisecondsSinceEpoch(liveMs);
-    if (liveAt.isAfter(best)) best = liveAt;
-  }
-  return best;
-}
-
-// ── 任务运行时长 ────────────────────────────────────────────────────────────
-// 从用户发出消息（runStartedAt）算起任务执行了多久；进行中实时累加，终止/等待
-// 时冻结到 runEndedAt。返回 null 表示无可用数据。
-bool _isRunningStatus(String? s) =>
-    s == 'thinking' || s == 'editing' || s == 'running';
-
-Duration? _runDuration(SessionStatus? live) {
-  if (live == null || live.runStartedAt <= 0) return null;
-  final running = _isRunningStatus(live.status) && live.runEndedAt <= 0;
-  final end = running
-      ? DateTime.now().millisecondsSinceEpoch
-      : (live.runEndedAt > 0 ? live.runEndedAt : live.runStartedAt);
-  final ms = end - live.runStartedAt;
-  return Duration(milliseconds: ms < 0 ? 0 : ms);
-}
-
-// 紧凑中文时长：12秒 / 3分20秒 / 1时05分。
-String _formatRunDuration(Duration d) {
-  final totalSec = d.inSeconds;
-  final h = totalSec ~/ 3600;
-  final m = (totalSec % 3600) ~/ 60;
-  final sec = totalSec % 60;
-  if (h > 0) return '$h时${m.toString().padLeft(2, '0')}分';
-  if (m > 0) return '$m分${sec.toString().padLeft(2, '0')}秒';
-  return '$sec秒';
-}
-
-// 运行时长短语（带 ⏱），无数据返回空串。
-String _runTimeText(SessionStatus? live) {
-  final d = _runDuration(live);
-  return d == null ? '' : '⏱ ${_formatRunDuration(d)}';
 }
 
 class SessionCard extends StatelessWidget {
@@ -198,14 +50,14 @@ class SessionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cliColor = _cliColor(session.cli);
+    final cliColor = cliBrandColor(session.cli);
     final live = liveStatus;
-    final lastInteraction = _sessionLastInteractionAt(session, live);
+    final lastInteraction = sessionLastInteractionAt(session, live);
     final ago = timeago.format(lastInteraction, locale: 'en_short');
     final statusColor = live != null
-        ? _wbStatusColor(live.status)
+        ? wbStatusColor(live.status)
         : (session.active ? const Color(0xFF7fd49a) : const Color(0xFF5b616c));
-    final isRunning = live != null && _isRunningStatus(live.status);
+    final isRunning = live != null && isRunningStatus(live.status);
     final mergeReady = live?.mergeReady == true;
     final title = session.label?.isNotEmpty == true
         ? session.label!
@@ -281,8 +133,8 @@ class SessionCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 7),
-                    if (_classifyBadge(live?.classifyState) != null) ...[
-                      _classifyChip(live, showLabel: false),
+                    if (classifyBadge(live?.classifyState) != null) ...[
+                      classifyChip(live, showLabel: false),
                       const SizedBox(width: 6),
                     ],
                     MiniBadge(label: session.cli.name, color: cliColor),
@@ -297,7 +149,7 @@ class SessionCard extends StatelessWidget {
                     if (live != null && live.status != 'idle') ...[
                       const SizedBox(width: 6),
                       Text(
-                        _wbStatusLabel(live.status),
+                        wbStatusLabel(live.status),
                         style: TextStyle(
                           color: statusColor,
                           fontSize: 10,
@@ -437,10 +289,10 @@ class SessionCard extends StatelessWidget {
                     ),
                   ),
                 ],
-                if (_runTimeText(live).isNotEmpty) ...[
+                if (runTimeText(live).isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
-                    _runTimeText(live),
+                    runTimeText(live),
                     style: const TextStyle(
                       color: Color(0xFF7a818c),
                       fontSize: 10,

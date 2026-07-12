@@ -13,6 +13,7 @@ import '../services/manage_service.dart';
 import '../services/workspace_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
+import '../utils/session_status_helpers.dart';
 import '../widgets/session_card.dart';
 import '../widgets/rainbow_border.dart';
 import '../widgets/session_badges.dart';
@@ -25,155 +26,6 @@ import 'memo_screen.dart';
 import 'settings_screen.dart';
 import 'cron_screen.dart';
 import 'terminal_screen.dart';
-
-// Brand colors used to distinguish Claude vs Codex sessions.
-const _kClaudeColor = Color(0xFFf0936b);
-const _kCodexColor = Color(0xFF7fd49a);
-const _kOpenCodeColor = Color(0xFFa78bfa);
-const _kZCodeColor = Color(0xFF38bdf8);
-
-/// Brand color for a session's CLI.
-Color _cliColor(SessionCli cli) => switch (cli) {
-  SessionCli.claude => _kClaudeColor,
-  SessionCli.codex => _kCodexColor,
-  SessionCli.opencode => _kOpenCodeColor,
-  SessionCli.zcode => _kZCodeColor,
-};
-
-// Workspace status board: map a live agent status to a colour / label.
-Color _wbStatusColor(String? status) {
-  switch (status) {
-    case 'thinking':
-      return const Color(0xFF6aa3ff);
-    case 'editing':
-      return const Color(0xFFe3b341);
-    case 'running':
-      return const Color(0xFF7fd49a);
-    case 'waiting':
-      return const Color(0xFFf0936b);
-    case 'completed':
-      return const Color(0xFF3ad6c5);
-    case 'error':
-      return const Color(0xFFff6b63);
-    default:
-      return const Color(0xFF5b616c);
-  }
-}
-
-String _wbStatusLabel(String? status) {
-  switch (status) {
-    case 'thinking':
-      return t('thinking');
-    case 'editing':
-      return t('editing');
-    case 'running':
-      return t('running');
-    case 'waiting':
-      return t('waiting');
-    case 'completed':
-      return t('completed');
-    case 'error':
-      return t('error');
-    default:
-      return t('idle');
-  }
-}
-
-/// Live classify-state (aux-AI intent classifier) badge styling, aligned to the
-/// web fleet cards (manage.js _CLASSIFY_BADGE). Returns null for sessions with
-/// no classify verdict yet, so the badge is simply hidden.
-///   D=done · C=continue · W=wait-user · B=wait-bg · E=api-error · P=processing
-({Color color, String label, String emoji})? _classifyBadge(String? s) {
-  switch (s) {
-    case 'D':
-      return (color: const Color(0xFF56d364), label: '已完成', emoji: '✅');
-    case 'C':
-      return (color: const Color(0xFF6cb6ff), label: '继续中', emoji: '▶️');
-    case 'W':
-      return (color: const Color(0xFFe3b341), label: '等待你', emoji: '⏸️');
-    case 'B':
-      return (color: const Color(0xFFe3b341), label: '后台等待', emoji: '⏳');
-    case 'E':
-      return (color: const Color(0xFFf85149), label: '接口异常', emoji: '⚠️');
-    case 'P':
-      return (color: const Color(0xFF6cb6ff), label: '处理中', emoji: '🔄');
-    default:
-      return null;
-  }
-}
-
-/// A small classify-state pill. Shows the state emoji (+ optional label) tinted
-/// by state, with the current task goal as a tooltip. Empty widget when the
-/// session has no classify verdict.
-Widget _classifyChip(SessionStatus? live, {bool showLabel = true}) {
-  final b = _classifyBadge(live?.classifyState);
-  if (b == null) return const SizedBox.shrink();
-  final goal = live?.goal;
-  final chip = Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(
-      color: b.color.withValues(alpha: 0.15),
-      border: Border.all(color: b.color.withValues(alpha: 0.4)),
-      borderRadius: BorderRadius.circular(4),
-    ),
-    child: Text(
-      showLabel ? '${b.emoji} ${b.label}' : b.emoji,
-      style: TextStyle(
-        color: b.color,
-        fontSize: 9.5,
-        fontWeight: FontWeight.w700,
-      ),
-    ),
-  );
-  return (goal != null && goal.isNotEmpty)
-      ? Tooltip(message: goal, child: chip)
-      : chip;
-}
-
-DateTime _sessionLastInteractionAt(Session session, SessionStatus? live) {
-  var best = session.createdAt;
-  final saved = session.lastActivity;
-  if (saved != null && saved.isAfter(best)) best = saved;
-  final liveMs = live?.lastActivity ?? 0;
-  if (liveMs > 0) {
-    final liveAt = DateTime.fromMillisecondsSinceEpoch(liveMs);
-    if (liveAt.isAfter(best)) best = liveAt;
-  }
-  return best;
-}
-
-// ── 任务运行时长 ────────────────────────────────────────────────────────────
-// 从用户发出消息（runStartedAt）算起任务执行了多久；进行中实时累加，终止/等待
-// 时冻结到 runEndedAt。返回 null 表示无可用数据。
-bool _isRunningStatus(String? s) =>
-    s == 'thinking' || s == 'editing' || s == 'running';
-
-Duration? _runDuration(SessionStatus? live) {
-  if (live == null || live.runStartedAt <= 0) return null;
-  final running = _isRunningStatus(live.status) && live.runEndedAt <= 0;
-  final end = running
-      ? DateTime.now().millisecondsSinceEpoch
-      : (live.runEndedAt > 0 ? live.runEndedAt : live.runStartedAt);
-  final ms = end - live.runStartedAt;
-  return Duration(milliseconds: ms < 0 ? 0 : ms);
-}
-
-// 紧凑中文时长：12秒 / 3分20秒 / 1时05分。
-String _formatRunDuration(Duration d) {
-  final totalSec = d.inSeconds;
-  final h = totalSec ~/ 3600;
-  final m = (totalSec % 3600) ~/ 60;
-  final sec = totalSec % 60;
-  if (h > 0) return '$h时${m.toString().padLeft(2, '0')}分';
-  if (m > 0) return '$m分${sec.toString().padLeft(2, '0')}秒';
-  return '$sec秒';
-}
-
-// 运行时长短语（带 ⏱），无数据返回空串。
-String _runTimeText(SessionStatus? live) {
-  final d = _runDuration(live);
-  return d == null ? '' : '⏱ ${_formatRunDuration(d)}';
-}
 
 class MainShell extends StatefulWidget {
   final SettingsService settings;
@@ -805,7 +657,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                 controller: nameCtrl,
                 autofocus: true,
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                decoration: _inputDec(hint: 'My project'),
+                decoration: sheetInputDecoration(hint: 'My project'),
               ),
               const SizedBox(height: 10),
               const Text(
@@ -820,7 +672,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                   fontSize: 13,
                   fontFamily: 'monospace',
                 ),
-                decoration: _inputDec(hint: '/Users/you/code/my-project'),
+                decoration: sheetInputDecoration(hint: '/Users/you/code/my-project'),
                 onChanged: (_) {
                   debounce?.cancel();
                   debounce = Timer(const Duration(milliseconds: 200), () async {
@@ -1005,8 +857,8 @@ void _showSessionSheet(
   ({Color color, String text}) statusInfo(Session s, SessionStatus? live) {
     if (live != null) {
       return (
-        color: _wbStatusColor(live.status),
-        text: _wbStatusLabel(live.status),
+        color: wbStatusColor(live.status),
+        text: wbStatusLabel(live.status),
       );
     }
     if (mgr.runningSessionIds.contains(s.id)) {
@@ -1099,8 +951,8 @@ void _showSessionSheet(
                     final dir = dirName(s.dirId);
                     final live = mgr.liveStatus(s.id);
                     final st = statusInfo(s, live);
-                    final cliColor = _cliColor(s.cli);
-                    final lastInteraction = _sessionLastInteractionAt(s, live);
+                    final cliColor = cliBrandColor(s.cli);
+                    final lastInteraction = sessionLastInteractionAt(s, live);
                     final ago = timeago.format(
                       lastInteraction,
                       locale: 'en_short',
@@ -1131,7 +983,7 @@ void _showSessionSheet(
                         ? s.provider!
                         : '';
                     final summary = live?.summary ?? '';
-                    final runtime = _runTimeText(live);
+                    final runtime = runTimeText(live);
 
                     return InkWell(
                       onTap: () {
@@ -1182,10 +1034,10 @@ void _showSessionSheet(
                                     fontWeight: FontWeight.w700,
                                   ),
                                 ),
-                                if (_classifyBadge(live?.classifyState) !=
+                                if (classifyBadge(live?.classifyState) !=
                                     null) ...[
                                   const SizedBox(width: 6),
-                                  _classifyChip(live),
+                                  classifyChip(live),
                                 ],
                                 const Spacer(),
                                 if (runtime.isNotEmpty) ...[
@@ -1602,21 +1454,21 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                         spacing: 6,
                         runSpacing: 6,
                         children: [
-                          AddSessionChip(label: '+ Claude Term', color: _kClaudeColor,
+                          AddSessionChip(label: '+ Claude Term', color: AppColors.claude,
                               onTap: () => _createSession(SessionCli.claude, SessionKind.terminal)),
-                          AddSessionChip(label: '+ Claude Chat', color: _kClaudeColor,
+                          AddSessionChip(label: '+ Claude Chat', color: AppColors.claude,
                               onTap: () => _createSession(SessionCli.claude, SessionKind.chat)),
-                          AddSessionChip(label: '+ Codex Term', color: _kCodexColor,
+                          AddSessionChip(label: '+ Codex Term', color: AppColors.codex,
                               onTap: () => _createSession(SessionCli.codex, SessionKind.terminal)),
-                          AddSessionChip(label: '+ Codex Chat', color: _kCodexColor,
+                          AddSessionChip(label: '+ Codex Chat', color: AppColors.codex,
                               onTap: () => _createSession(SessionCli.codex, SessionKind.chat)),
-                          AddSessionChip(label: '+ OpenCode Term', color: _kOpenCodeColor,
+                          AddSessionChip(label: '+ OpenCode Term', color: AppColors.opencode,
                               onTap: () => _createSession(SessionCli.opencode, SessionKind.terminal)),
-                          AddSessionChip(label: '+ OpenCode Chat', color: _kOpenCodeColor,
+                          AddSessionChip(label: '+ OpenCode Chat', color: AppColors.opencode,
                               onTap: () => _createSession(SessionCli.opencode, SessionKind.chat)),
-                          AddSessionChip(label: '+ ZCode Term', color: _kZCodeColor,
+                          AddSessionChip(label: '+ ZCode Term', color: AppColors.zcode,
                               onTap: () => _createSession(SessionCli.zcode, SessionKind.terminal)),
-                          AddSessionChip(label: '+ ZCode Chat', color: _kZCodeColor,
+                          AddSessionChip(label: '+ ZCode Chat', color: AppColors.zcode,
                               onTap: () => _createSession(SessionCli.zcode, SessionKind.chat)),
                         ],
                       ),
@@ -1641,46 +1493,46 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                               style: const TextStyle(color: AppColors.faint, fontSize: 12)),
                         )
                       else ...[
-                        _SessionGroup(title: t('claudeTerminals'), color: _kClaudeColor,
+                        _SessionGroup(title: t('claudeTerminals'), color: AppColors.claude,
                             sessions: groups['claude_terminal']!, mgr: widget.mgr,
                             settings: widget.settings, statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes, providers: _providers,
                             onOpen: _openSession),
-                        _SessionGroup(title: t('claudeChats'), color: _kClaudeColor,
+                        _SessionGroup(title: t('claudeChats'), color: AppColors.claude,
                             sessions: groups['claude_chat']!, mgr: widget.mgr,
                             settings: widget.settings, statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes, providers: _providers,
                             onOpen: _openSession),
-                        _SessionGroup(title: t('codexTerminals'), color: _kCodexColor,
+                        _SessionGroup(title: t('codexTerminals'), color: AppColors.codex,
                             sessions: groups['codex_terminal']!, mgr: widget.mgr,
                             settings: widget.settings, statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes, providers: _providers,
                             onOpen: _openSession),
-                        _SessionGroup(title: t('codexChats'), color: _kCodexColor,
+                        _SessionGroup(title: t('codexChats'), color: AppColors.codex,
                             sessions: groups['codex_chat']!, mgr: widget.mgr,
                             settings: widget.settings, statuses: _workspace.statuses,
                             pendingNotes: _workspace.pendingNotes, providers: _providers,
                             onOpen: _openSession),
                         if (groups['opencode_terminal']!.isNotEmpty)
-                          _SessionGroup(title: t('openCodeTerminals'), color: _kOpenCodeColor,
+                          _SessionGroup(title: t('openCodeTerminals'), color: AppColors.opencode,
                               sessions: groups['opencode_terminal']!, mgr: widget.mgr,
                               settings: widget.settings, statuses: _workspace.statuses,
                               pendingNotes: _workspace.pendingNotes, providers: _providers,
                               onOpen: _openSession),
                         if (groups['opencode_chat']!.isNotEmpty)
-                          _SessionGroup(title: t('openCodeChats'), color: _kOpenCodeColor,
+                          _SessionGroup(title: t('openCodeChats'), color: AppColors.opencode,
                               sessions: groups['opencode_chat']!, mgr: widget.mgr,
                               settings: widget.settings, statuses: _workspace.statuses,
                               pendingNotes: _workspace.pendingNotes, providers: _providers,
                               onOpen: _openSession),
                         if (groups['zcode_terminal']!.isNotEmpty)
-                          _SessionGroup(title: t('zCodeTerminals'), color: _kZCodeColor,
+                          _SessionGroup(title: t('zCodeTerminals'), color: AppColors.zcode,
                               sessions: groups['zcode_terminal']!, mgr: widget.mgr,
                               settings: widget.settings, statuses: _workspace.statuses,
                               pendingNotes: _workspace.pendingNotes, providers: _providers,
                               onOpen: _openSession),
                         if (groups['zcode_chat']!.isNotEmpty)
-                          _SessionGroup(title: t('zCodeChats'), color: _kZCodeColor,
+                          _SessionGroup(title: t('zCodeChats'), color: AppColors.zcode,
                               sessions: groups['zcode_chat']!, mgr: widget.mgr,
                               settings: widget.settings, statuses: _workspace.statuses,
                               pendingNotes: _workspace.pendingNotes, providers: _providers,
@@ -2116,24 +1968,24 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                         ProjectStatPill(
                           label: 'Claude',
                           value: claudeCount.toString(),
-                          color: _kClaudeColor,
+                          color: AppColors.claude,
                         ),
                         ProjectStatPill(
                           label: 'Codex',
                           value: codexCount.toString(),
-                          color: _kCodexColor,
+                          color: AppColors.codex,
                         ),
                         if (opencodeCount > 0)
                           ProjectStatPill(
                             label: 'OpenCode',
                             value: opencodeCount.toString(),
-                            color: _kOpenCodeColor,
+                            color: AppColors.opencode,
                           ),
                         if (zcodeCount > 0)
                           ProjectStatPill(
                             label: 'ZCode',
                             value: zcodeCount.toString(),
-                            color: _kZCodeColor,
+                            color: AppColors.zcode,
                           ),
                       ],
                     ),
@@ -2185,8 +2037,8 @@ class _DirectoryCardState extends State<_DirectoryCard> {
 
     // 按 lastActivity 或 createdAt 降序排序
     allSessions.sort((a, b) {
-      final ta = _sessionLastInteractionAt(a, _workspace.statuses[a.id]);
-      final tb = _sessionLastInteractionAt(b, _workspace.statuses[b.id]);
+      final ta = sessionLastInteractionAt(a, _workspace.statuses[a.id]);
+      final tb = sessionLastInteractionAt(b, _workspace.statuses[b.id]);
       return tb.compareTo(ta);
     });
 
@@ -2197,7 +2049,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
       if (summary == null || summary.isEmpty) continue;
       final ts = live?.summaryTs != null && live!.summaryTs > 0
           ? live.summaryTs
-          : _sessionLastInteractionAt(s, live).millisecondsSinceEpoch;
+          : sessionLastInteractionAt(s, live).millisecondsSinceEpoch;
       return _TaskPreview(
         who: s.label?.isNotEmpty == true ? s.label! : s.id,
         summary: summary,
@@ -2210,7 +2062,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     final live = _workspace.statuses[latest.id];
     final ts = live?.summaryTs != null && live!.summaryTs > 0
         ? live.summaryTs
-        : _sessionLastInteractionAt(latest, live).millisecondsSinceEpoch;
+        : sessionLastInteractionAt(latest, live).millisecondsSinceEpoch;
 
     // 生成一个基本的任务描述
     String summary;
@@ -2251,7 +2103,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
           controller: ctrl,
           autofocus: true,
           style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
-          decoration: _inputDec(hint: 'Directory name'),
+          decoration: sheetInputDecoration(hint: 'Directory name'),
           onSubmitted: (v) => Navigator.pop(context, v),
         ),
         actions: [
@@ -2343,7 +2195,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                     color: Color(0xFFe7eaee),
                     fontSize: 14,
                   ),
-                  decoration: _inputDec(hint: '留空使用自动信息'),
+                  decoration: sheetInputDecoration(hint: '留空使用自动信息'),
                   onSubmitted: (v) => Navigator.pop(bctx, v),
                 ),
                 actions: [
@@ -2743,14 +2595,14 @@ class _TaskProgressCard extends StatelessWidget {
     // active/idle fallback used before the workspace socket reports in.
     final live = task.live;
     final Color statusColor = live != null
-        ? _wbStatusColor(live.status)
+        ? wbStatusColor(live.status)
         : (task.active
               ? const Color(0xFF6aa3ff)
               : const Color(0xFF5b616c));
     final String statusLabel = live != null
-        ? _wbStatusLabel(live.status)
+        ? wbStatusLabel(live.status)
         : (task.active ? '运行中' : '空闲');
-    final String runtime = _runTimeText(live);
+    final String runtime = runTimeText(live);
     final String activityText = runtime.isNotEmpty
         ? '⏱ $runtime'
         : (task.active ? '⚙️ 正在运行' : '🕘 ${_relativeTime(task.lastActivity)}');
@@ -2807,8 +2659,8 @@ class _TaskProgressCard extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             // 任务状态徽标（classify 状态：已完成/等待/处理中…）
-            if (_classifyBadge(live?.classifyState) != null) ...[
-              _classifyChip(live),
+            if (classifyBadge(live?.classifyState) != null) ...[
+              classifyChip(live),
               const SizedBox(width: 8),
             ],
             // 状态标签
@@ -3087,10 +2939,10 @@ class _SessionGroup extends StatelessWidget {
                   (constraints.maxWidth - gap * (columns - 1)) / columns;
               final sortedSessions = [...sessions]
                 ..sort(
-                  (a, b) => _sessionLastInteractionAt(
+                  (a, b) => sessionLastInteractionAt(
                     b,
                     statuses[b.id],
-                  ).compareTo(_sessionLastInteractionAt(a, statuses[a.id])),
+                  ).compareTo(sessionLastInteractionAt(a, statuses[a.id])),
                 );
               return Wrap(
                 spacing: gap,
@@ -3119,26 +2971,6 @@ class _SessionGroup extends StatelessWidget {
   }
 }
 
-InputDecoration _inputDec({String? hint}) => InputDecoration(
-  isDense: true,
-  filled: true,
-  fillColor: const Color(0xFF070809),
-  hintText: hint,
-  hintStyle: const TextStyle(color: Color(0xFF454b54), fontSize: 13),
-  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-  border: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF20242b)),
-    borderRadius: BorderRadius.circular(6),
-  ),
-  enabledBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF20242b)),
-    borderRadius: BorderRadius.circular(6),
-  ),
-  focusedBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
-    borderRadius: BorderRadius.circular(6),
-  ),
-);
 
 /// Dialog listing a directory's uncommitted files with a "commit all" action.
 /// Mirrors the web "⚠ 未提交文件" modal — surfaces dirty main working-tree
