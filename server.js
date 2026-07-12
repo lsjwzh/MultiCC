@@ -9024,16 +9024,31 @@ function runChatTurn(sessionName, text, opts = {}) {
   // promptText string the claude streaming path + fallback/continue spawns still
   // consume; the non-claude per-turn spawn below hands the envelope to
   // provider.shape() instead.
-  const envelope = composeMessage({
-    text, persisted, sessionName,
-    opts: { isFirstTurn, goalLimits, mode: cs.cli === 'claude' ? 'streaming' : 'per-turn' },
-    deps: {
-      resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
-      buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
-      pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
-      normalizeEffort, cliEffortLevel,
-    },
-  });
+  let envelope;
+  try {
+    envelope = composeMessage({
+      text, persisted, sessionName,
+      opts: { isFirstTurn, goalLimits, mode: cs.cli === 'claude' ? 'streaming' : 'per-turn' },
+      deps: {
+        resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
+        buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
+        pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
+        normalizeEffort, cliEffortLevel,
+      },
+    });
+  } catch (e) {
+    // composeMessage.validateEnvelope THROWS when NODE_ENV !== 'production', and
+    // the multicc server is started via nohup/launchd without NODE_ENV set. Valid
+    // turns never produce a violating envelope, so this catch is defense-in-depth:
+    // a future envelope-construction bug degrades to a clean, visible per-turn abort
+    // instead of an uncaught throw that could crash the process through the
+    // synchronous trigger path (bus.emit('chat:run')).
+    console.error(`[multicc/chat] [${sessionName}] composeMessage failed, aborting turn: ${e && e.message ? e.message : e}`);
+    try { chatBroadcast(sessionName, { type: 'error', error: `消息组装失败：${e && e.message ? e.message : e}` }); } catch (_) {}
+    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    cs.isStreaming = false;
+    return false;
+  }
   const promptText = renderPrompt(envelope);
   const rolePrompt = envelope.rolePrompt;
   const goalMaxTurns = envelope.spawnOpts.maxTurns;
@@ -9487,6 +9502,11 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.isStreaming = true;
         cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the continuation spawn (turnStartedAt may be >10min old)
         const continuePrompt = codexStreamDisconnectContinuePrompt();
+        // Intentionally NOT migrated to shape(): this codex-disconnect continuation
+        // spawns a fresh, layer-less continuePrompt (no notes/gateway/goal envelope),
+        // so it stays on the lower-level buildChatSpawnArgs API rather than composing
+        // a bare envelope. Kept in lockstep with the shape() path via the shared
+        // resolveSessionWireModel/effort helpers.
         const continueArgs = provider.buildChatSpawnArgs(persisted, continuePrompt, {
           isFirstTurn: false,
           rolePrompt,
@@ -9527,6 +9547,11 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the retry spawn (turnStartedAt may be >10min old)
         cs.streamReplay = [];
         cs._codexTransportError = '';
+        // Intentionally NOT migrated to shape(): the fresh-session retry reuses the
+        // already-composed promptText (from renderPrompt(envelope) above) verbatim,
+        // only flipping isFirstTurn→true. Re-composing would re-fire the notes
+        // side effects, so it deliberately stays on buildChatSpawnArgs with the
+        // same promptText string.
         const fallbackArgs = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn: true, rolePrompt });
         chatBroadcast(sessionName, {
           type: 'system', subtype: 'warning',
