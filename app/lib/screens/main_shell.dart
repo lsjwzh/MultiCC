@@ -18,6 +18,7 @@ import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/rainbow_border.dart';
 import '../widgets/session_badges.dart';
+import '../widgets/git_status_row.dart';
 import '../models/agent_preset.dart';
 import '../services/agent_preset_service.dart';
 import 'chat_screen.dart';
@@ -2099,7 +2100,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                                   ),
                                 ),
                               // ── Git 状态行（分支 + ahead/behind）──
-                              _GitStatusRow(pushState: widget.directory.pushState),
+                              GitStatusRow(pushState: widget.directory.pushState),
                             ],
                           ),
                         ),
@@ -4810,59 +4811,3 @@ class _UncommittedFilesDialogState extends State<_UncommittedFilesDialog> {
 //  GIT STATUS ROW — 在舰队卡片上显示分支名 + ahead/behind/脏 状态的紧凑行
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _GitStatusRow extends StatelessWidget {
-  final DirectoryPushState? pushState;
-  const _GitStatusRow({this.pushState});
-
-  @override
-  Widget build(BuildContext context) {
-    final ps = pushState;
-    // 没有任何 git 信息时不渲染
-    if (ps == null || (!ps.available && ps.dirty == 0)) return const SizedBox.shrink();
-
-    // 不可用 + 也没有脏文件
-    if (!ps.available) return const SizedBox.shrink();
-
-    final branch = ps.remoteBranch ?? '';
-    final ahead = ps.ahead;
-    final behind = ps.behind;
-    final dirty = ps.dirty;
-
-    // 构建紧凑的状态行
-    final parts = <String>[];
-    if (branch.isNotEmpty) parts.add('🌿 $branch');
-    if (ahead > 0) parts.add('📤$ahead');
-    if (behind > 0) parts.add('📥$behind');
-    if (dirty > 0) parts.add('📝$dirty');
-
-    // 如果没有任何值得显示的数据
-    if (parts.isEmpty) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Row(
-        children: [
-          Text(
-            parts.join('  '),
-            style: const TextStyle(
-              color: AppColors.faint,
-              fontSize: 10,
-              fontFamily: 'monospace',
-            ),
-          ),
-          if (dirty == 0 && ahead == 0 && behind == 0) ...[
-            const SizedBox(width: 6),
-            Container(
-              width: 6,
-              height: 6,
-              decoration: const BoxDecoration(
-                color: Color(0xFF3fb950),
-                shape: BoxShape.circle,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
