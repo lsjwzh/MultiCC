@@ -1,5 +1,7 @@
 'use strict';
 
+const { renderPrompt } = require('../message-composer');
+
 function createOpencodeAdapter({ cmd }) {
   return {
     name: 'opencode',
@@ -21,6 +23,22 @@ function createOpencodeAdapter({ cmd }) {
       }
       args.push(promptText);
       return args;
+    },
+    shape(env) {
+      const so = env.spawnOpts;
+      const isFirstTurn = env.historyHandle.isFirstTurn;
+      const model = so.rawModel;
+      const cliSessionId = env.historyHandle.cliSessionId;
+      const args = ['run', '--format', 'json', '--auto'];
+      if (model) args.push('--model', model);
+      if (!isFirstTurn && cliSessionId) args.push('--session', cliSessionId);
+      else if (!isFirstTurn) args.push('--continue');
+      const prompt = renderPrompt(env);
+      let payload = prompt;
+      if (isFirstTurn && env.rolePrompt) {
+        payload = `[角色设定]\n${env.rolePrompt}\n[角色设定结束]\n\n${prompt}`;
+      }
+      return { args, payload };
     },
     needsAsyncSessionIdCapture: false,
   };
