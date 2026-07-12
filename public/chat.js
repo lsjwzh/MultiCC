@@ -209,6 +209,7 @@ const micBtn      = document.getElementById('mic-btn');
 const micToast    = document.getElementById('mic-toast');
 const cancelBtn   = document.getElementById('cancel-btn');
 const mergeBtn    = document.getElementById('merge-btn');
+const restartBtn  = document.getElementById('restart-btn');
 const mergeHint   = document.getElementById('merge-hint');
 const mergeHintBtn = document.getElementById('merge-hint-btn');
 const headerMoreBtn = document.getElementById('header-more-btn');
@@ -602,6 +603,8 @@ let _loadingOlderSentinel = null; // DOM node inserted at top while loading, als
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
 let _isDisconnected = false;
+let _isRestarting = false;       // true while a user-triggered server restart is in progress
+let _restartAt = 0;              // Date.now() when restart was hit — grace gate so we don't reconnect to the dying old server
 let _disconnectEpisodeId = 0;
 let _lastReconnectNoticeEpisode = 0;
 let _lastInitInfoLine = '';
@@ -626,6 +629,14 @@ function connect() {
   dbg('ws', `connect() → ${url.replace(/token=[^&]*/, 'token=***')}`);
 
   ws.onopen = () => {
+    // During a restart the OLD server stays reachable until the detached
+    // child's kill -INT lands (~2s + drain). If we reconnect within the grace
+    // window we've hit the old instance — drop it and keep retrying so we don't
+    // flash a false "restarted" then immediately disconnect again.
+    if (_isRestarting && Date.now() - _restartAt < 6000) {
+      try { ws.close(); } catch (_) {}
+      return;
+    }
     statusEl.textContent = 'Connected';
     statusEl.className = 'connected';
     _reconnectAttempt = 0;
@@ -640,6 +651,7 @@ function connect() {
       }
     }
     _isDisconnected = false;
+    if (_isRestarting) { _isRestarting = false; addSystemMsg('✓ 服务已重启，连接已恢复'); }
     _wasConnected = true;
     // Show thinking while we wait for server's init message (which tells us real streaming state)
     if (isStreaming) showThinking();
@@ -667,7 +679,7 @@ function connect() {
     const delay = Math.min(1000 * Math.pow(2, _reconnectAttempt), 15000);
     _reconnectAttempt++;
     const secs = Math.round(delay / 1000);
-    statusEl.textContent = `Reconnecting in ${secs}s...`;
+    statusEl.textContent = _isRestarting ? '重启中…' : `Reconnecting in ${secs}s...`;
     statusEl.className = 'error';
     statusEl.onclick = () => { _reconnectAttempt = 0; connect(); };
     // Sticky in-chat banner so the reconnect state is visible without scrolling up.
@@ -1627,6 +1639,7 @@ function addSystemMsg(text) {
 }
 
 function showDisconnectBanner(secs) {
+  if (_isRestarting) return;  // during a restart we show a dedicated status, not the disconnect banner
   if (!_disconnectBannerEl) {
     _disconnectBannerEl = document.createElement('div');
     _disconnectBannerEl.className = 'msg system-msg disconnect-banner';
@@ -2594,6 +2607,37 @@ async function requestMerge() {
 
 mergeBtn?.addEventListener('click', requestMerge);
 mergeHintBtn?.addEventListener('click', requestMerge);
+
+async function requestRestart() {
+  if (!await confirmInPage('确定要重启 multicc 服务吗？\n这会短暂断开所有会话，随后自动重连（在途消息会先保存）。')) return;
+  _isRestarting = true;
+  _restartAt = Date.now();
+  addSystemMsg('正在重启服务…');
+  updateUI();
+  try {
+    const res = await fetch(withToken('/api/restart'), { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      _isRestarting = false;
+      addSystemMsg('重启失败：' + (data.error || `HTTP ${res.status}`));
+      updateUI();
+      return;
+    }
+    if (data.activeStreaming > 0) {
+      addSystemMsg(`⚠️ 有 ${data.activeStreaming} 个会话正在输出，其在途内容已保存、将被中断`);
+    }
+    // Drop the socket; onclose auto-reconnect (backoff) brings us back once the
+    // fresh instance is up. The disconnect banner is suppressed while _isRestarting.
+    _reconnectAttempt = 0;
+    try { if (ws) ws.close(); } catch (_) {}
+  } catch (e) {
+    _isRestarting = false;
+    addSystemMsg('重启请求失败：' + e.message);
+    updateUI();
+  }
+}
+
+restartBtn?.addEventListener('click', requestRestart);
 
 /* ── Auto-commit after task completion ── */
 // Called after an assistant turn completes. If the per-message auto-commit
