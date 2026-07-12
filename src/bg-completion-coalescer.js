@@ -71,7 +71,9 @@ function buildNudge(items) {
     const outLine = snippet
       ? `\n以下是它的输出，请据此继续推进任务，不要重复已完成的步骤：\n${snippet}`
       : '\n（无输出）请据此继续推进任务。';
-    return `【后台任务完成】你之前启动的后台任务（${desc}）已结束（状态：${status}）。${outLine}`;
+    const id = items[0].taskId || items[0].toolUseId;
+    const ref = id ? ` [ref:${id}]` : '';
+    return `【后台任务完成】你之前启动的后台任务（${desc}）已结束（状态：${status}）。${outLine}${ref}`;
   }
   const blocks = items.map((it, i) => {
     const n = i + 1;
@@ -80,7 +82,9 @@ function buildNudge(items) {
     const indented = s.replace(/\n/g, '\n   ');
     return `${n}. （${it.desc}）状态：${it.status}——输出：\n   ${indented}`;
   });
-  return `【后台任务完成 ×${items.length}】你之前启动的多个后台任务已先后结束，请据此一并推进、不要重复已完成的步骤：\n${blocks.join('\n')}`;
+  const ids = items.map(it => it.taskId || it.toolUseId).filter(Boolean);
+  const ref = ids.length ? ` [refs:${ids.join(',')}]` : '';
+  return `【后台任务完成 ×${items.length}】你之前启动的多个后台任务已先后结束，请据此一并推进、不要重复已完成的步骤：\n${blocks.join('\n')}${ref}`;
 }
 
 module.exports = { createCoalescer, buildNudge, DEFAULT_WINDOW_MS, MERGED_SNIPPET_CAP };
