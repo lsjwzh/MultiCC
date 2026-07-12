@@ -5,31 +5,10 @@ import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../models/agent_preset.dart';
 import '../services/settings_service.dart';
+import '../theme.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
 
-// ── Local copy of _inputDec (same definition as in main_shell.dart) ────────────
-
-InputDecoration _inputDec({String? hint}) => InputDecoration(
-  isDense: true,
-  filled: true,
-  fillColor: const Color(0xFF070809),
-  hintText: hint,
-  hintStyle: const TextStyle(color: Color(0xFF454b54), fontSize: 13),
-  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-  border: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF20242b)),
-    borderRadius: BorderRadius.circular(6),
-  ),
-  enabledBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF20242b)),
-    borderRadius: BorderRadius.circular(6),
-  ),
-  focusedBorder: OutlineInputBorder(
-    borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
-    borderRadius: BorderRadius.circular(6),
-  ),
-);
 
 // ── New-session dialog with role presets + provider→model linkage ───────────
 
@@ -370,7 +349,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             TextField(
               controller: _nameCtrl,
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(hint: '可选，留空自动生成'),
+              decoration: sheetInputDecoration(hint: '可选，留空自动生成'),
             ),
             const SizedBox(height: 12),
             // ── Role prompt with preset picker ──
@@ -402,7 +381,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               controller: _roleCtrl,
               maxLines: 3,
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(hint: '可选，留空继承Fleet默认'),
+              decoration: sheetInputDecoration(hint: '可选，留空继承Fleet默认'),
             ),
             const SizedBox(height: 12),
             // ── Provider ──
@@ -415,7 +394,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               value: _pickedProvider ?? '',
               dropdownColor: const Color(0xFF0f1115),
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(),
+              decoration: sheetInputDecoration(),
               items: [
                 if (!_hasConcreteDefaultProvider)
                   const DropdownMenuItem(
@@ -450,7 +429,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               value: _customModel ? '__custom__' : _pickedModel,
               dropdownColor: const Color(0xFF0f1115),
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(),
+              decoration: sheetInputDecoration(),
               items: [
                 ...modelOptions.map(
                   (e) => DropdownMenuItem(
@@ -486,7 +465,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               TextField(
                 controller: _customModelCtrl,
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                decoration: _inputDec(
+                decoration: sheetInputDecoration(
                   hint: _isClaude
                       ? '模型 ID，如 claude-opus-4-8'
                       : '模型 ID，如 gpt-5.5 / xopglm52',
@@ -504,7 +483,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               value: _pickedEffort,
               dropdownColor: const Color(0xFF0f1115),
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(),
+              decoration: sheetInputDecoration(),
               items:
                   (_isClaude
                           ? const [

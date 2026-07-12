@@ -79,3 +79,26 @@ ThemeData buildAppTheme() {
     ),
   );
 }
+
+/// Shared compact InputDecoration for bottom-sheet / dialog text fields (dark
+/// theme). 自 main_shell.dart 的 _inputDec 抽出，供 main_shell / create_session_dialog 共用。
+InputDecoration sheetInputDecoration({String? hint}) => InputDecoration(
+  isDense: true,
+  filled: true,
+  fillColor: const Color(0xFF070809),
+  hintText: hint,
+  hintStyle: const TextStyle(color: Color(0xFF454b54), fontSize: 13),
+  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+  border: OutlineInputBorder(
+    borderSide: const BorderSide(color: Color(0xFF20242b)),
+    borderRadius: BorderRadius.circular(6),
+  ),
+  enabledBorder: OutlineInputBorder(
+    borderSide: const BorderSide(color: Color(0xFF20242b)),
+    borderRadius: BorderRadius.circular(6),
+  ),
+  focusedBorder: OutlineInputBorder(
+    borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
+    borderRadius: BorderRadius.circular(6),
+  ),
+);
