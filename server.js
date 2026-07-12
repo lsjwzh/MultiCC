@@ -10873,11 +10873,19 @@ function gracefulShutdown(sig) {
   };
   // Snapshot turns that are mid-flight right now and let them finish so their
   // FULL assistant message is persisted normally (not a half-written partial).
-  // A turn is in flight while its child process is still alive (proc 'close'
-  // nulls cs.claudeProc after the result is saved).
+  // Two kinds of in-flight turn:
+  //   • legacy per-turn child proc — alive until proc 'close' nulls cs.claudeProc
+  //     after the result is saved.
+  //   • streaming turn — NO per-turn child; it runs on the persistent chatStream
+  //     process and its liveness is chatStream.status(name).busy (not cs.claudeProc).
+  // Missing the streaming case here made a restart mid-stream exit immediately
+  // ("no in-flight turns"), drop the turn (flushed 0), then post-restart
+  // auto-continue re-ran it → the user saw a duplicate assistant bubble while
+  // history held only the re-run's single copy.
+  const isStreamingBusy = (name, cs) => cs && cs.cli === 'claude' && !!chatStream.status(name)?.busy;
   const draining = new Set();
   for (const [name, cs] of chatSessions) {
-    if (cs && cs.claudeProc) draining.add(name);
+    if (cs && (cs.claudeProc || isStreamingBusy(name, cs))) draining.add(name);
   }
   if (draining.size === 0) return finish('no in-flight turns');
   console.log(`[multicc] ${sig} → draining ${draining.size} in-flight turn(s) before exit (grace ${SHUTDOWN_GRACE_MS}ms)`);
@@ -10885,7 +10893,9 @@ function gracefulShutdown(sig) {
   const timer = setInterval(() => {
     for (const name of [...draining]) {
       const cs = chatSessions.get(name);
-      if (!cs || !cs.claudeProc) draining.delete(name);   // that turn finished + saved
+      // Done when neither a live per-turn proc nor an in-flight streaming turn
+      // remains (streaming turn's `result` event flips busy→false + saves it).
+      if (!cs || (!cs.claudeProc && !isStreamingBusy(name, cs))) draining.delete(name);
     }
     if (draining.size === 0) { clearInterval(timer); finish('all turns drained'); }
     else if (Date.now() - t0 > SHUTDOWN_GRACE_MS) { clearInterval(timer); finish('grace timeout'); }
