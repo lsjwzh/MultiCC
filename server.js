@@ -8721,7 +8721,20 @@ const bgCompletionCoalescer = bgCoalesce.createCoalescer({
     // was known) so the classify dedup window covers the coalescing gap; don't
     // re-open it here (that would suppress a user's own continuation for 60s if a
     // user message landed during the window). Just inject the (merged) result.
-    waitInjector.injectSystemMsg(sessionName, bgCoalesce.buildNudge(items), 0);
+    //
+    // Aggregate the origin ids of EVERY item in the window so the resulting user
+    // message can be traced back to its task(s). A single completion yields a
+    // precise one-tool_use_id link (the frontend can pin the notice to that tool
+    // card); a merged flush carries the full set so history can still map the
+    // message to all originating tasks even though it won't pin to one card.
+    const bgTaskIds = items.map(it => it.taskId).filter(Boolean);
+    const bgToolUseIds = items.map(it => it.toolUseId).filter(Boolean);
+    // Guard on EITHER list: a completion may carry tool_use_id without a task_id
+    // (some CLI event shapes), and tool_use_id is the primary join key to the
+    // originating tool card — keying only on bgTaskIds.length would drop it
+    // exactly when taskId is absent.
+    const origin = (bgTaskIds.length || bgToolUseIds.length) ? { bgTaskIds, bgToolUseIds } : {};
+    waitInjector.injectSystemMsg(sessionName, bgCoalesce.buildNudge(items), 0, origin);
   },
 });
 function handleBackgroundTaskEvent(sessionName, cs, evt) {
@@ -8732,11 +8745,16 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     const outputFile = monitorOutputFilePath(evt.session_id || '', taskId);
     const tu = cs.currentToolCalls && cs.currentToolCalls.find(t => t.id === evt.tool_use_id);
     const cmd = (tu && tu.input && tu.input.command) || '';
-    if (tu && tu.name === 'Bash' && !(tu.input && tu.input.run_in_background)) {
+    // A foreground (sync) Bash still emits task_started/task_notification — its
+    // result returns via the normal tool_result path, so it is NOT a background
+    // task and must not fire a 后台任务 notice. Tag it for nudge suppression AND
+    // flag the broadcast so the frontend can skip it.
+    const isSyncBash = !!(tu && tu.name === 'Bash' && !(tu.input && tu.input.run_in_background));
+    if (isSyncBash) {
       tagSyncBashTask(taskId);
       console.log(`[multicc/bg] ${sessionName} task ${taskId} sync Bash (${cmd.slice(0, 60)}) -> will suppress completion nudge`);
     }
-    chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd });
+    chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd, background: !isSyncBash });
     startMonitorShadow(sessionName, cs, taskId, outputFile, evt.description || '');
   } else if (sub === 'task_notification') {
     const taskId = evt.task_id;
@@ -8747,7 +8765,11 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     let output = '';
     if (outputFile) { try { output = require('fs').readFileSync(outputFile, 'utf8'); } catch {} }
     const snippet = output.length > 2000 ? output.slice(-2000) : output;
-    chatBroadcast(sessionName, { type: 'monitor_done', task_id: taskId, status: evt.status, summary: evt.summary || '', output: snippet });
+    // Resolve sync-Bash ONCE: it drives both the broadcast flag (foreground Bash
+    // must NOT show a 后台任务 notice — its result returns via tool_result) and
+    // the nudge-suppression branch below.
+    const isSync = isSyncBashTask(taskId);
+    chatBroadcast(sessionName, { type: 'monitor_done', task_id: taskId, status: evt.status, summary: evt.summary || '', output: snippet, background: !isSync });
     // v2: drive a continuation inject straight from the completion event. The
     // event is a deterministic fact carrying the real result, so hand it to the
     // model now rather than letting classify guess B/C and nudge with an empty
@@ -8761,20 +8783,26 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
         consumeTaskOutputAwaiting(taskId);
         return;
       }
-      if (isSyncBashTask(taskId)) {
+      if (isSync) {
         console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sync Bash) -> suppress completion nudge (de-dup vs tool_result)`);
         consumeSyncBashTask(taskId);
         return;
       }
       const desc = evt.description || evt.summary || '后台任务';
       const status = evt.status || 'completed';
-      // Open the classify dedup window NOW (completion is known), not at flush —
-      // otherwise the ~1.5s coalescing gap lets autoContinue(D)/bgCheck(E) inject
-      // an empty "继续" nudge that the real result nudge then lands on top of.
-      // Then buffer; the coalescer flushes a single or merged nudge after a short
-      // window. Single completion → identical wording as before, ~1.5s later.
+      // Carry the origin ids through the coalescer so the flushed nudge can be
+      // linked back to the task that produced it (task_id) and — more usefully —
+      // to the tool_use block that launched it (tool_use_id is the natural join
+      // key to the assistant message's tools[].id and to the frontend's
+      // currentToolCards index). buildNudge ignores these (its text stays
+      // identical for back-compat with the regression script / string matchers);
+      // they ride along as metadata for onFlush to stamp onto the user message.
       waitInjector.noteBgResultInjected(sessionName);
-      bgCompletionCoalescer.add(sessionName, { desc, status, snippet });
+      bgCompletionCoalescer.add(sessionName, {
+        desc, status, snippet,
+        taskId: taskId || null,
+        toolUseId: evt.tool_use_id || null,
+      });
     }
   } else if (sub === 'background_tasks_changed') {
     chatBroadcast(sessionName, { type: 'background_tasks', tasks: evt.tasks || [] });
@@ -8782,7 +8810,7 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
 }
 
 function runChatTurn(sessionName, text, opts = {}) {
-  const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits } = opts;
+  const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits, bgTaskIds, bgToolUseIds } = opts;
   const clientMsgId = typeof opts.clientMsgId === 'string' ? opts.clientMsgId.trim().slice(0, 128) : '';
   text = String(text || '').trim();
   if (!text) return false;
@@ -8881,10 +8909,16 @@ function runChatTurn(sessionName, text, opts = {}) {
     }
   }
 
-  // Save user message to history
+  // Save user message to history. bgTaskIds/bgToolUseIds are present ONLY on
+  // background-completion result injections — they let history (and the UI)
+  // attribute this message back to the task(s) / tool_use block that originated
+  // it. Omitted (undefined, not null) for ordinary user messages and every other
+  // inject path, so old history and other callers are completely unaffected.
   appendChatMessage(sessionName, {
     role: 'user', content: text, ts: Date.now(),
     clientMsgId: clientMsgId || undefined,
+    bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
+    bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
   });
 
   // Reset accumulators
@@ -9555,7 +9589,10 @@ services.provide('chat.runTurn', runChatTurn);
 waitInjector.init({
   // All continuations route through runChatTurn → streaming sessions get the
   // warm process (queued if busy), default sessions get a --resume turn.
-  inject: (session, text) => runChatTurn(session, text, { originContinue: true }),
+  // opts (e.g. { bgTaskIds, bgToolUseIds } from the bg-completion coalescer) are
+  // forwarded so an injected continuation can carry origin metadata onto the
+  // saved user message. originContinue stays the default for every inject path.
+  inject: (session, text, opts) => runChatTurn(session, text, { originContinue: true, ...(opts || {}) }),
   isBusy: (session) => {
     const cs = chatSessions.get(session);
     if (cs && cs.claudeProc) return true;
