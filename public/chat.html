@@ -148,7 +148,7 @@
       #header { gap: 6px; }
       #header-more-wrap { display: inline-flex; }
       #session-title { max-width: 34vw; }
-      #model-btn, #provider-btn, #role-btn, #memory-btn, #stream-btn, #auto-commit-btn, #share-btn { max-width: 100%; }
+      #model-btn, #provider-btn, #role-btn, #memory-btn, #auto-commit-btn, #share-btn { max-width: 100%; }
     }
 
     /* Session identity (directory / alias) shown in the header */
@@ -1318,7 +1318,6 @@
     <button class="hdr-btn" id="provider-btn" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
     <button class="hdr-btn" id="role-btn" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
     <button class="hdr-btn" id="memory-btn" title="会话记忆：清理历史时辅助 AI 自动提炼的关键问题与解决方式，可查看/编辑" data-i18n="memory">🧠 记忆</button>
-    <button class="hdr-btn" id="stream-btn" title="流式常驻（claude 会话）" style="display:none" data-i18n="stream">⚡ 流式</button>
     <button class="hdr-btn" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="任务完成后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
     <button class="hdr-btn" id="share-btn" title="把此会话分享到外部（网页链接：只读 / 密码 / 可对话）" data-i18n="share">🔗 分享</button>
     <span id="header-more-wrap">
@@ -1326,7 +1325,6 @@
       <span id="header-more-menu"></span>
     </span>
     <button class="hdr-btn" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
-    <button class="hdr-btn" id="restart-btn" title="重启 multicc 服务（优雅：先保存在途消息，再自动重连）">🔄 重启</button>
     <span class="hdr-menu-wrap" id="clear-ctx-wrap">
       <button class="hdr-btn" id="clear-ctx-btn" title="Clear context" data-i18n="clear">Clear</button>
       <span class="hdr-drop-menu" id="clear-ctx-menu" style="display:none">

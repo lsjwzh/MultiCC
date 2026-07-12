@@ -209,13 +209,12 @@ const micBtn      = document.getElementById('mic-btn');
 const micToast    = document.getElementById('mic-toast');
 const cancelBtn   = document.getElementById('cancel-btn');
 const mergeBtn    = document.getElementById('merge-btn');
-const restartBtn  = document.getElementById('restart-btn');
 const mergeHint   = document.getElementById('merge-hint');
 const mergeHintBtn = document.getElementById('merge-hint-btn');
 const headerMoreBtn = document.getElementById('header-more-btn');
 const headerMoreMenu = document.getElementById('header-more-menu');
 const headerMoreWrap = document.getElementById('header-more-wrap');
-const HEADER_MORE_IDS = ['model-btn', 'role-btn', 'memory-btn', 'stream-btn', 'auto-commit-btn', 'share-btn'];
+const HEADER_MORE_IDS = ['model-btn', 'role-btn', 'memory-btn', 'auto-commit-btn', 'share-btn'];
 
 function syncHeaderMoreMenu() {
   if (!headerMoreMenu || !headerMoreWrap) return;
@@ -2649,37 +2648,6 @@ async function requestMerge() {
 mergeBtn?.addEventListener('click', requestMerge);
 mergeHintBtn?.addEventListener('click', requestMerge);
 
-async function requestRestart() {
-  if (!await confirmInPage('确定要重启 multicc 服务吗？\n这会短暂断开所有会话，随后自动重连（在途消息会先保存）。')) return;
-  _isRestarting = true;
-  _restartAt = Date.now();
-  addSystemMsg('正在重启服务…');
-  updateUI();
-  try {
-    const res = await fetch(withToken('/api/restart'), { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      _isRestarting = false;
-      addSystemMsg('重启失败：' + (data.error || `HTTP ${res.status}`));
-      updateUI();
-      return;
-    }
-    if (data.activeStreaming > 0) {
-      addSystemMsg(`⚠️ 有 ${data.activeStreaming} 个会话正在输出，其在途内容已保存、将被中断`);
-    }
-    // Drop the socket; onclose auto-reconnect (backoff) brings us back once the
-    // fresh instance is up. The disconnect banner is suppressed while _isRestarting.
-    _reconnectAttempt = 0;
-    try { if (ws) ws.close(); } catch (_) {}
-  } catch (e) {
-    _isRestarting = false;
-    addSystemMsg('重启请求失败：' + e.message);
-    updateUI();
-  }
-}
-
-restartBtn?.addEventListener('click', requestRestart);
-
 /* ── Auto-commit after task completion ── */
 // Called after an assistant turn completes. If the per-message auto-commit
 // checkbox is checked and the worktree has mergeable changes, silently
@@ -3163,10 +3131,8 @@ async function loadSessionModel() {
     updateEffortBtn();
     if ((info.cli || 'claude') !== 'claude') {
       updateAutoCommitBtn();
-      return; // streaming is claude-only
+      return; // autoDispatch below is claude-only
     }
-    _sessionStreaming = !!info.streaming;
-    updateStreamBtn();
     _sessionAutoCommit = !!info.autoCommit;
     updateAutoCommitBtn();
     _sessionAutoDispatch = !!info.autoDispatch;
@@ -3675,66 +3641,6 @@ memoryBtn?.addEventListener('click', () => { openMemoryEditor(); });
 
 // Live update when the aux AI distills new memory for this session.
 function applyMemoryEvent(memory) { _sessionMemory = memoryToText(memory); updateMemoryBtn(); }
-
-/* ── Per-session streaming (claude only) ── */
-// autoContinue was removed as a user-facing toggle (always on server-side, gated by
-// classify's D/W guards + tryAutoContinue). Only the 流式常驻 toggle remains.
-const streamBtn = document.getElementById('stream-btn');
-let _sessionStreaming = false;
-
-function updateStreamBtn() {
-  if (!streamBtn) return;
-  streamBtn.style.display = '';
-  const on = _sessionStreaming;
-  streamBtn.textContent = on ? tt('stream') : tt('streamOff');
-  streamBtn.style.opacity = on ? '1' : '0.6';
-  streamBtn.title = '流式常驻：保持 claude 进程不退出、保住上下文（适合「等数据返回再继续」的任务）。\n下一轮对话生效。';
-}
-
-// Single-toggle picker (WebView-safe; native confirm is unreliable in Android WebViews).
-function showStreamSettings(streaming) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:460px;max-width:94vw;color:#c9d1d9;';
-    box.innerHTML = `
-      <div style="font-size:15px;font-weight:600;margin-bottom:12px;">流式常驻（下一轮生效）</div>
-      <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:16px;cursor:pointer;">
-        <input type="checkbox" id="ss-stream" ${streaming ? 'checked' : ''} style="margin-top:3px;">
-        <span><b>流式常驻</b><br><span style="font-size:12px;color:#8b949e;">保持 claude 进程不退出、上下文常驻。turn 结束（哪怕模型说"等数据"）进程也活着待命，续接更快、更稳。</span></span>
-      </label>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button id="ss-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">取消</button>
-        <button id="ss-ok" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">保存</button>
-      </div>`;
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    const close = (r) => { overlay.remove(); resolve(r); };
-    box.querySelector('#ss-ok').onclick = () => close({ streaming: box.querySelector('#ss-stream').checked });
-    box.querySelector('#ss-cancel').onclick = () => close(null);
-    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
-  });
-}
-
-streamBtn?.addEventListener('click', async () => {
-  const picked = await showStreamSettings(_sessionStreaming);
-  if (picked === null) return;
-  try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streaming: picked.streaming }),
-    });
-    const data = await res.json();
-    if (!res.ok) { addSystemMsg('保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
-    _sessionStreaming = !!data.streaming;
-    updateStreamBtn();
-    addSystemMsg(`✓ 流式常驻=${_sessionStreaming ? '开' : '关'}，下一轮对话生效`);
-  } catch (e) {
-    addSystemMsg('保存失败：' + e.message);
-  }
-});
 
 /* ── Per-session auto-commit (auto commit & merge after task completion) ── */
 const autoCommitBtn = document.getElementById('auto-commit-btn');

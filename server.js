@@ -2526,7 +2526,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     if (effort === undefined) return res.status(400).json({ error: 'invalid effort' });
     if (!validEffortForCli(s.cli || 'claude', effort)) return res.status(400).json({ error: 'invalid reasoning level' });
     s.effort = effort || null;
-    if (s.streaming) chatStream.close(s.id);
+    if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
     appendEvent(s.dirId, 'session_effort_changed', `${s.label || s.id} → ${effectiveSessionEffort(s) || effortLabel(s.effort)}`, s.id);
   }
   if (req.body.rolePrompt !== undefined) {
@@ -2559,13 +2559,9 @@ app.patch('/api/sessions/:id', (req, res) => {
     appendEvent(s.dirId, 'memory_updated', s.memory ? '手动编辑会话记忆' : '清空会话记忆', s.id);
     workspaceBroadcast(s.dirId, { type: 'memory', sessionId: s.id, memory: s.memory || [] });
   }
-  if (req.body.streaming !== undefined) {
-    // Experimental: keep a persistent streaming claude process across turns.
-    if ((s.cli || 'claude') !== 'claude') return res.status(400).json({ error: 'streaming is claude-only' });
-    s.streaming = !!req.body.streaming;
-    if (!s.streaming) chatStream.close(s.id); // tear down any warm process
-    appendEvent(s.dirId, 'session_streaming_changed', `${s.label || s.id} → ${s.streaming ? '流式常驻' : '逐轮'}`, s.id);
-  }
+  // streaming (流式常驻) is no longer user-configurable: claude chat always runs
+  // in persistent-streaming mode. Any legacy `streaming` field in the PATCH body
+  // is ignored — the routing guard in runChatTurn keys on cli only.
   if (req.body.autoContinue !== undefined) {
     // autoContinue is no longer user-configurable (the streaming picker dropped
     // this toggle). Accept the field for back-compat with older clients but pin
@@ -2649,7 +2645,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     }
     // Chat sessions pick it up on the next per-turn spawn; a warm streaming
     // process must be torn down so it relaunches with the new env.
-    if (s.streaming) chatStream.close(s.id);
+    if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
     const pname = v.value ? (providers.getProviderSummary(s.cli === 'codex' ? 'codex' : 'claude', v.value)?.name || v.value) : '默认登录';
     appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
     // Push current classify state to chat so the classify bar updates immediately
@@ -2683,7 +2679,7 @@ app.patch('/api/sessions/:id', (req, res) => {
       return res.status(400).json({ error: 'invalid subagent' });
     }
     // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
-    if (s.streaming) chatStream.close(s.id);
+    if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
     const subApp2 = (s.cli === 'codex') ? 'codex' : 'claude';
     const saName = s.subagent
       ? `${providers.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
@@ -3384,12 +3380,12 @@ app.get('/api/sessions/:id', (req, res) => {
   // The session's own role override (null = inherits the directory default).
   const rolePrompt = persisted?.rolePrompt || null;
   const memory = persisted?.memory || null;  // distilled session memory
-  // streaming defaults on for claude chat sessions (createSessionRecord sets it,
-  // but older persisted sessions predate the default → treat undefined as on for
-  // claude chat so they pick up the new default on first load).
+  // streaming (流式常驻) is claude chat's only mode now — reported for back-compat
+  // with older clients but no longer toggleable. Reflect the effective behavior
+  // (always on for claude chat) rather than any stale persisted flag.
   const isClaudeChat = persisted?.cli !== 'codex' && persisted?.cli !== 'opencode' && persisted?.cli !== 'zcode'
     && persisted?.kind !== 'terminal';
-  const streaming = persisted?.streaming === undefined ? isClaudeChat : !!persisted.streaming;
+  const streaming = isClaudeChat;
   // autoContinue is no longer user-facing; always true (classify gates the actual
   // injection). Legacy sessions that predate the pinned field default to true too,
   // matching tryAutoContinue (which no longer reads this field).
@@ -8957,7 +8953,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       });
       cs.chatTurnCount++;
     }
-  } else if (persisted.streaming && (persisted.cli || 'claude') === 'claude' && chatStream.status(sessionName)?.busy) {
+  } else if ((persisted.cli || 'claude') === 'claude' && chatStream.status(sessionName)?.busy) {
     // Streaming: no per-turn child proc, but a turn may be in flight on the
     // persistent process. Interrupt it (its finalize becomes a no-op via the
     // _streamTurnSeq bump) and preserve its partial output before resetting.
@@ -9076,13 +9072,14 @@ function runChatTurn(sessionName, text, opts = {}) {
 
   const rolePrompt = resolveRolePrompt(persisted);
 
-  // ── Streaming path (flag-gated, claude only) ──
+  // ── Streaming path (claude only — always on) ──
   // Persistent process kept warm across turns so a turn that ends in a
   // "waiting for external data" state leaves a live, in-context process ready
   // to continue (fed by the next message / the waiting-injector) instead of a
-  // dead one needing a cold --resume. Default sessions use the per-turn spawn
+  // dead one needing a cold --resume. Streaming is now claude chat's only mode
+  // (the per-turn toggle was removed); non-claude CLIs use the per-turn spawn
   // path below, unchanged.
-  if (persisted.streaming && cs.cli === 'claude') {
+  if (cs.cli === 'claude') {
     return runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt);
   }
 
@@ -10091,7 +10088,7 @@ function handleChatWs(ws, req, urlObj) {
 
       if (msg.type === 'cancel') {
         cancelClassify(cs);
-        if (persisted.streaming && cs.cli === 'claude' && chatStream.isAlive(sessionName)) {
+        if (cs.cli === 'claude' && chatStream.isAlive(sessionName)) {
           console.log(`[multicc/chat] [${sessionName}] (streaming) cancel requested by user`);
           cs._killReason = 'user_cancel';
           // proc death → finalizeStreamingTurn fires (stream_end + idle). Don't
