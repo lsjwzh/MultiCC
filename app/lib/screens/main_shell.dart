@@ -19,6 +19,8 @@ import '../widgets/session_diff_dialog.dart';
 import '../widgets/rainbow_border.dart';
 import '../widgets/session_badges.dart';
 import '../widgets/git_status_row.dart';
+import '../widgets/kpi_tile.dart';
+import '../widgets/project_stat_pill.dart';
 import '../models/agent_preset.dart';
 import '../services/agent_preset_service.dart';
 import 'chat_screen.dart';
@@ -952,7 +954,7 @@ class _KpiRow extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(10, 2, 10, 8),
       child: Row(
         children: [
-          _KpiTile(
+          KpiTile(
             label: t('activeSessions'),
             value: '$active',
             color: const Color(0xFF3ad6c5),
@@ -967,7 +969,7 @@ class _KpiRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _KpiTile(
+          KpiTile(
             label: t('waitingSessions'),
             value: '$waiting',
             color: const Color(0xFFe3b341),
@@ -982,7 +984,7 @@ class _KpiRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _KpiTile(
+          KpiTile(
             label: t('cronTasks'),
             value: null,
             color: const Color(0xFF6aa3ff),
@@ -996,72 +998,6 @@ class _KpiRow extends StatelessWidget {
   }
 }
 
-class _KpiTile extends StatelessWidget {
-  final String label;
-  final String? value;
-  final Color color;
-  final VoidCallback onTap;
-  const _KpiTile({
-    required this.label,
-    required this.value,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: const Color(0xFF14171c),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF20242b)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    color: Color(0xFF8a909b),
-                    fontSize: 12,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (value != null) ...[
-                const SizedBox(width: 4),
-                Text(
-                  value!,
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ] else
-                const Icon(
-                  Icons.chevron_right,
-                  size: 16,
-                  color: Color(0xFF5b616c),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // Bottom-sheet list of sessions ("dir / alias"); tap an entry to jump to it.
 void _showSessionSheet(
@@ -2185,32 +2121,32 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                       spacing: 6,
                       runSpacing: 6,
                       children: [
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: t('sessions'),
                           value: widget.directory.totalSessions.toString(),
                         ),
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: t('active'),
                           value: activeCount.toString(),
                         ),
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: 'Claude',
                           value: claudeCount.toString(),
                           color: _kClaudeColor,
                         ),
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: 'Codex',
                           value: codexCount.toString(),
                           color: _kCodexColor,
                         ),
                         if (opencodeCount > 0)
-                          _ProjectStatPill(
+                          ProjectStatPill(
                             label: 'OpenCode',
                             value: opencodeCount.toString(),
                             color: _kOpenCodeColor,
                           ),
                         if (zcodeCount > 0)
-                          _ProjectStatPill(
+                          ProjectStatPill(
                             label: 'ZCode',
                             value: zcodeCount.toString(),
                             color: _kZCodeColor,
@@ -3111,48 +3047,6 @@ String _eventLabel(Map<String, dynamic> e) {
   }
 }
 
-class _ProjectStatPill extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color? color;
-  const _ProjectStatPill({
-    required this.label,
-    required this.value,
-    this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final c = color ?? const Color(0xFF8a909b);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF070809),
-        border: Border.all(
-          color: color == null
-              ? const Color(0xFF20242b)
-              : c.withValues(alpha: 0.45),
-        ),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: TextStyle(color: c, fontSize: 11),
-          children: [
-            TextSpan(
-              text: value,
-              style: const TextStyle(
-                color: Color(0xFFf2f4f7),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            TextSpan(text: ' $label'),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  SESSION GROUP + CARD
