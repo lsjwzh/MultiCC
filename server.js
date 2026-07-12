@@ -999,6 +999,7 @@ function destroySessionCascade(s, d) {
     chatSessions.delete(s.id);
   }
   waitInjector.cancelForSession(s.id);
+  bgCompletionCoalescer.cancel(s.id); // drop any completions buffered for this now-deleted session
   share.removeForSession(s.id);
   if (s.worktreePath && s.branch) gitWorktreeRemove(d.path, s.worktreePath, s.branch);
   teardownTriggers(s.id);
@@ -3514,6 +3515,7 @@ app.delete('/api/sessions/:id', (req, res) => {
     chatSessions.delete(id);
   }
   waitInjector.cancelForSession(id);
+  bgCompletionCoalescer.cancel(id); // drop any completions buffered for this now-deleted session
   share.removeForSession(id);
   // Remove the session's git worktree + branch.
   const persisted = persistedSessions.get(id);
@@ -4372,6 +4374,7 @@ const push = require('./src/push');
 const tunnel = require('./src/tunnel');
 const chatStream = require('./src/chat-stream');
 const waitInjector = require('./src/wait-injector');
+const bgCoalesce = require('./src/bg-completion-coalescer');
 const detached = require('./src/detached');
 const share = require('./src/share');
 
@@ -8541,6 +8544,12 @@ function stopMonitorShadow(cs, taskId) {
 // session is awaiting via block=true; suppress the nudge for those.
 const _taskOutputAwaiting = new Map(); // taskId -> { at }
 const TASKOUTPUT_AWAIT_TTL_MS = 5 * 60 * 1000;
+// NOTE: only block=true pulls are marked. Marking block=false peeks too was tried
+// (to close the same-task double-delivery when a peek already saw the completed
+// output) but reverted: at tool_use time we can't tell whether the peek observed
+// completion or only partial output, so a short-TTL peek mark would suppress the
+// completion nudge of a task that finishes shortly after an EARLY peek — stalling
+// an idle session. A correct fix must gate on the tool_result showing completion.
 function markTaskOutputAwaiting(input) {
   try {
     if (!input || !input.block || !input.task_id) return; // only block=true pulls consume the result
@@ -8580,6 +8589,18 @@ function isSyncBashTask(taskId) {
   return true;
 }
 function consumeSyncBashTask(taskId) { if (taskId) _syncBashTaskIds.delete(String(taskId)); }
+// C2: coalesce completion nudges per session. Several bg tasks finishing within a
+// short window wake the session with ONE merged nudge instead of one turn each.
+const bgCompletionCoalescer = bgCoalesce.createCoalescer({
+  onFlush: (sessionName, items) => {
+    console.log(`[multicc/bg] ${sessionName} flush ${items.length} completion(s) -> ${items.length > 1 ? 'merged' : 'single'} nudge`);
+    // noteBgResultInjected was already called at add()-time (when the completion
+    // was known) so the classify dedup window covers the coalescing gap; don't
+    // re-open it here (that would suppress a user's own continuation for 60s if a
+    // user message landed during the window). Just inject the (merged) result.
+    waitInjector.injectSystemMsg(sessionName, bgCoalesce.buildNudge(items), 0);
+  },
+});
 function handleBackgroundTaskEvent(sessionName, cs, evt) {
   const sub = evt.subtype;
   if (sub === 'task_started') {
@@ -8624,12 +8645,13 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
       }
       const desc = evt.description || evt.summary || '后台任务';
       const status = evt.status || 'completed';
-      const outLine = snippet
-        ? `\n以下是它的输出，请据此继续推进任务，不要重复已完成的步骤：\n${snippet}`
-        : '\n（无输出）请据此继续推进任务。';
-      const nudge = `【后台任务完成】你之前启动的后台任务（${desc}）已结束（状态：${status}）。${outLine}`;
+      // Open the classify dedup window NOW (completion is known), not at flush —
+      // otherwise the ~1.5s coalescing gap lets autoContinue(D)/bgCheck(E) inject
+      // an empty "继续" nudge that the real result nudge then lands on top of.
+      // Then buffer; the coalescer flushes a single or merged nudge after a short
+      // window. Single completion → identical wording as before, ~1.5s later.
       waitInjector.noteBgResultInjected(sessionName);
-      waitInjector.injectSystemMsg(sessionName, nudge, 0);
+      bgCompletionCoalescer.add(sessionName, { desc, status, snippet });
     }
   } else if (sub === 'background_tasks_changed') {
     chatBroadcast(sessionName, { type: 'background_tasks', tasks: evt.tasks || [] });
