@@ -9858,6 +9858,10 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   // dropped turn lands here without it. Capture before the reset below.
   const completedOk = cs._resultSaved;
   cs._resultSaved = false;
+  // Why the turn ended, captured before reset: user_cancel / new_user_message are
+  // deliberate stops (never recovered); any other !completedOk end is a fault.
+  const killReason = cs._killReason || null;
+  cs._killReason = null;
   // classify prompt + dispatchStateAction handles API errors via state E → retry.
   const sawApi = cs._sawApiError; cs._sawApiError = false;
   // Let classify decide the final status. If sawApi, always defer to classify.
@@ -9865,9 +9869,24 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   if (sawApi) {
     classifyTurnEnd(cs, sessionName);
   } else if (completedOk) {
+    // Clean end: the turn fired its `result` event — whether the task is done or
+    // the assistant paused to ask the user. Never auto-recovered. Clear the
+    // interrupt-resume counter so a past fault doesn't leak into the next turn.
+    waitInjector.resetInterrupted(sessionName);
     emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
   } else {
-    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    // 非正常中断: the stream ended WITHOUT a `result` event and WITHOUT an API error
+    // — the turn was cut (proc/stream died, connection dropped, truncated, watchdog
+    // kill, restart mid-turn). Absence of the `result` event is the DETERMINISTIC
+    // interrupt fingerprint — no LLM guess. Auto-recover it (the only non-fault case
+    // we recover) unless the user stopped it themselves. resumeInterrupted is
+    // hasWait-guarded + capped (MAX_RESUME_INTERRUPTED) against a drop-loop.
+    const userStopped = killReason === 'user_cancel' || killReason === 'new_user_message';
+    if (!userStopped && waitInjector.resumeInterrupted(sessionName)) {
+      console.log(`[multicc/chat] [${sessionName}] (streaming) 非正常中断 (no result event, kill=${killReason || 'none'}) → resume`);
+    } else {
+      setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    }
   }
   chatBroadcast(sessionName, { type: 'stream_end' });
 
