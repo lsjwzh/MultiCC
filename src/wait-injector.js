@@ -55,7 +55,7 @@
 const crypto = require('crypto');
 
 // Injected dependencies (set by init) so the module is testable in isolation.
-let _inject = async () => {};   // (session, text) => Promise   — runChatTurn wrapper
+let _inject = async () => {};   // (session, text, opts?) => Promise   — runChatTurn wrapper
 let _exec = async () => ({ stdout: '', code: 1 }); // (cmd, cwd) => {stdout, stderr, code}
 let _isBusy = () => false;      // (session) => bool             — is a turn in flight
 let _log = () => {};
@@ -357,27 +357,32 @@ const SYS_PREFIX = '🔇';
 // forever. injectSystemMsg (classify nudges) has no such cap - nudges can wait,
 // real data must eventually land. (Streaming queues internally too.)
 const BUSY_MAX_ATTEMPTS = 300; // 5min @ 1s - generous; a live long turn never hits it
-function fireInject(session, text, attempt = 0) {
+function fireInject(session, text, attempt = 0, opts) {
   if (_isBusy(session) && attempt < BUSY_MAX_ATTEMPTS) {
-    setTimeout(() => fireInject(session, text, attempt + 1), 1000);
+    setTimeout(() => fireInject(session, text, attempt + 1, opts), 1000);
     return;
   }
   if (attempt >= BUSY_MAX_ATTEMPTS) {
     _log(`[wait] fireInject ${session}: still busy after ${BUSY_MAX_ATTEMPTS}s, force-injecting (turn may be hung)`);
   }
-  Promise.resolve(_inject(session, text)).catch(e => _log(`[wait] inject failed for ${session}: ${e.message}`));
+  Promise.resolve(_inject(session, text, opts)).catch(e => _log(`[wait] inject failed for ${session}: ${e.message}`));
 }
 
 // Fire an auto-generated nudge/retry message into a session. Always prefixed
 // with SYS_PREFIX so classifiers and reconcilers can reliably identify and
 // ignore it — language-agnostic, no fragile regex.
-function injectSystemMsg(session, text, delayMs) {
+//
+// opts is optional origin metadata forwarded to _inject (→ runChatTurn → the
+// saved user message). Today only the bg-completion coalescer passes
+// { bgTaskIds, bgToolUseIds }; classify nudges and other callers omit it, which
+// keeps their behaviour identical to before.
+function injectSystemMsg(session, text, delayMs, opts) {
   const msg = `${SYS_PREFIX}${text}`;
   const d = Number(delayMs);
   const delay = Number.isFinite(d) ? Math.max(0, d) : 0;
   const go = () => {
     if (_isBusy(session)) { setTimeout(go, 1000); return; }
-    Promise.resolve(_inject(session, msg)).catch(e => _log(`[wait] system inject failed for ${session}: ${e.message}`));
+    Promise.resolve(_inject(session, msg, opts)).catch(e => _log(`[wait] system inject failed for ${session}: ${e.message}`));
   };
   if (delay) { setTimeout(go, delay); return; }
   go();
