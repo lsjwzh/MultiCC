@@ -604,6 +604,7 @@ let _wasConnected = false;       // true once we've successfully opened at least
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
 let _isDisconnected = false;
 let _isRestarting = false;       // true while a user-triggered server restart is in progress
+let _restartAt = 0;              // Date.now() when restart was hit — grace gate so we don't reconnect to the dying old server
 let _disconnectEpisodeId = 0;
 let _lastReconnectNoticeEpisode = 0;
 let _lastInitInfoLine = '';
@@ -628,6 +629,14 @@ function connect() {
   dbg('ws', `connect() → ${url.replace(/token=[^&]*/, 'token=***')}`);
 
   ws.onopen = () => {
+    // During a restart the OLD server stays reachable until the detached
+    // child's kill -INT lands (~2s + drain). If we reconnect within the grace
+    // window we've hit the old instance — drop it and keep retrying so we don't
+    // flash a false "restarted" then immediately disconnect again.
+    if (_isRestarting && Date.now() - _restartAt < 6000) {
+      try { ws.close(); } catch (_) {}
+      return;
+    }
     statusEl.textContent = 'Connected';
     statusEl.className = 'connected';
     _reconnectAttempt = 0;
@@ -2602,6 +2611,7 @@ mergeHintBtn?.addEventListener('click', requestMerge);
 async function requestRestart() {
   if (!await confirmInPage('确定要重启 multicc 服务吗？\n这会短暂断开所有会话，随后自动重连（在途消息会先保存）。')) return;
   _isRestarting = true;
+  _restartAt = Date.now();
   addSystemMsg('正在重启服务…');
   updateUI();
   try {
