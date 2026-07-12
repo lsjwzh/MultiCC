@@ -82,6 +82,7 @@ const artifacts = require('./src/artifacts');
 const providers = require('./src/providers');
 const tokenGlobal = require('./src/token-global');
 const { createCliAdapters } = require('./src/cli-adapters');
+const { composeMessage, renderPrompt } = require('./src/message-composer');
 const { mountCodexProxy } = require('./src/codex-proxy');
 const { mountClaudeProxy } = require('./src/claude-proxy');
 const app = express();
@@ -9013,51 +9014,29 @@ function runChatTurn(sessionName, text, opts = {}) {
   // For codex:  first turn → exec --json, subsequent → exec resume <id> --json.
   const isFirstTurn = (typeof forceFirstTurn === 'boolean') ? forceFirstTurn : (cs.chatTurnCount === 0 || !persisted.cliSessionId);
 
-  // Passive inter-agent notes: prepend any pending notes addressed to this
-  // session onto the prompt, then mark them delivered.
-  let promptText = text;
-  const pendingNotes = pendingNotesFor(sessionName).slice(0, 10);
-  if (pendingNotes.length) {
-    let block = '[multicc 跨 agent 留言 — 来自同目录下的其他 agent]\n';
-    for (const n of pendingNotes) block += `- 来自「${n.fromLabel}」：${n.body}\n`;
-    block += '[留言结束]\n\n';
-    if (block.length > 4000) block = block.slice(0, 4000) + '\n…(截断)\n\n';
-    promptText = block + text;
-    const now = Date.now();
-    for (const n of pendingNotes) { n.delivered = true; n.deliveredAt = now; }
-    saveNotes();
-    appendEvent(persisted.dirId, 'note_delivered', `${pendingNotes.length} 条留言已送达`, sessionName);
-    workspaceBroadcast(persisted.dirId, {
-      type: 'note_pending', sessionId: sessionName, count: pendingNotesFor(sessionName).length,
-    });
-    chatBroadcast(sessionName, {
-      type: 'system', subtype: 'agent_notes',
-      notes: pendingNotes.map(n => ({ from: n.fromLabel, body: n.body })),
-    });
-  }
-  if (persisted.type === 'gateway') {
-    promptText = buildGatewayPrompt(promptText);
-  } else if (persisted.type !== 'aux') {
-    const dispatchContext = buildDispatchContextPrompt(sessionName);
-    if (dispatchContext) promptText = dispatchContext + promptText;
-  }
-
-  // Goal mode: prepend the configured limit constraints (round/budget) so the
-  // autonomous agent is bounded. maxTurns additionally becomes a hard CLI cap.
-  const goalMaxTurns = goalLimits ? (goalLimits.maxRounds || 0) : 0;
-  if (goalLimits) {
-    const note = buildGoalLimitNote(goalLimits);
-    if (note) promptText = note + promptText;
-  }
-
-  // ultracode 模式：在用户消息末尾追加触发词，激活 Claude Code 官方 dynamic workflow。
-  // 实测 --settings {"ultracode":true} 单独不触发（A 组 0 次 Workflow），user prompt 必须
-  // 出现 "ultracode" keyword（B/C/D 组均触发）。不依赖 autoDispatch，仅看 effort。
-  if (persisted.type !== 'aux' && normalizeEffort(persisted.effort) === 'ultracode') {
-    promptText = promptText + '\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]';
-  }
-
-  const rolePrompt = resolveRolePrompt(persisted);
+  // Unified message assembly (src/message-composer.js — message-builder Phase 2).
+  // composeMessage builds the prompt text (cross-agent notes → gateway/dispatch →
+  // goal-limit → user text → ultracode suffix) AND fires the notes-delivered side
+  // effects, byte-for-byte identical to the former inline assembly that lived here
+  // (regression-gated by tests/test-message-composer-golden.js suite 1). The
+  // notes side effects now live INSIDE composeMessage, so they are intentionally
+  // NOT duplicated here. renderPrompt() flattens the envelope back to the
+  // promptText string the claude streaming path + fallback/continue spawns still
+  // consume; the non-claude per-turn spawn below hands the envelope to
+  // provider.shape() instead.
+  const envelope = composeMessage({
+    text, persisted, sessionName,
+    opts: { isFirstTurn, goalLimits, mode: cs.cli === 'claude' ? 'streaming' : 'per-turn' },
+    deps: {
+      resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
+      buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
+      pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
+      normalizeEffort, cliEffortLevel,
+    },
+  });
+  const promptText = renderPrompt(envelope);
+  const rolePrompt = envelope.rolePrompt;
+  const goalMaxTurns = envelope.spawnOpts.maxTurns;
 
   // ── Streaming path (claude only — always on) ──
   // Persistent process kept warm across turns so a turn that ends in a
@@ -9073,7 +9052,22 @@ function runChatTurn(sessionName, text, opts = {}) {
   // Per-session provider (cc-switch): env injected into THIS child only, so
   // sibling sessions routing to other providers stay fully independent.
   const provEnv = providers.resolveSpawnEnv(persisted);
-  const args = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn, rolePrompt, maxTurns: goalMaxTurns, skipDefaultModel: provEnv.skipDefaultModel, providerModel: provEnv.providerModel, providerModels: provEnv.providerModels });
+  // Non-claude per-turn spawn now goes through the adapter's shape(envelope)
+  // factory (message-builder Phase 2). [...shape.args, shape.payload] is
+  // byte-for-byte identical to the former buildChatSpawnArgs
+  // (tests/test-message-composer-golden.js suite 3, codex/opencode/zcode). The
+  // provider wire-model fields are injected into spawnOpts here — resolveSpawnEnv
+  // runs after composeMessage — so shape() resolves the model exactly as before.
+  const shaped = provider.shape({
+    ...envelope,
+    spawnOpts: {
+      ...envelope.spawnOpts,
+      skipDefaultModel: provEnv.skipDefaultModel,
+      providerModel: provEnv.providerModel,
+      providerModels: provEnv.providerModels,
+    },
+  });
+  const args = [...shaped.args, shaped.payload];
   console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
 
   // Sanitize empty thinking blocks from the Claude CLI JSONL session file.
