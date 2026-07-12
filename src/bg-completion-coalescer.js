@@ -23,7 +23,7 @@ const MERGED_SNIPPET_CAP = 800; // per-task output cap when merging, keeps the c
 
 function createCoalescer({ windowMs = DEFAULT_WINDOW_MS, onFlush, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   if (typeof onFlush !== 'function') throw new Error('createCoalescer: onFlush is required');
-  const pending = new Map(); // session -> { items: [{desc,status,snippet}], timer }
+  const pending = new Map(); // session -> { items: [{desc,status,snippet,taskId?,toolUseId?}], timer }
 
   function add(session, item) {
     let p = pending.get(session);

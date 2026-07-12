@@ -881,6 +881,36 @@ function handleEvent(msg) {
       }
       break;
 
+    case 'monitor_started': {
+      // Background task (Monitor / run_in_background Bash) just started. The
+      // server broadcasts this but the frontend previously had no handler → it
+      // was silently dropped. Surface a one-line status so the launch is visible
+      // live (the task's full result still arrives later via the bg-completion
+      // nudge, attributed with bgToolUseIds).
+      // Skip foreground (sync) Bash — the server flags those background:false
+      // since their result returns via tool_result, not as a 后台任务 notice.
+      // (`!== false` so an unflagged/legacy payload still shows.)
+      if (msg.background === false) break;
+      addSystemMsg(`▶ 后台任务启动：${msg.description || msg.command || '后台任务'}`);
+      break;
+    }
+
+    case 'monitor_done': {
+      // Background task finished — show it the moment it lands. The real result
+      // is ALSO injected as a continuation turn (~1.5s later via the coalescer),
+      // but this live signal closes the "task vanished into a void" gap.
+      if (msg.background === false) break;
+      const desc = msg.summary || msg.description || '后台任务';
+      addSystemMsg(`✓ 后台任务完成（${desc}，状态：${msg.status || 'completed'}）`);
+      break;
+    }
+
+    case 'background_tasks':
+      // Periodic background-task list refresh from the CLI. No UI action needed
+      // right now (the per-task start/done events above are the useful signal);
+      // explicitly handled so it is NOT silently dropped.
+      break;
+
     case 'chat_msg_meta': {
       // Server saved a message and assigned its history id — tag the newest
       // bubble of that role (if it isn't tagged yet) so its delete button
@@ -1728,6 +1758,17 @@ function replayHistory(messages, serverTokenUsage, hasMore) {
     try {
     if (m.role === 'user') {
       const div = addUserMsg(m.content);
+      // Background-completion result injections carry bgToolUseIds (origin
+      // metadata stamped on by runChatTurn) so they can be told apart from real
+      // user messages and linked back to the tool_use block that launched the
+      // task. Show a small tag instead of letting the result read as if the user
+      // typed it.
+      if (Array.isArray(m.bgToolUseIds) && m.bgToolUseIds.length) {
+        const tag = document.createElement('div');
+        tag.textContent = `🔁 后台任务回流${m.bgToolUseIds.length > 1 ? ` ×${m.bgToolUseIds.length}` : ''}`;
+        tag.style.cssText = 'font-size:11px;color:#8b949e;margin-top:6px;border-top:1px dashed rgba(139,164,158,.35);padding-top:4px;';
+        div.appendChild(tag);
+      }
       if (m.id) { div.dataset.msgId = m.id; attachDeleteButton(div); attachForkButton(div); }
     } else if (m.role === 'assistant') {
       const div = renderHistoryAssistantNode(m);
