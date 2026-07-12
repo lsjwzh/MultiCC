@@ -2744,6 +2744,260 @@ app.delete('/api/sessions/:id/memory', (req, res) => {
   res.json({ ok: true, files: listMemoryFiles(dir) });
 });
 
+// ── Memory graph ──────────────────────────────────────────────────────────
+// Build a directed graph of the memory system for visualization. Every .md
+// file under memories/<dirId>/{_shared, sessions/*} becomes a node
+// {id, title, summary, type, scope, …}; every [[wikilink]] in a file body
+// becomes a directed edge {source, target, type:'reference', strength:count}.
+// Dangling [[links]] (no matching file yet) surface as `missing` placeholder
+// nodes so the "link liberally" convention is visible rather than dropped.
+//
+//   GET /api/memory/graph            → aggregate across all projects
+//   GET /api/memory/graph?dirId=<id> → scope to one project (dir)
+const MEM_GRAPH_MAX_NODES = 600; // safety cap so a huge store still renders <3s
+
+// Parse one memory .md into a node descriptor. Handles both the YAML-frontmatter
+// convention (name/description/metadata.type) and the plain "# H1 + body" files
+// that live in the store today. Never throws.
+function parseMemoryMarkdown(raw, slug) {
+  let body = String(raw == null ? '' : raw);
+  const fm = {}; // flat frontmatter: title, description, name, type
+  // ── YAML frontmatter (best-effort, no yaml dep) ──
+  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(body);
+  if (m) {
+    const yaml = m[1];
+    body = body.slice(m[0].length);
+    let inMeta = false;
+    for (const line of yaml.split(/\r?\n/)) {
+      const kv = /^(\s*)([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
+      if (!kv) continue;
+      const indent = kv[1].length, key = kv[2], val = kv[3].replace(/^["']|["']$/g, '').trim();
+      if (key === 'metadata') { inMeta = true; continue; }
+      if (inMeta && indent > 0) { if (key === 'type') fm.metaType = val; continue; }
+      inMeta = false;
+      if (key === 'name') fm.name = val;
+      else if (key === 'title') fm.title = val;
+      else if (key === 'description') fm.description = val;
+      else if (key === 'type') fm.type = val;
+    }
+    // 约定里 type 落在 metadata.type 下：让它确定性优先，避免与顶层 type 的先后顺序有关。
+    if (fm.metaType) fm.type = fm.metaType;
+  }
+  // ── Title: frontmatter → first H1 → humanized slug ──
+  let title = fm.title || '';
+  if (!title) {
+    const h1 = /^\s*#\s+(.+?)\s*$/m.exec(body);
+    if (h1) title = h1[1].trim();
+  }
+  if (!title) title = String(slug || '').replace(/[-_]+/g, ' ').trim() || slug;
+  title = title.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1'); // strip wikilinks from title
+  // ── Summary: frontmatter description → first meaningful paragraph ──
+  let summary = fm.description || '';
+  if (!summary) {
+    for (let ln of body.split(/\r?\n{2,}/)) {
+      ln = ln.trim();
+      if (!ln) continue;
+      if (/^#/.test(ln)) continue;                 // skip headings
+      const cleaned = ln
+        .replace(/^>\s?/gm, '')                     // blockquote markers
+        .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1') // wikilinks → text
+        .replace(/`{1,3}/g, '')                     // code fences/ticks
+        .replace(/[*_]{1,3}/g, '')                  // emphasis
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cleaned) { summary = cleaned; break; }
+    }
+  }
+  if (summary.length > 240) summary = summary.slice(0, 237) + '…';
+  // ── Outgoing wikilink targets → { slug: count } ──
+  const links = {};
+  const re = /\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g;
+  let lm;
+  while ((lm = re.exec(body))) {
+    let t = lm[1].trim().replace(/\.md$/i, '');
+    if (!t) continue;
+    links[t] = (links[t] || 0) + 1;
+  }
+  return { title, summary, type: (fm.type || '').toLowerCase(), links };
+}
+
+// Classify a file into a node "kind" for colouring, from filename + frontmatter.
+function memNodeKind(fileName, fmType) {
+  if (fmType) return fmType; // user | feedback | project | reference …
+  const base = String(fileName).toLowerCase();
+  if (base === '_auto.md') return 'auto';
+  if (['claude.md', 'agents.md', 'readme.md', 'memory.md'].includes(base)) return 'index';
+  return 'note';
+}
+
+function buildMemoryGraph(dirIdFilter) {
+  const nodes = [];
+  const byId = new Map();     // id → node
+  const slugIndex = new Map(); // dirId → Map(slug → [nodeId,…])
+  const pending = [];         // { fromId, dirId, slug, count } resolved after scan
+  let truncated = false;
+
+  const addNode = (n) => { nodes.push(n); byId.set(n.id, n); return n; };
+  const indexSlug = (dirId, slug, id) => {
+    if (!slugIndex.has(dirId)) slugIndex.set(dirId, new Map());
+    const m = slugIndex.get(dirId);
+    if (!m.has(slug)) m.set(slug, []);
+    m.get(slug).push(id);
+  };
+
+  let projectIds = [];
+  try {
+    projectIds = fs.readdirSync(MEMORY_STORE_ROOT, { withFileTypes: true })
+      .filter(d => d.isDirectory()).map(d => d.name);
+  } catch (_) { projectIds = []; }
+  if (dirIdFilter && dirIdFilter !== 'all') projectIds = projectIds.filter(id => id === dirIdFilter);
+
+  const projects = [];
+
+  const scanFolder = (absDir, meta) => {
+    // meta: { dirId, scope:'shared'|'session', sessionId }
+    let files;
+    try { files = fs.readdirSync(absDir).filter(f => f.toLowerCase().endsWith('.md')); }
+    catch (_) { return 0; }
+    let count = 0;
+    for (const file of files) {
+      if (nodes.length >= MEM_GRAPH_MAX_NODES) { truncated = true; break; }
+      let raw = '', size = 0;
+      try { raw = fs.readFileSync(path.join(absDir, file), 'utf8'); size = Buffer.byteLength(raw); }
+      catch (_) { continue; }
+      const slug = file.replace(/\.md$/i, '');
+      const parsed = parseMemoryMarkdown(raw, slug);
+      const id = `${meta.dirId}::${meta.scope}${meta.sessionId ? ':' + meta.sessionId : ''}::${slug}`;
+      addNode({
+        id, slug, file,
+        title: parsed.title,
+        summary: parsed.summary || '（无摘要）',
+        type: memNodeKind(file, parsed.type),
+        scope: meta.scope,
+        sessionId: meta.sessionId || null,
+        dirId: meta.dirId,
+        size,
+        missing: false,
+      });
+      indexSlug(meta.dirId, slug, id);
+      for (const [target, c] of Object.entries(parsed.links)) {
+        pending.push({ fromId: id, dirId: meta.dirId, slug: target, count: c });
+      }
+      count++;
+    }
+    return count;
+  };
+
+  for (const dirId of projectIds) {
+    const before = nodes.length;
+    const projRoot = path.join(MEMORY_STORE_ROOT, dirId);
+    // shared
+    scanFolder(path.join(projRoot, '_shared'), { dirId, scope: 'shared' });
+    // per-session
+    const sessRoot = path.join(projRoot, 'sessions');
+    let sessDirs = [];
+    try { sessDirs = fs.readdirSync(sessRoot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); }
+    catch (_) {}
+    for (const sid of sessDirs) {
+      scanFolder(path.join(sessRoot, sid), { dirId, scope: 'session', sessionId: sid });
+    }
+    const dir = directories.get(dirId);
+    const cnt = nodes.filter(n => n.dirId === dirId).length;
+    if (cnt > 0 || (dir && dir.name)) {
+      projects.push({ dirId, name: (dir && dir.name) || dirId.slice(0, 8), count: cnt });
+    }
+    void before;
+  }
+
+  // ── Resolve wikilink edges ──
+  // A [[slug]] in a file resolves within the SAME project (dirId), preferring:
+  // same-session node → shared node → any node in the project → else a dangling
+  // placeholder node so the intent is still drawn.
+  const edgeMap = new Map(); // `${source} ${target}` → strength
+  const missingByKey = new Map(); // `${dirId}::${slug}` → placeholder node id
+  const resolveTarget = (fromNode, dirId, slug) => {
+    const idx = slugIndex.get(dirId);
+    const candidates = idx && idx.get(slug);
+    if (candidates && candidates.length) {
+      // prefer a candidate in the same session, then shared, then first
+      const from = byId.get(fromNode);
+      if (from && from.sessionId) {
+        const same = candidates.find(cid => byId.get(cid) && byId.get(cid).sessionId === from.sessionId);
+        if (same) return same;
+      }
+      const shared = candidates.find(cid => byId.get(cid) && byId.get(cid).scope === 'shared');
+      if (shared) return shared;
+      return candidates[0];
+    }
+    return null;
+  };
+  for (const p of pending) {
+    const from = byId.get(p.fromId);
+    if (!from) continue;
+    let targetId = resolveTarget(p.fromId, p.dirId, p.slug);
+    if (!targetId) {
+      const key = `${p.dirId}::${p.slug}`;
+      if (missingByKey.has(key)) {
+        targetId = missingByKey.get(key);
+      } else if (nodes.length < MEM_GRAPH_MAX_NODES) {
+        targetId = `${p.dirId}::missing::${p.slug}`;
+        addNode({
+          id: targetId, slug: p.slug, file: p.slug + '.md',
+          title: String(p.slug).replace(/[-_]+/g, ' '),
+          summary: '（尚未创建的记忆 · 被引用但文件不存在）',
+          type: 'missing', scope: 'missing', sessionId: null,
+          dirId: p.dirId, size: 0, missing: true,
+        });
+        missingByKey.set(key, targetId);
+      } else { truncated = true; continue; }
+    }
+    if (targetId === p.fromId) continue; // no self-loops
+    const k = `${p.fromId} ${targetId}`;
+    edgeMap.set(k, (edgeMap.get(k) || 0) + p.count);
+  }
+
+  const edges = [];
+  for (const [k, strength] of edgeMap) {
+    const [source, target] = k.split(' ');
+    edges.push({ source, target, type: 'reference', strength });
+  }
+
+  // degree (for node sizing on the client)
+  const degree = new Map();
+  for (const e of edges) {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
+  }
+  for (const n of nodes) n.degree = degree.get(n.id) || 0;
+
+  projects.sort((a, b) => b.count - a.count);
+  return { nodes, edges, projects, truncated };
+}
+
+app.get('/api/memory/graph', (req, res) => {
+  const t0 = Date.now();
+  const dirId = req.query.dirId ? String(req.query.dirId) : 'all';
+  let data;
+  try {
+    data = buildMemoryGraph(dirId);
+  } catch (e) {
+    return res.status(500).json({ error: 'graph build failed: ' + e.message });
+  }
+  res.json({
+    nodes: data.nodes,
+    edges: data.edges,
+    meta: {
+      dirId,
+      projects: data.projects,
+      nodeCount: data.nodes.length,
+      edgeCount: data.edges.length,
+      truncated: data.truncated,
+      maxNodes: MEM_GRAPH_MAX_NODES,
+      durationMs: Date.now() - t0,
+    },
+  });
+});
+
 // Delete a single message from this session's persisted chat history.
 // Display-history only: the CLI's own transcript/context is not rewritten,
 // so the model may still "remember" the content in an ongoing conversation.
@@ -8248,7 +8502,7 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
 // (CLAUDE.md for claude, AGENTS.md for codex). The agent edits these with its
 // normal file tools to persist what it learns; every turn we read own+shared
 // and inject them into the role prompt (works for claude and codex alike).
-const MEMORY_STORE_ROOT = path.join(__dirname, 'memories');
+const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const SESSION_MEM_CAP = 5000;   // chars of own-folder memory injected per turn
 const SHARED_MEM_CAP  = 4000;   // chars of shared-folder memory injected per turn
 
