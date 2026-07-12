@@ -6995,27 +6995,25 @@ function dispatchStateAction(result, ctx) {
   }
 
   if (state === 'continue') {
-    // C — user pushed / confirmed / gave a new instruction; task NOT done, AI
-    // should keep going. Persist 'C' (non-terminal → scan will re-judge).
+    // C — the conversation reads as "keep going". We deliberately DO NOT auto-inject
+    // a 继续 here anymore. Auto-recovery is reserved for FAULTS only: E (API error,
+    // below) and 非正常中断 (interrupted turn — see finalizeStreamingTurn's
+    // !_resultSaved recovery + the P/no-turn-in-flight resume above). A turn that
+    // ended NORMALLY (fired its `result` event) is never auto-pushed, even if the
+    // task isn't finished — a deliberate pause (assistant asked the user something)
+    // must reach the user. The old uncapped C-autopush was the runaway-loop bug:
+    // it re-injected "继续" every scan and fed on its own injected messages.
     setTaskState(sessionName, { classifyState: 'C', endedAt: Date.now() }, { save: false });
-    // A turn already in progress will carry the continuation itself — just
-    // refresh the in-progress label, don't inject or finalize.
+    // Mid-stream: a turn IS in flight and will carry the continuation itself — just
+    // refresh the in-progress label, don't finalize.
     if (cs && cs.isStreaming) {
       const ph = phaseLabel(phase);
       const label = finalGoal ? `处理中：${finalGoal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
       emitRunningNotify(sessionName, label);
       return;
     }
-    // Turn ended but the conversation says "keep going" -> drive AI forward.
-    // autoContinue is always on (no toggle), so tryAutoContinue drives C the same
-    // way it drives B; the hasWait guard is the only suppression. An unsolicited
-    // "继续" injection is exactly that. tryAutoContinue is uncapped + hasWait-guarded.
-    clearBgIdleTimer(sessionName);
-    if (tryAutoContinue(sessionName, cs, ctx.cwd, '继续：请接着完成当前任务。')) {
-      console.log(`[multicc/classify] ${sessionName} C (continue) -> auto-continue`);
-      return;
-    }
-    // explicit wait pending -> fall through to the waiting broadcast.
+    // Turn ended: no auto-continue. Fall through to the waiting broadcast — the
+    // session rests as W (user is in charge; scan skips W, so no re-judge churn).
   }
 
   // ── C(no auto-continue) / W / B / E all → waiting (user-facing) ─────────
@@ -7034,28 +7032,13 @@ function dispatchStateAction(result, ctx) {
     waitInjector.injectSystemMsg(sessionName, nudge, API_RETRY_DELAY_MS);
   }
 
-  // B: background wait -> auto-continue if enabled; idle timer as fallback.
-  if (background) {
-    if (tryAutoContinue(sessionName, cs, ctx.cwd)) {
-      console.log(`[multicc/classify] ${sessionName} B (background) -> auto-continue`);
-      return;
-    }
-    // autoContinue off / capped -> idle timer (3 min silence -> inject "继续")
-    clearBgIdleTimer(sessionName);
-    const timer = setTimeout(() => {
-      const _p = persistedSessions.get(sessionName);
-      if (!_p) return; // session gone {ARROW} nothing to nudge (autoContinue is always on)
-      if (waitInjector.hasWait(sessionName)) return; // explicit wait covers it
-      const s = _bgIdleTimers.get(sessionName);
-      if (!s) return;
-      const elapsed = Date.now() - (s.lastActivity || Date.now());
-      if (elapsed < BG_IDLE_TIMEOUT_MS - 1000) return; // activity happened since
-      console.log(`[multicc/classify] ${sessionName} B idle timeout (${(elapsed / 1000).toFixed(0)}s) → injecting continue`);
-      waitInjector.safeInject(sessionName, '继续：上次在等待的后台任务/外部结果，可以推进就继续。');
-      _bgIdleTimers.delete(sessionName);
-    }, BG_IDLE_TIMEOUT_MS);
-    _bgIdleTimers.set(sessionName, { timer, lastActivity: Date.now() });
-  }
+  // B (background wait) is RETIRED. Background tasks now keep the main turn
+  // streaming (isStreaming stays true while Monitor / run_in_background run), and a
+  // genuinely async task resumes via the message mechanism (bg-completion injection
+  // / wait-injector callback+poll) — a real event, not a timer guess. So classify no
+  // longer emits B (removed from the prompt) and there is no B-autopush / 3-min idle
+  // "继续" timer. If a stale B somehow arrives, it just falls through to the waiting
+  // broadcast below — no injection.
 
   // Common waiting-state broadcast — driven by classifyState letter.
   // A 'continue' reaching here = a C that couldn't auto-drive (toggle off / hasWait):
@@ -8013,7 +7996,6 @@ function buildClassifySystemPrompt(priorGoal) {
        D = 任务已完成（助手把当前任务的所有要求都做完了，正常收尾、没有反问、也不需要再继续；用户可以验收）
        C = AI 应继续（用户发来新需求、纠错、认可、确认、继续执行等推进类消息，任务还没做完，AI 应接着做；AI 不需要等用户做决定）
        W = 等用户（助手在反问、征求意见、让用户做选择；或用户表达了犹豫需要时间考虑）
-       B = 在等外部系统/后台任务（AI 没法继续，用户也帮不上忙；在等 build/部署/API/子进程）
        E = API 异常中断（助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等故障信息，回答被截断而非正常完成）
        P = AI 还在处理中（回复为空、或明显话没说完，还没到判断的时候）
 
