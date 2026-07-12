@@ -8531,6 +8531,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
       }
       if (block.type === 'tool_use') {
         cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
+        recordMainToolUseId(sessionName, block.id);
         if (block.name === 'TaskOutput') markTaskOutputAwaiting(block.input);
         const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
         if (editTools.includes(block.name)) {
@@ -8735,6 +8736,31 @@ function isSubagentTask(taskId) {
   return true;
 }
 function consumeSubagentTask(taskId) { if (taskId) _subagentTaskIds.delete(String(taskId)); }
+// Robust sidechain detection: a session-lifetime, append-only set of tool_use
+// ids that the MAIN session has emitted. Populated from the main assistant
+// stream (NOT cleared per turn), so it survives across turns. At
+// task_notification: if evt.tool_use_id is present AND not in this set, the
+// task is a sidechain (sub-agent) task and must be suppressed — regardless of
+// whether the CLI delivered task_started for it.
+const _mainToolUseIds = new Map(); // sessionName -> { set: Set, order: string[] }
+const MAIN_TOOL_USE_CAP = 2000;
+function recordMainToolUseId(sessionName, id) {
+  if (!sessionName || !id) return;
+  let rec = _mainToolUseIds.get(sessionName);
+  if (!rec) { rec = { set: new Set(), order: [] }; _mainToolUseIds.set(sessionName, rec); }
+  if (rec.set.has(id)) return; // already recorded
+  rec.set.add(id);
+  rec.order.push(id);
+  while (rec.order.length > MAIN_TOOL_USE_CAP) {
+    const old = rec.order.shift();
+    rec.set.delete(old);
+  }
+}
+function isMainToolUseId(sessionName, id) {
+  if (!sessionName || !id) return false;
+  const rec = _mainToolUseIds.get(sessionName);
+  return rec ? rec.set.has(id) : false;
+}
 // C2: coalesce completion nudges per session. Several bg tasks finishing within a
 // short window wake the session with ONE merged nudge instead of one turn each.
 const bgCompletionCoalescer = bgCoalesce.createCoalescer({
@@ -8821,8 +8847,12 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
         consumeSyncBashTask(taskId);
         return;
       }
-      if (isSubagentTask(taskId)) {
-        console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sub-agent task) -> suppress completion nudge`);
+      // Robust sidechain suppression: the v1 tag (set at task_started) is a fast
+      // path; the fallback uses the session-lifetime main-tool-use set and works
+      // even when the CLI never emits task_started for sidechain tasks.
+      const isSidechainByToolUse = !!(evt.tool_use_id && !isMainToolUseId(sessionName, evt.tool_use_id));
+      if (isSubagentTask(taskId) || isSidechainByToolUse) {
+        console.log(`[multicc/bg] ${sessionName} task ${taskId} sidechain (subagent=${isSubagentTask(taskId)} toolUseId=${evt.tool_use_id || '-'} not in main tool-use set) -> suppress`);
         consumeSubagentTask(taskId);
         return;
       }
@@ -9167,6 +9197,7 @@ function runChatTurn(sessionName, text, opts = {}) {
             };
             forward(mapped);
             cs.currentToolCalls.push({ name: 'Bash', input: { command: it.command }, id: it.id });
+            recordMainToolUseId(sessionName, it.id);
             setSessionStatus(sessionName, { status: 'running', currentFile: null });
           }
           return;
@@ -9228,6 +9259,7 @@ function runChatTurn(sessionName, text, opts = {}) {
               message: { content: [{ type: 'tool_use', name: 'Thinking', id: it.id, input: { text: it.text || '' } }] },
             });
             cs.currentToolCalls.push({ name: 'Thinking', input: { text: it.text || '' }, id: it.id, result: it.text || '' });
+            recordMainToolUseId(sessionName, it.id);
             return;
           }
           return;
@@ -9323,6 +9355,7 @@ function runChatTurn(sessionName, text, opts = {}) {
           if (!tc) {
             tc = { name: toolName, input, id: callId };
             cs.currentToolCalls.push(tc);
+            recordMainToolUseId(sessionName, callId);
             forward({
               type: 'assistant',
               message: { content: [{ type: 'tool_use', name: toolName, id: callId, input }] },
