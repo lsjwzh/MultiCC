@@ -12,6 +12,7 @@ import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/screens/main_shell.dart';
+import 'package:multicc_app/widgets/session_card.dart';
 
 Future<Widget> _wrap(Widget child) async => MaterialApp(home: Scaffold(body: child));
 
