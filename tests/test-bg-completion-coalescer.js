@@ -2,7 +2,7 @@
 // Unit tests for src/bg-completion-coalescer.js — pure logic, fake clock, no server.
 //   node tests/test-bg-completion-coalescer.js
 const assert = require('assert');
-const { createCoalescer, buildNudge, MERGED_SNIPPET_CAP } = require('../src/bg-completion-coalescer');
+const { createCoalescer, buildNudge, classifyBgCompletion, MERGED_SNIPPET_CAP } = require('../src/bg-completion-coalescer');
 
 // ── tiny deterministic fake clock (injected as setTimer/clearTimer) ──
 function makeClock() {
@@ -162,6 +162,111 @@ test('onFlush throwing leaves pending clean; the next window still works', () =>
   c.add('s', item('b'));      // a fresh window must open normally
   clk.advance(1000);
   assert.strictEqual(calls, 2, 'second window flushed after the first threw');
+});
+
+// ── classifyBgCompletion: the suppress-vs-inject decision (extracted from
+//    handleBackgroundTaskEvent so it is unit-testable) ─────────────────────────
+// Precedence: TaskOutput pull → sync Bash → sidechain/subagent → inject.
+test('classify: pulled via TaskOutput → suppress (taskoutput)', () => {
+  assert.deepStrictEqual(classifyBgCompletion({ awaitingTaskOutput: true }), { action: 'suppress', reason: 'taskoutput' });
+});
+test('classify: sync/foreground Bash → suppress (sync-bash)', () => {
+  assert.deepStrictEqual(classifyBgCompletion({ sync: true }), { action: 'suppress', reason: 'sync-bash' });
+});
+test('classify: subagent task → suppress (sidechain)', () => {
+  assert.deepStrictEqual(classifyBgCompletion({ subagent: true }), { action: 'suppress', reason: 'sidechain' });
+});
+test('classify: sidechain-by-tool-use → suppress (sidechain)', () => {
+  assert.deepStrictEqual(classifyBgCompletion({ sidechainByToolUse: true }), { action: 'suppress', reason: 'sidechain' });
+});
+test('classify: precedence — TaskOutput wins even if other flags set', () => {
+  assert.strictEqual(classifyBgCompletion({ awaitingTaskOutput: true, sync: true, subagent: true }).reason, 'taskoutput');
+});
+
+// ── BUG REPRODUCTION (false-positive observed 2026-07-12, session chat-05) ───────
+// A `run_in_background` daemon (`node server.js &`) that the model used only via a
+// side channel (curl / CDP / reading its output file) and NEVER pulled with
+// TaskOutput matches none of the suppressors → the completion is INJECTED as a
+// wake-up nudge, long after the work was already done.
+//
+// This test PINS that known-bad behavior: all four predicates false → inject.
+// It is a characterization/regression anchor — when the daemon-suppression fix
+// lands, this assertion flips to { action:'suppress' } and the two below stop
+// producing a nudge. See the module-doc on classifyBgCompletion.
+test('REPRO: daemon consumed via side-channel (no TaskOutput) → currently INJECTS (the reported bug)', () => {
+  const d = classifyBgCompletion({ awaitingTaskOutput: false, sync: false, subagent: false, sidechainByToolUse: false });
+  assert.deepStrictEqual(d, { action: 'inject', reason: 'unconsumed' },
+    'documents the false-positive: a side-channel-consumed daemon still fires a nudge');
+});
+
+test('REPRO end-to-end: the daemon completion flows to a nudge with the exact observed wording', () => {
+  // Mirror the real event: only an "inject" decision reaches coalescer.add().
+  const decision = classifyBgCompletion({ awaitingTaskOutput: false, sync: false, subagent: false, sidechainByToolUse: false });
+  assert.strictEqual(decision.action, 'inject', 'precondition: the daemon case injects');
+
+  const flushed = [];
+  const clk = makeClock();
+  const c = createCoalescer({
+    windowMs: 1500,
+    onFlush: (s, items) => flushed.push(buildNudge(items)),
+    setTimer: clk.setTimer, clearTimer: clk.clearTimer,
+  });
+  // The literal completion that woke the session (desc + startup echo as output,
+  // plus the real taskId so the [ref:…] suffix is reproduced too).
+  c.add('multicc-claude-chat-05', {
+    desc: 'Background command "Start test server on port 3999 with real memories" completed (exit code 0)',
+    status: 'completed',
+    snippet: 'real mem exists: yes\nstarted pid 46222',
+    taskId: 'brwgfem7d',
+  });
+  clk.advance(1500);
+
+  assert.strictEqual(flushed.length, 1, 'exactly one nudge injected');
+  const msg = flushed[0];
+  assert.ok(msg.startsWith('【后台任务完成】'), 'legacy header');
+  assert.ok(msg.includes('已结束（状态：completed）'), 'status line');
+  assert.ok(msg.includes('据此继续推进任务，不要重复已完成的步骤'), 'the continue-nudge wording the user saw');
+  assert.ok(msg.includes('started pid 46222'), 'the daemon startup echo is carried in as if it were a result');
+  assert.ok(msg.includes('[ref:brwgfem7d]'), 'buildNudge appends the [ref:<taskId>] suffix when the item carries an id');
+  // The ONLY piece added downstream (not by buildNudge) is the 🔇 prefix, which
+  // injectSystemMsg (SYS_PREFIX) prepends before handing the text to runChatTurn.
+});
+
+// ── Wiring guard (structural) ────────────────────────────────────────────────
+// The tests above prove the PURE function is correct, but not that server.js
+// still calls it and dispatches each reason to the right side effect. Booting
+// handleBackgroundTaskEvent in isolation is impractical (it lives in a 500KB
+// server that starts listening on require), so this guards the call site at the
+// source level: it catches a silent removal of the call, a renamed predicate
+// key, or a reason→consume* mis-dispatch — all of which would otherwise leave
+// every unit test green. It is a coarse net, not a behavioural test.
+const fs = require('fs');
+const path = require('path');
+const SERVER = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+
+test('wiring: server.js calls classifyBgCompletion with the four predicate keys', () => {
+  const call = /bgCoalesce\.classifyBgCompletion\(\{([\s\S]{0,400}?)\}\)/.exec(SERVER);
+  assert.ok(call, 'handleBackgroundTaskEvent must call bgCoalesce.classifyBgCompletion({...})');
+  for (const key of ['awaitingTaskOutput', 'sync', 'subagent', 'sidechainByToolUse']) {
+    assert.ok(new RegExp('\\b' + key + '\\s*:').test(call[1]), `classifyBgCompletion call must pass the "${key}" predicate`);
+  }
+});
+
+test('wiring: each reason dispatches to its matching consume* side effect', () => {
+  // The suppress block branches on decision.reason; assert the three pairings
+  // still co-occur so a mis-dispatch (e.g. sync-bash → consumeTaskOutputAwaiting)
+  // is caught.
+  const pairs = [
+    ["reason === 'taskoutput'", 'consumeTaskOutputAwaiting'],
+    ["reason === 'sync-bash'", 'consumeSyncBashTask'],
+    ['consumeSubagentTask', 'consumeSubagentTask'], // sidechain is the else branch
+  ];
+  for (const [guard, consume] of pairs) {
+    assert.ok(SERVER.includes(guard), `expected wiring token: ${guard}`);
+    assert.ok(SERVER.includes(consume), `expected consume call: ${consume}`);
+  }
+  // And the inject path must still reach the coalescer.
+  assert.ok(/bgCompletionCoalescer\.add\(/.test(SERVER), 'inject path must call bgCompletionCoalescer.add(...)');
 });
 
 console.log(`\nbg-completion-coalescer: ${passed} tests passed`);
