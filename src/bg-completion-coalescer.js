@@ -87,4 +87,25 @@ function buildNudge(items) {
   return `【后台任务完成 ×${items.length}】你之前启动的多个后台任务已先后结束，请据此一并推进、不要重复已完成的步骤：\n${blocks.join('\n')}${ref}`;
 }
 
-module.exports = { createCoalescer, buildNudge, DEFAULT_WINDOW_MS, MERGED_SNIPPET_CAP };
+// Decide whether a background task's completion should INJECT a wake-up nudge or
+// be SUPPRESSED because its result already reaches the model another way. Pure:
+// the caller supplies the four predicates it computed from session bookkeeping.
+// Precedence mirrors the original inline chain in handleBackgroundTaskEvent:
+//   TaskOutput pull  →  sync/foreground Bash  →  sidechain/subagent  →  inject.
+//
+// KNOWN GAP (reproduced in the unit test): a `run_in_background` *daemon* — e.g.
+// `node server.js &`, which the CLI reports "completed (exit 0)" the instant `&`
+// detaches it while the process keeps running — that the model uses through a
+// side channel (curl / reading its output file / a browser) and NEVER pulls with
+// TaskOutput matches NONE of the suppressors. So it returns { action:'inject' },
+// a false-positive wake for work the model already consumed. The 'inject' verdict
+// on the all-false input IS the reported bug; the fix will add a signal that the
+// task is still-running/daemon-like and suppress it there.
+function classifyBgCompletion({ awaitingTaskOutput = false, sync = false, subagent = false, sidechainByToolUse = false } = {}) {
+  if (awaitingTaskOutput) return { action: 'suppress', reason: 'taskoutput' };
+  if (sync)               return { action: 'suppress', reason: 'sync-bash' };
+  if (subagent || sidechainByToolUse) return { action: 'suppress', reason: 'sidechain' };
+  return { action: 'inject', reason: 'unconsumed' };
+}
+
+module.exports = { createCoalescer, buildNudge, classifyBgCompletion, DEFAULT_WINDOW_MS, MERGED_SNIPPET_CAP };
