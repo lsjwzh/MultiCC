@@ -161,7 +161,7 @@
 |---|---|---|---|---|
 | 基线 | 6 纯逻辑单测全 green | ✅ 完成 | — | 2026-07-12 |
 | A0 | 示范：main_shell.dart 抽 MiniBadge + AddSessionChip | ✅ 完成 | 见 batch-a0 | 4938→4868，error 0，issues 15=基线，无损 |
-| A1 | main_shell.dart 剩余 widget | 🔄 进行中 | — | GitStatusRow ✓（4868→4813）；累计 4938→4813(-125)；余 SessionCard/_DirectoryCard/_CreateSessionDialog 等大块 |
+| A1 | main_shell.dart 剩余 widget | 🔄 进行中 | — | 已拆 MiniBadge/AddSessionChip/GitStatusRow/KpiTile/ProjectStatPill；累计 4938→4707(-231)；余 SessionCard(886)/_DirectoryCard/_CreateSessionDialog 等大块（多需解耦顶层私有函数 _showSessionSheet/_sessionLastInteractionAt） |
 | A2 | chat_screen.dart widget | ⬜ | | |
 | B0 | server.js 工具函数组 → ctx | ⬜ | | |
 | B1 | server.js 首个领域（scan.js）跑通 mount | ⬜ | | |
