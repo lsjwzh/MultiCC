@@ -9760,7 +9760,13 @@ function handleChatWs(ws, req, urlObj) {
   // Send only the newest page over WS on connect; older messages are fetched
   // on demand via GET /history?before=<id> as the user scrolls up.
   const history = loadChatHistory(sessionName);
-  const hasInProgress = !!(cs.currentAssistantText || cs.currentToolCalls.length);
+  // Only append an in-progress copy when the turn's output has NOT yet been
+  // persisted. Between the `result` event (applyClaudeChatEvent saves it and
+  // sets _resultSaved) and finalizeStreamingTurn (which clears
+  // currentAssistantText), a reconnect would otherwise append a duplicate of
+  // the already-saved assistant message — two identical bubbles. Guarding on
+  // !_resultSaved closes that race (matches the "unsaved" intent below).
+  const hasInProgress = !cs._resultSaved && !!(cs.currentAssistantText || cs.currentToolCalls.length);
   const page = paginateChatHistory(history, { limit: CHAT_HISTORY_PAGE });
   const replayMessages = [...page.messages];
   // Append unsaved in-progress response so reconnecting clients see current state
