@@ -17,8 +17,11 @@ import '../theme.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/rainbow_border.dart';
-import '../models/agent_preset.dart';
-import '../services/agent_preset_service.dart';
+import '../widgets/session_badges.dart';
+import '../widgets/git_status_row.dart';
+import '../widgets/kpi_tile.dart';
+import '../widgets/project_stat_pill.dart';
+import '../widgets/create_session_dialog.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
 import 'settings_screen.dart';
@@ -950,7 +953,7 @@ class _KpiRow extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(10, 2, 10, 8),
       child: Row(
         children: [
-          _KpiTile(
+          KpiTile(
             label: t('activeSessions'),
             value: '$active',
             color: const Color(0xFF3ad6c5),
@@ -965,7 +968,7 @@ class _KpiRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _KpiTile(
+          KpiTile(
             label: t('waitingSessions'),
             value: '$waiting',
             color: const Color(0xFFe3b341),
@@ -980,7 +983,7 @@ class _KpiRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _KpiTile(
+          KpiTile(
             label: t('cronTasks'),
             value: null,
             color: const Color(0xFF6aa3ff),
@@ -994,72 +997,6 @@ class _KpiRow extends StatelessWidget {
   }
 }
 
-class _KpiTile extends StatelessWidget {
-  final String label;
-  final String? value;
-  final Color color;
-  final VoidCallback onTap;
-  const _KpiTile({
-    required this.label,
-    required this.value,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: const Color(0xFF14171c),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF20242b)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    color: Color(0xFF8a909b),
-                    fontSize: 12,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (value != null) ...[
-                const SizedBox(width: 4),
-                Text(
-                  value!,
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ] else
-                const Icon(
-                  Icons.chevron_right,
-                  size: 16,
-                  color: Color(0xFF5b616c),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // Bottom-sheet list of sessions ("dir / alias"); tap an entry to jump to it.
 void _showSessionSheet(
@@ -1242,9 +1179,9 @@ void _showSessionSheet(
                                   ),
                                 ),
                                 const SizedBox(width: 6),
-                                _MiniBadge(label: s.cli.name, color: cliColor),
+                                MiniBadge(label: s.cli.name, color: cliColor),
                                 const SizedBox(width: 5),
-                                _MiniBadge(
+                                MiniBadge(
                                   label: s.kind.name,
                                   color: const Color(0xFF8a909b),
                                   icon: s.isChat
@@ -1523,9 +1460,9 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
     } catch (_) {}
     if (!mounted) return;
 
-    final result = await showDialog<_CreateSessionResult>(
+    final result = await showDialog<CreateSessionResult>(
       context: context,
-      builder: (ctx) => _CreateSessionDialog(
+      builder: (ctx) => CreateSessionDialog(
         cli: cli,
         kind: kind,
         providers: providers,
@@ -1680,21 +1617,21 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                         spacing: 6,
                         runSpacing: 6,
                         children: [
-                          _AddSessionChip(label: '+ Claude Term', color: _kClaudeColor,
+                          AddSessionChip(label: '+ Claude Term', color: _kClaudeColor,
                               onTap: () => _createSession(SessionCli.claude, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ Claude Chat', color: _kClaudeColor,
+                          AddSessionChip(label: '+ Claude Chat', color: _kClaudeColor,
                               onTap: () => _createSession(SessionCli.claude, SessionKind.chat)),
-                          _AddSessionChip(label: '+ Codex Term', color: _kCodexColor,
+                          AddSessionChip(label: '+ Codex Term', color: _kCodexColor,
                               onTap: () => _createSession(SessionCli.codex, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ Codex Chat', color: _kCodexColor,
+                          AddSessionChip(label: '+ Codex Chat', color: _kCodexColor,
                               onTap: () => _createSession(SessionCli.codex, SessionKind.chat)),
-                          _AddSessionChip(label: '+ OpenCode Term', color: _kOpenCodeColor,
+                          AddSessionChip(label: '+ OpenCode Term', color: _kOpenCodeColor,
                               onTap: () => _createSession(SessionCli.opencode, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ OpenCode Chat', color: _kOpenCodeColor,
+                          AddSessionChip(label: '+ OpenCode Chat', color: _kOpenCodeColor,
                               onTap: () => _createSession(SessionCli.opencode, SessionKind.chat)),
-                          _AddSessionChip(label: '+ ZCode Term', color: _kZCodeColor,
+                          AddSessionChip(label: '+ ZCode Term', color: _kZCodeColor,
                               onTap: () => _createSession(SessionCli.zcode, SessionKind.terminal)),
-                          _AddSessionChip(label: '+ ZCode Chat', color: _kZCodeColor,
+                          AddSessionChip(label: '+ ZCode Chat', color: _kZCodeColor,
                               onTap: () => _createSession(SessionCli.zcode, SessionKind.chat)),
                         ],
                       ),
@@ -2098,7 +2035,7 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                                   ),
                                 ),
                               // ── Git 状态行（分支 + ahead/behind）──
-                              _GitStatusRow(pushState: widget.directory.pushState),
+                              GitStatusRow(pushState: widget.directory.pushState),
                             ],
                           ),
                         ),
@@ -2183,32 +2120,32 @@ class _DirectoryCardState extends State<_DirectoryCard> {
                       spacing: 6,
                       runSpacing: 6,
                       children: [
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: t('sessions'),
                           value: widget.directory.totalSessions.toString(),
                         ),
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: t('active'),
                           value: activeCount.toString(),
                         ),
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: 'Claude',
                           value: claudeCount.toString(),
                           color: _kClaudeColor,
                         ),
-                        _ProjectStatPill(
+                        ProjectStatPill(
                           label: 'Codex',
                           value: codexCount.toString(),
                           color: _kCodexColor,
                         ),
                         if (opencodeCount > 0)
-                          _ProjectStatPill(
+                          ProjectStatPill(
                             label: 'OpenCode',
                             value: opencodeCount.toString(),
                             color: _kOpenCodeColor,
                           ),
                         if (zcodeCount > 0)
-                          _ProjectStatPill(
+                          ProjectStatPill(
                             label: 'ZCode',
                             value: zcodeCount.toString(),
                             color: _kZCodeColor,
@@ -3109,48 +3046,6 @@ String _eventLabel(Map<String, dynamic> e) {
   }
 }
 
-class _ProjectStatPill extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color? color;
-  const _ProjectStatPill({
-    required this.label,
-    required this.value,
-    this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final c = color ?? const Color(0xFF8a909b);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF070809),
-        border: Border.all(
-          color: color == null
-              ? const Color(0xFF20242b)
-              : c.withValues(alpha: 0.45),
-        ),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: TextStyle(color: c, fontSize: 11),
-          children: [
-            TextSpan(
-              text: value,
-              style: const TextStyle(
-                color: Color(0xFFf2f4f7),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            TextSpan(text: ' $label'),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  SESSION GROUP + CARD
@@ -3347,9 +3242,9 @@ class SessionCard extends StatelessWidget {
                       _classifyChip(live, showLabel: false),
                       const SizedBox(width: 6),
                     ],
-                    _MiniBadge(label: session.cli.name, color: cliColor),
+                    MiniBadge(label: session.cli.name, color: cliColor),
                     const SizedBox(width: 6),
-                    _MiniBadge(
+                    MiniBadge(
                       label: session.kind.name,
                       color: const Color(0xFF8a909b),
                       icon: session.isChat
@@ -4125,77 +4020,6 @@ class SessionCard extends StatelessWidget {
   }
 }
 
-class _MiniBadge extends StatelessWidget {
-  final String label;
-  final Color color;
-  final IconData? icon;
-  const _MiniBadge({required this.label, required this.color, this.icon});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        border: Border.all(color: color.withValues(alpha: 0.38)),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 10, color: color),
-            const SizedBox(width: 3),
-          ],
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AddSessionChip extends StatelessWidget {
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-  const _AddSessionChip({
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.1),
-          border: Border.all(color: color.withValues(alpha: 0.4)),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 InputDecoration _inputDec({String? hint}) => InputDecoration(
   isDense: true,
   filled: true,
@@ -4216,527 +4040,6 @@ InputDecoration _inputDec({String? hint}) => InputDecoration(
     borderRadius: BorderRadius.circular(6),
   ),
 );
-
-// ── New-session dialog with role presets + provider→model linkage ───────────
-
-class _CreateSessionResult {
-  final String? label;
-  final String? rolePrompt;
-  final String? provider;
-  final String? model;
-  final String? effort;
-  _CreateSessionResult({
-    this.label,
-    this.rolePrompt,
-    this.provider,
-    this.model,
-    this.effort,
-  });
-}
-
-class _CreateSessionDialog extends StatefulWidget {
-  final SessionCli cli;
-  final SessionKind kind;
-  final List<Map<String, dynamic>> providers;
-  final String? defaultProviderId;
-  final SettingsService settings;
-
-  const _CreateSessionDialog({
-    required this.cli,
-    required this.kind,
-    required this.providers,
-    this.defaultProviderId,
-    required this.settings,
-  });
-
-  @override
-  State<_CreateSessionDialog> createState() => _CreateSessionDialogState();
-}
-
-class _CreateSessionDialogState extends State<_CreateSessionDialog> {
-  late final TextEditingController _nameCtrl;
-  late final TextEditingController _roleCtrl;
-  late final AgentPresetService _presetSvc;
-  AgentPresetIndex? _presetIndex;
-  bool _loadingPresets = false;
-
-  String? _pickedProvider; // null or '' = default; id = that provider
-  String? _pickedModel;
-  late String _pickedEffort;
-  bool _customModel = false;
-  final _customModelCtrl = TextEditingController();
-
-  bool get _isClaude => widget.cli == SessionCli.claude;
-  bool get _isCodex => widget.cli == SessionCli.codex;
-  String get _defaultEffort => _isClaude ? 'medium' : 'xhigh';
-  bool get _hasConcreteDefaultProvider =>
-      widget.defaultProviderId != null &&
-      widget.defaultProviderId!.isNotEmpty &&
-      widget.providers.any((p) => p['id'] == widget.defaultProviderId);
-  String get _effectiveProviderId {
-    final picked = _pickedProvider;
-    if (picked != null && picked.isNotEmpty) return picked;
-    return widget.defaultProviderId ?? '';
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _nameCtrl = TextEditingController();
-    _roleCtrl = TextEditingController();
-    _presetSvc = AgentPresetService(settings: widget.settings);
-    if (_hasConcreteDefaultProvider) _pickedProvider = widget.defaultProviderId;
-    _pickedEffort = _defaultEffort;
-    _loadPresets();
-    final opts = _currentModelOptions;
-    _pickedModel = opts.isNotEmpty ? opts.first.key : null;
-  }
-
-  @override
-  void dispose() {
-    _nameCtrl.dispose();
-    _roleCtrl.dispose();
-    _customModelCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadPresets() async {
-    setState(() => _loadingPresets = true);
-    try {
-      _presetIndex = await _presetSvc.fetchIndex();
-    } catch (_) {}
-    if (!mounted) return;
-    setState(() => _loadingPresets = false);
-  }
-
-  /// Build the model options for the current provider selection.
-  /// Mirrors web rebuildModelOptions(): provider modelOptions if available,
-  /// else CLAUDE_MODEL_OPTIONS for Claude only (empty list for Codex).
-  List<MapEntry<String, String>> get _currentModelOptions {
-    Map<String, dynamic>? prov;
-    final providerId = _effectiveProviderId;
-    for (final p in widget.providers) {
-      if (p['id'] == providerId) {
-        prov = p;
-        break;
-      }
-    }
-    // Alias-mapped relays (e.g. iFlytek): expose the tiers directly, each option
-    // reading "opus → claude-opus-4-8 (GLM5.2)". The tier key is the value — the
-    // server honors session.model === opus/sonnet/haiku/fable as a wire model.
-    final map = prov?['aliasMap'];
-    if (map is Map) {
-      const order = ['opus', 'sonnet', 'haiku', 'fable'];
-      final tiers = <MapEntry<String, String>>[];
-      for (final t in order) {
-        final v = map[t];
-        if (v is Map && v['model'] != null) {
-          final m = v['model'].toString();
-          final name = v['name']?.toString();
-          tiers.add(
-            MapEntry(
-              t,
-              '$t → $m${(name != null && name.isNotEmpty) ? ' ($name)' : ''}',
-            ),
-          );
-        }
-      }
-      if (tiers.isNotEmpty) return tiers;
-    }
-    final opts = prov?['modelOptions'];
-    if (opts is List && opts.isNotEmpty) {
-      return opts
-          .map((m) => m.toString())
-          .map((s) => MapEntry<String, String>(s, s))
-          .toList();
-    }
-    // Empty provider follows the configured default provider for this CLI:
-    // Codex should still show GPT / XF model choices instead of a Claude list.
-    // No provider (or provider without modelOptions):
-    //  - Claude: fall back to standard model list
-    //  - Codex: empty list (custom model entry only), matching web behavior
-    return _isClaude ? kClaudeModelOptions : const [];
-  }
-
-
-  String _providerIdForPresetDefault(AgentPreset preset) {
-    final declared = preset.defaultProviderId ?? '';
-    if (declared.isNotEmpty &&
-        widget.providers.any((p) => p['id'] == declared)) {
-      return declared;
-    }
-    final key = preset.defaultProviderKey.toLowerCase();
-    final model = preset.defaultModel;
-    if (key == 'xf-maas-coding') {
-      for (final p in widget.providers) {
-        final opts = (p['modelOptions'] as List? ?? [])
-            .map((e) => e.toString())
-            .toList();
-        if (model.isNotEmpty && opts.contains(model)) return p['id'] as String;
-      }
-      for (final p in widget.providers) {
-        final name = (p['name'] ?? '').toString().toLowerCase();
-        if (name.contains('讯飞') || name.contains('xf') || name.contains('maas')) {
-          return p['id'] as String;
-        }
-      }
-    }
-    if (key == 'openai-codex') {
-      for (final p in widget.providers) {
-        final name = (p['name'] ?? '').toString().toLowerCase();
-        if (name.contains('openai') || name.contains('codex 官方') || name.contains('官方')) {
-          return p['id'] as String;
-        }
-      }
-      for (final p in widget.providers) {
-        final opts = (p['modelOptions'] as List? ?? [])
-            .map((e) => e.toString())
-            .toList();
-        if (opts.any((m) => m.startsWith('gpt-'))) return p['id'] as String;
-      }
-    }
-    return '';
-  }
-
-  void _applyPresetDefaults(AgentPreset preset) {
-    final presetCli = parseCli(preset.defaultCli.trim().toLowerCase());
-    if (presetCli != widget.cli) return;
-
-    final providerId = _providerIdForPresetDefault(preset);
-    if (providerId.isNotEmpty) _pickedProvider = providerId;
-
-    final opts = _currentModelOptions;
-    final model = preset.defaultModel;
-    if (model.isNotEmpty) {
-      if (opts.any((e) => e.key == model)) {
-        _pickedModel = model;
-        _customModel = false;
-        _customModelCtrl.clear();
-      } else {
-        _pickedModel = null;
-        _customModel = true;
-        _customModelCtrl.text = model;
-      }
-    }
-
-    final effort = preset.defaultEffort;
-    final validEfforts = _isClaude
-        ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
-        : (_isCodex
-            ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-            : const ['low', 'medium', 'high', 'xhigh']);
-    if (validEfforts.contains(effort)) _pickedEffort = effort;
-  }
-
-  Future<void> _pickPreset() async {
-    final id = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) =>
-          AgentPresetPickerSheet(service: _presetSvc, index: _presetIndex),
-    );
-    if (id == null || !mounted) return;
-    try {
-      final preset = await _presetSvc.fetchPreset(id);
-      final prompt = preset.prompt ?? '';
-      if (!mounted) return;
-      if (_roleCtrl.text.trim().isNotEmpty) {
-        final ok = await showDialog<bool>(
-          context: context,
-          builder: (c) => AlertDialog(
-            backgroundColor: const Color(0xFF14171c),
-            title: const Text(
-              '替换当前内容?',
-              style: TextStyle(color: Color(0xFFe7eaee), fontSize: 15),
-            ),
-            content: const Text(
-              '角色框已有内容，使用模板会覆盖。',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 13),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(c, false),
-                child: const Text(
-                  '取消',
-                  style: TextStyle(color: Color(0xFF8a909b)),
-                ),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(c, true),
-                child: const Text(
-                  '替换',
-                  style: TextStyle(color: Color(0xFFff6b63)),
-                ),
-              ),
-            ],
-          ),
-        );
-        if (ok != true) return;
-      }
-      setState(() {
-        _roleCtrl.text = prompt;
-        _applyPresetDefaults(preset);
-      });
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('模板加载失败：$e')));
-    }
-  }
-
-  void _onProviderChanged(String? v) {
-    setState(() {
-      _pickedProvider = v;
-      // Try to preserve the current model selection across provider switches
-      // (matching web rebuildModelOptions behavior). If the current model
-      // isn't in the new list, fall back to the first option or custom.
-      final opts = _currentModelOptions;
-      final prevModel = _customModel ? null : _pickedModel;
-      if (prevModel != null && opts.any((e) => e.key == prevModel)) {
-        // Current model exists in new provider's list — keep it
-        _customModel = false;
-      } else if (opts.isNotEmpty && opts.first.key.isNotEmpty) {
-        _pickedModel = opts.first.key;
-        _customModel = false;
-      } else {
-        _pickedModel = null;
-        _customModel = false;
-      }
-    });
-  }
-
-  void _submit() {
-    String? model;
-    if (_customModel) {
-      model = _customModelCtrl.text.trim().isNotEmpty
-          ? _customModelCtrl.text.trim()
-          : null;
-    } else {
-      model = (_pickedModel != null && _pickedModel!.isNotEmpty)
-          ? _pickedModel
-          : null;
-    }
-    final result = _CreateSessionResult(
-      label: _nameCtrl.text.trim().isNotEmpty ? _nameCtrl.text.trim() : null,
-      rolePrompt: _roleCtrl.text.trim().isNotEmpty
-          ? _roleCtrl.text.trim()
-          : null,
-      provider: (_pickedProvider != null && _pickedProvider!.isNotEmpty)
-          ? _pickedProvider
-          : null,
-      model: model,
-      effort: _pickedEffort,
-    );
-    Navigator.of(context).pop(result);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final modelOptions = _currentModelOptions;
-    return AlertDialog(
-      backgroundColor: const Color(0xFF0f1115),
-      title: Text(
-        '新建 ${widget.cli.displayName} ${widget.kind == SessionKind.chat ? 'Chat' : 'Terminal'}',
-        style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
-      ),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── Name ──
-            const Text(
-              '会话名称',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            TextField(
-              controller: _nameCtrl,
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(hint: '可选，留空自动生成'),
-            ),
-            const SizedBox(height: 12),
-            // ── Role prompt with preset picker ──
-            Row(
-              children: [
-                const Text(
-                  '角色提示词',
-                  style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-                ),
-                const Spacer(),
-                TextButton.icon(
-                  icon: const Icon(Icons.auto_awesome, size: 14),
-                  label: Text(
-                    _loadingPresets ? '加载中…' : '选择预设角色',
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF6aa3ff),
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 28),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  onPressed: _loadingPresets ? null : _pickPreset,
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            TextField(
-              controller: _roleCtrl,
-              maxLines: 3,
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(hint: '可选，留空继承Fleet默认'),
-            ),
-            const SizedBox(height: 12),
-            // ── Provider ──
-            const Text(
-              'Provider',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              value: _pickedProvider ?? '',
-              dropdownColor: const Color(0xFF0f1115),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(),
-              items: [
-                if (!_hasConcreteDefaultProvider)
-                  const DropdownMenuItem(
-                    value: '',
-                    child: Text(
-                      '默认登录 / 订阅',
-                      style: TextStyle(color: Color(0xFFe7eaee)),
-                    ),
-                  ),
-                ...widget.providers.map(
-                  (p) => DropdownMenuItem(
-                    value: p['id'] as String,
-                    child: Text(
-                      '${p['id'] == widget.defaultProviderId ? '默认 · ' : ''}${p['name']}'
-                      '${p['isOfficial'] == true ? ' · 订阅' : ''}'
-                      '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
-                      style: const TextStyle(color: Color(0xFFe7eaee)),
-                    ),
-                  ),
-                ),
-              ],
-              onChanged: _onProviderChanged,
-            ),
-            // ── Model (linked to provider) ──
-            const SizedBox(height: 12),
-            const Text(
-              '模型',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              value: _customModel ? '__custom__' : _pickedModel,
-              dropdownColor: const Color(0xFF0f1115),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(),
-              items: [
-                ...modelOptions.map(
-                  (e) => DropdownMenuItem(
-                    value: e.key,
-                    child: Text(
-                      e.value,
-                      style: const TextStyle(color: Color(0xFFe7eaee)),
-                    ),
-                  ),
-                ),
-                DropdownMenuItem(
-                  value: '__custom__',
-                  child: const Text(
-                    '自定义…',
-                    style: TextStyle(color: Color(0xFF8a909b)),
-                  ),
-                ),
-              ],
-              onChanged: (v) {
-                setState(() {
-                  if (v == '__custom__') {
-                    _customModel = true;
-                    _pickedModel = null;
-                  } else {
-                    _customModel = false;
-                    _pickedModel = v;
-                  }
-                });
-              },
-            ),
-            if (_customModel) ...[
-              const SizedBox(height: 6),
-              TextField(
-                controller: _customModelCtrl,
-                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-                decoration: _inputDec(
-                  hint: _isClaude
-                      ? '模型 ID，如 claude-opus-4-8'
-                      : '模型 ID，如 gpt-5.5 / xopglm52',
-                ),
-                autofocus: true,
-              ),
-            ],
-            const SizedBox(height: 12),
-            Text(
-              _isClaude ? 'Effort' : 'Reasoning Level',
-              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              value: _pickedEffort,
-              dropdownColor: const Color(0xFF0f1115),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: _inputDec(),
-              items:
-                  (_isClaude
-                          ? const [
-                              'low',
-                              'medium',
-                              'high',
-                              'xhigh',
-                              'max',
-                              'ultracode',
-                            ]
-                          : (_isCodex
-                              ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-                              : const ['low', 'medium', 'high', 'xhigh']))
-                      .map(
-                        (e) => DropdownMenuItem(
-                          value: e,
-                          child: Text(
-                            _isClaude
-                                ? e
-                                : effortShortNameForCli(widget.cli, e),
-                            style: const TextStyle(color: Color(0xFFe7eaee)),
-                          ),
-                        ),
-                      )
-                      .toList(),
-              onChanged: (v) => setState(() => _pickedEffort = v ?? _defaultEffort),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(null),
-          child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
-        ),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF22ab9c),
-            foregroundColor: Colors.white,
-          ),
-          onPressed: _submit,
-          child: const Text('创建'),
-        ),
-      ],
-    );
-  }
-}
 
 /// Dialog listing a directory's uncommitted files with a "commit all" action.
 /// Mirrors the web "⚠ 未提交文件" modal — surfaces dirty main working-tree
@@ -4880,59 +4183,3 @@ class _UncommittedFilesDialogState extends State<_UncommittedFilesDialog> {
 //  GIT STATUS ROW — 在舰队卡片上显示分支名 + ahead/behind/脏 状态的紧凑行
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _GitStatusRow extends StatelessWidget {
-  final DirectoryPushState? pushState;
-  const _GitStatusRow({this.pushState});
-
-  @override
-  Widget build(BuildContext context) {
-    final ps = pushState;
-    // 没有任何 git 信息时不渲染
-    if (ps == null || (!ps.available && ps.dirty == 0)) return const SizedBox.shrink();
-
-    // 不可用 + 也没有脏文件
-    if (!ps.available) return const SizedBox.shrink();
-
-    final branch = ps.remoteBranch ?? '';
-    final ahead = ps.ahead;
-    final behind = ps.behind;
-    final dirty = ps.dirty;
-
-    // 构建紧凑的状态行
-    final parts = <String>[];
-    if (branch.isNotEmpty) parts.add('🌿 $branch');
-    if (ahead > 0) parts.add('📤$ahead');
-    if (behind > 0) parts.add('📥$behind');
-    if (dirty > 0) parts.add('📝$dirty');
-
-    // 如果没有任何值得显示的数据
-    if (parts.isEmpty) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Row(
-        children: [
-          Text(
-            parts.join('  '),
-            style: const TextStyle(
-              color: AppColors.faint,
-              fontSize: 10,
-              fontFamily: 'monospace',
-            ),
-          ),
-          if (dirty == 0 && ahead == 0 && behind == 0) ...[
-            const SizedBox(width: 6),
-            Container(
-              width: 6,
-              height: 6,
-              decoration: const BoxDecoration(
-                color: Color(0xFF3fb950),
-                shape: BoxShape.circle,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
