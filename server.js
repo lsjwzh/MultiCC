@@ -8713,6 +8713,28 @@ function isSyncBashTask(taskId) {
   return true;
 }
 function consumeSyncBashTask(taskId) { if (taskId) _syncBashTaskIds.delete(String(taskId)); }
+// Sub-agent sidechain tasks: a sub-agent (Workflow internal / Task tool) runs
+// Bash in its own sidechain; its tool_use_id is NOT in the main session's
+// currentToolCalls list, so tu=undefined at task_started. These are NOT real
+// background tasks from the user's perspective and must not fire a 后台任务 nudge.
+// We tag them at task_started and suppress at task_notification — same scoping
+// pattern as the sync-Bash helpers above.
+const _subagentTaskIds = new Map(); // taskId -> { at }
+const SUBAGENT_TAG_TTL_MS = 5 * 60 * 1000;
+function tagSubagentTask(taskId) {
+  if (!taskId) return;
+  const now = Date.now();
+  for (const [k, v] of _subagentTaskIds) if (now - v.at > SUBAGENT_TAG_TTL_MS) _subagentTaskIds.delete(k);
+  _subagentTaskIds.set(String(taskId), { at: now });
+}
+function isSubagentTask(taskId) {
+  if (!taskId) return false;
+  const v = _subagentTaskIds.get(String(taskId));
+  if (!v) return false;
+  if (Date.now() - v.at > SUBAGENT_TAG_TTL_MS) { _subagentTaskIds.delete(String(taskId)); return false; }
+  return true;
+}
+function consumeSubagentTask(taskId) { if (taskId) _subagentTaskIds.delete(String(taskId)); }
 // C2: coalesce completion nudges per session. Several bg tasks finishing within a
 // short window wake the session with ONE merged nudge instead of one turn each.
 const bgCompletionCoalescer = bgCoalesce.createCoalescer({
@@ -8755,11 +8777,21 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
       tagSyncBashTask(taskId);
       console.log(`[multicc/bg] ${sessionName} task ${taskId} sync Bash (${cmd.slice(0, 60)}) -> will suppress completion nudge`);
     }
+    // A sub-agent (Workflow internal / Task tool) Bash runs in a sidechain; its
+    // tool_use_id is NOT in the main session's currentToolCalls, so tu=undefined.
+    // A MAIN-session run_in_background Bash ALWAYS has its tool_use in
+    // currentToolCalls (pushed synchronously before the task starts), so !tu is
+    // false for those — they are never tagged here.
+    const isSubagentTask = !!(evt.tool_use_id && !tu);
+    if (isSubagentTask) {
+      tagSubagentTask(taskId);
+      console.log(`[multicc/bg] ${sessionName} task ${taskId} sub-agent task (tool_use=${evt.tool_use_id} absent from currentToolCalls) -> will suppress completion nudge`);
+    }
     chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd, background: !isSyncBash });
     startMonitorShadow(sessionName, cs, taskId, outputFile, evt.description || '');
   } else if (sub === 'task_notification') {
     const taskId = evt.task_id;
-    console.log(`[multicc/bg-diag] ${sessionName} task_notification taskId=${taskId} hasToolUseId=${'tool_use_id' in evt} desc="${(evt.description || '').slice(0, 40)}"`);
+    console.log(`[multicc/bg-diag] ${sessionName} task_notification taskId=${taskId} toolUseId=${evt.tool_use_id || '-'} desc="${(evt.description || '').slice(0, 40)}"`);
     stopMonitorShadow(cs, taskId);
     // evt.output_file is CC's authoritative path; prefer it over our prediction.
     const outputFile = evt.output_file || (taskId && evt.session_id ? monitorOutputFilePath(evt.session_id, taskId, cs.cwd) : null);
@@ -8787,6 +8819,11 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
       if (isSync) {
         console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sync Bash) -> suppress completion nudge (de-dup vs tool_result)`);
         consumeSyncBashTask(taskId);
+        return;
+      }
+      if (isSubagentTask(taskId)) {
+        console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sub-agent task) -> suppress completion nudge`);
+        consumeSubagentTask(taskId);
         return;
       }
       const desc = evt.description || evt.summary || '后台任务';
