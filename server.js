@@ -8621,15 +8621,16 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
 // which lands here.
 //
 // CC tee's a Monitor's stdout to a predictable file:
-//   <realpath(/tmp)>/claude-<uid>/<encoded-realpath>/<sessionId>/tasks/<taskId>.output
+//   <realpath(/tmp)>/claude-<uid>/<encoded-cwd>/<sessionId>/tasks/<taskId>.output
+// where encoded-cwd = realpath(cwd).replace(/[\/.]/g, "-") (slashes AND dots -> dash).
 // We shadow-tail it to surface live progress to the UI. The authoritative
 // output_file path arrives in the task_notification(completed) event; we use
 // that for the final full read (handles any path-mismatch fallback).
-function monitorOutputFilePath(sessionId, taskId) {
+function monitorOutputFilePath(sessionId, taskId, cwd) {
   try {
     const { realpathSync } = require('fs');
     const tmpReal = realpathSync('/tmp');
-    const encoded = tmpReal.replace(/\//g, '-');
+    const encoded = realpathSync(cwd || '.').replace(/[\/.]/g, '-');
     return `${tmpReal}/claude-${process.getuid()}/${encoded}/${sessionId}/tasks/${taskId}.output`;
   } catch { return null; }
 }
@@ -8742,7 +8743,7 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
   if (sub === 'task_started') {
     const taskId = evt.task_id;
     if (!taskId) return;
-    const outputFile = monitorOutputFilePath(evt.session_id || '', taskId);
+    const outputFile = monitorOutputFilePath(evt.session_id || '', taskId, cs.cwd);
     const tu = cs.currentToolCalls && cs.currentToolCalls.find(t => t.id === evt.tool_use_id);
     const cmd = (tu && tu.input && tu.input.command) || '';
     // A foreground (sync) Bash still emits task_started/task_notification — its
@@ -8761,7 +8762,7 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     console.log(`[multicc/bg-diag] ${sessionName} task_notification taskId=${taskId} hasToolUseId=${'tool_use_id' in evt} desc="${(evt.description || '').slice(0, 40)}"`);
     stopMonitorShadow(cs, taskId);
     // evt.output_file is CC's authoritative path; prefer it over our prediction.
-    const outputFile = evt.output_file || (taskId && evt.session_id ? monitorOutputFilePath(evt.session_id, taskId) : null);
+    const outputFile = evt.output_file || (taskId && evt.session_id ? monitorOutputFilePath(evt.session_id, taskId, cs.cwd) : null);
     let output = '';
     if (outputFile) { try { output = require('fs').readFileSync(outputFile, 'utf8'); } catch {} }
     const snippet = output.length > 2000 ? output.slice(-2000) : output;
