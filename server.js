@@ -9075,23 +9075,32 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     // (E) skip their empty nudges within BG_RESULT_DEDUP_MS so we don't
     // double-inject (result + empty nudge) on top of each other.
     if (cs) {
-      if (isTaskOutputAwaiting(taskId)) {
-        console.log(`[multicc/bg] ${sessionName} task ${taskId} completed; main session pulling via TaskOutput -> suppress completion nudge (de-dup)`);
-        consumeTaskOutputAwaiting(taskId);
-        return;
-      }
-      if (isSync) {
-        console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sync Bash) -> suppress completion nudge (de-dup vs tool_result)`);
-        consumeSyncBashTask(taskId);
-        return;
-      }
       // Robust sidechain suppression: the v1 tag (set at task_started) is a fast
       // path; the fallback uses the session-lifetime main-tool-use set and works
       // even when the CLI never emits task_started for sidechain tasks.
       const isSidechainByToolUse = !!(evt.tool_use_id && !isMainToolUseId(sessionName, evt.tool_use_id));
-      if (isSubagentTask(taskId) || isSidechainByToolUse) {
-        console.log(`[multicc/bg] ${sessionName} task ${taskId} sidechain (subagent=${isSubagentTask(taskId)} toolUseId=${evt.tool_use_id || '-'} not in main tool-use set) -> suppress`);
-        consumeSubagentTask(taskId);
+      // The suppress-vs-inject decision is a pure function (unit-tested in
+      // test-bg-completion-coalescer.js). The predicates are pure reads; only the
+      // consume* side effects mutate, and we run just the winning reason's — so
+      // routing through classifyBgCompletion is behaviour-identical to the old
+      // if-chain (same precedence, same log lines, same early return).
+      const decision = bgCoalesce.classifyBgCompletion({
+        awaitingTaskOutput: isTaskOutputAwaiting(taskId),
+        sync: isSync,
+        subagent: isSubagentTask(taskId),
+        sidechainByToolUse: isSidechainByToolUse,
+      });
+      if (decision.action === 'suppress') {
+        if (decision.reason === 'taskoutput') {
+          console.log(`[multicc/bg] ${sessionName} task ${taskId} completed; main session pulling via TaskOutput -> suppress completion nudge (de-dup)`);
+          consumeTaskOutputAwaiting(taskId);
+        } else if (decision.reason === 'sync-bash') {
+          console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sync Bash) -> suppress completion nudge (de-dup vs tool_result)`);
+          consumeSyncBashTask(taskId);
+        } else { // sidechain
+          console.log(`[multicc/bg] ${sessionName} task ${taskId} sidechain (subagent=${isSubagentTask(taskId)} toolUseId=${evt.tool_use_id || '-'} not in main tool-use set) -> suppress`);
+          consumeSubagentTask(taskId);
+        }
         return;
       }
       const desc = evt.description || evt.summary || '后台任务';
