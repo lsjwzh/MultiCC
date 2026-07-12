@@ -477,6 +477,7 @@
 
     <div class="nav-label">Workspace</div>
     <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> 概览 <span class="badge" id="nav-dir-count">0</span></button>
+    <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> 记忆图谱 <span class="badge" id="nav-memory-count">0</span></button>
 
     <div class="nav-label">Settings</div>
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> 定时任务 <span class="badge" id="nav-cron-count">0</span></button>
@@ -534,6 +535,77 @@
           <div class="sec-head"><h2>Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="aux-section"></div>
           <div id="directory-list"></div>
+        </section>
+
+        <!-- ─── Memory Graph ─── -->
+        <section class="view" data-view="memory">
+          <style>
+            #mem-graph-wrap{display:flex;flex-direction:column;gap:12px}
+            #mem-graph-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+            #mem-graph-toolbar select{background:var(--bg-soft,#161b22);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;font-family:var(--mono);max-width:280px}
+            #mem-graph-meta{font-family:var(--mono);font-size:11px;color:var(--faint)}
+            #mem-graph-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted);align-items:center}
+            #mem-graph-legend .lg{display:inline-flex;align-items:center;gap:5px}
+            #mem-graph-legend .sw{width:11px;height:11px;border-radius:50%;display:inline-block}
+            #mem-graph-canvas{position:relative;width:100%;height:min(70vh,640px);min-height:420px;
+              background:radial-gradient(circle at 50% 40%,rgba(58,214,197,.05),transparent 70%),var(--bg,#0d1117);
+              border:1px solid var(--line);border-radius:12px;overflow:hidden;cursor:grab}
+            #mem-graph-canvas.panning{cursor:grabbing}
+            #mem-graph-svg{width:100%;height:100%;display:block;touch-action:none;user-select:none}
+            #mem-graph-svg text{pointer-events:none;font-family:var(--mono);fill:var(--text)}
+            #mem-graph-svg .mem-node{cursor:pointer}
+            #mem-graph-svg .mem-node circle{transition:stroke-width .1s,filter .1s}
+            #mem-graph-svg .mem-node:hover circle{stroke:#fff;stroke-width:2.5px}
+            #mem-graph-svg .mem-node:hover text{opacity:1}
+            #mem-graph-svg .mem-edge{stroke:var(--line);stroke-opacity:.55}
+            #mem-graph-svg .mem-node.dim,#mem-graph-svg .mem-edge.dim{opacity:.12}
+            #mem-graph-empty{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+              flex-direction:column;gap:8px;color:var(--faint);font-size:13px;text-align:center;padding:24px}
+            #mem-graph-hint{position:absolute;left:12px;bottom:10px;font-size:10px;color:var(--faint);
+              font-family:var(--mono);pointer-events:none;background:rgba(0,0,0,.25);padding:3px 8px;border-radius:6px}
+            .mem-zoom-btns{position:absolute;right:12px;bottom:12px;display:flex;flex-direction:column;gap:6px}
+            .mem-zoom-btns button{width:30px;height:30px;border-radius:8px;border:1px solid var(--line);
+              background:var(--bg-soft,#161b22);color:var(--text);cursor:pointer;font-size:15px;line-height:1}
+            .mem-zoom-btns button:hover{background:var(--accent-dim,#12312d)}
+            #mem-node-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:16000;display:none;align-items:center;justify-content:center}
+            #mem-node-modal.open{display:flex}
+            #mem-node-card{background:var(--bg-soft,#161b22);border:1px solid var(--line);border-radius:12px;
+              width:min(92vw,560px);max-height:80vh;overflow:auto;padding:18px 20px}
+            #mem-node-card h3{color:var(--text);font-size:15px;margin:0 0 4px;word-break:break-word}
+            #mem-node-card .mn-slug{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:12px;word-break:break-all}
+            #mem-node-card .mn-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+            #mem-node-card .mn-tag{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.06);color:var(--muted)}
+            #mem-node-card .mn-summary{color:var(--text);font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;background:var(--bg,#0d1117);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px}
+            #mem-node-card .mn-links h4{color:var(--muted);font-size:11px;margin:10px 0 6px;font-weight:600}
+            #mem-node-card .mn-link{display:block;width:100%;text-align:left;font-size:12px;padding:6px 9px;margin-bottom:4px;border-radius:6px;border:1px solid var(--line);background:var(--bg,#0d1117);color:var(--text);cursor:pointer;font-family:var(--mono);word-break:break-word}
+            #mem-node-card .mn-link:hover{border-color:var(--accent)}
+            #mem-node-card .mn-close{float:right;background:transparent;border:0;color:var(--faint);font-size:20px;cursor:pointer;line-height:1}
+          </style>
+          <div class="sec-head"><h2>记忆图谱 <span id="mem-graph-count-pill" style="color:var(--faint);font-weight:400;font-size:12px"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadMemoryGraph(undefined, true)">刷新</button>
+          </div>
+          <p class="sec-desc">项目记忆系统的可视化网络：每个 <b>记忆节点</b>（.md 文件）显示标题与摘要，节点之间的 <code>[[wikilink]]</code> 关联构成 <b>有向边</b>（类型 reference，强度=引用次数）。点击节点看详情，空白处按住拖拽平移，滚轮缩放。</p>
+          <div id="mem-graph-wrap">
+            <div id="mem-graph-toolbar">
+              <label style="font-size:12px;color:var(--muted)">项目
+                <select id="mem-graph-project" onchange="loadMemoryGraph(this.value)"></select>
+              </label>
+              <button class="btn btn-sm" onclick="memGraphResetView()">重置视图</button>
+              <span id="mem-graph-meta"></span>
+              <div style="flex:1"></div>
+              <div id="mem-graph-legend"></div>
+            </div>
+            <div id="mem-graph-canvas">
+              <svg id="mem-graph-svg"></svg>
+              <div id="mem-graph-empty"></div>
+              <div id="mem-graph-hint">拖拽平移 · 滚轮缩放 · 点击节点看详情 · 拖动节点可固定</div>
+              <div class="mem-zoom-btns">
+                <button onclick="memGraphZoom(1.2)" title="放大">＋</button>
+                <button onclick="memGraphZoom(1/1.2)" title="缩小">－</button>
+                <button onclick="memGraphResetView()" title="重置" style="font-size:12px">⊙</button>
+              </div>
+            </div>
+          </div>
         </section>
 
         <!-- ─── Scheduled Tasks ─── -->
@@ -1435,6 +1507,18 @@
     </div>
   </div>
 
+  <!-- Memory node detail modal -->
+  <div id="mem-node-modal" onclick="if(event.target===this)memNodeModalClose()">
+    <div id="mem-node-card">
+      <button class="mn-close" onclick="memNodeModalClose()" title="关闭">×</button>
+      <h3 id="mem-node-title"></h3>
+      <div class="mn-slug" id="mem-node-slug"></div>
+      <div class="mn-tags" id="mem-node-tags"></div>
+      <div class="mn-summary" id="mem-node-summary"></div>
+      <div class="mn-links" id="mem-node-links"></div>
+    </div>
+  </div>
+
   <!-- Memo modal -->
   <div id="memo-modal" class="modal-backdrop">
     <div class="modal-card" style="width:min(96vw,1200px);height:min(95vh,900px);display:flex;flex-direction:column;background:var(--bg);">
@@ -1478,6 +1562,7 @@
         resources: ['Agent 资源', 'Skills 与历史会话'],
         skillsync: ['技能同步', 'Skills 跨 Provider 同步状态'],
         storage: ['临时上传', '上传文件缓存'],
+        memory: ['🧠 记忆图谱', '项目记忆系统网络'],
       };
       window.setView = function (v) {
         document.body.dataset.view = v;
@@ -1489,6 +1574,11 @@
         const sub = document.getElementById('crumb-sub');
         if (sub) sub.textContent = t[1];
         document.body.classList.remove('nav-open');
+        // Lazy-load the memory graph the first time its view is opened.
+        if (v === 'memory' && typeof loadMemoryGraph === 'function' && !window.__memGraphLoaded) {
+          window.__memGraphLoaded = true;
+          loadMemoryGraph();
+        }
       };
 
       // Build KPI tiles once
