@@ -580,10 +580,68 @@
             #mem-node-card .mn-link{display:block;width:100%;text-align:left;font-size:12px;padding:6px 9px;margin-bottom:4px;border-radius:6px;border:1px solid var(--line);background:var(--bg,#0d1117);color:var(--text);cursor:pointer;font-family:var(--mono);word-break:break-word}
             #mem-node-card .mn-link:hover{border-color:var(--accent)}
             #mem-node-card .mn-close{float:right;background:transparent;border:0;color:var(--faint);font-size:20px;cursor:pointer;line-height:1}
+            /* ── node modal: storage location + tokens + edit ── */
+            #mem-node-meta{margin:2px 0 12px;display:flex;flex-direction:column;gap:6px}
+            #mem-node-meta .mn-path-row{display:flex;align-items:center;gap:6px}
+            #mem-node-meta code{font-family:var(--mono);font-size:11px;color:var(--muted);word-break:break-all;flex:1;background:var(--bg,#0d1117);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+            #mem-node-meta .mn-icobtn{flex-shrink:0;background:var(--bg-soft,#161b22);border:1px solid var(--line);border-radius:6px;color:var(--muted);cursor:pointer;font-size:12px;padding:4px 8px;line-height:1}
+            #mem-node-meta .mn-icobtn:hover{border-color:var(--accent);color:var(--text)}
+            #mem-node-meta .mn-statrow{display:flex;gap:14px;align-items:center;font-size:11px;color:var(--muted);font-family:var(--mono)}
+            #mem-node-meta .mn-statrow b{color:var(--text)}
+            #mem-node-edit{background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:12px;padding:6px 12px;cursor:pointer}
+            #mem-node-edit:hover{filter:brightness(1.08)}
+            /* ── graph / tree tab switcher ── */
+            #mem-tabs{display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--line)}
+            #mem-tabs .mtab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font-size:13px;padding:8px 14px;margin-bottom:-1px}
+            #mem-tabs .mtab:hover{color:var(--text)}
+            #mem-tabs .mtab.active{color:var(--text);border-bottom-color:var(--accent,#3ad6c5);font-weight:600}
+            /* ── tree view ── */
+            #mem-tree-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+            #mem-tree-stats{font-family:var(--mono);font-size:11px;color:var(--faint)}
+            #mem-tree{border:1px solid var(--line);border-radius:12px;background:var(--bg,#0d1117);padding:6px;max-height:min(72vh,680px);overflow:auto}
+            #mem-tree .mt-empty{color:var(--faint);font-size:13px;text-align:center;padding:32px}
+            #mem-tree .mt-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;user-select:none}
+            #mem-tree .mt-row:hover{background:rgba(255,255,255,.04)}
+            #mem-tree .mt-caret{display:inline-block;width:12px;color:var(--faint);font-size:10px;transition:transform .12s;flex-shrink:0}
+            #mem-tree .mt-body{display:none;margin-left:14px;border-left:1px solid var(--line);padding-left:6px}
+            #mem-tree .mt-body.open{display:block}
+            #mem-tree .mt-proj-hdr strong{color:var(--text);font-size:13px}
+            #mem-tree .mt-grp-hdr .mt-grp-label{color:var(--text);font-size:12px;font-weight:500}
+            #mem-tree .mt-grp-shared .mt-grp-label{color:#e3b341}
+            #mem-tree .mt-count{color:var(--faint);font-size:11px;font-family:var(--mono)}
+            #mem-tree .mt-tok{margin-left:auto;color:var(--muted);font-size:11px;font-family:var(--mono);white-space:nowrap}
+            #mem-tree .mt-tok .tokn{color:#3ad6c5}
+            #mem-tree .mt-file{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;cursor:pointer}
+            #mem-tree .mt-file:hover{background:rgba(58,214,197,.08)}
+            #mem-tree .mt-file .mt-fname{font-family:var(--mono);font-size:12px;color:var(--text);flex-shrink:0}
+            #mem-tree .mt-file .mt-ftitle{font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+            #mem-tree .mt-file .mt-fpath{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);opacity:.75;margin:0 0 4px 30px;word-break:break-all}
+            #mem-tree .mt-file .mt-edit{flex-shrink:0;background:var(--bg-soft,#161b22);border:1px solid var(--line);border-radius:6px;color:var(--muted);cursor:pointer;font-size:11px;padding:3px 9px}
+            #mem-tree .mt-file .mt-edit:hover{border-color:var(--accent);color:var(--text)}
+            /* ── shared memory-file editor overlay ── */
+            #mem-file-modal{position:fixed;inset:0;background:rgba(0,0,0,.66);z-index:16050;display:none;align-items:center;justify-content:center;padding:16px}
+            #mem-file-modal.open{display:flex}
+            #mem-file-card{background:var(--bg-soft,#161b22);border:1px solid var(--line);border-radius:12px;width:min(94vw,860px);max-height:90vh;display:flex;flex-direction:column;padding:16px 18px;gap:10px}
+            #mem-file-card .mf-head{display:flex;align-items:center;gap:10px}
+            #mem-file-card .mf-title{color:var(--text);font-size:14px;font-weight:600;font-family:var(--mono);word-break:break-all}
+            #mem-file-card .mf-tok{margin-left:auto;font-size:11px;color:var(--muted);font-family:var(--mono);white-space:nowrap}
+            #mem-file-card .mf-close{background:transparent;border:0;color:var(--faint);font-size:20px;cursor:pointer;line-height:1}
+            #mem-file-card .mf-path{font-family:var(--mono);font-size:11px;color:var(--faint);word-break:break-all}
+            #mem-file-card textarea{width:100%;flex:1;min-height:340px;background:var(--bg,#0d1117);border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:13px;font-family:var(--mono);padding:12px;resize:vertical;line-height:1.5}
+            #mem-file-card .mf-foot{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+            #mem-file-card .mf-msg{margin-right:auto;font-size:12px;color:var(--faint)}
+            #mem-file-card .mf-btn{border:1px solid var(--line);border-radius:6px;font-size:13px;padding:6px 14px;cursor:pointer;background:var(--bg-soft,#21262d);color:var(--text)}
+            #mem-file-card .mf-del{color:#f85149}
+            #mem-file-card .mf-save{background:#238636;border-color:#2ea043;color:#fff}
           </style>
           <div class="sec-head"><h2>记忆图谱 <span id="mem-graph-count-pill" style="color:var(--faint);font-weight:400;font-size:12px"></span></h2><div class="line"></div>
             <button class="btn btn-sm" onclick="loadMemoryGraph(undefined, true)">刷新</button>
           </div>
+          <div id="mem-tabs">
+            <button class="mtab active" data-memtab="graph" onclick="setMemTab('graph')">🕸 图谱</button>
+            <button class="mtab" data-memtab="tree" onclick="setMemTab('tree')">🌳 树状</button>
+          </div>
+          <div id="mem-graph-pane">
           <p class="sec-desc">项目记忆系统的可视化网络：每个 <b>记忆节点</b>（.md 文件）显示标题与摘要，节点之间的 <code>[[wikilink]]</code> 关联构成 <b>有向边</b>（类型 reference，强度=引用次数）。点击节点看详情，空白处按住拖拽平移，滚轮缩放。</p>
           <div id="mem-graph-wrap">
             <div id="mem-graph-toolbar">
@@ -605,6 +663,18 @@
                 <button onclick="memGraphResetView()" title="重置" style="font-size:12px">⊙</button>
               </div>
             </div>
+          </div>
+          </div><!-- /#mem-graph-pane -->
+          <div id="mem-tree-pane" style="display:none">
+            <p class="sec-desc">按 <b>项目 → 公共（_shared）/ 会话（sessions）</b> 层级梳理全部记忆文件。每个文件显示<b>存放位置</b>与<b>估算 token 数</b>，点击可随时打开编辑。token 为无依赖估算（中文≈1.5/字，其余≈4字符/token），仅作体量参考。</p>
+            <div id="mem-tree-toolbar">
+              <span id="mem-tree-stats">加载中…</span>
+              <div style="flex:1"></div>
+              <button class="btn btn-sm" onclick="memTreeExpandAll(true)">展开全部</button>
+              <button class="btn btn-sm" onclick="memTreeExpandAll(false)">折叠全部</button>
+              <button class="btn btn-sm" onclick="loadMemoryTree(true)">刷新</button>
+            </div>
+            <div id="mem-tree"><div class="mt-empty">加载中…</div></div>
           </div>
         </section>
 
@@ -1513,9 +1583,39 @@
       <button class="mn-close" onclick="memNodeModalClose()" title="关闭">×</button>
       <h3 id="mem-node-title"></h3>
       <div class="mn-slug" id="mem-node-slug"></div>
+      <div id="mem-node-meta">
+        <div class="mn-path-row">
+          <code id="mem-node-path" title="存放位置"></code>
+          <button class="mn-icobtn" id="mem-node-copy" title="复制路径">📋</button>
+        </div>
+        <div class="mn-statrow">
+          <span>📊 估算 tokens: <b id="mem-node-tokens">–</b></span>
+          <span>📦 大小: <b id="mem-node-size">–</b></span>
+          <button id="mem-node-edit" style="display:none">📝 打开编辑</button>
+        </div>
+      </div>
       <div class="mn-tags" id="mem-node-tags"></div>
       <div class="mn-summary" id="mem-node-summary"></div>
       <div class="mn-links" id="mem-node-links"></div>
+    </div>
+  </div>
+
+  <!-- Shared memory-file editor (used by tree tab + graph node modal) -->
+  <div id="mem-file-modal" onclick="if(event.target===this)memFileEditorClose()">
+    <div id="mem-file-card">
+      <div class="mf-head">
+        <span class="mf-title" id="mem-file-title"></span>
+        <span class="mf-tok" id="mem-file-tok"></span>
+        <button class="mf-close" onclick="memFileEditorClose()" title="关闭">×</button>
+      </div>
+      <div class="mf-path" id="mem-file-path"></div>
+      <textarea id="mem-file-ta" spellcheck="false" placeholder="# 记忆内容…"></textarea>
+      <div class="mf-foot">
+        <span class="mf-msg" id="mem-file-msg"></span>
+        <button class="mf-btn mf-del" id="mem-file-del">🗑 删除</button>
+        <button class="mf-btn" onclick="memFileEditorClose()">关闭</button>
+        <button class="mf-btn mf-save" id="mem-file-save">保存 (⌘/Ctrl+Enter)</button>
+      </div>
     </div>
   </div>
 
