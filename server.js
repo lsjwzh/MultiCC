@@ -621,6 +621,10 @@ const MULTICC_IMG_HINT = [
   '  · 被派方（你收到一个自包含任务时）：先 sync 再干活，干完 commit + merge 回基分支，并在回复里如实说明改动文件与合并结果；若 sync 或 merge 返回冲突（HTTP 409），不要硬来，把冲突文件清单报回派活方让其裁决。',
   '  · 收回成果后（派活方拿到对方「已合并」的回复时）：自己也 sync 一下把对方的成果拉进本会话 worktree（curl -s -X POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/sync），再继续后续工作，避免你手上还是旧代码。',
   '  · multicc 会在任一会话 merge 回基分支后，自动把同目录其它会话的 worktree 同步到新基分支（冲突的会跳过并提示）；但「你自己这个会话」和「正在进行中的对话」仍以你主动 sync 为准，涉及共享文件的关键节点请主动同步一次再动手。',
+'',
+`【代码搜索：grep/rg 在本会话失效】在 multicc chat 会话（你当前所在的 worktree）里，用 Bash 跑 grep/rg 搜当前 worktree 之外的代码（主仓库根、其它 worktree、任何本 worktree 外的路径）时，命令会被沙箱拦截、返回纯空 stdout——不是「0 匹配」，是连 grep -c 的计数字都没有、stderr 也被吞掉，极易误判为「没找到」。而 wc、cat、Read 工具读同一个文件完全正常。判断方法：wc -l <file> 有输出但 grep -c require <file> 为空，就是中招了。`,
+`搜代码请改用：① Read 工具（专用工具，绕过沙箱）按 offset/limit 读特定段落；② node fs 搜索——在 Bash 里（加 dangerouslyDisableSandbox）用 require("fs").readFileSync 把文件读成字符串、split 成行、用正则测试每行、命中就打印「行号: 片段」（比 grep 稍啰嗦，但唯一可靠）。`,
+`★这对子任务尤其关键：派 subagent / Workflow / Task 时，必须在指令里明确写「禁止 grep，只用 Read 或 node fs」——子 agent 不读你的记忆，遇到 grep 全空会不断换关键词无限重试、直接 stall（一直跑却不收尾，只能 TaskStop 收场）。`,
 ].join('\n');
 
 // Debug helper: dump the full `claude -p` argv (long prompt / system-prompt
