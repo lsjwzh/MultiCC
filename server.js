@@ -8397,9 +8397,14 @@ function ensureCurrentTask(cs, sessionName, userText) {
   }
   // No rule-based goal from userText — the classify loop (fired right after this
   // at turn start)提炼 the real goal, ignoring greetings / injected system text.
-  // If the prior task has a classify-refined goal, carry it forward so the "新任务"
-  // placeholder doesn't overwrite a valid goal before classify has a chance to run.
-  const carryGoal = (prev && prev.goal && prev.goal !== '新任务' && !isInjectedOrJunkGoal(prev.goal)) ? prev.goal : '';
+  // Carry a prior task's classify-refined goal forward so the "新任务" placeholder
+  // doesn't overwrite a valid goal before classify runs - BUT only while that prior
+  // task is still in flight (phase !== 'done'). If it already reached 'done', this
+  // new user message starts a new task: inheriting the old already-resolved goal
+  // makes scan see isStreaming + isGoalResolved(旧goal)=true -> skipped-streaming,
+  // starving classify for the whole turn. Reset to '新任务' so scan falls through
+  // and extracts the real goal mid-stream.
+  const carryGoal = (prev && prev.phase !== 'done' && prev.goal && prev.goal !== '新任务' && !isInjectedOrJunkGoal(prev.goal)) ? prev.goal : '';
   cs.currentTask = newCurrentTask(carryGoal);
   cs.currentTask.turnSeq = 1;
   // Persist the new task snapshot so a mid-task restart can reconcile it (②).
