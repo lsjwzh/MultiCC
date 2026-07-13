@@ -2762,6 +2762,18 @@ app.delete('/api/sessions/:id/memory', (req, res) => {
 //   GET /api/memory/graph?dirId=<id> → scope to one project (dir)
 const MEM_GRAPH_MAX_NODES = 600; // safety cap so a huge store still renders <3s
 
+// Estimate the token count of a memory file. No tokenizer dependency is bundled,
+// so this is a deliberately-labelled ESTIMATE (UI always prefixes it with "~估"):
+// CJK codepoints run ~1.5 tokens/char across GPT/Claude tokenizers, while Latin
+// text averages ~4 chars/token. Good enough as a size gauge, never exact.
+function estimateMemTokens(str) {
+  const s = String(str == null ? '' : str);
+  if (!s.length) return 0;
+  const cjk = (s.match(/[㐀-䶿一-鿿豈-﫿぀-ゟ゠-ヿ가-힯]/g) || []).length;
+  const other = s.length - cjk;
+  return Math.max(1, Math.round(cjk * 1.5 + other / 4));
+}
+
 // Parse one memory .md into a node descriptor. Handles both the YAML-frontmatter
 // convention (name/description/metadata.type) and the plain "# H1 + body" files
 // that live in the store today. Never throws.
@@ -2874,6 +2886,7 @@ function buildMemoryGraph(dirIdFilter) {
       const slug = file.replace(/\.md$/i, '');
       const parsed = parseMemoryMarkdown(raw, slug);
       const id = `${meta.dirId}::${meta.scope}${meta.sessionId ? ':' + meta.sessionId : ''}::${slug}`;
+      const absFile = path.join(absDir, file);
       addNode({
         id, slug, file,
         title: parsed.title,
@@ -2883,6 +2896,12 @@ function buildMemoryGraph(dirIdFilter) {
         sessionId: meta.sessionId || null,
         dirId: meta.dirId,
         size,
+        // Storage location + token gauge, so the UI can show where a node lives
+        // and open it in the file editor. `rel` is the store-root-relative key the
+        // /api/memory/file endpoints resolve (always forward-slash separated).
+        path: absFile,
+        rel: path.relative(MEMORY_STORE_ROOT, absFile).split(path.sep).join('/'),
+        tokens: estimateMemTokens(raw),
         missing: false,
       });
       indexSlug(meta.dirId, slug, id);
@@ -2952,7 +2971,7 @@ function buildMemoryGraph(dirIdFilter) {
           title: String(p.slug).replace(/[-_]+/g, ' '),
           summary: '（尚未创建的记忆 · 被引用但文件不存在）',
           type: 'missing', scope: 'missing', sessionId: null,
-          dirId: p.dirId, size: 0, missing: true,
+          dirId: p.dirId, size: 0, path: null, rel: null, tokens: 0, missing: true,
         });
         missingByKey.set(key, targetId);
       } else { truncated = true; continue; }
@@ -3002,6 +3021,215 @@ app.get('/api/memory/graph', (req, res) => {
       durationMs: Date.now() - t0,
     },
   });
+});
+
+// ── Memory TREE + generic file editor ──────────────────────────────────────
+// A hierarchical view of the same on-disk store the graph reads, grouped by
+//   项目(project=<dirId>) → 公共(_shared) + 会话(sessions/<id>)
+// Each file carries its absolute path, a store-relative `rel` key, byte size,
+// an estimated token count, its parsed title and mtime — so the UI can show
+// where memory lives, total token weight, and open any file in an editor.
+const MEM_TREE_MAX_FILES = 2000; // safety cap so a huge store still renders fast
+
+// Resolve a store-relative `rel` to a safe absolute *.md path, or null. Rejects
+// path traversal (.. / empty / backslash segments), anything outside the store
+// root, and (for existing files) symlinks that escape the root via realpath.
+function resolveMemoryFilePath(rel) {
+  if (!rel || typeof rel !== 'string') return null;
+  if (!/\.md$/i.test(rel)) return null;
+  const segments = rel.split('/');
+  for (const seg of segments) {
+    if (!seg || seg === '.' || seg === '..' || seg.includes('\\') || seg.includes('\0')) return null;
+  }
+  const root = path.resolve(MEMORY_STORE_ROOT);
+  const resolved = path.resolve(root, rel);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
+  try {
+    if (fs.existsSync(resolved)) {
+      const real = fs.realpathSync(resolved);
+      const realRoot = fs.realpathSync(root);
+      if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
+    }
+  } catch (_) { return null; }
+  return resolved;
+}
+
+// Build one tree file entry. `relDir` is the store-relative folder (forward
+// slashes). Never throws — returns null on read/stat failure so one bad file
+// doesn't sink the whole scan.
+function memTreeFileEntry(absDir, relDir, name) {
+  try {
+    const abs = path.join(absDir, name);
+    const raw = fs.readFileSync(abs, 'utf8');
+    let mtime = null;
+    try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
+    const parsed = parseMemoryMarkdown(raw, name.replace(/\.md$/i, ''));
+    return {
+      name,
+      rel: `${relDir}/${name}`,
+      path: abs,
+      size: Buffer.byteLength(raw),
+      tokens: estimateMemTokens(raw),
+      title: parsed.title || name.replace(/\.md$/i, ''),
+      mtime,
+    };
+  } catch (_) { return null; }
+}
+
+// List the *.md files of one folder as tree entries, honoring the global cap.
+// `counter` is a shared { n } so the cap spans the whole tree, not per-folder.
+function listMemTreeFiles(absDir, relDir, counter) {
+  let names;
+  try { names = fs.readdirSync(absDir).filter(f => f.toLowerCase().endsWith('.md')).sort(); }
+  catch (_) { return { files: [], tokens: 0 }; }
+  const files = [];
+  let tokens = 0;
+  for (const name of names) {
+    if (counter.n >= MEM_TREE_MAX_FILES) { counter.truncated = true; break; }
+    const e = memTreeFileEntry(absDir, relDir, name);
+    if (!e) continue;
+    files.push(e); tokens += e.tokens; counter.n++;
+  }
+  return { files, tokens };
+}
+
+function buildMemoryTree() {
+  const root = MEMORY_STORE_ROOT;
+  let projectIds = [];
+  try {
+    projectIds = fs.readdirSync(root, { withFileTypes: true })
+      .filter(d => d.isDirectory()).map(d => d.name);
+  } catch (_) { projectIds = []; }
+
+  const counter = { n: 0, truncated: false };
+  const projects = [];
+  let sessionCount = 0;
+
+  for (const dirId of projectIds) {
+    const projRoot = path.join(root, dirId);
+    const dir = directories.get(dirId);
+
+    // 公共记忆 (_shared)
+    const sharedRes = listMemTreeFiles(path.join(projRoot, '_shared'), `${dirId}/_shared`, counter);
+    const shared = {
+      dir: path.join(projRoot, '_shared'),
+      rel: `${dirId}/_shared`,
+      tokens: sharedRes.tokens,
+      files: sharedRes.files,
+    };
+
+    // 会话记忆 (sessions/<id>)
+    const sessions = [];
+    let sessDirs = [];
+    try {
+      sessDirs = fs.readdirSync(path.join(projRoot, 'sessions'), { withFileTypes: true })
+        .filter(d => d.isDirectory()).map(d => d.name).sort();
+    } catch (_) {}
+    for (const sid of sessDirs) {
+      const sRes = listMemTreeFiles(path.join(projRoot, 'sessions', sid), `${dirId}/sessions/${sid}`, counter);
+      const persisted = persistedSessions.get(sid);
+      sessions.push({
+        sessionId: sid,
+        label: (persisted && persisted.label) ? persisted.label : sid,
+        cli: (persisted && persisted.cli) || null,
+        live: !!persisted,
+        dir: path.join(projRoot, 'sessions', sid),
+        rel: `${dirId}/sessions/${sid}`,
+        tokens: sRes.tokens,
+        files: sRes.files,
+      });
+    }
+    sessionCount += sessions.length;
+
+    const projTokens = shared.tokens + sessions.reduce((a, s) => a + s.tokens, 0);
+    const fileCount = shared.files.length + sessions.reduce((a, s) => a + s.files.length, 0);
+    // Skip fully-empty projects (no files anywhere) to keep the tree tidy.
+    if (fileCount === 0) continue;
+    projects.push({
+      dirId,
+      name: (dir && dir.name) || dirId.slice(0, 8),
+      dirPath: (dir && dir.path) || null,
+      tokens: projTokens,
+      fileCount,
+      shared,
+      sessions,
+    });
+  }
+
+  projects.sort((a, b) => b.tokens - a.tokens);
+  const totals = projects.reduce((a, p) => {
+    a.tokens += p.tokens; a.files += p.fileCount; return a;
+  }, { tokens: 0, files: 0 });
+
+  return {
+    root,
+    projects,
+    meta: {
+      projectCount: projects.length,
+      sessionCount,
+      fileCount: totals.files,
+      tokenTotal: totals.tokens,
+      truncated: counter.truncated,
+      maxFiles: MEM_TREE_MAX_FILES,
+    },
+  };
+}
+
+app.get('/api/memory/tree', (req, res) => {
+  const t0 = Date.now();
+  let data;
+  try { data = buildMemoryTree(); }
+  catch (e) { return res.status(500).json({ error: 'tree build failed: ' + e.message }); }
+  data.meta.durationMs = Date.now() - t0;
+  res.json(data);
+});
+
+// Read one memory file by store-relative `rel`.
+app.get('/api/memory/file', (req, res) => {
+  const rel = req.query.rel ? String(req.query.rel) : '';
+  const abs = resolveMemoryFilePath(rel);
+  if (!abs) return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
+  if (!fs.existsSync(abs)) return res.status(404).json({ error: 'file not found' });
+  try {
+    const content = fs.readFileSync(abs, 'utf8');
+    let mtime = null;
+    try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
+    res.json({
+      rel, path: abs, name: path.basename(abs), content,
+      size: Buffer.byteLength(content), tokens: estimateMemTokens(content), mtime,
+    });
+  } catch (e) { res.status(500).json({ error: 'read failed: ' + e.message }); }
+});
+
+// Create/overwrite one memory file: { rel, content }. Parent dir must exist
+// (we never conjure new project/session folders from a raw path).
+app.put('/api/memory/file', (req, res) => {
+  const { rel, content } = req.body || {};
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
+  if (content.length > 200000) return res.status(413).json({ error: 'content too long (max 200000 chars)' });
+  const abs = resolveMemoryFilePath(rel);
+  if (!abs) return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
+  if (!fs.existsSync(path.dirname(abs))) return res.status(400).json({ error: 'parent folder does not exist' });
+  try {
+    fs.writeFileSync(abs, content);
+    let mtime = null;
+    try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
+    const dirId = String(rel).split('/')[0];
+    if (dirId) try { workspaceBroadcast(dirId, { type: 'memory', rel, scope: rel.includes('/_shared/') ? 'shared' : 'own' }); } catch (_) {}
+    res.json({ ok: true, rel, path: abs, size: Buffer.byteLength(content), tokens: estimateMemTokens(content), mtime });
+  } catch (e) { res.status(500).json({ error: 'write failed: ' + e.message }); }
+});
+
+// Delete one memory file by store-relative `rel`.
+app.delete('/api/memory/file', (req, res) => {
+  const rel = (req.body && req.body.rel) || req.query.rel;
+  const abs = resolveMemoryFilePath(rel);
+  if (!abs) return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
+  try { fs.unlinkSync(abs); }
+  catch (e) { if (e.code !== 'ENOENT') return res.status(500).json({ error: 'delete failed: ' + e.message }); }
+  const dirId = String(rel).split('/')[0];
+  if (dirId) try { workspaceBroadcast(dirId, { type: 'memory', rel, scope: String(rel).includes('/_shared/') ? 'shared' : 'own' }); } catch (_) {}
+  res.json({ ok: true });
 });
 
 // Delete a single message from this session's persisted chat history.

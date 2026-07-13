@@ -49,7 +49,16 @@ function reorderDirectories(newOrder) {
 
 /* ── Helpers ── */
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Human-readable byte size (B / KB / MB). Used by the memory tree + node modal.
+function formatSize(bytes) {
+  const n = Number(bytes);
+  if (!isFinite(n) || n < 0) return '–';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 function formatTime(iso) {
@@ -7048,6 +7057,18 @@ document.addEventListener('visibilitychange', () => {
     addTag('作用域: ' + (nd.scope || '—'));
     addTag('关联度: ' + (nd.degree || 0));
     if (nd.missing) addTag('⚠ 悬空引用');
+
+    // 存放位置 + token 估算 + 打开编辑
+    const pathEl = el('mem-node-path'), copyBtn = el('mem-node-copy'), editBtn = el('mem-node-edit');
+    if (pathEl) pathEl.textContent = nd.path || (nd.missing ? '（文件尚未创建）' : (nd.rel || '—'));
+    if (el('mem-node-tokens')) el('mem-node-tokens').textContent = nd.missing ? '–' : ('~' + (nd.tokens || 0));
+    if (el('mem-node-size')) el('mem-node-size').textContent = nd.missing ? '–' : formatSize(nd.size);
+    if (copyBtn) copyBtn.onclick = () => { if (nd.path) copyText(nd.path); };
+    if (editBtn) {
+      if (nd.rel && !nd.missing) { editBtn.style.display = ''; editBtn.onclick = () => openMemFileEditor(nd.rel); }
+      else editBtn.style.display = 'none';
+    }
+
     el('mem-node-summary').textContent = nd.summary || '（无摘要）';
 
     // 邻居（出/入边）
@@ -7095,5 +7116,265 @@ document.addEventListener('visibilitychange', () => {
   if (document.readyState !== 'loading') {
     const c = el('mem-graph-canvas');
     if (c) { canvas = c; svg = el('mem-graph-svg'); bindCanvasOnce(); }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // 记忆树 · Memory Tree  (按 项目→公共/会话 层级梳理；显示位置、token、可编辑)
+  // 复用同一记忆存储；数据来源 GET /api/memory/tree；文件读写走 /api/memory/file。
+  // ══════════════════════════════════════════════════════════════════════
+
+  // 与服务端 estimateMemTokens 保持一致：中文≈1.5 token/字，其余≈4 字符/token。
+  // 仅用于编辑时的实时估算，服务端返回的 tokens 才是列表的权威值。
+  function estTokens(str) {
+    const s = String(str == null ? '' : str);
+    if (!s.length) return 0;
+    const cjk = (s.match(/[㐀-䶿一-鿿豈-﫿぀-ゟ゠-ヿ가-힯]/g) || []).length;
+    return Math.max(1, Math.round(cjk * 1.5 + (s.length - cjk) / 4));
+  }
+
+  function copyText(t) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t); return; }
+    } catch (_) {}
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    } catch (_) {}
+  }
+  window.copyText = copyText;
+
+  // ── 图谱 / 树状 tab 切换 ──────────────────────────────────────────────
+  window.setMemTab = function (tab) {
+    const isTree = tab === 'tree';
+    const gp = el('mem-graph-pane'), tp = el('mem-tree-pane');
+    if (gp) gp.style.display = isTree ? 'none' : '';
+    if (tp) tp.style.display = isTree ? '' : 'none';
+    document.querySelectorAll('#mem-tabs .mtab').forEach(b =>
+      b.classList.toggle('active', b.dataset.memtab === tab));
+    if (isTree && !window.__memTreeLoaded) { window.__memTreeLoaded = true; loadMemoryTree(); }
+  };
+
+  // ── 数据加载 + 渲染 ───────────────────────────────────────────────────
+  let _treeData = null, _treeSeq = 0;
+  window.loadMemoryTree = async function (forceRefetch) {
+    const box = el('mem-tree'); if (!box) return;
+    if (_treeData && !forceRefetch) { renderTree(_treeData); return; }
+    const seq = ++_treeSeq;
+    box.innerHTML = '<div class="mt-empty">加载中…</div>';
+    const statsEl = el('mem-tree-stats'); if (statsEl) statsEl.textContent = '加载中…';
+    try {
+      const r = await fetch('/api/memory/tree' + tokenQS('?'));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      if (seq !== _treeSeq) return; // 竞态：更晚的请求已发出
+      _treeData = data;
+      renderTree(data);
+    } catch (e) {
+      if (seq !== _treeSeq) return;
+      box.innerHTML = '<div class="mt-empty">加载失败：' + escapeHtml(e.message) + '</div>';
+      if (statsEl) statsEl.textContent = '';
+    }
+  };
+
+  function renderTree(data) {
+    const box = el('mem-tree'); if (!box) return;
+    const m = data.meta || {};
+    const statsEl = el('mem-tree-stats');
+    if (statsEl) {
+      statsEl.textContent = `${m.projectCount || 0} 项目 · ${m.sessionCount || 0} 会话 · `
+        + `${m.fileCount || 0} 文件 · 估算 ~${(m.tokenTotal || 0).toLocaleString()} tokens`
+        + (m.truncated ? ` · 已截断至 ${m.maxFiles}` : '')
+        + (m.durationMs != null ? ` · ${m.durationMs}ms` : '');
+    }
+    const projects = data.projects || [];
+    if (!projects.length) { box.innerHTML = '<div class="mt-empty">暂无任何记忆文件。当会话把知识写进 memories/ 下的 .md 后，这里会出现层级。</div>'; return; }
+    box.innerHTML = projects.map(renderProject).join('');
+  }
+
+  function tok(n) { return `<span class="mt-tok"><span class="tokn">~${(n || 0).toLocaleString()}</span> tok</span>`; }
+
+  function renderProject(p) {
+    const shared = (p.shared && p.shared.files && p.shared.files.length)
+      ? renderGroup(p.shared, '公共记忆 (_shared)', 'shared', false) : '';
+    const sessions = (p.sessions || [])
+      .filter(s => s.files && s.files.length)
+      .map(s => renderGroup(s, sessLabel(s), 'session', true)).join('');
+    return `<div class="mt-proj" data-dirid="${escapeHtml(p.dirId)}">
+      <div class="mt-row mt-proj-hdr" data-toggle>
+        <span class="mt-caret">▶</span>
+        <strong>${escapeHtml(p.name)}</strong>
+        <span class="mt-count">${p.fileCount || 0} 文件 · ${(p.sessions || []).length} 会话</span>
+        ${tok(p.tokens)}
+      </div>
+      <div class="mt-body">${shared}${sessions || '<div class="mt-empty" style="padding:10px">该项目暂无会话记忆</div>'}</div>
+    </div>`;
+  }
+
+  function sessLabel(s) {
+    const base = s.label && s.label !== s.sessionId ? `${s.label} · ${s.sessionId}` : s.sessionId;
+    return (s.cli ? `[${s.cli}] ` : '') + base + (s.live ? '' : ' （离线）');
+  }
+
+  function renderGroup(g, label, kind, collapsed) {
+    const files = (g.files || []).map(renderFileRow).join('');
+    return `<div class="mt-grp mt-grp-${kind}">
+      <div class="mt-row mt-grp-hdr" data-toggle>
+        <span class="mt-caret">${collapsed ? '▶' : '▼'}</span>
+        <span class="mt-grp-label">${escapeHtml(label)}</span>
+        <span class="mt-count">${(g.files || []).length} 文件</span>
+        ${tok(g.tokens)}
+      </div>
+      <div class="mt-body${collapsed ? '' : ' open'}">${files}</div>
+    </div>`;
+  }
+
+  function renderFileRow(f) {
+    return `<div class="mt-filewrap">
+      <div class="mt-file" data-rel="${escapeHtml(f.rel)}" title="点击打开编辑">
+        <span>📄</span>
+        <span class="mt-fname">${escapeHtml(f.name)}</span>
+        <span class="mt-ftitle">${escapeHtml(f.title || '')}</span>
+        <span class="mt-tok"><span class="tokn">~${(f.tokens || 0).toLocaleString()}</span> tok · ${escapeHtml(formatSize(f.size))}</span>
+        <button class="mt-edit" data-edit="${escapeHtml(f.rel)}">编辑</button>
+      </div>
+      <code class="mt-fpath" data-copy="${escapeHtml(f.path)}" title="点击复制路径">${escapeHtml(f.path)}</code>
+    </div>`;
+  }
+
+  window.memTreeExpandAll = function (open) {
+    document.querySelectorAll('#mem-tree .mt-body').forEach(b => b.classList.toggle('open', !!open));
+    document.querySelectorAll('#mem-tree .mt-caret').forEach(c => { c.textContent = open ? '▼' : '▶'; });
+  };
+
+  // 事件委托：折叠/展开、打开编辑、复制路径。可能在 DOM 就绪前就调用，故做成
+  // 幂等的具名函数，IIFE 期与 DOMContentLoaded 各调一次，谁先见到 #mem-tree 谁绑。
+  function bindTree() {
+    const box = el('mem-tree'); if (!box || box.__bound) return; box.__bound = true;
+    box.addEventListener('click', (ev) => {
+      const editBtn = ev.target.closest('[data-edit]');
+      if (editBtn) { ev.stopPropagation(); openMemFileEditor(editBtn.dataset.edit); return; }
+      const copyEl = ev.target.closest('[data-copy]');
+      if (copyEl) { ev.stopPropagation(); copyText(copyEl.dataset.copy); flashMsg(copyEl, '已复制'); return; }
+      const file = ev.target.closest('.mt-file');
+      if (file && file.dataset.rel) { openMemFileEditor(file.dataset.rel); return; }
+      const hdr = ev.target.closest('[data-toggle]');
+      if (hdr) {
+        const body = hdr.nextElementSibling, caret = hdr.querySelector('.mt-caret');
+        if (body && body.classList.contains('mt-body')) {
+          const open = body.classList.toggle('open');
+          if (caret) caret.textContent = open ? '▼' : '▶';
+        }
+      }
+    });
+  }
+  bindTree();
+
+  function flashMsg(anchorEl, text) {
+    try {
+      const old = anchorEl.textContent; anchorEl.textContent = text + ' ✓';
+      setTimeout(() => { anchorEl.textContent = old; }, 900);
+    } catch (_) {}
+  }
+
+  // ── 共享的记忆文件编辑器 ─────────────────────────────────────────────
+  let _editRel = null, _editOrig = '';
+  window.openMemFileEditor = async function (rel) {
+    if (!rel) return;
+    // 从图谱节点弹窗打开时，先关掉节点弹窗，避免叠层
+    const nm = el('mem-node-modal'); if (nm) nm.classList.remove('open');
+    const modal = el('mem-file-modal'); if (!modal) return;
+    _editRel = rel;
+    _editOrig = '';                       // 清掉上一个文件的基线，避免误判“有未保存改动”
+    el('mem-file-title').textContent = rel.split('/').pop();
+    el('mem-file-path').textContent = '加载中… · ' + rel;
+    el('mem-file-ta').value = '';
+    el('mem-file-tok').textContent = '';
+    el('mem-file-msg').textContent = '';
+    modal.classList.add('open');
+    try {
+      const r = await fetch('/api/memory/file?rel=' + encodeURIComponent(rel) + (tokenQS('&') || ''));
+      if (_editRel !== rel) return;       // 期间又打开了别的文件（含 404 分支一并守卫）
+      if (r.status === 404) { el('mem-file-path').textContent = '（文件不存在，保存后创建）· ' + rel; updateEditorTok(); return; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      if (_editRel !== rel) return; // 期间又打开了别的文件
+      _editOrig = d.content || '';
+      el('mem-file-ta').value = _editOrig;
+      el('mem-file-path').textContent = d.path || rel;
+      updateEditorTok();
+    } catch (e) {
+      el('mem-file-msg').textContent = '读取失败：' + e.message;
+    }
+  };
+  window.memFileEditorClose = function () {
+    const ta = el('mem-file-ta');
+    if (ta && _editRel && ta.value !== _editOrig) {
+      if (!confirm('有未保存的改动，确定关闭？')) return;
+    }
+    const m = el('mem-file-modal'); if (m) m.classList.remove('open');
+    _editRel = null; _editOrig = '';
+  };
+  function updateEditorTok() {
+    const ta = el('mem-file-ta'); const t = el('mem-file-tok');
+    if (ta && t) t.textContent = '估算 ~' + estTokens(ta.value).toLocaleString() + ' tokens';
+  }
+  // 记忆增删后：图谱 + 树缓存全部失效，并立即刷新当前可见的那一面板（另一面板下次进入再拉）
+  function afterMemChange() {
+    _memRaw = null; window.__memGraphLoaded = false; _treeData = null;
+    const tp = el('mem-tree-pane'), gp = el('mem-graph-pane');
+    if (tp && tp.style.display !== 'none') loadMemoryTree(true);
+    else if (gp && gp.style.display !== 'none' && typeof window.loadMemoryGraph === 'function') window.loadMemoryGraph(undefined, true);
+  }
+  async function saveMemFile() {
+    if (!_editRel) return;
+    const content = el('mem-file-ta').value;
+    el('mem-file-msg').textContent = '保存中…';
+    try {
+      const r = await fetch('/api/memory/file', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rel: _editRel, content }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { el('mem-file-msg').textContent = '保存失败：' + (d.error || ('HTTP ' + r.status)); return; }
+      _editOrig = content;
+      el('mem-file-msg').textContent = '✓ 已保存 · ~' + (d.tokens || 0) + ' tokens';
+      afterMemChange();
+    } catch (e) { el('mem-file-msg').textContent = '保存失败：' + e.message; }
+  }
+  async function deleteMemFile() {
+    if (!_editRel) return;
+    if (!confirm('删除记忆文件「' + _editRel.split('/').pop() + '」？不可恢复。')) return;
+    try {
+      const r = await fetch('/api/memory/file', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rel: _editRel }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { el('mem-file-msg').textContent = '删除失败：' + (d.error || ('HTTP ' + r.status)); return; }
+      _editOrig = ''; _editRel = null;
+      const m = el('mem-file-modal'); if (m) m.classList.remove('open');
+      afterMemChange();
+    } catch (e) { el('mem-file-msg').textContent = '删除失败：' + e.message; }
+  }
+  document.addEventListener('DOMContentLoaded', wireEditor);
+  if (document.readyState !== 'loading') wireEditor();
+  function wireEditor() {
+    const save = el('mem-file-save'), del = el('mem-file-del'), ta = el('mem-file-ta');
+    if (save && !save.__b) { save.__b = 1; save.addEventListener('click', saveMemFile); }
+    if (del && !del.__b) { del.__b = 1; del.addEventListener('click', deleteMemFile); }
+    if (ta && !ta.__b) {
+      ta.__b = 1;
+      ta.addEventListener('input', updateEditorTok);
+      ta.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); saveMemFile(); }
+      });
+    }
+    bindTree(); // 兜底：首帧 DOM 可能晚于 IIFE 首次调用
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && el('mem-file-modal') && el('mem-file-modal').classList.contains('open')) {
+        window.memFileEditorClose();
+      }
+    });
   }
 })();
