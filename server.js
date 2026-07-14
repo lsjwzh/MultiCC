@@ -2470,9 +2470,8 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     // CLIs ignore this field. Only claude chat sessions default on.
     streaming: cli === 'claude' && kind === 'chat',
     // autoContinue is no longer a user-facing toggle (the picker keeps only the
-    // streaming option). The field stays true so tryAutoContinue / B idle-timer
-    // still auto-drive C/B states — classify's D/W guards + tryAutoContinue gate
-    // provide the safety rails; there's no reason to ever turn it off now.
+    // streaming option). The field stays true for back-compat only; the old
+    // auto-drive mechanisms (tryAutoContinue / B idle-timer) are retired.
     autoContinue: true,
     createdAt: new Date().toISOString(),
     worktreePath,
@@ -2570,8 +2569,8 @@ app.patch('/api/sessions/:id', (req, res) => {
   if (req.body.autoContinue !== undefined) {
     // autoContinue is no longer user-configurable (the streaming picker dropped
     // this toggle). Accept the field for back-compat with older clients but pin
-    // it true — tryAutoContinue / B idle-timer rely on it, and classify's D/W
-    // guards + tryAutoContinue gate make "always on" safe.
+    // it true. The old auto-drive paths (tryAutoContinue / B idle-timer) are
+    // retired; classify's D/W guards are the safety rails now.
     s.autoContinue = true;
   }
   if (req.body.autoCommit !== undefined) {
@@ -3874,8 +3873,8 @@ app.get('/api/sessions/:id', (req, res) => {
     && persisted?.kind !== 'terminal';
   const streaming = isClaudeChat;
   // autoContinue is no longer user-facing; always true (classify gates the actual
-  // injection). Legacy sessions that predate the pinned field default to true too,
-  // matching tryAutoContinue (which no longer reads this field).
+  // injection). Legacy sessions that predate the pinned field default to true too.
+  // tryAutoContinue is retired (0 call sites) — this field is vestigial.
   const autoContinue = persisted?.autoContinue !== false;
   const autoCommit = !!persisted?.autoCommit;
   const autoDispatch = !!persisted?.autoDispatch;
@@ -6800,7 +6799,8 @@ const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI
 //   • workspaceStatus  — the card's display status. Rebuilt from the persisted
 //     classifyState (D/C/W/B/E/P) so the board shows the real state immediately,
 //     NOT 'idle'. Without this, D/W sessions would stay idle forever (scan skips
-//     them) and C/B/E/P would show idle until the first 60s scan re-judges.
+//     both), and C/E/B/P would show idle until the first 60s scan re-judges (C
+//     falls through to W at dispatch, so it effectively idles as waiting too).
   for (const [sid, p] of persistedSessions) {
     if (!p) continue;
     if (p.summary) sessionSummaries.set(sid, { summary: p.summary, ts: p.summaryTs || Date.now() });
@@ -6808,7 +6808,8 @@ const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI
     const cls = p.taskState && p.taskState.classifyState;
     if (cls) {
       // D → completed (terminal). C/W/B/E/P are all "not done" → waiting; the
-      // scan re-judges C/B/E/P within 60s, while D/W stay as the accurate value.
+      // scan re-judges C/B/E/P within 60s, while D/W stay as the accurate value
+      // (a fell-through C persists as W, so it too rests rather than re-judging).
       const status = cls === 'D' ? 'completed' : 'waiting';
       workspaceStatus.set(sid, { status, currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null });
     }
@@ -6821,9 +6822,9 @@ const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI
 //
 // State letters (line 3):
 //   D = done          → state 'completed'  (task closed; notify user)
-//   C = continue      → state 'continue'   (user pushed/confirmed; AI should keep going)
+//   C = continue      → state 'continue'   (conversation reads as keep-going; dispatcher no longer auto-injects)
 //   W = wait on user  → state 'waiting'
-//   B = wait on bg    → state 'waiting' + background
+//   B = wait on bg    → state 'waiting' + background  (terminal only; chat prompt retired B)
 //   E = API error     → state 'waiting' + error (truncated reply → retry)
 //   P = processing    → state 'running'    (mid-turn only; refresh label)
 //   unknown           → state 'waiting'    (safe default; never falsely 'completed')
@@ -6854,7 +6855,7 @@ function parseClassifyResult(text) {
     || Object.entries(PHASE_LABELS).find(([, v]) => v === phaseRaw.toLowerCase())?.[0]
     || null;
 
-  // State (line 3). Single letter: C/W/B/E/P.
+  // State (line 3). Single letter: D/C/W/B/E/P.
   const stateRaw = (lines[2] || '')
     .toUpperCase()
     .replace(/^(第3行[:：]|状态[:：]|state[:：]?)\s*/i, '')
@@ -6899,7 +6900,7 @@ const CLASSIFY_DISPLAY = {
     voiceText: '任务已完成', ding: 'completed',
     cardStatus: 'completed', barTint: 'completed',
   },
-  C: {  // Continue — AI should keep going
+  C: {  // Continue — AI is continuing (display only; dispatcher no longer auto-injects)
     label: '继续中',
     pushType: null, pushTitle: null,
     voiceText: null, ding: null,
@@ -6911,7 +6912,7 @@ const CLASSIFY_DISPLAY = {
     voiceText: '等待你的操作', ding: 'waiting',
     cardStatus: 'waiting', barTint: 'waiting',
   },
-  B: {  // Wait on background task
+  B: {  // Wait on background task (terminal only; chat prompt no longer emits B)
     label: '后台等待',
     pushType: 'waiting', pushTitle: '等待操作',
     voiceText: '等待后台任务', ding: 'waiting',
@@ -6947,14 +6948,14 @@ function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 // to plugin handlers — classify only judges, this layer executes.
 //
 //   D → complete   (set completed, notify user, classifyState='D' → scan skips)
-//   C → continue   (AI should keep going → auto-continue; classifyState='C')
+//   C → continue   (no auto-continue; persist as C; if turn ended → fall through to W)
 //   W → waitUser   (set waiting, broadcast; classifyState='W')
-//   B → waitBg     (idle timer → inject "继续" after 3 min of silence; 'B')
+//   B → retired    (chat: no idle timer, no inject, falls through to waiting broadcast)
 //   E → apiError   (retry inject; classifyState='E')
-//   P → running    (mid-turn refresh label; or premature-stop → auto-continue)
+//   P → running    (mid-turn refresh label; or interrupted turn → resumeInterrupted)
 //
-// Only D is terminal — every other state is non-terminal and will be re-judged
-// by the periodic scan until the task genuinely completes (D).
+// D and W are excluded from scan — D=terminal (done), W=waiting on user (only
+// new user input flips it back to P). Other states (C/B/E/P/null) are re-judged.
 //
 // Context object carries everything the handlers need (varies by caller):
 //   { sessionName, sessionId, cs?, mon?, isTerminal?, cwd?, opts? }
@@ -6964,17 +6965,21 @@ function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 // as the aux service is up (so classify can judge E), we keep nudging. When
 // aux goes down, classify stops running and the retry loop stops naturally.
 const API_RETRY_DELAY_MS = 0;
-const BG_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 min - must be no new output for this long
+// RETIRED: the B idle-timer is gone (chat B is retired; terminal B never used a
+// timer). _bgIdleTimers is never populated, so BG_IDLE_TIMEOUT_MS is unread and
+// clearBgIdleTimer / bumpBgActivity are permanent no-ops. Kept only so their call
+// sites stay valid; safe to delete wholesale in a later cleanup.
+const BG_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // RETIRED (unread) — was the 3-min B idle window
 
-// Per-session state for B handler (not persisted across restarts).
+// Per-session state for B handler — RETIRED, never populated (0 .set call sites).
 const _bgIdleTimers = new Map();    // sessionName -> { timer, lastActivity }
 
-function clearBgIdleTimer(sessionName) {
+function clearBgIdleTimer(sessionName) {   // RETIRED no-op (_bgIdleTimers always empty)
   const s = _bgIdleTimers.get(sessionName);
   if (s) { clearTimeout(s.timer); _bgIdleTimers.delete(sessionName); }
 }
 
-function bumpBgActivity(sessionName) {
+function bumpBgActivity(sessionName) {     // RETIRED no-op (_bgIdleTimers always empty)
   const s = _bgIdleTimers.get(sessionName);
   if (s) s.lastActivity = Date.now();
 }
@@ -7017,12 +7022,10 @@ function pruneErrorTurnPairs(sessionName) {
   return removed;
 }
 
-// Attempt an auto-continue nudge (C/B states). autoContinue is no longer a
-// toggle (always on - classify's D/W guards + the hasWait gate are the safety
-// rails), so we only check the session record exists. The underlying
-// waitInjector.autoContinue is UNCAPPED (only 'D' is terminal). Returns true if
-// a nudge was injected, false if suppressed (no record / explicit wait pending).
-function tryAutoContinue(sessionName, cs, cwd, nudge) {
+// RETIRED — 0 call sites. C/B auto-continue was removed; E-retry and
+// resumeInterrupted are the only auto-recovery paths now. Body kept intact (not
+// deleted) so a later cleanup can remove it together with its waitInjector deps.
+function tryAutoContinue(sessionName, cs, cwd, nudge) { // RETIRED
   const p = persistedSessions.get(sessionName);
   if (!p) return false;
   if (waitInjector.hasWait(sessionName)) return false;
@@ -7167,10 +7170,10 @@ function dispatchStateAction(result, ctx) {
   // broadcast below — no injection.
 
   // Common waiting-state broadcast — driven by classifyState letter.
-  // A 'continue' reaching here = a C that couldn't auto-drive (toggle off / hasWait):
-  // persist it as W, not C. As W it's scan-skipped (no wasteful re-judge loop every
-  // ~2min that would never inject anyway) and the UI correctly shows "waiting" — the
-  // session now genuinely waits for the user (or the toggle), which is the truth.
+  // A 'continue' reaching here = C is deliberately NOT auto-driven anymore.
+  // (The old uncapped C-autopush was a runaway loop; now all C ends up here,
+  // no injection.) Persist it as W, not C. As W it's scan-skipped and the UI
+  // correctly shows "waiting" — the session genuinely waits for the user.
   const cls = error ? 'E' : background ? 'B' : 'W';
   const disp = classifyDisplay(cls);
   const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
@@ -7203,7 +7206,7 @@ function dispatchStateAction(result, ctx) {
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
 //     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory }
-//   classifyState ∈ D | C | W | B | E | P | null  (D=done terminal; null=never classified)
+//   classifyState ∈ D | C | W | B | E | P | null  (D=done; B=terminal only; null=never classified)
 //   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
 const TASK_STATE_DEFAULTS = {
   goal: '', phase: 'idle', startedAt: null, endedAt: null,
@@ -7326,8 +7329,8 @@ function isNetworkUnhealthy() { return networkHealth.unhealthy; }
 // Callers should check isNetworkUnhealthy() BEFORE calling this — this is the
 // "actually put it on hold" step.
 // Decide what pendingText to stash for a held session. Real data (dispatch result
-// / bg-completion via safeInject) has NO SYS_PREFIX; classify nudges (E/C/B via
-// injectSystemMsg) DO. A later nudge must NOT overwrite already-stashed real data
+// / bg-completion via safeInject) has NO SYS_PREFIX; the classify E-retry nudge
+// (injectSystemMsg) DOES. A later nudge must NOT overwrite already-stashed real data
 // - the real payload is what resumeHeldSessions must replay. (A new real payload
 // still wins over a prior nudge; nudges overwrite nudges.)
 function mergeHeldPendingText(pendingText, prior) {
@@ -7427,9 +7430,9 @@ function auxHealthProbe() {
 }
 
 // ── Periodic scan (replaces the old startup-only reconcile) ────────────────
-// Every minute, sweep sessions whose classifyState is not 'D' (i.e. still
-// C/W/B/E/P or never classified) and enqueue them for re-judging. 'D' (done)
-// is the only terminal state. Dedup against the queue, throttle recently-judged
+// Every minute, sweep sessions whose classifyState is not D or W (i.e. still
+// C/B/E/P or never classified). D=terminal (done), W=waiting on user — both are
+// scan-skipped. Dedup against the queue, throttle recently-judged
 // sessions, and bail if the queue is backed up. On restart the first tick picks
 // up everything that isn't definitively done — no special boot logic needed.
 const SCAN_INTERVAL_MS = 60 * 1000;
@@ -8075,10 +8078,10 @@ function purgeNotesForSession(sessionId) {
 }
 
 // ── Unified classify — the single source of truth for task state ────────────
-// goal/phase/C/D/W/B all come from ONE aux call per invocation. Call sites:
-//   · turn-end:   immediately after a turn ends to finalise goal + C/W/B/D
+// goal/phase/D/C/W/E/P all come from ONE aux call per invocation. Call sites:
+//   · turn-end:   immediately after a turn ends to finalise goal + D/C/W/E/P
 //   · scan:       every 60s, re-judges any session not yet D/W (system-side
-//                 events: auto-continue, background done, API recovered, resume)
+//                 events: API recovered, interrupted resume, goal resolution)
 // No in-turn loop — while streaming the output is incomplete and a mid-turn
 // verdict would be unreliable. On aux unhealthy: classify is suppressed; the
 // last-known goal/phase is frozen and the dashboard banner warns the user.
@@ -8089,11 +8092,12 @@ function cancelClassify(cs) {
   // The .then() handler now always applies the latest result unconditionally.
 }
 
-// Parse the unified 3-line CHAT classify output (distinct from parseClassifyResult
-// above, which is the terminal-mode 2-line parser).
+// Build the CHAT classify prompt (system + conversation). Output is the same
+// unified 3-line format parsed by parseClassifyResult above (shared with the
+// terminal path).
 // Line 1: goal — noun-phrase in the conversation's language (中文 ≤20 字 / EN ≤10 words)
 // Line 2: phase ∈ 规划中|实现中|验证中|收尾中|已完成 (Chinese codes; EN synonyms tolerated)
-// Line 3: D(done) | C(continue) | W(wait user) | B(wait bg) | E(api error) | P(processing)
+// Line 3: D(done) | C(continue) | W(wait user) | E(api error) | P(processing)  (chat prompt does not emit B)
 // Tolerant of blank lines, prefixes, and model cruft.
 // Build the classify system prompt (instructions only, no data).
 function buildClassifySystemPrompt(priorGoal) {
@@ -8226,7 +8230,7 @@ function runClassifyNow(cs, sessionName) {
 }
 
 // Fire classify immediately after a turn ends — classify is the ONLY decider of
-// C/W/B/D. No in-turn loop: while streaming the output is still changing so a
+// C/W/E/P/D. No in-turn loop: while streaming the output is still changing so a
 // mid-turn verdict would be judged against an incomplete reply. We judge once at
 // turn end (definitive) and the periodic scan re-judges anything not yet D/W.
 // runClassifyNow handles the empty-reply case itself (falls back to user msg).
@@ -8675,7 +8679,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
   if (evt.type === 'result') {
     cs.currentCost = evt.total_cost_usd || null;
     // Flag transport/API failures — classify prompt recognizes these and
-    // judges state B (background wait) → autoContinue picks up naturally.
+    // judges state E (API error) → retry inject picks up naturally.
     if (evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype))) {
       cs._sawApiError = true;
       recordApiError(evt.subtype || 'api_error');
@@ -9153,12 +9157,12 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
   // ── Degrade防线 fail-loop 拦截（方案C）──────────────────────────────
   // 上游 API 不健康时，所有「系统自动注入」起的新 turn 只会立刻失败，反过来喂大
-  // fail-loop（classify 判 E/B/C/P → 注入 → 失败 → recordApiError → 再 classify → 再注入…）。
+  // fail-loop（classify 判 E/P → 注入 → 失败 → recordApiError → 再 classify → 再注入…）。
   // originContinue 由 waitInjector._inject wrapper 统一设置（见 waitInjector.init 调用处），
   // 是「系统注入 vs 用户主动」的唯一可靠判别——SYS_PREFIX(🔇)文本前缀不可靠，因为
-  // safeInject 不加前缀（B idle-timer / resumeHeldSessions 都走 safeInject）。拦在这一个
-  // chokepoint = 覆盖全部注入源：classify 的 E-retry/C·B-autoContinue/P-resume/B-idle-timer
-  // 五点 + wait-injector 内 callback/poll/autoContinue/resumeInterrupted/bgCheck + bg-completion
+  // safeInject 不加前缀（resumeHeldSessions / resumeInterrupted 都走 safeInject）。拦在这一个
+  // chokepoint = 覆盖全部注入源：classify 的 E-retry/P-resume
+  // + wait-injector 内 callback/poll/resumeInterrupted/bgCheck + bg-completion
   // 结果回流 + dispatch 结果路由。用户主动消息（WS user_message / HTTP memo/send）不设
   // originContinue → 放行；dispatch 启动 worker 有自己的 gate（见 dispatchToSession 的
   // isNetworkUnhealthy 检查）。triggers / 全局 cron 直调 runChatTurn 不带 originContinue，
@@ -9279,7 +9283,7 @@ function runChatTurn(sessionName, text, opts = {}) {
 
   // Task start: show a neutral placeholder instantly. We do NOT classify here —
   // the turn's output hasn't been produced yet, so a mid-turn verdict would be
-  // judged against an empty/partial reply. The real goal + C/W/B/D are decided
+  // judged against an empty/partial reply. The real goal + C/W/E/P/D are decided
   // once at turn end (classifyTurnEnd); the periodic scan re-judges non-D/W.
   cancelClassify(cs);
   emitRunningNotify(sessionName, `处理中：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
@@ -9587,7 +9591,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       // Capture the flag before resetting so the branch below can reference it.
       const sawApi = cs._sawApiError; cs._sawApiError = false;
 
-      // Resting status — classifyTurnEnd is the single decider of C/W/B/E.
+      // Resting status — classifyTurnEnd is the single decider of D/C/W/E/P.
       if (killReason) {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       } else if (kind === 'normal' || sawApi || hadAdapterError || kind === 'nonzero_exit' || kind === 'signaled') {
