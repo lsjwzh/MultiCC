@@ -877,79 +877,25 @@ async function fetchRefined(raw) {
       signal: controller.signal,
     });
     console.log('[voice-client] Response received, status:', res.status, 'ok:', res.ok);
-    console.log('[voice-client] Response headers:', [...res.headers.entries()].map(([k,v]) => `${k}: ${v}`).join(', '));
-    if (!res.body) {
-      console.error('[voice-client] res.body is null/undefined! Cannot stream.');
-      vpStatus.textContent = '⚠ 浏览器不支持流式读取';
-      vpRefined.placeholder = '（处理失败，可手动输入）';
-      return;
-    }
-    const reader = res.body.getReader();
-    console.log('[voice-client] Got ReadableStream reader');
-    const decoder = new TextDecoder();
-    let buf = '';
-    let streamDone = false;
-    let chunkCount = 0;
-    let totalBytes = 0;
-    while (!streamDone) {
-      const { done, value } = await reader.read();
-      console.log(`[voice-client] reader.read() => done=${done}, value length=${value ? value.length : 0}`);
-      if (done) {
-        console.log('[voice-client] Stream ended (done=true). Total chunks:', chunkCount, 'Total bytes:', totalBytes);
-        break;
-      }
-      chunkCount++;
-      totalBytes += value.length;
-      const decoded = decoder.decode(value, { stream: true });
-      console.log(`[voice-client] Chunk #${chunkCount} decoded (${decoded.length} chars):`, JSON.stringify(decoded.slice(0, 200)));
-      buf += decoded;
-      const lines = buf.split('\n');
-      buf = lines.pop();  // keep incomplete line
-      console.log(`[voice-client] Split into ${lines.length} complete lines, remaining buf: ${JSON.stringify(buf.slice(0, 100))}`);
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) {
-          if (line.trim()) console.log('[voice-client] Skipping non-data line:', JSON.stringify(line));
-          continue;
-        }
-        const payload = line.slice(6).trim();
-        console.log('[voice-client] SSE payload:', JSON.stringify(payload.slice(0, 200)));
-        if (payload === '[DONE]') {
-          console.log('[voice-client] Received [DONE] signal');
-          streamDone = true;
-          break;
-        }
-        try {
-          const parsed = JSON.parse(payload);
-          if (parsed.timing) {
-            console.log(`[voice-client] Timing event: ${parsed.timing} = ${parsed.ms}ms`);
-            timingInfo[parsed.timing] = parsed.ms;
-          } else {
-            console.log('[voice-client] Parsed JSON text:', JSON.stringify(parsed.text?.slice(0, 100)));
-            vpRefined.value += parsed.text;
-            _vpRefinedFinal = vpRefined.value;
-          }
-        } catch (parseErr) {
-          console.error('[voice-client] JSON parse error for payload:', JSON.stringify(payload), parseErr);
-        }
-      }
-    }
-    // Calculate frontend total time
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || data.text || `HTTP ${res.status}`);
+
     timingInfo.frontend_total = Date.now() - fetchStart;
-    console.log('[voice-client] Stream processing complete. vpRefined.value:', JSON.stringify(vpRefined.value.slice(0, 200)));
+    if (typeof data.ms === 'number') timingInfo.server_total = data.ms;
+    vpRefined.value = data.ok && typeof data.text === 'string' ? data.text : '';
+    _vpRefinedFinal = vpRefined.value;
     console.log('[voice-client] Timing info:', timingInfo);
     if (vpRefined.value.trim()) {
       vpStatus.textContent = '✓ 完成';
+    } else if (!data.ok) {
+      vpStatus.textContent = `⚠ ${data.text || '失败'}`;
     } else {
       vpStatus.textContent = '⚠ AI 未返回结果';
-      console.warn('[voice-client] AI returned empty result after processing');
     }
     vpRefined.placeholder = '（AI 处理完毕，可手动编辑）';
-    // Display timing info
     if (vpTimingEl) {
       const labels = [];
-      if (timingInfo.queue != null) labels.push(`排队 ${(timingInfo.queue / 1000).toFixed(1)}s`);
-      if (timingInfo.first_token != null) labels.push(`首字节 ${(timingInfo.first_token / 1000).toFixed(1)}s`);
-      if (timingInfo.ai_process != null) labels.push(`AI处理 ${(timingInfo.ai_process / 1000).toFixed(1)}s`);
+      if (timingInfo.server_total != null) labels.push(`服务端 ${(timingInfo.server_total / 1000).toFixed(1)}s`);
       if (timingInfo.frontend_total != null) labels.push(`总耗时 ${(timingInfo.frontend_total / 1000).toFixed(1)}s`);
       vpTimingEl.textContent = labels.join(' | ');
     }

@@ -3,6 +3,7 @@
  * multicc integration test
  * Usage:  node test.js           (auto-detects running server)
  *         node test.js --no-ws   (skip WebSocket test)
+ *         node test.js --live-ai (include tests that call the configured Aux model)
  *         npm test
  */
 
@@ -16,15 +17,17 @@ const WebSocket = require('ws');
 const pty  = require('node-pty');
 
 const SKIP_WS     = process.argv.includes('--no-ws');
+const RUN_LIVE_AI = process.argv.includes('--live-ai') || process.env.RUN_LIVE_AI_TESTS === '1';
 const TIMEOUT_PTY = 20_000;
 const TIMEOUT_WS  = 20_000;
 
 /* ── tiny test runner ──────────────────────────────────────────────── */
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, skipped = 0;
 const results = [];
 
 function ok(name)           { passed++; results.push({ ok: true,  name }); }
 function fail(name, reason) { failed++; results.push({ ok: false, name, reason }); }
+function skip(name, reason) { skipped++; results.push({ ok: null, name, reason }); }
 
 function check(name, fn) {
   try { fn(); ok(name); }
@@ -65,17 +68,36 @@ function detectServer() {
   return { proto, wsProto, port };
 }
 
-function httpGet(url) {
+function httpRequest(url, { method = 'GET', body, timeout = 10_000 } = {}) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith('https') ? https : http;
-    const req = lib.get(url, { rejectUnauthorized: false }, res => {
-      let body = '';
-      res.on('data', d => (body += d));
-      res.on('end', () => resolve({ status: res.statusCode, body }));
+    const payload = body === undefined ? null : JSON.stringify(body);
+    const headers = { Accept: 'application/json' };
+    if (payload !== null) {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+    if (process.env.MULTICC_TOKEN) {
+      headers.Authorization = `Bearer ${process.env.MULTICC_TOKEN}`;
+    }
+    const req = lib.request(url, { method, headers, rejectUnauthorized: false }, res => {
+      let raw = '';
+      res.on('data', d => (raw += d));
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(raw); } catch (_) {}
+        resolve({ status: res.statusCode, headers: res.headers, body: raw, json });
+      });
     });
     req.on('error', reject);
-    req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
+    req.setTimeout(timeout, () => { req.destroy(); reject(new Error('timeout')); });
+    if (payload !== null) req.write(payload);
+    req.end();
   });
+}
+
+function httpGet(url) {
+  return httpRequest(url, { timeout: 5000 });
 }
 
 function serverIsUp(proto, port) {
@@ -90,22 +112,26 @@ function serverIsUp(proto, port) {
   /* 1. STATIC CHECKS */
   console.log('\n── Static checks ──────────────────────────────────────────');
 
-  const spawnHelper = path.join(
-    __dirname,
-    'node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper'
-  );
+  const nodePtyRoot = path.dirname(require.resolve('node-pty/package.json'));
+  const spawnHelper = process.platform === 'darwin'
+    ? path.join(nodePtyRoot, 'prebuilds', `darwin-${process.arch}`, 'spawn-helper')
+    : null;
 
-  check('spawn-helper exists', () => {
-    if (!fs.existsSync(spawnHelper)) throw new Error(`not found: ${spawnHelper}`);
-  });
+  if (spawnHelper) {
+    check('spawn-helper exists for the current architecture', () => {
+      if (!fs.existsSync(spawnHelper)) throw new Error(`not found: ${spawnHelper}`);
+    });
 
-  check('spawn-helper is executable', () => {
-    const stat = fs.statSync(spawnHelper);
-    if (!(stat.mode & 0o111)) {
-      fs.chmodSync(spawnHelper, 0o755);
-      console.log('    (auto-fixed: chmod +x spawn-helper)');
-    }
-  });
+    check('spawn-helper is executable', () => {
+      const stat = fs.statSync(spawnHelper);
+      if (!(stat.mode & 0o111)) {
+        throw new Error(`not executable: ${spawnHelper}; rerun npm install`);
+      }
+    });
+  } else {
+    skip('spawn-helper exists for the current architecture', 'macOS-only node-pty asset');
+    skip('spawn-helper is executable', 'macOS-only node-pty asset');
+  }
 
   check('node-pty native module loads', () => { require('node-pty'); });
 
@@ -176,103 +202,122 @@ function serverIsUp(proto, port) {
         if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
       });
 
-      await checkAsync('WebSocket: new session gets session_id + PTY output', () =>
-        new Promise((resolve, reject) => {
-          const ws = new WebSocket(`${wsProto}://localhost:${port}`, {
-            rejectUnauthorized: false,
+      await checkAsync('WebSocket: persisted terminal gets session_id + PTY output', async () => {
+        const baseUrl = `${proto}://localhost:${port}`;
+        const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-ws-test-'));
+        let dirId = null;
+
+        try {
+          const dirRes = await httpRequest(`${baseUrl}/api/directories`, {
+            method: 'POST',
+            body: { name: `WS integration ${process.pid}`, path: testDir, create: true },
+            timeout: 30_000,
           });
-          let gotSessionId = false;
-          let sessionId = null;
+          if (dirRes.status !== 200 || !dirRes.json?.id) {
+            throw new Error(`could not create test directory: HTTP ${dirRes.status} ${dirRes.body}`);
+          }
+          dirId = dirRes.json.id;
 
-          const timer = setTimeout(() => {
-            ws.terminate();
-            reject(new Error(
-              gotSessionId
-                ? `session ${sessionId} created but no PTY output within ${TIMEOUT_WS / 1000}s`
-                : `no session_id within ${TIMEOUT_WS / 1000}s`
-            ));
-          }, TIMEOUT_WS);
+          const sessionRes = await httpRequest(`${baseUrl}/api/directories/${dirId}/sessions`, {
+            method: 'POST',
+            body: { cli: 'claude', kind: 'terminal', label: 'WS integration terminal' },
+            timeout: 30_000,
+          });
+          if (sessionRes.status !== 200 || !sessionRes.json?.id) {
+            throw new Error(`could not create terminal session: HTTP ${sessionRes.status} ${sessionRes.body}`);
+          }
+          const expectedSessionId = sessionRes.json.id;
+          const token = process.env.MULTICC_TOKEN
+            ? `&token=${encodeURIComponent(process.env.MULTICC_TOKEN)}`
+            : '';
 
-          ws.on('error', e => { clearTimeout(timer); reject(e); });
+          await new Promise((resolve, reject) => {
+            const ws = new WebSocket(
+              `${wsProto}://localhost:${port}/?id=${encodeURIComponent(expectedSessionId)}${token}`,
+              { rejectUnauthorized: false }
+            );
+            let gotSessionId = false;
+            let settled = false;
 
-          ws.on('message', raw => {
-            let msg;
-            try { msg = JSON.parse(raw.toString()); } catch { return; }
-
-            if (msg.type === 'error') {
+            const finish = (error) => {
+              if (settled) return;
+              settled = true;
               clearTimeout(timer);
-              ws.terminate();
-              return reject(new Error(`server error: ${msg.data}`));
-            }
-            if (msg.type === 'session_id') {
-              gotSessionId = true;
-              sessionId = msg.id;
-              console.log(`    session_id received: ${sessionId}`);
-              return;
-            }
-            if (msg.type === 'output' && msg.data) {
-              clearTimeout(timer);
-              console.log(`    first output: ${JSON.stringify(msg.data.slice(0, 60))}…`);
-              ws.close();
-              // clean up test session
-              if (sessionId) {
-                const lib = proto === 'https' ? https : http;
-                const req = lib.request(
-                  { hostname: 'localhost', port, path: `/api/sessions/${sessionId}`, method: 'DELETE', rejectUnauthorized: false },
-                  () => {}
-                );
-                req.on('error', () => {});
-                req.end();
+              if (error) {
+                ws.terminate();
+                reject(error);
+              } else {
+                ws.close();
+                resolve();
               }
-              resolve();
-            }
+            };
+
+            const timer = setTimeout(() => {
+              finish(new Error(
+                gotSessionId
+                  ? `session ${expectedSessionId} attached but no PTY output within ${TIMEOUT_WS / 1000}s`
+                  : `no session_id within ${TIMEOUT_WS / 1000}s`
+              ));
+            }, TIMEOUT_WS);
+
+            ws.on('error', e => finish(e));
+            ws.on('close', () => {
+              if (!settled) finish(new Error('WebSocket closed before PTY output'));
+            });
+            ws.on('message', raw => {
+              if (settled) return;
+              let msg;
+              try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+              if (msg.type === 'error') {
+                return finish(new Error(`server error: ${msg.data}`));
+              }
+              if (msg.type === 'session_id') {
+                if (msg.id !== expectedSessionId) {
+                  return finish(new Error(`expected session ${expectedSessionId}, got ${msg.id}`));
+                }
+                gotSessionId = true;
+                console.log(`    session_id received: ${msg.id}`);
+                ws.send(JSON.stringify({ type: 'resize', cols: 120, rows: 30 }));
+                return;
+              }
+              if (msg.type === 'output' && msg.data) {
+                console.log(`    first output: ${JSON.stringify(msg.data.slice(0, 60))}...`);
+                finish();
+              }
+            });
           });
-        })
-      );
+        } finally {
+          if (dirId) {
+            try {
+              await httpRequest(`${baseUrl}/api/directories/${dirId}?force=1`, {
+                method: 'DELETE', timeout: 30_000,
+              });
+            } catch (error) {
+              console.log(`    cleanup warning: ${error.message}`);
+            }
+          }
+          fs.rmSync(testDir, { recursive: true, force: true });
+        }
+      });
     }
   }
 
-  /* 4. VOICE SSE INTEGRATION TESTS */
-  console.log('\n── Voice SSE integration tests ────────────────────────────');
+  /* 4. VOICE API INTEGRATION TESTS */
+  console.log('\n── Voice API integration tests ────────────────────────────');
   {
     const { proto, port } = detectServer();
     const isUp = await serverIsUp(proto, port);
 
     if (!isUp) {
-      console.log(`  ⚠  Server not running, skipping voice SSE tests`);
+      console.log('  Server not running, skipping voice API tests');
     } else {
 
-      // Helper: HTTP POST that returns raw response for SSE streaming
-      function httpPost(url, body) {
-        return new Promise((resolve, reject) => {
-          const lib = url.startsWith('https') ? https : http;
-          const urlObj = new URL(url);
-          const req = lib.request({
-            hostname: urlObj.hostname,
-            port: urlObj.port,
-            path: urlObj.pathname,
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            rejectUnauthorized: false,
-          }, (res) => {
-            // Clear the connection timeout once we receive headers;
-            // the SSE stream timeout in readSSEStream will manage the rest.
-            req.setTimeout(0);
-            resolve(res);
-          });
-          req.on('error', reject);
-          req.setTimeout(10000, () => { req.destroy(); reject(new Error('request timeout')); });
-          req.write(JSON.stringify(body));
-          req.end();
-        });
-      }
-
-      // Helper: read SSE stream and parse events
       function readSSEStream(res, timeoutMs = 60000) {
         return new Promise((resolve, reject) => {
           const events = [];
           let buf = '';
-          let rawChunks = [];
+          const rawChunks = [];
           const timer = setTimeout(() => {
             res.destroy();
             reject(new Error(`SSE stream timeout after ${timeoutMs / 1000}s. Events so far: ${JSON.stringify(events)}. Raw chunks: ${rawChunks.join('')}`));
@@ -314,15 +359,37 @@ function serverIsUp(proto, port) {
         });
       }
 
-      // Test 1: SSE test endpoint (no claude dependency)
+      function assertVoiceJsonResponse(response, { requireText = false } = {}) {
+        if (response.status !== 200) throw new Error(`Expected 200, got ${response.status}`);
+        if (!response.headers['content-type']?.includes('application/json')) {
+          throw new Error(`Expected application/json, got: ${response.headers['content-type']}`);
+        }
+        if (!response.json || typeof response.json.ok !== 'boolean') {
+          throw new Error(`Missing boolean ok field: ${response.body}`);
+        }
+        if (typeof response.json.text !== 'string') {
+          throw new Error(`Missing string text field: ${response.body}`);
+        }
+        if (typeof response.json.ms !== 'number' || response.json.ms < 0) {
+          throw new Error(`Missing non-negative ms field: ${response.body}`);
+        }
+        if (requireText && (!response.json.ok || !response.json.text.trim())) {
+          throw new Error(`Voice refine failed or returned empty text: ${response.body}`);
+        }
+      }
+
+      // The dedicated transport fixture remains SSE; /api/voice/refine is JSON.
       await checkAsync('SSE test endpoint streams 3 chunks + [DONE]', async () => {
         const res = await new Promise((resolve, reject) => {
           const lib = proto === 'https' ? https : http;
-          lib.get(`${proto}://localhost:${port}/api/voice/test-sse`, { rejectUnauthorized: false }, resolve)
+          const headers = process.env.MULTICC_TOKEN
+            ? { Authorization: `Bearer ${process.env.MULTICC_TOKEN}` }
+            : {};
+          lib.get(`${proto}://localhost:${port}/api/voice/test-sse`, {
+            headers, rejectUnauthorized: false,
+          }, resolve)
             .on('error', reject);
         });
-        console.log(`    Response status: ${res.statusCode}`);
-        console.log(`    Content-Type: ${res.headers['content-type']}`);
 
         if (res.statusCode !== 200) throw new Error(`Expected 200, got ${res.statusCode}`);
         if (!res.headers['content-type']?.includes('text/event-stream')) {
@@ -338,125 +405,69 @@ function serverIsUp(proto, port) {
         if (doneEvents.length !== 1) throw new Error(`Expected 1 [DONE] event, got ${doneEvents.length}`);
       });
 
-      // Test 2: Voice refine with empty input (immediate [DONE])
-      await checkAsync('Voice refine: empty input returns immediate [DONE]', async () => {
-        const res = await httpPost(`${proto}://localhost:${port}/api/voice/refine`, { raw: '' });
-        console.log(`    Response status: ${res.statusCode}`);
-        console.log(`    Content-Type: ${res.headers['content-type']}`);
-        const events = await readSSEStream(res, 5000);
-        console.log(`    Events: ${JSON.stringify(events)}`);
-        const doneEvents = events.filter(e => e.type === 'done');
-        if (doneEvents.length !== 1) throw new Error(`Expected 1 [DONE], got ${doneEvents.length}`);
-      });
-
-      // Test 3: Voice refine with real input (full claude flow)
-      await checkAsync('Voice refine: real input streams text + [DONE]', async () => {
-        console.log('    Sending real voice refine request (may take up to 60s)...');
-        const res = await httpPost(`${proto}://localhost:${port}/api/voice/refine`, { raw: '帮我检查一下git status' });
-        console.log(`    Response status: ${res.statusCode}`);
-        console.log(`    Content-Type: ${res.headers['content-type']}`);
-        console.log(`    All headers: ${JSON.stringify(Object.fromEntries(Object.entries(res.headers)))}`);
-
-        if (res.statusCode !== 200) throw new Error(`Expected 200, got ${res.statusCode}`);
-
-        const events = await readSSEStream(res, 65000);
-        console.log(`    Total events: ${events.length}`);
-        console.log(`    Events breakdown: ${JSON.stringify(events.map(e => ({ type: e.type, textLen: e.text?.length })))}`);
-
-        const dataEvents = events.filter(e => e.type === 'data');
-        const doneEvents = events.filter(e => e.type === 'done');
-        const parseErrors = events.filter(e => e.type === 'parse_error');
-
-        if (parseErrors.length > 0) {
-          console.log(`    ⚠ Parse errors: ${JSON.stringify(parseErrors)}`);
-        }
-
-        if (dataEvents.length === 0) {
-          throw new Error(`No data events received. All events: ${JSON.stringify(events)}`);
-        }
-        if (doneEvents.length !== 1) {
-          throw new Error(`Expected exactly 1 [DONE], got ${doneEvents.length}. All events: ${JSON.stringify(events)}`);
-        }
-
-        const fullText = dataEvents.map(e => e.text || '').join('');
-        console.log(`    Refined text: ${JSON.stringify(fullText.slice(0, 200))}`);
-        if (!fullText.trim()) {
-          throw new Error('Data events received but combined text is empty');
+      await checkAsync('Voice refine: empty input returns deterministic JSON', async () => {
+        const response = await httpRequest(`${proto}://localhost:${port}/api/voice/refine`, {
+          method: 'POST', body: { raw: '' }, timeout: 5000,
+        });
+        assertVoiceJsonResponse(response);
+        if (!response.json.ok || response.json.text !== '' || response.json.ms !== 0) {
+          throw new Error(`Unexpected empty-input response: ${response.body}`);
         }
       });
 
-      // Test 4: Verify SSE format is valid (manual byte-level check)
-      await checkAsync('Voice refine: SSE format byte-level verification', async () => {
-        const res = await httpPost(`${proto}://localhost:${port}/api/voice/refine`, { raw: '测试SSE格式' });
-        const rawData = await new Promise((resolve, reject) => {
-          const chunks = [];
-          const timer = setTimeout(() => { res.destroy(); reject(new Error('timeout')); }, 65000);
-          res.on('data', c => chunks.push(c));
-          res.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks).toString('utf8')); });
-          res.on('error', e => { clearTimeout(timer); reject(e); });
+      await checkAsync('Voice refine: response is one valid JSON document', async () => {
+        const response = await httpRequest(`${proto}://localhost:${port}/api/voice/refine`, {
+          method: 'POST', body: { raw: '   ' }, timeout: 5000,
+        });
+        assertVoiceJsonResponse(response);
+        if (!response.body.trim().startsWith('{') || response.body.includes('data: ')) {
+          throw new Error(`Unexpected wire format: ${JSON.stringify(response.body)}`);
+        }
+      });
+
+      if (RUN_LIVE_AI) {
+        await checkAsync('Voice refine: live input returns refined JSON text', async () => {
+          console.log('    Sending live voice refine request...');
+          const response = await httpRequest(`${proto}://localhost:${port}/api/voice/refine`, {
+            method: 'POST', body: { raw: '帮我检查一下 git status' }, timeout: 90_000,
+          });
+          assertVoiceJsonResponse(response, { requireText: true });
+          console.log(`    Refined text: ${JSON.stringify(response.json.text.slice(0, 200))}`);
         });
 
-        console.log(`    Raw SSE data (${rawData.length} bytes): ${JSON.stringify(rawData.slice(0, 300))}`);
-
-        // Check each SSE event ends with \n\n
-        const eventBlocks = rawData.split('\n\n').filter(b => b.trim());
-        console.log(`    Event blocks count: ${eventBlocks.length}`);
-        for (const block of eventBlocks) {
-          if (!block.startsWith('data: ')) {
-            throw new Error(`Event block doesn't start with "data: ": ${JSON.stringify(block.slice(0, 100))}`);
-          }
-        }
-
-        // Verify the last event is [DONE]
-        const lastBlock = eventBlocks[eventBlocks.length - 1];
-        if (!lastBlock.includes('[DONE]')) {
-          throw new Error(`Last event is not [DONE]: ${JSON.stringify(lastBlock)}`);
-        }
-      });
-
-      // Test 5: Concurrent requests (queue behavior)
-      await checkAsync('Voice refine: concurrent requests are queued correctly', async () => {
-        console.log('    Sending 2 concurrent requests...');
-        const [res1, res2] = await Promise.all([
-          httpPost(`${proto}://localhost:${port}/api/voice/refine`, { raw: '第一个请求' }),
-          httpPost(`${proto}://localhost:${port}/api/voice/refine`, { raw: '第二个请求' }),
-        ]);
-
-        console.log(`    Response 1 status: ${res1.statusCode}, Response 2 status: ${res2.statusCode}`);
-
-        const [events1, events2] = await Promise.all([
-          readSSEStream(res1, 120000),
-          readSSEStream(res2, 120000),
-        ]);
-
-        console.log(`    Request 1 events: ${events1.length}, Request 2 events: ${events2.length}`);
-
-        const done1 = events1.filter(e => e.type === 'done').length;
-        const done2 = events2.filter(e => e.type === 'done').length;
-        if (done1 !== 1) throw new Error(`Request 1: expected 1 [DONE], got ${done1}`);
-        if (done2 !== 1) throw new Error(`Request 2: expected 1 [DONE], got ${done2}`);
-
-        const data1 = events1.filter(e => e.type === 'data');
-        const data2 = events2.filter(e => e.type === 'data');
-        if (data1.length === 0) throw new Error('Request 1: no data events');
-        if (data2.length === 0) throw new Error('Request 2: no data events');
-
-        console.log(`    Both requests completed with data + [DONE] ✓`);
-      });
+        await checkAsync('Voice refine: concurrent live requests complete through the queue', async () => {
+          console.log('    Sending 2 concurrent requests...');
+          const [response1, response2] = await Promise.all([
+            httpRequest(`${proto}://localhost:${port}/api/voice/refine`, {
+              method: 'POST', body: { raw: '第一个请求' }, timeout: 120_000,
+            }),
+            httpRequest(`${proto}://localhost:${port}/api/voice/refine`, {
+              method: 'POST', body: { raw: '第二个请求' }, timeout: 120_000,
+            }),
+          ]);
+          assertVoiceJsonResponse(response1, { requireText: true });
+          assertVoiceJsonResponse(response2, { requireText: true });
+        });
+      } else {
+        skip('Voice refine: live input returns refined JSON text', 'enable with --live-ai or RUN_LIVE_AI_TESTS=1');
+        skip('Voice refine: concurrent live requests complete through the queue', 'enable with --live-ai or RUN_LIVE_AI_TESTS=1');
+      }
     }
   }
 
   /* SUMMARY */
   console.log('\n── Results ────────────────────────────────────────────────');
   for (const r of results) {
-    if (r.ok) {
+    if (r.ok === true) {
       console.log(`  ✓  ${r.name}`);
+    } else if (r.ok === null) {
+      console.log(`  -  ${r.name} (skipped: ${r.reason})`);
     } else {
       console.log(`  ✗  ${r.name}`);
       console.log(`       → ${r.reason}`);
     }
   }
-  console.log(`\n  ${passed} passed, ${failed} failed\n`);
+  console.log(`\n  ${passed} passed, ${failed} failed, ${skipped} skipped\n`);
   process.exit(failed > 0 ? 1 : 0);
 
 })();
