@@ -2803,8 +2803,11 @@ function defaultEffortForCurrentCli() {
 function updateModelBtn() {
   if (!modelBtn) return;
   const shown = _sessionEffectiveModel || _sessionModel;
-  const provider = _sessionProviderDisplayName
-    || (_sessionProvider ? providerShortName(_sessionProvider) : '')
+  // 有 provider id 时优先按 id 实时解析名字，避免切换后 _sessionProviderDisplayName
+  // （只在 WS 消息到达时更新）残留旧值导致顶部 provider 段不联动；
+  // provider 为空（默认登录）时才回退到 WS 推来的显示名。
+  const provider = (_sessionProvider ? providerShortName(_sessionProvider) : '')
+    || _sessionProviderDisplayName
     || tt('default');
   const model = shown ? modelDisplayName(shown, _sessionProvider) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
@@ -3202,6 +3205,9 @@ let _sessionProviderDisplayName = '';  // 实际生效 provider 的显示名（i
 let _sessionCli = 'claude';
 let _providerList = [];           // cached [{id,appType,name,baseUrl,model,isOfficial}]
 let _providerDefaults = { claude: null, codex: null };
+let _providerListAppType = '';    // appType that _providerList was fetched for
+let _providerListTs = 0;          // when _providerList was last fetched (ms)
+const _PROVIDER_LIST_TTL = 30000; // 30s — repeated opens reuse cache, no network lag
 
 function effectiveProviderIdForChoices(providerId) {
   return providerId || _providerDefaults[_sessionCli] || '';
@@ -3220,12 +3226,19 @@ function updateProviderBtn() {
 }
 
 async function ensureProviderList(appType) {
+  // 30s 内同一 appType 直接复用缓存，避免每次点开 provider/模型编辑窗都卡在网络请求上。
+  if (_providerList.length && _providerListAppType === appType
+      && Date.now() - _providerListTs < _PROVIDER_LIST_TTL) {
+    return _providerList;
+  }
   try {
     const res = await fetch(withToken(`/api/providers?appType=${encodeURIComponent(appType)}`));
     if (!res.ok) return [];
     const d = await res.json();
     _providerList = d.providers || [];
     _providerDefaults = d.defaults || _providerDefaults;
+    _providerListAppType = appType;
+    _providerListTs = Date.now();
     return _providerList;
   } catch (_) { return []; }
 }
@@ -3294,10 +3307,12 @@ providerBtn?.addEventListener('click', async () => {
     const data = await res.json();
     if (!res.ok) { addSystemMsg('Provider 切换失败：' + (data.error || `HTTP ${res.status}`)); return; }
     _sessionProvider = data.provider || '';
- _sessionModel = data.model || '';
+    _sessionModel = data.model || '';
     _sessionEffectiveModel = data.effectiveModel || data.model || '';
+    _sessionEffort = data.effort || '';
+    _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
     updateProviderBtn();
- updateModelBtn();
+    updateModelBtn();
     addSystemMsg(`✓ Provider 已切换为 ${providerShortName(_sessionProvider)}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('Provider 切换失败：' + e.message);
