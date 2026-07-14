@@ -11,6 +11,8 @@ function createCodexAdapter(deps) {
     envConstraint,
     stayAlivePrompt,
     multiccImgHint,
+    isResponseCompletedDisconnect = () => false,
+    isTransportDisconnect = () => false,
   } = deps;
 
   function configArgsFor(session) {
@@ -35,22 +37,7 @@ function createCodexAdapter(deps) {
       if (session.cliSessionId) return `${cmd}${baseArgs}${configArgs} resume ${session.cliSessionId}`;
       return `${cmd}${baseArgs}${configArgs}`;
     },
-    buildChatSpawnArgs(session, prompt, opts) {
-      let promptText = opts.isFirstTurn ? firstTurnPrompt(prompt, opts) : prompt;
-      if (stayAlivePrompt) promptText += `\n${stayAlivePrompt}`;
-
-      const spawnArgs = ['exec'];
-      for (const arg of configArgsFor(session)) spawnArgs.push('-c', arg);
-      if (!opts.isFirstTurn) spawnArgs.push('resume', session.cliSessionId);
-      spawnArgs.push(
-        '--json',
-        '--skip-git-repo-check',
-        '--dangerously-bypass-approvals-and-sandbox',
-        promptText,
-      );
-      return spawnArgs;
-    },
-    shape(env) {
+    buildInvocation(env) {
       const so = env.spawnOpts;
       const session = { effort: so.rawEffort, model: so.rawModel };
       const isFirstTurn = env.historyHandle.isFirstTurn;
@@ -61,7 +48,72 @@ function createCodexAdapter(deps) {
       for (const arg of configArgsFor(session)) args.push('-c', arg);
       if (!isFirstTurn) args.push('resume', env.historyHandle.cliSessionId);
       args.push('--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox');
-      return { args, payload };
+      return { cmd, args, payload };
+    },
+    decodeEvent(event) {
+      if (!event || typeof event !== 'object') return [];
+      if (event.type === 'thread.started') {
+        return event.thread_id ? [{ type: 'session_started', sessionId: event.thread_id }] : [];
+      }
+      if (event.type === 'turn.started') return [];
+      if (event.type === 'item.started') {
+        const item = event.item || {};
+        if (item.type !== 'command_execution') return [];
+        return [{
+          type: 'tool_start', id: item.id, name: 'Bash',
+          input: { command: item.command }, status: 'running',
+        }];
+      }
+      if (event.type === 'item.completed') {
+        const item = event.item || {};
+        if (item.type === 'command_execution') {
+          return [{
+            type: 'tool_result', id: item.id, content: item.aggregated_output || '',
+            isError: !!(item.exit_code && item.exit_code !== 0),
+          }];
+        }
+        if (item.type === 'function_call' && /^(request_user_input|AskUserQuestion)$/i.test(item.name || '')) {
+          let questionText = '';
+          try {
+            const parsed = JSON.parse(item.arguments || '{}');
+            const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+            questionText = questions.map((question) => {
+              const heading = question.header || question.title || '';
+              const body = question.question || question.text || '';
+              const options = Array.isArray(question.options)
+                ? question.options.map(option => `  - ${option.label || option.text || ''}${option.description ? `：${option.description}` : ''}`).join('\n')
+                : '';
+              return `${heading ? `**${heading}**\n` : ''}${body}${options ? `\n${options}` : ''}`;
+            }).join('\n\n');
+          } catch (_) {
+            questionText = String(item.arguments || '');
+          }
+          if (!questionText) return [];
+          return [{
+            type: 'assistant_text',
+            text: `\n\n> [提问工具 ${item.name} 在非交互环境不可用，已转为文本透传]\n${questionText}\n`,
+            log: `ask-tool ${item.name} degraded to text`,
+          }];
+        }
+        if (item.type === 'agent_message') {
+          return [{ type: 'assistant_text', text: item.text || '', forwardSuffix: '\n\n' }];
+        }
+        if (item.type === 'reasoning') {
+          return [{ type: 'thinking', id: item.id, text: item.text || '' }];
+        }
+        return [];
+      }
+      if (event.type === 'turn.completed') {
+        return [{ type: 'complete', cost: null, usage: event.usage || {} }];
+      }
+      if (event.type === 'error' || event.type === 'turn.failed') {
+        const message = String(event.message || (event.error && event.error.message) || '未知错误');
+        const kind = isResponseCompletedDisconnect(message)
+          ? 'response_completed_disconnect'
+          : isTransportDisconnect(message) ? 'transport_disconnect' : 'provider';
+        return [{ type: 'error', label: 'Codex', message, kind }];
+      }
+      return [];
     },
     needsAsyncSessionIdCapture: true,
   };

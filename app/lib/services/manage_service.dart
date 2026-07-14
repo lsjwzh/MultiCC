@@ -257,7 +257,7 @@ class ManageService {
   }
 
   /// Aux config + provider lists for the pickers.
-  /// `{cli, providerId?, model?, effort?, providers, claudeProviders, codexProviders}`.
+  /// `{protocol, providerId?, model?, protocols, providersByProtocol}`.
   Future<Map<String, dynamic>> fetchAuxConfig() async {
     final res = await http
         .get(Uri.parse(_url('/api/aux/config')), headers: _headers)
@@ -267,21 +267,19 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
-  /// Save aux config. Returns the normalized config `{ok, cli, providerId, model, effort}`.
+  /// Save aux config. Returns `{ok, protocol, providerId, model, wireApi}`.
   Future<Map<String, dynamic>> saveAuxConfig({
-    required String cli,
+    required String protocol,
     String providerId = '',
     String model = '',
-    String effort = '',
   }) async {
     final res = await http
         .post(Uri.parse(_url('/api/aux/config')),
             headers: _headers,
             body: jsonEncode({
-              'cli': cli,
+              'protocol': protocol,
               'providerId': providerId,
               'model': model,
-              'effort': effort,
             }))
         .timeout(const Duration(seconds: 10));
     try {

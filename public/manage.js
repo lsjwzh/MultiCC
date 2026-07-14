@@ -512,17 +512,15 @@ function renderAuxCard(s, isFocused) {
 }
 
 // ── Aux AI model config ──
-let _auxConfig = null; // { cli, providerId, model, claudeProviders, codexProviders }
+let _auxConfig = null; // { protocol, providerId, model, providersByProtocol }
 function _auxModelLabel() {
   if (!_auxConfig) return 'auxqueue';
-  const cli = (_auxConfig.cli || 'claude') === 'codex' ? 'codex' : 'claude';
-  const providers = cli === 'codex' ? (_auxConfig.codexProviders || []) : (_auxConfig.claudeProviders || _auxConfig.providers || []);
+  const protocol = _auxConfig.protocol === 'openai' ? 'openai' : 'anthropic';
+  const providerList = _auxConfig.providersByProtocol?.[protocol] || [];
   const prov = _auxConfig.providerId
-    ? (providers.find(p => p.id === _auxConfig.providerId)?.name || '自定义')
-    : '默认登录';
-  const fallback = cli === 'claude' ? 'haiku' : 'provider 默认';
-  const effort = _auxConfig.effort || (cli === 'codex' ? 'xhigh' : 'medium');
-  return `${cli} · ${prov} · ${_auxConfig.model || fallback} · ${effort}`;
+    ? (providerList.find(p => p.id === _auxConfig.providerId)?.name || '未配置')
+    : '未配置';
+  return `${protocol} · ${prov} · ${_auxConfig.model || '未选择模型'}`;
 }
 async function loadAuxConfig() {
   try {
@@ -531,71 +529,40 @@ async function loadAuxConfig() {
   } catch (_) { _auxConfig = null; }
 }
 function refreshAuxProviderOptions() {
-  const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
+  const protocol = (document.getElementById('aux-protocol')?.value || _auxConfig?.protocol || 'anthropic') === 'openai'
+    ? 'openai'
+    : 'anthropic';
   const sel = document.getElementById('aux-provider');
   if (!sel) return;
-  const list = cli === 'codex'
-    ? (_auxConfig?.codexProviders || [])
-    : (_auxConfig?.claudeProviders || _auxConfig?.providers || []);
-  sel.innerHTML = '<option value="">默认登录</option>'
-    + list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
-  const current = _auxConfig?.cli === cli ? (_auxConfig?.providerId || '') : '';
-  sel.value = current;
+  const list = _auxConfig?.providersByProtocol?.[protocol] || [];
+  sel.innerHTML = '<option value="">请选择 Provider</option>'
+    + list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} · ${escapeHtml(p.wireApi || '')}</option>`).join('');
+  const saved = _auxConfig?.protocol === protocol ? (_auxConfig?.providerId || '') : '';
+  sel.value = list.some(provider => provider.id === saved) ? saved : (list[0]?.id || '');
   refreshAuxModelOptions();
-  refreshAuxEffortOptions();
 }
-// Provider → Model linkage (mirrors session settings): populate the model
-// dropdown from the selected provider's modelOptions. Falls back to a small
-// built-in list so the field is never empty. "留空使用默认" keeps the
-// provider's own default model.
-const _AUX_CLAUDE_MODEL_FALLBACK = ['haiku', 'sonnet', 'opus', 'fable'];
+// Provider → Model linkage: populate the model dropdown from the selected
+// callable provider's model catalog.
 function refreshAuxModelOptions() {
-  const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
+  const protocol = (document.getElementById('aux-protocol')?.value || _auxConfig?.protocol || 'anthropic') === 'openai'
+    ? 'openai'
+    : 'anthropic';
   const provId = document.getElementById('aux-provider')?.value || '';
   const sel = document.getElementById('aux-model');
   if (!sel) return;
-  const list = cli === 'codex'
-    ? (_auxConfig?.codexProviders || [])
-    : (_auxConfig?.claudeProviders || _auxConfig?.providers || []);
+  const list = _auxConfig?.providersByProtocol?.[protocol] || [];
   const prov = list.find(p => p.id === provId);
-  let models = (prov && Array.isArray(prov.modelOptions)) ? prov.modelOptions.slice() : [];
-  // No provider selected (默认登录) or provider without a model list → fall back
-  // to the built-in tier aliases for claude; codex has no universal fallback.
-  if (!models.length && cli === 'claude') models = _AUX_CLAUDE_MODEL_FALLBACK.slice();
-  sel.innerHTML = '<option value="">默认</option>'
+  const models = (prov && Array.isArray(prov.modelOptions)) ? prov.modelOptions.slice() : [];
+  sel.innerHTML = '<option value="">请选择模型</option>'
     + models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
-  // Preserve the saved model if it's still valid; else leave on 默认.
-  const saved = _auxConfig?.model || '';
-  sel.value = models.includes(saved) ? saved : '';
-}
-function refreshAuxEffortOptions() {
-  const cli = (document.getElementById('aux-cli')?.value || _auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
-  const sel = document.getElementById('aux-effort');
-  if (!sel) return;
-  const opts = cli === 'codex' ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] : ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
-  sel.innerHTML = opts.map(v => `<option value="${v}">${escapeHtml(v)}</option>`).join('');
-  const current = _auxConfig?.effort || (cli === 'codex' ? 'xhigh' : 'medium');
-  sel.value = opts.includes(current) ? current : opts[0];
-  // aux runs as a single-shot direct-HTTP call for API-key providers — effort/
-  // reasoning level isn't sent in that path. Hint the user it only applies when
-  // aux falls back to a CLI spawn (OAuth codex / default login).
-  const row = sel.closest('.setting-row');
-  if (row) {
-    let hint = row.querySelector('.aux-effort-hint');
-    if (!hint) {
-      hint = document.createElement('span');
-      hint.className = 'aux-effort-hint';
-      hint.style.cssText = 'font-size:10px;color:var(--faint);margin-left:8px;';
-      sel.parentElement?.appendChild(hint);
-    }
-    hint.textContent = '仅 CLI 回退模式生效';
-  }
+  const saved = _auxConfig?.providerId === provId ? (_auxConfig?.model || '') : '';
+  sel.value = models.includes(saved) ? saved : (models[0] || '');
 }
 async function openAuxModal() {
   await loadAuxConfig();
-  const cliSel = document.getElementById('aux-cli');
-  if (cliSel) cliSel.value = (_auxConfig?.cli || 'claude') === 'codex' ? 'codex' : 'claude';
-  refreshAuxProviderOptions();   // → also refreshes model + effort
+  const protocolSel = document.getElementById('aux-protocol');
+  if (protocolSel) protocolSel.value = _auxConfig?.protocol === 'openai' ? 'openai' : 'anthropic';
+  refreshAuxProviderOptions();
   const st = document.getElementById('aux-modal-status');
   if (st) st.textContent = '';
   document.getElementById('aux-modal')?.classList.add('visible');
@@ -605,15 +572,14 @@ function closeAuxModal() {
 }
 async function saveAuxConfig() {
   const st = document.getElementById('aux-modal-status');
-  const cli = (document.getElementById('aux-cli')?.value || 'claude') === 'codex' ? 'codex' : 'claude';
+  const protocol = (document.getElementById('aux-protocol')?.value || 'anthropic') === 'openai' ? 'openai' : 'anthropic';
   const providerId = document.getElementById('aux-provider')?.value || '';
   const model = document.getElementById('aux-model')?.value || '';
-  const effort = document.getElementById('aux-effort')?.value || '';
   if (st) st.textContent = '保存中…';
   try {
     const res = await fetch('/api/aux/config' + tokenQS('?'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cli, providerId, model, effort }),
+      body: JSON.stringify({ protocol, providerId, model }),
     });
     const data = await res.json();
     if (!data.ok) { if (st) st.textContent = data.error || '保存失败'; return; }
