@@ -3146,7 +3146,7 @@ async function loadSessionModel() {
 modelBtn?.addEventListener('click', async () => {
   // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
   await loadSessionModel();
-  await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
+  await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude', { loading: true });
   const picked = await showAIConfigPicker({
     provider: _sessionProvider,
     model: _sessionModel,
@@ -3203,11 +3203,8 @@ let _sessionProvider = '';       // provider id ('' = default login)
 let _sessionSubagent = null;     // {providerId, model} for Task-tool subagent (claude-proxy), null = 随主
 let _sessionProviderDisplayName = '';  // 实际生效 provider 的显示名（init 兜底；_sessionProvider 为空或 _providerList 未加载时用）
 let _sessionCli = 'claude';
-let _providerList = [];           // cached [{id,appType,name,baseUrl,model,isOfficial}]
+let _providerList = [];           // [{id,appType,name,baseUrl,model,isOfficial}] - 最近一次拉取结果
 let _providerDefaults = { claude: null, codex: null };
-let _providerListAppType = '';    // appType that _providerList was fetched for
-let _providerListTs = 0;          // when _providerList was last fetched (ms)
-const _PROVIDER_LIST_TTL = 30000; // 30s — repeated opens reuse cache, no network lag
 
 function effectiveProviderIdForChoices(providerId) {
   return providerId || _providerDefaults[_sessionCli] || '';
@@ -3225,22 +3222,41 @@ function updateProviderBtn() {
   updateModelBtn();
 }
 
-async function ensureProviderList(appType) {
-  // 30s 内同一 appType 直接复用缓存，避免每次点开 provider/模型编辑窗都卡在网络请求上。
-  if (_providerList.length && _providerListAppType === appType
-      && Date.now() - _providerListTs < _PROVIDER_LIST_TTL) {
-    return _providerList;
+// 轻量 loading 遮罩：异步操作期间提示「加载中」，返回关闭函数。
+function showLoadingOverlay(text) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10001;display:flex;align-items:center;justify-content:center;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px 22px;color:#c9d1d9;font-size:13px;display:flex;align-items:center;gap:10px;';
+  const spin = document.createElement('span');
+  spin.style.cssText = 'width:14px;height:14px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;display:inline-block;animation:multiccSpin .8s linear infinite;';
+  box.appendChild(spin);
+  box.appendChild(document.createTextNode(text || '加载中…'));
+  overlay.appendChild(box);
+  // 旋转动画样式仅注入一次
+  if (!document.getElementById('multicc-spin-style')) {
+    const st = document.createElement('style');
+    st.id = 'multicc-spin-style';
+    st.textContent = '@keyframes multiccSpin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(st);
   }
+  document.body.appendChild(overlay);
+  return () => overlay.remove();
+}
+
+async function ensureProviderList(appType, opts) {
+  // 不缓存：每次都重新拉取，保证 provider 列表始终最新。用户主动打开的选择窗
+  // 传入 { loading: true }，fetch 期间显示 loading 遮罩，避免点了没反应的卡顿感。
+  const closeLoading = opts && opts.loading ? showLoadingOverlay('加载 Provider 列表…') : null;
   try {
     const res = await fetch(withToken(`/api/providers?appType=${encodeURIComponent(appType)}`));
     if (!res.ok) return [];
     const d = await res.json();
     _providerList = d.providers || [];
     _providerDefaults = d.defaults || _providerDefaults;
-    _providerListAppType = appType;
-    _providerListTs = Date.now();
     return _providerList;
   } catch (_) { return []; }
+  finally { if (closeLoading) closeLoading(); }
 }
 
 function showProviderPicker(current, list) {
@@ -3295,7 +3311,7 @@ function showProviderPicker(current, list) {
 }
 
 providerBtn?.addEventListener('click', async () => {
-  const list = await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
+  const list = await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude', { loading: true });
   const picked = await showProviderPicker(_sessionProvider, list);
   if (picked === null) return;
   try {
