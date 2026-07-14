@@ -424,6 +424,17 @@ function createHandler({ getProvider, onUsage }) {
     delete headers.te;
     delete headers.trailer;
     delete headers.upgrade;
+    // Force an UNCOMPRESSED upstream response so the usage-metering tee
+    // (_feedChunk / _finalizeTee) can read message_start/message_delta as text.
+    // The CLI sends `accept-encoding: gzip, br`; api.anthropic.com (Claude
+    // Official OAuth route) honours it and streams a compressed SSE body, which
+    // chunk.toString('utf8') turns into garbage — no `data:` lines parse, tee.got
+    // stays false, onUsage never fires, and per-role billing silently loses every
+    // MAIN token on official sessions (domestic relays don't compress, so they
+    // were unaffected and masked the bug). Stripping accept-encoding makes the
+    // upstream return identity; the localhost proxy↔upstream hop pays a little
+    // more bandwidth, which is irrelevant. The client still gets a clean stream.
+    delete headers['accept-encoding'];
     if (creds.isOfficialOAuth) {
       // Replay the subscription OAuth token + the OAuth beta, and DO NOT touch the
       // body: UA / x-stainless / x-app / system prompt pass through untouched, so
