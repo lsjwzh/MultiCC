@@ -327,21 +327,9 @@ class _InputBarState extends State<InputBar> {
       final res = await http.post(uri, headers: headers, body: jsonEncode({'raw': raw}))
           .timeout(const Duration(seconds: 30));
       if (res.statusCode != 200) return null;
-      // Parse SSE response — decode as UTF-8 (http package defaults to Latin-1 for SSE)
-      final bodyText = utf8.decode(res.bodyBytes);
-      final lines = bodyText.split('\n');
-      final buf = StringBuffer();
-      for (final line in lines) {
-        if (line.startsWith('data: ')) {
-          final payload = line.substring(6).trim();
-          if (payload == '[DONE]') break;
-          try {
-            final json = jsonDecode(payload) as Map<String, dynamic>;
-            if (json.containsKey('text')) buf.write(json['text']);
-          } catch (_) {}
-        }
-      }
-      final result = buf.toString().trim();
+      final data = jsonDecode(utf8.decode(res.bodyBytes));
+      if (data is! Map<String, dynamic> || data['ok'] != true) return null;
+      final result = (data['text'] ?? '').toString().trim();
       return result.isNotEmpty ? result : null;
     } catch (_) {
       return null;

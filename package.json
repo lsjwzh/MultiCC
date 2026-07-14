@@ -11,7 +11,7 @@
     "test": "node tests/test.js",
     "test:git-push": "node tests/test-git-push.js",
     "test:power": "node tests/test-macos-power.js",
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true"
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.67.0",
