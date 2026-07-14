@@ -671,6 +671,9 @@ function connect() {
       _isDisconnected = true;
       _disconnectEpisodeId++;
     }
+    // Running background-task rows can't get their monitor_done on a dead socket —
+    // demote them so the danmaku panel doesn't hang with a stuck spinner.
+    if (typeof danmakuOnDisconnect === 'function') danmakuOnDisconnect();
     // Don't reset isStreaming here — server may still be running.
     // UI stays in streaming state so user sees "reconnecting" rather than a broken state.
     updateUI();
@@ -881,26 +884,27 @@ function handleEvent(msg) {
       break;
 
     case 'monitor_started': {
-      // Background task (Monitor / run_in_background Bash) just started. The
-      // server broadcasts this but the frontend previously had no handler → it
-      // was silently dropped. Surface a one-line status so the launch is visible
-      // live (the task's full result still arrives later via the bg-completion
-      // nudge, attributed with bgToolUseIds).
+      // Background task (Monitor / run_in_background Bash) just started. Show it
+      // live in the danmaku panel (see pushDanmaku) instead of a chat bubble, so
+      // these ephemeral status lines don't consume chat scroll space. The task's
+      // full result still arrives later via the bg-completion nudge.
       // Skip foreground (sync) Bash — the server flags those background:false
       // since their result returns via tool_result, not as a 后台任务 notice.
       // (`!== false` so an unflagged/legacy payload still shows.)
       if (msg.background === false) break;
-      addSystemMsg(`▶ 后台任务启动：${msg.description || msg.command || '后台任务'}`);
+      pushDanmaku('start', msg.description || msg.command || '后台任务', msg.task_id);
       break;
     }
 
     case 'monitor_done': {
-      // Background task finished — show it the moment it lands. The real result
-      // is ALSO injected as a continuation turn (~1.5s later via the coalescer),
-      // but this live signal closes the "task vanished into a void" gap.
+      // Background task finished — resolve its danmaku row in place (spinner →
+      // ✓/✗, paired by task_id). The real result is ALSO injected as a
+      // continuation turn (~1.5s later via the coalescer); this is just the live
+      // signal that closes the "task vanished into a void" gap.
       if (msg.background === false) break;
       const desc = msg.summary || msg.description || '后台任务';
-      addSystemMsg(`✓ 后台任务完成（${desc}，状态：${msg.status || 'completed'}）`);
+      const kind = (msg.status === 'error' || msg.status === 'failed') ? 'fail' : 'done';
+      pushDanmaku(kind, desc, msg.task_id);
       break;
     }
 
@@ -1665,6 +1669,190 @@ function addSystemMsg(text) {
   div.textContent = text;
   messagesEl.appendChild(div);
   maybeScrollToBottom();
+}
+
+/* ── Background-task danmaku panel ──
+ * Live "bullet-comment" feed for Monitor / run_in_background task start & done
+ * notices. Replaces the old addSystemMsg chat bubbles so these ephemeral status
+ * lines stop consuming chat scroll space. Newest row slides in at the top; a
+ * start row shows a spinner and resolves in-place to ✓/✗ when the matching
+ * monitor_done lands (paired by task_id). The panel is display:none when empty,
+ * auto-hides 5s after every row goes terminal, and collapses to a count pill.
+ * All text goes through textContent — task descriptions are agent-authored and
+ * must never be treated as HTML. */
+const DANMAKU_MAX_ROWS = 8;
+const DANMAKU_AUTOHIDE_MS = 5000;
+// Watchdog: a 'start' row that never gets a matching monitor_done (server crash,
+// WS disconnect, or a genuinely hung task) would otherwise keep _danmakuHasRunning
+// true forever and pin the panel on screen with a stuck spinner. After this idle
+// it is demoted to a muted 'stale' state so the panel can auto-hide. Long enough
+// not to prematurely resolve normal multi-minute background tasks.
+const DANMAKU_STALE_MS = 180000; // 3 min
+let _danmakuCollapsed = false;
+let _danmakuHideTimer = null;
+let _danmakuFadeTimer = null;
+let _danmakuInited = false;
+const _danmakuRows = new Map(); // key(task_id) -> { el, txtEl, icEl, state, staleTimer }
+
+function _dmEls() {
+  return {
+    panel: document.getElementById('danmaku-panel'),
+    head:  document.getElementById('danmaku-head'),
+    body:  document.getElementById('danmaku-body'),
+    title: document.getElementById('danmaku-title'),
+    count: document.getElementById('danmaku-count'),
+    dot:   document.getElementById('danmaku-dot'),
+    btn:   document.getElementById('danmaku-collapse-btn'),
+  };
+}
+
+function initDanmakuPanel() {
+  if (_danmakuInited) return;
+  const e = _dmEls();
+  if (!e.panel) return;
+  _danmakuInited = true;
+  e.btn.addEventListener('click', (ev) => { ev.stopPropagation(); toggleDanmakuCollapse(); });
+  // Tapping anywhere on the collapsed pill re-expands it.
+  e.head.addEventListener('click', () => { if (_danmakuCollapsed) toggleDanmakuCollapse(); });
+}
+
+function _danmakuHasRunning() {
+  for (const r of _danmakuRows.values()) if (r.state === 'start') return true;
+  return false;
+}
+
+function _danmakuRefreshMeta() {
+  const e = _dmEls();
+  if (!e.panel) return;
+  e.dot.className = _danmakuHasRunning() ? 'dm-dot-running' : 'dm-dot-idle';
+  e.count.textContent = (_danmakuCollapsed || !_danmakuRows.size) ? '' : String(_danmakuRows.size);
+  e.title.textContent = _danmakuCollapsed ? `${_danmakuRows.size} 后台任务` : '后台任务';
+}
+
+function _danmakuShow() {
+  const e = _dmEls();
+  if (!e.panel) return;
+  clearTimeout(_danmakuFadeTimer);
+  e.panel.style.display = 'flex';
+  e.panel.style.opacity = '1';
+}
+
+function _danmakuScheduleHide() {
+  clearTimeout(_danmakuHideTimer);
+  _danmakuHideTimer = null;
+  if (_danmakuCollapsed) return;      // pinned open as a pill until user expands
+  if (_danmakuHasRunning()) return;   // keep visible while any task is still running
+  _danmakuHideTimer = setTimeout(() => {
+    const e = _dmEls();
+    if (!e.panel) return;
+    e.panel.style.opacity = '0';
+    _danmakuFadeTimer = setTimeout(() => {
+      e.panel.style.display = 'none';
+      for (const r of _danmakuRows.values()) clearTimeout(r.staleTimer); // no leaked watchdogs
+      _danmakuRows.clear();           // fresh slate for the next burst
+      if (e.body) e.body.textContent = '';
+      _danmakuRefreshMeta();
+    }, 320);
+  }, DANMAKU_AUTOHIDE_MS);
+}
+
+function _danmakuSetRowState(row, state) {
+  // Any transition disarms the previous watchdog; a fresh 'start' re-arms it.
+  clearTimeout(row.staleTimer);
+  row.staleTimer = null;
+  row.state = state;
+  row.el.className = 'dm-row dm-' + state;
+  row.icEl.className = 'dm-ic';
+  if (state === 'start') {
+    row.icEl.textContent = '';
+    const sp = document.createElement('span');
+    sp.className = 'dm-spin';
+    row.icEl.appendChild(sp);
+    row.staleTimer = setTimeout(() => {
+      if (row.state !== 'start') return;        // resolved in the meantime
+      _danmakuSetRowState(row, 'stale');         // stop blocking auto-hide
+      _danmakuRefreshMeta();
+      _danmakuScheduleHide();
+    }, DANMAKU_STALE_MS);
+  } else if (state === 'stale') {
+    row.icEl.textContent = '·';                  // muted: outcome unknown (never reported)
+  } else {
+    row.icEl.textContent = state === 'fail' ? '✗' : '✓'; // ✗ / ✓
+  }
+}
+
+// Called when the WebSocket drops: a running task's monitor_done can never arrive
+// on the dead socket, so demote every 'start' row to 'stale' now instead of waiting
+// out the full watchdog. Lets the panel auto-hide promptly on disconnect.
+function danmakuOnDisconnect() {
+  if (!_danmakuRows.size) return;
+  let changed = false;
+  for (const r of _danmakuRows.values()) {
+    if (r.state === 'start') { _danmakuSetRowState(r, 'stale'); changed = true; }
+  }
+  if (changed) { _danmakuRefreshMeta(); _danmakuScheduleHide(); }
+}
+
+// kind: 'start' | 'done' | 'fail'; desc: task text; taskId: server msg.task_id (pairing key)
+function pushDanmaku(kind, desc, taskId) {
+  initDanmakuPanel();
+  const e = _dmEls();
+  if (!e.panel) return;
+  const text = (desc && String(desc).trim()) || '后台任务';
+  const key = taskId ? 't:' + taskId : 'd:' + text;   // fall back to desc when no id
+
+  const existing = _danmakuRows.get(key);
+  if (existing) {
+    if (kind === 'start') { _danmakuShow(); return; }  // duplicate start → ignore
+    _danmakuSetRowState(existing, kind);               // done/fail resolves the row in place
+    existing.txtEl.textContent = text;
+    _danmakuRefreshMeta();
+    _danmakuShow();
+    _danmakuScheduleHide();
+    return;
+  }
+
+  // New row — evict the oldest first if we are at the cap.
+  if (_danmakuRows.size >= DANMAKU_MAX_ROWS) {
+    const oldestKey = _danmakuRows.keys().next().value;
+    const oldest = _danmakuRows.get(oldestKey);
+    if (oldest) {
+      clearTimeout(oldest.staleTimer);
+      if (oldest.el.parentNode) oldest.el.parentNode.removeChild(oldest.el);
+    }
+    _danmakuRows.delete(oldestKey);
+  }
+
+  const row = document.createElement('div');
+  const ic = document.createElement('span');
+  const txt = document.createElement('span');
+  txt.className = 'dm-txt';
+  txt.textContent = text;
+  row.appendChild(ic);
+  row.appendChild(txt);
+  const rec = { el: row, txtEl: txt, icEl: ic, state: kind };
+  _danmakuSetRowState(rec, kind);
+  e.body.prepend(row);                 // newest at the top → live-feed feel
+  _danmakuRows.set(key, rec);
+
+  _danmakuShow();
+  _danmakuRefreshMeta();
+  _danmakuScheduleHide();
+}
+
+function toggleDanmakuCollapse() {
+  const e = _dmEls();
+  if (!e.panel) return;
+  _danmakuCollapsed = !_danmakuCollapsed;
+  e.panel.classList.toggle('dm-collapsed', _danmakuCollapsed);
+  e.btn.textContent = _danmakuCollapsed ? '▸' : '▾'; // ▸ / ▾
+  _danmakuRefreshMeta();
+  if (_danmakuCollapsed) {
+    clearTimeout(_danmakuHideTimer);   // stay visible as a pill
+    _danmakuShow();
+  } else {
+    _danmakuScheduleHide();
+  }
 }
 
 function showDisconnectBanner(secs) {
