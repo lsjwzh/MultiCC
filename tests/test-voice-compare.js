@@ -3,7 +3,6 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const https = require('https');
 
 // Allow self-signed certs for local MultiCC server
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -120,69 +119,30 @@ async function multiccWhisperSTT(audioPath) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Refine: Call MultiCC /api/voice/refine (SSE)
+//  Refine: Call MultiCC /api/voice/refine (JSON)
 // ═══════════════════════════════════════════════════════════════
 
 async function multiccRefine(rawText) {
   const t0 = Date.now();
-
-  return new Promise((resolve, reject) => {
-    const url = new URL(`${MULTICC_BASE_URL}/api/voice/refine`);
-    const postData = JSON.stringify({ raw: rawText });
-
-    const options = {
-      hostname: url.hostname,
-      port: url.port || 443,
-      path: url.pathname,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData),
-      },
-      rejectUnauthorized: false,
-    };
-
-    const req = https.request(options, (res) => {
-      let buffer = '';
-      let fullText = '';
-      let firstTokenMs = null;
-
-      res.on('data', (chunk) => {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data: ')) continue;
-          const data = trimmed.slice(6);
-          if (data === '[DONE]') continue;
-
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.text) {
-              if (firstTokenMs === null) firstTokenMs = Date.now() - t0;
-              fullText += parsed.text;
-            }
-          } catch (_) {}
-        }
-      });
-
-      res.on('end', () => {
-        resolve({
-          text: fullText.trim(),
-          latencyMs: Date.now() - t0,
-          firstTokenMs,
-        });
-      });
-
-      res.on('error', reject);
-    });
-
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
+  const response = await fetch(`${MULTICC_BASE_URL}/api/voice/refine`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw: rawText }),
   });
+  const raw = await response.text();
+  let data;
+  try { data = JSON.parse(raw); }
+  catch (_) { throw new Error(`MultiCC Refine returned invalid JSON: ${raw.slice(0, 300)}`); }
+  if (!response.ok || !data.ok) {
+    throw new Error(`MultiCC Refine ${response.status}: ${data.text || data.error || raw.slice(0, 300)}`);
+  }
+  return {
+    text: (data.text || '').trim(),
+    latencyMs: Date.now() - t0,
+    serverMs: Number(data.ms) || 0,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -335,13 +295,13 @@ async function main() {
             typelessText: row.refined_text,
             sttLatency: stt.latencyMs,
             refineLatency: refine.latencyMs,
-            refineFirstToken: refine.firstTokenMs,
+            refineServerMs: refine.serverMs,
             totalLatency: totalMs,
             simStt: simStt,
             simRefine: simRefine,
           });
 
-          console.log(`  2) Refine  (${refine.latencyMs}ms, 首token ${refine.firstTokenMs}ms): ${truncate(refine.text)}`);
+          console.log(`  2) Refine  (${refine.latencyMs}ms, server ${refine.serverMs}ms): ${truncate(refine.text)}`);
           console.log(`  Typeless:  ${truncate(row.refined_text)}`);
           console.log(`  相似度: STT ${(simStt * 100).toFixed(1)}% → Refine ${(simRefine * 100).toFixed(1)}% | 总耗时 ${totalMs}ms`);
         } catch (err) {
