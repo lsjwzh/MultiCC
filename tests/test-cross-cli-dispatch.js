@@ -530,151 +530,58 @@ function validEffortForCli(cli, effort) {
     await restoreDefaults();
   }
 
-  // ── T1.5-1.7: POST /api/settings/default-cli 边界 ──
-  hdr('T1.5-1.7 Aux 默认 CLI 切换边界');
+  // ── T1.5-1.10: Aux protocol/provider HTTP boundary ──
+  hdr('T1.5-1.10 Aux 协议与 Provider 边界');
 
-  // Save original defaultCli
-  let origDefaultCli = 'claude';
+  const auxConfigRes = await get('/api/aux/config');
+  if (auxConfigRes.status === 200) {
+    const body = auxConfigRes.body || {};
+    const groups = body.providersByProtocol || {};
+    if ((body.protocol === 'anthropic' || body.protocol === 'openai')
+        && Array.isArray(groups.anthropic) && Array.isArray(groups.openai)
+        && body.cli === undefined && body.effort === undefined) {
+      ok('T1.5 Aux GET 使用协议结构', `protocol=${body.protocol}，无 cli/effort`);
+    } else {
+      fail('T1.5 Aux GET 使用协议结构', JSON.stringify(body).slice(0, 180));
+    }
+
+    const sourceProtocol = groups.anthropic.length ? 'anthropic'
+      : groups.openai.length ? 'openai'
+      : null;
+    if (sourceProtocol) {
+      const targetProtocol = sourceProtocol === 'anthropic' ? 'openai' : 'anthropic';
+      const sourceProvider = groups[sourceProtocol][0];
+      const res = await post('/api/aux/config', {
+        protocol: targetProtocol,
+        providerId: sourceProvider.id,
+        model: (sourceProvider.modelOptions || [])[0] || 'test-model',
+      });
+      if (res.status === 400) ok('T1.6 跨协议 Provider 被拒', (res.body.error || '').slice(0, 100));
+      else fail('T1.6 跨协议 Provider 被拒', `期望 400，实际 ${res.status}`);
+    } else {
+      diag('T1.6 跨协议 Provider 被拒', '无可用 HTTP Provider，跳过');
+    }
+  } else {
+    fail('T1.5 Aux GET 使用协议结构', `status ${auxConfigRes.status}`);
+  }
+
+  {
+    const res = await post('/api/aux/config', {
+      protocol: 'codex',
+      providerId: 'missing',
+      model: 'test-model',
+    });
+    if (res.status === 400 && /protocol/i.test(res.body.error || '')) {
+      ok('T1.7 非法协议被拒', (res.body.error || '').slice(0, 100));
+    } else {
+      fail('T1.7 非法协议被拒', `期望 protocol 400，实际 ${res.status}`);
+    }
+  }
+
   {
     const res = await get('/api/settings/default-cli');
-    if (res.status === 200) origDefaultCli = res.body.defaultCli || 'claude';
-  }
-
-  // T1.5: opencode → 400
-  {
-    const res = await post('/api/settings/default-cli', { defaultCli: 'opencode' });
-    if (res.status === 400) {
-      ok('T1.5 opencode 被拒', `400 — ${(res.body.error || '').slice(0, 80)}`);
-    } else {
-      fail('T1.5 opencode 被拒', `期望 400，实际 ${res.status}`);
-    }
-  }
-
-  // T1.6: zcode → 400
-  {
-    const res = await post('/api/settings/default-cli', { defaultCli: 'zcode' });
-    if (res.status === 400) {
-      ok('T1.6 zcode 被拒', `400 — ${(res.body.error || '').slice(0, 80)}`);
-    } else {
-      fail('T1.6 zcode 被拒', `期望 400，实际 ${res.status}`);
-    }
-  }
-
-  // T1.7: claude/codex → 200
-  {
-    const res = await post('/api/settings/default-cli', { defaultCli: 'claude' });
-    if (res.status === 200) ok('T1.7 claude 允许', `200`);
-    else fail('T1.7 claude 允许', `期望 200，实际 ${res.status}`);
-  }
-  {
-    const res = await post('/api/settings/default-cli', { defaultCli: 'codex' });
-    if (res.status === 200) ok('T1.7 codex 允许', `200`);
-    else fail('T1.7 codex 允许', `期望 200，实际 ${res.status}`);
-  }
-
-  // Restore
-  if (origDefaultCli) {
-    await post('/api/settings/default-cli', { defaultCli: origDefaultCli });
-  }
-
-  // ── T1.8: POST /api/aux/config — normalizeAuxCli 边缘用例 ──
-  hdr('T1.8 Aux Config normalizeAuxCli 边缘');
-
-  // Save original aux config
-  const origAux = await get('/api/aux/config');
-  const origCli = (origAux.status === 200) ? origAux.body.cli : 'claude';
-  const origProv = (origAux.status === 200) ? origAux.body.providerId : null;
-  const origModel = (origAux.status === 200) ? origAux.body.model : null;
-  const origEffort = (origAux.status === 200) ? origAux.body.effort : null;
-
-  // Test cases: [inputCli, expectedClamp, label]
-  const auxCases = [
-    ['opencode', 'claude', 'opencode→claude clamp'],
-    ['zcode', 'claude', 'zcode→claude clamp'],
-    [null, 'claude', 'null→claude clamp'],
-    ['', 'claude', "''→claude clamp"],
-    ['CODEX', 'codex', 'CODEX→codex clamp', true], // may need null providerId for codex pool
-  ];
-
-  for (const [inputCli, expectedCli, caseLabel, mayNeedNullProvider] of auxCases) {
-    // For CODEX→codex, the original providerId may be from claude pool and invalid
-    // for codex. Pass null if switching CLI pools to avoid provider validation errors.
-    const provForCase = (mayNeedNullProvider && expectedCli !== 'claude' && origProv) ? null : origProv;
-    const body = {
-      providerId: provForCase,
-      model: mayNeedNullProvider ? null : origModel,
-      effort: validEffortForCli(expectedCli, origEffort),
-    };
-    // Only set cli if not null (null sends undefined via JSON)
-    if (inputCli !== null) body.cli = inputCli;
-    const res = await post('/api/aux/config', body);
-    if (res.status === 200) {
-      const gotCli = res.body.cli;
-      if (gotCli === expectedCli) {
-        ok(`T1.8 ${caseLabel}`, `.cli="${gotCli}"（被 normalizeAuxCli 静默 clamp）`);
-      } else {
-        fail(`T1.8 ${caseLabel}`, `.cli="${gotCli}"（期望="${expectedCli}"）`);
-      }
-    } else if (res.status === 400 && mayNeedNullProvider) {
-      // 400 with provider error (cross-pool) is acceptable for CODEX case —
-      // the normalizeAuxCli clamp still happened; the rejection is about provider, not CLI
-      const err = (res.body.error || '').toLowerCase();
-      if (/provider/i.test(err) && !/cli/i.test(err)) {
-        ok(`T1.8 ${caseLabel}`, `400 provider mismatch（normalizeAuxCli 仍已 clamp 到 codex，但 provider 跨池无效）`);
-      } else {
-        fail(`T1.8 ${caseLabel}`, `400 但不是 provider 错误: ${(res.body.error || '').slice(0, 80)}`);
-      }
-    } else {
-      fail(`T1.8 ${caseLabel}`, `期望 200，实际 ${res.status}: ${JSON.stringify(res.body).slice(0, 100)}`);
-    }
-  }
-
-  // Restore aux config (try/catch wrap, effort clamp for origCli)
-  try {
-    const restoreEffort = validEffortForCli(origCli, origEffort);
-    const restoreBody = {
-      cli: origCli,
-      providerId: origProv,
-      model: origModel,
-      effort: restoreEffort,
-    };
-    await post('/api/aux/config', restoreBody);
-  } catch (e) {
-    diag('T1.8 restore aux config failed', e.message);
-  }
-
-  // ── T1.9: GET /api/aux/config — cli 永不为 opencode/zcode ──
-  {
-    const res = await get('/api/aux/config');
-    if (res.status === 200) {
-      const cli = res.body.cli;
-      if (cli === 'opencode' || cli === 'zcode') {
-        fail('T1.9 GET aux config', `.cli="${cli}" 不应为 opencode/zcode`);
-      } else if (cli === 'claude' || cli === 'codex') {
-        ok('T1.9 GET aux config', `.cli="${cli}"（仅 claude/codex）`);
-      } else {
-        fail('T1.9 GET aux config', `意外 .cli="${cli}"`);
-      }
-    } else {
-      fail('T1.9 GET aux config', `status ${res.status}`);
-    }
-  }
-
-  // ── T1.10: GET /api/settings/default-cli — 仅 claude/codex ──
-  {
-    const res = await get('/api/settings/default-cli');
-    if (res.status === 200) {
-      const dc = res.body.defaultCli;
-      if (dc === 'opencode' || dc === 'zcode') {
-        fail('T1.10 GET default-cli', `defaultCli="${dc}" 不应为 opencode/zcode`);
-      } else if (dc === 'claude' || dc === 'codex') {
-        ok('T1.10 GET default-cli', `defaultCli="${dc}"（仅 claude/codex）`);
-      } else {
-        fail('T1.10 GET default-cli', `意外 defaultCli="${dc}"`);
-      }
-    } else {
-      fail('T1.10 GET default-cli', `status ${res.status}`);
-    }
+    if (res.status === 404) ok('T1.8 default-cli API 已删除', '404');
+    else fail('T1.8 default-cli API 已删除', `期望 404，实际 ${res.status}`);
   }
 
   // ── T1.11-1.15: Dispatch 安全边界 ──

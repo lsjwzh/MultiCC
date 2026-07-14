@@ -8,7 +8,7 @@ import 'aux_history_screen.dart';
 /// AI 助手 (aux) 面板。聚合 aux 的配置、健康状态、重跑操作和任务历史入口——
 /// 镜像网页管理台 manage.html 里的 aux-section + aux-modal 那一整套。
 ///
-/// • 配置：选 cli / provider / model / effort（POST /api/aux/config）
+/// • 配置：选协议 / provider / model（POST /api/aux/config）
 /// • 健康：显示 aux 是否可用、连续失败次数（GET /api/aux/health）
 /// • 重跑所有会话：用当前 aux 模型重新判定每个会话的目标·阶段
 /// • 任务历史：跳到 AuxHistoryScreen 看每次 aux 任务的输入输出
@@ -30,10 +30,9 @@ class _AuxScreenState extends State<AuxScreen> {
   String? _error;
 
   // editor state
-  String _cli = 'claude';
+  String _protocol = 'anthropic';
   String _providerId = '';
   String _model = '';
-  String _effort = 'medium';
 
   @override
   void initState() {
@@ -57,11 +56,10 @@ class _AuxScreenState extends State<AuxScreen> {
       setState(() {
         _config = cfg;
         _health = hlt;
-        final cliVal = cfg['cli']?.toString() ?? 'claude';
-        _cli = ['claude', 'codex', 'opencode', 'zcode'].contains(cliVal) ? cliVal : 'claude';
+        final protocol = cfg['protocol']?.toString() ?? 'anthropic';
+        _protocol = protocol == 'openai' ? 'openai' : 'anthropic';
         _providerId = cfg['providerId']?.toString() ?? '';
         _model = cfg['model']?.toString() ?? '';
-        _effort = cfg['effort']?.toString() ?? (_cli == 'claude' ? 'medium' : 'xhigh');
         _loading = false;
       });
     } catch (e) {
@@ -73,29 +71,22 @@ class _AuxScreenState extends State<AuxScreen> {
     }
   }
 
-  List<Map<String, dynamic>> _providersFor(String cli) {
+  List<Map<String, dynamic>> _providersFor(String protocol) {
     if (_config == null) return [];
-    final key = cli == 'codex' ? 'codexProviders' : 'claudeProviders';
-    final list = _config![key] ?? _config!['providers'];
+    final grouped = _config!['providersByProtocol'];
+    final list = grouped is Map ? grouped[protocol] : null;
     if (list is! List) return [];
     return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
   }
 
-  List<String> _modelsFor(String cli, String providerId) {
-    final provs = _providersFor(cli);
+  List<String> _modelsFor(String protocol, String providerId) {
+    final provs = _providersFor(protocol);
     final p = provs.firstWhere((p) => p['id'] == providerId, orElse: () => {});
     final opts = p['modelOptions'];
     if (opts is List) {
       return opts.map((e) => e.toString()).where((e) => e.trim().isNotEmpty).toList();
     }
-    // No provider or no model list → claude falls back to tier aliases; codex has none.
-    return cli == 'claude' ? const ['haiku', 'sonnet', 'opus', 'fable'] : const [];
-  }
-
-  List<String> _effortOptsFor(String cli) {
-    if (cli == 'codex') return const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-    if (cli == 'claude') return const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
-    return const ['low', 'medium', 'high', 'xhigh'];
+    return const [];
   }
 
   Future<void> _save() async {
@@ -105,10 +96,9 @@ class _AuxScreenState extends State<AuxScreen> {
     });
     try {
       await _manage.saveAuxConfig(
-        cli: _cli,
+        protocol: _protocol,
         providerId: _providerId,
         model: _model,
-        effort: _effort,
       );
       if (!mounted) return;
       setState(() => _saving = false);
@@ -252,57 +242,42 @@ class _AuxScreenState extends State<AuxScreen> {
           const Text('助手模型',
               style: TextStyle(color: AppColors.textBright, fontSize: 14, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
-          const Text('辅助 AI 用来判定会话目标·阶段、goal 预检等。选默认登录走本机订阅。',
+          const Text('辅助 AI 用来判定会话目标·阶段、goal 预检等，通过 Provider 的 HTTP 端点调用。',
               style: TextStyle(color: AppColors.faint, fontSize: 12, height: 1.4)),
           const SizedBox(height: 14),
-          // cli
-          const _Label('CLI'),
+          // protocol
+          const _Label('协议'),
           Row(children: [
-            _typeChoice('claude', 'Claude'),
+            _typeChoice('anthropic', 'Anthropic'),
             const SizedBox(width: 8),
-            _typeChoice('codex', 'Codex'),
-            const SizedBox(width: 8),
-            _typeChoice('opencode', 'OpenCode'),
-            const SizedBox(width: 8),
-            _typeChoice('zcode', 'ZCode'),
+            _typeChoice('openai', 'OpenAI'),
           ]),
           const SizedBox(height: 14),
           // provider
           const _Label('Provider'),
           _dropdown(
             value: _providerId,
-            hint: '默认登录 / 订阅',
-            items: _providersFor(_cli)
+            hint: '请选择可调用的 Provider',
+            items: _providersFor(_protocol)
                 .map((p) => DropdownMenuItem(value: p['id'] as String, child: Text(p['name']?.toString() ?? '')))
                 .toList(),
             onChanged: (v) => setState(() {
               _providerId = v ?? '';
               // reset model if it's no longer valid for the new provider
-              final models = _modelsFor(_cli, _providerId);
+              final models = _modelsFor(_protocol, _providerId);
               if (models.isNotEmpty && !models.contains(_model)) _model = '';
             }),
           ),
           const SizedBox(height: 14),
           // model
-          const _Label('Model（留空=默认）'),
+          const _Label('Model'),
           _dropdown(
             value: _model.isEmpty ? null : _model,
-            hint: '默认',
-            items: _modelsFor(_cli, _providerId)
+            hint: '请选择模型',
+            items: _modelsFor(_protocol, _providerId)
                 .map((m) => DropdownMenuItem(value: m, child: Text(m)))
                 .toList(),
             onChanged: (v) => setState(() => _model = v ?? ''),
-          ),
-          const SizedBox(height: 14),
-          // effort
-          const _Label('推理强度（仅 CLI 回退模式生效）'),
-          _dropdown(
-            value: _effort,
-            hint: 'effort',
-            items: _effortOptsFor(_cli)
-                .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                .toList(),
-            onChanged: (v) => setState(() => _effort = v ?? _effort),
           ),
           if (_error != null) ...[
             const SizedBox(height: 10),
@@ -368,15 +343,14 @@ class _AuxScreenState extends State<AuxScreen> {
   }
 
   Widget _typeChoice(String value, String label) {
-    final sel = _cli == value;
+    final sel = _protocol == value;
     return Expanded(
       child: GestureDetector(
         onTap: () => setState(() {
-          _cli = value;
-          // provider/model may not exist for the other cli → reset
+          _protocol = value;
+          // Provider/model belong to one protocol and must be selected again.
           _providerId = '';
           _model = '';
-          _effort = value == 'claude' ? 'medium' : 'xhigh';
         }),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 11),

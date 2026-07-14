@@ -4,10 +4,8 @@
 // src/message-composer.js
 // Unified message construction module.
 //
-// composeMessage() is the template method that replaces runChatTurn's inline
-// promptText assembly (server.js:9035-9075). It produces a normalized
-// MessageEnvelope consumed by each CLI adapter's shape(envelope) factory
-// (wiring phase, NOT implemented here).
+// composeMessage() produces a normalized MessageEnvelope consumed by each CLI
+// adapter's buildInvocation(envelope) factory.
 //
 // This module depends ONLY on the injected `deps` bag -- it never requires
 // server.js, so it has no circular dependency and is independently unit-testable.
@@ -41,7 +39,7 @@
 
 /**
  * Raw spawn options. Values are RAW (persisted.model / persisted.effort) -- each
- * CLI adapter's shape() resolves/maps them via the same helpers used today
+ * CLI adapter's buildInvocation() resolves/maps them via shared helpers
  * (configArgsFor / codexModelConfigArg / resolveSessionWireModel / cliEffortLevel ...).
  * composeMessage does NOT pre-parse, preserving today's per-CLI resolution behavior.
  *
@@ -59,12 +57,12 @@
 
 /**
  * The normalized message envelope produced by composeMessage and consumed by
- * each adapter's shape(envelope).
+ * each adapter's buildInvocation(envelope).
  *
  * @typedef {Object} MessageEnvelope
- * @property {string} imgHint                - = MULTICC_IMG_HINT (independent field; codex shape needs it as a standalone block)
- * @property {string|null} rolePrompt        - = resolveRolePrompt(persisted); codex/opencode/zcode shapes inline it
- * @property {string} systemPrompt           - = rolePrompt ? imgHint+'\n\n'+rolePrompt : imgHint (derived; claude shape passes via --append-system-prompt)
+ * @property {string} imgHint                - = MULTICC_IMG_HINT (codex invocation needs it as a standalone block)
+ * @property {string|null} rolePrompt        - = resolveRolePrompt(persisted); non-Claude adapters inline it
+ * @property {string} systemPrompt           - = rolePrompt ? imgHint+'\n\n'+rolePrompt : imgHint
  * @property {ContextLayer[]} contextLayers  - ordered prefix layers, sorted by order ascending
  * @property {string} userText               - raw user message
  * @property {string} suffix                 - ultracode trigger suffix or ''
@@ -168,7 +166,7 @@ function validateEnvelope(env) {
  *
  * The envelope's spawnOpts carry RAW values (rawModel=persisted.model,
  * rawEffort=persisted.effort). Per-CLI resolution/mapping is deferred to each
- * adapter's shape(envelope) (wiring phase) so today's per-CLI behavior is
+ * adapter's buildInvocation(envelope) so per-CLI behavior is
  * preserved bit-for-bit.
  *
  * @param {Object} input

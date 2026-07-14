@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { renderPrompt } = require('../message-composer');
 
 function createClaudeAdapter(deps) {
@@ -29,38 +32,7 @@ function createClaudeAdapter(deps) {
       if (session.cliSessionId) command += ` --session-id ${session.cliSessionId}`;
       return command;
     },
-    buildChatSpawnArgs(session, prompt, opts) {
-      const sysPrompt = opts.rolePrompt
-        ? `${multiccImgHint}\n\n${opts.rolePrompt}`
-        : multiccImgHint;
-      const spawnArgs = [
-        '-p', '--output-format', 'stream-json', '--verbose',
-        '--include-partial-messages', '--dangerously-skip-permissions',
-        '--append-system-prompt', sysPrompt,
-      ];
-      const model = providers.resolveSessionWireModel(session.model, {
-        providerModel: opts.providerModel,
-        providerModels: opts.providerModels,
-        skipDefaultModel: opts.skipDefaultModel,
-        defaultModel: claudeDefaultModel(),
-      });
-      if (model) spawnArgs.push('--model', model);
-      const effort = cliEffortLevel(session);
-      if (effort) spawnArgs.push('--effort', effort);
-      if (normalizeEffort(session?.effort) === 'ultracode') {
-        spawnArgs.push('--settings', '{"ultracode":true}');
-      }
-      if (chatDisallowedTools.length) {
-        spawnArgs.push('--disallowedTools', chatDisallowedTools.join(','));
-      }
-      if (opts.maxTurns > 0) spawnArgs.push('--max-turns', String(opts.maxTurns));
-      if (opts.isFirstTurn) spawnArgs.push('--session-id', session.cliSessionId);
-      else spawnArgs.push('--resume', session.cliSessionId);
-      spawnArgs.push(prompt);
-      debugLogClaudeInvoke(session, spawnArgs);
-      return spawnArgs;
-    },
-    shape(env) {
+    buildInvocation(env) {
       const so = env.spawnOpts;
       const sysPrompt = env.systemPrompt;
       const model = providers.resolveSessionWireModel(so.rawModel, {
@@ -85,7 +57,8 @@ function createClaudeAdapter(deps) {
           ...(sysPrompt ? ['--append-system-prompt', sysPrompt] : []),
           ...extraArgs,
         ];
-        return { args, payload };
+        debugLogClaudeInvoke({ model: so.rawModel, effort: so.rawEffort }, args);
+        return { cmd, args, payload };
       }
 
       const args = [
@@ -104,7 +77,50 @@ function createClaudeAdapter(deps) {
       if (so.maxTurns > 0) args.push('--max-turns', String(so.maxTurns));
       if (env.historyHandle.isFirstTurn) args.push('--session-id', env.historyHandle.cliSessionId);
       else args.push('--resume', env.historyHandle.cliSessionId);
-      return { args, payload };
+      debugLogClaudeInvoke({ model: so.rawModel, effort: so.rawEffort }, [...args, payload]);
+      return { cmd, args, payload };
+    },
+    decodeEvent(event) {
+      if (event && event.type === 'system' && event.subtype === 'init') {
+        return [{ type: 'session_init', model: event.model, raw: event }];
+      }
+      return [{ type: 'claude_event', raw: event }];
+    },
+    prepareSpawn({ sessionId }) {
+      try {
+        if (!sessionId) return 0;
+        const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+        if (!fs.existsSync(projectsDir)) return 0;
+
+        let cleaned = 0;
+        for (const entry of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const jsonlPath = path.join(projectsDir, entry.name, `${sessionId}.jsonl`);
+          if (!fs.existsSync(jsonlPath)) continue;
+          const output = fs.readFileSync(jsonlPath, 'utf8').split('\n').map((line) => {
+            if (!line.trim()) return line;
+            try {
+              const parsed = JSON.parse(line);
+              if (parsed.message && Array.isArray(parsed.message.content)) {
+                parsed.message.content = parsed.message.content.filter((block) => {
+                  const emptyThinking = block.type === 'thinking'
+                    && (!block.thinking || !/\S/.test(block.thinking));
+                  if (emptyThinking) cleaned += 1;
+                  return !emptyThinking;
+                });
+              }
+              return JSON.stringify(parsed);
+            } catch (_) {
+              return line;
+            }
+          });
+          if (cleaned > 0) fs.writeFileSync(jsonlPath, output.join('\n'));
+          break;
+        }
+        return cleaned;
+      } catch (_) {
+        return 0;
+      }
     },
     needsAsyncSessionIdCapture: false,
   };

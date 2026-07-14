@@ -28,8 +28,12 @@ function collectText(label) {
     cmd: CLAUDE,
     cwd: process.cwd(),
     sessionId: crypto.randomUUID(),
-    model: 'haiku',
-    sysPrompt: 'You are a terse test bot. Answer in as few words as possible.',
+    baseArgs: [
+      '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
+      '--verbose', '--include-partial-messages', '--dangerously-skip-permissions',
+      '--model', 'haiku',
+      '--append-system-prompt', 'You are a terse test bot. Answer in as few words as possible.',
+    ],
   });
 
   // Turn 1

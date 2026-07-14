@@ -6,22 +6,19 @@
 // Byte-equivalence regression gate for the unified message-builder refactor.
 //
 // Strategy: A/B direct comparison of TODAY's inline assembly vs the NEW
-// composeMessage/renderPrompt/shape design.
+// composeMessage/renderPrompt/buildInvocation design.
 //
 //   "today" string  = re-derivation of server.js runChatTurn inline prepend
-//                     chain (server.js:9035-9075) and each adapter's current
-//                     buildChatSpawnArgs, using the SAME injected helper deps.
-//   "new"   string  = renderPrompt(composeMessage(...)) and adapter.shape().
+//                     chain and the former per-CLI argument rules.
+//   "new"   string  = renderPrompt(composeMessage(...)) and
+//                     adapter.buildInvocation().
 //
 // Iron rule under test: the args + payload emitted to every CLI must be
 // byte-for-byte identical to today. Any drift (flag order, separator, model
 // source, ultracode --settings, streaming --max-turns, ...) fails the gate.
 //
-// STATUS: This gate is INTENTIONALLY written ahead of the wiring phase.
-//   - promptText-equivalence suites (renderPrompt) can run now; composer exists.
-//   - shape-equivalence suites require adapter.shape() (Phase 2). Until shape
-//     lands they report failure ("shape not implemented") -- the gate turns
-//     green only once Phase 2 produces a byte-identical implementation.
+// The legacy rules are re-derived below so deleting the duplicate runtime API
+// does not weaken byte-level regression coverage.
 // ═══════════════════════════════════════════════════════════════════════
 
 const { composeMessage, renderPrompt } = require('../src/message-composer');
@@ -250,10 +247,9 @@ console.log('── Suite 2: envelope structure ──');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
-// Suite 3: adapter.shape() byte-equivalence vs buildChatSpawnArgs
-// (Phase 2 gate -- fails as "shape not implemented" until wiring lands)
+// Suite 3: adapter.buildInvocation() byte-equivalence
 // ═══════════════════════════════════════════════════════════════════════
-console.log('── Suite 3: adapter.shape() byte-equivalence (Phase 2 gate) ──');
+console.log('── Suite 3: adapter.buildInvocation() byte-equivalence ──');
 
 // Build real adapters with the same stub deps the server would inject.
 const providersStub = {
@@ -282,7 +278,48 @@ const opencodeAdapter = createOpencodeAdapter({ cmd: 'opencode' });
 const zcodeAdapter = createZcodeAdapter({ cmd: 'zcode' });
 
 function todayBuildChatArgs(adapter, persisted, promptText, o) {
-  return adapter.buildChatSpawnArgs(persisted, promptText, o);
+  if (adapter.name === 'claude') {
+    const sysPrompt = o.rolePrompt ? `${IMG_HINT}\n\n${o.rolePrompt}` : IMG_HINT;
+    const result = [
+      '-p', '--output-format', 'stream-json', '--verbose',
+      '--include-partial-messages', '--dangerously-skip-permissions',
+      '--append-system-prompt', sysPrompt,
+    ];
+    const model = providersStub.resolveSessionWireModel(persisted.model, {
+      providerModel: o.providerModel, providerModels: o.providerModels,
+      skipDefaultModel: o.skipDefaultModel, defaultModel: 'claude-default',
+    });
+    if (model) result.push('--model', model);
+    const effort = cliEffortLevel(persisted);
+    if (effort) result.push('--effort', effort);
+    if (normalizeEffort(persisted.effort) === 'ultracode') result.push('--settings', '{"ultracode":true}');
+    if (o.disallowedTools.length) result.push('--disallowedTools', o.disallowedTools.join(','));
+    if (o.maxTurns > 0) result.push('--max-turns', String(o.maxTurns));
+    result.push(o.isFirstTurn ? '--session-id' : '--resume', persisted.cliSessionId, promptText);
+    return result;
+  }
+  if (adapter.name === 'codex') {
+    let payload = o.isFirstTurn
+      ? `${IMG_HINT}\n\n${ENV_CONSTRAINT}\n\n[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
+      : promptText;
+    payload += `\n${STAY_ALIVE}`;
+    const result = ['exec'];
+    for (const arg of [codexReasoningConfigArg(persisted), codexModelConfigArg(persisted)].filter(Boolean)) {
+      result.push('-c', arg);
+    }
+    if (!o.isFirstTurn) result.push('resume', persisted.cliSessionId);
+    result.push('--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', payload);
+    return result;
+  }
+  const result = ['run', '--format', 'json', '--auto'];
+  if (persisted.model) result.push('--model', persisted.model);
+  if (!o.isFirstTurn && persisted.cliSessionId) result.push('--session', persisted.cliSessionId);
+  else if (!o.isFirstTurn) result.push('--continue');
+  const payload = o.isFirstTurn && o.rolePrompt
+    ? `[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
+    : promptText;
+  result.push(payload);
+  return result;
 }
 
 function shapeEquiv(label, { adapter, persisted, isFirstTurn, disallowedTools, maxTurns }) {
@@ -301,19 +338,20 @@ function shapeEquiv(label, { adapter, persisted, isFirstTurn, disallowedTools, m
   const todayArr = todayBuildChatArgs(adapter, persisted, promptText, {
     isFirstTurn,
     rolePrompt: envelope.rolePrompt,
-    // single source of truth (matches server.js:9064 goalMaxTurns fed to buildChatSpawnArgs at 9092)
+    // Single source of truth: goal max turns is carried through the envelope.
     maxTurns: envelope.spawnOpts.maxTurns,
     skipDefaultModel: opts.skipDefaultModel,
     providerModel: opts.providerModel,
     providerModels: opts.providerModels,
+    disallowedTools: disallowedTools || [],
   });
-  if (typeof adapter.shape !== 'function') {
-    assert(false, `${label}: adapter.shape not yet implemented (Phase 2 gate -- red until wiring lands)`);
+  if (typeof adapter.buildInvocation !== 'function') {
+    assert(false, `${label}: adapter.buildInvocation not implemented`);
     return;
   }
-  const { args, payload } = adapter.shape(envelope);
+  const { args, payload } = adapter.buildInvocation(envelope);
   const newArr = [...args, payload];
-  const ok = assert(eq(newArr, todayArr), `${label}: [...shape.args, payload] === today's buildChatSpawnArgs (byte equality)`);
+  const ok = assert(eq(newArr, todayArr), `${label}: invocation args + payload preserve legacy bytes`);
   if (!ok) {
     console.error('    --- new ---'); console.error(JSON.stringify(newArr));
     console.error('    --- today ---'); console.error(JSON.stringify(todayArr));
@@ -370,17 +408,15 @@ shapeEquiv('3g zcode first-turn', {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// Suite 4: claude.shape(streaming) byte-equivalence
+// Suite 4: claude.buildInvocation(streaming) byte-equivalence
 //
-// Streaming today does NOT go through buildChatSpawnArgs. Its base args are
-// hand-assembled in runChatTurnStreaming (server.js:9801-9806 extraArgs) and
-// chat-stream.spawnProc (src/chat-stream.js:60-71 prefix). The session
-// handle (--session-id/--resume) is appended by spawnProc at spawn time and
+// The legacy streaming base args are re-derived below. The session handle
+// (--session-id/--resume) is appended by chat-stream at spawn time and
 // is explicitly OUT of scope for shape args. ultracode --settings and
 // --max-turns are intentionally NOT added to streaming today (drift preserved
 // per iron rule #3); shape(streaming) must match that drift exactly.
 // ═══════════════════════════════════════════════════════════════════════
-console.log('── Suite 4: claude.shape(streaming) byte-equivalence ──');
+console.log('── Suite 4: claude.buildInvocation(streaming) byte-equivalence ──');
 
 function todayStreamingBaseArgs(persisted, { sysPrompt, model, disallowedTools }) {
   // Replicates chat-stream.spawnProc prefix (minus sessionArgs) +
@@ -425,12 +461,12 @@ function todayStreamingBaseArgs(persisted, { sysPrompt, model, disallowedTools }
   const todayArgs = todayStreamingBaseArgs(persisted, { sysPrompt: todaySys, model: todayModel, disallowedTools: disallowed });
 
   const adapter = claudeAdapterWith(disallowed);
-  if (typeof adapter.shape !== 'function') {
-    assert(false, '4a claude.shape(streaming): not yet implemented (Phase 2 gate)');
+  if (typeof adapter.buildInvocation !== 'function') {
+    assert(false, '4a claude.buildInvocation(streaming): not implemented');
     return;
   }
-  const { args, payload } = adapter.shape(envelope);
-  const okArgs = assert(eq(args, todayArgs), '4a streaming: shape.args === today base args (no handle, no --settings, no --max-turns)');
+  const { args, payload } = adapter.buildInvocation(envelope);
+  const okArgs = assert(eq(args, todayArgs), '4a streaming: invocation.args === legacy base args (no handle, no --settings, no --max-turns)');
   if (!okArgs) {
     console.error('    --- shape.args ---'); console.error(JSON.stringify(args));
     console.error('    --- todayArgs  ---'); console.error(JSON.stringify(todayArgs));
@@ -445,9 +481,5 @@ function todayStreamingBaseArgs(persisted, { sysPrompt, model, disallowedTools }
 // ═══════════════════════════════════════════════════════════════════════
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
-if (failed > 0) {
-  console.log('NOTE: shape suites are expected to fail until the Phase 2 wiring lands.');
-  console.log('      A promptText-suite failure indicates a real byte drift that must be fixed.');
-  process.exit(1);
-}
+if (failed > 0) process.exit(1);
 console.log('ALL TESTS PASSED ✓');

@@ -4,6 +4,12 @@ function createCliProviderRegistry(adapters, fallbackName = 'claude') {
   const byName = new Map();
   for (const adapter of adapters) {
     if (!adapter || !adapter.name) continue;
+    if (typeof adapter.buildInvocation !== 'function') {
+      throw new Error(`CLI adapter ${adapter.name} is missing buildInvocation()`);
+    }
+    if (typeof adapter.decodeEvent !== 'function') {
+      throw new Error(`CLI adapter ${adapter.name} is missing decodeEvent()`);
+    }
     byName.set(adapter.name, adapter);
   }
   const fallback = byName.get(fallbackName);
