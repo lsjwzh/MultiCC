@@ -32,6 +32,8 @@ function createCliAdapters(deps) {
       envConstraint: deps.codexEnvConstraint,
       stayAlivePrompt: deps.codexStayAlivePrompt,
       multiccImgHint: deps.multiccImgHint,
+      isResponseCompletedDisconnect: deps.isCodexResponseCompletedDisconnect,
+      isTransportDisconnect: deps.isCodexTransportDisconnect,
     }),
     createOpencodeAdapter({ cmd: commands.opencode }),
     createZcodeAdapter({ cmd: commands.zcode }),

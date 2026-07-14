@@ -389,7 +389,7 @@ function summarize(p) {
     // Alias-only relay: has a base URL but no canonical ANTHROPIC_MODEL — it only
     // declares per-tier alias targets (e.g. iFlytek maps opus/sonnet/haiku/fable →
     // astron-code-latest). Such relays reject those targets as literal --model
-    // values, so the spawn path substitutes a safe wire default (see buildChatSpawnArgs).
+    // values, so the invocation path substitutes a safe wire default.
     aliasOnly = !!baseUrl && !model;
     // Surface the alias↔model correspondence for the model picker, carrying cc-switch's
     // friendly *_MODEL_NAME label (e.g. opus → astron-code-latest (GLM5.2)).
@@ -421,6 +421,8 @@ function summarize(p) {
   return {
     id: p.id,
     appType: p.appType,
+    protocol: p.appType === 'claude' ? 'anthropic' : 'openai',
+    wireApi: p.appType === 'claude' ? 'messages' : (tomlValue(cfg.config, 'wire_api') || 'responses'),
     name: p.name,
     source: p.source || 'local', // 'local' | 'ccswitch'
     baseUrl,
@@ -432,6 +434,75 @@ function summarize(p) {
     tokenMask: maskToken(token),
     hasToken: !!token,
     isOfficial: !baseUrl, // no custom base url -> default login / subscription
+  };
+}
+
+// Resolve an Aux provider into a callable HTTP endpoint. Aux is protocol-based,
+// not CLI-based: Anthropic providers use /messages; OpenAI providers declare
+// either /responses or /chat/completions. OAuth-only OpenAI providers are not
+// callable because there is no API key to authenticate a plain HTTP request.
+function resolveAuxHttpTarget(protocol, providerId, { port, claudeOfficialViaProxy = false } = {}) {
+  const normalized = protocol === 'openai' ? 'openai' : 'anthropic';
+  const appType = normalized === 'openai' ? 'codex' : 'claude';
+  const provider = getProvider(appType, providerId);
+  if (!provider) return { available: false, protocol: normalized, reason: 'provider not found' };
+  const cfg = parseConfig(provider.settingsConfig);
+  const summary = summarize(provider);
+
+  if (normalized === 'anthropic') {
+    const env = cfg.env || {};
+    const hasBase = !!env.ANTHROPIC_BASE_URL;
+    const hasKey = !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
+    const officialOAuth = providerId === 'claude-official' && claudeOfficialViaProxy;
+    if (!(hasBase && hasKey) && !officialOAuth) {
+      return { available: false, protocol: normalized, reason: 'provider has no HTTP credentials' };
+    }
+    if (!port) return { available: false, protocol: normalized, reason: 'proxy port unavailable' };
+    return {
+      available: true,
+      protocol: normalized,
+      wireApi: 'messages',
+      url: `http://127.0.0.1:${port}/claude-proxy/${providerId}/aux/v1/messages?beta=true`,
+      apiKey: 'multicc-aux',
+      model: summary.model || '',
+      modelOptions: summary.modelOptions && summary.modelOptions.length
+        ? summary.modelOptions
+        : ['haiku', 'sonnet', 'opus', 'fable'],
+      providerName: summary.name,
+      localProxy: true,
+    };
+  }
+
+  const auth = cfg.auth || {};
+  const apiKey = auth.OPENAI_API_KEY || '';
+  const model = tomlValue(cfg.config, 'model') || '';
+  const modelOptions = (cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models))
+    ? cfg.modelCatalog.models.map(item => item && item.model).filter(Boolean)
+    : (model ? [model] : []);
+  if (cfg.proxyTarget && cfg.proxyTarget.baseUrl) {
+    const key = cfg.proxyTarget.apiKey || apiKey;
+    if (!key) return { available: false, protocol: normalized, reason: 'proxy target has no API key' };
+    return {
+      available: true, protocol: normalized, wireApi: 'chat_completions',
+      url: cfg.proxyTarget.baseUrl, apiKey: key, model, modelOptions,
+      providerName: summary.name,
+    };
+  }
+  if (!apiKey) return { available: false, protocol: normalized, reason: 'OAuth provider has no API key' };
+  const base = tomlValue(cfg.config, 'base_url') || '';
+  if (!base) return { available: false, protocol: normalized, reason: 'provider has no base_url' };
+  if (/127\.0\.0\.1|localhost/.test(base)) {
+    return { available: false, protocol: normalized, reason: 'local proxy has no direct target' };
+  }
+  const wireApi = tomlValue(cfg.config, 'wire_api') === 'chat_completions'
+    ? 'chat_completions'
+    : 'responses';
+  const suffix = wireApi === 'responses' ? '/responses' : '/chat/completions';
+  let url = base.replace(/\/+$/, '');
+  if (!url.endsWith(suffix)) url += suffix;
+  return {
+    available: true, protocol: normalized, wireApi, url, apiKey, model,
+    modelOptions, providerName: summary.name,
   };
 }
 
@@ -452,54 +523,12 @@ function getProviderSummary(appType, id) {
   return p ? summarize(p) : null;
 }
 
-// Resolve a codex provider's direct-HTTP target (OpenAI /chat/completions),
-// so aux can POST straight to it without spawning the codex CLI — the codex
-// analogue of the claude direct-HTTP path.
-//
-// Three provider shapes (see providers.json):
-//   1. proxyTarget present → { baseUrl: ".../chat/completions", apiKey } is the
-//      real upstream (domestic providers bridged through codex-proxy). Use it
-//      directly and skip the local proxy hop entirely.
-//   2. real base_url in config.toml + OPENAI_API_KEY → hit <base_url>/chat/completions.
-//   3. OAuth (auth_mode=chatgpt, OPENAI_API_KEY=null) → cannot key-auth a plain
-//      POST; canDirect=false so the caller falls back to CLI spawn.
+// Compatibility wrapper used by the provider speed test.
 function resolveCodexDirectHttp(providerId) {
-  const p = getProvider('codex', providerId);
-  if (!p) return { canDirect: false, reason: 'provider not found' };
-  const cfg = parseConfig(p.settingsConfig);
-  const auth = cfg.auth || {};
-  const apiKey = auth.OPENAI_API_KEY || '';
-  const model = tomlValue(cfg.config, 'model') || '';
-  const modelOptions = (cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models))
-    ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean)
-    : (model ? [model] : []);
-
-  // Shape 1: codex-proxy target carries the real /chat/completions URL + key.
-  if (cfg.proxyTarget && cfg.proxyTarget.baseUrl) {
-    const key = cfg.proxyTarget.apiKey || apiKey;
-    if (!key) return { canDirect: false, reason: 'proxyTarget without apiKey' };
-    return { canDirect: true, url: cfg.proxyTarget.baseUrl, apiKey: key, model, modelOptions };
-  }
-
-  // Shape 3: OAuth-only (no usable API key) → must use the CLI.
-  if (!apiKey) return { canDirect: false, reason: 'OAuth provider (no API key) — CLI only' };
-
-  // Shape 2: real upstream base_url from config.toml. Normalize to a
-  // /chat/completions endpoint (append if the base_url is a bare host/prefix).
-  let base = tomlValue(cfg.config, 'base_url') || '';
-  if (!base) return { canDirect: false, reason: 'no base_url in config' };
-  // A base_url pointing back at our own local codex-proxy but WITHOUT a
-  // proxyTarget is unusable for direct HTTP (we'd loop through the responses
-  // bridge). Treat as CLI-only.
-  if (/127\.0\.0\.1|localhost/.test(base)) {
-    return { canDirect: false, reason: 'base_url is local proxy without proxyTarget — CLI only' };
-  }
-  let url = base.replace(/\/+$/, '');
-  if (!/\/chat\/completions$/.test(url)) {
-    // base_url like "https://host/v1" → "https://host/v1/chat/completions"
-    url = url + '/chat/completions';
-  }
-  return { canDirect: true, url, apiKey, model, modelOptions };
+  const target = resolveAuxHttpTarget('openai', providerId);
+  return target.available
+    ? { ...target, canDirect: true }
+    : { ...target, canDirect: false };
 }
 
 function createProvider({ appType, name, baseUrl, authToken, model, models, useChatResponsesProxy, settingsConfig, aliasMap }) {
@@ -1055,6 +1084,7 @@ module.exports = {
   listProviders,
   getProvider,
   getProviderSummary,
+  resolveAuxHttpTarget,
   resolveCodexDirectHttp,
   createProvider,
   updateProvider,

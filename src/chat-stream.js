@@ -29,7 +29,7 @@
 const { spawn } = require('child_process');
 
 // session name -> state
-//   { proc, sessionId, cwd, model, sysPrompt, cmd, baseArgs,
+//   { proc, sessionId, cwd, cmd, baseArgs,
 //     started (bool: has this sessionId ever run a turn → use --resume),
 //     busy (bool: a turn is in flight), queue: [{text, onEvent, resolve, reject}],
 //     current: {onEvent, resolve, reject} | null,
@@ -54,21 +54,11 @@ function userMessageLine(text) {
 // time and --resume on any later respawn so context survives a process restart.
 function spawnProc(name, cfg) {
   const s = sessions.get(name);
+  if (typeof s.beforeSpawn === 'function') s.beforeSpawn({ sessionId: s.sessionId });
   const sessionArgs = s.started
     ? ['--resume', s.sessionId]
     : ['--session-id', s.sessionId];
-  const args = [
-    '-p',
-    '--input-format', 'stream-json',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--include-partial-messages',
-    '--dangerously-skip-permissions',
-    ...(s.model ? ['--model', s.model] : []),
-    ...(s.sysPrompt ? ['--append-system-prompt', s.sysPrompt] : []),
-    ...(s.extraArgs || []),
-    ...sessionArgs,
-  ];
+  const args = [...s.baseArgs, ...sessionArgs];
 
   // s.env is the FULL child env the caller already computed (process.env with
   // ANTHROPIC_* routing keys stripped + the session's provider env applied), so
@@ -242,7 +232,7 @@ function clearIdle(s) {
 
 /**
  * Ensure a streaming session exists (does not spawn until first send()).
- * cfg: { cmd, cwd, sessionId, model?, sysPrompt?, extraArgs?, env?, idleMs?, onExit? }
+ * cfg: { cmd, cwd, sessionId, baseArgs, beforeSpawn?, env?, idleMs?, onExit? }
  */
 function ensure(name, cfg) {
   let s = sessions.get(name);
@@ -251,9 +241,8 @@ function ensure(name, cfg) {
       cmd: cfg.cmd,
       cwd: cfg.cwd,
       sessionId: cfg.sessionId,
-      model: cfg.model || null,
-      sysPrompt: cfg.sysPrompt || null,
-      extraArgs: cfg.extraArgs || [],
+      baseArgs: cfg.baseArgs || [],
+      beforeSpawn: cfg.beforeSpawn || null,
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       onExit: cfg.onExit || null,
@@ -264,9 +253,9 @@ function ensure(name, cfg) {
     };
     sessions.set(name, s);
   } else {
-    // Allow per-turn overrides (model/system prompt/provider env can change between turns).
-    if (cfg.model !== undefined) s.model = cfg.model;
-    if (cfg.sysPrompt !== undefined) s.sysPrompt = cfg.sysPrompt;
+    // Allow per-turn overrides (arguments/provider env can change between turns).
+    if (cfg.baseArgs !== undefined) s.baseArgs = cfg.baseArgs;
+    if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
     if (cfg.env !== undefined) s.env = cfg.env;
     if (cfg.onBackgroundEvent !== undefined) s.onBackgroundEvent = cfg.onBackgroundEvent;
   }

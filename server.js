@@ -80,6 +80,7 @@ const services = require('./src/services');
 const state = require('./src/state');
 const artifacts = require('./src/artifacts');
 const providers = require('./src/providers');
+const { executeAuxHttp } = require('./src/aux-http');
 const tokenGlobal = require('./src/token-global');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
@@ -479,15 +480,6 @@ function appTypeForCli(cli) {
   return cli === 'codex' ? 'codex' : 'claude';
 }
 
-// ── Global default CLI for auxiliary AI (intent classify, task summary, etc.) ──
-// Let (not const): hot-reloadable via POST /api/settings/default-cli (persists to
-// .env). 'claude' or 'codex'. Switching to codex means the aux queue, S2S confirm,
-// voice refine etc. run through the Codex CLI (which may reach a different provider).
-let DEFAULT_CLI = (process.env.DEFAULT_CLI || 'claude').trim().toLowerCase();
-if (DEFAULT_CLI !== 'claude' && DEFAULT_CLI !== 'codex') DEFAULT_CLI = 'claude';
-console.log(`[multicc] Default CLI for aux: ${DEFAULT_CLI}`);
-function auxCliCmd() { return DEFAULT_CLI === 'codex' ? CODEX_CMD : CLAUDE_CMD; }
-
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 function normalizeEffort(v) {
@@ -665,6 +657,8 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
   codexReasoningConfigArg,
   codexModelConfigArg,
   debugLogClaudeInvoke,
+  isCodexResponseCompletedDisconnect,
+  isCodexTransportDisconnect,
 });
 const CLAUDE_CMD = cliCommands.claude;
 const CODEX_CMD = cliCommands.codex;
@@ -4744,15 +4738,21 @@ function writeEnvFile(updates) {
     const m = line.match(/^\s*([^#=]+?)\s*=/);
     if (m && updates.hasOwnProperty(m[1])) {
       written.add(m[1]);
+      if (updates[m[1]] == null) return '';
       return `${m[1]}=${updates[m[1]]}`;
     }
     return line;
   }).filter(l => l.trim() !== '');
   for (const [k, v] of Object.entries(updates)) {
-    if (!written.has(k)) lines.push(`${k}=${v}`);
+    if (!written.has(k) && v != null) lines.push(`${k}=${v}`);
   }
   fs.writeFileSync(ENV_PATH, lines.join('\n') + '\n');
 }
+
+// DEFAULT_CLI belonged to the removed Aux CLI fallback. Migrate persisted
+// installations as well as the in-memory environment to the protocol config.
+if (readEnvFile().DEFAULT_CLI !== undefined) writeEnvFile({ DEFAULT_CLI: null });
+delete process.env.DEFAULT_CLI;
 
 app.get('/api/settings/voice', (req, res) => {
   const env = readEnvFile();
@@ -5014,25 +5014,6 @@ app.post('/api/settings/notify', (req, res) => {
   if (typeof webhookUrl === 'string') updates.WEBHOOK_URL = webhookUrl;
   if (Object.keys(updates).length > 0) { writeEnvFile(updates); push.applyEnvUpdates(updates); }
   res.json({ ok: true });
-});
-
-// ── Global default CLI for auxiliary AI (Claude vs Codex) ──
-// Readable anywhere; POST is localhost-only. The `DEFAULT_CLI` variable is
-// hot-reloaded so the aux queue picks it up immediately.
-app.get('/api/settings/default-cli', (req, res) => {
-  res.json({ defaultCli: DEFAULT_CLI });
-});
-
-app.post('/api/settings/default-cli', (req, res) => {
-  if (!isLocalRequest(req)) return res.status(403).json({ error: '仅可在本机修改' });
-  const v = (req.body && req.body.defaultCli || '').toString().trim().toLowerCase();
-  if (v !== 'claude' && v !== 'codex') {
-    return res.status(400).json({ error: 'defaultCli 必须是 claude 或 codex' });
-  }
-  DEFAULT_CLI = v;
-  writeEnvFile({ DEFAULT_CLI: v });
-  console.log(`[multicc] Default CLI for aux switched to: ${DEFAULT_CLI}`);
-  res.json({ ok: true, defaultCli: DEFAULT_CLI });
 });
 
 // ── External tunnel monitor (花生壳 / Tailscale) ──
@@ -5409,29 +5390,31 @@ function triggerPush(sessionId, type, message) {
   console.log(`[multicc/push] Sent ${type} notification for session ${sessionId}`);
 }
 
-// ── AuxQueue: stateless claude -p AI service (intent classification, etc.) ──
+// ── AuxQueue: stateless direct-HTTP AI service (intent classification, etc.) ──
 const AUX_SESSION_ID = '__aux__';
 const AUX_TIMEOUT_MS = Math.max(10000, parseInt(process.env.AUX_TIMEOUT_MS || '90000', 10) || 90000);
 const AUX_HISTORY_MAX = 200;
 
 // Aux model config (persisted in aux-config.json). The aux helper runs short,
-// stateless single-turn tasks (intent classify, summary, voice refine). It can
-// use either Claude providers or Codex providers; providerId=null follows the
-// selected CLI's default login, model=null follows that provider's default.
+// stateless single-turn tasks (intent classify, summary, voice refine). It
+// selects a wire protocol first, then one callable provider and model. Aux never
+// spawns a CLI; providers without HTTP credentials are excluded from the picker.
 const AUX_CONFIG_FILE = path.join(__dirname, 'aux-config.json');
-let auxConfig = { cli: 'claude', providerId: null, model: null, effort: null };
-function normalizeAuxCli(v) {
-  return String(v || '').toLowerCase() === 'codex' ? 'codex' : 'claude';
+let auxConfig = { protocol: 'anthropic', providerId: null, model: null };
+function normalizeAuxProtocol(v) {
+  return String(v || '').toLowerCase() === 'openai' ? 'openai' : 'anthropic';
 }
 function loadAuxConfig() {
   try {
     const c = JSON.parse(fs.readFileSync(AUX_CONFIG_FILE, 'utf8'));
     auxConfig = {
-      cli: normalizeAuxCli(c.cli),
+      // One-time compatibility read for pre-refactor config; save writes only
+      // protocol/provider/model and permanently removes the old cli field.
+      protocol: normalizeAuxProtocol(c.protocol || (c.cli === 'codex' ? 'openai' : 'anthropic')),
       providerId: c.providerId || null,
       model: (c.model && String(c.model).trim()) || null,
-      effort: normalizeEffort(c.effort) || null,
     };
+    saveAuxConfig();
   } catch (_) { /* no config yet → defaults */ }
 }
 function saveAuxConfig() {
@@ -5451,8 +5434,6 @@ const auxQueue = {
   health: { consecutiveFails: 0, unhealthy: false, lastFailAt: null, lastFailMsg: '', sinceAt: null },
   clients: new Set(), // WebSocket clients watching aux events
   history: [],        // loaded from chat_history/__aux__.json
-  _warmProc: null,    // pre-spawned claude process waiting for stdin input
-  _warmReady: false,  // true once the warm process has started successfully
 
   // Record a failed task. Cancelled tasks don't count (user-initiated).
   // Returns the updated health object.
@@ -5504,19 +5485,8 @@ const auxQueue = {
       const existing = persistedSessions.get(AUX_SESSION_ID);
       if (existing.type !== 'aux') { existing.type = 'aux'; existing.label = 'AI Assistant'; savePersistedSessions(); }
     }
-    console.log('[multicc/aux] AuxQueue initialized (cold-spawn per task)');
+    console.log('[multicc/aux] AuxQueue initialized (direct HTTP)');
   },
-
-  // NOTE: process pre-warming was removed. It spawned `claude -p` with stdin held
-  // open, intending to feed the prompt later — but the CLI aborts with
-  //   "no stdin data received in 3s, proceeding without it" → exit 1
-  // if stdin stays empty for 3s, which it always did (tasks arrive seconds after
-  // prewarm). That silently killed EVERY aux task → no completion/waiting push
-  // notifications. We now cold-spawn per task with the prompt as a CLI argument
-  // (no stdin dependency, no race). Kept as a no-op so existing call sites are
-  // safe; if low latency is ever needed, use `--input-format stream-json` (a
-  // genuinely persistent process) rather than an idle one-shot `-p`.
-  prespawn() { /* intentionally a no-op — see note above */ },
 
   enqueue(task) {
     return new Promise((resolve, reject) => {
@@ -5594,12 +5564,12 @@ const auxQueue = {
       appendChatMessage(AUX_SESSION_ID, {
         role: 'user', content: task.prompt, ts: task.ts,
         taskType: task.type, taskId: task.id, meta: task.meta,
-        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
+        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
       });
       appendChatMessage(AUX_SESSION_ID, {
         role: 'assistant', content: resultText, ts: Date.now(),
         taskId: task.id, durationMs, cancelled: task.cancelled,
-        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
+        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
         enqueuedAt: task.ts, startedAt: startTime, queueMs: startTime - task.ts,
       });
 
@@ -5618,12 +5588,12 @@ const auxQueue = {
       appendChatMessage(AUX_SESSION_ID, {
         role: 'user', content: task.prompt, ts: task.ts,
         taskType: task.type, taskId: task.id, meta: task.meta,
-        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
+        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
       });
       appendChatMessage(AUX_SESSION_ID, {
         role: 'assistant', content: `[ERROR] ${errMsg}`, ts: Date.now(),
         taskId: task.id, durationMs, error: true,
-        cli: auxConfig.cli || 'claude', transport: task._transport || 'cli',
+        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
         enqueuedAt: task.ts, startedAt: startTime, queueMs: startTime - task.ts,
       });
       task.reject(err);
@@ -5636,397 +5606,38 @@ const auxQueue = {
     this.drain(); // process next
   },
 
-  // Whether aux can use direct HTTP instead of CLI spawn: needs a provider with
-  // baseUrl + API key (not OAuth-only like claude-official without key).
-  _canDirectHttp: null,
-  canDirectHttp() {
-    if (this._canDirectHttp !== null) return this._canDirectHttp;
-    if (!auxConfig.providerId) { console.log('[multicc/aux] canDirectHttp=false (no providerId)'); this._canDirectHttp = false; return false; }
-    const p = providers.getProvider('claude', auxConfig.providerId);
-    if (!p) { console.log(`[multicc/aux] canDirectHttp=false (provider ${auxConfig.providerId} not found)`); this._canDirectHttp = false; return false; }
-    let cfg = {};
-    try { cfg = (p.settingsConfig && typeof p.settingsConfig === 'object') ? p.settingsConfig : JSON.parse(p.settingsConfig || '{}'); } catch (_) {}
-    const hasBase = !!(cfg.env && cfg.env.ANTHROPIC_BASE_URL);
-    const hasKey = !!(cfg.env && (cfg.env.ANTHROPIC_API_KEY || cfg.env.ANTHROPIC_AUTH_TOKEN));
-    // Can direct HTTP if: has baseUrl + API key; OR is the official OAuth provider
-    // (ccfw proxy handles Keychain OAuth token replay).
-    const isOfficial = auxConfig.providerId === 'claude-official';
-    this._canDirectHttp = (hasBase && hasKey) || (isOfficial && CLAUDE_OFFICIAL_VIA_PROXY);
-    console.log(`[multicc/aux] canDirectHttp=${this._canDirectHttp} provider=${auxConfig.providerId} hasBase=${hasBase} hasKey=${hasKey} envKeys=${cfg.env ? Object.keys(cfg.env).join(',') : 'none'}`);
-    return this._canDirectHttp;
+  // Resolve the configured protocol/provider to one direct HTTP target.
+  resolveHttpTarget() {
+    const target = providers.resolveAuxHttpTarget(auxConfig.protocol, auxConfig.providerId, {
+      port: PORT,
+      claudeOfficialViaProxy: CLAUDE_OFFICIAL_VIA_PROXY,
+    });
+    if (!target.available) {
+      throw new Error(`Aux Provider 不可用：${target.reason || '缺少可调用的 HTTP 端点'}`);
+    }
+    return target;
   },
 
   execute(task) {
-    if (auxConfig.cli === 'codex') {
-      // Codex direct-HTTP: API-key providers POST straight to /chat/completions,
-      // no CLI spawn (symmetric with the claude path). OAuth codex → CLI.
-      const cx = this.canDirectHttpCodex();
-      if (cx.canDirect) { task._transport = 'directHttp'; return this.executeDirectHttpCodex(task, cx); }
-      task._transport = 'cli'; return this.executeCodex(task);
+    let target;
+    try {
+      target = this.resolveHttpTarget();
+    } catch (error) {
+      return Promise.reject(error);
     }
-    // If aux has a direct API provider (non-OAuth, has baseUrl), skip CLI spawn
-    // and use HTTP directly via the proxy — faster, no OAuth dependency.
-    if (this.canDirectHttp()) { task._transport = 'directHttp'; return this.executeDirectHttp(task); }
-    task._transport = 'cli'; return this.executeClaude(task);
+    task._transport = 'directHttp';
+    task._wireApi = target.wireApi;
+    return this.executeHttp(task, target);
   },
 
-  // Codex direct-HTTP capability (cached). Resolves the provider's real
-  // /chat/completions target; canDirect=false for OAuth-only codex providers.
-  _canDirectHttpCodex: null,
-  canDirectHttpCodex() {
-    if (this._canDirectHttpCodex !== null) return this._canDirectHttpCodex;
-    if (!auxConfig.providerId) { this._canDirectHttpCodex = { canDirect: false, reason: 'no provider (default login → CLI)' }; return this._canDirectHttpCodex; }
-    const r = providers.resolveCodexDirectHttp(auxConfig.providerId);
-    this._canDirectHttpCodex = r;
-    if (r.canDirect) console.log(`[multicc/aux] codex direct HTTP mode (no CLI spawn) → ${r.url}`);
-    else console.log(`[multicc/aux] codex uses CLI spawn (${r.reason})`);
-    return r;
-  },
-
-  // Direct HTTP execution for codex providers: POST OpenAI /chat/completions,
-  // no CLI spawn. Mirrors executeDirectHttp (claude) but in OpenAI wire format.
-  executeDirectHttpCodex(task, cx) {
-    return new Promise((resolve, reject) => {
-      const model = auxConfig.model || cx.model || (cx.modelOptions && cx.modelOptions[0]) || '';
-      if (!model) { reject(new Error('codex direct HTTP: no model resolved')); return; }
-      const body = JSON.stringify({
-        model,
-        max_tokens: 128000,
-        messages: [{ role: 'user', content: task.prompt }],
-      });
-      let urlObj;
-      try { urlObj = new URL(cx.url); } catch (e) { reject(new Error('bad codex url: ' + cx.url)); return; }
-      const isHttps = urlObj.protocol === 'https:';
-      const lib = isHttps ? require('https') : require('http');
-      const req = lib.request({
-        hostname: urlObj.hostname,
-        port: urlObj.port || (isHttps ? 443 : 80),
-        path: urlObj.pathname + urlObj.search,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${cx.apiKey}`,
-        },
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          // Check HTTP status before trying to parse JSON — 503, 502, etc.
-          // often return non-JSON error pages.
-          if (res.statusCode >= 500) {
-            reject(new Error(`HTTP ${res.statusCode} (upstream error): ${String(data).slice(0, 200).replace(/\n/g, ' ')}`));
-            return;
-          }
-          if (res.statusCode >= 400) {
-            let errMsg = `HTTP ${res.statusCode}`;
-            try {
-              const pe = JSON.parse(data);
-              if (pe.error) errMsg = pe.error.message || JSON.stringify(pe.error);
-            } catch (_) {
-              errMsg = `HTTP ${res.statusCode}: ${String(data).slice(0, 200).replace(/\n/g, ' ')}`;
-            }
-            reject(new Error(errMsg));
-            return;
-          }
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
-            // OpenAI chat/completions shape: choices[0].message.content
-            const text = parsed.choices && parsed.choices[0] && parsed.choices[0].message
-              ? (parsed.choices[0].message.content || '')
-              : '';
-            resolve(typeof text === 'string' ? text : JSON.stringify(text));
-          } catch (e) {
-            reject(e);
-          }
-        });
-      });
-      req.on('error', reject);
-      req.setTimeout((task.meta && task.meta.timeout) || AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
-      req.write(body);
-      req.end();
-    });
-  },
-
-  // Direct HTTP execution: POST /v1/messages via the ccfw proxy, no CLI spawn.
-  // Works when aux has a provider with baseUrl + API key (not OAuth).
-  executeDirectHttp(task) {
-    return new Promise((resolve, reject) => {
-      const model = auxConfig.model || 'haiku';
-      const messages = [];
-      if (task.systemPrompt) {
-        messages.push({ role: 'system', content: task.systemPrompt });
-      }
-      messages.push({ role: 'user', content: task.prompt });
-      const body = JSON.stringify({
-        model,
-        max_tokens: 128000,
-        messages,
-      });
-      const req = require('http').request({
-        hostname: '127.0.0.1',
-        port: PORT,
-        path: `/claude-proxy/${auxConfig.providerId}/aux/v1/messages?beta=true`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `multicc-aux`,
-          'anthropic-version': '2023-06-01',
-          'x-api-key': 'multicc-aux',
-        },
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          // Check HTTP status before trying to parse JSON — 503, 502, etc.
-          // often return non-JSON error pages.
-          if (res.statusCode >= 500) {
-            reject(new Error(`HTTP ${res.statusCode} (upstream error): ${String(data).slice(0, 200).replace(/\n/g, ' ')}`));
-            return;
-          }
-          if (res.statusCode >= 400) {
-            let errMsg = `HTTP ${res.statusCode}`;
-            try {
-              const pe = JSON.parse(data);
-              if (pe.error) errMsg = pe.error.message || JSON.stringify(pe.error);
-            } catch (_) {
-              errMsg = `HTTP ${res.statusCode}: ${String(data).slice(0, 200).replace(/\n/g, ' ')}`;
-            }
-            reject(new Error(errMsg));
-            return;
-          }
-          try {
-            const parsed = JSON.parse(data);
-            let text = '';
-            if (Array.isArray(parsed.content)) {
-              text = parsed.content.filter(b => b.type === 'text').map(b => b.text).join(' ');
-            } else if (parsed.error) {
-              throw new Error(parsed.error.message || parsed.error);
-            }
-            console.log('[multicc/aux] directHTTP resp: stop=' + parsed.stop_reason + ' blocks=' + (Array.isArray(parsed.content) ? parsed.content.map(b => b.type).join(',') : '?') + ' textlen=' + text.length + ' out=' + ((parsed.usage || {}).output_tokens));
-            resolve(text);
-          } catch (e) {
-            reject(e);
-          }
-        });
-      });
-      req.on('error', reject);
-      req.setTimeout((task.meta && task.meta.timeout) || AUX_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
-      req.write(body);
-      req.end();
-    });
-  },
-
-  executeClaude(task) {
-    return new Promise((resolve, reject) => {
-      // Cold-spawn per task: prompt passed as a CLI argument, stdin ignored
-      // (/dev/null → immediate EOF). No prewarm, no stdin race. Single-turn,
-      // stateless tasks (intent classify, voice refine) — Haiku on the OAuth
-      // subscription is the cheap default (~30× cheaper than Opus), but the
-      // provider+model are configurable (aux-config.json / settings UI).
-      //
-      // buildChildEnv strips every inherited ANTHROPIC_* routing key first, then
-      // re-applies only the chosen provider's env — so a leaked global override
-      // (e.g. ANTHROPIC_DEFAULT_HAIKU_MODEL=DeepSeek-V4-pro from a cc-switch)
-      // can't silently redirect the `haiku` alias and break every aux task.
-      const useCodex = DEFAULT_CLI === 'codex';
-      const auxCli = useCodex ? 'codex' : 'claude';
-      const auxSession = { cli: auxCli, provider: auxConfig.providerId || null };
-      const built = providers.buildChildEnv(process.env, auxSession, { TERM: 'dumb', NO_COLOR: '1' });
-      if (!useCodex) {
-        // Claude path: route through the proxy if enabled (Codex uses its own upstream).
-        providers.applyClaudeProxyEnv(built.env, {
-          providerId: auxConfig.providerId || null, sessionId: 'aux',
-          port: PORT, enabled: CLAUDE_PROXY_ENABLED,
-          officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
-        });
-      }
-      // Model precedence: explicit aux config wins; else if the provider routes
-      // elsewhere (custom base_url) let its own model env decide (omit --model);
-      // else fall back to haiku (Claude) or the Codex default (no --model needed).
-      let model = auxConfig.model || null;
-      if (!model && !built.skipDefaultModel) {
-        model = useCodex ? null : 'haiku';   // codex has its own default; Claude needs haiku
-      }
-      const cliCmd = auxCliCmd();
-      const args = ['-p', '--output-format', 'stream-json', '--max-turns', '1', '--verbose'];
-      if (model) args.splice(1, 0, '--model', model);
-      // aux tasks are stateless text classification — no skills, no MCP, no slash
-      // commands needed. Disabling them keeps the CLI preamble small and, crucially,
-      // prevents skill/MCP preamble text from leaking into the model's output (a past
-      // bug where "Available skills: 85" ended up captured as a task goal). Claude-only
-      // flags; codex uses a different arg shape so we skip them there.
-      if (!useCodex) args.push('--strict-mcp-config', '--disable-slash-commands');
-      args.push(task.prompt);
-      const proc = spawn(cliCmd, args, {
-        cwd: __dirname,
-        env: built.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let assistantText = '';
-      let lineBuf = '';
-      let stderrBuf = '';
-
-      const timeout = setTimeout(() => {
-        try { proc.kill('SIGTERM'); } catch (_) {}
-        reject(new Error('timeout'));
-      }, (task.meta && task.meta.timeout) || AUX_TIMEOUT_MS);
-
-      proc.stdout.on('data', (chunk) => {
-        lineBuf += chunk.toString();
-        const lines = lineBuf.split('\n');
-        lineBuf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const evt = JSON.parse(line);
-            if (evt.type === 'assistant' && evt.message?.content) {
-              for (const block of evt.message.content) {
-                if (block.type === 'text') assistantText += block.text;
-              }
-            }
-            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-              assistantText += evt.delta.text;
-            }
-          } catch (_) {}
-        }
-      });
-
-      proc.stderr.on('data', (chunk) => { stderrBuf += chunk.toString(); });
-
-      proc.on('close', (code) => {
-        clearTimeout(timeout);
-        // Immediately pre-spawn next warm process
-        this.prespawn();
-
-        // Process remaining buffer
-        if (lineBuf.trim()) {
-          try {
-            const evt = JSON.parse(lineBuf);
-            if (evt.type === 'assistant' && evt.message?.content) {
-              for (const block of evt.message.content) {
-                if (block.type === 'text') assistantText += block.text;
-              }
-            }
-          } catch (_) {}
-        }
-        if (assistantText) {
-          resolve(assistantText);
-        } else if (code !== 0) {
-          reject(new Error(`claude exited ${code}: ${stderrBuf.slice(0, 300)}`));
-        } else {
-          resolve('');
-        }
-      });
-
-      proc.on('error', (err) => {
-        clearTimeout(timeout);
-        this.prespawn(); // try to recover warm pool
-        reject(err);
-      });
-    });
-  },
-
-  executeCodex(task) {
-    return new Promise((resolve, reject) => {
-      // Codex aux calls are stateless one-shot requests. Keep them read-only
-      // and approval-free so internal classifier/summary prompts never stall.
-      const auxSession = {
-        cli: 'codex',
-        provider: auxConfig.providerId || null,
-        model: auxConfig.model || null,
-        effort: auxConfig.effort || null,
-      };
-      const built = providers.buildChildEnv(process.env, auxSession, {
-        TERM: 'dumb',
-        NO_COLOR: '1',
-      });
-      const args = ['exec'];
-      const effortArg = codexReasoningConfigArg(auxSession);
-      if (effortArg) args.push('-c', effortArg);
-      const modelArg = codexModelConfigArg(auxSession);
-      if (modelArg) args.push('-c', modelArg);
-      args.push(
-        '-c', 'sandbox_mode="read-only"',
-        '-c', 'approval_policy="never"',
-        '--json',
-        '--skip-git-repo-check',
-        task.prompt,
-      );
-      const proc = spawn(CODEX_CMD, args, {
-        cwd: __dirname,
-        env: built.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let assistantText = '';
-      let lineBuf = '';
-      let stderrBuf = '';
-      let codexError = '';
-
-      const timeout = setTimeout(() => {
-        try { proc.kill('SIGTERM'); } catch (_) {}
-        reject(new Error('timeout'));
-      }, (task.meta && task.meta.timeout) || AUX_TIMEOUT_MS);
-
-      const collectText = (text) => {
-        if (!text) return;
-        assistantText += (assistantText ? '\n\n' : '') + text;
-      };
-
-      const handleLine = (line) => {
-        let evt;
-        try { evt = JSON.parse(line); } catch (_) { return; }
-        if (evt.type === 'item.completed') {
-          const it = evt.item || {};
-          if (it.type === 'agent_message') collectText(it.text || '');
-          if (it.type === 'message' && Array.isArray(it.content)) {
-            collectText(it.content.map(c => c.text || '').join(''));
-          }
-          return;
-        }
-        if (evt.type === 'error' || evt.type === 'turn.failed') {
-          codexError = (evt.message || (evt.error && evt.error.message) || 'codex failed').toString();
-          if (evt.type === 'error' && isCodexResponseCompletedDisconnect(codexError) && assistantText) {
-            codexError = '';
-          }
-          return;
-        }
-        if (evt.type === 'response.output_text.delta' && evt.delta) {
-          assistantText += evt.delta;
-        }
-      };
-
-      proc.stdout.on('data', (chunk) => {
-        lineBuf += chunk.toString();
-        const lines = lineBuf.split('\n');
-        lineBuf = lines.pop();
-        for (const line of lines) {
-          if (line.trim()) handleLine(line);
-        }
-      });
-
-      proc.stderr.on('data', (chunk) => { stderrBuf += chunk.toString(); });
-
-      proc.on('close', (code) => {
-        clearTimeout(timeout);
-        if (lineBuf.trim()) handleLine(lineBuf);
-        if (assistantText) {
-          resolve(assistantText);
-        } else if (codexError) {
-          reject(new Error(codexError));
-        } else if (code !== 0) {
-          reject(new Error(`codex exited ${code}: ${stderrBuf.slice(0, 300)}`));
-        } else {
-          resolve('');
-        }
-      });
-
-      proc.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
+  executeHttp(task, target) {
+    const model = auxConfig.model || target.model || (target.modelOptions && target.modelOptions[0]) || '';
+    return executeAuxHttp({
+      target,
+      model,
+      prompt: task.prompt,
+      systemPrompt: task.systemPrompt,
+      timeoutMs: (task.meta && task.meta.timeout) || AUX_TIMEOUT_MS,
     });
   },
 
@@ -6041,7 +5652,6 @@ const auxQueue = {
       currentTask: this.currentTask ? { id: this.currentTask.id, type: this.currentTask.type } : null,
       totalProcessed: this.totalProcessed,
       lastTaskTime: this.lastTaskTime,
-      warmReady: this._warmReady,
       health: { ...this.health },
     };
   },
@@ -6069,43 +5679,68 @@ app.post('/api/aux/enqueue', (req, res) => {
     .catch(err => res.json({ ok: false, error: err?.message || 'cancelled' }));
 });
 
-// Aux model config: which CLI/provider/model the aux helper uses.
-// GET also returns provider lists so the UI can render a picker.
+function listAuxProviders(protocol) {
+  const normalized = normalizeAuxProtocol(protocol);
+  const appType = normalized === 'openai' ? 'codex' : 'claude';
+  return providers.listProviders(appType).map((provider) => {
+    const target = providers.resolveAuxHttpTarget(normalized, provider.id, {
+      port: PORT,
+      claudeOfficialViaProxy: CLAUDE_OFFICIAL_VIA_PROXY,
+    });
+    return {
+      id: provider.id,
+      name: provider.name,
+      modelOptions: target.modelOptions || provider.modelOptions || [],
+      wireApi: target.wireApi || provider.wireApi || null,
+      available: !!target.available,
+      unavailableReason: target.available ? null : target.reason,
+    };
+  }).filter(provider => provider.available);
+}
+
+// Aux model config: protocol -> callable provider -> model.
 app.get('/api/aux/config', (req, res) => {
-  const cli = normalizeAuxCli(auxConfig.cli);
+  const providersByProtocol = {
+    anthropic: listAuxProviders('anthropic'),
+    openai: listAuxProviders('openai'),
+  };
   res.json({
-    cli,
+    protocol: auxConfig.protocol,
     providerId: auxConfig.providerId,
     model: auxConfig.model,
-    effort: auxConfig.effort,
-    // Every provider list carries modelOptions so the settings UI can drive a
-    // consistent provider → model linkage (pick provider ⇒ its models populate
-    // the model dropdown) for BOTH claude and codex, exactly like session settings.
-    providers: providers.listProviders(cli).map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
-    claudeProviders: providers.listProviders('claude').map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
-    codexProviders: providers.listProviders('codex').map(p => ({ id: p.id, name: p.name, modelOptions: p.modelOptions || [] })),
+    protocols: [
+      { id: 'anthropic', name: 'Anthropic Messages' },
+      { id: 'openai', name: 'OpenAI Responses / Chat Completions' },
+    ],
+    providersByProtocol,
   });
 });
 app.post('/api/aux/config', (req, res) => {
   const { providerId, model } = req.body || {};
-  const cli = normalizeAuxCli((req.body || {}).cli);
-  const effort = normalizeEffort((req.body || {}).effort);
-  if (effort === undefined) return res.status(400).json({ ok: false, error: 'invalid effort' });
-  if (!validEffortForCli(cli, effort)) return res.status(400).json({ ok: false, error: 'invalid reasoning level' });
-  if (providerId && !providers.getProvider(cli, String(providerId))) {
-    return res.status(400).json({ ok: false, error: `未知的 ${cli} provider` });
+  const rawProtocol = String((req.body || {}).protocol || '').toLowerCase();
+  if (rawProtocol !== 'anthropic' && rawProtocol !== 'openai') {
+    return res.status(400).json({ ok: false, error: 'protocol 必须是 anthropic 或 openai' });
   }
-  auxConfig.cli = cli;
-  auxConfig.providerId = providerId ? String(providerId) : null;
-  auxConfig.model = (model && String(model).trim()) || null;
-  auxConfig.effort = effort || null;
-  // Invalidate the direct-HTTP capability caches: provider/cli may have changed,
-  // so whether aux can skip CLI spawn must be re-evaluated on the next task.
-  auxQueue._canDirectHttp = null;
-  auxQueue._canDirectHttpCodex = null;
+  const protocol = normalizeAuxProtocol(rawProtocol);
+  if (!providerId) return res.status(400).json({ ok: false, error: '请选择 Provider' });
+  const target = providers.resolveAuxHttpTarget(protocol, String(providerId), {
+    port: PORT,
+    claudeOfficialViaProxy: CLAUDE_OFFICIAL_VIA_PROXY,
+  });
+  if (!target.available) {
+    return res.status(400).json({ ok: false, error: `Provider 不支持 ${protocol} HTTP 调用：${target.reason || '不可用'}` });
+  }
+  const resolvedModel = (model && String(model).trim())
+    || target.model
+    || (target.modelOptions && target.modelOptions[0])
+    || null;
+  if (!resolvedModel) return res.status(400).json({ ok: false, error: '请选择模型' });
+  auxConfig.protocol = protocol;
+  auxConfig.providerId = String(providerId);
+  auxConfig.model = resolvedModel;
   saveAuxConfig();
-  console.log(`[multicc/aux] config updated: cli=${auxConfig.cli} provider=${auxConfig.providerId || 'default'} model=${auxConfig.model || (auxConfig.cli === 'claude' ? 'haiku' : 'provider-default')} effort=${auxConfig.effort || 'default'}`);
-  res.json({ ok: true, cli: auxConfig.cli, providerId: auxConfig.providerId, model: auxConfig.model, effort: auxConfig.effort });
+  console.log(`[multicc/aux] config updated: protocol=${protocol} wire=${target.wireApi} provider=${auxConfig.providerId} model=${auxConfig.model}`);
+  res.json({ ok: true, protocol, providerId: auxConfig.providerId, model: auxConfig.model, wireApi: target.wireApi });
 });
 
 // ── Goal-mode precheck ──
@@ -6528,11 +6163,9 @@ app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
         return res.json({ ok: false, ms: Date.now() - t0, error: cx.reason || 'OAuth 订阅型 provider 不支持测速' });
       }
       const model = (cx.modelOptions && cx.modelOptions[0]) || cx.model || 'gpt-4o-mini';
-      const body = JSON.stringify({
-        model,
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'hi' }],
-      });
+      const body = JSON.stringify(cx.wireApi === 'responses'
+        ? { model, input: 'hi', max_output_tokens: 1 }
+        : { model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] });
       let urlObj;
       try { urlObj = new URL(cx.url); } catch (e) {
         return res.json({ ok: false, ms: Date.now() - t0, error: 'bad url: ' + cx.url });
@@ -9088,6 +8721,147 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
   forward(evt);
 }
 
+// Apply adapter-neutral events to server-owned chat state. Wire-format parsing
+// belongs to each CLI adapter; this function owns persistence, status and the
+// Claude-shaped event contract consumed by existing clients.
+function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, forward) {
+  const decoded = provider.decodeEvent(rawEvent) || [];
+  for (const evt of (Array.isArray(decoded) ? decoded : [decoded])) {
+    if (!evt) continue;
+    if (evt.type === 'claude_event') {
+      applyClaudeChatEvent(cs, sessionName, evt.raw, forward);
+      continue;
+    }
+    if (evt.type === 'session_init') {
+      if (evt.model) noteReportedModel(sessionName, evt.model);
+      continue;
+    }
+    if (evt.type === 'session_started') {
+      if (evt.sessionId && !persisted.cliSessionId) {
+        persisted.cliSessionId = evt.sessionId;
+        savePersistedSessions();
+        console.log(`[multicc/chat] [${sessionName}] captured ${provider.name} session id=${evt.sessionId}`);
+      }
+      continue;
+    }
+    if (evt.type === 'status') {
+      setSessionStatus(sessionName, { status: evt.status || 'thinking', currentFile: evt.currentFile || null });
+      continue;
+    }
+    if (evt.type === 'assistant_text') {
+      if (!evt.text) continue;
+      cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + evt.text;
+      forward({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: evt.text + (evt.forwardSuffix || '') }] },
+      });
+      setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
+      scheduleIncrementalSave(sessionName, cs);
+      if (evt.log) console.warn(`[multicc/chat] [${sessionName}] ${provider.name} ${evt.log}`);
+      continue;
+    }
+    if (evt.type === 'tool_start') {
+      const tool = { name: evt.name, input: evt.input || {}, id: evt.id };
+      cs.currentToolCalls.push(tool);
+      recordMainToolUseId(sessionName, evt.id);
+      forward({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: evt.name, id: evt.id, input: evt.input || {} }] },
+      });
+      setSessionStatus(sessionName, { status: evt.status || 'running', currentFile: evt.currentFile || null });
+      continue;
+    }
+    if (evt.type === 'tool_result') {
+      const text = evt.content || '';
+      forward({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: evt.id, content: text, is_error: !!evt.isError }] },
+      });
+      const tool = cs.currentToolCalls.find(item => item.id === evt.id);
+      if (tool) {
+        tool.result = text.length > 1000 ? text.slice(0, 1000) + '...' : text;
+        tool.is_error = !!evt.isError;
+      }
+      continue;
+    }
+    if (evt.type === 'tool_update') {
+      const id = evt.id || `call_${cs.currentToolCalls.length}`;
+      let tool = cs.currentToolCalls.find(item => item.id === id);
+      if (!tool) {
+        tool = { name: evt.name, input: evt.input || {}, id };
+        cs.currentToolCalls.push(tool);
+        recordMainToolUseId(sessionName, id);
+        forward({
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', name: evt.name, id, input: evt.input || {} }] },
+        });
+      }
+      setSessionStatus(sessionName, { status: 'running', currentFile: evt.currentFile || null });
+      if (evt.completed) {
+        const text = evt.content || '';
+        forward({
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: !!evt.isError }] },
+        });
+        tool.result = text.length > 1000 ? text.slice(0, 1000) + '...' : text;
+        tool.is_error = !!evt.isError;
+      }
+      continue;
+    }
+    if (evt.type === 'thinking') {
+      const tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, result: evt.text || '' };
+      cs.currentToolCalls.push(tool);
+      recordMainToolUseId(sessionName, evt.id);
+      forward({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Thinking', id: evt.id, input: tool.input }] },
+      });
+      continue;
+    }
+    if (evt.type === 'complete') {
+      cs.currentCost = evt.cost == null ? null : evt.cost;
+      const usage = evt.usage || {};
+      if (cs.currentAssistantText || cs.currentToolCalls.length) {
+        appendChatMessage(sessionName, {
+          role: 'assistant', content: cs.currentAssistantText,
+          tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
+          cost: cs.currentCost, usage, ts: Date.now(),
+        });
+        accumulateTokenUsage(sessionName, usage);
+        broadcastProviderTokenStats(sessionName);
+        broadcastRoleTokenStats(sessionName);
+        cs.chatTurnCount++;
+        cs._resultSaved = true;
+      }
+      forward({
+        type: 'result', total_cost_usd: cs.currentCost, usage,
+        durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
+        num_turns: cs.chatTurnCount,
+      });
+      setSessionStatus(sessionName, { status: 'completed', currentFile: null });
+      classifyTurnEnd(cs, sessionName);
+      continue;
+    }
+    if (evt.type === 'error') {
+      if (evt.kind === 'response_completed_disconnect') {
+        cs._codexPendingStreamError = evt.message;
+        cs._codexPendingStreamErrorCount = (cs._codexPendingStreamErrorCount || 0) + 1;
+        const hasOutput = !!(cs.currentAssistantText || cs.currentToolCalls.length || cs._resultSaved);
+        if (hasOutput) cs._codexRecoveredDisconnect = true;
+        console.warn(`[multicc/chat] [${sessionName}] pending ${provider.name} response.completed disconnect${hasOutput ? ' after output' : ''} #${cs._codexPendingStreamErrorCount}: ${evt.message}`);
+      } else if (evt.kind === 'transport_disconnect') {
+        cs._codexTransportError = evt.message;
+        cs._sawApiError = true;
+        recordApiError(evt.message);
+        console.warn(`[multicc/chat] [${sessionName}] ${provider.name} transport disconnect: ${evt.message}`);
+      } else {
+        cs._adapterError = evt.message;
+        forward({ type: 'error', error: `${evt.label || provider.name} 出错：${evt.message}` });
+      }
+    }
+  }
+}
+
 // === Background task (Monitor / run_in_background) shadow tracking ===
 //
 // CC emits task_started/task_updated/task_notification/background_tasks_changed
@@ -9522,10 +9296,8 @@ function runChatTurn(sessionName, text, opts = {}) {
   // effects, byte-for-byte identical to the former inline assembly that lived here
   // (regression-gated by tests/test-message-composer-golden.js suite 1). The
   // notes side effects now live INSIDE composeMessage, so they are intentionally
-  // NOT duplicated here. renderPrompt() flattens the envelope back to the
-  // promptText string the claude streaming path + fallback/continue spawns still
-  // consume; the non-claude per-turn spawn below hands the envelope to
-  // provider.shape() instead.
+  // NOT duplicated here. renderPrompt() also provides stable text for retry and
+  // continuation turns; every process invocation is built by the adapter.
   let envelope;
   try {
     envelope = composeMessage({
@@ -9552,8 +9324,19 @@ function runChatTurn(sessionName, text, opts = {}) {
     return false;
   }
   const promptText = renderPrompt(envelope);
-  const rolePrompt = envelope.rolePrompt;
-  const goalMaxTurns = envelope.spawnOpts.maxTurns;
+  // Provider routing is resolved before every invocation so all runners consume
+  // the same adapter-produced command contract.
+  const provEnv = providers.resolveSpawnEnv(persisted);
+  const invocationEnvelope = {
+    ...envelope,
+    spawnOpts: {
+      ...envelope.spawnOpts,
+      skipDefaultModel: provEnv.skipDefaultModel,
+      providerModel: provEnv.providerModel,
+      providerModels: provEnv.providerModels,
+    },
+  };
+  const invocation = provider.buildInvocation(invocationEnvelope);
 
   // ── Streaming path (claude only — always on) ──
   // Persistent process kept warm across turns so a turn that ends in a
@@ -9563,79 +9346,28 @@ function runChatTurn(sessionName, text, opts = {}) {
   // (the per-turn toggle was removed); non-claude CLIs use the per-turn spawn
   // path below, unchanged.
   if (cs.cli === 'claude') {
-    return runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt);
+    return runChatTurnStreaming(sessionName, cs, persisted, invocation, provider);
   }
 
-  // Per-session provider (cc-switch): env injected into THIS child only, so
-  // sibling sessions routing to other providers stay fully independent.
-  const provEnv = providers.resolveSpawnEnv(persisted);
-  // Non-claude per-turn spawn now goes through the adapter's shape(envelope)
-  // factory (message-builder Phase 2). [...shape.args, shape.payload] is
-  // byte-for-byte identical to the former buildChatSpawnArgs
-  // (tests/test-message-composer-golden.js suite 3, codex/opencode/zcode). The
-  // provider wire-model fields are injected into spawnOpts here — resolveSpawnEnv
-  // runs after composeMessage — so shape() resolves the model exactly as before.
-  const shaped = provider.shape({
-    ...envelope,
-    spawnOpts: {
-      ...envelope.spawnOpts,
-      skipDefaultModel: provEnv.skipDefaultModel,
-      providerModel: provEnv.providerModel,
-      providerModels: provEnv.providerModels,
-    },
-  });
-  const args = [...shaped.args, shaped.payload];
-  console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${provider.cmd} ${args.join(' ').slice(0, 200)}...`);
+  const args = [...invocation.args, invocation.payload];
+  console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${invocation.cmd} ${args.join(' ').slice(0, 200)}...`);
 
-  // Sanitize empty thinking blocks from the Claude CLI JSONL session file.
-  // Third-party providers (GLM, DeepSeek, etc.) may return thinking blocks
-  // with only whitespace content. When switching back to Claude official API,
-  // the API rejects these with HTTP 400 "each thinking block must contain
-  // non-whitespace thinking". Clean them proactively before each spawn.
-  const sanitizeCliSessionJSONL = () => {
-    if (!cs.cliSessionId || !cs.cwd) return;
-    try {
-      const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
-      if (!fs.existsSync(claudeProjects)) return;
-      // Walk all project subdirectories looking for the session JSONL.
-      let cleaned = 0;
-      const dirs = fs.readdirSync(claudeProjects, { withFileTypes: true });
-      for (const d of dirs) {
-        if (!d.isDirectory()) continue;
-        const jl = path.join(claudeProjects, d.name, `${cs.cliSessionId}.jsonl`);
-        if (!fs.existsSync(jl)) continue;
-        let content = fs.readFileSync(jl, 'utf8');
-        const lines = content.split('\n');
-        const out = [];
-        for (const line of lines) {
-          if (!line.trim()) { out.push(line); continue; }
-          try {
-            const j = JSON.parse(line);
-            if (j.message && Array.isArray(j.message.content)) {
-              const before = j.message.content.length;
-              j.message.content = j.message.content.filter(b => {
-                if (b.type === 'thinking' && (!b.thinking || !/\S/.test(b.thinking))) {
-                  cleaned++; return false;
-                }
-                return true;
-              });
-            }
-            out.push(JSON.stringify(j));
-          } catch (_) { out.push(line); }
-        }
-        if (cleaned > 0) {
-          fs.writeFileSync(jl, out.join('\n'));
-          // Also clean multicc's own chat_history cache so it stays fresh.
-          chatHistories.delete(sessionName);
-          console.log(`[multicc/chat] [${sessionName}] sanitized ${cleaned} empty thinking block(s) from session JSONL`);
-        }
-        break; // Found the session, stop searching
-      }
-    } catch (_) {}
-  };
+  // Retry and transport-continuation turns reuse already-rendered text without
+  // re-running composeMessage's note-delivery side effects.
+  const buildBareInvocation = (bareText, firstTurn) => provider.buildInvocation({
+    ...invocationEnvelope,
+    contextLayers: [],
+    userText: bareText,
+    suffix: '',
+    historyHandle: {
+      ...invocationEnvelope.historyHandle,
+      isFirstTurn: firstTurn,
+      cliSessionId: persisted.cliSessionId,
+    },
+    spawnOpts: { ...invocationEnvelope.spawnOpts, ultracode: false },
+  });
 
   const spawnChat = (spawnArgs, isRetry) => {
-    sanitizeCliSessionJSONL();  // Clean before every claude exec resume
     // buildChildEnv strips inherited ANTHROPIC_* routing vars (which may have
     // leaked into the multicc server's own env) before applying the session's
     // provider env, so the per-session provider choice is always authoritative.
@@ -9652,7 +9384,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
-    const proc = spawn(provider.cmd, spawnArgs, {
+    const proc = spawn(invocation.cmd, spawnArgs, {
       cwd: cs.cwd,
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -9671,254 +9403,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       let evt;
       try { evt = JSON.parse(line); } catch { return; }
 
-      if (cs.cli === 'codex') {
-        // ── Codex → claude-shaped events ──
-        if (evt.type === 'thread.started') {
-          if (evt.thread_id && !persisted.cliSessionId) {
-            persisted.cliSessionId = evt.thread_id;
-            savePersistedSessions();
-            console.log(`[multicc/chat] [${sessionName}] captured codex thread_id=${evt.thread_id}`);
-          }
-          return;  // don't forward
-        }
-        if (evt.type === 'turn.started') return;  // noise, drop
-        if (evt.type === 'item.started') {
-          const it = evt.item || {};
-          if (it.type === 'command_execution') {
-            // Emit an assistant event with a tool_use block so a tool card appears
-            const mapped = {
-              type: 'assistant',
-              message: { content: [{ type: 'tool_use', name: 'Bash', id: it.id, input: { command: it.command } }] },
-            };
-            forward(mapped);
-            cs.currentToolCalls.push({ name: 'Bash', input: { command: it.command }, id: it.id });
-            recordMainToolUseId(sessionName, it.id);
-            setSessionStatus(sessionName, { status: 'running', currentFile: null });
-          }
-          return;
-        }
-        if (evt.type === 'item.completed') {
-          const it = evt.item || {};
-          if (it.type === 'command_execution') {
-            // Emit a tool_result event to fill in the existing tool card
-            const resultText = it.aggregated_output || '';
-            const mapped = {
-              type: 'user',
-              message: { content: [{ type: 'tool_result', tool_use_id: it.id, content: resultText, is_error: (it.exit_code && it.exit_code !== 0) || false }] },
-            };
-            forward(mapped);
-            const tc = cs.currentToolCalls.find(t => t.id === it.id);
-            if (tc) {
-              tc.result = resultText.length > 1000 ? resultText.slice(0, 1000) + '...' : resultText;
-              tc.is_error = (it.exit_code && it.exit_code !== 0) || false;
-            }
-            return;
-          }
-          // Degradation: the model called an ask/user-input tool (request_user_input,
-          // AskUserQuestion, ...) which is unavailable in non-interactive codex exec.
-          // Codex already replies "is unavailable in Default mode" and the model may
-          // loop. Surface the question text to the user as plain assistant text so the
-          // turn stays observable instead of silently churning.
-          if (it.type === 'function_call' && /^(request_user_input|AskUserQuestion)$/i.test(it.name || '')) {
-            let questionText = '';
-            try {
-              const parsed = JSON.parse(it.arguments || '{}');
-              const qs = Array.isArray(parsed.questions) ? parsed.questions : [];
-              questionText = qs.map(q => {
-                const h = q.header || q.title || '';
-                const body = q.question || q.text || '';
-                const opts = Array.isArray(q.options) ? q.options.map(o => '  - ' + (o.label || o.text || '') + (o.description ? '：' + o.description : '')).join('\n') : '';
-                return (h ? `**${h}**\n` : '') + body + (opts ? `\n${opts}` : '');
-              }).join('\n\n');
-            } catch (_) { questionText = String(it.arguments || ''); }
-            const surfaced = questionText ? `\n\n> [提问工具 ${it.name} 在非交互环境不可用，已转为文本透传]\n${questionText}\n` : '';
-            if (surfaced) {
-              cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + surfaced;
-              forward({ type: 'assistant', message: { content: [{ type: 'text', text: surfaced }] } });
-              console.warn(`[multicc/chat] [${sessionName}] codex ask-tool ${it.name} degraded to text`);
-            }
-            return;
-          }
-          if (it.type === 'agent_message') {
-            const text = it.text || '';
-            cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + text;
-            forward({ type: 'assistant', message: { content: [{ type: 'text', text: text + '\n\n' }] } });
-            setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-            return;
-          }
-          if (it.type === 'reasoning') {
-            // Emit as a collapsible thinking-style tool card so users can see but it
-            // doesn't pollute the main assistant text stream.
-            forward({
-              type: 'assistant',
-              message: { content: [{ type: 'tool_use', name: 'Thinking', id: it.id, input: { text: it.text || '' } }] },
-            });
-            cs.currentToolCalls.push({ name: 'Thinking', input: { text: it.text || '' }, id: it.id, result: it.text || '' });
-            recordMainToolUseId(sessionName, it.id);
-            return;
-          }
-          return;
-        }
-        if (evt.type === 'turn.completed') {
-          cs.currentCost = null;  // codex doesn't report dollar cost
-          const usage = evt.usage || {};
-          if (cs.currentAssistantText || cs.currentToolCalls.length) {
-            appendChatMessage(sessionName, {
-              role: 'assistant', content: cs.currentAssistantText,
-              tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-              cost: null, usage, ts: Date.now(),
-            });
-            accumulateTokenUsage(sessionName, usage);
-            broadcastProviderTokenStats(sessionName);
-            broadcastRoleTokenStats(sessionName);
-            cs.chatTurnCount++;
-            cs._resultSaved = true;
-          }
-          forward({ type: 'result', total_cost_usd: null, usage, durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined, num_turns: cs.chatTurnCount });
-          // turn.completed only fires on a clean codex turn (errors emit
-          // 'error'/'turn.failed'), so this rests at 'completed'.
-          setSessionStatus(sessionName, { status: 'completed', currentFile: null });
-          classifyTurnEnd(cs, sessionName);
-          return;
-        }
-        // ── Codex error / turn failure ──
-        // codex emits {type:'error'} / {type:'turn.failed'} when the provider
-        // rejects the request (bad/expired token, wrong base_url, etc). Without
-        // handling them the message is dropped: the turn yields no text, the
-        // close handler wastes a retry on the same broken provider, and the user
-        // only ever sees a garbled stderr tail. Surface codex's own clean error
-        // and flag the turn so the pointless retry is skipped.
-        if (evt.type === 'error' || evt.type === 'turn.failed') {
-          const emsg = (evt.message || (evt.error && evt.error.message) || '未知错误').toString();
-          if (isCodexResponseCompletedDisconnect(emsg)) {
-            cs._codexPendingStreamError = emsg;
-            cs._codexPendingStreamErrorCount = (cs._codexPendingStreamErrorCount || 0) + 1;
-            const hasOutput = !!(cs.currentAssistantText || cs.currentToolCalls.length || cs._resultSaved);
-            if (hasOutput) cs._codexRecoveredDisconnect = true;
-            console.warn(`[multicc/chat] [${sessionName}] pending codex response.completed disconnect${hasOutput ? ' after output' : ''} #${cs._codexPendingStreamErrorCount}: ${emsg}`);
-            return;
-          }
-          if (isCodexTransportDisconnect(emsg)) {
-            cs._codexTransportError = emsg;
-            cs._sawApiError = true;
-            recordApiError(emsg);
-            console.warn(`[multicc/chat] [${sessionName}] codex transport disconnect: ${emsg}`);
-            return;
-          }
-          cs._codexError = emsg;
-          forward({ type: 'error', error: `Codex 出错：${emsg}` });
-          return;
-        }
-        return;  // unknown event type: drop
-      }
-
-      if (cs.cli === 'opencode' || cs.cli === 'zcode') {
-        // ── opencode/zcode → claude-shaped events ──
-        // `run --format json` emits NDJSON: {type,timestamp,sessionID,part:{...}}.
-        // Capture the CLI-assigned session id (ses_…) once, so subsequent turns
-        // resume via --session <id>.
-        if (evt.sessionID && !persisted.cliSessionId) {
-          persisted.cliSessionId = evt.sessionID;
-          savePersistedSessions();
-          console.log(`[multicc/chat] [${sessionName}] captured ${cs.cli} sessionID=${evt.sessionID}`);
-        }
-        const part = evt.part || {};
-        const cliLabel = cs.cli === 'opencode' ? 'OpenCode' : 'ZCode';
-
-        if (evt.type === 'step_start') {
-          setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-          return;
-        }
-        if (evt.type === 'text') {
-          const text = part.text || '';
-          if (text) {
-            cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + text;
-            forward({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
-            setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-          }
-          return;
-        }
-        if (evt.type === 'tool_use' || evt.type === 'tool_call') {
-          // opencode delivers a tool call + its result in one event once
-          // state.status flips to "completed". Dedupe by callID so a card isn't
-          // duplicated when an intermediate "running" event precedes it.
-          const toolName = part.tool || part.name || 'tool';
-          const callId = part.callID || part.id || `call_${cs.currentToolCalls.length}`;
-          const state = part.state || {};
-          const input = state.input != null ? state.input : (part.args || {});
-          let tc = cs.currentToolCalls.find(t => t.id === callId);
-          if (!tc) {
-            tc = { name: toolName, input, id: callId };
-            cs.currentToolCalls.push(tc);
-            recordMainToolUseId(sessionName, callId);
-            forward({
-              type: 'assistant',
-              message: { content: [{ type: 'tool_use', name: toolName, id: callId, input }] },
-            });
-          }
-          setSessionStatus(sessionName, { status: 'running', currentFile: state.title || null });
-          if (state.status === 'completed' || state.output !== undefined) {
-            const resultText = typeof state.output === 'string'
-              ? state.output
-              : (state.output == null ? '' : JSON.stringify(state.output));
-            forward({
-              type: 'user',
-              message: { content: [{ type: 'tool_result', tool_use_id: callId, content: resultText, is_error: state.status === 'error' }] },
-            });
-            tc.result = resultText.length > 1000 ? resultText.slice(0, 1000) + '...' : resultText;
-            tc.is_error = state.status === 'error';
-          }
-          return;
-        }
-        if (evt.type === 'step_finish') {
-          // reason === 'stop' → clean turn end; anything else (e.g. 'tool-calls')
-          // is an intermediate step → keep accumulating, don't finalize.
-          if (part.reason && part.reason !== 'stop') return;
-          const tokens = part.tokens || {};
-          const usage = {
-            input_tokens: tokens.input || 0,
-            output_tokens: tokens.output || 0,
-            cache_read_input_tokens: (tokens.cache && tokens.cache.read) || 0,
-            cache_creation_input_tokens: (tokens.cache && tokens.cache.write) || 0,
-          };
-          if (cs.currentAssistantText || cs.currentToolCalls.length) {
-            appendChatMessage(sessionName, {
-              role: 'assistant', content: cs.currentAssistantText,
-              tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-              cost: part.cost != null ? part.cost : null, usage, ts: Date.now(),
-            });
-            accumulateTokenUsage(sessionName, usage);
-            broadcastProviderTokenStats(sessionName);
-            broadcastRoleTokenStats(sessionName);
-            cs.chatTurnCount++;
-            cs._resultSaved = true;
-          }
-          forward({
-            type: 'result',
-            total_cost_usd: part.cost != null ? part.cost : null,
-            usage,
-            durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
-            num_turns: cs.chatTurnCount,
-          });
-          setSessionStatus(sessionName, { status: 'completed', currentFile: null });
-          classifyTurnEnd(cs, sessionName);
-          return;
-        }
-        if (evt.type === 'error') {
-          const err = evt.error || part.error;
-          const msg = (err && err.data && err.data.message)
-            || (err && err.message)
-            || (typeof err === 'string' ? err : '')
-            || `${cs.cli} 出错`;
-          cs._opencodeError = msg;
-          forward({ type: 'error', error: `${cliLabel} 出错：${msg}` });
-          return;
-        }
-        return;  // unknown opencode/zcode event: drop
-      }
-
-      // ── Claude: shared with the streaming path ──
-      applyClaudeChatEvent(cs, sessionName, evt, forward);
+      applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward);
     };
 
     const forward = (evt) => {
@@ -9966,8 +9451,8 @@ function runChatTurn(sessionName, text, opts = {}) {
       const pendingTransportError = cs._codexTransportError || '';
       const pendingStreamErrorCount = cs._codexPendingStreamErrorCount || 0;
       const hasTurnOutput = !!(cs._resultSaved || cs.currentAssistantText || cs.currentToolCalls.length);
-      if (pendingStreamError && !hasTurnOutput && !cs._codexError) {
-        cs._codexError = pendingStreamError;
+      if (pendingStreamError && !hasTurnOutput && !cs._adapterError) {
+        cs._adapterError = pendingStreamError;
         chatBroadcast(sessionName, { type: 'error', error: `Codex 出错：${pendingStreamError}` });
       }
       const recoveredCodexDisconnect = (!!cs._codexRecoveredDisconnect || !!pendingStreamError) && hasTurnOutput;
@@ -10004,19 +9489,8 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.isStreaming = true;
         cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the continuation spawn (turnStartedAt may be >10min old)
         const continuePrompt = codexStreamDisconnectContinuePrompt();
-        // Intentionally NOT migrated to shape(): this codex-disconnect continuation
-        // spawns a fresh, layer-less continuePrompt (no notes/gateway/goal envelope),
-        // so it stays on the lower-level buildChatSpawnArgs API rather than composing
-        // a bare envelope. Kept in lockstep with the shape() path via the shared
-        // resolveSessionWireModel/effort helpers.
-        const continueArgs = provider.buildChatSpawnArgs(persisted, continuePrompt, {
-          isFirstTurn: false,
-          rolePrompt,
-          maxTurns: goalMaxTurns,
-          skipDefaultModel: provEnv.skipDefaultModel,
-          providerModel: provEnv.providerModel,
-          providerModels: provEnv.providerModels,
-        });
+        const continueInvocation = buildBareInvocation(continuePrompt, false);
+        const continueArgs = [...continueInvocation.args, continueInvocation.payload];
         const msg = isGlm52Session(persisted)
           ? `正在使用 GLM-5.2 最高档：检测到连接中断，正在自动续跑剩余任务（${cs._codexStreamContinuationCount}/${CODEX_STREAM_DISCONNECT_CONTINUE_MAX}）。`
           : `检测到 Codex 连接中断，正在自动续跑剩余任务（${cs._codexStreamContinuationCount}/${CODEX_STREAM_DISCONNECT_CONTINUE_MAX}）。`;
@@ -10031,9 +9505,9 @@ function runChatTurn(sessionName, text, opts = {}) {
 
       // If spawn yielded no assistant text and it's not a user-initiated kill, retry
       // once with a fresh session id (covers resume-failed / session-id conflict cases).
-      // A reported codex error (cs._codexError) is a real provider failure, not a
+      // A reported adapter error is a real provider failure, not a
       // resume glitch — retrying would just hit the same wall, so skip it.
-      if (!isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._codexError && !cs._opencodeError) {
+      if (!isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._adapterError) {
         const stderrTail = stderrBuf.slice(-300).trim();
         const reason = pendingTransportError ? 'codex transport disconnected'
           : stderrTail.includes('already in use') ? 'session-id conflict'
@@ -10049,12 +9523,8 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the retry spawn (turnStartedAt may be >10min old)
         cs.streamReplay = [];
         cs._codexTransportError = '';
-        // Intentionally NOT migrated to shape(): the fresh-session retry reuses the
-        // already-composed promptText (from renderPrompt(envelope) above) verbatim,
-        // only flipping isFirstTurn→true. Re-composing would re-fire the notes
-        // side effects, so it deliberately stays on buildChatSpawnArgs with the
-        // same promptText string.
-        const fallbackArgs = provider.buildChatSpawnArgs(persisted, promptText, { isFirstTurn: true, rolePrompt });
+        const fallbackInvocation = buildBareInvocation(promptText, true);
+        const fallbackArgs = [...fallbackInvocation.args, fallbackInvocation.payload];
         chatBroadcast(sessionName, {
           type: 'system', subtype: 'warning',
           message: `${cs.cli} 启动失败（${reason}），已用新会话重试`,
@@ -10103,8 +9573,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs.currentAssistantText = '';
       cs.currentToolCalls = [];
       cs._resultSaved = false;
-      const hadCodexError = !!cs._codexError && !recoveredCodexDisconnect; cs._codexError = null;
-      cs._opencodeError = null;
+      const hadAdapterError = !!cs._adapterError && !recoveredCodexDisconnect; cs._adapterError = null;
       cs._codexRecoveredDisconnect = false;
       cs._codexPendingStreamError = '';
       cs._codexPendingStreamErrorCount = 0;
@@ -10117,7 +9586,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       // Resting status — classifyTurnEnd is the single decider of C/W/B/E.
       if (killReason) {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-      } else if (kind === 'normal' || sawApi || hadCodexError || kind === 'nonzero_exit' || kind === 'signaled') {
+      } else if (kind === 'normal' || sawApi || hadAdapterError || kind === 'nonzero_exit' || kind === 'signaled') {
         classifyTurnEnd(cs, sessionName);
         if (auxQueue.isUnhealthy()) {
           setSessionStatus(sessionName, { status: 'idle', currentFile: null });
@@ -10279,13 +9748,12 @@ app.get('/api/detached/:taskId', (req, res) => {
 // UI sees identical events. The turn boundary is the `result` event (handled
 // inside applyClaudeChatEvent); finalizeStreamingTurn() then does the
 // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
-function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt) {
-  const sysPrompt = rolePrompt ? `${MULTICC_IMG_HINT}\n\n${rolePrompt}` : MULTICC_IMG_HINT;
+function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) {
   // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
   // vars before applying the provider env, so the provider choice is always
   // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
   // passed through; chat-stream uses it verbatim (no second process.env merge).
-  const { env: childEnv, skipDefaultModel, providerModel, providerModels } = providers.buildChildEnv(process.env, persisted, {
+  const { env: childEnv } = providers.buildChildEnv(process.env, persisted, {
     TERM: 'dumb', NO_COLOR: '1',
     MULTICC_SESSION_ID: sessionName,
     MULTICC_DIR_ID: persisted.dirId || '',
@@ -10298,18 +9766,6 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
     subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
     officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
   });
-  // Wire-model resolution lives in providers.resolveSessionWireModel (shared
-  // with buildChatSpawnArgs) so the two spawn paths cannot drift apart.
-  const model = providers.resolveSessionWireModel(persisted.model, {
-    providerModel, providerModels, skipDefaultModel, defaultModel: claudeDefaultModel(),
-  });
-  const extraArgs = [];
-  const effort = cliEffortLevel(persisted);
-  if (effort) extraArgs.push('--effort', effort);
-  if (CLAUDE_CHAT_DISALLOWED_TOOLS.length) {
-    extraArgs.push('--disallowedTools', CLAUDE_CHAT_DISALLOWED_TOOLS.join(','));
-  }
-
   // Streaming uses a SEPARATE session UUID (stored on the persisted record as
   // _streamSessionId) so the persistent process never collides with the per-turn
   // spawn path which uses cliSessionId. Both paths share the same Claude project
@@ -10320,10 +9776,19 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
     savePersistedSessions();
   }
   chatStream.ensure(sessionName, {
-    cmd: cliProviders.claude.cmd,
+    cmd: invocation.cmd,
     cwd: cs.cwd,
     sessionId: persisted._streamSessionId,
-    model, sysPrompt, extraArgs,
+    baseArgs: invocation.args,
+    beforeSpawn: ({ sessionId }) => {
+      const cleaned = typeof provider.prepareSpawn === 'function'
+        ? provider.prepareSpawn({ sessionId })
+        : 0;
+      if (cleaned > 0) {
+        chatHistories.delete(sessionName);
+        console.log(`[multicc/chat] [${sessionName}] sanitized ${cleaned} empty thinking block(s) from session JSONL`);
+      }
+    },
     env: childEnv,
     onBackgroundEvent: (evt) => handleBackgroundTaskEvent(sessionName, cs, evt),
   });
@@ -10340,10 +9805,9 @@ function runChatTurnStreaming(sessionName, cs, persisted, promptText, rolePrompt
     chatBroadcast(sessionName, evt);
   };
 
-  console.log(`[multicc/chat] [${sessionName}] (streaming) send turn=${cs.chatTurnCount} model=${model} status=${JSON.stringify(chatStream.status(sessionName))}`);
-  chatStream.send(sessionName, promptText, (evt) => {
-    if (evt.type === 'system' && evt.subtype === 'init') { noteReportedModel(sessionName, evt.model); return; } // server already sent its own init
-    applyClaudeChatEvent(cs, sessionName, evt, forward);
+  console.log(`[multicc/chat] [${sessionName}] (streaming) send turn=${cs.chatTurnCount} model=${persisted.model || 'default'} status=${JSON.stringify(chatStream.status(sessionName))}`);
+  chatStream.send(sessionName, invocation.payload, (evt) => {
+    applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward);
   })
     .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq))
     .catch((err) => {
