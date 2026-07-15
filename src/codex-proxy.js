@@ -5,6 +5,7 @@
 
 const { responsesToChat, chatStreamToResponses } = require('./codex-proxy-transform');
 const { StringDecoder } = require('string_decoder');
+const TOML = require('@iarna/toml');
 
 let compatRequestSeq = 0;
 const COMPAT_BUSY_RETRY_MAX = 5;
@@ -27,35 +28,172 @@ function setSseHeaders(res) {
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 }
 
+function parseSettingsConfig(value) {
+  if (value && typeof value === 'object') return value;
+  try { return JSON.parse(value || '{}'); } catch (_) { return {}; }
+}
+
+function appendEndpoint(baseUrl, endpoint) {
+  const clean = String(baseUrl || '').replace(/\/+$/, '');
+  return clean.endsWith(endpoint) ? clean : clean + endpoint;
+}
+
+function normalizeResponsesUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const totalInput = Number(usage.input_tokens || usage.prompt_tokens || 0);
+  const cached = Number(
+    (usage.input_tokens_details && usage.input_tokens_details.cached_tokens)
+    || (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens)
+    || usage.cached_input_tokens
+    || 0
+  );
+  const result = {
+    inputTokens: Math.max(0, totalInput - cached),
+    outputTokens: Number(usage.output_tokens || usage.completion_tokens || 0),
+    cacheWrite: 0,
+    cacheRead: Math.max(0, cached),
+  };
+  return result.inputTokens + result.outputTokens + result.cacheRead > 0 ? result : null;
+}
+
+function newResponsesUsageTee(contentType = '') {
+  return {
+    contentType,
+    isSSE: /text\/event-stream/i.test(contentType),
+    buffer: '',
+    usage: null,
+  };
+}
+
+function captureResponsesObject(tee, value) {
+  if (!value || typeof value !== 'object') return;
+  const usage = (value.response && value.response.usage) || value.usage;
+  const normalized = normalizeResponsesUsage(usage);
+  if (normalized) tee.usage = normalized;
+}
+
+function feedResponsesUsage(tee, chunk) {
+  const text = typeof chunk === 'string'
+    ? chunk
+    : (chunk ? Buffer.from(chunk).toString('utf8') : '');
+  tee.buffer += text;
+  if (!tee.isSSE) return;
+  let nl;
+  while ((nl = tee.buffer.indexOf('\n')) >= 0) {
+    const line = tee.buffer.slice(0, nl).replace(/\r$/, '');
+    tee.buffer = tee.buffer.slice(nl + 1);
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try { captureResponsesObject(tee, JSON.parse(payload)); } catch (_) {}
+  }
+}
+
+function finalizeResponsesUsage(tee) {
+  if (!tee.isSSE && tee.buffer) {
+    try { captureResponsesObject(tee, JSON.parse(tee.buffer)); } catch (_) {}
+  } else if (tee.isSSE && tee.buffer.trim().startsWith('data:')) {
+    try { captureResponsesObject(tee, JSON.parse(tee.buffer.trim().slice(5).trim())); } catch (_) {}
+  }
+  return tee.usage;
+}
+
+function resolveProviderTarget(provider) {
+  const cfg = parseSettingsConfig(provider && provider.settingsConfig);
+  const auth = cfg.auth || {};
+  const proxyTarget = cfg.proxyTarget;
+  if (proxyTarget && proxyTarget.baseUrl) {
+    return {
+      mode: proxyTarget.mode || 'chat-to-responses',
+      url: proxyTarget.baseUrl,
+      apiKey: proxyTarget.apiKey || auth.OPENAI_API_KEY || '',
+    };
+  }
+
+  let config;
+  try { config = TOML.parse(cfg.config || ''); } catch (error) {
+    return { error: `invalid provider config.toml: ${error.message}` };
+  }
+  const providerName = config.model_provider;
+  const providerConfig = providerName && config.model_providers && config.model_providers[providerName];
+  const baseUrl = providerConfig && providerConfig.base_url;
+  if (!baseUrl) return { error: 'provider has no callable base_url' };
+  if (/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/codex-proxy\//i.test(baseUrl)) {
+    return { error: 'provider base_url points back to codex-proxy without a real upstream target' };
+  }
+
+  const wireApi = String(providerConfig.wire_api || 'responses').toLowerCase();
+  const isChat = wireApi === 'chat' || wireApi === 'chat_completions';
+  let mode = isChat ? 'chat-to-responses' : 'direct-responses';
+  try {
+    if (!isChat && new URL(baseUrl).hostname === 'maas-coding-api.cn-huabei-1.xf-yun.com') {
+      mode = 'responses-compat';
+    }
+  } catch (_) {}
+  const accessToken = auth.tokens && auth.tokens.access_token;
+  return {
+    mode,
+    url: appendEndpoint(baseUrl, isChat ? '/chat/completions' : '/responses'),
+    apiKey: auth.OPENAI_API_KEY || accessToken || '',
+  };
+}
+
+function upstreamHeaders(incoming, apiKey) {
+  const headers = { ...incoming };
+  for (const key of [
+    'host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding',
+    'te', 'trailer', 'upgrade', 'accept-encoding', 'authorization',
+  ]) delete headers[key];
+  headers['content-type'] = 'application/json';
+  headers.accept = 'text/event-stream';
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
+function reportUsage(context, usage, isStream) {
+  if (!usage || !context || !context.sessionId || typeof context.onUsage !== 'function') return;
+  try {
+    context.onUsage({
+      sessionId: context.sessionId,
+      role: context.role,
+      providerId: context.providerId,
+      providerName: context.providerName,
+      model: context.model,
+      isStream,
+      usage,
+    });
+  } catch (error) {
+    console.warn(`[codex-proxy] usage callback failed: ${error.message}`);
+  }
+}
+
 /**
  * 在 express app 上挂载 codex 协议转换代理端点。
  *   POST /codex-proxy/:providerId/responses
  * @param {import('express').Express} app
- * @param {{ getProvider:(appType:string,id:string)=>any, getPort:()=>number }} opts
+ * @param {{ getProvider:(appType:string,id:string)=>any, getPort?:()=>number, onUsage?:(info:any)=>void }} opts
  */
-function mountCodexProxy(app, { getProvider, getPort }) {
-  app.post('/codex-proxy/:providerId/responses', async (req, res) => {
-    const providerId = req.params.providerId;
-
-    // ① 查 provider 配置
+function mountCodexProxy(app, { getProvider, onUsage }) {
+  async function handle(req, res, { providerId, sessionId = '', role = 'main' }) {
+    if (role !== 'main' && role !== 'sub') {
+      return res.status(400).json({ error: `invalid codex proxy role: ${role}` });
+    }
     const provider = getProvider('codex', providerId);
-    if (!provider) {
-      return res.status(404).json({ error: `codex provider not found: ${providerId}` });
-    }
-    const cfg = (provider.settingsConfig && typeof provider.settingsConfig === 'object')
-      ? provider.settingsConfig
-      : {};
-    const proxyTarget = cfg.proxyTarget;
-    if (!proxyTarget || !proxyTarget.baseUrl || !proxyTarget.apiKey) {
-      return res.status(400).json({
-        error: 'provider has no proxyTarget (baseUrl/apiKey) — not a proxied domestic provider',
-      });
-    }
-    if (proxyTarget.mode === 'responses-compat') {
-      return proxyResponsesCompat(req, res, proxyTarget);
-    }
+    if (!provider) return res.status(404).json({ error: `codex provider not found: ${providerId}` });
+    const target = resolveProviderTarget(provider);
+    if (target.error) return res.status(400).json({ error: target.error });
+    if (!target.apiKey) return res.status(400).json({ error: 'provider has no HTTP credential' });
+    const context = {
+      providerId,
+      providerName: provider.name || providerId,
+      sessionId,
+      role,
+      model: String((req.body && req.body.model) || ''),
+      onUsage,
+    };
+    if (target.mode === 'responses-compat') return proxyResponsesCompat(req, res, target, context);
+    if (target.mode === 'direct-responses') return proxyResponsesDirect(req, res, target, context);
 
-    // ② Responses body → Chat body
     let chatBody;
     try {
       chatBody = responsesToChat(req.body || {});
@@ -67,16 +205,11 @@ function mountCodexProxy(app, { getProvider, getPort }) {
     }
     chatBody.stream = true;
 
-    // ③ fetch 真实 chat/completions（stream）
     let upstream;
     try {
-      upstream = await fetch(proxyTarget.baseUrl, {
+      upstream = await fetch(target.url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-          'Authorization': `Bearer ${proxyTarget.apiKey}`,
-        },
+        headers: upstreamHeaders(req.headers, target.apiKey),
         body: JSON.stringify(chatBody),
       });
     } catch (e) {
@@ -92,14 +225,11 @@ function mountCodexProxy(app, { getProvider, getPort }) {
       return;
     }
 
-    // ④ Chat SSE → Responses SSE，逐行转发
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    setSseHeaders(res);
+    const usageTee = newResponsesUsageTee('text/event-stream');
 
     const converter = chatStreamToResponses(sse => {
+      feedResponsesUsage(usageTee, sse);
       try { res.write(sse); } catch (_) {}
     });
 
@@ -133,6 +263,7 @@ function mountCodexProxy(app, { getProvider, getPort }) {
         buffer = '';
       }
       try { converter.end(); } catch (_) {}
+      reportUsage(context, finalizeResponsesUsage(usageTee), true);
     } catch (e) {
       const msg = (e && e.message) ? e.message : String(e);
       try {
@@ -144,10 +275,59 @@ function mountCodexProxy(app, { getProvider, getPort }) {
     } finally {
       try { res.end(); } catch (_) {}
     }
-  });
+  }
+
+  app.post('/codex-proxy/:providerId/:sessionId/:role/responses', (req, res) => handle(req, res, {
+    providerId: req.params.providerId,
+    sessionId: req.params.sessionId,
+    role: req.params.role,
+  }));
+  // Backward-compatible endpoint for already-materialized provider homes. It has
+  // no session/role context, so it forwards correctly but does not bill by role.
+  app.post('/codex-proxy/:providerId/responses', (req, res) => handle(req, res, {
+    providerId: req.params.providerId,
+  }));
 }
 
-async function proxyResponsesCompat(req, res, proxyTarget) {
+async function proxyResponsesDirect(req, res, target, context) {
+  const body = { ...(req.body || {}), stream: req.body && req.body.stream !== false };
+  let upstream;
+  try {
+    upstream = await fetch(target.url, {
+      method: 'POST',
+      headers: upstreamHeaders(req.headers, target.apiKey),
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return sendFailed(res, `fetch upstream failed: ${error.message}`);
+  }
+  if (!upstream.ok || !upstream.body) {
+    let detail = '';
+    try { detail = await upstream.text(); } catch (_) {}
+    return sendFailed(res, `upstream ${upstream.status}: ${String(detail).slice(0, 500)}`);
+  }
+
+  const contentType = upstream.headers.get('content-type') || 'text/event-stream';
+  if (/text\/event-stream/i.test(contentType)) setSseHeaders(res);
+  else res.setHeader('content-type', contentType);
+  const tee = newResponsesUsageTee(contentType);
+  const reader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      feedResponsesUsage(tee, value);
+      res.write(value);
+    }
+    reportUsage(context, finalizeResponsesUsage(tee), tee.isSSE);
+  } catch (error) {
+    if (!res.writableEnded) sendFailed(res, `stream error: ${error.message}`);
+    return;
+  }
+  try { res.end(); } catch (_) {}
+}
+
+async function proxyResponsesCompat(req, res, target, context) {
   const body = { ...(req.body || {}), stream: true };
   const reqId = `xf-${(++compatRequestSeq).toString(36)}`;
   const startedAt = Date.now();
@@ -195,13 +375,9 @@ async function proxyResponsesCompat(req, res, proxyTarget) {
     const aborter = new AbortController();
     currentAborter = aborter;
     try {
-      upstream = await fetch(proxyTarget.baseUrl, {
+      upstream = await fetch(target.url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-          'Authorization': `Bearer ${proxyTarget.apiKey}`,
-        },
+        headers: upstreamHeaders(req.headers, target.apiKey),
         body: JSON.stringify(body),
         signal: aborter.signal,
       });
@@ -397,6 +573,7 @@ async function proxyResponsesCompat(req, res, proxyTarget) {
       })}`);
     }
 
+    reportUsage(context, normalizeResponsesUsage(usage), true);
     try { res.end(); } catch (_) {}
     return;
   }
@@ -415,4 +592,8 @@ function sendFailed(res, message) {
   try { res.end(); } catch (_) {}
 }
 
-module.exports = { mountCodexProxy };
+module.exports = {
+  mountCodexProxy,
+  normalizeResponsesUsage,
+  resolveProviderTarget,
+};

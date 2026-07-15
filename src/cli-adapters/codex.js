@@ -2,6 +2,37 @@
 
 const { renderPrompt } = require('../message-composer');
 
+function normalizeCodexUsage(usage) {
+  const source = usage || {};
+  const cached = Number(source.cached_input_tokens || source.cache_read_input_tokens || 0);
+  const totalInput = Number(source.input_tokens || 0);
+  return {
+    ...source,
+    input_tokens: source.cache_read_input_tokens == null
+      ? Math.max(0, totalInput - cached)
+      : totalInput,
+    cache_read_input_tokens: cached,
+  };
+}
+
+function collabToolName(tool) {
+  if (tool === 'spawn_agent') return 'Agent';
+  if (tool === 'wait') return 'Agent Wait';
+  if (tool === 'send_input') return 'Agent Input';
+  if (tool === 'close_agent') return 'Agent Close';
+  return `Agent ${tool || 'Task'}`;
+}
+
+function collabResult(item) {
+  const states = item.agents_states || {};
+  const lines = Object.entries(states).map(([id, state]) => {
+    const status = state && state.status ? state.status : 'unknown';
+    const message = state && state.message ? `: ${state.message}` : '';
+    return `${id} [${status}]${message}`;
+  });
+  return lines.join('\n') || item.status || '';
+}
+
 function createCodexAdapter(deps) {
   const {
     cmd,
@@ -58,6 +89,16 @@ function createCodexAdapter(deps) {
       if (event.type === 'turn.started') return [];
       if (event.type === 'item.started') {
         const item = event.item || {};
+        if (item.type === 'collab_tool_call') {
+          return [{
+            type: 'tool_start', id: item.id, name: collabToolName(item.tool),
+            input: {
+              prompt: item.prompt || undefined,
+              agentIds: item.receiver_thread_ids || [],
+            },
+            status: 'running',
+          }];
+        }
         if (item.type !== 'command_execution') return [];
         return [{
           type: 'tool_start', id: item.id, name: 'Bash',
@@ -66,6 +107,12 @@ function createCodexAdapter(deps) {
       }
       if (event.type === 'item.completed') {
         const item = event.item || {};
+        if (item.type === 'collab_tool_call') {
+          return [{
+            type: 'tool_result', id: item.id,
+            content: collabResult(item), isError: item.status === 'failed',
+          }];
+        }
         if (item.type === 'command_execution') {
           return [{
             type: 'tool_result', id: item.id, content: item.aggregated_output || '',
@@ -104,7 +151,7 @@ function createCodexAdapter(deps) {
         return [];
       }
       if (event.type === 'turn.completed') {
-        return [{ type: 'complete', cost: null, usage: event.usage || {} }];
+        return [{ type: 'complete', cost: null, usage: normalizeCodexUsage(event.usage) }];
       }
       if (event.type === 'error' || event.type === 'turn.failed') {
         const message = String(event.message || (event.error && event.error.message) || '未知错误');
@@ -119,4 +166,4 @@ function createCodexAdapter(deps) {
   };
 }
 
-module.exports = { createCodexAdapter };
+module.exports = { createCodexAdapter, normalizeCodexUsage };

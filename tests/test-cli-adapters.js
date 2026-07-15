@@ -45,9 +45,39 @@ assert.strictEqual(
   codex.decodeEvent({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })[0].type,
   'assistant_text',
 );
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'item.started',
+    item: { type: 'collab_tool_call', id: 'a1', tool: 'spawn_agent', prompt: 'inspect' },
+  })[0],
+  {
+    type: 'tool_start', id: 'a1', name: 'Agent',
+    input: { prompt: 'inspect', agentIds: [] }, status: 'running',
+  },
+);
+assert.strictEqual(
+  codex.decodeEvent({
+    type: 'item.completed',
+    item: {
+      type: 'collab_tool_call', id: 'a1', tool: 'spawn_agent', status: 'completed',
+      agents_states: { child: { status: 'completed', message: 'ok' } },
+    },
+  })[0].content,
+  'child [completed]: ok',
+);
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'response-disconnect' })[0].kind, 'response_completed_disconnect');
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'transport-disconnect' })[0].kind, 'transport_disconnect');
 assert.strictEqual(codex.decodeEvent({ type: 'turn.completed', usage: { input_tokens: 3 } })[0].type, 'complete');
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'turn.completed',
+    usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 7 },
+  })[0].usage,
+  {
+    input_tokens: 60, cached_input_tokens: 40, output_tokens: 7,
+    cache_read_input_tokens: 40,
+  },
+);
 
 for (const adapter of [opencode, zcode]) {
   const decoded = adapter.decodeEvent({ type: 'text', sessionID: 'ses_1', part: { text: 'hello' } });

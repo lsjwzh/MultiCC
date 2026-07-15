@@ -144,6 +144,7 @@ assert(fcAdded.data.item.name === 'get_weather', 'function_call name');
 // 验证 usage
 const completed = eventList.find(e => e.type === 'response.completed');
 assert(completed.data.response.usage.total_tokens === 150, 'usage.total_tokens');
+assert(completed.data.response.output[0].content[0].text === '今天天气不错', 'completed 保留完整文本');
 
 // 验证 output 包含所有 item
 assert(completed.data.response.output.length >= 2, 'output 含 text + function_call');
