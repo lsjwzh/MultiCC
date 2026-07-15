@@ -21,6 +21,7 @@ const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const { execSync, spawn } = require('child_process');
+const TOML = require('@iarna/toml');
 
 const PROJECT_DIR = path.join(__dirname, '..');
 
@@ -1077,6 +1078,119 @@ function applyClaudeProxyEnv(env, { providerId, sessionId, subagent, port, enabl
   }
 }
 
+const CODEX_SUBAGENT_PROVIDER = 'multicc_subagent';
+const CODEX_BUILTIN_AGENT_ROLES = {
+  default: {
+    description: 'General-purpose subagent routed by MultiCC.',
+    instructions: 'Complete the delegated task and return a concise result to the parent agent.',
+  },
+  worker: {
+    description: 'Execution-focused subagent routed by MultiCC.',
+    instructions: 'Implement or verify the delegated task within the scope assigned by the parent agent.',
+  },
+  explorer: {
+    description: 'Read-heavy codebase explorer routed by MultiCC.',
+    instructions: 'Inspect only the requested scope and return concrete findings with file references.',
+  },
+};
+
+function codexProviderProxyable(providerOrId) {
+  const provider = typeof providerOrId === 'string'
+    ? getProvider('codex', providerOrId)
+    : providerOrId;
+  if (!provider) return false;
+  const cfg = parseConfig(provider.settingsConfig);
+  if (cfg.proxyTarget && cfg.proxyTarget.baseUrl) return true;
+  const baseUrl = tomlValue(cfg.config, 'base_url');
+  return !!baseUrl && !/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/codex-proxy\//i.test(baseUrl);
+}
+
+function localCodexProxyBase({ providerId, sessionId, role, port }) {
+  return `http://127.0.0.1:${port}/codex-proxy/${encodeURIComponent(providerId)}`
+    + `/${encodeURIComponent(sessionId)}/${role}`;
+}
+
+// Materialize the provider/model split using Codex's native agent config layers.
+// The parent keeps its selected provider; built-in child roles select a second
+// model_provider whose base URL carries an explicit `sub` role to the local proxy.
+function materializeCodexRoutingHome(home, {
+  mainProviderId,
+  mainProxyable,
+  sessionId,
+  subProviderId,
+  subModel,
+  port,
+}) {
+  if (!home || !mainProviderId || !sessionId || !subProviderId || !port) return false;
+  const configPath = path.join(home, 'config.toml');
+  if (!fs.existsSync(configPath)) return false;
+
+  const config = TOML.parse(fs.readFileSync(configPath, 'utf8'));
+  config.model_providers = config.model_providers || {};
+
+  if (mainProxyable) {
+    const activeProvider = String(config.model_provider || '');
+    const active = activeProvider && config.model_providers[activeProvider];
+    if (!active || typeof active !== 'object') {
+      throw new Error(`Codex config has no model_providers.${activeProvider || '(unset)'}`);
+    }
+    active.base_url = localCodexProxyBase({
+      providerId: mainProviderId, sessionId, role: 'main', port,
+    });
+    active.wire_api = 'responses';
+    active.requires_openai_auth = true;
+  }
+
+  config.model_providers[CODEX_SUBAGENT_PROVIDER] = {
+    name: 'MultiCC subagent route',
+    base_url: localCodexProxyBase({
+      providerId: subProviderId, sessionId, role: 'sub', port,
+    }),
+    wire_api: 'responses',
+    requires_openai_auth: true,
+  };
+  config.features = config.features || {};
+  config.features.multi_agent = true;
+  fs.writeFileSync(configPath, TOML.stringify(config));
+
+  const agentsDir = path.join(home, 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const [role, meta] of Object.entries(CODEX_BUILTIN_AGENT_ROLES)) {
+    const agent = {
+      name: role,
+      description: meta.description,
+      developer_instructions: meta.instructions,
+      model_provider: CODEX_SUBAGENT_PROVIDER,
+    };
+    if (subModel) agent.model = subModel;
+    fs.writeFileSync(path.join(agentsDir, `${role}.toml`), TOML.stringify(agent));
+  }
+  return true;
+}
+
+function applyCodexProxyConfig(env, { providerId, sessionId, subagent, port }) {
+  if (!env || !env.CODEX_HOME || !providerId || !sessionId || !port) return false;
+  const mainProvider = getProvider('codex', providerId);
+  if (!mainProvider) return false;
+  const mainProxyable = codexProviderProxyable(mainProvider);
+  const explicitSubId = subagent && subagent.providerId;
+  const subProviderId = explicitSubId || (mainProxyable ? providerId : null);
+  if (!subProviderId || !codexProviderProxyable(subProviderId)) return false;
+  try {
+    return materializeCodexRoutingHome(env.CODEX_HOME, {
+      mainProviderId: providerId,
+      mainProxyable,
+      sessionId,
+      subProviderId,
+      subModel: explicitSubId ? String(subagent.model || '').trim() : '',
+      port,
+    });
+  } catch (error) {
+    console.warn(`[multicc/provider] failed to materialize Codex role routing: ${error.message}`);
+    return false;
+  }
+}
+
 module.exports = {
   ccSwitchAvailable,
   appTypeForCli,
@@ -1093,6 +1207,9 @@ module.exports = {
   resolveSpawnEnv,
   buildChildEnv,
   applyClaudeProxyEnv,
+  applyCodexProxyConfig,
+  materializeCodexRoutingHome,
+  codexProviderProxyable,
   resolveSessionWireModel,
   modelValidForProvider,
   getProviderUsageStats,

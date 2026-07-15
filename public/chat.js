@@ -3172,10 +3172,10 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
       <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
       <label id="ai-effort-label" style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">${_sessionCli === 'codex' ? 'Reasoning Level' : 'Effort'}</label>
       <select id="ai-effort" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
-      <div id="ai-sub-section" style="${_sessionCli === 'codex' ? 'display:none;' : ''}">
+      <div id="ai-sub-section">
       <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
       <div style="font-size:13px;font-weight:600;margin-bottom:2px;">子任务 (subagent)</div>
-      <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:10px;">Task 工具派生的子 agent 走的 provider+model（经 claude-proxy 路由，与主进程隔离）。留空=随主。</div>
+      <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:10px;">子 agent 走的 provider+model（经本地协议代理路由，与主进程隔离）。留空=随主。</div>
       <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Provider</label>
       <select id="ai-sub-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:10px;"></select>
       <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Model</label>
@@ -3224,6 +3224,10 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
     subDef.value = ''; subDef.textContent = '默认（随主）';
     subProviderSel.appendChild(subDef);
     for (const p of _providerList) {
+      // Codex subscription/OAuth providers have no standalone HTTP endpoint for
+      // the local role proxy. They remain valid as the main provider, but cannot
+      // be selected as a routed child target.
+      if (_sessionCli === 'codex' && p.isOfficial) continue;
       const opt = document.createElement('option');
       opt.value = p.id;
       opt.textContent = p.name + (p.isOfficial ? ' · 订阅' : (p.baseUrl ? ' · ' + p.baseUrl.replace(/^https?:\/\//, '') : ''));
@@ -3281,7 +3285,11 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
     }
 
     rebuildModels(providerSel.value, model || '');
-    providerSel.onchange = () => rebuildModels(providerSel.value, '');
+    providerSel.onchange = () => {
+      rebuildModels(providerSel.value, '');
+      if (_sessionCli === 'codex' && !providerSel.value) subProviderSel.value = '';
+      refreshSubUI();
+    };
     modelSel.onchange = () => { syncCustom(); if (modelSel.value === '__custom__') custom.focus(); };
 
     const close = (r) => { overlay.remove(); resolve(r); };
@@ -3293,7 +3301,7 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
         provider: providerSel.value,
         model: pickedModel,
         effort: effortSel.value,
-        subagent: (_sessionCli === 'codex') ? null : (subPid && subModel ? { providerId: subPid, model: subModel } : null),
+        subagent: subPid && subModel ? { providerId: subPid, model: subModel } : null,
       });
     };
     box.querySelector('#ai-cancel').onclick = () => close(null);
@@ -3908,9 +3916,7 @@ function updateAutoDispatchCheck() {
 const subagentPill = document.getElementById('subagent-pill');
 function updateSubagentPill() {
   const el = document.getElementById('subagent-pill-label');
-  // subagent routing is claude-proxy-only (it decodes ccfw:<pid>:<model>); codex-proxy
-  // has no such decode, so the pill is a silent no-op there - hide it for codex.
-  if (subagentPill) subagentPill.style.display = (_sessionCli === 'codex') ? 'none' : '';
+  if (subagentPill) subagentPill.style.display = '';
   if (!el) return;
   // Show the REAL wire model id that hits the server (effectiveModel), not the
   // stored tier alias (opus/sonnet/…). Falls back to the raw model, then 随主.
