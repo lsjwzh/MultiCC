@@ -273,7 +273,10 @@ function decodeCcfwModel(model) {
   const body = model.slice(CCFW_PREFIX.length);
   const i = body.indexOf(':');
   if (i < 0) return null;
-  return { providerId: body.slice(0, i), realModel: body.slice(i + 1) };
+  const providerId = body.slice(0, i).trim();
+  const realModel = body.slice(i + 1).trim();
+  if (!providerId || !realModel) return null;
+  return { providerId, realModel };
 }
 
 function rewriteModel(bodyBuf, newModel) {
@@ -331,7 +334,9 @@ function createHandler({ getProvider, onUsage }) {
     const ccfw = decodeCcfwModel(model);
     let routeProviderId = providerId;
     let outBody = bodyBuf;
-    let role = 'main';
+    // Aux HTTP also uses this proxy, but it is not part of a Claude CLI main
+    // turn. Keep it out of the main bucket so savings/accounting stays honest.
+    let role = sessionId === 'aux' ? 'aux' : 'main';
     if (ccfw) {
       routeProviderId = ccfw.providerId;
       outBody = rewriteModel(bodyBuf, ccfw.realModel);

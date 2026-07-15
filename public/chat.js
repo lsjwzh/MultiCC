@@ -2129,6 +2129,11 @@ function send(opts = {}) {
       ws.send(JSON.stringify(payload));
       _pendingCancel = false;
       _turnStartMs = Date.now();  // client-side fallback for live reply timing
+      // A new turn must not render the previous turn's 主/辅 split while the
+      // first proxy request is still in flight. The server resets its tracker at
+      // the same boundary and will repopulate this via role_token_stats.
+      _roleTokens = { main: null, sub: null, subByProvider: [] };
+      _liveStreamUsage = null;
       isStreaming = true;
       showThinking();
       startTitleAnimation();

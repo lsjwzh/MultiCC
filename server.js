@@ -82,6 +82,7 @@ const artifacts = require('./src/artifacts');
 const providers = require('./src/providers');
 const { executeAuxHttp } = require('./src/aux-http');
 const tokenGlobal = require('./src/token-global');
+const { createRoleTokenTracker } = require('./src/role-token-tracker');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
 const { mountCodexProxy } = require('./src/codex-proxy');
@@ -1852,68 +1853,18 @@ function createSession(id) {
 // session's main provider — and stash a per-turn runtime breakdown so the chat
 // frontend can show "本轮 主 A / 辅 B" instead of a single merged number.
 const TOKEN_BY_ROLE_FILE = path.join(__dirname, 'token_by_role.json');
-// In-memory per-session CURRENT-TURN breakdown, keyed by sessionName.
-//   { main: {inputTokens, outputTokens, cacheWrite, cacheRead},
-//     sub:   { ...same..., byProvider: { <providerId>: {name,model,input,output,cacheWrite,cacheRead} } } }
-// Reset at each turn start (chat-stream send handler). Fed by the proxy's
-// onUsage; read by broadcastRoleTokenStats on the result boundary.
-const roleRuntime = new Map();
-function _emptyRoleBucket() {
-  return { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0 };
+// In-memory current-turn snapshots and the persistent per-day × role × provider
+// ledger share one tested implementation. The proxy callback is the only source
+// that knows both the real upstream and whether a request came from a subagent.
+const roleTokenTracker = createRoleTokenTracker({ filePath: TOKEN_BY_ROLE_FILE });
+function recordRoleTokenUsage(info) {
+  if (!roleTokenTracker.accumulate(info)) return;
+  // Push on every completed upstream response, not only on the parent turn's
+  // result boundary. A background subagent can finish after that boundary; its
+  // usage must still appear in the live 主/辅 split without waiting for another turn.
+  broadcastRoleTokenStats(info.sessionId);
 }
-function _addIntoBucket(b, u) {
-  b.inputTokens += u.inputTokens || 0;
-  b.outputTokens += u.outputTokens || 0;
-  b.cacheWrite += u.cacheWrite || 0;
-  b.cacheRead += u.cacheRead || 0;
-}
-function accumulateTokenByRole(info) {
-  // info: { sessionId, role:'main'|'sub', providerId, providerName, model, usage }
-  if (!info || !info.sessionId || !info.usage) return;
-  const u = info.usage;
-  if (!(u.inputTokens || u.outputTokens || u.cacheWrite || u.cacheRead)) return;
-
-  // 1) Per-turn runtime breakdown (in-memory, drives the live "本轮 主/辅" UI).
-  let rt = roleRuntime.get(info.sessionId);
-  if (!rt) { rt = { main: _emptyRoleBucket(), sub: _emptyRoleBucket(), byProviderSub: {} }; roleRuntime.set(info.sessionId, rt); }
-  const turnBucket = info.role === 'sub' ? rt.sub : rt.main;
-  _addIntoBucket(turnBucket, u);
-  if (info.role === 'sub') {
-    const key = info.providerId || '_unknown_';
-    const pb = rt.byProviderSub[key] || (rt.byProviderSub[key] = { name: info.providerName || key, model: info.model || '', ..._emptyRoleBucket() });
-    _addIntoBucket(pb, u);
-    if (info.model && !pb.model) pb.model = info.model;
-  }
-
-  // 2) Persistent per-day × role × provider ledger (token_by_role.json), so the
-  //    breakdown survives restarts and can be queried for time windows. Mirror's
-  //    token_daily.json's shape but adds the role + provider dimensions the
-  //    transcript result-event can't recover.
-  try {
-    const now = new Date();
-    const dk = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-    let data = {};
-    try { data = JSON.parse(fs.readFileSync(TOKEN_BY_ROLE_FILE, 'utf8')); } catch (_) {}
-    if (typeof data !== 'object' || Array.isArray(data)) data = {};
-    const day = data[dk] || (data[dk] = {});
-    const rk = info.role === 'sub' ? 'sub' : 'main';
-    const prov = day[rk] || (day[rk] = {});
-    const pb = prov[info.providerId || '_default_'] || (prov[info.providerId || '_default_'] = { name: info.providerName || info.providerId || '', inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, turns: 0 });
-    pb.inputTokens += u.inputTokens || 0;
-    pb.outputTokens += u.outputTokens || 0;
-    pb.cacheWrite += u.cacheWrite || 0;
-    pb.cacheRead += u.cacheRead || 0;
-    pb.turns += 1;
-    if (info.providerName && !pb.name) pb.name = info.providerName;
-    data[dk] = day;
-    try { fs.writeFileSync(TOKEN_BY_ROLE_FILE, JSON.stringify(data, null, 2)); } catch (e) {
-      console.error(`[multicc] Failed to save token_by_role: ${e.message}`);
-    }
-  } catch (e) {
-    console.error(`[multicc] accumulateTokenByRole error: ${e.message}`);
-  }
-}
-mountClaudeProxy(app, { getProvider: providers.getProvider, onUsage: accumulateTokenByRole });
+mountClaudeProxy(app, { getProvider: providers.getProvider, onUsage: recordRoleTokenUsage });
 app.use(express.json({ limit: '50mb' }));
 
 // Codex Responses↔Chat 协议转换代理（国产服务商 DeepSeek/GLM/Qwen/MiniMax）。
@@ -6060,22 +6011,10 @@ app.get('/api/token-usage/global', async (req, res) => {
 app.get('/api/token-usage/by-role', (req, res) => {
   try {
     if (req.query.session) {
-      const rt = roleRuntime.get(req.query.session);
-      if (!rt) return res.json({ main: null, sub: null, subByProvider: [] });
-      const sub = rt.sub;
-      const hasSub = (sub.inputTokens || sub.outputTokens || sub.cacheWrite || sub.cacheRead) > 0;
-      return res.json({
-        main: { ...rt.main },
-        sub: hasSub ? { ...sub } : null,
-        subByProvider: hasSub
-          ? Object.entries(rt.byProviderSub).map(([pid, b]) => ({ providerId: pid, name: b.name, model: b.model, inputTokens: b.inputTokens, outputTokens: b.outputTokens, cacheWrite: b.cacheWrite, cacheRead: b.cacheRead }))
-          : [],
-      });
+      return res.json(roleTokenTracker.snapshot(req.query.session)
+        || { main: null, sub: null, subByProvider: [] });
     }
-    let data = {};
-    try { data = JSON.parse(fs.readFileSync(TOKEN_BY_ROLE_FILE, 'utf8')); } catch (_) {}
-    if (typeof data !== 'object' || Array.isArray(data)) data = {};
-    res.json(data);
+    res.json(roleTokenTracker.readLedger());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -6730,21 +6669,11 @@ function broadcastProviderTokenStats(sessionName) {
 
 // Push the per-turn main/sub role breakdown to the chat frontend so "本轮" can
 // render "主 A / 辅 B" instead of the CLI's single merged number. Sourced from
-// the claude-proxy onUsage hook (roleRuntime), which sees each /v1/messages
+// the claude-proxy onUsage hook (roleTokenTracker), which sees each /v1/messages
 // request's real route — independent of the session's main provider.
 function broadcastRoleTokenStats(sessionName) {
-  const rt = roleRuntime.get(sessionName);
-  if (!rt) return;
-  const sub = rt.sub;
-  const hasSub = (sub.inputTokens || sub.outputTokens || sub.cacheWrite || sub.cacheRead) > 0;
-  const payload = {
-    main: { ...rt.main },
-    sub: hasSub ? { ...sub } : null,
-    // Per-sub-provider detail (when a turn spawns subagents on >1 provider).
-    subByProvider: hasSub
-      ? Object.entries(rt.byProviderSub).map(([pid, b]) => ({ providerId: pid, name: b.name, model: b.model, inputTokens: b.inputTokens, outputTokens: b.outputTokens, cacheWrite: b.cacheWrite, cacheRead: b.cacheRead }))
-      : [],
-  };
+  const payload = roleTokenTracker.snapshot(sessionName);
+  if (!payload) return;
   chatBroadcast(sessionName, { type: 'role_token_stats', role: payload });
 }
 
@@ -9274,7 +9203,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // Reset the per-turn role breakdown (main vs sub) collected by the claude-proxy
   // onUsage hook. A new user turn starts a fresh "本轮" window, so stale subagent
   // totals from the previous turn must not bleed into the new one.
-  roleRuntime.delete(sessionName);
+  roleTokenTracker.reset(sessionName);
   cs._codexRecoveredDisconnect = false;
   cs._codexPendingStreamError = '';
   cs._codexPendingStreamErrorCount = 0;
