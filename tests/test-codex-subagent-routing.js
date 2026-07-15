@@ -10,7 +10,10 @@ const {
   mountCodexProxy,
   normalizeResponsesUsage,
 } = require('../src/codex-proxy');
-const { materializeCodexRoutingHome } = require('../src/providers');
+const {
+  materializeCodexAuth,
+  materializeCodexRoutingHome,
+} = require('../src/providers');
 
 let passed = 0;
 let failed = 0;
@@ -114,6 +117,37 @@ async function main() {
       cacheWrite: 0,
       cacheRead: 40,
     });
+  });
+
+  await test('official Codex provider follows the current global OAuth login', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-auth-'));
+    const home = path.join(root, 'home');
+    const globalAuth = path.join(root, 'global-auth.json');
+    fs.mkdirSync(home);
+    fs.writeFileSync(globalAuth, JSON.stringify({ tokens: { access_token: 'current' } }));
+    try {
+      const source = materializeCodexAuth(home, {
+        auth: { tokens: { access_token: 'stale-import' } },
+        config: 'model = "gpt-5.5"\n',
+      }, { globalAuthPath: globalAuth });
+      assert.strictEqual(source, 'global');
+      assert.strictEqual(
+        JSON.parse(fs.readFileSync(path.join(home, 'auth.json'))).tokens.access_token,
+        'current'
+      );
+
+      const custom = materializeCodexAuth(home, {
+        auth: { OPENAI_API_KEY: 'custom-key' },
+        config: 'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://api.example/v1"\n',
+      }, { globalAuthPath: globalAuth });
+      assert.strictEqual(custom, 'provider');
+      assert.strictEqual(
+        JSON.parse(fs.readFileSync(path.join(home, 'auth.json'))).OPENAI_API_KEY,
+        'custom-key'
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   await test('Codex routing home overrides all built-in subagent roles', () => {
