@@ -730,6 +730,36 @@ function buildChildEnv(base, session, extra = {}) {
   };
 }
 
+function materializeCodexAuth(home, cfg, {
+  globalAuthPath = path.join(os.homedir(), '.codex', 'auth.json'),
+} = {}) {
+  const authPath = path.join(home, 'auth.json');
+  const baseUrl = tomlValue(cfg && cfg.config, 'base_url');
+
+  // Subscription refresh tokens rotate. A provider import is only a snapshot,
+  // so replaying cfg.auth would overwrite the current global login with a stale
+  // token on every spawn. Official providers always follow the live Codex login.
+  if (!baseUrl) {
+    if (fs.existsSync(globalAuthPath)) {
+      fs.copyFileSync(globalAuthPath, authPath);
+      return 'global';
+    }
+    if (cfg && cfg.auth) {
+      fs.writeFileSync(authPath, JSON.stringify(cfg.auth, null, 2));
+      return 'provider-fallback';
+    }
+    fs.rmSync(authPath, { force: true });
+    return 'none';
+  }
+
+  if (cfg && cfg.auth) {
+    fs.writeFileSync(authPath, JSON.stringify(cfg.auth, null, 2));
+    return 'provider';
+  }
+  fs.rmSync(authPath, { force: true });
+  return 'none';
+}
+
 // Compute env overrides + flags to apply when spawning a child for `session`.
 //   - env: object merged into the child's process env (only this child).
 //   - skipDefaultModel: claude routes elsewhere → don't force the global --model.
@@ -799,17 +829,7 @@ function resolveSpawnEnv(session) {
   try {
     const home = path.join(CODEX_HOMES_DIR, providerId);
     fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
-    if (cfg.auth) {
-      fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify(cfg.auth, null, 2));
-    } else {
-      const baseUrl = tomlValue(cfg.config, 'base_url');
-      if (!baseUrl) {
-        const globalAuth = path.join(os.homedir(), '.codex', 'auth.json');
-        const authPath = path.join(home, 'auth.json');
-        if (fs.existsSync(globalAuth)) fs.copyFileSync(globalAuth, authPath);
-        else if (fs.existsSync(authPath)) fs.rmSync(authPath, { force: true });
-      }
-    }
+    materializeCodexAuth(home, cfg);
     if (cfg.config) {
       // cc-switch 导入的 config 可能带 model_catalog_json 指向 cc-switch 自己目录里的
       // 文件（codex home 里没有），导致 codex 启动时 "config could not be loaded" → exit 1。
@@ -1206,6 +1226,7 @@ module.exports = {
   importFromCcSwitch,
   resolveSpawnEnv,
   buildChildEnv,
+  materializeCodexAuth,
   applyClaudeProxyEnv,
   applyCodexProxyConfig,
   materializeCodexRoutingHome,

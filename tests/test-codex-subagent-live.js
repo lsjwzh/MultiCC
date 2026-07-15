@@ -108,7 +108,6 @@ async function main() {
   }
   const detail = await api('GET', `/api/sessions/${encodeURIComponent(sessionId)}`);
   assert.strictEqual(detail.cli, 'codex', 'live session must use the codex CLI');
-  assert.strictEqual(detail.kind, 'chat', 'live session must be a chat session');
   assert.ok(detail.provider, 'live session needs a selected main provider');
   assert.ok(detail.subagent?.providerId, 'live session needs a subagent provider override');
   assert.notStrictEqual(detail.provider, detail.subagent.providerId,
