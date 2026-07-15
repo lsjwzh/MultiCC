@@ -126,6 +126,7 @@ function chatStreamToResponses(emit) {
   let _textPartStarted = false;    // content_part.added 已发？
   let _textContentIndex = 0;       // content_index（同一 message 内第几个 output_text）
   let _textItemFinished = false;   // output_item.done (message) 已发？
+  let _textAcc = '';               // completed.output 中必须保留所有流式 delta
 
   let _toolIndex = 0;              // 第几个 function_call
   const _toolItems = [];           // [{id, call_id, name, arguments, itemDone, accArgs}]
@@ -283,6 +284,11 @@ function chatStreamToResponses(emit) {
       input_tokens: obj.usage.prompt_tokens || obj.usage.input_tokens || 0,
       output_tokens: obj.usage.completion_tokens || obj.usage.output_tokens || 0,
       total_tokens: obj.usage.total_tokens || 0,
+      input_tokens_details: {
+        cached_tokens: (obj.usage.prompt_tokens_details && obj.usage.prompt_tokens_details.cached_tokens)
+          || (obj.usage.input_tokens_details && obj.usage.input_tokens_details.cached_tokens)
+          || 0,
+      },
     };
 
     const choice = (obj.choices && obj.choices.length > 0) ? obj.choices[0] : null;
@@ -310,7 +316,7 @@ function chatStreamToResponses(emit) {
     if (delta.tool_calls && delta.tool_calls.length > 0) {
       // tool_calls 来时，如果文本 item 还在进行中，先关闭它
       if (_textStarted && !_textItemFinished) {
-        finishTextItem('');
+        finishTextItem(_textAcc);
       }
 
       for (const tc of delta.tool_calls) {
@@ -348,6 +354,7 @@ function chatStreamToResponses(emit) {
       if (_toolStarted) { finishToolItem(); }
 
       ensureTextItem(content);
+      _textAcc += typeof content === 'string' ? content : String(content);
       const itemId = shortId('msg', 0);
       sse('response.output_text.delta', {
         type: 'response.output_text.delta',
@@ -362,7 +369,7 @@ function chatStreamToResponses(emit) {
     // ── finish_reason: stop → 关闭文本 item ──
     if (finishReason === 'stop' || finishReason === 'length') {
       if (_toolStarted) { finishToolItem(); }
-      if (_textStarted && !_textItemFinished) { finishTextItem(''); }
+      if (_textStarted && !_textItemFinished) { finishTextItem(_textAcc); }
     }
   }
 
@@ -381,7 +388,7 @@ function chatStreamToResponses(emit) {
 
     // 关闭任何还在进行中的 item
     if (_toolStarted) { finishToolItem(); }
-    if (_textStarted && !_textItemFinished) { finishTextItem(''); }
+    if (_textStarted && !_textItemFinished) { finishTextItem(_textAcc); }
 
     // response.completed
     sse('response.completed', {

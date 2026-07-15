@@ -1679,6 +1679,11 @@ function createSession(id) {
       subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
+  } else {
+    providers.applyCodexProxyConfig(termEnv, {
+      providerId: persisted.provider, sessionId: id,
+      subagent: persisted.subagent, port: PORT,
+    });
   }
 
   // For Claude: pre-allocate a stable session UUID so chat-mode `--resume` works.
@@ -1869,7 +1874,11 @@ app.use(express.json({ limit: '50mb' }));
 
 // Codex Responses↔Chat 协议转换代理（国产服务商 DeepSeek/GLM/Qwen/MiniMax）。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
-mountCodexProxy(app, { getProvider: providers.getProvider, getPort: () => PORT });
+mountCodexProxy(app, {
+  getProvider: providers.getProvider,
+  getPort: () => PORT,
+  onUsage: recordRoleTokenUsage,
+});
 
 app.get('/api/sessions', (req, res) => {
   const list = [...persistedSessions.values()]
@@ -2613,13 +2622,9 @@ app.patch('/api/sessions/:id', (req, res) => {
     } catch (_) {}
   }
   if (req.body.subagent !== undefined) {
-    // Per-session Task-tool subagent provider+model, routed via the claude-proxy
-    // (effective only for provider-backed claude sessions). null / '' / {} clears it.
-    // codex-proxy has no ccfw:<pid>:<model> decode, so an override is a silent
-    // no-op there - never persist one for codex (clears any stale value too).
-    if ((s.cli || 'claude') === 'codex') {
-      s.subagent = null;
-    } else {
+    // Per-session subagent provider+model. Claude encodes the route in its model;
+    // Codex materializes native default/worker/explorer agent config layers that
+    // select a second model_provider. null / '' / {} clears the override.
     const sa = req.body.subagent;
     if (sa === null || sa === '' || (typeof sa === 'object' && Object.keys(sa).length === 0)) {
       s.subagent = null;
@@ -2629,6 +2634,12 @@ app.patch('/api/sessions/:id', (req, res) => {
       if (!v.ok) return res.status(400).json({ error: 'invalid subagent provider' });
       const model = (sa.model || '').toString().trim();
       if (!model) return res.status(400).json({ error: 'subagent model required' });
+      if (s.cli === 'codex') {
+        if (!s.provider) return res.status(400).json({ error: 'Codex subagent routing requires a selected main provider' });
+        if (!providers.codexProviderProxyable(v.value)) {
+          return res.status(400).json({ error: 'Codex subagent provider has no callable HTTP endpoint' });
+        }
+      }
       s.subagent = { providerId: v.value, model };
     } else {
       return res.status(400).json({ error: 'invalid subagent' });
@@ -2640,7 +2651,6 @@ app.patch('/api/sessions/:id', (req, res) => {
       ? `${providers.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
       : '默认(随主)';
     appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
-    } // codex subagent is a no-op; only claude reaches here
   }
   savePersistedSessions();
   res.json({ ...s, subagent: serializeSubagent(s.subagent), effectiveModel: effectiveSessionModel(s), effectiveEffort: effectiveSessionEffort(s) });
@@ -6677,6 +6687,44 @@ function broadcastRoleTokenStats(sessionName) {
   chatBroadcast(sessionName, { type: 'role_token_stats', role: payload });
 }
 
+// Codex reports one aggregate turn usage for the parent plus every child thread.
+// Proxy-backed requests are already exact per role. An official parent can stay
+// direct, though, so fill only the positive remainder after subtracting all
+// proxy-observed main/sub buckets. This also covers providers that omitted usage
+// on one response without double-counting routes the proxy did observe.
+function reconcileCodexRoleUsage(sessionName, usage) {
+  const persisted = persistedSessions.get(sessionName);
+  if (!persisted || persisted.cli !== 'codex' || !usage) return;
+  const cached = Number(usage.cache_read_input_tokens || usage.cached_input_tokens || 0);
+  const input = Number(usage.input_tokens || 0);
+  const aggregate = {
+    inputTokens: usage.cache_read_input_tokens == null ? Math.max(0, input - cached) : input,
+    outputTokens: Number(usage.output_tokens || 0),
+    cacheWrite: Number(usage.cache_creation_input_tokens || 0),
+    cacheRead: cached,
+  };
+  const snapshot = roleTokenTracker.snapshot(sessionName) || {};
+  const main = snapshot.main || {};
+  const sub = snapshot.sub || {};
+  const missing = {
+    inputTokens: Math.max(0, aggregate.inputTokens - (main.inputTokens || 0) - (sub.inputTokens || 0)),
+    outputTokens: Math.max(0, aggregate.outputTokens - (main.outputTokens || 0) - (sub.outputTokens || 0)),
+    cacheWrite: Math.max(0, aggregate.cacheWrite - (main.cacheWrite || 0) - (sub.cacheWrite || 0)),
+    cacheRead: Math.max(0, aggregate.cacheRead - (main.cacheRead || 0) - (sub.cacheRead || 0)),
+  };
+  if (missing.inputTokens + missing.outputTokens + missing.cacheWrite + missing.cacheRead === 0) return;
+  const providerId = persisted.provider || '_default_';
+  const summary = persisted.provider ? providers.getProviderSummary('codex', persisted.provider) : null;
+  recordRoleTokenUsage({
+    sessionId: sessionName,
+    role: 'main',
+    providerId,
+    providerName: (summary && summary.name) || (persisted.provider ? providerId : 'Default login'),
+    model: effectiveSessionModel(persisted) || '',
+    usage: missing,
+  });
+}
+
 // ── WeChat Bridge ──
 // Must come after chatSessions/chatBroadcast are declared (TDZ would crash otherwise).
 wechatBridge.init({
@@ -8758,6 +8806,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
     if (evt.type === 'complete') {
       cs.currentCost = evt.cost == null ? null : evt.cost;
       const usage = evt.usage || {};
+      reconcileCodexRoleUsage(sessionName, usage);
       if (cs.currentAssistantText || cs.currentToolCalls.length) {
         appendChatMessage(sessionName, {
           role: 'assistant', content: cs.currentAssistantText,
@@ -9321,6 +9370,12 @@ function runChatTurn(sessionName, text, opts = {}) {
       subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
+    if (persisted.cli === 'codex') {
+      providers.applyCodexProxyConfig(childEnv, {
+        providerId: persisted.provider, sessionId: sessionName,
+        subagent: persisted.subagent, port: PORT,
+      });
+    }
     const proc = spawn(invocation.cmd, spawnArgs, {
       cwd: cs.cwd,
       env: childEnv,
