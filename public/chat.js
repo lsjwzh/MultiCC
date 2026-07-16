@@ -2997,14 +2997,14 @@ function showCliSwitchPicker(current, states) {
     title.textContent = '切换 CLI';
     const desc = document.createElement('div');
     desc.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;margin-bottom:14px;';
-    desc.textContent = '每个 CLI 保留自己的原生会话。切换时不会转换 JSONL，而是把最近可见对话、任务状态和 Git 状态作为 checkpoint 交给目标 CLI。';
+    desc.textContent = '切换后，目标 CLI 会接着当前任务继续工作。每个 CLI 的原对话都会单独保留。';
     const select = document.createElement('select');
     select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#c9d1d9;font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
     for (const [value, meta] of Object.entries(CLI_META)) {
       const state = states && states[value];
       const opt = document.createElement('option');
       opt.value = value;
-      opt.textContent = `${meta.label}${value === current ? '（当前）' : ''}${state?.hasNativeSession ? ' · 可恢复原会话' : ' · 新会话'}`;
+      opt.textContent = `${meta.label}${value === current ? '（当前）' : ''}${state?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话'}`;
       select.appendChild(opt);
     }
     select.value = current;
@@ -3016,19 +3016,19 @@ function showCliSwitchPicker(current, states) {
     reset.type = 'checkbox';
     reset.style.marginTop = '2px';
     const resetText = document.createElement('span');
-    resetText.textContent = '重置目标 CLI 原生会话（恢复失败时使用；仍会注入当前 checkpoint）';
+    resetText.textContent = '重新开始目标 CLI（仅在切换后无法继续时勾选，当前任务信息会保留）';
     resetRow.append(reset, resetText);
     const updateInfo = () => {
       const state = states && states[select.value];
       targetInfo.textContent = state?.hasNativeSession
-        ? `将恢复 ${CLI_META[select.value].label} 之前的原生会话，并注入这次切换后的增量 checkpoint。`
-        : `将为 ${CLI_META[select.value].label} 创建新的原生会话，并注入完整 checkpoint。`;
+        ? `将继续 ${CLI_META[select.value].label} 上次的对话，并带上切换后新增的内容。`
+        : `将打开新的 ${CLI_META[select.value].label} 对话，并带上当前任务信息。`;
     };
     select.onchange = updateInfo;
     updateInfo();
     const warning = document.createElement('div');
     warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
-    warning.textContent = '切换只允许在当前回合结束后执行。目标 CLI 首次成功回复前，handoff 会保持 pending；恢复失败不会静默新建会话。';
+    warning.textContent = '请在当前回复结束后切换。如果无法继续，请勾选上面的“重新开始”后再试。';
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
