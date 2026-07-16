@@ -1,4 +1,4 @@
-// AI 配置底部面板（provider/model/effort/subagent/streaming + 角色提示词编辑）。自 chat_screen.dart 抽出。
+// AI 配置底部面板（provider/model/effort/agent/subagent + 角色提示词编辑）。自 chat_screen.dart 抽出。
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -20,7 +20,7 @@ class AIConfigResult {
   final String modelLabel;
   final String effortLabel;
   final SessionSubagent? subagent;
-  final bool? streaming;
+  final String? agent;
   const AIConfigResult({
     required this.provider,
     required this.model,
@@ -29,7 +29,7 @@ class AIConfigResult {
     required this.modelLabel,
     required this.effortLabel,
     this.subagent,
-    this.streaming,
+    this.agent,
   });
 }
 
@@ -41,7 +41,7 @@ class AIConfigSheet extends StatefulWidget {
   final String effort;
   final String? subProviderId;
   final String? subModel;
-  final bool streaming;
+  final String? agent;
   const AIConfigSheet({
     super.key,
     required this.cli,
@@ -51,7 +51,7 @@ class AIConfigSheet extends StatefulWidget {
     required this.effort,
     this.subProviderId,
     this.subModel,
-    required this.streaming,
+    this.agent,
   });
 
   @override
@@ -62,9 +62,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   late String _provider;
   late String _model;
   late String _effort;
-  late bool _streaming;
   bool _customModel = false;
   late final TextEditingController _customCtrl;
+  late final TextEditingController _agentCtrl;
   // Sub-task (subagent) cascade — same shape as the main provider/model.
   late String _subProvider;
   late String _subModel;
@@ -73,18 +73,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   bool get _isClaude => widget.cli == SessionCli.claude;
   bool get _isCodex => widget.cli == SessionCli.codex;
-  String get _defaultEffort => _isClaude ? 'medium' : 'xhigh';
-
-  static const _claudeEfforts = <String>[
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max',
-    'ultracode',
-  ];
-  static const _codexEfforts = <String>['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-  static const _genericEfforts = <String>['low', 'medium', 'high', 'xhigh'];
+  String get _defaultEffort => widget.cli.defaultEffort;
 
   @override
   void initState() {
@@ -92,10 +81,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     _provider = widget.provider;
     _model = _normalizeModel(widget.provider, widget.model);
     _effort = _validEfforts.contains(widget.effort) ? widget.effort : _defaultEffort;
-    _streaming = widget.streaming;
     final known = _modelChoices(_provider).contains(_model);
     _customModel = _model.isNotEmpty && !known;
     _customCtrl = TextEditingController(text: _customModel ? _model : '');
+    _agentCtrl = TextEditingController(text: widget.agent ?? '');
     // Sub-task seeding.
     _subProvider = widget.subProviderId ?? '';
     _subModel = _normalizeModel(_subProvider, widget.subModel ?? '');
@@ -108,12 +97,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   @override
   void dispose() {
     _customCtrl.dispose();
+    _agentCtrl.dispose();
     _subCustomCtrl.dispose();
     super.dispose();
   }
 
-  List<String> get _validEfforts =>
-      _isClaude ? _claudeEfforts : (_isCodex ? _codexEfforts : _genericEfforts);
+  List<String> get _validEfforts => widget.cli.effortOptions;
 
   Map<String, dynamic>? _providerMap(String id) {
     for (final p in widget.providers) {
@@ -201,8 +190,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   String _effortDescription(String value) {
+    if (value.isEmpty) return 'Default — Follow the selected model/provider';
     if (!_isClaude) {
       switch (value) {
+        case 'minimal':
+          return 'Minimal — Minimal reasoning where supported';
         case 'low':
           return 'Low — Fast responses with lighter reasoning';
         case 'medium':
@@ -221,6 +213,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     final choices = _modelChoices(next);
     setState(() {
       _provider = next;
+      if (_isCodex && next.isEmpty) {
+        _subProvider = '';
+        _subModel = '';
+        _customSubModel = false;
+        _subCustomCtrl.clear();
+      }
       if (!choices.contains(_model)) {
         _model = '';
         _customModel = false;
@@ -260,10 +258,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         modelLabel: _modelResultLabel(_provider, model),
         effortLabel: effortShortNameForCli(widget.cli, _effort),
         subagent: subagent,
-        // streaming is claude-only (server.js:2858 rejects it for codex with
-        // 400 "streaming is claude-only"). The toggle is hidden for non-claude,
-        // so send null there to keep the PATCH body clean.
-        streaming: _isClaude ? _streaming : null,
+        agent: widget.cli.supportsAgent ? _agentCtrl.text.trim() : null,
       ),
     );
   }
@@ -287,7 +282,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             ? _subModel
             : (subModelChoices.isNotEmpty ? subModelChoices.first : ''));
     return SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: EdgeInsets.only(
           left: 18,
           right: 18,
@@ -299,9 +294,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              _isClaude
-                  ? 'AI 配置（Provider / Model / Effort）'
-                  : 'AI 配置（Provider / Model / Reasoning Level）',
+              'AI 配置（Provider / Model${widget.cli.supportsEffort ? ' / ${widget.cli.effortFieldLabel}' : ''}）',
               style: const TextStyle(
                 color: AppColors.text,
                 fontSize: 15,
@@ -379,28 +372,52 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 ),
               ),
             ],
-            const SizedBox(height: 12),
-            Text(
-              _isClaude ? 'Effort' : 'Reasoning Level',
-              style: const TextStyle(color: AppColors.faint, fontSize: 12),
-            ),
-            const SizedBox(height: 5),
-            DropdownButtonFormField<String>(
-              value: _effort,
-              dropdownColor: AppColors.panel,
-              decoration: _sheetInputDecoration(),
-              style: const TextStyle(color: AppColors.text, fontSize: 13),
-              items: _validEfforts
-                  .map(
-                    (e) => DropdownMenuItem(
-                      value: e,
-                      child: Text(_effortDescription(e)),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (v) => setState(() => _effort = v ?? _defaultEffort),
-            ),
-            if (_isClaude) ...[
+            if (widget.cli.supportsEffort) ...[
+              const SizedBox(height: 12),
+              Text(
+                widget.cli.effortFieldLabel,
+                style: const TextStyle(color: AppColors.faint, fontSize: 12),
+              ),
+              const SizedBox(height: 5),
+              DropdownButtonFormField<String>(
+                value: _effort,
+                isExpanded: true,
+                dropdownColor: AppColors.panel,
+                decoration: _sheetInputDecoration(),
+                style: const TextStyle(color: AppColors.text, fontSize: 13),
+                items: _validEfforts
+                    .map((e) => DropdownMenuItem(
+                          value: e,
+                          child: Text(
+                            _effortDescription(e),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ))
+                    .toList(),
+                onChanged: (v) => setState(() => _effort = v ?? _defaultEffort),
+              ),
+            ],
+            if (widget.cli.supportsAgent) ...[
+              const Divider(height: 32),
+              Text(
+                '${widget.cli.displayName} Agent',
+                style: const TextStyle(
+                    color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 5),
+              TextField(
+                controller: _agentCtrl,
+                maxLength: 80,
+                style: const TextStyle(color: AppColors.text, fontSize: 13),
+                decoration: _sheetInputDecoration(
+                  hint: widget.cli == SessionCli.opencode
+                      ? '例如 build；留空使用默认 agent'
+                      : '已定义的 agent 名称；留空使用默认 agent',
+                ).copyWith(counterText: ''),
+              ),
+            ],
+            if (widget.cli.supportsSubagent) ...[
               const Divider(height: 32),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
@@ -415,7 +432,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Task 工具派生的子 agent 走的 provider+model，留空 = 随主（经 claude-proxy 路由）',
+                      '派生子 agent 使用独立的 provider+model，留空 = 随主（经本地协议代理路由）',
                       style: TextStyle(color: AppColors.faint, fontSize: 11),
                     ),
                   ),
@@ -432,7 +449,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 style: const TextStyle(color: AppColors.text, fontSize: 13),
                 items: [
                   const DropdownMenuItem(value: '', child: Text('默认（随主）')),
-                  ...widget.providers.map(
+                  ...widget.providers
+                      .where((p) => !(_isCodex && p['isOfficial'] == true))
+                      .map(
                     (p) => DropdownMenuItem(
                       value: p['id']?.toString() ?? '',
                       child: Text(
@@ -484,18 +503,6 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 ],
               ],
             ],
-            if (_isClaude) ...[
-              SwitchListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                title: const Text('流式输出',
-                    style: TextStyle(color: AppColors.text, fontSize: 13)),
-                subtitle: const Text('关闭后等整段结果再返回（弱网/调试可用），下一轮生效',
-                    style: TextStyle(color: AppColors.muted, fontSize: 11)),
-                value: _streaming,
-                onChanged: (v) => setState(() => _streaming = v),
-              ),
-            ],
             const SizedBox(height: 16),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -538,9 +545,22 @@ Future<void> openAIConfigSheet(
     return;
   }
   final sess = found;
+  var runtime = SessionCliConfig(
+    cli: sess.cli,
+    provider: sess.provider,
+    model: sess.model,
+    effectiveModel: sess.effectiveModel,
+    effort: sess.effort,
+    effectiveEffort: sess.effectiveEffort,
+    agent: sess.agent,
+    subagent: sess.subagent,
+  );
+  try {
+    runtime = await mgr.fetchSessionCliConfig(sess.id);
+  } catch (_) {}
   List<Map<String, dynamic>> providers = const [];
   try {
-    final appType = sess.cli.appType;
+    final appType = runtime.cli.appType;
     final d = await ManageService(settings: settings).fetchProviders(appType);
     providers =
         (d['providers'] as List? ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
@@ -554,16 +574,14 @@ Future<void> openAIConfigSheet(
     shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
     builder: (_) => AIConfigSheet(
-      cli: sess.cli,
+      cli: runtime.cli,
       providers: providers,
-      provider: sess.provider ?? '',
-      model: sess.model ?? '',
-      effort: sess.effectiveEffort ??
-          sess.effort ??
-          (sess.cli == SessionCli.claude ? 'medium' : 'xhigh'),
-      subProviderId: sess.subagent?.providerId,
-      subModel: sess.subagent?.model,
-      streaming: sess.streaming ?? true,
+      provider: runtime.provider ?? '',
+      model: runtime.model ?? '',
+      effort: runtime.effectiveEffort ?? runtime.effort ?? runtime.cli.defaultEffort,
+      subProviderId: runtime.subagent?.providerId,
+      subModel: runtime.subagent?.model,
+      agent: runtime.agent,
     ),
   );
   if (picked == null) return;
@@ -574,12 +592,13 @@ Future<void> openAIConfigSheet(
       model: picked.model,
       effort: picked.effort,
       subagent: picked.subagent,
-      streaming: picked.streaming,
+      agent: picked.agent,
       clearSubagent: picked.subagent == null,
     );
+    final summary = [picked.providerLabel, picked.modelLabel];
+    if (picked.effortLabel.isNotEmpty) summary.add(picked.effortLabel);
     messenger.showSnackBar(SnackBar(
-      content: Text(
-          '✓ AI 配置已保存：${picked.providerLabel} | ${picked.modelLabel} | ${picked.effortLabel}，下一轮对话生效'),
+      content: Text('✓ AI 配置已保存：${summary.join(' | ')}，下一轮对话生效'),
     ));
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('AI 配置保存失败：$e')));

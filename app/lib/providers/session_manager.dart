@@ -413,6 +413,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
                 : session.id,
             dirName: _dirNameFor(session.dirId),
             sessionCwd: session.cwd,
+            initialCli: session.cli,
+            onSessionConfigChanged: loadDashboard,
           )
           ..isActive = false
           ..isInBackground = _isInBackground;
@@ -469,6 +471,20 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     await loadDashboard();
   }
 
+  Future<SessionCliConfig> fetchSessionCliConfig(String id) =>
+      _sessionService.fetchSessionCliConfig(id);
+
+  Future<SessionCliConfig> switchSessionCli(
+    String id,
+    SessionCli cli, {
+    bool fresh = false,
+  }) async {
+    final config = await _sessionService.switchSessionCli(id, cli, fresh: fresh);
+    _providers[id]?.applyCliConfig(config);
+    await loadDashboard();
+    return config;
+  }
+
   // ── Directory + session creation ──────────────────────────────────────────
 
   Future<Directory> createDirectory({
@@ -508,6 +524,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     String? model,
     String? provider,
     String? effort,
+    String? agent,
     String? rolePrompt,
   }) async {
     final s = await _sessionService.createSessionInDir(
@@ -518,6 +535,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       model: model,
       provider: provider,
       effort: effort,
+      agent: agent,
       rolePrompt: rolePrompt,
     );
     await loadDashboard();
@@ -541,7 +559,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     required String effort,
     SessionSubagent? subagent,
     bool clearSubagent = false,
-    bool? streaming,
+    String? agent,
   }) async {
     await _sessionService.updateSessionAIConfig(
       id,
@@ -550,7 +568,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       effort: effort,
       subagent: subagent,
       clearSubagent: clearSubagent,
-      streaming: streaming,
+      agent: agent,
     );
     await loadDashboard();
   }
