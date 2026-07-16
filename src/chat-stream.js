@@ -232,7 +232,8 @@ function clearIdle(s) {
 
 /**
  * Ensure a streaming session exists (does not spawn until first send()).
- * cfg: { cmd, cwd, sessionId, baseArgs, beforeSpawn?, env?, idleMs?, onExit? }
+ * cfg: { cmd, cwd, sessionId, baseArgs, beforeSpawn?, env?, idleMs?, onExit?,
+ *        onNewSessionId?, resume? }
  */
 function ensure(name, cfg) {
   let s = sessions.get(name);
@@ -246,17 +247,20 @@ function ensure(name, cfg) {
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       onExit: cfg.onExit || null,
+      onNewSessionId: cfg.onNewSessionId || null,
       onBackgroundEvent: cfg.onBackgroundEvent || null,
       proc: null, started: false, busy: false,
       queue: [], current: null, lineBuf: '', stderrTail: '',
       idleTimer: null,
     };
+    s.started = cfg.resume === true;
     sessions.set(name, s);
   } else {
     // Allow per-turn overrides (arguments/provider env can change between turns).
     if (cfg.baseArgs !== undefined) s.baseArgs = cfg.baseArgs;
     if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
     if (cfg.env !== undefined) s.env = cfg.env;
+    if (cfg.onNewSessionId !== undefined) s.onNewSessionId = cfg.onNewSessionId;
     if (cfg.onBackgroundEvent !== undefined) s.onBackgroundEvent = cfg.onBackgroundEvent;
   }
   return s;
