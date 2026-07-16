@@ -80,6 +80,14 @@ function cleanup() {
   ok(response.status === 200 && response.data.cli === 'opencode', 'create OpenCode chat');
   const sessionId = response.data.id;
 
+  response = await api('PATCH', `/api/sessions/${sessionId}`, { effort: 'high', agent: 'build' });
+  ok(response.status === 200 && response.data.effort === 'high' && response.data.agent === 'build',
+    'OpenCode variant and native agent are persisted');
+
+  response = await api('PATCH', `/api/sessions/${sessionId}`, { subagent: { providerId: 'x', model: 'y' } });
+  ok(response.status === 400 && /only supported/.test(response.data.error || ''),
+    'OpenCode rejects Claude/Codex-only subagent routing');
+
   response = await api('PATCH', `/api/sessions/${sessionId}`, { cli: 'codex' });
   ok(response.status === 400 && /switch-cli/.test(response.data.error || ''), 'PATCH cli is rejected explicitly');
 
@@ -97,6 +105,8 @@ function cleanup() {
     && switchState.effort === response.data.effort
     && switchState.effectiveEffort === response.data.effectiveEffort,
   'switch response includes the target CLI AI settings');
+  ok(response.data.cliAvailability && typeof response.data.cliAvailability.opencode?.available === 'boolean',
+    'GET reports local CLI availability for the switcher');
   ok(response.data.pendingCliHandoff?.status === 'pending', 'handoff remains pending before target reply');
   ok(!JSON.stringify(response.data).includes('transcript'), 'GET does not expose checkpoint transcript');
 
@@ -109,6 +119,9 @@ function cleanup() {
 
   response = await api('POST', `/api/sessions/${sessionId}/switch-cli`, { cli: 'opencode' });
   ok(response.status === 200 && response.data.cli === 'opencode', 'Claude → OpenCode round trip');
+  response = await api('GET', `/api/sessions/${sessionId}`);
+  ok(response.data.effort === 'high' && response.data.agent === 'build',
+    'OpenCode-specific variant and agent survive a CLI round trip');
 
   response = await api('POST', `/api/sessions/${sessionId}/switch-cli`, { cli: 'opencode', fresh: true });
   ok(response.status === 200 && response.data.changed && response.data.fresh, 'explicit same-CLI native reset');
