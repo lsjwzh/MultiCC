@@ -3143,7 +3143,7 @@ function updateModelBtn() {
     || tt('default');
   const model = shown ? modelDisplayName(shown, _sessionProvider) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
-  const agent = _sessionCli === 'opencode' && _sessionAgent ? `Agent ${_sessionAgent}` : '';
+  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent ? `Agent ${_sessionAgent}` : '';
   modelBtn.textContent = `🧠 ${[provider, model, effort, agent].filter(Boolean).join(' | ')}`;
   modelBtn.style.display = '';
 }
@@ -3318,10 +3318,10 @@ function showAIConfigPicker({ provider, model, effort, subagent, agent }) {
       </div>
       <div id="ai-agent-section">
       <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
-      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">OpenCode Agent</div>
-      <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">对应原生 <code>opencode run --agent</code>。留空使用 OpenCode 默认 primary agent。</div>
-      <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="例如 build" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
-      <datalist id="ai-agent-list"><option value="build"></option></datalist>
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${_sessionCli === 'claude' ? 'Claude Code' : 'OpenCode'} Agent</div>
+      <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
+      <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${_sessionCli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
+      <datalist id="ai-agent-list">${_sessionCli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
       </div>
       <div id="ai-sub-section">
       <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
@@ -3364,9 +3364,9 @@ function showAIConfigPicker({ provider, model, effort, subagent, agent }) {
 
     const effortOptions = effortOptionsForCurrentCli();
     effortSection.style.display = effortOptions.length ? '' : 'none';
-    agentSection.style.display = _sessionCli === 'opencode' ? '' : 'none';
+    agentSection.style.display = (_sessionCli === 'claude' || _sessionCli === 'opencode') ? '' : 'none';
     subSection.style.display = (_sessionCli === 'claude' || _sessionCli === 'codex') ? '' : 'none';
-    agentInput.value = _sessionCli === 'opencode' ? (agent || '') : '';
+    agentInput.value = (_sessionCli === 'claude' || _sessionCli === 'opencode') ? (agent || '') : '';
     for (const o of effortOptions) {
       const opt = document.createElement('option');
       opt.value = o.value;
@@ -3460,7 +3460,7 @@ function showAIConfigPicker({ provider, model, effort, subagent, agent }) {
         provider: providerSel.value,
         model: pickedModel,
         effort: effortSel.value,
-        agent: _sessionCli === 'opencode' ? agentInput.value.trim() : null,
+        agent: (_sessionCli === 'claude' || _sessionCli === 'opencode') ? agentInput.value.trim() : null,
         subagent: (_sessionCli === 'claude' || _sessionCli === 'codex') && subPid && subModel
           ? { providerId: subPid, model: subModel }
           : null,
@@ -3527,7 +3527,7 @@ modelBtn?.addEventListener('click', async () => {
         provider: picked.provider,
         model: picked.model,
         effort: picked.effort,
-        ...(_sessionCli === 'opencode' ? { agent: picked.agent } : {}),
+        ...((_sessionCli === 'claude' || _sessionCli === 'opencode') ? { agent: picked.agent } : {}),
         ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
       }),
     });
@@ -3544,7 +3544,7 @@ modelBtn?.addEventListener('click', async () => {
     updateModelBtn();
     const _savedModel = _sessionEffectiveModel || _sessionModel;
     const savedParts = [providerShortName(_sessionProvider), _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
-    if (_sessionCli === 'opencode' && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
+    if ((_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
     addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('AI 配置保存失败：' + e.message);
@@ -3575,7 +3575,7 @@ effortBtn?.addEventListener('click', async () => {
 const providerBtn = document.getElementById('provider-btn');
 let _sessionProvider = '';       // provider id ('' = default login)
 let _sessionSubagent = null;     // {providerId, model} for Task-tool subagent (claude-proxy), null = 随主
-let _sessionAgent = '';          // OpenCode native --agent name; blank = default primary agent
+let _sessionAgent = '';          // Claude/OpenCode native --agent name; blank = CLI default agent
 let _sessionProviderDisplayName = '';  // 实际生效 provider 的显示名（init 兜底；_sessionProvider 为空或 _providerList 未加载时用）
 let _sessionCli = 'claude';
 let _sessionCliStates = {};
@@ -3600,6 +3600,7 @@ function applyCliSwitchState(info) {
   if (info.effectiveEffort !== undefined) {
     _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
   }
+  if (info.agent !== undefined) _sessionAgent = info.agent || '';
   if (info.subagent !== undefined) _sessionSubagent = info.subagent || null;
   updateSubagentPill();
   updateModelBtn();

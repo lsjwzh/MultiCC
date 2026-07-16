@@ -586,7 +586,7 @@ function effectiveSessionEffort(session) {
 function normalizeCliAgent(cli, value) {
   const agent = value == null ? '' : String(value).trim();
   if (!agent) return null;
-  if (cli !== 'opencode' || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
+  if (!['claude', 'opencode'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
   return agent;
 }
 function codexDefaultReasoningLevel() {
@@ -2503,7 +2503,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     label,
     model: model || null, // null = follow default/provider model
     effort: sessionEffort || null, // null = follow Claude Code/provider default
-    agent: sessionAgent || null, // OpenCode --agent; unsupported CLIs keep null
+    agent: sessionAgent || null, // Claude/OpenCode native --agent; unsupported CLIs keep null
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     autoCommit: true,      // default: auto-commit & merge after task completion
     autoDispatch: false,   // default: do NOT inject dispatch context prompt unless user opts in
@@ -2761,6 +2761,7 @@ app.post('/api/sessions/:id/switch-cli', (req, res) => {
       providerName: sessionProviderName(session),
       model: session.model || null,
       effort: session.effort || null,
+      agent: session.agent || null,
       subagent: serializeSubagent(session.subagent),
     });
   } catch (error) {
@@ -2794,8 +2795,11 @@ app.patch('/api/sessions/:id', (req, res) => {
       return res.status(400).json({ error: 'invalid model' });
     }
     s.model = model || null;
-    // Chat sessions pick this up on the next turn (fresh spawn per turn);
-    // terminal sessions need a session restart to relaunch their CLI with it.
+    // Non-Claude chat sessions spawn per turn. Claude chat keeps a warm
+    // process, so close it now or the UI would report the new model while the
+    // next turn still runs on the old one. Terminal sessions still need a
+    // manual restart to relaunch their CLI with it.
+    if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
     appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
   }
   if (req.body.effort !== undefined) {
@@ -2808,8 +2812,9 @@ app.patch('/api/sessions/:id', (req, res) => {
   }
   if (req.body.agent !== undefined) {
     const agent = normalizeCliAgent(s.cli || 'claude', req.body.agent);
-    if (agent === undefined) return res.status(400).json({ error: 'agent is only supported by OpenCode and must be a valid agent name' });
+    if (agent === undefined) return res.status(400).json({ error: 'agent is only supported by Claude/OpenCode and must be a valid agent name' });
     s.agent = agent;
+    if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
     appendEvent(s.dirId, 'session_agent_changed', `${s.label || s.id} → ${s.agent || '默认 agent'}`, s.id);
   }
   if (req.body.rolePrompt !== undefined) {
@@ -2817,6 +2822,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     if (rp.length > 40000) return res.status(400).json({ error: 'rolePrompt too long (max 40000)' });
     // null clears the session override → it falls back to the directory default.
     s.rolePrompt = rp.trim() || null;
+    if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
     appendEvent(s.dirId, 'session_role_changed', s.rolePrompt ? (s.label || s.id) : `${s.label || s.id}（清除，继承目录）`, s.id);
   }
   if (req.body.memory !== undefined) {
@@ -3737,15 +3743,19 @@ app.post('/api/sessions/:id/fork', (req, res) => {
   }
 
   // Create the forked session record, inheriting the source's CLI/provider/model/
-  // effort/rolePrompt so it continues from the same backend.
+  // effort/native-agent/rolePrompt so it continues from the same backend.
   const dir = directories.get(src.dirId);
   const r = createSessionRecord({
     dir, cli: src.cli, kind: 'chat', label: label || `${src.label || src.id} · fork`,
     provider: src.provider == null ? undefined : src.provider,
-    model: src.model, effort: src.effort, rolePrompt: src.rolePrompt,
+    model: src.model, effort: src.effort, agent: src.agent, rolePrompt: src.rolePrompt,
   });
   if (!r.ok) return res.status(400).json({ error: r.error });
   const newSid = r.id;
+  if (src.subagent && src.subagent.providerId && src.subagent.model) {
+    r.session.subagent = { providerId: src.subagent.providerId, model: src.subagent.model };
+    rememberActiveCliState(r.session);
+  }
 
   // Seed the new session's chat history with the sliced transcript. The forkedFrom
   // meta message goes first so the agent and UI can see this is a fork.
@@ -3944,7 +3954,7 @@ app.get('/api/sessions/:id/bundle', (req, res) => {
       v: 1, exportedAt: new Date().toISOString(),
       sessionMeta: {
         id: s.id, cli: s.cli, kind: s.kind, label: s.label,
-        model: s.model, effort: s.effort, rolePrompt: s.rolePrompt || null,
+        model: s.model, effort: s.effort, agent: s.agent || null, rolePrompt: s.rolePrompt || null,
         branch: s.branch, worktreePath: s.worktreePath, dirId: s.dirId,
         // dirId/branch/worktreePath are hints; target rebuilds its own paths.
       },
@@ -4001,7 +4011,7 @@ app.post('/api/sessions/import', (req, res) => {
     dir, cli: meta.cli, kind: 'chat',
     label: labelOverride || (meta.label ? `${meta.label} · imported` : null),
     provider: targetProviderId === undefined ? undefined : (targetProviderId || ''),
-    model: meta.model, effort: meta.effort, rolePrompt: meta.rolePrompt,
+    model: meta.model, effort: meta.effort, agent: meta.agent, rolePrompt: meta.rolePrompt,
   });
   if (!r.ok) return res.status(400).json({ error: r.error });
   const newSid = r.id;

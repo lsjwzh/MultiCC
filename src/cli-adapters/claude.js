@@ -24,6 +24,7 @@ function createClaudeAdapter(deps) {
     buildTerminalCmd(session) {
       let command = `${cmd}${args.length ? ' ' + args.join(' ') : ''}`;
       if (session.model) command += ` --model ${session.model}`;
+      if (session.agent) command += ` --agent ${session.agent}`;
       const effort = cliEffortLevel(session);
       if (effort) command += ` --effort ${effort}`;
       if (normalizeEffort(session?.effort) === 'ultracode') {
@@ -46,6 +47,7 @@ function createClaudeAdapter(deps) {
 
       if (so.mode === 'streaming') {
         const extraArgs = [];
+        if (so.rawAgent) extraArgs.push('--agent', so.rawAgent);
         if (effort) extraArgs.push('--effort', effort);
         if (chatDisallowedTools.length) {
           extraArgs.push('--disallowedTools', chatDisallowedTools.join(','));
@@ -67,6 +69,7 @@ function createClaudeAdapter(deps) {
         '--append-system-prompt', sysPrompt,
       ];
       if (model) args.push('--model', model);
+      if (so.rawAgent) args.push('--agent', so.rawAgent);
       if (effort) args.push('--effort', effort);
       if (normalizeEffort(so.rawEffort) === 'ultracode') {
         args.push('--settings', '{"ultracode":true}');

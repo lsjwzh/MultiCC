@@ -292,6 +292,7 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
       skipDefaultModel: o.skipDefaultModel, defaultModel: 'claude-default',
     });
     if (model) result.push('--model', model);
+    if (persisted.agent) result.push('--agent', persisted.agent);
     const effort = cliEffortLevel(persisted);
     if (effort) result.push('--effort', effort);
     if (normalizeEffort(persisted.effort) === 'ultracode') result.push('--settings', '{"ultracode":true}');
@@ -365,7 +366,7 @@ function shapeEquiv(label, { adapter, persisted, isFirstTurn, disallowedTools, m
 // 3a: claude per-turn, first turn, ultracode (=> --settings + --effort xhigh)
 shapeEquiv('3a claude per-turn first ultracode', {
   adapter: claudeAdapterWith(['Bash', 'WebFetch']),
-  persisted: basePersisted({ cli: 'claude', type: null, effort: 'ultracode' }),
+  persisted: basePersisted({ cli: 'claude', type: null, effort: 'ultracode', agent: 'reviewer' }),
   isFirstTurn: true, disallowedTools: ['Bash', 'WebFetch'],
 });
 
@@ -426,6 +427,7 @@ function todayStreamingBaseArgs(persisted, { sysPrompt, model, disallowedTools }
   // Replicates chat-stream.spawnProc prefix (minus sessionArgs) +
   // runChatTurnStreaming extraArgs (effort + disallowedTools), no prompt, no handle.
   const extraArgs = [];
+  if (persisted.agent) extraArgs.push('--agent', persisted.agent);
   const effort = cliEffortLevel(persisted);
   if (effort) extraArgs.push('--effort', effort);
   if (disallowedTools && disallowedTools.length) {
@@ -447,7 +449,7 @@ function todayStreamingBaseArgs(persisted, { sysPrompt, model, disallowedTools }
   delete notesStore[sessionName];
   const deps = makeDeps();
   const disallowed = ['Bash'];
-  const persisted = basePersisted({ cli: 'claude', type: null, effort: 'high', streaming: true });
+  const persisted = basePersisted({ cli: 'claude', type: null, effort: 'high', agent: 'reviewer', streaming: true });
   const opts = {
     isFirstTurn: true, mode: 'streaming',
     providerModel: 'fable-wire', providerModels: ['fable-wire'], skipDefaultModel: false,
