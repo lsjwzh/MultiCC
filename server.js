@@ -85,8 +85,7 @@ const tokenGlobal = require('./src/token-global');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
-const { mountCodexProxy } = require('./src/codex-proxy');
-const { mountClaudeProxy } = require('./src/claude-proxy');
+const { mountCodexProxy, mountClaudeProxy } = require('cli-provider-router');
 const app = express();
 
 // ── Access token authentication (cookie-based login) ──
@@ -304,7 +303,7 @@ const CODEX_STAY_ALIVE_PROMPT = CODEX_STAY_ALIVE_HINT === '0' ? '' : [
   '- 如果你不确定子任务是否还在跑，宁可多等一轮也不要提前退出。',
   '[进程保活规则结束]',
 ].join('\n');
-// Default-on toggle for the per-session/per-role claude proxy (src/claude-proxy.js).
+// Default-on toggle for the per-session/per-role cli-provider-router Claude proxy.
 // `let`: hot-reloadable at runtime via POST /api/settings/proxy (persists to .env).
 // Set CLAUDE_PROXY_ENABLED=0 in .env to bypass and route claude directly to the provider.
 let CLAUDE_PROXY_ENABLED = String(process.env.CLAUDE_PROXY_ENABLED ?? '1') !== '0';
@@ -1844,7 +1843,7 @@ function createSession(id) {
 }
 
 // ── REST API ──
-// Claude Code per-session/per-role routing proxy (src/claude-proxy.js). Mounted
+// Claude Code per-session/per-role routing proxy from cli-provider-router. Mounted
 // BEFORE express.json() on purpose: it streams the raw request body (no 100kb
 // limit, no double-parse) and inspects the `model` field to route each
 // /v1/messages request — main loop vs Task-tool subagent — to different providers.

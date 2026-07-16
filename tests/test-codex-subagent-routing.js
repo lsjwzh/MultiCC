@@ -9,7 +9,7 @@ const express = require('express');
 const {
   mountCodexProxy,
   normalizeResponsesUsage,
-} = require('../src/codex-proxy');
+} = require('cli-provider-router');
 const {
   materializeCodexAuth,
   materializeCodexRoutingHome,

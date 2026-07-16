@@ -6,10 +6,10 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const {
-  createHandler,
-  decodeCcfwModel,
-  parseProxyUrl,
-} = require('../src/claude-proxy');
+  createClaudeHandler: createHandler,
+  decodeClaudeRoutedModel: decodeCcfwModel,
+  parseClaudeProxyUrl: parseProxyUrl,
+} = require('cli-provider-router');
 const { createRoleTokenTracker } = require('../src/role-token-tracker');
 
 let passed = 0;
