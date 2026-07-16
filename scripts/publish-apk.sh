@@ -20,6 +20,16 @@ echo "[publish-apk] Building release APK…"
 
 cp "$SRC" "$DEST"
 
+# Keep the legacy checksum sidecar in sync for scripts and mirrors that still
+# verify the published APK before serving or copying it.
+if command -v shasum >/dev/null 2>&1; then
+  shasum -a 1 "$DEST" | awk '{print $1}' > "$DEST.sha1"
+elif command -v sha1sum >/dev/null 2>&1; then
+  sha1sum "$DEST" | awk '{print $1}' > "$DEST.sha1"
+else
+  echo "[publish-apk] WARNING: no SHA-1 utility found; checksum not updated" >&2
+fi
+
 # Extract versionName/versionCode via the Android SDK's aapt2, if available, so
 # the server can advertise the exact version. Falls back gracefully if absent.
 AAPT="$(ls "$HOME/Library/Android/sdk/build-tools/"*/aapt2 2>/dev/null | sort -V | tail -1 || true)"
