@@ -5,16 +5,21 @@ configurations while keeping Codex's native `spawn_agent` orchestration.
 
 ## Runtime structure
 
-1. `src/providers.js` materializes the selected provider's `CODEX_HOME`.
+1. `src/providers.js` resolves MultiCC providers and delegates `CODEX_HOME`
+   materialization to `cli-provider-router`.
 2. A proxyable main provider is rewritten to
    `/codex-proxy/:providerId/:sessionId/main/responses`.
 3. `default`, `worker`, and `explorer` agent TOMLs select the injected
    `multicc_subagent` model provider, which points to the same endpoint with the
    `sub` role and the selected child provider.
-4. `src/codex-proxy.js` resolves the provider into one of three isolated wire
+4. `cli-provider-router` resolves the provider into one of three isolated wire
    paths: direct Responses, Responses compatibility, or Chat-to-Responses.
 5. Every completed upstream response reports normalized usage to the shared role
    tracker. OpenAI cached input is split from fresh input before accounting.
+
+The package owns protocol conversion, route preparation, auth materialization and
+usage normalization. MultiCC owns session state, provider CRUD, current-turn reset,
+persistent token ledgers, WebSocket updates and official-main aggregate reconciliation.
 
 An official/OpenAI subscription parent stays direct. Its main usage is the
 positive remainder of Codex's aggregate turn usage after proxy-observed child

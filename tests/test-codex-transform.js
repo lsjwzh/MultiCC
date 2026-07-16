@@ -1,6 +1,6 @@
 'use strict';
 
-const { responsesToChat, chatStreamToResponses } = require('../src/codex-proxy-transform.js');
+const { responsesToChat, chatStreamToResponses } = require('cli-provider-router');
 
 let passed = 0;
 let failed = 0;
