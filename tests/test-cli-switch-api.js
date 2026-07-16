@@ -87,9 +87,16 @@ function cleanup() {
   ok(response.status === 200 && response.data.changed && response.data.fromCli === 'opencode', 'OpenCode → Codex switch');
   ok(response.data.cliStates?.opencode && response.data.cliStates?.codex, 'per-CLI state summaries returned');
   ok(/^handoff_/.test(response.data.handoffId || ''), 'handoff id returned');
+  const switchState = response.data;
 
   response = await api('GET', `/api/sessions/${sessionId}`);
   ok(response.status === 200 && response.data.cli === 'codex', 'GET reports active Codex CLI');
+  ok(switchState.provider === response.data.provider
+    && switchState.model === response.data.model
+    && switchState.effectiveModel === response.data.effectiveModel
+    && switchState.effort === response.data.effort
+    && switchState.effectiveEffort === response.data.effectiveEffort,
+  'switch response includes the target CLI AI settings');
   ok(response.data.pendingCliHandoff?.status === 'pending', 'handoff remains pending before target reply');
   ok(!JSON.stringify(response.data).includes('transcript'), 'GET does not expose checkpoint transcript');
 
