@@ -43,10 +43,20 @@ async function waitForServer() {
   throw new Error('isolated server did not start');
 }
 
+async function clickElement(page, selector) {
+  const clicked = await page.evaluate(sel => {
+    const element = document.querySelector(sel);
+    if (!element) return false;
+    element.click();
+    return true;
+  }, selector);
+  if (!clicked) throw new Error(`missing clickable element: ${selector}`);
+}
+
 async function openConfig(page, expectedCli) {
   await page.waitForFunction(cli => document.querySelector('#cli-btn')?.textContent.includes(cli),
-    { timeout: 10000 }, expectedCli);
-  await page.click('#model-btn');
+    { polling: 100, timeout: 10000 }, expectedCli);
+  await clickElement(page, '#model-btn');
   await page.waitForSelector('#ai-agent-section', { timeout: 10000 });
   return page.evaluate(() => ({
     effortLabel: document.querySelector('#ai-effort-label')?.textContent.trim(),
@@ -59,8 +69,8 @@ async function openConfig(page, expectedCli) {
 }
 
 async function closeConfig(page) {
-  await page.click('#ai-cancel');
-  await page.waitForFunction(() => !document.querySelector('#ai-cancel'));
+  await clickElement(page, '#ai-cancel');
+  await page.waitForFunction(() => !document.querySelector('#ai-cancel'), { polling: 100 });
 }
 
 async function stopServer() {
@@ -112,6 +122,7 @@ async function cleanup() {
   const chatUrl = `${BASE}/chat.html?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(TOKEN)}`;
   await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
+  console.log('  checking OpenCode controls');
   let ui = await openConfig(page, 'OpenCode');
   if (!ui.agentVisible || ui.subagentVisible || ui.subagentPillVisible
       || ui.effortLabel !== 'Variant' || !ui.effortValues.includes('minimal')) {
@@ -119,8 +130,9 @@ async function cleanup() {
   }
   await closeConfig(page);
 
-  await page.click('#cli-btn');
-  await page.waitForFunction(() => [...document.querySelectorAll('option')].some(option => option.value === 'zcode'));
+  await clickElement(page, '#cli-btn');
+  await page.waitForFunction(() => [...document.querySelectorAll('option')].some(option => option.value === 'zcode'),
+    { polling: 100 });
   const zcodeOption = await page.evaluate(() => {
     const option = [...document.querySelectorAll('option')].find(item => item.value === 'zcode');
     return { disabled: option?.disabled, text: option?.textContent || '' };
@@ -130,6 +142,7 @@ async function cleanup() {
   }
   await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === '取消')?.click());
 
+  console.log('  checking Claude controls');
   await api('POST', `/api/sessions/${session.id}/switch-cli`, { cli: 'claude' });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
   ui = await openConfig(page, 'Claude');
@@ -138,6 +151,7 @@ async function cleanup() {
   }
   await closeConfig(page);
 
+  console.log('  checking Codex controls');
   await api('POST', `/api/sessions/${session.id}/switch-cli`, { cli: 'codex' });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
   ui = await openConfig(page, 'Codex');
