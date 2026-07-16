@@ -490,6 +490,16 @@ function appTypeForCli(cli) {
   return cli === 'codex' ? 'codex' : 'claude';
 }
 
+function sessionProviderName(session) {
+  const providerId = session && session.provider;
+  if (!providerId) return null;
+  try {
+    return providers.getProviderSummary(appTypeForCli(session.cli), providerId)?.name || providerId;
+  } catch (_) {
+    return providerId;
+  }
+}
+
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 function normalizeEffort(v) {
@@ -2610,6 +2620,13 @@ function performCliSwitch(session, targetCli, options = {}) {
     handoffId: handoff.id,
     reusedTarget: result.reused,
     fresh: options.fresh === true,
+    provider: session.provider || null,
+    providerName: sessionProviderName(session),
+    model: session.model || null,
+    effectiveModel: effectiveSessionModel(session),
+    effort: session.effort || null,
+    effectiveEffort: effectiveSessionEffort(session),
+    subagent: serializeSubagent(session.subagent),
   });
   if (session.dirId) workspaceBroadcast(session.dirId, { type: 'session_cli_changed', sessionId: session.id, cli: targetCli });
   return { result, handoff };
@@ -2677,6 +2694,10 @@ app.post('/api/sessions/:id/switch-cli', (req, res) => {
       effectiveModel: effectiveSessionModel(session),
       effectiveEffort: effectiveSessionEffort(session),
       provider: session.provider || null,
+      providerName: sessionProviderName(session),
+      model: session.model || null,
+      effort: session.effort || null,
+      subagent: serializeSubagent(session.subagent),
     });
   } catch (error) {
     console.error(`[multicc/cli-switch] ${session.id} → ${targetCli}:`, error);

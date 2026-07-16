@@ -822,7 +822,7 @@ function handleEvent(msg) {
       break;
 
     case 'cli_switched':
-      applyCliUi(msg.cli);
+      applyCliSwitchState(msg);
       addSystemMsg(`⇄ CLI 已从 ${CLI_META[msg.fromCli]?.label || msg.fromCli} 切换到 ${CLI_META[msg.cli]?.label || msg.cli}；下一条消息会携带结构化上下文交接${msg.reusedTarget ? '并恢复该 CLI 原会话' : ''}`);
       loadSessionModel();
       break;
@@ -3066,7 +3066,7 @@ cliBtn?.addEventListener('click', async () => {
       return;
     }
     _sessionCliStates = data.cliStates || _sessionCliStates;
-    if (data.cli) applyCliUi(data.cli);
+    applyCliSwitchState(data);
     await loadSessionModel();
   } catch (error) {
     addSystemMsg('CLI 切换失败：' + error.message);
@@ -3436,6 +3436,7 @@ async function loadSessionModel() {
     _sessionCliStates = info.cliStates || {};
     _pendingCliHandoff = info.pendingCliHandoff || null;
     _sessionProvider = info.provider || '';
+    _sessionProviderDisplayName = '';
     _sessionSubagent = info.subagent || null;
     updateSubagentPill();
     if (_sessionProvider) await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
@@ -3518,6 +3519,27 @@ let _pendingCliHandoff = null;
 let _providerList = [];           // [{id,appType,name,baseUrl,model,isOfficial}] - 最近一次拉取结果
 let _providerDefaults = { claude: null, codex: null };
 
+// Replace the source CLI's AI settings as soon as a switch succeeds. The
+// follow-up GET remains as reconciliation, but the header must not keep showing
+// the old provider while that request is pending (or if it fails).
+function applyCliSwitchState(info) {
+  if (!info) return;
+  if (info.cli) applyCliUi(info.cli);
+  _providerList = [];
+  _sessionProviderDisplayName = '';
+  if (info.provider !== undefined) _sessionProvider = info.provider || '';
+  if (info.providerName !== undefined) _sessionProviderDisplayName = info.providerName || '';
+  if (info.model !== undefined) _sessionModel = info.model || '';
+  if (info.effectiveModel !== undefined) _sessionEffectiveModel = info.effectiveModel || info.model || '';
+  if (info.effort !== undefined) _sessionEffort = info.effort || '';
+  if (info.effectiveEffort !== undefined) {
+    _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
+  }
+  if (info.subagent !== undefined) _sessionSubagent = info.subagent || null;
+  updateSubagentPill();
+  updateModelBtn();
+}
+
 function effectiveProviderIdForChoices(providerId) {
   return providerId || _providerDefaults[_sessionCli] || '';
 }
@@ -3525,7 +3547,7 @@ function effectiveProviderIdForChoices(providerId) {
 function providerShortName(id) {
   if (!id) return tt('default');
   const p = _providerList.find(o => o.id === id);
-  return p ? p.name : id.slice(0, 8);
+  return p ? p.name : (_sessionProviderDisplayName || id.slice(0, 8));
 }
 
 function updateProviderBtn() {
