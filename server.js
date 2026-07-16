@@ -85,6 +85,15 @@ const tokenGlobal = require('./src/token-global');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
+const {
+  SUPPORTED_CHAT_CLIS,
+  ensureCliStates,
+  rememberActiveCliState,
+  activateCliState,
+  stateSummary: cliStateSummary,
+  buildHandoffCheckpoint,
+  renderHandoffPrompt,
+} = require('./src/cli-switch');
 const { mountCodexProxy, mountClaudeProxy } = require('cli-provider-router');
 const app = express();
 
@@ -399,6 +408,7 @@ function noteReportedModel(sessionName, model) {
   const p = persistedSessions.get(sessionName);
   if (!p || p.reportedModel === model) return;
   p.reportedModel = model;
+  rememberActiveCliState(p);
   savePersistedSessions();
 }
 
@@ -962,6 +972,13 @@ function savePersistedSessions() {
 const _state = loadPersistedState();
 const persistedSessions = _state.persistedSessions;
 
+// Schema vNext: preserve one native session/settings snapshot per CLI. Legacy
+// records keep their active top-level fields for backward compatibility; the
+// map is hydrated from those fields once and then maintained on every switch.
+for (const session of persistedSessions.values()) {
+  if (ensureCliStates(session)) _state.needsSave = true;
+}
+
 // ── Directory domain (src/directory: controller / service / repository) ──
 // Composition root: bind the domain's ports to this file's runtime state. The
 // repository wraps the boot-loaded Map, so `directories` below keeps the same
@@ -1007,6 +1024,8 @@ function destroySessionCascade(s, d) {
   bgCompletionCoalescer.cancel(s.id); // drop any completions buffered for this now-deleted session
   share.removeForSession(s.id);
   if (s.worktreePath && s.branch) gitWorktreeRemove(d.path, s.worktreePath, s.branch);
+  chatHistories.delete(s.id);
+  try { fs.unlinkSync(chatHistoryPath(s.id)); } catch (_) {}
   teardownTriggers(s.id);
   purgeNotesForSession(s.id);
   persistedSessions.delete(s.id);
@@ -1902,6 +1921,8 @@ app.get('/api/sessions', (req, res) => {
         subagent: serializeSubagent(p.subagent),  // Task-tool subagent override; null = 随主
         autoCommit: !!p.autoCommit,
         autoDispatch: !!p.autoDispatch,
+        cliStates: cliStateSummary(p),
+        pendingCliHandoff: cliHandoffSummary(p),
         cwd,
         createdAt: p.createdAt,
         mergeState: p.dirId ? mergeStateCached(directories.get(p.dirId), p) : null,
@@ -2348,6 +2369,7 @@ app.get('/api/directories/:id/sessions', (req, res) => {
         model: s.model || null, effort: s.effort || null, effectiveEffort: effectiveSessionEffort(s), rolePrompt: s.rolePrompt || null,
         provider: s.provider || null,  // cc-switch provider id; null = default login
         subagent: serializeSubagent(s.subagent),  // Task-tool subagent override; null = 随主
+        cliStates: cliStateSummary(s), pendingCliHandoff: cliHandoffSummary(s),
         createdAt: s.createdAt,
         branch: s.branch || null,
         worktreePath: s.worktreePath || null,
@@ -2438,6 +2460,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
   };
   if (rp) session.rolePrompt = rp;
   if (ephemeral) session.ephemeral = true;
+  if (kind === 'chat') ensureCliStates(session);
   persistedSessions.set(sid, session);
   savePersistedSessions();
   appendEvent(dir.id, 'session_created', `${cli} ${kind}${ephemeral ? ' (gw)' : ''}`, sid);
@@ -2460,12 +2483,218 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   res.json(r.session);
 });
 
+function cliSwitchDefaults(cli) {
+  const appType = appTypeForCli(cli);
+  const provider = providerDefaults[cli] || providerDefaults[appType] || null;
+  return {
+    provider,
+    // A provider/model that is valid for Claude may not be accepted by
+    // OpenCode/ZCode even though they share the Anthropic-compatible pool.
+    // Let a newly activated CLI choose its own default model.
+    model: null,
+    effort: cli === 'codex' ? codexDefaultReasoningLevel() : null,
+    subagent: null,
+  };
+}
+
+function cliHandoffSummary(session) {
+  const handoff = session && session.pendingCliHandoff;
+  return handoff ? {
+    id: handoff.id,
+    fromCli: handoff.fromCli,
+    toCli: handoff.toCli,
+    status: handoff.status,
+    createdAt: handoff.createdAt,
+    reusedTarget: !!handoff.reusedTarget,
+  } : null;
+}
+
+function cliSwitchGitSnapshot(session) {
+  const cwd = cwdForSession(session);
+  const snapshot = { branch: session.branch || null, head: null, changes: [] };
+  try {
+    snapshot.head = execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+    }).trim() || null;
+  } catch (_) {}
+  try {
+    const out = execFileSync('git', ['-C', cwd, 'status', '--short'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    snapshot.changes = out.split('\n').map(line => line.trimEnd()).filter(Boolean).slice(0, 100);
+  } catch (_) {}
+  return snapshot;
+}
+
+function cliSwitchBusyState(sessionId) {
+  const cs = chatSessions.get(sessionId);
+  const stream = chatStream.status(sessionId);
+  const busy = !!(
+    (cs && (cs.isStreaming || cs.claudeProc))
+    || (stream && (stream.busy || stream.queued > 0))
+  );
+  return { busy, cs, stream };
+}
+
+function resetChatRuntimeForCli(cs, session) {
+  if (!cs) return;
+  if (cs.claudeProc) {
+    try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
+    cs.claudeProc = null;
+  }
+  cancelClassify(cs);
+  cs.cli = session.cli;
+  cs.chatTurnCount = (session.cliSessionId || session._streamSessionId) ? 1 : 0;
+  cs.lineBuf = '';
+  cs.currentAssistantText = '';
+  cs.currentToolCalls = [];
+  cs.currentCost = null;
+  cs.isStreaming = false;
+  cs.streamReplay = [];
+  cs._adapterError = null;
+  cs._killReason = null;
+  cs._resultSaved = false;
+}
+
+function performCliSwitch(session, targetCli, options = {}) {
+  const fromCli = session.cli || 'claude';
+  const now = Date.now();
+  const history = loadChatHistory(session.id);
+  const checkpoint = buildHandoffCheckpoint({
+    session,
+    fromCli,
+    toCli: targetCli,
+    history,
+    git: cliSwitchGitSnapshot(session),
+    now,
+  });
+
+  // Snapshot the source state before terminating its process. activateCliState
+  // then restores the target's independent native id and settings, if present.
+  const result = activateCliState(session, targetCli, {
+    fresh: options.fresh === true,
+    defaults: cliSwitchDefaults(targetCli),
+    now,
+  });
+  const handoff = {
+    id: `handoff_${crypto.randomBytes(8).toString('hex')}`,
+    fromCli,
+    toCli: targetCli,
+    createdAt: checkpoint.createdAt,
+    status: 'pending',
+    reusedTarget: result.reused,
+    checkpoint,
+  };
+  session.pendingCliHandoff = handoff;
+
+  // chatStream owns Claude's warm process; killing cs.claudeProc alone does not
+  // touch it. Always close the adapter state before reusing this logical id.
+  chatStream.close(session.id);
+  const cs = chatSessions.get(session.id);
+  resetChatRuntimeForCli(cs, session);
+  rememberActiveCliState(session, now);
+
+  appendChatMessage(session.id, {
+    role: 'system',
+    content: `CLI switched from ${fromCli} to ${targetCli}. A structured handoff checkpoint will be delivered with the next message.`,
+    ts: now,
+    cliSwitch: { handoffId: handoff.id, fromCli, toCli: targetCli, reusedTarget: result.reused },
+  });
+  appendEvent(session.dirId, 'session_cli_changed', `${session.label || session.id}: ${fromCli} → ${targetCli}`, session.id);
+  savePersistedSessions();
+  chatBroadcast(session.id, {
+    type: 'cli_switched',
+    cli: targetCli,
+    fromCli,
+    handoffId: handoff.id,
+    reusedTarget: result.reused,
+    fresh: options.fresh === true,
+  });
+  if (session.dirId) workspaceBroadcast(session.dirId, { type: 'session_cli_changed', sessionId: session.id, cli: targetCli });
+  return { result, handoff };
+}
+
+function consumePendingCliHandoff(sessionName) {
+  const session = persistedSessions.get(sessionName);
+  const handoff = session && session.pendingCliHandoff;
+  if (!handoff || handoff.status !== 'pending') return false;
+  session.lastCliHandoff = {
+    id: handoff.id,
+    fromCli: handoff.fromCli,
+    toCli: handoff.toCli,
+    createdAt: handoff.createdAt,
+    consumedAt: new Date().toISOString(),
+  };
+  delete session.pendingCliHandoff;
+  rememberActiveCliState(session);
+  savePersistedSessions();
+  chatBroadcast(sessionName, {
+    type: 'system', subtype: 'cli_handoff_applied',
+    message: `✓ ${handoff.fromCli} → ${handoff.toCli} 的上下文交接已由目标 CLI 接收`,
+  });
+  return true;
+}
+
+app.post('/api/sessions/:id/switch-cli', (req, res) => {
+  const session = persistedSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (session.type === 'aux' || session.type === 'gateway') {
+    return res.status(400).json({ error: 'system session must be switched by its bridge controller' });
+  }
+  if (session.kind !== 'chat') return res.status(400).json({ error: 'only chat sessions can switch CLI' });
+  const targetCli = String(req.body && req.body.cli || '').trim().toLowerCase();
+  if (!SUPPORTED_CHAT_CLIS.includes(targetCli)) {
+    return res.status(400).json({ error: `cli must be one of: ${SUPPORTED_CHAT_CLIS.join(', ')}` });
+  }
+  const fresh = !!(req.body && req.body.fresh);
+  if ((session.cli || 'claude') === targetCli && !fresh) {
+    ensureCliStates(session);
+    return res.json({
+      ok: true, changed: false, cli: targetCli,
+      cliStates: cliStateSummary(session),
+      pendingCliHandoff: cliHandoffSummary(session),
+    });
+  }
+  const activity = cliSwitchBusyState(session.id);
+  if (activity.busy) {
+    return res.status(409).json({
+      error: 'session is running; wait for the current turn to finish or cancel it before switching CLI',
+      stream: activity.stream || null,
+    });
+  }
+  try {
+    const switched = performCliSwitch(session, targetCli, { fresh });
+    res.json({
+      ok: true,
+      changed: true,
+      cli: session.cli,
+      fromCli: switched.result.fromCli,
+      handoffId: switched.handoff.id,
+      reusedTarget: switched.result.reused,
+      fresh,
+      cliStates: cliStateSummary(session),
+      effectiveModel: effectiveSessionModel(session),
+      effectiveEffort: effectiveSessionEffort(session),
+      provider: session.provider || null,
+    });
+  } catch (error) {
+    console.error(`[multicc/cli-switch] ${session.id} → ${targetCli}:`, error);
+    res.status(500).json({ error: `CLI switch failed: ${error.message}` });
+  }
+});
+
 // PATCH a session — supports display-name edits via label.
 app.patch('/api/sessions/:id', (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (s.type === 'aux' || s.type === 'gateway') {
     return res.status(400).json({ error: 'system session cannot be renamed' });
+  }
+  if (req.body.cli !== undefined) {
+    return res.status(400).json({
+      error: 'cli cannot be changed with PATCH; use POST /api/sessions/:id/switch-cli',
+    });
   }
   if (req.body.label !== undefined) {
     const label = (req.body.label || '').toString().trim();
@@ -2651,8 +2880,18 @@ app.patch('/api/sessions/:id', (req, res) => {
       : '默认(随主)';
     appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
   }
+  rememberActiveCliState(s);
   savePersistedSessions();
-  res.json({ ...s, subagent: serializeSubagent(s.subagent), effectiveModel: effectiveSessionModel(s), effectiveEffort: effectiveSessionEffort(s) });
+  res.json({
+    ...s,
+    // The full checkpoint can contain recent visible conversation text. Keep
+    // it server-side and expose only lifecycle metadata in ordinary responses.
+    cliStates: cliStateSummary(s),
+    pendingCliHandoff: cliHandoffSummary(s),
+    subagent: serializeSubagent(s.subagent),
+    effectiveModel: effectiveSessionModel(s),
+    effectiveEffort: effectiveSessionEffort(s),
+  });
 });
 
 // ── Folder-based session memory: the human window into the same memory the ──
@@ -3426,6 +3665,28 @@ app.post('/api/sessions/:id/fork', (req, res) => {
   chatHistories.set(newSid, newHistory);
   saveChatHistory(newSid);
 
+  // A fork has a fresh vendor-native session, so copying display history alone
+  // is not context continuation. Seed the same one-shot checkpoint mechanism
+  // used by cross-CLI switches; it is consumed only after the fork produces a
+  // successful result.
+  const forkCheckpoint = buildHandoffCheckpoint({
+    session: src,
+    fromCli: src.cli,
+    toCli: r.session.cli,
+    history: sliced,
+    git: cliSwitchGitSnapshot(r.session),
+  });
+  r.session.pendingCliHandoff = {
+    id: `fork_${crypto.randomBytes(8).toString('hex')}`,
+    fromCli: src.cli,
+    toCli: r.session.cli,
+    createdAt: forkCheckpoint.createdAt,
+    status: 'pending',
+    reusedTarget: false,
+    checkpoint: forkCheckpoint,
+  };
+  savePersistedSessions();
+
   // Copy the source session's private memory folder (CLAUDE.md/AGENTS.md + any
   // notes) so pre-window distilled context survives into the fork. Best-effort.
   if (includeMemory) {
@@ -3442,7 +3703,14 @@ app.post('/api/sessions/:id/fork', (req, res) => {
   }
 
   appendEvent(src.dirId, 'session_forked', `${src.label || src.id} → ${newSid}`, newSid);
-  res.json({ ok: true, sessionId: newSid, session: r.session,
+  res.json({
+    ok: true,
+    sessionId: newSid,
+    session: {
+      ...r.session,
+      cliStates: cliStateSummary(r.session),
+      pendingCliHandoff: cliHandoffSummary(r.session),
+    },
              forkedFrom: forkMeta.forkedFrom, replayedMessages: sliced.length });
 });
 
@@ -3840,14 +4108,16 @@ app.get('/api/sessions/:id', (req, res) => {
   const autoDispatch = !!persisted?.autoDispatch;
   const provider = persisted?.provider || null;  // cc-switch provider id; null = default login
   const subagent = serializeSubagent(persisted?.subagent);  // Task-tool subagent override; null = 随主
+  const cliStates = cliStateSummary(persisted);
+  const pendingCliHandoff = cliHandoffSummary(persisted);
   const activeChat = persisted?.kind === 'chat' ? chatSessions.get(id) : null;
   const lastActivity = persisted?.kind === 'chat' ? chatLastActivity(id, activeChat) : null;
   if (active) {
-    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, streaming, autoContinue, autoCommit, autoDispatch });
+    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, cliStates, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
   } else if (persisted?.kind === 'chat') {
-    res.json({ id: persisted.id, cwd: cwdForSession(persisted), createdAt: persisted.createdAt, lastActivity, clients: activeChat ? activeChat.clients.size : 0, active: !!(activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming)), mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, streaming, autoContinue, autoCommit, autoDispatch });
+    res.json({ id: persisted.id, cwd: cwdForSession(persisted), createdAt: persisted.createdAt, lastActivity, clients: activeChat ? activeChat.clients.size : 0, active: !!(activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming)), mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, cliStates, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
   } else {
-    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, streaming, autoContinue, autoCommit, autoDispatch });
+    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, cliStates, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
   }
 });
 
@@ -3968,6 +4238,7 @@ app.delete('/api/sessions/:id', (req, res) => {
   if (persisted) appendEvent(persisted.dirId, 'session_deleted', persisted.label || persisted.id, null);
   // Clean chat history on disk so a future session that reuses the same id
   // won't pick up stale messages from the deleted session.
+  chatHistories.delete(id);
   try { fs.unlinkSync(chatHistoryPath(id)); } catch (_) {}
   teardownTriggers(id);
   purgeNotesForSession(id);
@@ -8686,6 +8957,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
       const incrTimer = _incrSaveTimers.get(sessionName);
       if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
     }
+    if (cs._resultSaved) consumePendingCliHandoff(sessionName);
     // Include durationMs + num_turns in the result broadcast so clients
     // (web + app) can display per-message task timing without client-side
     // clock guesswork. durationMs is the wall-clock time from turnStartedAt
@@ -8721,8 +8993,31 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'session_started') {
+      const handoff = persisted.pendingCliHandoff;
+      const resumeMismatch = !!(
+        evt.sessionId
+        && persisted.cliSessionId
+        && evt.sessionId !== persisted.cliSessionId
+        && handoff
+        && handoff.status === 'pending'
+        && handoff.reusedTarget
+        && handoff.toCli === persisted.cli
+      );
+      if (resumeMismatch) {
+        cs._adapterError = 'cross-cli target returned a different native session id';
+        cs._killReason = 'cli_resume_mismatch';
+        chatBroadcast(sessionName, {
+          type: 'error',
+          error: `目标 ${persisted.cli} 没有恢复预期的原生会话；未接受 CLI 返回的新会话。请重新切换并选择“重置目标 CLI 会话”。`,
+        });
+        if (cs.claudeProc) {
+          try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
+        }
+        continue;
+      }
       if (evt.sessionId && !persisted.cliSessionId) {
         persisted.cliSessionId = evt.sessionId;
+        rememberActiveCliState(persisted);
         savePersistedSessions();
         console.log(`[multicc/chat] [${sessionName}] captured ${provider.name} session id=${evt.sessionId}`);
       }
@@ -8818,6 +9113,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
         cs.chatTurnCount++;
         cs._resultSaved = true;
       }
+      if (cs._resultSaved) consumePendingCliHandoff(sessionName);
       forward({
         type: 'result', total_cost_usd: cs.currentCost, usage,
         durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
@@ -9290,6 +9586,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       opts: { isFirstTurn, goalLimits, mode: cs.cli === 'claude' ? 'streaming' : 'per-turn' },
       deps: {
         resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
+        buildCliHandoffPrompt: (session) => renderHandoffPrompt(session && session.pendingCliHandoff),
         buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
         pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
         normalizeEffort, cliEffortLevel,
@@ -9494,11 +9791,35 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs.isStreaming = false;
       cs.streamReplay = [];
 
+      // A cross-CLI switch that restored a previous target-native session must
+      // fail closed if resume produces no output. Silently starting a fresh
+      // thread would erase target-side context while making the UI look
+      // continuous. The user can explicitly retry the switch with fresh:true;
+      // the pending checkpoint is retained until a successful target result.
+      const guardedHandoffResumeFailure = !!(
+        !isRetry
+        && persisted.pendingCliHandoff
+        && persisted.pendingCliHandoff.status === 'pending'
+        && persisted.pendingCliHandoff.reusedTarget
+        && persisted.pendingCliHandoff.toCli === cs.cli
+        && !cs.currentAssistantText
+        && !cs.currentToolCalls.length
+        && !killReason
+        && !cs._adapterError
+      );
+      if (guardedHandoffResumeFailure) {
+        cs._adapterError = 'cross-cli target resume failed';
+        chatBroadcast(sessionName, {
+          type: 'error',
+          error: `目标 ${cs.cli} 原生会话恢复失败；未自动创建新会话。请重新切换并选择“重置目标 CLI 会话”。`,
+        });
+      }
+
       // If spawn yielded no assistant text and it's not a user-initiated kill, retry
       // once with a fresh session id (covers resume-failed / session-id conflict cases).
       // A reported adapter error is a real provider failure, not a
       // resume glitch — retrying would just hit the same wall, so skip it.
-      if (!isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._adapterError) {
+      if (!guardedHandoffResumeFailure && !isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._adapterError) {
         const stderrTail = stderrBuf.slice(-300).trim();
         const reason = pendingTransportError ? 'codex transport disconnected'
           : stderrTail.includes('already in use') ? 'session-id conflict'
@@ -9508,6 +9829,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         // Reset session id so the retry starts a brand-new conversation
         if (cs.cli === 'claude') persisted.cliSessionId = crypto.randomUUID();
         else persisted.cliSessionId = null;  // codex will allocate on first turn
+        rememberActiveCliState(persisted);
         savePersistedSessions();
         cs.chatTurnCount = 0;
         cs.isStreaming = true;
@@ -9762,15 +10084,23 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
   // spawn path which uses cliSessionId. Both paths share the same Claude project
   // directory (keyed on cwd), and the streaming process is the single source of
   // truth for streaming sessions — per-turn spawns are never used concurrently.
+  const resumeExistingStream = !!persisted._streamSessionId;
   if (!persisted._streamSessionId) {
     persisted._streamSessionId = crypto.randomUUID();
+    rememberActiveCliState(persisted);
     savePersistedSessions();
   }
   chatStream.ensure(sessionName, {
     cmd: invocation.cmd,
     cwd: cs.cwd,
     sessionId: persisted._streamSessionId,
+    resume: resumeExistingStream,
     baseArgs: invocation.args,
+    onNewSessionId: (newId) => {
+      persisted._streamSessionId = newId;
+      rememberActiveCliState(persisted);
+      savePersistedSessions();
+    },
     beforeSpawn: ({ sessionId }) => {
       const cleaned = typeof provider.prepareSpawn === 'function'
         ? provider.prepareSpawn({ sessionId })
@@ -9838,11 +10168,28 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   // deliberate stops (never recovered); any other !completedOk end is a fault.
   const killReason = cs._killReason || null;
   cs._killReason = null;
+  const userStopped = killReason === 'user_cancel' || killReason === 'new_user_message';
+  const handoff = persisted.pendingCliHandoff;
+  const guardedHandoffResumeFailure = !!(
+    !completedOk
+    && !userStopped
+    && handoff
+    && handoff.status === 'pending'
+    && handoff.reusedTarget
+    && handoff.toCli === persisted.cli
+  );
   // classify prompt + dispatchStateAction handles API errors via state E → retry.
   const sawApi = cs._sawApiError; cs._sawApiError = false;
   // Let classify decide the final status. If sawApi, always defer to classify.
   // classify; otherwise emit the obvious outcome.
-  if (sawApi) {
+  if (guardedHandoffResumeFailure) {
+    waitInjector.resetInterrupted(sessionName);
+    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    chatBroadcast(sessionName, {
+      type: 'error',
+      error: '目标 Claude 原生会话恢复异常；未自动新建或重试。请重新切换并选择“重置目标 CLI 会话”。',
+    });
+  } else if (sawApi) {
     classifyTurnEnd(cs, sessionName);
   } else if (completedOk) {
     // Clean end: the turn fired its `result` event — whether the task is done or
@@ -9857,7 +10204,6 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
     // interrupt fingerprint — no LLM guess. Auto-recover it (the only non-fault case
     // we recover) unless the user stopped it themselves. resumeInterrupted is
     // hasWait-guarded + capped (MAX_RESUME_INTERRUPTED) against a drop-loop.
-    const userStopped = killReason === 'user_cancel' || killReason === 'new_user_message';
     if (!userStopped && waitInjector.resumeInterrupted(sessionName)) {
       console.log(`[multicc/chat] [${sessionName}] (streaming) 非正常中断 (no result event, kill=${killReason || 'none'}) → resume`);
     } else {
@@ -9868,6 +10214,7 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
 
   // Gateway/dispatch回流 — same hooks the per-turn close handler fires.
   try {
+    if (guardedHandoffResumeFailure) return;
     if (cs.originDispatchId) {
       const did = cs.originDispatchId;
       cs.originDispatchId = null;
@@ -9986,6 +10333,8 @@ function handleChatWs(ws, req, urlObj) {
     providerId: provId,
     providerName: provName,
     providerTokenWindows: provWindows,
+    cliStates: cliStateSummary(persisted),
+    pendingCliHandoff: cliHandoffSummary(persisted),
   }));
 
   // Replay saved history + in-progress assistant response (if any).
@@ -10120,7 +10469,16 @@ function handleChatWs(ws, req, urlObj) {
         //   codex:  clear so next exec allocates a fresh thread (will be captured from thread.started)
         const pExisting = persistedSessions.get(sessionName);
         if (pExisting) {
-          pExisting.cliSessionId = (cs.cli === 'claude') ? crypto.randomUUID() : null;
+          chatStream.close(sessionName);
+          pExisting.cliSessionId = null;
+          delete pExisting._streamSessionId;
+          delete pExisting.pendingCliHandoff;
+          ensureCliStates(pExisting);
+          if (pExisting.cliStates && pExisting.cliStates[cs.cli]) {
+            pExisting.cliStates[cs.cli].cliSessionId = null;
+            pExisting.cliStates[cs.cli].streamSessionId = null;
+          }
+          rememberActiveCliState(pExisting);
           savePersistedSessions();
         }
         cs.chatTurnCount = 0;

@@ -183,7 +183,7 @@ function validateEnvelope(env) {
  * @param {boolean|undefined} input.opts.skipDefaultModel
  * @param {string[]} [input.opts.disallowedTools=[]]
  * @param {Object} input.deps - injected dependencies (avoids a circular require of server.js):
- *   { resolveRolePrompt, multiccImgHint, buildGatewayPrompt, buildDispatchContextPrompt,
+ *   { resolveRolePrompt, multiccImgHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
  *     buildGoalLimitNote, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
  *     chatBroadcast, normalizeEffort, cliEffortLevel }
  * @returns {MessageEnvelope}
@@ -219,6 +219,14 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
     if (goalLimits) {
       const note = deps.buildGoalLimitNote(goalLimits);
       if (note) contextLayers.push({ kind: 'goal-limit', order: 10, text: note });
+    }
+
+    // order 15: one-shot cross-CLI handoff. This is a bounded checkpoint of
+    // visible messages + task/git state, never a vendor transcript conversion.
+    // It remains pending until the target CLI produces a successful result.
+    if (typeof deps.buildCliHandoffPrompt === 'function') {
+      const handoff = deps.buildCliHandoffPrompt(persisted);
+      if (handoff) contextLayers.push({ kind: 'cli-handoff', order: 15, text: handoff });
     }
 
     // order 20: gateway OR dispatch-context (mutually exclusive; today server.js:9055-9060).

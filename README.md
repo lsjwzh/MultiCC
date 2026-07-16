@@ -273,18 +273,20 @@ MultiCC is the only project in this list that is a **self-hosted server** rather
 | Mode | UI | Backend |
 |------|----|---------|
 | **Terminal** (`/`) | Full `xterm.js` — scrollback, colors, input, resize | `tmux` session, `pipe-pane` + named FIFO for reliable output |
-| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews | Claude Code `stream-json` or Codex `exec --json` — events normalized over WebSocket |
+| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews, in-place CLI switching | Claude Code, Codex, OpenCode, or ZCode — events normalized over WebSocket |
 
 Both modes share the same session registry, auth, and notifications. Reconnect replays the last 500 stream events so you never see a half-empty conversation.
 
 ### Multi-provider support
 
-Each session picks its own CLI (`claude` or `codex`) and an optional provider — one session can use the official Claude subscription while another routes through DeepSeek via a custom endpoint.
+Each session picks its own CLI (`claude`, `codex`, `opencode`, or `zcode`) and an optional provider — one session can use the official Claude subscription while another routes through DeepSeek via a custom endpoint.
 
 | CLI | Terminal mode | Chat mode | Provider isolation |
 |-----|---------------|-----------|--------------------|
 | **Claude Code** | `claude` inside `tmux`, resumed by session id | `claude -p --output-format stream-json` | Per-session `ANTHROPIC_*` env vars; clean default login for sessions without a provider override |
 | **Codex** | `codex` / `codex resume <id>` inside `tmux` | `codex exec --json` | Per-provider `CODEX_HOME` under `~/.multicc/codex-homes`; local proxy for non-OpenAI endpoints |
+| **OpenCode** | `opencode --session <id>` inside `tmux` | `opencode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
+| **ZCode** | `zcode --session <id>` inside `tmux` | `zcode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
 
 - Providers are managed from `/manage` or the provider API — create, edit, import from `cc-switch`, set per-CLI defaults.
 - **Per-session model selection**: each session can override the provider's default model; the chat UI shows a model picker with provider-specific options.
@@ -301,6 +303,7 @@ Each session picks its own CLI (`claude` or `codex`) and an optional provider �
 - **Git worktree isolation.** Each normal session runs in `<repo>/.multicc-worktrees/<sessionId>` on branch `multicc/<sessionId>`. Parallel agents edit safely; merge/sync APIs move changes between session branches and the base branch.
 - **Agent Commander.** Every new directory is seeded with an Agent Commander chat session — a fleet conductor that can coordinate specialized sibling sessions. Comes with role presets for common agent profiles.
 - **Cross-session dispatch.** Any chat session can emit `<<dispatch target="SESSION_ID">...</dispatch>>`; MultiCC runs the task on the target session and injects the result back. IM bridges use the same mechanism with explicit confirmation.
+- **In-place cross-CLI handoff.** A chat can switch among Claude, Codex, OpenCode, and ZCode without changing its logical session or worktree. Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
 - **Passive inter-agent notes.** Sessions leave notes for siblings in the same directory; notes are prepended to the target agent's next chat turn.
 - **Syntax-gated merges.** Merge is rejected if a session's changes introduce JS syntax errors — broken code can't reach the base branch.
 - **Auto-commit + auto-sync.** Sessions auto-commit before merging; sibling worktrees auto-sync after a merge so everyone stays current.
@@ -801,6 +804,7 @@ user interrupts by speaking → agent stops → next turn
 | `GET` | `/api/sessions` | List all sessions |
 | `GET` | `/api/sessions/:id` | Get session details |
 | `PATCH` | `/api/sessions/:id` | Update label, model, role prompt, memory, streaming, auto-continue, provider |
+| `POST` | `/api/sessions/:id/switch-cli` | Switch a chat CLI (`{ cli, fresh? }`), preserving per-CLI native state and staging a one-shot semantic handoff |
 | `DELETE` | `/api/sessions/:id` | Kill and delete a session |
 | `POST` | `/api/sessions/:id/relocate` | Change session's working directory |
 | `POST` | `/api/sessions/:id/restart` | Restart a dead terminal session in place |
