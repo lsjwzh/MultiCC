@@ -7,6 +7,7 @@ const {
   rememberActiveCliState,
   activateCliState,
   stateSummary,
+  clearAllNativeCliStates,
   buildHandoffCheckpoint,
   renderHandoffPrompt,
 } = require('../src/cli-switch');
@@ -38,7 +39,7 @@ test('legacy active fields migrate into the current CLI state', () => {
   assert.deepStrictEqual(session.cliStates.codex, {
     cliSessionId: 'codex-thread', streamSessionId: null, model: 'gpt-5', effort: 'high',
     provider: 'codex-provider', subagent: { providerId: 'sub', model: 'mini' },
-    reportedModel: null, updatedAt: 100,
+    agent: null, reportedModel: null, updatedAt: 100,
   });
 });
 
@@ -97,12 +98,46 @@ test('fresh switch discards only the target native state', () => {
 });
 
 test('rememberActiveCliState captures a newly assigned native id', () => {
-  const session = { kind: 'chat', cli: 'opencode', cliSessionId: null };
+  const session = { kind: 'chat', cli: 'opencode', cliSessionId: null, effort: 'high', agent: 'build' };
   ensureCliStates(session, 1);
   session.cliSessionId = 'ses_new';
   rememberActiveCliState(session, 2);
   assert.strictEqual(session.cliStates.opencode.cliSessionId, 'ses_new');
   assert.strictEqual(session.cliStates.opencode.updatedAt, 2);
+  assert.strictEqual(session.cliStates.opencode.effort, 'high');
+  assert.strictEqual(session.cliStates.opencode.agent, 'build');
+});
+
+test('clear invalidates every native CLI session while preserving per-CLI settings', () => {
+  const session = {
+    kind: 'chat', cli: 'opencode', cliSessionId: 'ses_open', effort: 'high', agent: 'build',
+    cliStates: {
+      claude: { streamSessionId: 'claude-stream', model: 'opus', effort: 'max' },
+      codex: { cliSessionId: 'codex-thread', model: 'gpt-5', effort: 'xhigh' },
+    },
+  };
+  assert.strictEqual(clearAllNativeCliStates(session, 600), 3);
+  assert.strictEqual(session.cliSessionId, null);
+  assert.strictEqual(stateSummary(session).claude.hasNativeSession, false);
+  assert.strictEqual(stateSummary(session).codex.hasNativeSession, false);
+  assert.strictEqual(stateSummary(session).opencode.hasNativeSession, false);
+  assert.strictEqual(session.cliStates.opencode.agent, 'build');
+  assert.strictEqual(session.cliStates.codex.model, 'gpt-5');
+});
+
+test('keep-history reset renders a context checkpoint instead of a fake CLI switch', () => {
+  const checkpoint = buildHandoffCheckpoint({
+    session: {}, fromCli: 'opencode', toCli: 'opencode',
+    history: [{ role: 'user', content: 'retain me', ts: 1 }],
+  });
+  checkpoint.reason = 'history_clear_keep';
+  const prompt = renderHandoffPrompt({
+    id: 'checkpoint-1', fromCli: 'opencode', toCli: 'opencode',
+    reason: 'history_clear_keep', checkpoint,
+  });
+  assert.match(prompt, /MultiCC context checkpoint v1/);
+  assert.match(prompt, /retain me/);
+  assert.doesNotMatch(prompt, /logical conversation switched/);
 });
 
 test('checkpoint contains bounded visible transcript and no native ids', () => {
