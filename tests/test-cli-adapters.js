@@ -91,4 +91,30 @@ for (const adapter of [opencode, zcode]) {
   assert.strictEqual(adapter.decodeEvent({ type: 'step_finish', part: { reason: 'stop' } })[0].type, 'complete');
 }
 
+const opencodeEnvelope = {
+  spawnOpts: { rawModel: 'open/model', rawEffort: 'high', rawAgent: 'build' },
+  historyHandle: { isFirstTurn: true, cliSessionId: null },
+  contextLayers: [], userText: 'hello', suffix: '', rolePrompt: '',
+};
+assert.deepStrictEqual(
+  opencode.buildInvocation(opencodeEnvelope).args,
+  ['run', '--format', 'json', '--auto', '--model', 'open/model', '--variant', 'high', '--agent', 'build'],
+);
+assert.deepStrictEqual(
+  zcode.buildInvocation(opencodeEnvelope).args,
+  ['run', '--format', 'json', '--auto', '--model', 'open/model'],
+);
+assert.strictEqual(
+  opencode.buildTerminalCmd({ model: 'open/model', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
+  'opencode --model open/model --variant max --agent build --session ses_1',
+);
+assert.strictEqual(
+  zcode.buildTerminalCmd({ model: 'z/model', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
+  'zcode --model z/model --session ses_1',
+);
+assert.strictEqual(
+  claude.buildTerminalCmd({ model: 'opus', effort: null, agent: 'reviewer', cliSessionId: null }),
+  'claude --model opus --agent reviewer',
+);
+
 console.log('CLI adapter contract and decoder tests passed');

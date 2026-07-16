@@ -769,6 +769,8 @@ function handleEvent(msg) {
         if (msg.providerId !== undefined) _sessionProvider = msg.providerId || '';
         if (msg.providerName !== undefined) _sessionProviderDisplayName = msg.providerName || '';
         if (msg.cliStates) _sessionCliStates = msg.cliStates;
+        if (msg.cliAvailability) _cliAvailability = msg.cliAvailability;
+        if (msg.agent !== undefined) _sessionAgent = msg.agent || '';
         _pendingCliHandoff = msg.pendingCliHandoff || null;
         // effectiveModel/model refresh unconditionally on reconnect, exactly like
         // provider/effort above — otherwise a server-side alias-map change leaves
@@ -777,7 +779,7 @@ function handleEvent(msg) {
           _sessionEffectiveModel = msg.effectiveModel || '';
           if (msg.model !== undefined) _sessionModel = msg.model || '';
         }
-        if (msg.effort !== undefined || msg.providerName || msg.effectiveModel !== undefined || msg.providerId !== undefined) {
+        if (msg.effort !== undefined || msg.providerName || msg.effectiveModel !== undefined || msg.providerId !== undefined || msg.agent !== undefined) {
           updateEffortBtn();
           updateModelBtn();
         }
@@ -2090,7 +2092,7 @@ function send(opts = {}) {
     if (cmd === '/clear') {
       // Clear chat UI and server history
       messagesEl.innerHTML = '';
-      addSystemMsg('Chat cleared');
+      addSystemMsg('Chat cleared；Claude / Codex / OpenCode / ZCode 的原生上下文均已重置');
       inputEl.value = '';
       inputEl.style.height = 'auto';
       if (ws?.readyState === WebSocket.OPEN) {
@@ -2986,7 +2988,7 @@ document.getElementById('diff-modal')?.addEventListener('click', (e) => {
 startMergeStatusPolling();
 
 /* ── Cross-CLI switch (one logical chat, independent native sessions) ── */
-function showCliSwitchPicker(current, states) {
+function showCliSwitchPicker(current, states, availability) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -3002,9 +3004,11 @@ function showCliSwitchPicker(current, states) {
     select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#c9d1d9;font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
     for (const [value, meta] of Object.entries(CLI_META)) {
       const state = states && states[value];
+      const installed = availability?.[value]?.available !== false;
       const opt = document.createElement('option');
       opt.value = value;
-      opt.textContent = `${meta.label}${value === current ? '（当前）' : ''}${state?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话'}`;
+      opt.disabled = !installed && value !== current;
+      opt.textContent = `${meta.label}${value === current ? '（当前）' : ''}${installed ? (state?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
       select.appendChild(opt);
     }
     select.value = current;
@@ -3051,7 +3055,7 @@ function showCliSwitchPicker(current, states) {
 cliBtn?.addEventListener('click', async () => {
   if (!_sessionName) return;
   await loadSessionModel();
-  const picked = await showCliSwitchPicker(_sessionCli, _sessionCliStates);
+  const picked = await showCliSwitchPicker(_sessionCli, _sessionCliStates, _cliAvailability);
   if (!picked || (picked.cli === _sessionCli && !picked.fresh)) return;
   cliBtn.disabled = true;
   try {
@@ -3066,6 +3070,7 @@ cliBtn?.addEventListener('click', async () => {
       return;
     }
     _sessionCliStates = data.cliStates || _sessionCliStates;
+    _cliAvailability = data.cliAvailability || _cliAvailability;
     applyCliSwitchState(data);
     await loadSessionModel();
   } catch (error) {
@@ -3097,11 +3102,34 @@ const CODEX_REASONING_OPTIONS = [
   { value: 'max', label: 'Max', desc: 'Maximum single-agent reasoning depth' },
   { value: 'ultra', label: 'Ultra', desc: 'Maximum reasoning with automatic task delegation when available' },
 ];
+const OPENCODE_VARIANT_OPTIONS = [
+  { value: '', label: 'Default', desc: 'Use the selected model/provider default' },
+  { value: 'minimal', label: 'Minimal', desc: 'Minimal reasoning where supported by the model' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'max', label: 'Max' },
+];
 let _sessionEffort = '';
-let _sessionEffectiveEffort = 'medium';
+let _sessionEffectiveEffort = '';
 
 function defaultEffortForCurrentCli() {
-  return _sessionCli === 'codex' ? 'xhigh' : 'medium';
+  if (_sessionCli === 'codex') return 'xhigh';
+  if (_sessionCli === 'claude') return 'medium';
+  return '';
+}
+
+function effortOptionsForCurrentCli() {
+  if (_sessionCli === 'codex') return CODEX_REASONING_OPTIONS;
+  if (_sessionCli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
+  if (_sessionCli === 'claude') return EFFORT_OPTIONS;
+  return [];
+}
+
+function effortLabelForCurrentCli() {
+  if (_sessionCli === 'codex') return 'Reasoning Level';
+  if (_sessionCli === 'opencode') return 'Variant';
+  return 'Effort';
 }
 
 function updateModelBtn() {
@@ -3115,12 +3143,15 @@ function updateModelBtn() {
     || tt('default');
   const model = shown ? modelDisplayName(shown, _sessionProvider) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
-  modelBtn.textContent = `🧠 ${provider} | ${model} | ${effort}`;
+  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent ? `Agent ${_sessionAgent}` : '';
+  modelBtn.textContent = `🧠 ${[provider, model, effort, agent].filter(Boolean).join(' | ')}`;
   modelBtn.style.display = '';
 }
 
 function effortShortName(effort) {
   const v = effort || defaultEffortForCurrentCli();
+  if (_sessionCli === 'zcode') return '';
+  if (_sessionCli === 'opencode') return v ? `Variant ${v}` : '';
   if (_sessionCli === 'codex') {
     if (v === 'xhigh') return 'Extra high';
     if (v === 'low') return 'Low';
@@ -3267,7 +3298,7 @@ function modelDisplayName(model, providerId) {
   return modelShortName(model);
 }
 
-function showAIConfigPicker({ provider, model, effort, subagent }) {
+function showAIConfigPicker({ provider, model, effort, subagent, agent }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -3275,14 +3306,23 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
     box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:94vw;color:#c9d1d9;';
     box.innerHTML = `
       <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-      <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">Provider、Model、${_sessionCli === 'codex' ? 'Reasoning Level' : 'Effort'} 会一起保存。切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。</div>
+      <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">Provider、Model${effortOptionsForCurrentCli().length ? `、${effortLabelForCurrentCli()}` : ''} 会一起保存。切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。</div>
       <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
       <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
       <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Model</label>
       <select id="ai-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
       <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
-      <label id="ai-effort-label" style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">${_sessionCli === 'codex' ? 'Reasoning Level' : 'Effort'}</label>
+      <div id="ai-effort-section">
+      <label id="ai-effort-label" style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">${effortLabelForCurrentCli()}</label>
       <select id="ai-effort" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
+      </div>
+      <div id="ai-agent-section">
+      <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${_sessionCli === 'claude' ? 'Claude Code' : 'OpenCode'} Agent</div>
+      <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
+      <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${_sessionCli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
+      <datalist id="ai-agent-list">${_sessionCli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
+      </div>
       <div id="ai-sub-section">
       <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
       <div style="font-size:13px;font-weight:600;margin-bottom:2px;">子任务 (subagent)</div>
@@ -3305,6 +3345,10 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
     const custom = box.querySelector('#ai-model-custom');
     const effortSel = box.querySelector('#ai-effort');
     const effortLabel = box.querySelector('#ai-effort-label');
+    const effortSection = box.querySelector('#ai-effort-section');
+    const agentSection = box.querySelector('#ai-agent-section');
+    const agentInput = box.querySelector('#ai-agent');
+    const subSection = box.querySelector('#ai-sub-section');
 
     const providerDefault = document.createElement('option');
     providerDefault.value = '';
@@ -3318,7 +3362,11 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
     }
     providerSel.value = provider || '';
 
-    const effortOptions = _sessionCli === 'codex' ? CODEX_REASONING_OPTIONS : EFFORT_OPTIONS;
+    const effortOptions = effortOptionsForCurrentCli();
+    effortSection.style.display = effortOptions.length ? '' : 'none';
+    agentSection.style.display = (_sessionCli === 'claude' || _sessionCli === 'opencode') ? '' : 'none';
+    subSection.style.display = (_sessionCli === 'claude' || _sessionCli === 'codex') ? '' : 'none';
+    agentInput.value = (_sessionCli === 'claude' || _sessionCli === 'opencode') ? (agent || '') : '';
     for (const o of effortOptions) {
       const opt = document.createElement('option');
       opt.value = o.value;
@@ -3412,7 +3460,10 @@ function showAIConfigPicker({ provider, model, effort, subagent }) {
         provider: providerSel.value,
         model: pickedModel,
         effort: effortSel.value,
-        subagent: subPid && subModel ? { providerId: subPid, model: subModel } : null,
+        agent: (_sessionCli === 'claude' || _sessionCli === 'opencode') ? agentInput.value.trim() : null,
+        subagent: (_sessionCli === 'claude' || _sessionCli === 'codex') && subPid && subModel
+          ? { providerId: subPid, model: subModel }
+          : null,
       });
     };
     box.querySelector('#ai-cancel').onclick = () => close(null);
@@ -3434,10 +3485,12 @@ async function loadSessionModel() {
     // Provider switch applies to every cli (claude & codex both have providers).
     applyCliUi(info.cli || 'claude');
     _sessionCliStates = info.cliStates || {};
+    _cliAvailability = info.cliAvailability || _cliAvailability;
     _pendingCliHandoff = info.pendingCliHandoff || null;
     _sessionProvider = info.provider || '';
     _sessionProviderDisplayName = '';
     _sessionSubagent = info.subagent || null;
+    _sessionAgent = info.agent || '';
     updateSubagentPill();
     if (_sessionProvider) await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
     updateProviderBtn();
@@ -3463,18 +3516,26 @@ modelBtn?.addEventListener('click', async () => {
     model: _sessionModel,
     effort: _sessionEffectiveEffort || _sessionEffort || defaultEffortForCurrentCli(),
     subagent: _sessionSubagent,
+    agent: _sessionAgent,
   });
   if (picked === null) return;
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: picked.provider, model: picked.model, effort: picked.effort, subagent: picked.subagent }),
+      body: JSON.stringify({
+        provider: picked.provider,
+        model: picked.model,
+        effort: picked.effort,
+        ...((_sessionCli === 'claude' || _sessionCli === 'opencode') ? { agent: picked.agent } : {}),
+        ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
+      }),
     });
     const data = await res.json();
     if (!res.ok) { addSystemMsg('AI 配置保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
     _sessionProvider = data.provider || '';
     _sessionSubagent = data.subagent || null;
+    _sessionAgent = data.agent || '';
     updateSubagentPill();
     _sessionModel = data.model || '';
     _sessionEffectiveModel = data.effectiveModel || data.model || '';
@@ -3482,7 +3543,9 @@ modelBtn?.addEventListener('click', async () => {
     _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
     updateModelBtn();
     const _savedModel = _sessionEffectiveModel || _sessionModel;
-    addSystemMsg(`✓ AI 配置已保存：${providerShortName(_sessionProvider)} | ${_savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default')} | ${effortShortName(_sessionEffectiveEffort)}，下一轮对话生效`);
+    const savedParts = [providerShortName(_sessionProvider), _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
+    if ((_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
+    addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('AI 配置保存失败：' + e.message);
   }
@@ -3512,9 +3575,11 @@ effortBtn?.addEventListener('click', async () => {
 const providerBtn = document.getElementById('provider-btn');
 let _sessionProvider = '';       // provider id ('' = default login)
 let _sessionSubagent = null;     // {providerId, model} for Task-tool subagent (claude-proxy), null = 随主
+let _sessionAgent = '';          // Claude/OpenCode native --agent name; blank = CLI default agent
 let _sessionProviderDisplayName = '';  // 实际生效 provider 的显示名（init 兜底；_sessionProvider 为空或 _providerList 未加载时用）
 let _sessionCli = 'claude';
 let _sessionCliStates = {};
+let _cliAvailability = {};
 let _pendingCliHandoff = null;
 let _providerList = [];           // [{id,appType,name,baseUrl,model,isOfficial}] - 最近一次拉取结果
 let _providerDefaults = { claude: null, codex: null };
@@ -3535,6 +3600,7 @@ function applyCliSwitchState(info) {
   if (info.effectiveEffort !== undefined) {
     _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
   }
+  if (info.agent !== undefined) _sessionAgent = info.agent || '';
   if (info.subagent !== undefined) _sessionSubagent = info.subagent || null;
   updateSubagentPill();
   updateModelBtn();
@@ -4049,7 +4115,8 @@ function updateAutoDispatchCheck() {
 const subagentPill = document.getElementById('subagent-pill');
 function updateSubagentPill() {
   const el = document.getElementById('subagent-pill-label');
-  if (subagentPill) subagentPill.style.display = '';
+  const supported = _sessionCli === 'claude' || _sessionCli === 'codex';
+  if (subagentPill) subagentPill.style.display = supported ? '' : 'none';
   if (!el) return;
   // Show the REAL wire model id that hits the server (effectiveModel), not the
   // stored tier alias (opus/sonnet/…). Falls back to the raw model, then 随主.
@@ -4294,10 +4361,11 @@ function doClear(keepN) {
     const msgs = [...messagesEl.querySelectorAll('.msg:not(.system-msg)')];
     const remove = msgs.slice(0, Math.max(0, msgs.length - keepN));
     remove.forEach(el => el.remove());
-    if (remove.length) addSystemMsg('Cleared ' + remove.length + ' earlier messages (keep last ' + keepN + ')');
+    if (remove.length) addSystemMsg('Cleared ' + remove.length + ' earlier messages；保留的最近 ' + keepN + ' 条会作为新上下文检查点发送，全部 CLI 原生上下文已重置');
+    else addSystemMsg('保留当前消息并重置全部 CLI 原生上下文；最近消息会作为新上下文检查点发送');
   } else {
     messagesEl.innerHTML = '';
-    addSystemMsg('Chat cleared');
+    addSystemMsg('Chat cleared；全部 CLI 原生上下文已重置');
   }
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'clear_history', keep: keepN }));
