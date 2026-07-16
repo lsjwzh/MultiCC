@@ -91,6 +91,7 @@ const {
   rememberActiveCliState,
   activateCliState,
   stateSummary: cliStateSummary,
+  clearAllNativeCliStates,
   buildHandoffCheckpoint,
   renderHandoffPrompt,
 } = require('./src/cli-switch');
@@ -502,18 +503,22 @@ function sessionProviderName(session) {
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const OPENCODE_VARIANTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
 function normalizeEffort(v) {
   const s = (v == null ? '' : String(v)).trim().toLowerCase();
   if (!s) return null;
-  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) ? s : undefined;
+  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) || OPENCODE_VARIANTS.has(s) ? s : undefined;
 }
 function validEffortForCli(cli, effort) {
   if (!effort) return true;
-  return (cli === 'codex') ? CODEX_REASONING_LEVELS.has(effort) : EFFORT_LEVELS.has(effort);
+  if (cli === 'codex') return CODEX_REASONING_LEVELS.has(effort);
+  if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
+  if (cli === 'zcode') return false;
+  return EFFORT_LEVELS.has(effort);
 }
 function cliEffortLevel(session) {
   const e = normalizeEffort(session?.effort);
-  if (!e) return null;
+  if (!e || !EFFORT_LEVELS.has(e)) return null;
   return e === 'ultracode' ? 'xhigh' : e;
 }
 function codexReasoningLevel(session) {
@@ -569,7 +574,20 @@ function effectiveSessionEffort(session) {
   if (!session) return null;
   const cli = session.cli || 'claude';
   if (cli === 'codex') return codexReasoningLevel(session) || codexDefaultReasoningLevel();
-  return normalizeEffort(session.effort) || claudeDefaultEffort();
+  if (cli === 'opencode') {
+    const effort = normalizeEffort(session.effort);
+    return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;
+  }
+  if (cli === 'zcode') return null;
+  const effort = normalizeEffort(session.effort);
+  return effort && EFFORT_LEVELS.has(effort) ? effort : claudeDefaultEffort();
+}
+
+function normalizeCliAgent(cli, value) {
+  const agent = value == null ? '' : String(value).trim();
+  if (!agent) return null;
+  if (cli !== 'opencode' || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
+  return agent;
 }
 function codexDefaultReasoningLevel() {
   const homes = [process.env.CODEX_HOME, path.join(os.homedir(), '.codex')].filter(Boolean);
@@ -687,6 +705,35 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
 const CLAUDE_CMD = cliCommands.claude;
 const CODEX_CMD = cliCommands.codex;
 const cliProviders = cliAdapterRegistry.providers;
+
+function cliCommandAvailable(command) {
+  const candidate = String(command || '').trim();
+  if (!candidate) return false;
+  const suffixes = isWindows
+    ? String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+    : [''];
+  const locations = (path.isAbsolute(candidate) || candidate.includes(path.sep))
+    ? ['']
+    : String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const dir of locations) {
+    for (const suffix of suffixes) {
+      const file = dir ? path.join(dir, candidate + suffix) : candidate + suffix;
+      try {
+        fs.accessSync(file, fs.constants.X_OK);
+        return true;
+      } catch (_) {}
+    }
+  }
+  return false;
+}
+
+function cliAvailabilitySummary() {
+  const out = {};
+  for (const cli of SUPPORTED_CHAT_CLIS) {
+    out[cli] = { available: cliCommandAvailable(cliCommands[cli]) };
+  }
+  return out;
+}
 
 function providerFor(session) {
   return cliAdapterRegistry.get(session?.cli);
@@ -1926,6 +1973,7 @@ app.get('/api/sessions', (req, res) => {
         effectiveModel: effectiveSessionModel(p),
         effort: p.effort || null,
         effectiveEffort: effectiveSessionEffort(p),
+        agent: p.agent || null,
         rolePrompt: p.rolePrompt || null,
         provider: p.provider || null,  // cc-switch provider id; null = default login
         subagent: serializeSubagent(p.subagent),  // Task-tool subagent override; null = 随主
@@ -2376,7 +2424,7 @@ app.get('/api/directories/:id/sessions', (req, res) => {
       return {
         id: s.id, dirId: s.dirId, cli: s.cli, kind: s.kind,
         cliSessionId: s.cliSessionId || null, label: s.label || null,
-        model: s.model || null, effort: s.effort || null, effectiveEffort: effectiveSessionEffort(s), rolePrompt: s.rolePrompt || null,
+        model: s.model || null, effort: s.effort || null, effectiveEffort: effectiveSessionEffort(s), agent: s.agent || null, rolePrompt: s.rolePrompt || null,
         provider: s.provider || null,  // cc-switch provider id; null = default login
         subagent: serializeSubagent(s.subagent),  // Task-tool subagent override; null = 随主
         cliStates: cliStateSummary(s), pendingCliHandoff: cliHandoffSummary(s),
@@ -2404,7 +2452,7 @@ app.get('/api/directories/:id/workspace', (req, res) => {
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
 // to create/reuse a named session (e.g. ephemeral gateway chats). Returns
 // { ok:true, id, session, reused? } or { ok:false, error }.
-function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, rolePrompt = null }) {
+function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!['claude', 'codex', 'opencode', 'zcode'].includes(cli)) return { ok: false, error: 'cli must be claude, codex, opencode or zcode' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -2418,6 +2466,8 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
   if (effortLevel === undefined) return { ok: false, error: 'invalid effort' };
   if (!validEffortForCli(cli, effortLevel)) return { ok: false, error: 'invalid reasoning level' };
   const sessionEffort = effortLevel || (cli === 'codex' ? codexDefaultReasoningLevel() : null);
+  const sessionAgent = normalizeCliAgent(cli, agent);
+  if (sessionAgent === undefined) return { ok: false, error: 'invalid agent' };
   const rp = rolePrompt == null ? null : String(rolePrompt).trim();
   if (rp && rp.length > 40000) return { ok: false, error: 'rolePrompt too long (max 40000)' };
   // Provider override (cc-switch). An explicit value is validated; when omitted
@@ -2453,6 +2503,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
     label,
     model: model || null, // null = follow default/provider model
     effort: sessionEffort || null, // null = follow Claude Code/provider default
+    agent: sessionAgent || null, // OpenCode --agent; unsupported CLIs keep null
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     autoCommit: true,      // default: auto-commit & merge after task completion
     autoDispatch: false,   // default: do NOT inject dispatch context prompt unless user opts in
@@ -2485,17 +2536,20 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   const label = (req.body.label || '').trim() || null;
   const model = (req.body.model || '').trim() || null;
   const effort = req.body.effort === undefined ? null : req.body.effort;
+  const agent = req.body.agent === undefined ? null : req.body.agent;
   // provider: omit → inherit global default; '' → explicit no-override; id → that provider.
   const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
   const rolePrompt = (req.body.rolePrompt || '').trim() || null;
-  const r = createSessionRecord({ dir: d, cli, kind, label, model, provider, effort, rolePrompt });
+  const r = createSessionRecord({ dir: d, cli, kind, label, model, provider, effort, agent, rolePrompt });
   if (!r.ok) return res.status(400).json({ error: r.error });
   res.json(r.session);
 });
 
 function cliSwitchDefaults(cli) {
-  const appType = appTypeForCli(cli);
-  const provider = providerDefaults[cli] || providerDefaults[appType] || null;
+  // Match normal session creation exactly. OpenCode/ZCode share a provider
+  // pool with Claude, but must not silently inherit Claude's global default:
+  // the provider/model may be unsupported by their native CLI.
+  const provider = providerDefaults[cli] || null;
   return {
     provider,
     // A provider/model that is valid for Claude may not be accepted by
@@ -2504,6 +2558,7 @@ function cliSwitchDefaults(cli) {
     model: null,
     effort: cli === 'codex' ? codexDefaultReasoningLevel() : null,
     subagent: null,
+    agent: null,
   };
 }
 
@@ -2514,6 +2569,7 @@ function cliHandoffSummary(session) {
     fromCli: handoff.fromCli,
     toCli: handoff.toCli,
     status: handoff.status,
+    reason: handoff.reason || null,
     createdAt: handoff.createdAt,
     reusedTarget: !!handoff.reusedTarget,
   } : null;
@@ -2648,7 +2704,9 @@ function consumePendingCliHandoff(sessionName) {
   savePersistedSessions();
   chatBroadcast(sessionName, {
     type: 'system', subtype: 'cli_handoff_applied',
-    message: `✓ ${handoff.fromCli} → ${handoff.toCli} 的上下文交接已由目标 CLI 接收`,
+    message: handoff.reason === 'history_clear_keep'
+      ? `✓ 保留的最近消息已由 ${handoff.toCli} 作为新上下文接收`
+      : `✓ ${handoff.fromCli} → ${handoff.toCli} 的上下文交接已由目标 CLI 接收`,
   });
   return true;
 }
@@ -2670,8 +2728,13 @@ app.post('/api/sessions/:id/switch-cli', (req, res) => {
     return res.json({
       ok: true, changed: false, cli: targetCli,
       cliStates: cliStateSummary(session),
+      cliAvailability: cliAvailabilitySummary(),
       pendingCliHandoff: cliHandoffSummary(session),
     });
+  }
+  const availability = cliAvailabilitySummary();
+  if (!availability[targetCli]?.available) {
+    return res.status(400).json({ error: `${targetCli} CLI is not installed or not executable` });
   }
   const activity = cliSwitchBusyState(session.id);
   if (activity.busy) {
@@ -2691,6 +2754,7 @@ app.post('/api/sessions/:id/switch-cli', (req, res) => {
       reusedTarget: switched.result.reused,
       fresh,
       cliStates: cliStateSummary(session),
+      cliAvailability: availability,
       effectiveModel: effectiveSessionModel(session),
       effectiveEffort: effectiveSessionEffort(session),
       provider: session.provider || null,
@@ -2741,6 +2805,12 @@ app.patch('/api/sessions/:id', (req, res) => {
     s.effort = effort || null;
     if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
     appendEvent(s.dirId, 'session_effort_changed', `${s.label || s.id} → ${effectiveSessionEffort(s) || effortLabel(s.effort)}`, s.id);
+  }
+  if (req.body.agent !== undefined) {
+    const agent = normalizeCliAgent(s.cli || 'claude', req.body.agent);
+    if (agent === undefined) return res.status(400).json({ error: 'agent is only supported by OpenCode and must be a valid agent name' });
+    s.agent = agent;
+    appendEvent(s.dirId, 'session_agent_changed', `${s.label || s.id} → ${s.agent || '默认 agent'}`, s.id);
   }
   if (req.body.rolePrompt !== undefined) {
     const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
@@ -2875,7 +2945,12 @@ app.patch('/api/sessions/:id', (req, res) => {
     // Codex materializes native default/worker/explorer agent config layers that
     // select a second model_provider. null / '' / {} clears the override.
     const sa = req.body.subagent;
-    if (sa === null || sa === '' || (typeof sa === 'object' && Object.keys(sa).length === 0)) {
+    const cli = s.cli || 'claude';
+    const clearing = sa === null || sa === '' || (typeof sa === 'object' && Object.keys(sa).length === 0);
+    if (!clearing && cli !== 'claude' && cli !== 'codex') {
+      return res.status(400).json({ error: 'subagent routing is only supported by Claude and Codex' });
+    }
+    if (clearing) {
       s.subagent = null;
     } else if (typeof sa === 'object') {
       const subApp = (s.cli === 'codex') ? 'codex' : 'claude';
@@ -2908,6 +2983,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     // The full checkpoint can contain recent visible conversation text. Keep
     // it server-side and expose only lifecycle metadata in ordinary responses.
     cliStates: cliStateSummary(s),
+    cliAvailability: cliAvailabilitySummary(),
     pendingCliHandoff: cliHandoffSummary(s),
     subagent: serializeSubagent(s.subagent),
     effectiveModel: effectiveSessionModel(s),
@@ -4112,6 +4188,8 @@ app.get('/api/sessions/:id', (req, res) => {
   const effectiveModel = effectiveSessionModel(persisted);
   const effort = persisted?.effort || null;
   const effectiveEffort = effectiveSessionEffort(persisted);
+  const agent = persisted?.agent || null;
+  const cliAvailability = cliAvailabilitySummary();
   // The session's own role override (null = inherits the directory default).
   const rolePrompt = persisted?.rolePrompt || null;
   const memory = persisted?.memory || null;  // distilled session memory
@@ -4134,11 +4212,11 @@ app.get('/api/sessions/:id', (req, res) => {
   const activeChat = persisted?.kind === 'chat' ? chatSessions.get(id) : null;
   const lastActivity = persisted?.kind === 'chat' ? chatLastActivity(id, activeChat) : null;
   if (active) {
-    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, cliStates, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
+    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model, effectiveModel, effort, effectiveEffort, agent, rolePrompt, memory, provider, subagent, cliStates, cliAvailability, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
   } else if (persisted?.kind === 'chat') {
-    res.json({ id: persisted.id, cwd: cwdForSession(persisted), createdAt: persisted.createdAt, lastActivity, clients: activeChat ? activeChat.clients.size : 0, active: !!(activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming)), mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, cliStates, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
+    res.json({ id: persisted.id, cwd: cwdForSession(persisted), createdAt: persisted.createdAt, lastActivity, clients: activeChat ? activeChat.clients.size : 0, active: !!(activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming)), mergeState, cli, model, effectiveModel, effort, effectiveEffort, agent, rolePrompt, memory, provider, subagent, cliStates, cliAvailability, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
   } else {
-    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model, effectiveModel, effort, effectiveEffort, rolePrompt, memory, provider, subagent, cliStates, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
+    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model, effectiveModel, effort, effectiveEffort, agent, rolePrompt, memory, provider, subagent, cliStates, cliAvailability, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
   }
 });
 
@@ -10351,10 +10429,12 @@ function handleChatWs(ws, req, urlObj) {
     effectiveModel: effectiveSessionModel(persisted),
     effort: persisted.effort || null,
     effectiveEffort: effectiveSessionEffort(persisted),
+    agent: persisted.agent || null,
     providerId: provId,
     providerName: provName,
     providerTokenWindows: provWindows,
     cliStates: cliStateSummary(persisted),
+    cliAvailability: cliAvailabilitySummary(),
     pendingCliHandoff: cliHandoffSummary(persisted),
   }));
 
@@ -10474,10 +10554,14 @@ function handleChatWs(ws, req, urlObj) {
       if (msg.type === 'clear_history') {
         const h = chatHistories.get(sessionName);
         const keep = Math.max(0, parseInt(msg.keep || '0', 10) || 0);
-        if (keep > 0 && h && h.length > keep) {
+        let retained = [];
+        if (keep > 0 && h) {
           // Keep the last N messages (typically user/assistant pairs), distill the rest.
-          const removed = h.splice(0, h.length - keep);
+          // If history is shorter than N, retain all of it rather than falling
+          // through to the clear-all branch.
+          const removed = h.splice(0, Math.max(0, h.length - keep));
           if (removed.length) distillHistoryIntoMemory(sessionName, removed);
+          retained = h.slice();
         } else {
           // Distill the soon-to-be-discarded conversation into long-lived session
           // memory BEFORE wiping it (key problems + how they were solved).
@@ -10485,25 +10569,38 @@ function handleChatWs(ws, req, urlObj) {
           if (h) h.length = 0;
         }
         saveChatHistory(sessionName);
-        // Reset the CLI session so next turn starts fresh:
-        //   claude: allocate a new UUID (will be used as --session-id)
-        //   codex:  clear so next exec allocates a fresh thread (will be captured from thread.started)
+        // Reset every vendor-native session. Clearing only the active CLI lets
+        // an old conversation reappear after switching away and back.
         const pExisting = persistedSessions.get(sessionName);
         if (pExisting) {
           chatStream.close(sessionName);
-          pExisting.cliSessionId = null;
-          delete pExisting._streamSessionId;
           delete pExisting.pendingCliHandoff;
-          ensureCliStates(pExisting);
-          if (pExisting.cliStates && pExisting.cliStates[cs.cli]) {
-            pExisting.cliStates[cs.cli].cliSessionId = null;
-            pExisting.cliStates[cs.cli].streamSessionId = null;
+          const cleared = clearAllNativeCliStates(pExisting);
+          if (keep > 0 && retained.length) {
+            const checkpoint = buildHandoffCheckpoint({
+              session: pExisting,
+              fromCli: cs.cli,
+              toCli: cs.cli,
+              history: retained,
+              git: cliSwitchGitSnapshot(pExisting),
+            });
+            checkpoint.reason = 'history_clear_keep';
+            pExisting.pendingCliHandoff = {
+              id: `checkpoint_${crypto.randomBytes(8).toString('hex')}`,
+              fromCli: cs.cli,
+              toCli: cs.cli,
+              createdAt: checkpoint.createdAt,
+              status: 'pending',
+              reason: 'history_clear_keep',
+              reusedTarget: false,
+              checkpoint,
+            };
           }
           rememberActiveCliState(pExisting);
           savePersistedSessions();
+          console.log(`[multicc/chat] Cleared history and reset ${cleared} native CLI session(s) for ${sessionName}`);
         }
         cs.chatTurnCount = 0;
-        console.log(`[multicc/chat] Cleared history and reset ${cs.cli} session for ${sessionName}`);
         return;
       }
 

@@ -23,6 +23,7 @@ function activeState(session, now = Date.now()) {
     effort: session.effort || null,
     provider: session.provider || null,
     subagent: cloneValue(session.subagent) || null,
+    agent: session.agent || null,
     reportedModel: session.reportedModel || null,
     updatedAt: now,
   };
@@ -71,6 +72,7 @@ function activateCliState(session, targetCli, options = {}) {
     effort: defaults.effort || null,
     provider: defaults.provider || null,
     subagent: cloneValue(defaults.subagent) || null,
+    agent: defaults.agent || null,
     reportedModel: null,
     updatedAt: now,
   };
@@ -83,6 +85,7 @@ function activateCliState(session, targetCli, options = {}) {
   session.effort = state.effort || null;
   session.provider = state.provider || null;
   session.subagent = cloneValue(state.subagent) || null;
+  session.agent = state.agent || null;
   if (state.reportedModel) session.reportedModel = state.reportedModel;
   else delete session.reportedModel;
   session.streaming = targetCli === 'claude' && session.kind === 'chat';
@@ -109,9 +112,32 @@ function stateSummary(session) {
       updatedAt: state.updatedAt || null,
       model: state.model || null,
       provider: state.provider || null,
+      effort: state.effort || null,
+      agent: state.agent || null,
     };
   }
   return out;
+}
+
+// Clearing a logical chat must invalidate every vendor-native conversation,
+// not only the CLI that happens to be active. Otherwise switching away and
+// back after /clear resurrects context the user explicitly discarded.
+// Per-CLI configuration is intentionally preserved.
+function clearAllNativeCliStates(session, now = Date.now()) {
+  if (!session || session.kind !== 'chat') return 0;
+  ensureCliStates(session, now);
+  let cleared = 0;
+  for (const cli of SUPPORTED_CHAT_CLIS) {
+    const state = session.cliStates && session.cliStates[cli];
+    if (!state || typeof state !== 'object') continue;
+    if (state.cliSessionId || state.streamSessionId) cleared += 1;
+    state.cliSessionId = null;
+    state.streamSessionId = null;
+    state.updatedAt = now;
+  }
+  session.cliSessionId = null;
+  delete session._streamSessionId;
+  return cleared;
 }
 
 function messageText(message) {
@@ -173,7 +199,13 @@ function buildHandoffCheckpoint({ session, fromCli, toCli, history, git, now = D
 function renderHandoffPrompt(handoff) {
   if (!handoff || !handoff.checkpoint) return '';
   const cp = handoff.checkpoint;
-  const lines = [
+  const isContextReset = handoff.reason === 'history_clear_keep' || cp.reason === 'history_clear_keep';
+  const lines = isContextReset ? [
+    '[MultiCC context checkpoint v1]',
+    'The user cleared native CLI context but explicitly kept recent visible messages.',
+    'Every native CLI session was invalidated. Use the verified visible checkpoint below as prior context.',
+    `Checkpoint id: ${handoff.id || 'unknown'}`,
+  ] : [
     '[MultiCC CLI handoff v1]',
     `The logical conversation switched from ${cp.fromCli || handoff.fromCli} to ${cp.toCli || handoff.toCli}.`,
     'Native CLI transcripts are intentionally not shared. Use the verified visible checkpoint below as prior context.',
@@ -199,7 +231,7 @@ function renderHandoffPrompt(handoff) {
     }
   }
   lines.push('Continue the current user request using this checkpoint. Do not claim access to the source CLI\'s hidden state.');
-  lines.push('[MultiCC CLI handoff end]\n\n');
+  lines.push(isContextReset ? '[MultiCC context checkpoint end]\n\n' : '[MultiCC CLI handoff end]\n\n');
   return lines.join('\n');
 }
 
@@ -210,6 +242,7 @@ module.exports = {
   rememberActiveCliState,
   activateCliState,
   stateSummary,
+  clearAllNativeCliStates,
   buildHandoffCheckpoint,
   renderHandoffPrompt,
   messageText,
