@@ -33,9 +33,7 @@ class ModelChip extends StatefulWidget {
 
 class ModelChipState extends State<ModelChip> {
   List<Map<String, dynamic>> _providers = [];
-  bool _loaded = false;
-
-  String get _appType => widget.cli.appType;
+  int _loadEpoch = 0;
 
   @override
   void initState() {
@@ -43,21 +41,29 @@ class ModelChipState extends State<ModelChip> {
     _load();
   }
 
-  Future<void> _load() async {
+  @override
+  void didUpdateWidget(covariant ModelChip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cli != widget.cli) {
+      _providers = [];
+      _load();
+    }
+  }
+
+  Future<void> _load({SessionCli? cli}) async {
+    final epoch = ++_loadEpoch;
+    final appType = (cli ?? widget.cli).appType;
     try {
       final d = await ManageService(
         settings: widget.settings,
-      ).fetchProviders(_appType);
-      if (!mounted) return;
+      ).fetchProviders(appType);
+      if (!mounted || epoch != _loadEpoch) return;
       setState(() {
         _providers = (d['providers'] as List? ?? [])
             .map((e) => (e as Map).cast<String, dynamic>())
             .toList();
-        _loaded = true;
       });
-    } catch (_) {
-      if (mounted) setState(() => _loaded = true);
-    }
+    } catch (_) {}
   }
 
   String _providerLabel(String? id) {
@@ -121,12 +127,12 @@ class ModelChipState extends State<ModelChip> {
         break;
       }
     }
-    final label =
-        '${_providerLabel(s?.provider)} | ${_modelLabel(s)} | ${_effortLabel(s)}';
+    final parts = [_providerLabel(s?.provider), _modelLabel(s)];
+    if (widget.cli.supportsEffort) parts.add(_effortLabel(s));
+    final label = parts.join(' | ');
     return Tooltip(
-      message: widget.cli == SessionCli.codex
-          ? 'Provider / Model / Reasoning Level'
-          : 'Provider / Model / Effort',
+      message:
+          'Provider / Model${widget.cli.supportsEffort ? ' / ${widget.cli.effortFieldLabel}' : ''}',
       child: GestureDetector(
         onTap: () => _switchAIConfig(context, mgr, s),
         child: Container(
@@ -182,7 +188,20 @@ class ModelChipState extends State<ModelChip> {
       ).showSnackBar(SnackBar(content: Text(t('sessionNotLoaded'))));
       return;
     }
-    if (!_loaded) await _load();
+    var runtime = SessionCliConfig(
+      cli: s.cli,
+      provider: s.provider,
+      model: s.model,
+      effectiveModel: s.effectiveModel,
+      effort: s.effort,
+      effectiveEffort: s.effectiveEffort,
+      agent: s.agent,
+      subagent: s.subagent,
+    );
+    try {
+      runtime = await mgr.fetchSessionCliConfig(s.id);
+    } catch (_) {}
+    await _load(cli: runtime.cli);
     if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final picked = await showModalBottomSheet<AIConfigResult>(
@@ -193,14 +212,14 @@ class ModelChipState extends State<ModelChip> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (_) => AIConfigSheet(
-        cli: widget.cli,
+        cli: runtime.cli,
         providers: _providers,
-        provider: s.provider ?? '',
-        model: s.model ?? '',
-        effort: s.effectiveEffort ?? s.effort ?? 'medium',
-        subProviderId: s.subagent?.providerId,
-        subModel: s.subagent?.model,
-        streaming: s.streaming ?? true,
+        provider: runtime.provider ?? '',
+        model: runtime.model ?? '',
+        effort: runtime.effectiveEffort ?? runtime.effort ?? runtime.cli.defaultEffort,
+        subProviderId: runtime.subagent?.providerId,
+        subModel: runtime.subagent?.model,
+        agent: runtime.agent,
       ),
     );
     if (picked == null) return;
@@ -211,15 +230,13 @@ class ModelChipState extends State<ModelChip> {
         model: picked.model,
         effort: picked.effort,
         subagent: picked.subagent,
-        streaming: picked.streaming,
+        agent: picked.agent,
         clearSubagent: picked.subagent == null,
       );
+      final summary = [picked.providerLabel, picked.modelLabel];
+      if (picked.effortLabel.isNotEmpty) summary.add(picked.effortLabel);
       messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            '✓ AI 配置已保存：${picked.providerLabel} | ${picked.modelLabel} | ${picked.effortLabel}，下一轮对话生效',
-          ),
-        ),
+        SnackBar(content: Text('✓ AI 配置已保存：${summary.join(' | ')}，下一轮对话生效')),
       );
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('AI 配置保存失败：$e')));

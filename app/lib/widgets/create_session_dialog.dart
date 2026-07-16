@@ -18,12 +18,14 @@ class CreateSessionResult {
   final String? provider;
   final String? model;
   final String? effort;
+  final String? agent;
   CreateSessionResult({
     this.label,
     this.rolePrompt,
     this.provider,
     this.model,
     this.effort,
+    this.agent,
   });
 }
 
@@ -50,6 +52,7 @@ class CreateSessionDialog extends StatefulWidget {
 class CreateSessionDialogState extends State<CreateSessionDialog> {
   late final TextEditingController _nameCtrl;
   late final TextEditingController _roleCtrl;
+  late final TextEditingController _agentCtrl;
   late final AgentPresetService _presetSvc;
   AgentPresetIndex? _presetIndex;
   bool _loadingPresets = false;
@@ -61,8 +64,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   final _customModelCtrl = TextEditingController();
 
   bool get _isClaude => widget.cli == SessionCli.claude;
-  bool get _isCodex => widget.cli == SessionCli.codex;
-  String get _defaultEffort => _isClaude ? 'medium' : 'xhigh';
+  String get _defaultEffort => widget.cli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
       widget.defaultProviderId != null &&
       widget.defaultProviderId!.isNotEmpty &&
@@ -78,6 +80,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     super.initState();
     _nameCtrl = TextEditingController();
     _roleCtrl = TextEditingController();
+    _agentCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
     if (_hasConcreteDefaultProvider) _pickedProvider = widget.defaultProviderId;
     _pickedEffort = _defaultEffort;
@@ -90,6 +93,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   void dispose() {
     _nameCtrl.dispose();
     _roleCtrl.dispose();
+    _agentCtrl.dispose();
     _customModelCtrl.dispose();
     super.dispose();
   }
@@ -214,11 +218,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     }
 
     final effort = preset.defaultEffort;
-    final validEfforts = _isClaude
-        ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
-        : (_isCodex
-            ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-            : const ['low', 'medium', 'high', 'xhigh']);
+    final validEfforts = widget.cli.effortOptions;
     if (validEfforts.contains(effort)) _pickedEffort = effort;
   }
 
@@ -322,6 +322,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           : null,
       model: model,
       effort: _pickedEffort,
+      agent: widget.cli.supportsAgent && _agentCtrl.text.trim().isNotEmpty
+          ? _agentCtrl.text.trim()
+          : null,
     );
     Navigator.of(context).pop(result);
   }
@@ -473,44 +476,48 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 autofocus: true,
               ),
             ],
-            const SizedBox(height: 12),
-            Text(
-              _isClaude ? 'Effort' : 'Reasoning Level',
-              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              value: _pickedEffort,
-              dropdownColor: const Color(0xFF0f1115),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: sheetInputDecoration(),
-              items:
-                  (_isClaude
-                          ? const [
-                              'low',
-                              'medium',
-                              'high',
-                              'xhigh',
-                              'max',
-                              'ultracode',
-                            ]
-                          : (_isCodex
-                              ? const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-                              : const ['low', 'medium', 'high', 'xhigh']))
-                      .map(
-                        (e) => DropdownMenuItem(
+            if (widget.cli.supportsEffort) ...[
+              const SizedBox(height: 12),
+              Text(
+                widget.cli.effortFieldLabel,
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              ),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<String>(
+                value: _pickedEffort,
+                dropdownColor: const Color(0xFF0f1115),
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                decoration: sheetInputDecoration(),
+                items: widget.cli.effortOptions
+                    .map((e) => DropdownMenuItem(
                           value: e,
                           child: Text(
-                            _isClaude
-                                ? e
-                                : effortShortNameForCli(widget.cli, e),
+                            _isClaude ? e : effortShortNameForCli(widget.cli, e),
                             style: const TextStyle(color: Color(0xFFe7eaee)),
                           ),
-                        ),
-                      )
-                      .toList(),
-              onChanged: (v) => setState(() => _pickedEffort = v ?? _defaultEffort),
-            ),
+                        ))
+                    .toList(),
+                onChanged: (v) => setState(() => _pickedEffort = v ?? _defaultEffort),
+              ),
+            ],
+            if (widget.cli.supportsAgent) ...[
+              const SizedBox(height: 12),
+              Text(
+                '${widget.cli.displayName} Agent',
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _agentCtrl,
+                maxLength: 80,
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                decoration: sheetInputDecoration(
+                  hint: widget.cli == SessionCli.opencode
+                      ? '例如 build；留空使用默认 agent'
+                      : '已定义的 agent 名称；留空使用默认 agent',
+                ).copyWith(counterText: ''),
+              ),
+            ],
           ],
         ),
       ),

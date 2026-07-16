@@ -11,6 +11,7 @@ import '../services/settings_service.dart';
 import '../screens/file_browser_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/share_messages_screen.dart';
+import 'cli_switch_sheet.dart';
 import 'model_chip.dart';
 
 class ChatHeader extends StatelessWidget {
@@ -92,7 +93,13 @@ class ChatHeader extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              _ChatCliBadge(cli: provider.cli),
+              _ChatCliBadge(
+                cli: provider.cli,
+                onTap: () => openCliSwitchSheet(
+                  context,
+                  sessionId: provider.sessionName,
+                ),
+              ),
               const SizedBox(width: 6),
               Flexible(
                 child: Text(
@@ -723,7 +730,8 @@ class _HeaderOverflowMenu extends StatelessWidget {
 
 class _ChatCliBadge extends StatelessWidget {
   final SessionCli cli;
-  const _ChatCliBadge({required this.cli});
+  final VoidCallback onTap;
+  const _ChatCliBadge({required this.cli, required this.onTap});
   @override
   Widget build(BuildContext context) {
     final color = switch (cli) {
@@ -732,19 +740,33 @@ class _ChatCliBadge extends StatelessWidget {
       SessionCli.opencode => const Color(0xFFa78bfa),
       SessionCli.zcode => const Color(0xFF38bdf8),
     };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
+    return Tooltip(
+      message: '切换会话 CLI',
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        cli.name,
-        style: TextStyle(
-          color: color,
-          fontSize: 9,
-          fontWeight: FontWeight.w700,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.15),
+            border: Border.all(color: color.withValues(alpha: 0.4)),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                cli.name,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 2),
+              Icon(Icons.swap_horiz_rounded, size: 11, color: color),
+            ],
+          ),
         ),
       ),
     );

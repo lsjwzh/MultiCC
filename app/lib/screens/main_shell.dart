@@ -1291,8 +1291,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
       final defaults = d['defaults'];
-      if (defaults is Map && defaults[appType] != null) {
-        defaultProviderId = defaults[appType].toString();
+      if (defaults is Map && defaults[cli.name] != null) {
+        defaultProviderId = defaults[cli.name].toString();
       }
     } catch (_) {}
     if (!mounted) return;
@@ -1318,6 +1318,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
         model: result.model,
         provider: result.provider,
         effort: result.effort,
+        agent: result.agent,
         rolePrompt: result.rolePrompt,
       );
       if (!mounted) return;
@@ -3113,4 +3114,3 @@ class _UncommittedFilesDialogState extends State<_UncommittedFilesDialog> {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  GIT STATUS ROW — 在舰队卡片上显示分支名 + ahead/behind/脏 状态的紧凑行
 // ═══════════════════════════════════════════════════════════════════════════════
-

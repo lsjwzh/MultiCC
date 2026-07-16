@@ -219,6 +219,10 @@ class ChatService {
         if (msg['id'] != null) _sessionId = msg['id'].toString();
         break;
 
+      case 'cli_switched':
+        _emit('cli_switched', msg);
+        break;
+
       case 'chat_history':
         final messages = msg['messages'];
         if (messages is List) {
