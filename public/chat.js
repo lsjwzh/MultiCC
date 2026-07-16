@@ -516,6 +516,31 @@ let currentToolCards = new Map();
 let activeContentType = null;
 let activeContentIndex = -1;
 let currentCli = 'claude';
+const cliBtn = document.getElementById('cli-btn');
+const CLI_META = {
+  claude: { label: 'Claude', color: '#f78166' },
+  codex: { label: 'Codex', color: '#2ea043' },
+  opencode: { label: 'OpenCode', color: '#388bfd' },
+  zcode: { label: 'ZCode', color: '#a371f7' },
+};
+
+function applyCliUi(cli) {
+  const next = CLI_META[cli] ? cli : 'claude';
+  const meta = CLI_META[next];
+  currentCli = next;
+  _sessionCli = next;
+  const badge = document.querySelector('.badge');
+  if (badge) {
+    badge.textContent = `${meta.label} · Chat`;
+    badge.style.background = meta.color;
+  }
+  if (cliBtn) {
+    cliBtn.textContent = `CLI: ${meta.label}`;
+    cliBtn.style.borderColor = meta.color;
+    cliBtn.title = `当前 ${meta.label}；点击切换 CLI（通过结构化 checkpoint 交接上下文）`;
+  }
+  document.title = `MultiCC Chat · ${meta.label}`;
+}
 let _mergeReady = false;
 let _syncConflict = false;
 let _syncConflictFiles = [];
@@ -724,18 +749,7 @@ function handleEvent(msg) {
         refreshNotifyPreference();
         if (!_sessionName && sessionId) updateTabIdentity(sessionId);
         if (msg.cwd) updateCwdDisplay(msg.cwd);
-        // Update CLI badge in the header (Claude orange / Codex green)
-        if (msg.cli) {
-          currentCli = msg.cli;
-          const badge = document.querySelector('.badge');
-          if (badge) {
-            badge.textContent = msg.cli === 'codex' ? 'Codex · Chat' : 'Claude · Chat';
-            badge.style.background = msg.cli === 'codex' ? '#2ea043' : '#f78166';
-          }
-          if (document.title && !document.title.includes(msg.cli)) {
-            document.title = `MultiCC Chat · ${msg.cli}`;
-          }
-        }
+        if (msg.cli) applyCliUi(msg.cli);
         const parts = [];
         if (sessionId) parts.push(`Session: ${sessionId.slice(0, 8)}...`);
         if (msg.cli) parts.push(msg.cli);
@@ -754,7 +768,8 @@ function handleEvent(msg) {
         // providerId 必须恢复，否则 AI 配置弹窗的 Provider 下拉会落到「默认登录」。
         if (msg.providerId !== undefined) _sessionProvider = msg.providerId || '';
         if (msg.providerName !== undefined) _sessionProviderDisplayName = msg.providerName || '';
-        if (msg.cli) _sessionCli = msg.cli;
+        if (msg.cliStates) _sessionCliStates = msg.cliStates;
+        _pendingCliHandoff = msg.pendingCliHandoff || null;
         // effectiveModel/model refresh unconditionally on reconnect, exactly like
         // provider/effort above — otherwise a server-side alias-map change leaves
         // the AI-config button showing the NEW provider paired with the OLD model.
@@ -804,6 +819,12 @@ function handleEvent(msg) {
 
     case 'session_id':
       if (msg.id) { sessionId = msg.id; refreshNotifyPreference(); if (!_sessionName) updateTabIdentity(msg.id); }
+      break;
+
+    case 'cli_switched':
+      applyCliUi(msg.cli);
+      addSystemMsg(`⇄ CLI 已从 ${CLI_META[msg.fromCli]?.label || msg.fromCli} 切换到 ${CLI_META[msg.cli]?.label || msg.cli}；下一条消息会携带结构化上下文交接${msg.reusedTarget ? '并恢复该 CLI 原会话' : ''}`);
+      loadSessionModel();
       break;
 
     case 'stream_event':
@@ -2964,6 +2985,96 @@ document.getElementById('diff-modal')?.addEventListener('click', (e) => {
 
 startMergeStatusPolling();
 
+/* ── Cross-CLI switch (one logical chat, independent native sessions) ── */
+function showCliSwitchPicker(current, states) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:460px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-size:17px;font-weight:700;margin-bottom:8px;';
+    title.textContent = '切换 CLI';
+    const desc = document.createElement('div');
+    desc.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;margin-bottom:14px;';
+    desc.textContent = '每个 CLI 保留自己的原生会话。切换时不会转换 JSONL，而是把最近可见对话、任务状态和 Git 状态作为 checkpoint 交给目标 CLI。';
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#c9d1d9;font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
+    for (const [value, meta] of Object.entries(CLI_META)) {
+      const state = states && states[value];
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = `${meta.label}${value === current ? '（当前）' : ''}${state?.hasNativeSession ? ' · 可恢复原会话' : ' · 新会话'}`;
+      select.appendChild(opt);
+    }
+    select.value = current;
+    const targetInfo = document.createElement('div');
+    targetInfo.style.cssText = 'min-height:34px;font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:8px;';
+    const resetRow = document.createElement('label');
+    resetRow.style.cssText = 'display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#c9d1d9;background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:9px;margin-bottom:14px;cursor:pointer;';
+    const reset = document.createElement('input');
+    reset.type = 'checkbox';
+    reset.style.marginTop = '2px';
+    const resetText = document.createElement('span');
+    resetText.textContent = '重置目标 CLI 原生会话（恢复失败时使用；仍会注入当前 checkpoint）';
+    resetRow.append(reset, resetText);
+    const updateInfo = () => {
+      const state = states && states[select.value];
+      targetInfo.textContent = state?.hasNativeSession
+        ? `将恢复 ${CLI_META[select.value].label} 之前的原生会话，并注入这次切换后的增量 checkpoint。`
+        : `将为 ${CLI_META[select.value].label} 创建新的原生会话，并注入完整 checkpoint。`;
+    };
+    select.onchange = updateInfo;
+    updateInfo();
+    const warning = document.createElement('div');
+    warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
+    warning.textContent = '切换只允许在当前回合结束后执行。目标 CLI 首次成功回复前，handoff 会保持 pending；恢复失败不会静默新建会话。';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 15px;cursor:pointer;';
+    const ok = document.createElement('button');
+    ok.textContent = '确认切换';
+    ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 15px;cursor:pointer;';
+    row.append(cancel, ok);
+    box.append(title, desc, select, targetInfo, resetRow, warning, row);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = (value) => { overlay.remove(); resolve(value); };
+    cancel.onclick = () => close(null);
+    ok.onclick = () => close({ cli: select.value, fresh: reset.checked });
+    overlay.onclick = (event) => { if (event.target === overlay) close(null); };
+  });
+}
+
+cliBtn?.addEventListener('click', async () => {
+  if (!_sessionName) return;
+  await loadSessionModel();
+  const picked = await showCliSwitchPicker(_sessionCli, _sessionCliStates);
+  if (!picked || (picked.cli === _sessionCli && !picked.fresh)) return;
+  cliBtn.disabled = true;
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/switch-cli`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(picked),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      addSystemMsg('CLI 切换失败：' + (data.error || `HTTP ${res.status}`));
+      return;
+    }
+    _sessionCliStates = data.cliStates || _sessionCliStates;
+    if (data.cli) applyCliUi(data.cli);
+    await loadSessionModel();
+  } catch (error) {
+    addSystemMsg('CLI 切换失败：' + error.message);
+  } finally {
+    cliBtn.disabled = false;
+  }
+});
+
 /* ── Per-session model switch ── */
 const modelBtn = document.getElementById('model-btn');
 // CLAUDE_MODEL_OPTIONS + modelShortName live in shared/models.js (loaded before chat.js).
@@ -3321,7 +3432,9 @@ async function loadSessionModel() {
     _sessionMemory = memoryToText(info.memory);
     updateMemoryBtn();
     // Provider switch applies to every cli (claude & codex both have providers).
-    _sessionCli = info.cli || 'claude';
+    applyCliUi(info.cli || 'claude');
+    _sessionCliStates = info.cliStates || {};
+    _pendingCliHandoff = info.pendingCliHandoff || null;
     _sessionProvider = info.provider || '';
     _sessionSubagent = info.subagent || null;
     updateSubagentPill();
@@ -3333,10 +3446,6 @@ async function loadSessionModel() {
     _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
     updateModelBtn();
     updateEffortBtn();
-    if ((info.cli || 'claude') !== 'claude') {
-      updateAutoCommitBtn();
-      return; // autoDispatch below is claude-only
-    }
     _sessionAutoCommit = !!info.autoCommit;
     updateAutoCommitBtn();
     _sessionAutoDispatch = !!info.autoDispatch;
@@ -3404,6 +3513,8 @@ let _sessionProvider = '';       // provider id ('' = default login)
 let _sessionSubagent = null;     // {providerId, model} for Task-tool subagent (claude-proxy), null = 随主
 let _sessionProviderDisplayName = '';  // 实际生效 provider 的显示名（init 兜底；_sessionProvider 为空或 _providerList 未加载时用）
 let _sessionCli = 'claude';
+let _sessionCliStates = {};
+let _pendingCliHandoff = null;
 let _providerList = [];           // [{id,appType,name,baseUrl,model,isOfficial}] - 最近一次拉取结果
 let _providerDefaults = { claude: null, codex: null };
 

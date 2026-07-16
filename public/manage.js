@@ -3141,6 +3141,10 @@ function connectWorkspace(dirId) {
       updateSessionClassifyDom(msg.sessionId);
       // Also refresh summary — classify goal changes often mean the summary line should update too
       updateSessionSummaryDom(msg.sessionId);
+    } else if (msg.type === 'session_cli_changed') {
+      // CLI determines which group/card the session belongs to. Re-fetch the
+      // compact dashboard data so the open management view re-groups it live.
+      loadSessions();
     }
   };
   ws.onclose = () => { if (_workspaceWs.get(dirId) === ws) _workspaceWs.delete(dirId); };
@@ -3174,6 +3178,7 @@ function eventLabel(evt) {
     case 'session_created': return `🆕 新建会话 ${who}（${evt.detail || ''}）`;
     case 'session_renamed': return `✏️ 会话改名为 ${evt.detail || who}`;
     case 'session_model_changed': return `🧠 切换模型 ${evt.detail || who}`;
+    case 'session_cli_changed': return `⇄ 切换 CLI ${evt.detail || who}`;
     case 'session_deleted': return `🗑 删除会话 ${evt.detail || who}`;
     case 'merged':          return `🔀 ${who} 合并：${evt.detail || ''}`;
     case 'memory_updated':  return `🧠 ${who} ${evt.detail || '更新会话记忆'}`;
