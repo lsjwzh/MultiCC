@@ -20,39 +20,13 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
-const { execSync, spawn } = require('child_process');
-const TOML = require('@iarna/toml');
+const { spawn } = require('child_process');
+const cliProviderRouter = require('cli-provider-router');
 
 const PROJECT_DIR = path.join(__dirname, '..');
 
 let Database;
 try { Database = require('better-sqlite3'); } catch (_) { Database = null; }
-
-// On-demand install of better-sqlite3 — only when the user triggers the
-// cc-switch import. Most users never touch this feature, so paying the
-// native-compilation cost upfront wastes time and breaks on machines
-// without build toolchains.
-//
-// Windows: better-sqlite3 needs node-gyp → Visual Studio Build Tools + Python.
-// Pre-built binaries are available for common Node/arch combos and npm install
-// will prefer them; native compilation is the fallback.
-function ensureDatabase() {
-  if (Database) return true;
-  console.log('[multicc] better-sqlite3 not installed — installing on demand (cc-switch import)…');
-  try {
-    execSync('npm install better-sqlite3@^12.6.2 --no-save', {
-      cwd: PROJECT_DIR,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 120000,
-    });
-    Database = require('better-sqlite3');
-    console.log('[multicc] better-sqlite3 installed and loaded');
-    return true;
-  } catch (e) {
-    console.error('[multicc] Failed to install better-sqlite3:', e.message);
-    return false;
-  }
-}
 
 function nativeBuildHint() {
   switch (process.platform) {
@@ -341,7 +315,7 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
   //
   // For domestic services, config.toml's base_url is rewritten to the local
   // proxy; the real /chat/completions URL + apiKey are stored in
-  // settingsConfig.proxyTarget for src/codex-proxy.js to read.
+  // settingsConfig.proxyTarget for cli-provider-router's Codex proxy to read.
   const proxySpec = useChatResponsesProxy ? codexProxyTarget(baseUrl) : null;
   const port = process.env.PORT || 3000;
   const proxyBaseUrl = (proxySpec && providerId)
@@ -609,11 +583,10 @@ function deleteProvider(appType, id) {
 function importFromCcSwitch() {
   const ccDb = resolveCcDb();
   if (!fs.existsSync(ccDb)) throw new Error('cc-switch database not found at ' + ccDb);
-  if (!ensureDatabase()) {
+  if (!Database) {
     throw new Error(
-      'Failed to install better-sqlite3 (native compilation).\n' +
-      'Install build tools and retry:\n' + nativeBuildHint() + '\n' +
-      'Or manually: cd ' + PROJECT_DIR + ' && npm install better-sqlite3'
+      'better-sqlite3 is unavailable; run `npm ci` in ' + PROJECT_DIR + '.\n' +
+      'If native compilation is required, install build tools first:\n' + nativeBuildHint()
     );
   }
   const db = new Database(ccDb, { readonly: true, fileMustExist: true, timeout: 4000 });
@@ -730,35 +703,7 @@ function buildChildEnv(base, session, extra = {}) {
   };
 }
 
-function materializeCodexAuth(home, cfg, {
-  globalAuthPath = path.join(os.homedir(), '.codex', 'auth.json'),
-} = {}) {
-  const authPath = path.join(home, 'auth.json');
-  const baseUrl = tomlValue(cfg && cfg.config, 'base_url');
-
-  // Subscription refresh tokens rotate. A provider import is only a snapshot,
-  // so replaying cfg.auth would overwrite the current global login with a stale
-  // token on every spawn. Official providers always follow the live Codex login.
-  if (!baseUrl) {
-    if (fs.existsSync(globalAuthPath)) {
-      fs.copyFileSync(globalAuthPath, authPath);
-      return 'global';
-    }
-    if (cfg && cfg.auth) {
-      fs.writeFileSync(authPath, JSON.stringify(cfg.auth, null, 2));
-      return 'provider-fallback';
-    }
-    fs.rmSync(authPath, { force: true });
-    return 'none';
-  }
-
-  if (cfg && cfg.auth) {
-    fs.writeFileSync(authPath, JSON.stringify(cfg.auth, null, 2));
-    return 'provider';
-  }
-  fs.rmSync(authPath, { force: true });
-  return 'none';
-}
+const materializeCodexAuth = cliProviderRouter.materializeCodexAuth;
 
 // Compute env overrides + flags to apply when spawning a child for `session`.
 //   - env: object merged into the child's process env (only this child).
@@ -1052,7 +997,7 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
 }
 
 // Rewrite a child process env so claude routes through the local claude-proxy
-// (src/claude-proxy.js) instead of the provider's real endpoint. Only applies to
+// (cli-provider-router) instead of the provider's real endpoint. Only applies to
 // provider-backed sessions — default-login sessions have no provider creds for
 // the proxy to forward, so they bypass and use OAuth/login directly.
 //
@@ -1075,140 +1020,19 @@ async function probeRelayModels(baseEnv, candidates, cliCmd) {
 // ANTHROPIC_BASE_URL — i.e. a "Claude Official"/OAuth-subscription entry — is
 // ALSO routed through the proxy instead of bypassed. The proxy then replays the
 // Keychain OAuth token to api.anthropic.com, which is what lets an official
-// session route its subagents to cheaper providers. See src/claude-proxy.js.
-function applyClaudeProxyEnv(env, { providerId, sessionId, subagent, port, enabled, officialOAuth }) {
-  if (!enabled) return;
-  if (!providerId || !sessionId || !port) return;
-  const p = getProvider('claude', providerId);
-  const cfg = p ? parseConfig(p.settingsConfig) : {};
-  const hasBase = !!(cfg.env && cfg.env.ANTHROPIC_BASE_URL);
-  // No custom baseUrl → normally bypass (nothing to forward to). Exception: the
-  // canonical `claude-official` provider when the opt-in OAuth toggle is on —
-  // route it too so the proxy can replay the Keychain OAuth token. Other
-  // empty-baseUrl providers still bypass (they are not the subscription login).
-  const isOfficial = providerId === 'claude-official';
-  if (!hasBase && !(officialOAuth && isOfficial)) return;
-  env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}/claude-proxy/${providerId}/${sessionId}`;
-  env.ANTHROPIC_AUTH_TOKEN = `multicc-${sessionId}`;
-  delete env.ANTHROPIC_API_KEY; // real creds stay in the store; proxy resolves them
-  if (subagent && subagent.providerId && subagent.model) {
-    env.CLAUDE_CODE_SUBAGENT_MODEL = `ccfw:${subagent.providerId}:${subagent.model}`;
-  } else {
-    delete env.CLAUDE_CODE_SUBAGENT_MODEL; // never let a stale inherited value leak
-  }
+// session route its subagents to cheaper providers. See cli-provider-router.
+function applyClaudeProxyEnv(env, options) {
+  return cliProviderRouter.applyClaudeProxyEnv(env, { ...options, getProvider });
 }
-
-const CODEX_SUBAGENT_PROVIDER = 'multicc_subagent';
-const CODEX_BUILTIN_AGENT_ROLES = {
-  default: {
-    description: 'General-purpose subagent routed by MultiCC.',
-    instructions: 'Complete the delegated task and return a concise result to the parent agent.',
-  },
-  worker: {
-    description: 'Execution-focused subagent routed by MultiCC.',
-    instructions: 'Implement or verify the delegated task within the scope assigned by the parent agent.',
-  },
-  explorer: {
-    description: 'Read-heavy codebase explorer routed by MultiCC.',
-    instructions: 'Inspect only the requested scope and return concrete findings with file references.',
-  },
-};
 
 function codexProviderProxyable(providerOrId) {
-  const provider = typeof providerOrId === 'string'
-    ? getProvider('codex', providerOrId)
-    : providerOrId;
-  if (!provider) return false;
-  const cfg = parseConfig(provider.settingsConfig);
-  if (cfg.proxyTarget && cfg.proxyTarget.baseUrl) return true;
-  const baseUrl = tomlValue(cfg.config, 'base_url');
-  return !!baseUrl && !/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/codex-proxy\//i.test(baseUrl);
+  return cliProviderRouter.codexProviderProxyable(providerOrId, { getProvider });
 }
 
-function localCodexProxyBase({ providerId, sessionId, role, port }) {
-  return `http://127.0.0.1:${port}/codex-proxy/${encodeURIComponent(providerId)}`
-    + `/${encodeURIComponent(sessionId)}/${role}`;
-}
+const materializeCodexRoutingHome = cliProviderRouter.materializeCodexRoutingHome;
 
-// Materialize the provider/model split using Codex's native agent config layers.
-// The parent keeps its selected provider; built-in child roles select a second
-// model_provider whose base URL carries an explicit `sub` role to the local proxy.
-function materializeCodexRoutingHome(home, {
-  mainProviderId,
-  mainProxyable,
-  sessionId,
-  subProviderId,
-  subModel,
-  port,
-}) {
-  if (!home || !mainProviderId || !sessionId || !subProviderId || !port) return false;
-  const configPath = path.join(home, 'config.toml');
-  if (!fs.existsSync(configPath)) return false;
-
-  const config = TOML.parse(fs.readFileSync(configPath, 'utf8'));
-  config.model_providers = config.model_providers || {};
-
-  if (mainProxyable) {
-    const activeProvider = String(config.model_provider || '');
-    const active = activeProvider && config.model_providers[activeProvider];
-    if (!active || typeof active !== 'object') {
-      throw new Error(`Codex config has no model_providers.${activeProvider || '(unset)'}`);
-    }
-    active.base_url = localCodexProxyBase({
-      providerId: mainProviderId, sessionId, role: 'main', port,
-    });
-    active.wire_api = 'responses';
-    active.requires_openai_auth = true;
-  }
-
-  config.model_providers[CODEX_SUBAGENT_PROVIDER] = {
-    name: 'MultiCC subagent route',
-    base_url: localCodexProxyBase({
-      providerId: subProviderId, sessionId, role: 'sub', port,
-    }),
-    wire_api: 'responses',
-    requires_openai_auth: true,
-  };
-  config.features = config.features || {};
-  config.features.multi_agent = true;
-  fs.writeFileSync(configPath, TOML.stringify(config));
-
-  const agentsDir = path.join(home, 'agents');
-  fs.mkdirSync(agentsDir, { recursive: true });
-  for (const [role, meta] of Object.entries(CODEX_BUILTIN_AGENT_ROLES)) {
-    const agent = {
-      name: role,
-      description: meta.description,
-      developer_instructions: meta.instructions,
-      model_provider: CODEX_SUBAGENT_PROVIDER,
-    };
-    if (subModel) agent.model = subModel;
-    fs.writeFileSync(path.join(agentsDir, `${role}.toml`), TOML.stringify(agent));
-  }
-  return true;
-}
-
-function applyCodexProxyConfig(env, { providerId, sessionId, subagent, port }) {
-  if (!env || !env.CODEX_HOME || !providerId || !sessionId || !port) return false;
-  const mainProvider = getProvider('codex', providerId);
-  if (!mainProvider) return false;
-  const mainProxyable = codexProviderProxyable(mainProvider);
-  const explicitSubId = subagent && subagent.providerId;
-  const subProviderId = explicitSubId || (mainProxyable ? providerId : null);
-  if (!subProviderId || !codexProviderProxyable(subProviderId)) return false;
-  try {
-    return materializeCodexRoutingHome(env.CODEX_HOME, {
-      mainProviderId: providerId,
-      mainProxyable,
-      sessionId,
-      subProviderId,
-      subModel: explicitSubId ? String(subagent.model || '').trim() : '',
-      port,
-    });
-  } catch (error) {
-    console.warn(`[multicc/provider] failed to materialize Codex role routing: ${error.message}`);
-    return false;
-  }
+function applyCodexProxyConfig(env, options) {
+  return cliProviderRouter.applyCodexProxyConfig(env, { ...options, getProvider });
 }
 
 module.exports = {

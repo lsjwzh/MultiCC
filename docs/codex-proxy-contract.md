@@ -1,13 +1,14 @@
 # Codex Responses↔Chat 协议转换代理 — 接口契约（权威）
 
 > 目的：让 codex CLI（只支持 `wire_api="responses"`）能连只提供 `/chat/completions`
-> 的国产服务商（DeepSeek/GLM/Qwen/MiniMax）。复刻 cc-switch 的本地代理思路。
-> 两个实现会话都必须严格遵守本契约，最后由 commander 集成。
+> 的国产服务商（DeepSeek/GLM/Qwen/MiniMax），并让主线程和子 Agent
+> 分别路由到不同 provider。实现归属独立包 `cli-provider-router`；MultiCC
+> 只提供 provider resolver、session 生命周期和 usage sink。
 
 ## 整体数据流
 
 ```
-codex exec  ──POST /codex-proxy/<providerId>/responses (Responses API, SSE)──►  multicc server
+codex exec  ──POST /codex-proxy/<providerId>/<sessionId>/<role>/responses──►  multicc server
                                                                                       │
                                                   ① 读 providerId → 查真实 base_url+key │
                                                   ② Responses body → Chat body (模块A)  │
@@ -39,7 +40,7 @@ reasoning, store, stream, include, prompt_cache_key, client_metadata
 
 ## ── 模块 A：请求转换（纯函数，模块A会话负责）──
 
-文件：`src/codex-proxy-transform.js`，CommonJS。
+文件：`cli-provider-router/lib/proxy/codex-transform.js`，CommonJS；由包入口导出。
 
 ```js
 /**
@@ -69,7 +70,7 @@ module.exports = { responsesToChat, chatStreamToResponses };
 
 ## ── 模块 B：响应流转换（流式状态机，模块B会话负责）──
 
-同文件 `src/codex-proxy-transform.js` 导出：
+同文件导出：
 
 ```js
 /**
@@ -97,17 +98,20 @@ function chatStreamToResponses(emit) { ... }
 - usage：从上游最后一帧的 `usage` 取；没有就给 0。
 - 上游报错或非 200：发一个 `response.failed` 事件，data `{type:"response.failed", response:{status:"failed", error:{message}}}`。
 
-## ── 模块 C：端点 + 集成（commander 负责，或第三会话）──
+## ── 模块 C：端点 + 宿主集成──
 
-- `src/codex-proxy.js`：导出 `mountCodexProxy(app, { getProvider, port })`，挂载
-  `POST /codex-proxy/:providerId/responses`。流程：查 provider → responsesToChat →
-  fetch 真实 `/chat/completions`（stream）→ 用 chatStreamToResponses 转发 SSE。
-- `server.js`：require 并 `mountCodexProxy(app, {...})`。
-- `src/providers.js`：codex provider 若 base_url 命中国产服务，config.toml 的 base_url
-  改写为 `http://127.0.0.1:<PORT>/codex-proxy/<providerId>`，wire_api="responses"；
-  真实 base_url（chat/completions 端点）+ key 存在 provider 配置里供代理读取。
+- `cli-provider-router` 导出 `mountCodexProxy`、`createCodexHandler`、
+  `applyCodexProxyConfig` 和 `materializeCodexRoutingHome`。
+- role-aware 端点为
+  `POST /codex-proxy/:providerId/:sessionId/:role/responses`；旧的
+  `/:providerId/responses` 仅作无 role usage 的兼容入口。
+- `server.js` 注入 `providers.getProvider` 和 `recordRoleTokenUsage`，不实现协议转换。
+- `src/providers.js` 只保留 MultiCC store 适配；Codex HOME、Agent TOML 和认证物化
+  委托给独立包。真实 base URL 和凭证仍由 MultiCC provider store 提供。
 
 ## 验收
 
-- 单测（模块A/B 各自）：给定样例 Responses body → 期望 Chat body；给定样例 Chat SSE 行序列 → 期望 Responses 事件序列。
+- 包契约测试：Responses→Chat、Chat SSE→Responses、direct Responses、main/sub role、
+  cached tokens、自定义 mount path 和官方主线程直连。
+- MultiCC 集成测试：provider store adapter、role token tracker 和 Codex aggregate 对账。
 - 端到端（commander）：真实 DeepSeek key，codex exec "say hi" 经代理跑通，返回正常回复。
