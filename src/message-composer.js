@@ -165,7 +165,7 @@ function validateEnvelope(env) {
  * inline coupling.
  *
  * The envelope's spawnOpts carry RAW values (rawModel=persisted.model,
- * rawEffort=persisted.effort). Per-CLI resolution/mapping is deferred to each
+ * rawEffort=persisted.effort, rawAgent=persisted.agent). Per-CLI resolution/mapping is deferred to each
  * adapter's buildInvocation(envelope) so per-CLI behavior is
  * preserved bit-for-bit.
  *
@@ -292,6 +292,7 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
       // RAW values -- shape() resolves per CLI (iron rule #5: no pre-parsing here).
       rawModel: persisted.model != null ? persisted.model : null,
       rawEffort: persisted.effort != null ? persisted.effort : null,
+      rawAgent: persisted.agent != null ? persisted.agent : null,
       maxTurns: goalLimits ? (goalLimits.maxRounds || 0) : 0,
       ultracode,
       disallowedTools,

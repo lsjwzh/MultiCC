@@ -2,13 +2,15 @@
 
 const { renderPrompt } = require('../message-composer');
 
-function createOpencodeLikeAdapter({ name, label, cmd }) {
+function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = false }) {
   return {
     name,
     cmd,
     buildTerminalCmd(session) {
       let command = cmd;
       if (session.model) command += ` --model ${session.model}`;
+      if (supportsAgentVariant && session.effort) command += ` --variant ${session.effort}`;
+      if (supportsAgentVariant && session.agent) command += ` --agent ${session.agent}`;
       if (session.cliSessionId) command += ` --session ${session.cliSessionId}`;
       return command;
     },
@@ -17,6 +19,8 @@ function createOpencodeLikeAdapter({ name, label, cmd }) {
       const isFirstTurn = env.historyHandle.isFirstTurn;
       const args = ['run', '--format', 'json', '--auto'];
       if (so.rawModel) args.push('--model', so.rawModel);
+      if (supportsAgentVariant && so.rawEffort) args.push('--variant', so.rawEffort);
+      if (supportsAgentVariant && so.rawAgent) args.push('--agent', so.rawAgent);
       if (!isFirstTurn && env.historyHandle.cliSessionId) {
         args.push('--session', env.historyHandle.cliSessionId);
       } else if (!isFirstTurn) {
