@@ -148,13 +148,18 @@ enum SessionCli { claude, codex, opencode, zcode }
 /// Interactive TUI terminal, or stream-json chat.
 enum SessionKind { terminal, chat }
 
-SessionCli parseCli(String? s) {
+SessionCli? tryParseCli(String? s) {
   switch (s) {
+    case 'claude': return SessionCli.claude;
     case 'codex': return SessionCli.codex;
     case 'opencode': return SessionCli.opencode;
     case 'zcode': return SessionCli.zcode;
-    default: return SessionCli.claude;
+    default: return null;
   }
+}
+
+SessionCli parseCli(String? s) {
+  return tryParseCli(s) ?? SessionCli.claude;
 }
 SessionKind _parseKind(String? s) =>
     s == 'chat' ? SessionKind.chat : SessionKind.terminal;
@@ -177,6 +182,31 @@ extension SessionCliX on SessionCli {
     SessionCli.codex => 'Codex',
     SessionCli.opencode => 'OpenCode',
     SessionCli.zcode => 'ZCode',
+  };
+
+  bool get supportsAgent => this == SessionCli.claude || this == SessionCli.opencode;
+  bool get supportsSubagent => this == SessionCli.claude || this == SessionCli.codex;
+  bool get supportsEffort => this != SessionCli.zcode;
+
+  String get effortFieldLabel => switch (this) {
+    SessionCli.claude => 'Effort',
+    SessionCli.codex => 'Reasoning Level',
+    SessionCli.opencode => 'Variant',
+    SessionCli.zcode => '',
+  };
+
+  String get defaultEffort => switch (this) {
+    SessionCli.claude => 'medium',
+    SessionCli.codex => 'xhigh',
+    SessionCli.opencode => '',
+    SessionCli.zcode => '',
+  };
+
+  List<String> get effortOptions => switch (this) {
+    SessionCli.claude => const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    SessionCli.codex => const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    SessionCli.opencode => const ['', 'minimal', 'low', 'medium', 'high', 'max'],
+    SessionCli.zcode => const [],
   };
 }
 
@@ -231,13 +261,13 @@ String modelDisplayName(SessionCli cli, String? model, {Map? aliasMap}) {
 }
 
 String effortShortNameForCli(SessionCli cli, String? effort) {
-  final isCodexLike = cli == SessionCli.codex ||
-      cli == SessionCli.opencode || cli == SessionCli.zcode;
-  final v = (effort == null || effort.isEmpty)
-      ? (isCodexLike ? 'xhigh' : 'medium')
-      : effort;
-  if (isCodexLike) {
+  if (!cli.supportsEffort) return '';
+  final v = (effort == null || effort.isEmpty) ? cli.defaultEffort : effort;
+  if (cli == SessionCli.opencode && v.isEmpty) return 'Default';
+  if (cli == SessionCli.codex || cli == SessionCli.opencode) {
     switch (v) {
+      case 'minimal':
+        return 'Minimal';
       case 'low':
         return 'Low';
       case 'medium':
@@ -282,6 +312,143 @@ class SessionSubagent {
   bool get isEmpty => (providerId == null || providerId == '') && (model == null || model == '');
 }
 
+class SessionCliState {
+  final bool hasNativeSession;
+  final int? lastActivatedAt;
+  final int? updatedAt;
+  final String? model;
+  final String? provider;
+  final String? effort;
+  final String? agent;
+
+  const SessionCliState({
+    this.hasNativeSession = false,
+    this.lastActivatedAt,
+    this.updatedAt,
+    this.model,
+    this.provider,
+    this.effort,
+    this.agent,
+  });
+
+  factory SessionCliState.fromJson(dynamic json) {
+    final map = json is Map ? json : const {};
+    return SessionCliState(
+      hasNativeSession: map['hasNativeSession'] == true,
+      lastActivatedAt: (map['lastActivatedAt'] as num?)?.toInt(),
+      updatedAt: (map['updatedAt'] as num?)?.toInt(),
+      model: map['model']?.toString(),
+      provider: map['provider']?.toString(),
+      effort: map['effort']?.toString(),
+      agent: map['agent']?.toString(),
+    );
+  }
+}
+
+class CliHandoff {
+  final String? id;
+  final SessionCli fromCli;
+  final SessionCli toCli;
+  final String status;
+  final String? reason;
+  final bool reusedTarget;
+
+  const CliHandoff({
+    this.id,
+    required this.fromCli,
+    required this.toCli,
+    required this.status,
+    this.reason,
+    this.reusedTarget = false,
+  });
+
+  factory CliHandoff.fromJson(Map<dynamic, dynamic> json) => CliHandoff(
+        id: json['id']?.toString(),
+        fromCli: parseCli(json['fromCli']?.toString()),
+        toCli: parseCli(json['toCli']?.toString()),
+        status: json['status']?.toString() ?? '',
+        reason: json['reason']?.toString(),
+        reusedTarget: json['reusedTarget'] == true,
+      );
+}
+
+Map<SessionCli, SessionCliState> parseCliStates(dynamic json) {
+  if (json is! Map) return const {};
+  final result = <SessionCli, SessionCliState>{};
+  for (final entry in json.entries) {
+    final cli = tryParseCli(entry.key.toString());
+    if (cli != null) result[cli] = SessionCliState.fromJson(entry.value);
+  }
+  return result;
+}
+
+Map<SessionCli, bool> parseCliAvailability(dynamic json) {
+  if (json is! Map) return const {};
+  final result = <SessionCli, bool>{};
+  for (final entry in json.entries) {
+    final cli = tryParseCli(entry.key.toString());
+    if (cli == null) continue;
+    final value = entry.value;
+    result[cli] = value is Map ? value['available'] == true : value == true;
+  }
+  return result;
+}
+
+/// Runtime settings returned by GET /api/sessions/:id and switch-cli.
+class SessionCliConfig {
+  final SessionCli cli;
+  final Map<SessionCli, SessionCliState> cliStates;
+  final Map<SessionCli, bool> cliAvailability;
+  final CliHandoff? pendingCliHandoff;
+  final String? provider;
+  final String? providerName;
+  final String? model;
+  final String? effectiveModel;
+  final String? effort;
+  final String? effectiveEffort;
+  final String? agent;
+  final SessionSubagent? subagent;
+  final bool changed;
+  final bool reusedTarget;
+
+  const SessionCliConfig({
+    required this.cli,
+    this.cliStates = const {},
+    this.cliAvailability = const {},
+    this.pendingCliHandoff,
+    this.provider,
+    this.providerName,
+    this.model,
+    this.effectiveModel,
+    this.effort,
+    this.effectiveEffort,
+    this.agent,
+    this.subagent,
+    this.changed = false,
+    this.reusedTarget = false,
+  });
+
+  factory SessionCliConfig.fromJson(Map<String, dynamic> json) {
+    final handoff = json['pendingCliHandoff'];
+    return SessionCliConfig(
+      cli: parseCli(json['cli']?.toString()),
+      cliStates: parseCliStates(json['cliStates']),
+      cliAvailability: parseCliAvailability(json['cliAvailability']),
+      pendingCliHandoff: handoff is Map ? CliHandoff.fromJson(handoff) : null,
+      provider: json['provider']?.toString(),
+      providerName: json['providerName']?.toString(),
+      model: json['model']?.toString(),
+      effectiveModel: json['effectiveModel']?.toString(),
+      effort: json['effort']?.toString(),
+      effectiveEffort: json['effectiveEffort']?.toString(),
+      agent: json['agent']?.toString(),
+      subagent: json['subagent'] == null ? null : SessionSubagent.fromJson(json['subagent']),
+      changed: json['changed'] == true,
+      reusedTarget: json['reusedTarget'] == true,
+    );
+  }
+}
+
 class Session {
   final String id;
   final String? dirId;
@@ -298,6 +465,9 @@ class Session {
   final String? rolePrompt;
   final String? provider; // cc-switch provider id; null = default login
   final SessionSubagent? subagent; // Task-tool subagent provider+model override (claude-proxy)
+  final String? agent; // Native --agent for Claude/OpenCode.
+  final Map<SessionCli, SessionCliState> cliStates;
+  final CliHandoff? pendingCliHandoff;
   final bool? streaming; // per-session stream mode (claude chat defaults true; server 2ad82ec)
   final String cwd;
   final DateTime createdAt;
@@ -321,6 +491,9 @@ class Session {
     this.rolePrompt,
     this.provider,
     this.subagent,
+    this.agent,
+    this.cliStates = const {},
+    this.pendingCliHandoff,
     this.streaming,
     this.cwd = '',
     required this.createdAt,
@@ -346,6 +519,11 @@ class Session {
       rolePrompt: json['rolePrompt']?.toString(),
       provider: json['provider']?.toString(),
       subagent: json['subagent'] == null ? null : SessionSubagent.fromJson(json['subagent']),
+      agent: json['agent']?.toString(),
+      cliStates: parseCliStates(json['cliStates']),
+      pendingCliHandoff: json['pendingCliHandoff'] is Map
+          ? CliHandoff.fromJson(json['pendingCliHandoff'] as Map)
+          : null,
       streaming: json['streaming'] == null ? null : json['streaming'] == true,
       cwd: (json['cwd'] ?? '').toString(),
       createdAt: json['createdAt'] != null

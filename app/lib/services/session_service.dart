@@ -32,6 +32,36 @@ class SessionService {
         .toList();
   }
 
+  Future<SessionCliConfig> fetchSessionCliConfig(String id) async {
+    final res = await http
+        .get(Uri.parse(_url('/api/sessions/$id')), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    return SessionCliConfig.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  Future<SessionCliConfig> switchSessionCli(
+    String id,
+    SessionCli cli, {
+    bool fresh = false,
+  }) async {
+    final res = await http
+        .post(
+          Uri.parse(_url('/api/sessions/$id/switch-cli')),
+          headers: _headers,
+          body: jsonEncode({'cli': cli.name, 'fresh': fresh}),
+        )
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    return SessionCliConfig.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
   Future<void> deleteSession(String id) async {
     final res = await http
         .delete(Uri.parse(_url('/api/sessions/$id')), headers: _headers)
@@ -210,14 +240,14 @@ class SessionService {
     required String effort,
     SessionSubagent? subagent,
     bool clearSubagent = false,
-    bool? streaming,
+    String? agent,
   }) async {
     final body = <String, dynamic>{
       'provider': provider,
       'model': model,
       'effort': effort,
     };
-    if (streaming != null) body['streaming'] = streaming;
+    if (agent != null) body['agent'] = agent;
     if (clearSubagent) {
       body['subagent'] = null;
     } else if (subagent != null && !subagent.isEmpty) {
@@ -699,6 +729,7 @@ class SessionService {
     String? model,
     String? provider,
     String? effort,
+    String? agent,
     String? rolePrompt,
   }) async {
     final body = <String, dynamic>{'cli': cli.name, 'kind': kind.name};
@@ -706,6 +737,7 @@ class SessionService {
     if (model != null && model.isNotEmpty) body['model'] = model;
     if (provider != null) body['provider'] = provider;
     if (effort != null && effort.isNotEmpty) body['effort'] = effort;
+    if (agent != null && agent.isNotEmpty) body['agent'] = agent;
     if (rolePrompt != null && rolePrompt.isNotEmpty) {
       body['rolePrompt'] = rolePrompt;
     }

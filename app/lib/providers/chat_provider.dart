@@ -17,6 +17,7 @@ class ChatProvider extends ChangeNotifier {
   String displayName;
   String dirName;
   String sessionCwd;
+  final VoidCallback? onSessionConfigChanged;
 
   /// Human-facing identity in the form `directory / alias` (falls back to just
   /// the alias, and the alias falls back to the session id). Used in the chat
@@ -51,6 +52,7 @@ class ChatProvider extends ChangeNotifier {
   /// CLI driving this chat — learned from the server's `system init` event.
   SessionCli _cli = SessionCli.claude;
   SessionCli get cli => _cli;
+  String? _lastCliSwitchHandoffId;
 
   String _statusText = 'Disconnected';
   String get statusText => _statusText;
@@ -112,9 +114,12 @@ class ChatProvider extends ChangeNotifier {
     String? displayName,
     String? dirName,
     required this.sessionCwd,
+    SessionCli initialCli = SessionCli.claude,
+    this.onSessionConfigChanged,
   })  : displayName = displayName ?? sessionName,
         dirName = dirName ?? '' {
     _cwd = sessionCwd;
+    _cli = initialCli;
     _initService();
   }
 
@@ -198,6 +203,28 @@ class ChatProvider extends ChangeNotifier {
 
       case 'system_msg':
         _addSystemMsg(evt.payload as String);
+        break;
+
+      case 'cli_switched':
+        final msg = evt.payload as Map<String, dynamic>;
+        final next = parseCli(msg['cli']?.toString());
+        final from = parseCli(msg['fromCli']?.toString());
+        _cli = next;
+        final model = msg['effectiveModel']?.toString();
+        _statusText = model != null && model.isNotEmpty
+            ? 'Connected · $model'
+            : 'Connected · ${next.name}';
+        final handoffId = msg['handoffId']?.toString();
+        if (handoffId == null || handoffId != _lastCliSwitchHandoffId) {
+          _lastCliSwitchHandoffId = handoffId;
+          final resumed = msg['reusedTarget'] == true ? '，已恢复该 CLI 的原会话' : '';
+          _addSystemMsg(
+            'CLI 已从 ${from.displayName} 切换到 ${next.displayName}$resumed；下一条消息会携带上下文交接。',
+          );
+        } else {
+          notifyListeners();
+        }
+        onSessionConfigChanged?.call();
         break;
 
       case 'chat_history':
@@ -346,6 +373,17 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         break;
     }
+  }
+
+  /// Apply the authoritative REST response immediately. The matching WS event
+  /// still owns the user-facing handoff notice and is de-duplicated separately.
+  void applyCliConfig(SessionCliConfig config) {
+    _cli = config.cli;
+    final model = config.effectiveModel ?? config.model;
+    _statusText = model != null && model.isNotEmpty
+        ? 'Connected · $model'
+        : 'Connected · ${config.cli.name}';
+    notifyListeners();
   }
 
   /// Remove a message from the local transcript by its server-side history id.
