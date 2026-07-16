@@ -112,5 +112,9 @@ assert.strictEqual(
   zcode.buildTerminalCmd({ model: 'z/model', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
   'zcode --model z/model --session ses_1',
 );
+assert.strictEqual(
+  claude.buildTerminalCmd({ model: 'opus', effort: null, agent: 'reviewer', cliSessionId: null }),
+  'claude --model opus --agent reviewer',
+);
 
 console.log('CLI adapter contract and decoder tests passed');
