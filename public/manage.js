@@ -6027,11 +6027,32 @@ async function loadProviders() {
   } catch (_) {
     _providerData = { available: true, ccSwitchAvailable: false, providers: [], defaults: { claude: null, codex: null } };
   }
-  // cc-switch only gates the import button, not the store itself.
+  // cc-switch only gates the import button, not the store itself. A database
+  // file alone is insufficient: better-sqlite3 loads its native addon lazily,
+  // so the server also reports whether a real SQLite probe succeeded.
+  const ccStatus = (_providerData.ccSwitchStatus && typeof _providerData.ccSwitchStatus === 'object')
+    ? _providerData.ccSwitchStatus
+    : {
+        available: _providerData.ccSwitchAvailable === true,
+        dbFound: _providerData.ccSwitchAvailable === true,
+        reason: _providerData.ccSwitchAvailable === true ? null : 'database-not-found',
+      };
   const ccUnavail = document.getElementById('provider-ccswitch-unavailable');
-  if (ccUnavail) ccUnavail.style.display = _providerData.ccSwitchAvailable ? 'none' : '';
+  if (ccUnavail) {
+    ccUnavail.style.display = ccStatus.available ? 'none' : '';
+    const text = ccUnavail.querySelector('.status-text');
+    if (text) {
+      if (!ccStatus.dbFound || ccStatus.reason === 'database-not-found') {
+        text.textContent = '未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。';
+      } else if (ccStatus.reason === 'native-runtime-unavailable') {
+        text.textContent = '已找到 cc-switch 数据库，但 SQLite native runtime 不可用。请在 MultiCC 目录执行：npm rebuild better-sqlite3 --foreground-scripts，然后重试。';
+      } else {
+        text.textContent = ccStatus.message || 'cc-switch 当前不可导入，请检查服务端状态。';
+      }
+    }
+  }
   const importBtn = document.getElementById('prov-import-btn');
-  if (importBtn) importBtn.disabled = !_providerData.ccSwitchAvailable;
+  if (importBtn) importBtn.disabled = !ccStatus.available;
   renderProviderDefaults();
   renderProviderList();
   loadGlobalUsage();
