@@ -20,6 +20,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
 
   List<Map<String, dynamic>> _providers = [];
   Map<String, dynamic> _defaults = {'claude': null, 'codex': null};
+  Map<String, dynamic> _ccSwitchStatus = const {};
   bool _ccSwitchAvailable = false;
   bool _loading = true;
   bool _importing = false;
@@ -39,12 +40,19 @@ class _ProviderScreenState extends State<ProviderScreen> {
     try {
       final d = await _manage.fetchProviders();
       if (!mounted) return;
+      final reportedStatus = (d['ccSwitchStatus'] as Map?)?.cast<String, dynamic>();
+      final ccSwitchStatus = reportedStatus ?? <String, dynamic>{
+        'available': d['ccSwitchAvailable'] == true,
+        'dbFound': d['ccSwitchAvailable'] == true,
+        'reason': d['ccSwitchAvailable'] == true ? null : 'database-not-found',
+      };
       setState(() {
         _providers = (d['providers'] as List? ?? [])
             .map((e) => (e as Map).cast<String, dynamic>())
             .toList();
         _defaults = (d['defaults'] as Map?)?.cast<String, dynamic>() ?? {'claude': null, 'codex': null};
-        _ccSwitchAvailable = d['ccSwitchAvailable'] == true;
+        _ccSwitchStatus = ccSwitchStatus;
+        _ccSwitchAvailable = ccSwitchStatus['available'] == true;
         _loading = false;
       });
     } catch (e) {
@@ -224,9 +232,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
               style: TextStyle(color: AppColors.textBright, fontSize: 14, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Text(
-            _ccSwitchAvailable
-                ? '把 cc-switch 里的 provider 同步进 multicc 自己的存储（按来源去重，可重复同步）。导入后可自由编辑/删除，不影响 cc-switch。'
-                : '未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。仍可手动新建。',
+            _ccSwitchDescription,
             style: const TextStyle(color: AppColors.faint, fontSize: 12, height: 1.5),
           ),
           const SizedBox(height: 12),
@@ -244,6 +250,21 @@ class _ProviderScreenState extends State<ProviderScreen> {
         ],
       ),
     );
+  }
+
+  String get _ccSwitchDescription {
+    if (_ccSwitchAvailable) {
+      return '把 cc-switch 里的 provider 同步进 multicc 自己的存储（按来源去重，可重复同步）。导入后可自由编辑/删除，不影响 cc-switch。';
+    }
+    final reason = _ccSwitchStatus['reason']?.toString();
+    final dbFound = _ccSwitchStatus['dbFound'] == true;
+    if (!dbFound || reason == 'database-not-found') {
+      return '未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。仍可手动新建。';
+    }
+    if (reason == 'native-runtime-unavailable') {
+      return '已找到 cc-switch 数据库，但 SQLite native runtime 不可用。请在 MultiCC 目录执行 npm rebuild better-sqlite3 --foreground-scripts，然后重试。仍可手动新建。';
+    }
+    return _ccSwitchStatus['message']?.toString() ?? 'cc-switch 当前不可导入，请检查服务端状态。仍可手动新建。';
   }
 
   Widget _defaultsCard() {

@@ -599,6 +599,19 @@ Provider config is stored locally and managed from `/manage`:
 | `provider-defaults.json` | Default provider id per CLI for new sessions. |
 | `~/.multicc/codex-homes/<providerId>/` | Materialized `CODEX_HOME` per Codex provider — isolated auth/config. |
 
+MultiCC only reads the CC-Switch database during import; it never rewrites
+CC-Switch settings. If `/manage` reports that the database exists but the
+SQLite native runtime is unavailable, repair and verify the local native
+modules from the MultiCC directory:
+
+```bash
+npm rebuild better-sqlite3 --foreground-scripts
+node scripts/check-native-deps.js
+```
+
+The installer and `./multicc update` run this verification automatically and
+attempt the SQLite rebuild once before failing safely.
+
 ### Voice — Speech-to-Speech (S2S)
 
 | Variable | Default | Description |

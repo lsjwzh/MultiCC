@@ -50,6 +50,28 @@ warn()    { echo "${C_YELLOW}[!]${C_RESET} $*"; }
 err()     { echo "${C_RED}[ERROR]${C_RESET} $*"; }
 step()    { echo ""; echo "${C_BOLD}${C_CYAN}>> $*${C_RESET}"; }
 
+check_native_dependencies() {
+  local check_rc=0
+  node scripts/check-native-deps.js || check_rc=$?
+  if [ "$check_rc" -eq 0 ]; then
+    return 0
+  fi
+
+  # Exit 10 means better-sqlite3 is the only broken native dependency. Its
+  # package may be present while its ABI-specific binding is missing (for
+  # example after an install with lifecycle scripts disabled), so rebuild it
+  # once and verify by constructing a real in-memory database again.
+  if [ "$check_rc" -eq 10 ]; then
+    warn "better-sqlite3 native binding is unavailable — rebuilding it once"
+    if npm rebuild better-sqlite3 --foreground-scripts 2>&1; then
+      check_rc=0
+      node scripts/check-native-deps.js || check_rc=$?
+      [ "$check_rc" -eq 0 ] && return 0
+    fi
+  fi
+  return "$check_rc"
+}
+
 # Generate a random 20-char alphanumeric token. Must be SIGPIPE-safe: under
 # `set -euo pipefail`, a `... | head -c 20` pipeline makes the upstream command
 # exit 141 (SIGPIPE) once head closes the pipe, which would otherwise abort the
@@ -391,10 +413,19 @@ else
     echo "  If it's a native compilation error, install build tools:"
     echo "    sudo apt-get update && sudo apt-get install -y build-essential python3 make g++"
   fi
-  echo ""
-  echo "  Diagnostic workaround:"
-  echo "    npm install --ignore-scripts"
-  echo "  better-sqlite3 is installed on-demand when you use the cc-switch import)"
+  exit 1
+fi
+
+step "Verifying native dependencies"
+if check_native_dependencies; then
+  ok "Native dependencies verified"
+else
+  err "Native dependency verification failed. Run the repair command shown above, then retry."
+  if [ "$IS_MACOS" = true ]; then
+    echo "  Build tools: xcode-select --install"
+  elif [ "$IS_LINUX" = true ]; then
+    echo "  Build tools: sudo apt-get install -y build-essential python3 make g++"
+  fi
   exit 1
 fi
 

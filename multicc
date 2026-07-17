@@ -51,9 +51,32 @@ get_pid() {
   pgrep -f "node $SCRIPT_DIR/server.js" 2>/dev/null | head -1
 }
 
+check_native_dependencies() {
+  local check_rc=0
+  "$NODE" "$SCRIPT_DIR/scripts/check-native-deps.js" || check_rc=$?
+  if [ "$check_rc" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ "$check_rc" -eq 10 ]; then
+    echo "better-sqlite3 native binding is unavailable — rebuilding it once..."
+    if (cd "$SCRIPT_DIR" && env PATH="$(dirname "$NODE"):$PATH" npm rebuild better-sqlite3 --foreground-scripts 2>&1); then
+      check_rc=0
+      "$NODE" "$SCRIPT_DIR/scripts/check-native-deps.js" || check_rc=$?
+      [ "$check_rc" -eq 0 ] && return 0
+    fi
+  fi
+  return "$check_rc"
+}
+
 do_start() {
   if is_running; then
     echo "MultiCC is already running (PID $(get_pid))"
+    return 1
+  fi
+  echo "Verifying native dependencies..."
+  if ! check_native_dependencies; then
+    echo "Native dependency verification failed — MultiCC was not started."
     return 1
   fi
   echo "Starting MultiCC..."
@@ -130,6 +153,15 @@ do_update() {
     return 1
   fi
 
+  # Repair a half-installed native addon even when git is already current. This
+  # catches installs where lifecycle scripts were skipped and avoids returning
+  # "already up to date" while CC-Switch import is still broken.
+  echo "Verifying current native dependencies..."
+  if ! check_native_dependencies; then
+    echo "Native dependency verification failed — update was not started."
+    return 1
+  fi
+
   # ── Resolve the release channel ──────────────────────────────────────
   # .multicc_channel is written by install.sh.  If absent we default to "dev"
   # for backwards-compatibility with older installations that pre-date this
@@ -172,6 +204,9 @@ do_update() {
   # For stable channel: prefer the currently-checked-out tag (if on one).
   # For dev channel: use package.json version.
   local_version=""
+  local before after stashed=0 merge_base local_tip origin_tip
+  before="$(git rev-parse HEAD 2>/dev/null)"
+
   if [ "$channel" = "stable" ]; then
     local_version="$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//')" || true
   fi
@@ -209,6 +244,7 @@ do_update() {
       return 1
     fi
     echo "Switched to ${latest_tag}."
+    after="$(git rev-parse HEAD 2>/dev/null)"
   else
     # Dev channel (main): pull the latest main.
     # Warn if a newer release exists that the user might prefer.
@@ -226,9 +262,6 @@ do_update() {
     fi
 
     # Proceed with the existing git-pull-on-main logic (preserved below).
-    local before after stashed=0 merge_base local_tip origin_tip
-    before="$(git rev-parse HEAD 2>/dev/null)"
-
     # The running server constantly rewrites runtime-state files, so the working
     # tree is almost never clean. Instead of aborting, stash local changes (tracked
     # + untracked), fast-forward, then restore them — no manual commit/stash needed.
@@ -306,6 +339,13 @@ do_update() {
         return 1
       fi
     fi
+  fi
+
+  echo "Verifying native dependencies..."
+  if ! check_native_dependencies; then
+    echo "Native dependency verification failed — server was not restarted."
+    echo "Run the repair command shown above, then re-run './multicc update'."
+    return 1
   fi
 
   echo "Restarting to apply update..."
