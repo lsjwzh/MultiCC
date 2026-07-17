@@ -6275,9 +6275,11 @@ function validProviderId(cli, id) {
 // multicc owns this store; cc-switch is only an import source.
 app.get('/api/providers', (req, res) => {
   const appType = (req.query.appType || '').trim();
+  const ccSwitchStatus = providers.getCcSwitchStatus();
   res.json({
     available: true,
-    ccSwitchAvailable: providers.ccSwitchAvailable(),
+    ccSwitchAvailable: ccSwitchStatus.available,
+    ccSwitchStatus,
     providers: providers.listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined),
     defaults: providerDefaults,
     stats: providers.getProviderUsageStats().stats,
@@ -6414,7 +6416,13 @@ app.post('/api/providers/import', (req, res) => {
   try {
     const r = providers.importFromCcSwitch();
     res.json({ ok: true, ...r });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) {
+    res.status(400).json({
+      error: e.message,
+      ...(e.code ? { code: e.code } : {}),
+      ...(e.reason ? { reason: e.reason } : {}),
+    });
+  }
 });
 
 app.post('/api/providers', (req, res) => {
