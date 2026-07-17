@@ -22,23 +22,9 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const cliProviderRouter = require('cli-provider-router');
+const { createSqliteRuntime } = require('./sqlite-runtime');
 
-const PROJECT_DIR = path.join(__dirname, '..');
-
-let Database;
-try { Database = require('better-sqlite3'); } catch (_) { Database = null; }
-
-function nativeBuildHint() {
-  switch (process.platform) {
-    case 'darwin':
-      return '  xcode-select --install';
-    case 'win32':
-      return '  npm install --global windows-build-tools\n' +
-        '  (Or install Visual Studio Build Tools with "Desktop development with C++" + Python 3)';
-    default:
-      return '  sudo apt-get install -y build-essential python3 make g++';
-  }
-}
+const sqliteRuntime = createSqliteRuntime();
 
 // cc-switch stores its data at ~/.cc-switch/ on all platforms (Rust dirs::home_dir).
 // On Windows the default is C:\Users\<name>\.cc-switch\. However, Git Bash / Cygwin
@@ -98,7 +84,11 @@ function saveStore(list) {
   catch (e) { console.error('[multicc] save providers.json failed:', e.message); }
 }
 
-function ccSwitchAvailable() { return fs.existsSync(resolveCcDb()); }
+function getCcSwitchStatus() {
+  return sqliteRuntime.getStatus(resolveCcDb());
+}
+
+function ccSwitchAvailable() { return getCcSwitchStatus().available; }
 
 function parseConfig(s) {
   if (s && typeof s === 'object') return s;
@@ -582,14 +572,7 @@ function deleteProvider(appType, id) {
 // refreshes existing entries instead of duplicating. Local providers untouched.
 function importFromCcSwitch() {
   const ccDb = resolveCcDb();
-  if (!fs.existsSync(ccDb)) throw new Error('cc-switch database not found at ' + ccDb);
-  if (!Database) {
-    throw new Error(
-      'better-sqlite3 is unavailable; run `npm ci` in ' + PROJECT_DIR + '.\n' +
-      'If native compilation is required, install build tools first:\n' + nativeBuildHint()
-    );
-  }
-  const db = new Database(ccDb, { readonly: true, fileMustExist: true, timeout: 4000 });
+  const db = sqliteRuntime.openReadonly(ccDb);
   let rows;
   try {
     rows = db.prepare('SELECT id, app_type, name, settings_config FROM providers ORDER BY app_type, sort_index, name').all();
@@ -1037,6 +1020,7 @@ function applyCodexProxyConfig(env, options) {
 
 module.exports = {
   ccSwitchAvailable,
+  getCcSwitchStatus,
   appTypeForCli,
   APP_TYPES,
   listProviders,
