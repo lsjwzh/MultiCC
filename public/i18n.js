@@ -1,8 +1,10 @@
 (function () {
   'use strict';
 
+  const SHARED = window.MULTICC_I18N_CATALOG || {};
   const I18N = {
     zh: {
+      ...(SHARED.zh || {}),
       cancel: '取消',
       confirm: '确认',
       create: '创建',
@@ -46,6 +48,36 @@
       providerTitle: '切换该会话使用的 Provider（下一轮对话生效）',
       providerDefault: '默认登录 / 订阅（不覆盖）',
       providerEmpty: '还没有可用 provider。请到管理台「Provider」页配置。',
+      deleteDirectory: '删除 Fleet',
+      deleteSession: '删除会话',
+      note: '留言',
+      rolePrompt: '角色提示词',
+      rolePromptSet: '角色提示词（已设置）',
+      changeModel: '切换模型（{model}）',
+      mergeTo: '合并到 {base}',
+      mergeToAhead: '✓ 合并到 {base}（领先 {n} 个提交）',
+      dirtyChanges: '有未提交改动',
+      aheadCommits: '领先 {n} 个提交',
+      mergeReadyTitle: '可合并：{detail}',
+      mergeWorktreeTitle: '把 worktree 合并回基分支',
+      moreSessionActions: '更多操作（改名/留言/Diff/合并/删除）',
+      moreSessionActionsReady: '{detail}（点击查看更多）',
+      terminal: '终端',
+      manage: '管理',
+      clear: '清理',
+      clearHistory: '清空全部',
+      clearKeepLast: '保留最近 {n} 条',
+      changeDir: '切换目录',
+      sync: '同步',
+      syncing: '同步中…',
+      syncWorktree: '同步 worktree',
+      behindLabel: '⎇ {branch} · 落后 {base} {n} 个提交',
+      behindBanner: '⚠ 当前 worktree（{branch}）落后 {base} {n} 个提交，请使用上方同步按钮合入基分支。',
+      worktreeClean: '当前 worktree 没有可合并的改动。',
+      worktreeMergeable: '当前 worktree 有{detail}，可合并回 {base}。',
+      mergeWorktreeConfirmReady: '此 worktree 有可合并改动。\n未提交改动会先自动提交，是否继续？',
+      mergeWorktreeConfirm: '把此会话 worktree 合并回基分支？\n未提交改动会先自动提交。',
+      modelTitle: '切换该会话使用的模型（下一轮对话生效）',
       role: '🎭 角色',
       roleSet: '🎭 角色✓',
       memory: '🧠 记忆',
@@ -59,6 +91,7 @@
       language: '中/EN',
     },
     en: {
+      ...(SHARED.en || {}),
       cancel: 'Cancel',
       confirm: 'Confirm',
       create: 'Create',
@@ -175,11 +208,14 @@ function applyI18n(root) {
   scope.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
   scope.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle); });
   scope.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  scope.querySelectorAll('[data-i18n-aria-label]').forEach((el) => { el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel)); });
+  scope.querySelectorAll('[data-i18n-value]').forEach((el) => { el.value = t(el.dataset.i18nValue); });
   scope.querySelectorAll('.lang-toggle').forEach((el) => { el.textContent = t('language'); });
 }
 
 window.I18N = I18N;
 window.t = t;
+window.getLang = getLang;
 window.setLang = setLang;
 window.toggleLang = toggleLang;
 window.applyI18n = applyI18n;
