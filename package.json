@@ -8,8 +8,9 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/test.js && node --test tests/test-sqlite-runtime.js && node tests/test-native-deps.js",
+    "test": "node tests/test.js && node --test tests/test-sqlite-runtime.js && node tests/test-native-deps.js && node tests/test-branding.js",
     "test:cli-switch": "node tests/test-cli-switch.js && node tests/test-cli-adapters.js && node tests/test-message-composer-golden.js && node tests/test-chat-stream-resume.js && node tests/test-cli-switch-api.js && node tests/test-cli-switch-failclosed.js && node tests/test-cli-specific-ui.js",
+    "test:branding": "node tests/test-branding.js",
     "test:subagent-routing": "node tests/test-claude-subagent-routing.js",
     "test:subagent-live": "node tests/test-claude-subagent-live.js",
     "test:codex-subagent-routing": "node tests/test-codex-subagent-routing.js",
