@@ -1524,10 +1524,11 @@ function buildGatewayPrompt(userText) {
 const GATEWAY_ID = '__gateway__';
 const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;   // pending confirmation expires after 10 min
 let pendingDispatch = null;                    // { id, targetId, message, createdAt }
-const dispatchRuns = new Map();                // dispatchId → { targetId, chatSessionId, createdAt }
+const dispatchRuns = new Map();                // hot cache; durable source of truth is orchestrationRuntime
 const DISPATCH_RE = /<<dispatch\s+target=["'“”]?([^"'“”>\s]+)["'“”]?\s*>([\s\S]*?)<\/dispatch>>?/;
 const DISPATCH_CONFIRM_RE = /^(确认|确定|yes|y|ok)$/i;
 const DISPATCH_CANCEL_RE = /^(取消|算了|no|n)$/i;
+const TERMINAL_DISPATCH_STATUS = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
 
 // Pull a single dispatch marker out of gateway reply text.
 // Returns { target, message, cleanText } (marker removed) or null.
@@ -1630,7 +1631,7 @@ function handleGatewayControl(rawText) {
   if (DISPATCH_CONFIRM_RE.test(text)) {
     const pd = pendingDispatch; pendingDispatch = null;
     appendChatMessage(GATEWAY_ID, { role: 'user', content: rawText, ts: Date.now() });
-    dispatchToSession(pd.targetId, pd.message)
+    dispatchToSession(pd.targetId, pd.message, { idempotencyKey: `gateway:${pd.id}` })
       .then(r => pushToGateway(r.ok ? `✅ 已投递给 ${pd.targetId}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`))
       .catch(e => pushToGateway(`⚠️ 投递异常：${e.message}`));
     return true;
@@ -1693,27 +1694,40 @@ async function dispatchToSession(targetId, message, opts = {}) {
     chatId = created.id;
   }
 
-  // Busy guard: v1 refuses rather than queueing.
-  const cs = chatSessions.get(chatId);
-  if (cs && cs.claudeProc) return { ok: false, error: `${targetId} 正在忙，稍后再试` };
-
-  const dispatchId = crypto.randomUUID();
-  dispatchRuns.set(dispatchId, { targetId, chatSessionId: chatId, replyTo: opts.replyTo || null, createdAt: Date.now() });
-  // Registry call (not a bus event): we need runChatTurn's boolean back to
-  // detect an immediate launch failure. Avoids a static require of the chat domain.
-  if (isNetworkUnhealthy()) {
-    // ⑥A hold: API is down — queue this dispatch for recovery instead of
-    // launching a turn that will immediately fail.
-    holdSession(opts.replyTo || targetId, 'dispatch');
-    return { ok: false, error: '上游 API 异常，任务已暂挂，恢复后自动接续' };
-  }
-  const ok = services.call('chat.runTurn', chatId, message, { originDispatchId: dispatchId });
-  if (ok === false) { dispatchRuns.delete(dispatchId); return { ok: false, error: `启动 ${targetId} 回合失败` }; }
+  const ownerSessionId = opts.replyTo || GATEWAY_ID;
+  const admitted = await orchestrationRuntime.admitDispatch({
+    ownerSessionId,
+    resultSessionId: ownerSessionId,
+    idempotencyKey: opts.idempotencyKey || null,
+    spec: {
+      targetId,
+      targetLabel: rec.label || '',
+      chatId,
+      message,
+      replyTo: opts.replyTo || null,
+      gateway: !opts.replyTo,
+    },
+  });
+  const dispatchId = admitted.id;
+  dispatchRuns.set(dispatchId, {
+    targetId,
+    chatSessionId: chatId,
+    replyTo: opts.replyTo || null,
+    createdAt: admitted.createdAt,
+  });
   // Track this pending dispatch on the dispatcher's currentTask so its card
   // shows "等待 worker 回报" (waiting) instead of falling to idle while the
   // worker runs. opts.replyTo is the dispatcher's session id.
-  if (opts.replyTo) addPendingDispatch(opts.replyTo, dispatchId, targetId);
-  return { ok: true, chatId };
+  if (opts.replyTo && !TERMINAL_DISPATCH_STATUS.has(admitted.status)) {
+    addPendingDispatch(opts.replyTo, dispatchId, targetId);
+  }
+  return {
+    ok: true,
+    chatId,
+    operationId: dispatchId,
+    status: admitted.status,
+    duplicate: !!admitted.idempotent,
+  };
 }
 
 // ── Dispatch ↔ currentTask bridge (step 2, idle fix) ──────────────────────────
@@ -1752,27 +1766,36 @@ function removePendingDispatch(dispatcherId, dispatchId) {
 // A dispatched turn finished → route its final text back to whoever dispatched
 // it: a normal session (the commander) gets it injected as a new turn so it can
 // aggregate; a gateway/WeChat dispatch falls back to pushToGateway.
-function finalizeDispatch(dispatchId, sessionName, finalText) {
+async function finalizeDispatch(dispatchId, sessionName, finalText) {
   const run = dispatchRuns.get(dispatchId);
   dispatchRuns.delete(dispatchId);
-  const targetId = run ? run.targetId : sessionName;
-  const text = (finalText || '').trim() || '（本次运行没有产生文本输出）';
-  const targetRec = persistedSessions.get(targetId);
-  const label = (targetRec && targetRec.label) ? `${targetId}（${targetRec.label}）` : targetId;
-  const replyTo = run && run.replyTo;
+  const operation = await orchestrationRuntime.operations.get(dispatchId);
+  const targetId = operation?.spec?.targetId || (run ? run.targetId : sessionName);
+  const replyTo = operation?.spec?.replyTo || (run && run.replyTo);
   // A worker finished → drop it from the dispatcher's pending list (so the
   // dispatcher's status can leave 'waiting' once all workers回流).
   if (replyTo) removePendingDispatch(replyTo, dispatchId);
-  if (replyTo && persistedSessions.get(replyTo)) {
-    // Busy-safe: if several parallel dispatches finish at once they serialise
-    // into the dispatcher one turn at a time instead of clobbering each other.
-    waitInjector.safeInject(replyTo, `【${label} 回复】\n${text}`);
-  } else {
-    pushToGateway(`【${targetId} 回复】\n${text}`);
+  const completed = await orchestrationRuntime.completeDispatch(dispatchId, {
+    status: 'completed',
+    sessionName,
+    text: (finalText || '').trim() || '（本次运行没有产生文本输出）',
+  });
+  // Compatibility fallback for a dispatch that began before this deployment
+  // and therefore has no durable operation record.
+  if (!completed.ok && completed.code === 'not_found') {
+    const text = (finalText || '').trim() || '（本次运行没有产生文本输出）';
+    if (replyTo && persistedSessions.get(replyTo)) {
+      waitInjector.safeInject(replyTo, `【${targetId} 回复】\n${text}`);
+    } else {
+      pushToGateway(`【${targetId} 回复】\n${text}`);
+    }
   }
 }
 // Gateway domain owns this handler; chat emits when a dispatched turn finishes.
-bus.on('chat:dispatch-complete', finalizeDispatch);
+bus.on('chat:dispatch-complete', (dispatchId, sessionName, finalText) => {
+  finalizeDispatch(dispatchId, sessionName, finalText)
+    .catch(error => console.error(`[multicc/dispatch] finalize ${dispatchId} failed: ${error.message}`));
+});
 
 // ── Generalised cross-session dispatch (any chat session, not just the gateway) ──
 // A session emits one or more <<dispatch target="SID">self-contained task</dispatch>>
@@ -1828,13 +1851,19 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   const from = persistedSessions.get(dispatcherId);
   if (!from) return;
   lastDispatchOutAt.set(dispatcherId, Date.now());
-  for (const mk of markers) {
+  const history = loadChatHistory(dispatcherId);
+  const sourceMessage = [...history].reverse().find(entry => entry && entry.role === 'assistant');
+  const sourceKey = sourceMessage?.id || crypto.createHash('sha256').update(String(finalText || '')).digest('hex').slice(0, 24);
+  for (const [markerIndex, mk] of markers.entries()) {
     if (mk.target === dispatcherId) continue;                       // no self-dispatch
     const v = validateDispatchTarget(mk.target, dispatcherId);
     if (!v.ok) { waitInjector.safeInject(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
     if (v.rec.dirId !== from.dirId) { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
-    dispatchToSession(mk.target, mk.message, { replyTo: dispatcherId })
+    dispatchToSession(mk.target, mk.message, {
+      replyTo: dispatcherId,
+      idempotencyKey: `marker:${dispatcherId}:${sourceKey}:${markerIndex}`,
+    })
       .then(r => { if (!r.ok) waitInjector.safeInject(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
       .catch(e => waitInjector.safeInject(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`));
   }
@@ -4991,7 +5020,7 @@ app.get('/api/sessions/:id/notes', (req, res) => {
 // reach for curl; without this door they "dispatch" into run-detached and the
 // ultra workers never hear about it. Result flows back automatically as a
 // 【target 回复】message via finalizeDispatch.
-async function executeDispatchContract(fromId, body) {
+async function executeDispatchContract(fromId, body, options = {}) {
   const from = persistedSessions.get(fromId);
   if (!from) return { status: 404, error: 'session not found', code: 'session_not_found' };
   const target = String((body && body.target) || '').trim();
@@ -5004,16 +5033,23 @@ async function executeDispatchContract(fromId, body) {
   appendEvent(from.dirId, 'dispatch', `→ ${validation.rec.label || target}`, from.id);
   lastDispatchOutAt.set(from.id, Date.now());
   try {
-    const result = await dispatchToSession(target, message, { replyTo: from.id });
+    const result = await dispatchToSession(target, message, {
+      replyTo: from.id,
+      idempotencyKey: options.idempotencyKey || null,
+    });
     if (!result.ok) return { status: 409, error: result.error, code: 'dispatch_rejected' };
     return {
       status: 200,
-      value: toDispatchResultDto({
+      value: {
+        ...toDispatchResultDto({
         ok: true,
         target,
         chatId: result.chatId,
         note: '任务已投递；完成后结果会以【回复】消息自动回流到本会话',
-      }),
+        }),
+        operationId: result.operationId,
+        status: result.status,
+      },
     };
   } catch (error) {
     logger.error('dispatch_failed', { fromId, target, error: error && error.message });
@@ -5023,7 +5059,16 @@ async function executeDispatchContract(fromId, body) {
 
 function sendDispatchContract(req, res, result) {
   const context = requestContext(req, res);
-  if (result.status === 200) return res.json(withApiMeta(result.value, context));
+  if (result.status === 200) {
+    const dto = withApiMeta(result.value, context);
+    // /api/v1 remains byte/schema compatible. The unversioned endpoint gains
+    // durable-operation metadata without changing the published v1 schema.
+    if (req.path.startsWith('/api/v1/')) {
+      delete dto.operationId;
+      delete dto.status;
+    }
+    return res.json(dto);
+  }
   return res.status(result.status).json(createErrorDto({
     ...context,
     message: result.error,
@@ -5032,7 +5077,9 @@ function sendDispatchContract(req, res, result) {
 }
 
 function dispatchContractHandler(req, res) {
-  executeDispatchContract(req.params.id, req.body)
+  executeDispatchContract(req.params.id, req.body, {
+    idempotencyKey: req.get('Idempotency-Key') || null,
+  })
     .then(result => sendDispatchContract(req, res, result))
     .catch(error => {
       logger.error('dispatch_contract_failed', { sessionId: req.params.id, error: error && error.message });
@@ -5625,7 +5672,8 @@ const tunnel = require('./src/tunnel');
 const chatStream = require('./src/chat-stream');
 const waitInjector = require('./src/wait-injector');
 const bgCoalesce = require('./src/bg-completion-coalescer');
-const detached = require('./src/detached');
+const { createDetached } = require('./src/detached');
+const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const share = require('./src/share');
 
 // ── Server Info (LAN IP for QR code) ──
@@ -9980,8 +10028,38 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
       tagSubagentTask(taskId);
       console.log(`[multicc/bg] ${sessionName} task ${taskId} sub-agent task (tool_use=${evt.tool_use_id} absent from currentToolCalls) -> will suppress completion nudge`);
     }
+    orchestrationRuntime.observeTask({
+      sessionId: sessionName,
+      taskId,
+      status: 'running',
+      detail: {
+        kind: isSyncBash ? 'sync-bash' : isSubagentTask ? 'agent-task' : 'background-task',
+        description: evt.description || '',
+        toolUseId: evt.tool_use_id || null,
+        outputFile,
+      },
+    }).catch(error => console.warn(`[multicc/task-ledger] start ${taskId} failed: ${error.message}`));
     chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd, background: !isSyncBash });
     startMonitorShadow(sessionName, cs, taskId, outputFile, evt.description || '');
+  } else if (sub === 'task_updated') {
+    const taskId = evt.task_id;
+    if (!taskId) return;
+    const rawStatus = String(evt.status || 'running').toLowerCase();
+    const status = rawStatus === 'completed' ? 'completed'
+      : ['failed', 'error'].includes(rawStatus) ? 'failed'
+        : ['cancelled', 'canceled', 'stopped', 'interrupted'].includes(rawStatus) ? 'interrupted'
+          : 'running';
+    orchestrationRuntime.observeTask({
+      sessionId: sessionName,
+      taskId,
+      status,
+      detail: {
+        description: evt.description || evt.summary || '',
+        toolUseId: evt.tool_use_id || null,
+        lastOutput: evt.output || evt.content || evt.summary || '',
+        error: evt.error || null,
+      },
+    }).catch(error => console.warn(`[multicc/task-ledger] update ${taskId} failed: ${error.message}`));
   } else if (sub === 'task_notification') {
     const taskId = evt.task_id;
     console.log(`[multicc/bg-diag] ${sessionName} task_notification taskId=${taskId} toolUseId=${evt.tool_use_id || '-'} desc="${(evt.description || '').slice(0, 40)}"`);
@@ -9991,6 +10069,22 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     let output = '';
     if (outputFile) { try { output = require('fs').readFileSync(outputFile, 'utf8'); } catch {} }
     const snippet = output.length > 2000 ? output.slice(-2000) : output;
+    const rawStatus = String(evt.status || 'completed').toLowerCase();
+    const ledgerStatus = rawStatus === 'completed' ? 'completed'
+      : ['failed', 'error'].includes(rawStatus) ? 'failed'
+        : 'interrupted';
+    orchestrationRuntime.observeTask({
+      sessionId: sessionName,
+      taskId,
+      status: ledgerStatus,
+      detail: {
+        description: evt.description || evt.summary || '',
+        toolUseId: evt.tool_use_id || null,
+        outputFile,
+        lastOutput: snippet,
+        error: evt.error || (ledgerStatus === 'failed' ? evt.summary || 'task failed' : null),
+      },
+    }).catch(error => console.warn(`[multicc/task-ledger] finish ${taskId} failed: ${error.message}`));
     // Resolve sync-Bash ONCE: it drives both the broadcast flag (foreground Bash
     // must NOT show a 后台任务 notice — its result returns via tool_result) and
     // the nudge-suppression branch below.
@@ -10178,6 +10272,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     role: 'user', content: text, ts: Date.now(),
     clientMsgId: clientMsgId || undefined,
     deliveryId: deliveryId || undefined,
+    originDispatchId: originDispatchId || undefined,
     bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
     bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
   });
@@ -10634,12 +10729,51 @@ function probeExplicitWait(metadata) {
   });
 }
 
+function recoverDispatchOperation(operation) {
+  const history = loadChatHistory(operation.spec.chatId);
+  const requestId = operation.requestOutboxId;
+  const userIndex = history.findIndex(message => message && message.role === 'user' && (
+    message.originDispatchId === operation.id
+    || message.deliveryId === requestId
+    || message.clientMsgId === requestId
+  ));
+  if (userIndex < 0) return null;
+  for (let index = userIndex + 1; index < history.length; index++) {
+    const message = history[index];
+    if (!message || message.role !== 'assistant') continue;
+    if (message._interim || message.partial || message.cancelled || message.error) {
+      return { completed: false, lastOutput: String(message.content || '').slice(-4000) };
+    }
+    return { completed: true, text: String(message.content || '') };
+  }
+  return { completed: false, lastOutput: '' };
+}
+
+function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
+  if (item.payload?.type === 'dispatch.request' && isNetworkUnhealthy()) return false;
+  if (item.payload?.type === 'dispatch.result' && item.payload.gateway) {
+    const saved = appendChatMessage(GATEWAY_ID, {
+      role: 'assistant',
+      content: text,
+      ts: Date.now(),
+      clientMsgId: opts.clientMsgId,
+      deliveryId: opts.deliveryId,
+    });
+    if (saved) pushToGateway(text, { persist: false });
+    return saved;
+  }
+  return runChatTurn(sessionId, text, opts);
+}
+
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile,
   runChatTurn,
   isBusy: orchestrationChatBusy,
   hasPersistedDelivery: persistedOrchestrationDelivery,
+  deliverOutbox: deliverOrchestrationOutbox,
   probe: probeExplicitWait,
+  detachedAdapter: detached,
+  recoverDispatchResult: recoverDispatchOperation,
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
@@ -10774,7 +10908,7 @@ app.delete('/api/wait/:wid', async (req, res) => {
 // then auto-registers a poll that injects the exit code + output tail back into
 // the session on completion. Body: { command, cwd?, label?, intervalSec?,
 // maxChecks?, injectPrefix? }.
-app.post('/api/sessions/:id/run-detached', (req, res) => {
+app.post('/api/sessions/:id/run-detached', async (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const b = req.body || {};
@@ -10783,7 +10917,6 @@ app.post('/api/sessions/:id/run-detached', (req, res) => {
   try {
     const baseCwd = cwdForSession(s);
     const cwd = b.cwd ? resolveCwd(baseCwd, String(b.cwd)) : baseCwd;
-    const job = detached.launch({ command, cwd, label: b.label });
     const label = (b.label || command.replace(/\s+/g, ' ').slice(0, 60)).trim();
     // Daemon mode: for long-running services (dev server, API, etc.) that never
     // exit on their own. The done-file model (poll until process exits) doesn't
@@ -10791,31 +10924,56 @@ app.post('/api/sessions/:id/run-detached', (req, res) => {
     // injections. Instead, just launch the process and return; the caller can
     // check status via GET /api/detached/:taskId at any time.
     const isDaemon = b.daemon === true || b.daemon === 'true';
-    if (isDaemon) {
-      res.json({ ok: true, taskId: job.id, waitId: null, pid: job.pid, logPath: job.logPath, daemon: true });
-      return;
-    }
-    // Normal mode: 10s interval × 360 checks ≈ 1h ceiling before the poll gives up; tune via body.
     const intervalSec = Math.max(3, Number(b.intervalSec) || 10);
     const maxChecks = Math.max(1, Number(b.maxChecks) || 360);
-    const reg = waitInjector.register({
-      session: s.id, mode: 'poll', cwd,
-      pollCmd: job.pollCmd, untilContains: job.doneMarker,
-      intervalSec, maxChecks,
-      injectPrefix: b.injectPrefix || `[后台任务完成] ${label}`,
+    const started = await orchestrationRuntime.startDetached({
+      sessionId: s.id,
+      idempotencyKey: req.get('Idempotency-Key') || b.idempotencyKey || null,
+      spec: {
+        command,
+        cwd,
+        label,
+        daemon: isDaemon,
+        intervalSec,
+        maxChecks,
+        injectPrefix: b.injectPrefix || `[后台任务完成] ${label}`,
+      },
     });
-    res.json({ ok: true, taskId: job.id, waitId: reg.id, pid: job.pid, logPath: job.logPath, intervalSec, maxChecks });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+    const operation = started.operation;
+    const job = started.state || detached.status(operation.externalId) || {};
+    res.json({
+      ok: true,
+      taskId: operation.externalId,
+      waitId: null,
+      pid: job.pid || operation.pid || null,
+      logPath: job.logPath || null,
+      intervalSec,
+      maxChecks,
+      daemon: isDaemon,
+      operationId: operation.id,
+      status: operation.status,
+      duplicate: !!started.idempotent,
+    });
+  } catch (e) { res.status(e.statusCode || 400).json({ error: e.message, operationId: e.operationId || null }); }
 });
 
 // Inspect detached tasks (survives restart — read from disk).
-app.get('/api/sessions/:id/detached', (req, res) => {
-  res.json({ tasks: detached.list() });
+app.get('/api/sessions/:id/detached', async (req, res) => {
+  const operations = await orchestrationRuntime.operations.list({ kind: 'detached' });
+  const byExternalId = new Map(operations.map(operation => [operation.externalId, operation]));
+  res.json({
+    tasks: detached.list().map(task => {
+      const operation = byExternalId.get(task.id);
+      return operation ? { ...task, operationId: operation.id, status: operation.status } : task;
+    }),
+  });
 });
-app.get('/api/detached/:taskId', (req, res) => {
+app.get('/api/detached/:taskId', async (req, res) => {
   const st = detached.status(req.params.taskId);
   if (!st) return res.status(404).json({ error: 'task not found' });
-  res.json(st);
+  const operations = await orchestrationRuntime.operations.list({ kind: 'detached' });
+  const operation = operations.find(entry => entry.externalId === req.params.taskId);
+  res.json(operation ? { ...st, operationId: operation.id, status: operation.status } : st);
 });
 
 // ── Streaming chat turn (persistent process; see runChatTurn's streaming branch) ──
