@@ -378,6 +378,13 @@ function createProviderRouterPort(options = {}) {
       : null;
     const common = {
       getProvider,
+      ...(embeddingPaths ? {
+        paths: embeddingPaths.cprPaths,
+        cprHome: embeddingPaths.cprPaths.home,
+        ...(embeddingPaths.cprPaths.capturesDir
+          ? { captureDir: embeddingPaths.cprPaths.capturesDir }
+          : {}),
+      } : {}),
       ...(typeof mountOptions.getPort === 'function' ? { getPort: mountOptions.getPort } : {}),
       ...(mountOptions.proxyBaseUrl ? { proxyBaseUrl: String(mountOptions.proxyBaseUrl) } : {}),
       onUsageEvent: onUsageObserved ? event => onUsageObserved(normalizeUsage(event)) : undefined,

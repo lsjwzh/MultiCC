@@ -13,6 +13,7 @@ const HOST_PATHS = Object.freeze({
   cprPaths: Object.freeze({
     home: '/host/explicit/cpr-home',
     dataDir: '/host/explicit/cpr-home/data',
+    capturesDir: '/host/explicit/cpr-home/captures',
     codexHomesDir: '/router/default/must-not-be-used',
   }),
   codexHomesDir: '/host/explicit/multicc-codex-homes',
@@ -70,8 +71,8 @@ function fakeRouter(options = {}) {
     },
     resolveSessionWireModel(model) { return `cpr:${model}`; },
     normalizeUsageEvent(event) { return event; },
-    mountClaudeProxy() { calls.push({ method: 'mountClaudeProxy' }); return 'cpr-claude'; },
-    mountCodexProxy() { calls.push({ method: 'mountCodexProxy' }); return 'cpr-codex'; },
+    mountClaudeProxy(app, mountOptions) { calls.push({ method: 'mountClaudeProxy', mountOptions }); return 'cpr-claude'; },
+    mountCodexProxy(app, mountOptions) { calls.push({ method: 'mountCodexProxy', mountOptions }); return 'cpr-codex'; },
   };
   return router;
 }
@@ -90,8 +91,8 @@ function fakeLegacy(calls = []) {
     getProvider: () => fakeStore().getProvider(),
     getProviderSummary: () => fakeStore().getProviderSummary(),
     normalizeUsageEvent: event => event,
-    mountClaudeProxy() { calls.push({ method: 'mountClaudeProxy' }); return 'legacy-claude'; },
-    mountCodexProxy() { calls.push({ method: 'mountCodexProxy' }); return 'legacy-codex'; },
+    mountClaudeProxy(app, mountOptions) { calls.push({ method: 'mountClaudeProxy', mountOptions }); return 'legacy-claude'; },
+    mountCodexProxy(app, mountOptions) { calls.push({ method: 'mountCodexProxy', mountOptions }); return 'legacy-codex'; },
   };
 }
 
@@ -257,5 +258,8 @@ test('shadow mounts only legacy protocol proxies, never CPR management APIs', ()
   const mounted = port.mountProtocolProxies({ use() {} });
   assert.deepEqual(mounted, { claude: 'legacy-claude', codex: 'legacy-codex' });
   assert.deepEqual(legacyCalls.map(call => call.method), ['mountClaudeProxy', 'mountCodexProxy']);
+  assert.equal(legacyCalls[0].mountOptions.paths.home, '/host/explicit/cpr-home');
+  assert.equal(legacyCalls[0].mountOptions.cprHome, '/host/explicit/cpr-home');
+  assert.equal(legacyCalls[0].mountOptions.captureDir, '/host/explicit/cpr-home/captures');
   assert.deepEqual(routerCalls, []);
 });
