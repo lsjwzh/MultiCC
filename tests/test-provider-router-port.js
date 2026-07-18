@@ -263,3 +263,28 @@ test('shadow mounts only legacy protocol proxies, never CPR management APIs', ()
   assert.equal(legacyCalls[0].mountOptions.captureDir, '/host/explicit/cpr-home/captures');
   assert.deepEqual(routerCalls, []);
 });
+
+test('shadow never compares write/event operations and can mount one protocol at a time', () => {
+  const reports = [];
+  const legacyCalls = [];
+  const routerCalls = [];
+  const port = createProviderRouterPort({
+    mode: 'shadow', legacy: fakeLegacy(legacyCalls), router: fakeRouter({ calls: routerCalls }),
+    providerStore: fakeStore(), embeddingPaths: HOST_PATHS,
+    onShadowDiff: report => reports.push(report),
+  });
+  const binding = createProviderBinding({ sessionId: 's1', cli: 'claude', providerId: 'provider-1' });
+  port.buildChildEnv({}, binding, {});
+  port.normalizeUsage({
+    occurredAt: 1_750_000_000_000, sessionId: 's1', providerId: 'provider-1',
+    roleKind: 'main', routeName: 'main', source: 'exact', coverage: 'observed',
+    status: 'success', protocol: 'anthropic-messages', tokens: { input: 1, output: 1 },
+  }, binding);
+  const mounted = port.mountProtocolProxies({ use() {} }, { protocols: ['claude'] });
+  assert.deepEqual(mounted, { claude: 'legacy-claude' });
+  assert.deepEqual(reports, []);
+  assert.deepEqual(routerCalls, []);
+  assert.equal(legacyCalls.filter(call => call.method === 'buildChildEnv').length, 1);
+  assert.equal(legacyCalls.filter(call => call.method === 'mountClaudeProxy').length, 1);
+  assert.equal(legacyCalls.filter(call => call.method === 'mountCodexProxy').length, 0);
+});
