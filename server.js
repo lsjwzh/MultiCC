@@ -102,6 +102,20 @@ const {
   renderHandoffPrompt,
 } = require('./src/cli-switch');
 const { mountCodexProxy, mountClaudeProxy } = require('cli-provider-router');
+// Data-directory + persistence infrastructure. MULTICC_DATA_DIR (defaults to
+// __dirname) is the ONE knob to swap where state lives; every file path used to
+// resolve state (sessions.json, directories.json, journal, chat history, …)
+// now flows through `MULTICC_PATHS` so tests can point at a mkdtemp dir and
+// the production install keeps behaving exactly as before. state-store gives
+// atomic writes + rolling backups + fail-closed loads; state-tx replays the
+// on-disk journal for cross-file mutations (directory delete → both
+// directories.json and sessions.json) so a mid-write crash is recoverable.
+const { createPaths } = require('./src/paths');
+const stateStore = require('./src/state-store');
+const stateTx = require('./src/state-tx');
+const { createShutdownCoordinator } = require('./src/shutdown');
+const { requestIdMiddleware, safeErrorHandler } = require('./src/http-errors');
+const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const app = express();
 
 // ── Access token authentication (cookie-based login) ──
@@ -165,6 +179,9 @@ function isAuthenticated(req) {
 // Always register login routes + auth middleware (no-op while ACCESS_TOKEN is
 // empty, see isAuthenticated). This lets a token set later via the localhost UI
 // take effect immediately, without restarting the server.
+// requestId middleware runs first so every subsequent handler + error response
+// can be correlated with a log line. It's cheap (8 hex chars) and always safe.
+app.use(requestIdMiddleware);
 {
   // Login page & handler
   app.get('/login', (req, res) => {
@@ -914,21 +931,49 @@ function ensureDirGitReady(dir) {
 //
 // On first load, we auto-migrate the old flat { id, cwd, claudeSessionId, chatClaudeSessionId } schema
 // into directories.json + split each paired session into a terminal + optional chat record.
-const SESSIONS_FILE = path.join(__dirname, 'sessions.json');
-const DIRECTORIES_FILE = path.join(__dirname, 'directories.json');
+// Paths flow through MULTICC_PATHS so MULTICC_DATA_DIR can relocate the whole
+// state directory in tests / alternate deployments without a code change.
+const SESSIONS_FILE = MULTICC_PATHS.sessionsFile;
+const DIRECTORIES_FILE = MULTICC_PATHS.directoriesFile;
+
+// Both files are persisted through state-store: atomic tmp+fsync+rename + dir
+// fsync + rolling .bakN backups. A save FAILURE now throws so the HTTP layer
+// can 5xx the client instead of returning success on a torn on-disk state.
+const sessionsStore = stateStore.createStore({
+  file: SESSIONS_FILE, kind: 'sessions', schemaVersion: 1, legacyIsArray: true,
+});
+const directoriesStore = stateStore.createStore({
+  file: DIRECTORIES_FILE, kind: 'directories', schemaVersion: 1, legacyIsArray: true,
+});
+
+// Boot-time journal replay: if the previous process crashed between writing
+// the state-tx journal and finishing the two file writes, finish the job here
+// BEFORE anyone reads state. Journal entries carry the exact intended
+// snapshots, so replay is idempotent.
+{
+  const { replayed, skipped } = stateTx.replayJournals(MULTICC_PATHS.journalDir, {
+    log: (m) => console.log(m),
+  });
+  if (replayed || skipped) {
+    console.log(`[multicc] state-tx journal: ${replayed} replayed, ${skipped} skipped`);
+  }
+}
 
 function loadDirectories() {
-  try {
-    if (fs.existsSync(DIRECTORIES_FILE)) {
-      const data = JSON.parse(fs.readFileSync(DIRECTORIES_FILE, 'utf8'));
-      const map = new Map();
-      for (const d of data) map.set(d.id, d);
-      return map;
-    }
-  } catch (e) {
-    console.error('[multicc] Failed to load directories.json:', e.message);
+  let r;
+  try { r = directoriesStore.loadOrRecover(); }
+  catch (e) {
+    // Fail-closed: refuse to boot into a fresh empty state that would clobber
+    // an unreadable directories.json on the next save(). Operators can move
+    // the file aside manually after inspecting it.
+    console.error(`[multicc] directories.json unreadable and no backup usable: ${e.message}`);
+    throw e;
   }
-  return new Map();
+  if (!r.present) return new Map();
+  if (r.recovered) console.warn(`[multicc] directories.json recovered from backup ${r.recoveredFrom}`);
+  const map = new Map();
+  for (const d of r.data) map.set(d.id, d);
+  return map;
 }
 
 // saveDirectories() moved into src/directory/repository.js; a delegate with the
@@ -991,10 +1036,17 @@ function migrateOldSchema(oldList) {
 
 function loadPersistedState() {
   let rawSessions = [];
-  try {
-    if (fs.existsSync(SESSIONS_FILE)) rawSessions = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
-  } catch (e) {
-    console.error('[multicc] Failed to load sessions.json:', e.message);
+  let r;
+  try { r = sessionsStore.loadOrRecover(); }
+  catch (e) {
+    // Fail-closed on both primary AND all backups corrupt. Refuse to boot
+    // rather than overwrite the file with an empty array on the next save().
+    console.error(`[multicc] sessions.json unreadable and no backup usable: ${e.message}`);
+    throw e;
+  }
+  if (r.present) {
+    if (r.recovered) console.warn(`[multicc] sessions.json recovered from backup ${r.recoveredFrom}`);
+    rawSessions = r.data;
   }
 
   const dirMap = loadDirectories();
@@ -1028,8 +1080,14 @@ function loadPersistedState() {
 function savePersistedSessions() {
   const data = [...persistedSessions.values()];
   try {
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
+    sessionsStore.save(data);
   } catch (e) {
+    // Base savePersistedSessions() is called from ~40 non-HTTP call sites that
+    // don't wrap it (background timers, teardown callbacks) — throwing here
+    // would crash the process on every hiccup. It's log-only; the HTTP-facing
+    // cross-file mutation (directory delete → state-tx.commitCrossFileWrite)
+    // DOES throw and turns save failures into a 500 with a torn-state journal
+    // that replays on next boot. That is the strong-consistency path.
     console.error('[multicc] Failed to save sessions.json:', e.message);
   }
 }
@@ -1099,7 +1157,7 @@ function destroySessionCascade(s, d) {
 }
 
 const directoryModule = createDirectoryModule({
-  repository: { file: DIRECTORIES_FILE, map: _state.directories },
+  repository: { file: DIRECTORIES_FILE, map: _state.directories, store: directoriesStore },
   git: {
     baseBranch: gitBaseBranch,
     pushState: (p, b, o) => gitPush.directoryPushState(p, b, o),
@@ -1116,6 +1174,9 @@ const directoryModule = createDirectoryModule({
     seedCommander: seedCommanderSession,
     destroyCascade: destroySessionCascade,
     persistRecords: savePersistedSessions,
+    // Cross-file transaction needs the sessions payload at the moment of
+    // journal-write, so it's captured alongside the directories payload.
+    snapshotRecords: () => [...persistedSessions.values()],
   },
   events: { append: appendEvent },
   fsPort: {
@@ -1127,6 +1188,19 @@ const directoryModule = createDirectoryModule({
       .map(e => ({ name: e.name, isDirectory: e.isDirectory(), isSymbolicLink: e.isSymbolicLink() })),
   },
   helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason },
+  // Cross-file transaction wiring: directory deletion writes directories.json
+  // AND sessions.json under a single journal entry, so a crash between the
+  // two writes is finished by replayJournals() on next boot rather than
+  // leaving the two files inconsistent (dir deleted + its sessions still
+  // pointing at nothing, or vice versa).
+  tx: {
+    directoriesFile: DIRECTORIES_FILE,
+    sessionsFile: SESSIONS_FILE,
+    commitCrossFileWrite: (spec) => stateTx.commitCrossFileWrite({
+      journalDir: MULTICC_PATHS.journalDir,
+      ...spec,
+    }),
+  },
 });
 const directories = directoryModule.repo.map();
 function saveDirectories() { directoryModule.repo.save(); }
@@ -11486,8 +11560,19 @@ tunnel.init();
 // `result` event, or the child process closing). A plain SIGTERM — e.g. a
 // service restart — would otherwise drop whatever the agent had already
 // streamed in an unfinished turn, so that text vanishes from history after the
-// restart. On SIGTERM/SIGINT we flush each session's partial assistant text
-// first (appendChatMessage is synchronous), then exit.
+// restart.
+//
+// The ShutdownCoordinator (src/shutdown.js) drives the whole sequence:
+//   1. flip readiness → false (health probe / restart endpoints can steer away),
+//   2. checkpoint — flushInFlightChats(): persist every session's partial
+//      assistant text synchronously so even a hard kill in the next few ms
+//      loses nothing,
+//   3. drain — let in-flight turns run to their natural `result` event, up to
+//      SHUTDOWN_GRACE_MS,
+//   4. close — HTTP → WS → watchers → timers → child procs (registered below
+//      as the various subsystems come up).
+// PM2's kill_timeout in ecosystem.config.js is set greater than the grace so
+// PM2 doesn't cut off partial-checkpoint mid-flight.
 let _shuttingDown = false;
 function flushInFlightChats() {
   let n = 0;
@@ -11512,53 +11597,91 @@ function flushInFlightChats() {
   return n;
 }
 const SHUTDOWN_GRACE_MS = 60000;   // max time to let in-flight turns finish
-function gracefulShutdown(sig) {
-  if (_shuttingDown) return;
-  // Ignore SIGTERM (kill) to prevent accidental shutdowns. Use SIGINT (Ctrl+C) to exit.
-  if (sig === 'SIGTERM') {
-    console.log('[multicc] SIGTERM ignored. Use ./multicc stop to stop.');
-    return;
-  }
-  _shuttingDown = true;
-  // Exit cleanly, flushing anything still unsaved as a safety net (covers turns
-  // that didn't reach `result` in time, or new turns started during drain).
-  const finish = (why) => {
-    let n = 0;
-    try { n = flushInFlightChats(); } catch (e) { console.error(`[multicc] shutdown flush error: ${e.message}`); }
-    console.log(`[multicc] ${sig} → ${why}; flushed ${n} partial message(s), exiting`);
-    process.exit(0);
-  };
-  // Snapshot turns that are mid-flight right now and let them finish so their
-  // FULL assistant message is persisted normally (not a half-written partial).
-  // Two kinds of in-flight turn:
-  //   • legacy per-turn child proc — alive until proc 'close' nulls cs.claudeProc
-  //     after the result is saved.
-  //   • streaming turn — NO per-turn child; it runs on the persistent chatStream
-  //     process and its liveness is chatStream.status(name).busy (not cs.claudeProc).
-  // Missing the streaming case here made a restart mid-stream exit immediately
-  // ("no in-flight turns"), drop the turn (flushed 0), then post-restart
-  // auto-continue re-ran it → the user saw a duplicate assistant bubble while
-  // history held only the re-run's single copy.
+const shutdownCoordinator = createShutdownCoordinator({ logger: console });
+
+// Bridge legacy _shuttingDown flag callers still consult (e.g. the restart
+// endpoint) to the coordinator's readiness bit. They stay wire-compatible.
+Object.defineProperty(global, '_shuttingDownCoordinated', {
+  get: () => shutdownCoordinator.isShuttingDown(),
+});
+
+// Checkpoint FIRST: partial-in-memory-only state → disk, synchronously.
+shutdownCoordinator.onCheckpoint(() => {
+  try { flushInFlightChats(); }
+  catch (e) { console.error(`[multicc] shutdown flush error: ${e.message}`); }
+});
+
+// Drain: give live turns time to reach their natural `result` event so their
+// FULL assistant message is persisted (not a half-written partial). Two kinds
+// of in-flight turn:
+//   • legacy per-turn child proc — alive until proc 'close' nulls cs.claudeProc
+//     after the result is saved.
+//   • streaming turn — NO per-turn child; it runs on the persistent chatStream
+//     process and its liveness is chatStream.status(name).busy (not cs.claudeProc).
+shutdownCoordinator.onDrain(async ({ graceMs }) => {
   const isStreamingBusy = (name, cs) => cs && cs.cli === 'claude' && !!chatStream.status(name)?.busy;
   const draining = new Set();
   for (const [name, cs] of chatSessions) {
     if (cs && (cs.claudeProc || isStreamingBusy(name, cs))) draining.add(name);
   }
-  if (draining.size === 0) return finish('no in-flight turns');
-  console.log(`[multicc] ${sig} → draining ${draining.size} in-flight turn(s) before exit (grace ${SHUTDOWN_GRACE_MS}ms)`);
+  if (draining.size === 0) return;
+  console.log(`[multicc] shutdown → draining ${draining.size} in-flight turn(s) (grace ${graceMs}ms)`);
   const t0 = Date.now();
-  const timer = setInterval(() => {
-    for (const name of [...draining]) {
-      const cs = chatSessions.get(name);
-      // Done when neither a live per-turn proc nor an in-flight streaming turn
-      // remains (streaming turn's `result` event flips busy→false + saves it).
-      if (!cs || (!cs.claudeProc && !isStreamingBusy(name, cs))) draining.delete(name);
+  await new Promise(resolve => {
+    const timer = setInterval(() => {
+      for (const name of [...draining]) {
+        const cs = chatSessions.get(name);
+        if (!cs || (!cs.claudeProc && !isStreamingBusy(name, cs))) draining.delete(name);
+      }
+      if (draining.size === 0) { clearInterval(timer); resolve(); }
+      else if (Date.now() - t0 > graceMs) { clearInterval(timer); resolve(); }
+    }, 300);
+  });
+  // Second checkpoint pass: any turns that hadn't reached `result` by grace get
+  // their partial saved so restart still shows what the agent had streamed.
+  try {
+    const n = flushInFlightChats();
+    if (n) console.log(`[multicc] shutdown flushed ${n} partial message(s) after drain`);
+  } catch (e) { console.error(`[multicc] post-drain flush error: ${e.message}`); }
+});
+
+// Closers: HTTP server first (stop accepting new turns) → chokidar watchers
+// (below where they are created, they call shutdownCoordinator.onClose(fn)).
+// Wired here for the HTTP server itself.
+shutdownCoordinator.onClose(() => new Promise(resolve => {
+  try {
+    if (server && server.listening) {
+      server.close(() => resolve());
+      // If close() doesn't finish in 2s (long-poll clients hanging on), don't
+      // block PM2's kill_timeout — hard-close remaining sockets.
+      setTimeout(() => { try { server.closeAllConnections?.(); } catch (_) {} resolve(); }, 2000).unref();
+    } else {
+      resolve();
     }
-    if (draining.size === 0) { clearInterval(timer); finish('all turns drained'); }
-    else if (Date.now() - t0 > SHUTDOWN_GRACE_MS) { clearInterval(timer); finish('grace timeout'); }
-  }, 300);
+  } catch (_) { resolve(); }
+}));
+
+function gracefulShutdown(sig) {
+  if (_shuttingDown) return;
+  // Ignore SIGTERM by default to prevent accidental shutdowns from arbitrary
+  // `kill` invocations. `./multicc stop` sends SIGINT explicitly, and the
+  // coordinator handles both signals uniformly when SIGTERM is not swallowed.
+  if (sig === 'SIGTERM') {
+    console.log('[multicc] SIGTERM ignored. Use ./multicc stop to stop.');
+    return;
+  }
+  _shuttingDown = true;
+  shutdownCoordinator.shutdown({ reason: sig, graceMs: SHUTDOWN_GRACE_MS, exitCode: 0 })
+    .catch(e => { console.error(`[multicc] shutdown driver error: ${e && e.message}`); process.exit(1); });
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Terminal error handler: catches errors that reach next(err) or throw out of
+// async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
+// generic {error, requestId} so clients can't fingerprint the filesystem.
+// Registered LAST so every route falls through here.
+app.use(safeErrorHandler(console));
 
 (async () => {
   try {

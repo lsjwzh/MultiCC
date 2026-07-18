@@ -35,6 +35,7 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     seedCommander: (dir) => { calls.seeded.push(dir.id); },
     destroyCascade: (s) => { calls.destroyed.push(s.id); },
     persistRecords: () => { calls.persisted++; },
+    snapshotRecords: () => sessions.slice(),
   };
   const events = { append: (dirId, type, detail) => { calls.events.push({ dirId, type, detail }); } };
   const fsPort = {
