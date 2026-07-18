@@ -229,6 +229,7 @@ table.sessions-table {
 }
 .active-dot.yes { background: var(--green); box-shadow: 0 0 6px rgba(63,185,80,.4); }
 .active-dot.no { background: var(--gray); }
+.mobile-status-text { display: none; }
 
 /* Monospace cell */
 .mono { font-family: var(--mono); font-size: 12px; }
@@ -280,10 +281,78 @@ table.sessions-table {
 
 /* Responsive */
 @media (max-width: 768px) {
+  .dash-header { padding: 10px 12px; gap: 8px; }
+  .dash-header .spacer { display: none; }
+  .dash-header .refresh-indicator { margin-left: auto; }
+  .dash-header .hdr-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 44px;
+    padding: 8px 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
   .dash-main { padding: 12px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-  .stat-card { padding: 12px; }
+  .stat-card { padding: 12px; min-width: 0; }
   .stat-card .stat-value { font-size: 22px; }
-  .filter-bar { padding: 10px; gap: 10px; }
-  .sessions-table th, .sessions-table td { padding: 8px 10px; }
+  .stat-card .stat-detail { overflow-wrap: anywhere; }
+  .filter-bar { padding: 12px; gap: 10px; align-items: stretch; }
+  .filter-group { min-height: 44px; }
+  .filter-group select,
+  .filter-group button { min-height: 44px; font-size: 16px; }
+  .filter-bar > .spacer { display: none; }
+  .filter-bar > span:last-child { flex-basis: 100%; }
+
+  /* A seven-column table is technically scrollable on a phone, but the user
+     sees only half a row and loses its identity while panning. Render each
+     session as a labelled card instead; desktop keeps the dense table. */
+  .table-wrap { overflow: visible; background: transparent; border: 0; }
+  table.sessions-table,
+  .sessions-table tbody,
+  .sessions-table tr,
+  .sessions-table td { display: block; width: 100%; }
+  .sessions-table thead { display: none; }
+  .sessions-table tbody { display: grid; gap: 10px; }
+  .sessions-table tbody tr {
+    padding: 10px 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .sessions-table td {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 5px 0;
+    border: 0;
+    min-width: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+  .sessions-table td::before {
+    content: attr(data-label);
+    flex: 0 0 48px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .4px;
+    text-align: left;
+  }
+  .sessions-table td > * { min-width: 0; }
+  .sessions-table .mono { overflow-wrap: anywhere; }
+  .sessions-table td:first-child { justify-content: flex-start; align-items: center; }
+  .sessions-table td:first-child::before { margin-right: auto; }
+  .mobile-status-text { display: inline; color: var(--muted); font-size: 12px; }
+}
+
+@media (max-width: 390px) {
+  .dash-header .title { display: none; }
+  .dash-header .refresh-indicator { font-size: 11px; }
+  .filter-group { width: 100%; }
+  .filter-group select { flex: 1; }
+  .filter-group button { flex: 1; padding-inline: 6px; }
 }
