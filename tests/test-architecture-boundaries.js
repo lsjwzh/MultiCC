@@ -48,3 +48,25 @@ test('no source module reverse requires server.js', () => {
     for (const dependency of requires(file)) assert.doesNotMatch(dependency, /(?:^|\/)server(?:\.js)?$/);
   }
 });
+
+test('production request paths do not run synchronous child processes', () => {
+  const files = ['server.js'];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(target);
+      else if (entry.name.endsWith('.js')) files.push(target);
+    }
+  };
+  visit('src');
+  visit('plugins');
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    assert.doesNotMatch(source, /\b(?:execSync|execFileSync|spawnSync)\b/, file);
+  }
+});
+
+test('session bundle import never resets a worktree with reset --hard', () => {
+  const source = fs.readFileSync('server.js', 'utf8');
+  assert.doesNotMatch(source, /reset["'`,\s]+--hard/);
+});
