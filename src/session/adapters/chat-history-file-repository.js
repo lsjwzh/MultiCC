@@ -55,6 +55,17 @@ function createChatHistoryFileRepository({ dataDir, fsImpl = fs, writeJson = ato
     }
   }
 
+  function renameSession(fromSessionId, toSessionId) {
+    const source = fileFor(fromSessionId);
+    const target = fileFor(toSessionId);
+    if (!fsImpl.existsSync(source) || fsImpl.existsSync(target)) return false;
+    if (fsImpl === fs) ensurePrivateDir(root);
+    else fsImpl.mkdirSync(root, { recursive: true, mode: 0o700 });
+    fsImpl.renameSync(source, target);
+    if (typeof fsImpl.chmodSync === 'function') fsImpl.chmodSync(target, 0o600);
+    return true;
+  }
+
   function hasPersistedDelivery(sessionId, deliveryId) {
     if (!deliveryId) return false;
     let messages;
@@ -69,12 +80,27 @@ function createChatHistoryFileRepository({ dataDir, fsImpl = fs, writeJson = ato
     ));
   }
 
+  function listSessionIds() {
+    let names;
+    try { names = fsImpl.readdirSync(root); }
+    catch (error) {
+      if (error && error.code === 'ENOENT') return [];
+      throw error;
+    }
+    return names
+      .filter(name => typeof name === 'string' && name.endsWith('.json'))
+      .map(name => name.slice(0, -5))
+      .sort();
+  }
+
   return Object.freeze({
     deleteSession,
     fileFor,
     hasPersistedDelivery,
+    listSessionIds,
     read,
     readStrict,
+    renameSession,
     root,
     write,
   });

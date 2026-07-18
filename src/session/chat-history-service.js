@@ -18,12 +18,20 @@ function cleanThinkingBlocks(message) {
   return message;
 }
 
+function freezeEvent(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeEvent(child);
+  return Object.freeze(value);
+}
+
 function createChatHistoryService({
   history,
   idFactory,
   clock = Date.now,
   maxMessages = 10000,
   retentionPolicy = null,
+  postPersist = null,
+  onPostPersistError = () => {},
 } = {}) {
   assertChatHistoryPort(history);
   if (typeof idFactory !== 'function') throw new TypeError('[session] idFactory must be a function');
@@ -33,6 +41,12 @@ function createChatHistoryService({
   }
   if (retentionPolicy !== null && typeof retentionPolicy !== 'function') {
     throw new TypeError('[session] retentionPolicy must be a function');
+  }
+  if (postPersist !== null && typeof postPersist !== 'function') {
+    throw new TypeError('[session] postPersist must be a function');
+  }
+  if (typeof onPostPersistError !== 'function') {
+    throw new TypeError('[session] onPostPersistError must be a function');
   }
   const cache = new Map();
 
@@ -62,27 +76,44 @@ function createChatHistoryService({
     });
   }
 
-  function read(sessionId) {
+  function current(sessionId) {
     const key = String(sessionId);
     if (!cache.has(key)) cache.set(key, normalize(history.read(key)));
-    return jsonClone(cache.get(key));
+    return cache.get(key);
   }
 
-  function persist(sessionId, messages) {
+  function read(sessionId) {
+    return jsonClone(current(sessionId));
+  }
+
+  function emitPostPersist(event, afterCommit) {
+    const committed = freezeEvent(jsonClone(event));
+    for (const callback of [postPersist, afterCommit]) {
+      if (typeof callback !== 'function') continue;
+      try { callback(committed); }
+      catch (error) {
+        try { onPostPersistError(error, committed); } catch (_) {}
+      }
+    }
+  }
+
+  function persist(sessionId, messages, event, afterCommit) {
     const key = String(sessionId);
     const snapshot = jsonClone(messages);
     history.write(key, snapshot);
     cache.set(key, snapshot);
+    emitPostPersist({ sessionId: key, ...event }, afterCommit);
   }
 
   function invalidate(sessionId) {
     cache.delete(String(sessionId));
   }
 
-  function deleteSession(sessionId) {
+  function deleteSession(sessionId, { afterCommit } = {}) {
     const key = String(sessionId);
     const deleted = history.deleteSession(key);
     cache.delete(key);
+    emitPostPersist({ type: 'delete', sessionId: key, deleted }, afterCommit);
     return deleted;
   }
 
@@ -95,7 +126,15 @@ function createChatHistoryService({
     return history.hasPersistedDelivery(String(sessionId), id);
   }
 
-  function append(sessionId, value) {
+  function containsDelivery(sessionId, deliveryId) {
+    const id = String(deliveryId || '');
+    if (!id) return false;
+    return current(sessionId).some(message => message && (
+      message.deliveryId === id || message.clientMsgId === id
+    ));
+  }
+
+  function append(sessionId, value, { afterCommit } = {}) {
     if (!value || typeof value !== 'object') throw new TypeError('[session] chat message must be an object');
     const messages = read(sessionId);
     const message = cleanThinkingBlocks(jsonClone(value));
@@ -112,33 +151,45 @@ function createChatHistoryService({
       const previous = messages[messages.length - 1];
       if (previous.role === 'assistant' && previous.content === message.content &&
           stableTools(previous.tools) === stableTools(message.tools)) {
-        if (message.usage !== undefined) previous.usage = message.usage;
-        if (message.cost !== undefined) previous.cost = message.cost;
-        if (message.durationMs !== undefined) previous.durationMs = message.durationMs;
-        if (message.ts !== undefined) previous.ts = message.ts;
+        if (message.usage) previous.usage = message.usage;
+        if (message.cost != null) previous.cost = message.cost;
+        if (message.durationMs != null) previous.durationMs = message.durationMs;
+        if (message.ts) previous.ts = message.ts;
         const dropped = trim(sessionId, messages);
-        persist(sessionId, messages);
-        return Object.freeze({
+        const result = Object.freeze({
           deduplicated: true,
           dropped: jsonClone(dropped),
           message: jsonClone(previous),
           messages: jsonClone(messages),
         });
+        persist(sessionId, messages, {
+          type: 'append',
+          deduplicated: true,
+          dropped: result.dropped,
+          message: result.message,
+        }, afterCommit);
+        return result;
       }
     }
 
     messages.push(message);
     const dropped = trim(sessionId, messages);
-    persist(sessionId, messages);
-    return Object.freeze({
+    const result = Object.freeze({
       deduplicated: false,
       dropped: jsonClone(dropped),
       message: jsonClone(message),
       messages: jsonClone(messages),
     });
+    persist(sessionId, messages, {
+      type: 'append',
+      deduplicated: false,
+      dropped: result.dropped,
+      message: result.message,
+    }, afterCommit);
+    return result;
   }
 
-  function upsertInterim(sessionId, value) {
+  function upsertInterim(sessionId, value, { afterCommit } = {}) {
     if (!value || typeof value !== 'object') throw new TypeError('[session] interim message must be an object');
     const messages = read(sessionId);
     const message = cleanThinkingBlocks(jsonClone(value));
@@ -165,34 +216,49 @@ function createChatHistoryService({
     else messages.push(message);
 
     const dropped = trim(sessionId, messages);
-    persist(sessionId, messages);
-    return Object.freeze({
+    const result = Object.freeze({
       replaced,
       dropped: jsonClone(dropped),
       message: jsonClone(message),
       messages: jsonClone(messages),
     });
+    persist(sessionId, messages, {
+      type: 'interim',
+      replaced,
+      dropped: result.dropped,
+      message: result.message,
+    }, afterCommit);
+    return result;
   }
 
-  function replace(sessionId, values) {
+  function replace(sessionId, values, { afterCommit, reason = null } = {}) {
     const messages = normalize(values);
     const dropped = trim(sessionId, messages);
-    persist(sessionId, messages);
-    return Object.freeze({ messages: jsonClone(messages), dropped: jsonClone(dropped) });
+    const result = Object.freeze({ messages: jsonClone(messages), dropped: jsonClone(dropped) });
+    persist(sessionId, messages, {
+      type: 'replace',
+      reason: reason == null ? null : String(reason).slice(0, 80),
+      dropped: result.dropped,
+    }, afterCommit);
+    return result;
   }
 
-  function remove(sessionId, messageId) {
+  function remove(sessionId, messageId, { afterCommit } = {}) {
     const messages = read(sessionId);
     const index = messages.findIndex(message => message.id === messageId);
     if (index < 0) return Object.freeze({ removed: false, messages: jsonClone(messages) });
     const [removed] = messages.splice(index, 1);
-    persist(sessionId, messages);
-    return Object.freeze({ removed: true, message: jsonClone(removed), messages: jsonClone(messages) });
+    const result = Object.freeze({ removed: true, message: jsonClone(removed), messages: jsonClone(messages) });
+    persist(sessionId, messages, {
+      type: 'remove',
+      message: result.message,
+    }, afterCommit);
+    return result;
   }
 
   function paginate(sessionId, { before, limit = 30 } = {}) {
-    const messages = read(sessionId);
-    const pageSize = Math.max(1, Math.min(100, Math.floor(Number(limit) || 30)));
+    const messages = current(sessionId);
+    const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || 30));
     let end = messages.length;
     if (before) {
       const index = messages.findIndex(message => message.id === before);
@@ -210,7 +276,7 @@ function createChatHistoryService({
   }
 
   function latestAssistantAt(sessionId) {
-    const messages = read(sessionId);
+    const messages = current(sessionId);
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       const ts = Number(message && message.role === 'assistant' && message.ts);
@@ -221,6 +287,7 @@ function createChatHistoryService({
 
   return Object.freeze({
     append,
+    containsDelivery,
     deleteSession,
     hasPersistedDelivery,
     invalidate,
