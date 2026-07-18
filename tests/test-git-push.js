@@ -23,11 +23,12 @@ function git(cwd, args) {
   try {
     fs.mkdirSync(local);
     git(root, ['init', '--bare', remote]);
-    assert.deepStrictEqual(directoryPushState(local, 'main'), {
+    assert.deepStrictEqual(await directoryPushState(local, 'main', { force: true }), {
       available: false,
       hasRemote: false,
       ahead: 0,
       behind: 0,
+      dirty: 0,
       reason: 'not-a-git-repository',
     });
     git(local, ['init', '-b', 'main']);
@@ -37,17 +38,18 @@ function git(cwd, args) {
     git(local, ['add', 'file.txt']);
     git(local, ['commit', '-m', 'first']);
 
-    assert.deepStrictEqual(directoryPushState(local, 'main'), {
+    assert.deepStrictEqual(await directoryPushState(local, 'main', { force: true }), {
       available: true,
       hasRemote: false,
       branch: 'main',
       ahead: 0,
       behind: 0,
+      dirty: 0,
       reason: 'no-remote',
     });
 
     git(local, ['remote', 'add', 'origin', remote]);
-    let state = directoryPushState(local, 'main');
+    let state = await directoryPushState(local, 'main', { force: true });
     assert.strictEqual(state.hasRemote, true);
     assert.strictEqual(state.upstreamConfigured, false);
     assert.strictEqual(state.ahead, 1);
@@ -60,7 +62,7 @@ function git(cwd, args) {
     fs.appendFileSync(path.join(local, 'file.txt'), 'two\n');
     git(local, ['add', 'file.txt']);
     git(local, ['commit', '-m', 'second']);
-    state = directoryPushState(local, 'main');
+    state = await directoryPushState(local, 'main', { force: true });
     assert.strictEqual(state.ahead, 1);
 
     result = await pushDirectory(local, 'main');

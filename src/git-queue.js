@@ -15,10 +15,8 @@ function queueDepth(cwd) { return defaultRepoActor.queueDepth(cwd); }
 function operationStatus(operationId) { return defaultRepoActor.status(operationId); }
 
 // ── Tiny synchronous TTL memo, with per-key jitter so a batch of entries
-// populated in the same tick don't all expire on the same future tick (which
-// would make one unlucky poll pay the full recompute cost). Used to wrap
-// synchronous git helpers (e.g. worktree merge-state) that are called once per
-// item across large lists on every poll.
+// populated in the same tick don't all expire on the same future tick. Retained
+// for non-Git callers that still use this facade's small generic cache helper.
 function makeTtlCache(baseTtlMs, jitterMs = 0) {
   const store = new Map();   // key -> { value, expiry }
   return {
