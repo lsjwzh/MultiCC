@@ -23,6 +23,7 @@ const REQUEST_CONTEXT = Object.freeze({
 test('maps domain and infrastructure errors to stable HTTP contracts', () => {
   const cases = [
     [DOMAIN_KINDS.BAD_REQUEST, 400, 'invalid_request', 'invalid input'],
+    [DOMAIN_KINDS.PAYLOAD_TOO_LARGE, 413, 'payload_too_large', 'payload too large'],
     [DOMAIN_KINDS.NOT_FOUND, 404, 'not_found', 'session not found'],
     [DOMAIN_KINDS.CONFLICT, 409, 'conflict', 'session is active'],
     [DOMAIN_KINDS.RATE_LIMITED, 429, 'rate_limited', 'try again later'],

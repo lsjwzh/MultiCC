@@ -223,8 +223,20 @@
 - 两份新 Web 测试已纳入默认 security 门。完整 `npm test` 与 `test:integration:isolated` 通过。
 - 本批为了明确 proof/lease 顺序，`server.js` 暂时净增长；下一批迁 retry/post-turn 时必须把 preparation composition 收进 `src/chat` host coordinator，不能继续在 God file 内堆状态机。
 
-### 第四波建议
+### 第四波（2026-07-18，已完成）
 
-1. 先迁 Memo HTTP 三条路由到 `asyncRoute → DomainError → presenter`，消除原始 `e.message` 路径泄漏；同时让 `memo.html` 与 Chat 内 Memo 复用同一 controller，结束三套实现。
-2. 再把 retry policy 和 post-turn effect 接入生产，并将 preparation composition 从 `server.js` 下沉到可注入 coordinator。
-3. 完成上述两项后再拆 Chat WS controller；Flutter God Screen 作为独立批次，避免与 Web/host 热点交叉。
+- Memo GET/PUT/send 已从 `server.js` 连续内联块迁入 `src/memo/{controller,file-port,router,index}.js`；Host 只注入 directories、sessions 和 runTurn port。`server.js` 12,634→12,588（-46）。
+- Memo 首次成为 `src/http` 的生产 adopter：400/404/409 保持旧文本与状态，新增 413 `PAYLOAD_TOO_LARGE` 映射；所有 fs/内部/启动异常统一为带 requestId/code 的 `500 internal_error`，不返回原始路径、stack、stderr 或 token。
+- Dashboard、Standalone `memo.html` 与 Chat popup 统一消费 `public/memo-controller.js` 的 client/controller/primitives。三端 Memo 直接 fetch/withToken/tokenQS 为 0；Host 重复代码共删除 191 行，生产文件合计净减 10 行。
+- 完整 `npm test`、contracts/native 与 `test:integration:isolated` 全绿；新增 isolated Memo HTTP 测试使用临时数据目录和 fake runTurn，不启动 AI。
+- 为兼容旧成功 DTO，GET/PUT 仍返回绝对 `path`；这是已接受的本地 authenticated UI 兼容风险。错误响应不得泄露路径，后续 API v2 可移除或改成逻辑文件名。
+
+### 第五波前置修复（先于 retry/post-turn 接线）
+
+只读生命周期审计发现三项 P0，不能直接把现有 retry/post-turn 替换成纯模块：
+
+1. 多个 assistant 保存路径未检查 `appendChatMessage()` 返回值却置 `_resultSaved`，可能在结果未落盘时消费 handoff 或触发 dispatch/gateway/marker。
+2. interrupted/API-error 安排 retry 后仍继续 post-turn，可能把部分输出提前回流并清除 dispatch lineage，最终完整结果反而不回流。
+3. `_killReason`、`originDispatchId`、`_originTrigger` 属于 session 共享状态；stale proc/stream finalize 可把上一轮终止原因污染下一轮，retry 也会丢 dispatch/trigger lineage。
+
+第五波必须先建立 turn-owned termination/lineage context 与 durable-result proof，修复上述排序，再 shadow 接入 retry decision，最后统一两处 post-turn effect 块。完成前禁止声称 retry/post-turn 已生产迁移。
