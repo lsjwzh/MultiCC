@@ -71,17 +71,17 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
   // ── register ──
   {
     const { svc, repo, calls } = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
-    let r = svc.register({ name: '', path: '/p/a' });
+    let r = await svc.register({ name: '', path: '/p/a' });
     ok(!r.ok && r.message === 'name and path required', 'register: empty name rejected');
-    r = svc.register({ name: 'x', path: '/home/u' });
+    r = await svc.register({ name: 'x', path: '/home/u' });
     ok(!r.ok && r.message === '不允许选择 $HOME 或更高层目录', 'register: home dir rejected');
-    r = svc.register({ name: 'x', path: '/p/missing' });
+    r = await svc.register({ name: 'x', path: '/p/missing' });
     ok(!r.ok && r.message === 'path does not exist: /p/missing', 'register: missing path without create rejected');
-    r = svc.register({ name: 'x', path: '/p/missing', create: true });
+    r = await svc.register({ name: 'x', path: '/p/missing', create: true });
     ok(r.ok && r.data.id === 'id-1' && r.data.path === '/p/missing', 'register: create:true mkdirps and registers');
     ok(calls.gitReady.includes('id-1') && calls.saved === 1 && calls.seeded.includes('id-1'),
       'register: git-ready checked, saved once, commander seeded');
-    r = svc.register({ name: 'y', path: '/p/missing' });
+    r = await svc.register({ name: 'y', path: '/p/missing' });
     ok(!r.ok && r.message === '该路径已被目录 "x" 登记，不允许重复', 'register: duplicate path rejected');
     ok(repo.get('id-1'), 'register: record present in repository');
   }
@@ -94,7 +94,7 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     g.svc; // (separate instance below)
     const fakes = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
     fakes.git.ensureReady = () => ({ ok: false, reason: 'boom' });
-    const r = fakes.svc.register({ name: 'x', path: '/p/a' });
+    const r = await fakes.svc.register({ name: 'x', path: '/p/a' });
     ok(!r.ok && r.message === 'friendly:boom', 'register: git-init failure → friendly error');
     ok(!fakes.repo.get('id-1') && fakes.calls.saved === 0, 'register: failed record rolled back, never saved');
     void svc; void repo;
@@ -104,18 +104,18 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
   {
     const d = { id: 'd1', name: 'old', path: '/p/a' };
     const { svc, calls } = makeFakes({ dirs: [d], fsDirs: new Set(['/p', '/p/a', '/p/b']) });
-    let r = svc.update('nope', { name: 'x' });
+    let r = await svc.update('nope', { name: 'x' });
     ok(!r.ok && r.code === 'not_found', 'update: unknown id → not_found');
-    r = svc.update('d1', { name: ' renamed ' });
+    r = await svc.update('d1', { name: ' renamed ' });
     ok(r.ok && r.data.name === 'renamed' && calls.saved === 1, 'update: rename trims and saves');
-    r = svc.update('d1', { path: '/p/missing' });
+    r = await svc.update('d1', { path: '/p/missing' });
     ok(!r.ok && r.message === 'path does not exist: /p/missing', 'update: missing path rejected');
-    r = svc.update('d1', { path: '/p/b' });
+    r = await svc.update('d1', { path: '/p/b' });
     ok(r.ok && r.data.path === '/p/b' && calls.unmarked.includes('d1') && calls.gitReady.includes('d1'),
       'update: path change re-verifies git readiness');
-    r = svc.update('d1', { rolePrompt: 'R'.repeat(40001) });
+    r = await svc.update('d1', { rolePrompt: 'R'.repeat(40001) });
     ok(!r.ok && r.message === 'rolePrompt too long (max 40000)', 'update: oversized rolePrompt rejected');
-    r = svc.update('d1', { rolePrompt: '  ' });
+    r = await svc.update('d1', { rolePrompt: '  ' });
     ok(r.ok && r.data.rolePrompt === null, 'update: blank rolePrompt → null');
   }
 
@@ -124,12 +124,12 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     const d = { id: 'd1', name: 'x', path: '/p/a' };
     const sess = [{ id: 's1', dirId: 'd1' }, { id: 's2', dirId: 'd1' }, { id: 's3', dirId: 'other' }];
     const { svc, repo, calls } = makeFakes({ dirs: [d], sessions: sess, fsDirs: new Set(['/p/a']) });
-    let r = svc.remove('nope', {});
+    let r = await svc.remove('nope', {});
     ok(!r.ok && r.code === 'not_found', 'remove: unknown id → not_found');
-    r = svc.remove('d1', { force: false });
+    r = await svc.remove('d1', { force: false });
     ok(!r.ok && r.message === 'directory has 2 session(s); pass ?force=1 to delete them too'
       && r.extra.sessions.join() === 's1,s2', 'remove: refuses without force, lists sessions');
-    r = svc.remove('d1', { force: true });
+    r = await svc.remove('d1', { force: true });
     ok(r.ok && r.data.removedSessions === 2, 'remove: force destroys owned sessions');
     ok(calls.destroyed.join() === 's1,s2' && !repo.get('d1') && calls.saved === 1 && calls.persisted === 1,
       'remove: cascade order — destroy, delete record, save, persist sessions');

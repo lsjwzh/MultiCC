@@ -19,6 +19,7 @@
     "test:codex-subagent-routing": "node tests/test-codex-subagent-routing.js",
     "test:codex-subagent-live": "node tests/test-codex-subagent-live.js",
     "test:git-push": "node tests/test-git-push.js",
+    "test:repo-actor": "node --test tests/test-repo-actor.js tests/test-git-safety.js",
     "test:power": "node tests/test-macos-power.js",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
   },

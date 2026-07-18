@@ -72,7 +72,7 @@ const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./plugins/utils/macos-power');
 const gitPush = require('./plugins/utils/git-push');
-const { runGit: gitRunQueued, makeTtlCache } = require('./src/git-queue');
+const { runGit: gitRunQueued } = require('./src/git-queue');
 
 const crypto = require('crypto');
 const bus = require('./src/bus');
@@ -814,16 +814,16 @@ function findCodexSessionId(cwd, sinceMs, sessionsDir) {
 // Pure primitives, destructured so existing call sites are unchanged. The
 // stateful recoverTmuxSessions() (below) stays — it rebuilds core session state.
 const {
-  TMUX_PREFIX, tmuxSessionName, tmuxHasSession, tmuxCreateSession, tmuxResize,
+  TMUX_PREFIX, tmuxSessionName, tmuxListSessions, tmuxHasSession, tmuxCreateSession, tmuxResize,
   applyMaxClientSize, tmuxKillSession, tmuxCapturePane, tmuxPaneTty, tmuxPaneCwd,
   tmuxWriteInput, fifoPathForSession, startOutputCapture, stopOutputCapture,
 } = require('./src/tmux');
 
 // Recover existing tmux sessions on startup (survives server restart)
-function recoverTmuxSessions() {
+async function recoverTmuxSessions() {
   try {
-    const output = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' });
-    for (const name of output.trim().split('\n')) {
+    const names = await tmuxListSessions();
+    for (const name of names) {
       if (!name || !name.startsWith(TMUX_PREFIX)) continue;
       const id = name.slice(TMUX_PREFIX.length);
       if (sessions.has(id)) continue;
@@ -838,7 +838,7 @@ function recoverTmuxSessions() {
       }
       console.log(`[multicc] Recovering tmux session: ${id} (${persisted.cli})`);
       try {
-        createSession(id);
+        await createSession(id);
       } catch (err) {
         console.error(`[multicc] Failed to recover session ${id}:`, err.message);
       }
@@ -855,30 +855,48 @@ function recoverTmuxSessions() {
 // existing call sites are unchanged. The stateful bits stay here in server.js.
 const {
   WORKTREE_SUBDIR, gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
-  gitWorktreeAdd, gitWorktreeRemove, gitWorktreeCommitAll, gitWorktreeMergeState, gitMergeBack,
-  gitSyncFromBase, gitRebaseResolve,
+  gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeCommitAll, gitWorktreeMergeState, gitMergeBack,
+  gitSyncFromBase, gitRebaseResolve, defaultRepoActor,
 } = require('./src/git');
 
-// gitWorktreeMergeState fires ~4 synchronous git subprocesses per session. It is
-// read once per session on every /api/sessions poll, so on a busy server (dozens
-// of sessions × many open clients) it forks git nonstop and blocks the event
-// loop. Wrap it in a short TTL memo (with per-entry jitter so a batch populated
-// in one poll doesn't all expire on the same later tick). Mutating endpoints
+// RepoActor operations are retained in a bounded in-memory history. Destructive
+// endpoint responses include operationId; callers can inspect progress and the
+// observed queue depth here without polling child processes themselves.
+app.get('/api/repo-operations/:operationId', (req, res) => {
+  const operation = defaultRepoActor.status(req.params.operationId);
+  if (!operation) return res.status(404).json({ error: 'operation not found' });
+  res.json(operation);
+});
+
+// gitWorktreeMergeState fires several asynchronous git subprocesses per session.
+// It is read once per session on every /api/sessions poll, so on a busy server
+// we keep REST serialization synchronous by returning the latest cached state
+// while RepoActor refreshes it in the background. Mutating endpoints
 // (merge/sync/commit) call mergeStateFresh() to recompute and refresh the cache
 // so the UI never shows a stale indicator after an actual git change. WS
 // broadcasts already push fresh state to active viewers, so the bounded staleness
 // only ever affects passive REST polling.
-const _mergeStateCache = makeTtlCache(4000, 3000);
+const _mergeStateCache = new Map();
+const _mergeStatePending = new Map();
 function mergeStateKey(session) { return session && session.id ? session.id : null; }
 function mergeStateCached(dir, session) {
   const key = mergeStateKey(session);
-  if (!key) return gitWorktreeMergeState(dir, session);
-  return _mergeStateCache.get(key, () => gitWorktreeMergeState(dir, session));
+  if (!key) return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'loading' };
+  const cached = _mergeStateCache.get(key);
+  const now = Date.now();
+  if ((!cached || cached.expiry <= now) && !_mergeStatePending.has(key)) {
+    const pending = gitWorktreeMergeState(dir, session)
+      .then(value => { _mergeStateCache.set(key, { value, expiry: Date.now() + 4000 + Math.floor(Math.random() * 3000) }); return value; })
+      .catch(() => cached?.value || null)
+      .finally(() => _mergeStatePending.delete(key));
+    _mergeStatePending.set(key, pending);
+  }
+  return cached?.value || { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'loading' };
 }
-function mergeStateFresh(dir, session) {
-  const value = gitWorktreeMergeState(dir, session);
+async function mergeStateFresh(dir, session) {
+  const value = await gitWorktreeMergeState(dir, session);
   const key = mergeStateKey(session);
-  if (key) _mergeStateCache.set(key, value);
+  if (key) _mergeStateCache.set(key, { value, expiry: Date.now() + 4000 });
   return value;
 }
 
@@ -894,7 +912,7 @@ const {
 } = require('./src/directories');
 
 // Make sure a directory is a usable git repo; refuses $HOME and missing paths.
-function ensureDirGitReady(dir) {
+async function ensureDirGitReady(dir) {
   if (gitReadyDirs.has(dir.id)) return { ok: true };
   if (isHomeOrAbove(dir.path)) return { ok: false, reason: 'home-or-above' };
   if (!fs.existsSync(dir.path)) return { ok: false, reason: 'path-missing' };
@@ -905,17 +923,17 @@ function ensureDirGitReady(dir) {
   const fit = dirSuitability(dir.path);
   if (!fit.ok) return { ok: false, reason: 'unsuitable: ' + fit.reason };
   try {
-    if (!gitIsRepo(dir.path)) {
+    if (!await gitIsRepo(dir.path)) {
       console.log(`[multicc] git init: ${dir.path}`);
-      gitRun(dir.path, ['init']);
+      await gitRun(dir.path, ['init']);
     }
-    gitEnsureExcluded(dir.path);
-    if (!gitHasCommit(dir.path)) {
-      try { gitRun(dir.path, ['add', '-A']); } catch (_) {}
-      gitRun(dir.path, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
+    await gitEnsureExcluded(dir.path);
+    if (!await gitHasCommit(dir.path)) {
+      try { await gitRun(dir.path, ['add', '-A']); } catch (_) {}
+      await gitRun(dir.path, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
         'commit', '--allow-empty', '-m', 'multicc: initial commit']);
     }
-    dir.baseBranch = gitBaseBranch(dir.path);
+    dir.baseBranch = await gitBaseBranch(dir.path);
     dir.gitInitialized = true;
     gitReadyDirs.add(dir.id);
     return { ok: true };
@@ -1112,7 +1130,7 @@ const { createDirectoryModule } = require('./src/directory');
 // Seed TWO default Agent Commander chat sessions for a newly-registered directory
 // (session-domain logic, exposed to the directory domain via its session port):
 // one under Claude, one under Codex — so every fleet has both CLI commanders.
-function seedCommanderSession(dir) {
+async function seedCommanderSession(dir) {
   const commander = agentCommanderPrompt();
   if (!commander) {
     console.warn('[multicc] Agent Commander preset not found; skipping seed sessions for new dir');
@@ -1120,7 +1138,7 @@ function seedCommanderSession(dir) {
   }
   for (const cli of ['claude', 'codex']) {
     const label = cli === 'codex' ? '🫡 Agent Commander (Codex)' : '🫡 Agent Commander';
-    const r = createSessionRecord({ dir, cli, kind: 'chat', label });
+    const r = await createSessionRecord({ dir, cli, kind: 'chat', label });
     if (r.ok) {
       r.session.rolePrompt = commander.prompt;
       savePersistedSessions();
@@ -1134,10 +1152,37 @@ function seedCommanderSession(dir) {
 // Tear down one session record + all its runtime state (tmux, chat proc, wait
 // registrations, shares, worktree, triggers, notes, status board entry).
 // Directory deletion cascades through here for every owned session.
-function destroySessionCascade(s, d) {
+async function destroySessionCascade(s, d, opts = {}) {
   const active = sessions.get(s.id);
-  if (active) { tmuxKillSession(s.id); sessions.delete(s.id); }
   const chat = chatSessions.get(s.id);
+  const isActive = !!active || !!(chat && (chat.claudeProc || chat.isStreaming || chat.clients?.size));
+  if (isActive && !opts.force) return { ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be removed' };
+  let removal = null;
+  // Remove the worktree before tearing down runtime/persistence. A default
+  // dirty/unmerged refusal therefore leaves the session completely intact.
+  if (s.worktreePath && s.branch) {
+    try {
+      removal = await gitWorktreeRemove(d.path, s.worktreePath, s.branch, {
+        sessionId: s.id, baseBranch: d.baseBranch, force: !!opts.force,
+        activeCheck: opts.force ? null : () => sessionWorktreeActive(s.id),
+      });
+    } catch (error) {
+      const reason = error.code === 'SESSION_ACTIVE' ? 'active'
+        : (error.code === 'SESSION_LEASED' ? 'leased' : null);
+      if (!reason) throw error;
+      return { ok: false, blocked: true, reasons: [reason], operationId: error.operationId,
+        queueDepth: error.queueDepth, error: error.message };
+    }
+    if (!removal.ok) return removal;
+  }
+  if (active) {
+    if (active.exitCheckTimer) clearInterval(active.exitCheckTimer);
+    if (active.captureTimer) clearInterval(active.captureTimer);
+    cleanupPushMonitor(s.id);
+    await stopOutputCapture(active);
+    await tmuxKillSession(s.id);
+    sessions.delete(s.id);
+  }
   if (chat) {
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
@@ -1146,7 +1191,6 @@ function destroySessionCascade(s, d) {
   waitInjector.cancelForSession(s.id);
   bgCompletionCoalescer.cancel(s.id); // drop any completions buffered for this now-deleted session
   share.removeForSession(s.id);
-  if (s.worktreePath && s.branch) gitWorktreeRemove(d.path, s.worktreePath, s.branch);
   chatHistories.delete(s.id);
   try { fs.unlinkSync(chatHistoryPath(s.id)); } catch (_) {}
   teardownTriggers(s.id);
@@ -1154,6 +1198,12 @@ function destroySessionCascade(s, d) {
   persistedSessions.delete(s.id);
   invalidSessions.delete(s.id);
   workspaceStatus.delete(s.id);
+  return {
+    ok: true,
+    operationId: removal?.operationId || null,
+    queueDepth: removal?.queueDepth || 0,
+    backup: removal?.backup || null,
+  };
 }
 
 const directoryModule = createDirectoryModule({
@@ -1214,7 +1264,7 @@ if (_state.needsSave) {
 // Startup: ensure every session has an isolated worktree. Legacy sessions (created
 // before worktree isolation) get one built here. Sessions whose directory is invalid
 // ($HOME, or a duplicate physical path) are marked invalid and skipped at recovery.
-function initWorktrees() {
+async function initWorktrees() {
   // Detect directories that point at the same physical path — keep the earliest as
   // canonical, mark sessions under the rest invalid.
   const seenPaths = new Map();   // realpath → canonical dir id
@@ -1237,18 +1287,18 @@ function initWorktrees() {
     if (isHomeOrAbove(dir.path)) { invalidSessions.set(s.id, 'directory is $HOME or above'); continue; }
     if (s.worktreePath && fs.existsSync(s.worktreePath)) continue;  // already isolated
 
-    const ready = ensureDirGitReady(dir);
+    const ready = await ensureDirGitReady(dir);
     if (!ready.ok) { invalidSessions.set(s.id, 'git not ready: ' + ready.reason); continue; }
     try {
-      const { worktreePath, branch } = gitWorktreeAdd(dir.path, s.id, dir.baseBranch);
+      const { worktreePath, branch } = await gitWorktreeAdd(dir.path, s.id, dir.baseBranch);
       s.worktreePath = worktreePath;
       s.branch = branch;
       built++;
       // Legacy terminal session still running in the old (non-worktree) tmux pane:
       // kill it so recovery recreates the session inside its worktree.
-      if (s.kind === 'terminal' && tmuxHasSession(s.id)) {
+      if (s.kind === 'terminal' && await tmuxHasSession(s.id)) {
         console.log(`[multicc] migrating terminal ${s.id} into worktree — discarding old tmux pane`);
-        tmuxKillSession(s.id);
+        await tmuxKillSession(s.id);
       }
     } catch (e) {
       invalidSessions.set(s.id, 'worktree create failed: ' + e.message);
@@ -1355,7 +1405,7 @@ function ultracodeWorkerId(parentId, n) {
   return `${stem}-ultra-${String(n).padStart(2, '0')}`;
 }
 
-function ensureUltracodeWorkers(parentId) {
+async function ensureUltracodeWorkers(parentId) {
   const parent = persistedSessions.get(parentId);
   if (!parent || !parent.dirId || parent.kind !== 'chat') return;
   if (normalizeEffort(parent.effort) !== 'ultracode') return;
@@ -1364,7 +1414,7 @@ function ensureUltracodeWorkers(parentId) {
   for (let i = 1; i <= 3; i++) {
     const id = ultracodeWorkerId(parentId, i);
     if (persistedSessions.has(id)) continue;
-    const r = createSessionRecord({
+    const r = await createSessionRecord({
       dir,
       cli: parent.cli || 'claude',
       kind: 'chat',
@@ -1555,7 +1605,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
       if (dispatcher && normalizeEffort(dispatcher?.effort) === 'ultracode') {
         const dir = directories.get(dispatcher.dirId);
         if (dir) {
-          const created = createSessionRecord({
+          const created = await createSessionRecord({
             dir, cli: dispatcher.cli || 'claude', kind: 'chat',
             label: `⚡ Ultra Worker ${String(parseInt(m[1], 10))}`,
             id: targetId, ephemeral: true,
@@ -1577,7 +1627,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
     chatId = targetId;
   } else {
     // terminal-only target → create/reuse an ephemeral chat in the same directory.
-    const created = createSessionRecord({
+    const created = await createSessionRecord({
       dir: directories.get(rec.dirId),
       cli: rec.cli || 'claude',
       kind: 'chat',
@@ -1791,7 +1841,7 @@ function resolveCwd(current, arg) {
   return path.resolve(current, arg);
 }
 
-function createSession(id) {
+async function createSession(id) {
   // Look up the persisted record (must exist — sessions are pre-created via REST now)
   const persisted = persistedSessions.get(id);
   if (!persisted) {
@@ -1854,24 +1904,24 @@ function createSession(id) {
   // Create tmux session if it doesn't already exist (it may survive server restarts)
   let isRecovery = false;
   const launchTime = Date.now();
-  if (!tmuxHasSession(id)) {
+  if (!await tmuxHasSession(id)) {
     console.log(`[multicc] Creating tmux session: ${tmuxSessionName(id)} in ${cwd} (${provider.name} session: ${persisted.cliSessionId || '<pending>'})`);
-    tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(persisted || {}), termEnv);
+    await tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(persisted || {}), termEnv);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
     isRecovery = true;
   }
 
   // Get the tty device path for direct input writes
-  const ttyPath = tmuxPaneTty(id);
+  const ttyPath = await tmuxPaneTty(id);
 
   // Start output capture via pipe-pane → FIFO
-  const { stream, fifoPath } = startOutputCapture(id);
+  const { stream, fifoPath } = await startOutputCapture(id);
 
   // Pre-fill buffer with current terminal content for recovered sessions
   const initialBuffer = [];
   if (isRecovery) {
-    const captured = tmuxCapturePane(id);
+    const captured = await tmuxCapturePane(id);
     if (captured) initialBuffer.push(captured);
   }
 
@@ -1944,23 +1994,23 @@ function createSession(id) {
   // Detect session exit or stream failure
   const onStreamEnd = (err) => {
     if (sessions.get(id) !== session) return;
-    setTimeout(() => {
+    setTimeout(async () => {
       if (sessions.get(id) !== session) return;
-      if (!tmuxHasSession(id)) {
+      if (!await tmuxHasSession(id)) {
         console.log(`[multicc] Session ${id} exited (tmux session gone)`);
         cleanupPushMonitor(id);
         if (session.captureTimer) { clearInterval(session.captureTimer); session.captureTimer = null; }
         const cliLabel = session.cli === 'codex' ? 'Codex' : 'Claude Code';
         const exitMsg = `\r\n\x1b[33m[${cliLabel} process exited]\x1b[0m\r\n`;
         broadcastTo(session.clients, { type: 'exit', data: exitMsg });
-        stopOutputCapture(session);
+        await stopOutputCapture(session);
         sessions.delete(id);
       } else {
         // Tmux session still alive but stream died — restart output capture
         console.log(`[multicc] Stream died for ${id}, restarting output capture...`);
-        stopOutputCapture(session);
+        await stopOutputCapture(session);
         try {
-          const { stream: newStream, fifoPath: newFifo } = startOutputCapture(id);
+          const { stream: newStream, fifoPath: newFifo } = await startOutputCapture(id);
           session.outputStream = newStream;
           session.fifoPath = newFifo;
           const newDecoder = new StringDecoder('utf8');
@@ -1985,12 +2035,12 @@ function createSession(id) {
   stream.on('error', onStreamEnd);
 
   // Periodic check: tmux session may exit without FIFO closing cleanly
-  session.exitCheckTimer = setInterval(() => {
+  session.exitCheckTimer = setInterval(async () => {
     if (sessions.get(id) !== session) {
       clearInterval(session.exitCheckTimer);
       return;
     }
-    if (!tmuxHasSession(id)) {
+    if (!await tmuxHasSession(id)) {
       clearInterval(session.exitCheckTimer);
       onStreamEnd();
     }
@@ -2534,7 +2584,7 @@ app.get('/api/directories/:id/workspace', (req, res) => {
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
 // to create/reuse a named session (e.g. ephemeral gateway chats). Returns
 // { ok:true, id, session, reused? } or { ok:false, error }.
-function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!['claude', 'codex', 'opencode', 'zcode'].includes(cli)) return { ok: false, error: 'cli must be claude, codex, opencode or zcode' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -2568,11 +2618,11 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
 
   // Every session is isolated — make sure the directory is a git repo, then give the
   // session its own worktree + branch.
-  const ready = ensureDirGitReady(dir);
+  const ready = await ensureDirGitReady(dir);
   if (!ready.ok) return { ok: false, error: friendlyDirReason(ready.reason) };
   let worktreePath, branch;
   try {
-    ({ worktreePath, branch } = gitWorktreeAdd(dir.path, sid, dir.baseBranch));
+    ({ worktreePath, branch } = await gitWorktreeAdd(dir.path, sid, dir.baseBranch));
   } catch (e) {
     return { ok: false, error: 'worktree 创建失败: ' + e.message };
   }
@@ -2610,7 +2660,7 @@ function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemera
   return { ok: true, id: sid, session };
 }
 
-app.post('/api/directories/:id/sessions', (req, res) => {
+app.post('/api/directories/:id/sessions', async (req, res) => {
   const d = directories.get(req.params.id);
   if (!d) return res.status(404).json({ error: 'directory not found' });
   const cli = (req.body.cli || '').trim();
@@ -2622,7 +2672,7 @@ app.post('/api/directories/:id/sessions', (req, res) => {
   // provider: omit → inherit global default; '' → explicit no-override; id → that provider.
   const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
   const rolePrompt = (req.body.rolePrompt || '').trim() || null;
-  const r = createSessionRecord({ dir: d, cli, kind, label, model, provider, effort, agent, rolePrompt });
+  const r = await createSessionRecord({ dir: d, cli, kind, label, model, provider, effort, agent, rolePrompt });
   if (!r.ok) return res.status(400).json({ error: r.error });
   res.json(r.session);
 });
@@ -3834,7 +3884,7 @@ app.post('/api/sessions/:id/share-messages', (req, res) => {
 // memory; we therefore also copy the source session's private memory folder so the
 // forked session isn't blind to pre-window context. A `forkedFrom` meta record is
 // stamped as the first message of the new history.
-app.post('/api/sessions/:id/fork', (req, res) => {
+app.post('/api/sessions/:id/fork', async (req, res) => {
   const src = persistedSessions.get(req.params.id);
   if (!src) return res.status(404).json({ error: 'session not found' });
   if (src.type === 'aux' || src.type === 'gateway') {
@@ -3860,7 +3910,7 @@ app.post('/api/sessions/:id/fork', (req, res) => {
   // Create the forked session record, inheriting the source's CLI/provider/model/
   // effort/native-agent/rolePrompt so it continues from the same backend.
   const dir = directories.get(src.dirId);
-  const r = createSessionRecord({
+  const r = await createSessionRecord({
     dir, cli: src.cli, kind: 'chat', label: label || `${src.label || src.id} · fork`,
     provider: src.provider == null ? undefined : src.provider,
     model: src.model, effort: src.effort, agent: src.agent, rolePrompt: src.rolePrompt,
@@ -4096,7 +4146,7 @@ app.get('/api/sessions/:id/bundle', (req, res) => {
 // session to an already-configured provider on this machine, or omit to use the
 // default login. The bundle's provider env/codex files are kept in the session's
 // memory folder as `.handoff-provider.json` for reference/manual setup.
-app.post('/api/sessions/import', (req, res) => {
+app.post('/api/sessions/import', async (req, res) => {
   const b = req.body || {};
   const { salt, iv, ct, tag } = b;
   const passphrase = b.passphrase;
@@ -4122,7 +4172,7 @@ app.post('/api/sessions/import', (req, res) => {
 
   // Create the session record — this also creates a fresh empty worktree from
   // the dir's base branch. We then overlay the bundle's git content onto it.
-  const r = createSessionRecord({
+  const r = await createSessionRecord({
     dir, cli: meta.cli, kind: 'chat',
     label: labelOverride || (meta.label ? `${meta.label} · imported` : null),
     provider: targetProviderId === undefined ? undefined : (targetProviderId || ''),
@@ -4361,7 +4411,7 @@ app.get('/api/sessions/:id/diff', async (req, res) => {
   if (!persisted.worktreePath || !fs.existsSync(persisted.worktreePath)) {
     return res.status(400).json({ error: 'worktree missing' });
   }
-  const baseBranch = dir.baseBranch || gitBaseBranch(dir.path);
+  const baseBranch = dir.baseBranch || await gitBaseBranch(dir.path);
   const wt = persisted.worktreePath;
   const MAX_DIFF = 1024 * 1024;   // 1 MiB cap; keep UI snappy
   let diff = '', stat = '', truncated = false, error = null;
@@ -4431,51 +4481,37 @@ app.get('/api/git/log', async (req, res) => {
   }
 });
 
-app.delete('/api/sessions/:id', (req, res) => {
+app.delete('/api/sessions/:id', async (req, res) => {
   const id = req.params.id;
   const session = sessions.get(id);
   const chat = chatSessions.get(id);
-  if (!session && !chat && !persistedSessions.has(id)) {
+  const persisted = persistedSessions.get(id);
+  if (!session && !chat && !persisted) {
     return res.status(404).json({ error: 'Session not found' });
   }
-  if (session) {
-    tmuxKillSession(session.id);
-    if (session.exitCheckTimer) clearInterval(session.exitCheckTimer);
-    if (session.captureTimer) clearInterval(session.captureTimer);
+  const force = req.query.force === '1' || req.body?.force === true;
+  if (persisted) {
+    const dir = directories.get(persisted.dirId);
+    if (!dir) return res.status(404).json({ error: 'directory not found' });
+    const result = await destroySessionCascade(persisted, dir, { force });
+    if (!result.ok) return res.status(409).json(result);
+    appendEvent(persisted.dirId, 'session_deleted', persisted.label || persisted.id, null);
+    savePersistedSessions();
+    return res.json({ ...result, forced: force });
+  } else if (!force) {
+    return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be removed without force=1' });
+  } else {
+    if (session) await tmuxKillSession(id);
     sessions.delete(id);
-  }
-  if (chat) {
-    if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
-    chatStream.close(id);
-    if (chat._classifyTimer) clearTimeout(chat._classifyTimer);
     chatSessions.delete(id);
   }
-  waitInjector.cancelForSession(id);
-  bgCompletionCoalescer.cancel(id); // drop any completions buffered for this now-deleted session
-  share.removeForSession(id);
-  // Remove the session's git worktree + branch.
-  const persisted = persistedSessions.get(id);
-  if (persisted && persisted.worktreePath && persisted.branch) {
-    const dir = directories.get(persisted.dirId);
-    if (dir) gitWorktreeRemove(dir.path, persisted.worktreePath, persisted.branch);
-  }
-  if (persisted) appendEvent(persisted.dirId, 'session_deleted', persisted.label || persisted.id, null);
-  // Clean chat history on disk so a future session that reuses the same id
-  // won't pick up stale messages from the deleted session.
-  chatHistories.delete(id);
-  try { fs.unlinkSync(chatHistoryPath(id)); } catch (_) {}
-  teardownTriggers(id);
-  purgeNotesForSession(id);
-  persistedSessions.delete(id);
-  invalidSessions.delete(id);
-  workspaceStatus.delete(id);
   savePersistedSessions();
-  res.json({ ok: true });
+  res.json({ ok: true, forced: force });
 });
 
 // Relocate: moves a session to a different directory. Caller passes the target dirId.
 // (Old "change cwd" semantics are gone — cwd lives on the directory now.)
-app.post('/api/sessions/:id/relocate', (req, res) => {
+app.post('/api/sessions/:id/relocate', async (req, res) => {
   const id = req.params.id;
   const targetDirId = (req.body.dirId || '').trim();
   if (!targetDirId) return res.status(400).json({ error: 'dirId required (cwd is now owned by the directory)' });
@@ -4483,33 +4519,46 @@ app.post('/api/sessions/:id/relocate', (req, res) => {
   if (!targetDir) return res.status(404).json({ error: 'target directory not found' });
   const persisted = persistedSessions.get(id);
   if (!persisted) return res.status(404).json({ error: 'session not found' });
+  if (persisted.dirId === targetDirId) return res.json({ ok: true, unchanged: true, cwd: targetDir.path });
   if (!fs.existsSync(targetDir.path)) return res.status(400).json({ error: `directory path missing on disk: ${targetDir.path}` });
+  const force = req.query.force === '1' || req.body.force === true;
+  const activeTerminal = sessions.get(id);
+  const activeChat = chatSessions.get(id);
+  const active = !!activeTerminal || !!(activeChat && (activeChat.claudeProc || activeChat.isStreaming || activeChat.clients?.size));
+  if (active && !force) {
+    return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be relocated' });
+  }
 
   // The session's worktree belongs to the OLD directory's repo — relocate means
   // a fresh worktree in the target directory.
   const oldDir = directories.get(persisted.dirId);
-  const readyTarget = ensureDirGitReady(targetDir);
+  const readyTarget = await ensureDirGitReady(targetDir);
   if (!readyTarget.ok) {
     return res.status(400).json({ error: `目标目录 git 未就绪: ${readyTarget.reason}` });
   }
 
   const oldSession = sessions.get(id);
-  if (oldSession) {
-    broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
-    sessions.delete(id);
-    tmuxKillSession(oldSession.id);
-  }
+  const relocated = await gitRelocateWorktree(oldDir, targetDir, persisted, {
+    force, active,
+    activeCheck: force ? null : () => sessionWorktreeActive(id),
+    beforeRemove: async () => {
+      if (oldSession) {
+        broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
+        await stopOutputCapture(oldSession);
+        await tmuxKillSession(oldSession.id);
+        sessions.delete(id);
+      }
+      if (activeChat && force) {
+        if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
+        chatStream.close(id);
+        chatSessions.delete(id);
+      }
+    },
+  });
+  if (!relocated.ok) return res.status(relocated.blocked ? 409 : 500).json(relocated);
 
-  if (oldDir && persisted.worktreePath && persisted.branch) {
-    gitWorktreeRemove(oldDir.path, persisted.worktreePath, persisted.branch);
-  }
-  try {
-    const { worktreePath, branch } = gitWorktreeAdd(targetDir.path, id, targetDir.baseBranch);
-    persisted.worktreePath = worktreePath;
-    persisted.branch = branch;
-  } catch (e) {
-    return res.status(500).json({ error: 'worktree 创建失败: ' + e.message });
-  }
+  persisted.worktreePath = relocated.worktreePath;
+  persisted.branch = relocated.branch;
 
   persisted.dirId = targetDirId;
   // Clear cliSessionId so the new instance starts fresh in the new directory
@@ -4519,16 +4568,19 @@ app.post('/api/sessions/:id/relocate', (req, res) => {
 
   if (persisted.kind === 'terminal') {
     try {
-      createSession(id);
+      await createSession(id);
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
   }
-  res.json({ ok: true, cwd: targetDir.path });
+  res.json({ ok: true, cwd: targetDir.path, forced: force,
+    operationId: relocated.operationId,
+    queueDepth: relocated.queueDepth,
+    backup: relocated.backup || null });
 });
 
 // ── Restart session (kill tmux + respawn CLI in same directory, fresh conversation) ──
-app.post('/api/sessions/:id/restart', (req, res) => {
+app.post('/api/sessions/:id/restart', async (req, res) => {
   const id = req.params.id;
   const oldSession = sessions.get(id);
   const persisted = persistedSessions.get(id);
@@ -4542,13 +4594,13 @@ app.post('/api/sessions/:id/restart', (req, res) => {
 
   sessions.delete(id);
   if (oldSession) {
-    stopOutputCapture(oldSession);
+    await stopOutputCapture(oldSession);
     if (oldSession.exitCheckTimer) clearInterval(oldSession.exitCheckTimer);
     if (oldSession.captureTimer) clearInterval(oldSession.captureTimer);
     cleanupPushMonitor(id);
     oldSession.clients.clear();
   }
-  tmuxKillSession(id);
+  await tmuxKillSession(id);
 
   // Clear cliSessionId so a brand-new conversation starts (claude allocates a fresh UUID,
   // codex generates a fresh thread on first turn). The worktree is kept across restarts;
@@ -4557,10 +4609,10 @@ app.post('/api/sessions/:id/restart', (req, res) => {
     persisted.cliSessionId = null;
     const dir = directories.get(persisted.dirId);
     if (dir && (!persisted.worktreePath || !fs.existsSync(persisted.worktreePath))) {
-      const ready = ensureDirGitReady(dir);
+      const ready = await ensureDirGitReady(dir);
       if (ready.ok) {
         try {
-          const { worktreePath, branch } = gitWorktreeAdd(dir.path, id, dir.baseBranch);
+          const { worktreePath, branch } = await gitWorktreeAdd(dir.path, id, dir.baseBranch);
           persisted.worktreePath = worktreePath;
           persisted.branch = branch;
         } catch (e) {
@@ -4572,7 +4624,7 @@ app.post('/api/sessions/:id/restart', (req, res) => {
   }
 
   try {
-    createSession(id);
+    await createSession(id);
     console.log(`[multicc] Session ${id} restarted in ${cwd}`);
     broadcastTo(oldClients, { type: 'restart' });
     res.json({ ok: true, cwd });
@@ -4622,7 +4674,7 @@ app.post('/api/restart', (req, res) => {
 });
 
 // ── Merge a session's worktree branch back into the directory's base branch ──
-app.post('/api/sessions/:id/merge', (req, res) => {
+app.post('/api/sessions/:id/merge', async (req, res) => {
   const id = req.params.id;
   const persisted = persistedSessions.get(id);
   if (!persisted) return res.status(404).json({ error: 'session not found' });
@@ -4632,7 +4684,7 @@ app.post('/api/sessions/:id/merge', (req, res) => {
   const dir = directories.get(persisted.dirId);
   if (!dir) return res.status(404).json({ error: 'directory not found' });
 
-  const result = gitMergeBack(dir, persisted);
+  const result = await gitMergeBack(dir, persisted);
   if (!result.ok) {
     // conflict → 409 with file list; other failures → 400
     return res.status(result.conflicts?.length ? 409 : 400).json(result);
@@ -4641,7 +4693,7 @@ app.post('/api/sessions/:id/merge', (req, res) => {
     (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
   appendEvent(dir.id, 'merged',
     result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', id);
-  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: mergeStateFresh(dir, persisted) });
+  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
 
   // When this merge actually advanced the base branch, every OTHER worktree in
   // the same directory is now behind base. Auto-sync them so siblings don't have
@@ -4649,7 +4701,7 @@ app.post('/api/sessions/:id/merge', (req, res) => {
   // Best-effort & non-blocking: each sync is independent; conflicts are skipped
   // and surfaced via the workspace event log rather than failing this response.
   if (result.merged) {
-    const synced = autoSyncSiblingWorktrees(dir, id);
+    const synced = await autoSyncSiblingWorktrees(dir, id);
     if (synced.length) result.siblingsSynced = synced;
   }
   res.json(result);
@@ -4658,25 +4710,50 @@ app.post('/api/sessions/:id/merge', (req, res) => {
 // Pull the (just-advanced) base branch into every sibling worktree in `dir`
 // except `exceptId`. Returns a summary array; broadcasts per-session merge state
 // and a directory event. Conflicts are reported, not merged.
-function autoSyncSiblingWorktrees(dir, exceptId) {
+function sessionWorktreeActive(id) {
+  if (sessions.has(id)) return true;
+  const chat = chatSessions.get(id);
+  return !!(chat && (chat.claudeProc || chat.isStreaming || chat.clients?.size));
+}
+
+async function autoSyncSiblingWorktrees(dir, exceptId) {
   const out = [];
   for (const s of persistedSessions.values()) {
     if (s.id === exceptId) continue;
     if (s.dirId !== dir.id) continue;
     if (!s.worktreePath || !s.branch) continue;
     try {
+      if (sessionWorktreeActive(s.id)) {
+        out.push({ id: s.id, skipped: true, reason: 'active' });
+        appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：会话仍 active', s.id);
+        continue;
+      }
+      const state = await gitWorktreeMergeState(dir, s);
+      if (state.dirty) {
+        out.push({ id: s.id, skipped: true, reason: 'dirty' });
+        appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：worktree 有未提交改动', s.id);
+        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: state });
+        continue;
+      }
+      if (state.ahead > 0) {
+        out.push({ id: s.id, skipped: true, reason: 'unmerged' });
+        appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：worktree 有尚未合回主分支的提交', s.id);
+        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: state });
+        continue;
+      }
       // Automatic sync: abort on conflict so an unattended sibling session is
       // never left parked mid-rebase. The conflict still surfaces via merge
       // state (conflict badge) so the user can sync manually and resolve it.
-      const r = gitSyncFromBase(dir, s, { abortOnConflict: true });
+      const r = await gitSyncFromBase(dir, s, { abortOnConflict: true,
+        activeCheck: () => sessionWorktreeActive(s.id) });
       if (r.ok && r.merged) {
         out.push({ id: s.id, commits: r.commits });
         appendEvent(dir.id, 'synced', `自动同步 ${r.commits} 个提交（${dir.baseBranch} 合并后）`, s.id);
-        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: mergeStateFresh(dir, s) });
+        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: await mergeStateFresh(dir, s) });
       } else if (!r.ok && r.conflicts?.length) {
         out.push({ id: s.id, conflict: true, files: r.conflicts });
         appendEvent(dir.id, 'sync_conflict', `自动同步遇冲突，需手动处理：${r.conflicts.slice(0, 5).join(', ')}`, s.id);
-        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: mergeStateFresh(dir, s) });
+        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: await mergeStateFresh(dir, s) });
       }
     } catch (e) {
       console.warn(`[multicc] auto-sync sibling ${s.id} failed: ${e.message}`);
@@ -4690,7 +4767,7 @@ function autoSyncSiblingWorktrees(dir, exceptId) {
 
 // Sync: pull the base branch INTO this session's worktree (catch a stale
 // worktree up to main). Inverse direction of /merge.
-app.post('/api/sessions/:id/sync', (req, res) => {
+app.post('/api/sessions/:id/sync', async (req, res) => {
   const id = req.params.id;
   const persisted = persistedSessions.get(id);
   if (!persisted) return res.status(404).json({ error: 'session not found' });
@@ -4700,7 +4777,12 @@ app.post('/api/sessions/:id/sync', (req, res) => {
   const dir = directories.get(persisted.dirId);
   if (!dir) return res.status(404).json({ error: 'directory not found' });
 
-  const result = gitSyncFromBase(dir, persisted);
+  const force = req.query.force === '1' || req.body?.force === true;
+  const result = await gitSyncFromBase(dir, persisted, {
+    force,
+    activeCheck: force ? null : () => sessionWorktreeActive(id),
+  }).catch(error => ({ ok: false, blocked: true, reasons: [error.code === 'SESSION_ACTIVE' ? 'active' : 'leased'],
+    operationId: error.operationId, queueDepth: error.queueDepth, error: error.message }));
   if (!result.ok) {
     // A conflict leaves the worktree parked mid-rebase; broadcast the merge
     // state so the conflict badge shows up persistently on the card + chat,
@@ -4708,7 +4790,7 @@ app.post('/api/sessions/:id/sync', (req, res) => {
     if (result.conflicts?.length) {
       appendEvent(dir.id, 'sync_conflict',
         `同步 rebase 冲突，需手动解决：${result.conflicts.slice(0, 5).join(', ')}`, id);
-      workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: mergeStateFresh(dir, persisted) });
+      workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
     }
     return res.status(result.conflicts?.length ? 409 : 400).json(result);
   }
@@ -4716,13 +4798,13 @@ app.post('/api/sessions/:id/sync', (req, res) => {
     (result.merged ? `${result.commits} commit(s)` : 'already up to date'));
   appendEvent(dir.id, 'synced',
     result.merged ? `从 ${result.baseBranch} 同步 ${result.commits} 个提交` : '已是最新', id);
-  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: mergeStateFresh(dir, persisted) });
+  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
   res.json(result);
 });
 
 // Resolve a parked rebase (created by a conflicting sync): continue after the
 // user staged their fixes in the worktree, or abort to roll back. Body: { action }.
-app.post('/api/sessions/:id/rebase', (req, res) => {
+app.post('/api/sessions/:id/rebase', async (req, res) => {
   const id = req.params.id;
   const persisted = persistedSessions.get(id);
   if (!persisted) return res.status(404).json({ error: 'session not found' });
@@ -4733,10 +4815,14 @@ app.post('/api/sessions/:id/rebase', (req, res) => {
   if (!dir) return res.status(404).json({ error: 'directory not found' });
 
   const action = (req.body && req.body.action) === 'abort' ? 'abort' : 'continue';
-  const result = gitRebaseResolve(dir, persisted, action);
+  const force = req.query.force === '1' || req.body?.force === true;
+  const result = await gitRebaseResolve(dir, persisted, action, {
+    activeCheck: force ? null : () => sessionWorktreeActive(id),
+  }).catch(error => ({ ok: false, blocked: true, reasons: [error.code === 'SESSION_ACTIVE' ? 'active' : 'leased'],
+    operationId: error.operationId, queueDepth: error.queueDepth, error: error.message }));
   // Always re-broadcast: success clears the badge, partial-continue updates the
   // remaining conflict list, abort returns the worktree to a clean state.
-  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: mergeStateFresh(dir, persisted) });
+  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
   if (!result.ok) {
     return res.status(result.conflicts?.length ? 409 : 400).json(result);
   }
@@ -10903,7 +10989,7 @@ function handleChatWs(ws, req, urlObj) {
 }
 
 // ── WebSocket connections ──
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   const urlObj = new URL(req.url, 'http://localhost');
 
   // Share-scoped chat WS: a valid share token for the requested session grants
@@ -10996,7 +11082,7 @@ wss.on('connection', (ws, req) => {
     }
     console.log(`[multicc] Spawning terminal session ${sessionId}`);
     try {
-      session = createSession(sessionId);
+      session = await createSession(sessionId);
     } catch (err) {
       const cliLabel = (persisted.cli === 'codex') ? 'codex' : 'claude';
       const msg = `Failed to launch ${cliLabel}: ${err.message}\r\n` +
@@ -11121,8 +11207,10 @@ const wsPingInterval = setInterval(() => {
 wss.on('close', () => clearInterval(wsPingInterval));
 
 // Build worktrees for any session that lacks one, then recover tmux sessions.
-initWorktrees();
-recoverTmuxSessions();
+// Both paths are asynchronous so startup never blocks the event loop on git/tmux.
+const startupRepoReady = initWorktrees()
+  .then(() => recoverTmuxSessions())
+  .catch(error => console.error('[multicc] async repo/tmux startup failed:', error.message));
 
 // Initialize AuxQueue (loads history, registers __aux__ session)
 auxQueue.init();
@@ -11684,6 +11772,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 app.use(safeErrorHandler(console));
 
 (async () => {
+  // Do not accept API/WS traffic until legacy worktrees are migrated and tmux
+  // recovery has completed. The work itself is asynchronous, so this gates
+  // readiness without blocking timers or other event-loop work.
+  await startupRepoReady;
   try {
     PORT = await findAvailablePort(PORT);
   } catch (err) {
