@@ -19,7 +19,10 @@ function assertPort(portName, impl, methods) {
 }
 
 // Registry of directory records, persisted to directories.json.
-const REPOSITORY_PORT = ['get', 'list', 'add', 'remove', 'findByPath', 'save', 'map'];
+// `snapshot()` returns the raw payload array — used by cross-file transactions
+// (see src/state-tx.js) so directories.json and sessions.json land in a
+// single journal entry rather than as two independent atomic writes.
+const REPOSITORY_PORT = ['get', 'list', 'add', 'remove', 'findByPath', 'save', 'map', 'snapshot'];
 
 // Git effects on a directory's main working tree (push state, quick-commit,
 // repo-readiness). Backed by plugins/utils/git-push + src/git-queue + the
@@ -30,7 +33,9 @@ const GIT_PORT = ['baseBranch', 'pushState', 'push', 'invalidatePushCache',
 // Session lifecycle owned by the session domain: enumerate a directory's
 // sessions, seed the default Agent Commander chat, tear a session down
 // (tmux/chat proc/worktree/triggers/notes/records) when its directory dies.
-const SESSION_PORT = ['listByDir', 'seedCommander', 'destroyCascade', 'persistRecords'];
+// `snapshotRecords()` returns the raw persisted-sessions payload — required
+// alongside the directory snapshot for cross-file delete transactions.
+const SESSION_PORT = ['listByDir', 'seedCommander', 'destroyCascade', 'persistRecords', 'snapshotRecords'];
 
 // Append to the per-directory event feed.
 const EVENT_PORT = ['append'];

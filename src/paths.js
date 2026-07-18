@@ -1,0 +1,117 @@
+'use strict';
+// Centralised on-disk locations for multicc state files.
+//
+// Historically every state file was `path.join(__dirname, '<name>.json')`,
+// which conflates two independent concerns:
+//   (a) where multicc's binaries/source live (fixed by the checkout), and
+//   (b) where multicc's *state* lives (should be swappable per environment,
+//       especially for tests — the whole reason we exist as a module).
+//
+// This file adds a single knob — MULTICC_DATA_DIR — that controls (b).
+// Default is `__dirname` of the package root, so existing installs migrate
+// implicitly: same directory, same files, no user-visible change.
+//
+// Every test that mutates persistent state MUST use `paths.assertTestDir()` to
+// guard the data dir. The check refuses the package root, $HOME, or anything at
+// or above $HOME — the same rules directory registration uses. Nothing in the
+// production paths calls the guard; it exists purely so a bug in a test can't
+// silently wipe a developer's real state files.
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const PKG_ROOT = path.resolve(__dirname, '..');
+
+// realpath-ify without throwing for missing paths (mirrors src/directories.js).
+function realPathOf(p) {
+  try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); }
+}
+
+// True if `p` resolves to $HOME, an ancestor of $HOME, or the filesystem root.
+function isHomeOrAbove(p) {
+  const rp = realPathOf(p);
+  const rh = realPathOf(os.homedir());
+  if (rp === rh) return true;
+  if (rh === rp || rh.startsWith(rp + path.sep)) return true;
+  if (rp === path.parse(rp).root) return true;
+  return false;
+}
+
+// Return the effective data directory for this process.
+//
+// Precedence:
+//   1. explicit `override` parameter (createApp injects one for tests),
+//   2. process.env.MULTICC_DATA_DIR,
+//   3. package root (backwards-compatible default).
+//
+// The directory is created lazily if needed. The default (package root) is left
+// alone — it's already there.
+function resolveDataDir(override) {
+  const raw = (override || process.env.MULTICC_DATA_DIR || '').trim();
+  if (!raw) return PKG_ROOT;
+  const abs = path.isAbsolute(raw) ? raw : path.resolve(PKG_ROOT, raw);
+  try { fs.mkdirSync(abs, { recursive: true }); }
+  catch (e) { throw new Error(`[multicc/paths] cannot create MULTICC_DATA_DIR ${abs}: ${e.message}`); }
+  return abs;
+}
+
+// Build a namespaced set of file locations off a data dir. Kept as a factory so
+// tests can construct a `paths` object once per temp dir and pass it around.
+function createPaths({ dataDir } = {}) {
+  const root = resolveDataDir(dataDir);
+  return {
+    root,
+    pkgRoot: PKG_ROOT,
+    sessionsFile: path.join(root, 'sessions.json'),
+    directoriesFile: path.join(root, 'directories.json'),
+    // Journal directory for cross-file transactions. .journal/ under the same
+    // dir as the state files so a stale journal is trivially discoverable.
+    journalDir: path.join(root, '.journal'),
+    chatHistoryDir: path.join(root, 'chat_history'),
+    eventsDir: path.join(root, 'events'),
+    // Meta files still owned by server.js modules — export the paths so future
+    // consolidation can move them onto the store without another rename.
+    notesFile: path.join(root, 'notes.json'),
+    tokenUsageFile: path.join(root, 'token_usage.json'),
+    tokenDailyFile: path.join(root, 'token_daily.json'),
+    tokenByRoleFile: path.join(root, 'token_by_role.json'),
+    auxConfigFile: path.join(root, 'aux-config.json'),
+    goalConfigFile: path.join(root, 'goal-config.json'),
+    providerDefaultsFile: path.join(root, 'provider-defaults.json'),
+  };
+}
+
+// Refuse to run destructive test code against a data dir that isn't clearly
+// disposable. Throws (rather than returning false) because a wrong answer here
+// eats real user state — hard failure is the right blast radius.
+function assertTestDir(dir) {
+  if (typeof dir !== 'string' || !dir) {
+    throw new Error('[multicc/paths] assertTestDir: dir must be a non-empty string');
+  }
+  const abs = path.resolve(dir);
+  const rp = realPathOf(abs);
+  if (isHomeOrAbove(rp)) {
+    throw new Error(`[multicc/paths] refusing to use ${rp} as test data dir (is $HOME or above)`);
+  }
+  const pkgRp = realPathOf(PKG_ROOT);
+  if (rp === pkgRp) {
+    throw new Error(`[multicc/paths] refusing to use the package root (${rp}) as a test data dir`);
+  }
+  // Repo root check — walk up looking for the outermost .git; refuse anything
+  // that isn't strictly inside an OS tmpdir. Cheap and paranoid.
+  const tmp = realPathOf(os.tmpdir());
+  if (!(rp === tmp || rp.startsWith(tmp + path.sep))) {
+    throw new Error(`[multicc/paths] refusing test data dir ${rp}: not under os.tmpdir() (${tmp}); use fs.mkdtemp`);
+  }
+  return abs;
+}
+
+module.exports = {
+  createPaths,
+  resolveDataDir,
+  assertTestDir,
+  isHomeOrAbove,
+  realPathOf,
+  PKG_ROOT,
+};
