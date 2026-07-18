@@ -280,3 +280,19 @@
 2. 用 orchestration outbox receipt 接 `reservePostTurn/deliverPostTurn`，在此之前继续明确 dispatch `deliveryProven:false`。
 3. 按 scan 模板迁移 read-only/低依赖路由，再逐域接 `src/http` presenter；禁止一次性搬 100+ 路由。
 4. Web 下一批拆 WS transport/history/rendering；Flutter 用共享 Dashboard Workspace store 替换每卡独立连接，再缩小 `_DirectoryCardHost`。
+
+## 大重构第七波实施结果（2026-07-18）
+
+- Chat 两类 runner 的共同收尾已经生产迁入 `src/chat/finalize-plan.js` 与 `finalize-host.js`。process close 和 streaming finalize 仍保留各自协议判断，但 assistant 持久化、authoritative usage、broadcast、分类、wait、状态和 post-turn effects 只通过一个注入式 executor 执行。
+- Finalize 使用两阶段计划：先执行 append，取得真实 durable proof 后再解析后续 effects。append 失败、stale runner、显式 kill、retry、handoff failure 均 fail-closed；dispatch 仍明确 `deliveryProven:false`，没有虚构外部 exactly-once。
+- `/api/server-info`、`/api/version-check`、`/api/apk-info` 已按 `mount(app, deps)` 模板迁入 `src/routes/system.js`，保持旧 DTO、缓存和失败降级语义。`server.js` 从本波基线约 12,760 行降至 12,532 行（-228）。
+- Web Chat 的鉴权 bootstrap、一次性 WS ticket、凭据清理、连接生命周期、指数退避、stale connect 防护与 send guard 已迁入 `public/chat-transport.js`。HTTPS 页面拒绝降级到明文 `ws:`；`chat.js` 从 4,928 行降至 4,874 行（-54）。
+- Flutter 新增 `DashboardWorkspaceStore`：每个 directory 只维护一个 `WorkspaceService`/snapshot，卡片与 fleet detail 共用不可变快照，directory 移除时统一 dispose。`main_shell.dart` 现为 2,399 行；下一阶段再把 sync side effect 从 build composition 移出。
+- 默认测试门已包含 finalize plan/host、system routes 和 chat transport。完整 `npm test`、`test:integration:isolated`、Flutter 25/25、目标 analyze 0 issue、Node/Dart 格式与语法检查均通过。
+
+### 第七波后的真实边界
+
+1. `server.js` 仍有约 12.5k 行；下一批只迁低依赖 read-only 路由和 runner spawn/protocol glue，不能把 Claude stream 与 Codex process 强行合并。
+2. Chat finalize 已统一 effect execution，但外部 dispatch durable receipt 尚未接 proof-aware outbox adapter；在接入前继续报告 at-least-once/未证明交付。
+3. Web 下一批应拆 history/rendering state；Flutter 下一批应把 Workspace store 的同步触发移出 `build()`，并把 Flutter 端旧 WS token query 迁为短期 ticket。
+4. `src/http` 仍只在少数领域生产接线；后续按 route group 小批迁移，不做一次性全入口替换。

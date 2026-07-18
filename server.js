@@ -119,6 +119,7 @@ const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
+const { mountSystemRoutes } = require('./src/routes/system');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -141,6 +142,8 @@ const {
   recordResultEvent,
   recordPartialCheckpoint,
   hasMatchingPartialCheckpoint,
+  planTurnFinalization,
+  createTurnFinalizationExecutor,
 } = require('./src/chat');
 const {
   createErrorDto,
@@ -5805,21 +5808,17 @@ const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const share = require('./src/share');
 
-// ── Server Info (LAN IP for QR code) ──
-app.get('/api/server-info', (req, res) => {
-  const nets = os.networkInterfaces();
-  let ip = '127.0.0.1';
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
-        ip = net.address;
-        break;
-      }
-    }
-    if (ip !== '127.0.0.1') break;
-  }
-  const url = `http://${ip}:${PORT}`;
-  res.json({ ip, port: PORT, proto: 'http', url, authRequired: !!ACCESS_TOKEN });
+// Read-only host/install metadata lives behind a narrow route boundary. PORT is
+// read lazily because development mode may select a fallback port at startup.
+mountSystemRoutes(app, {
+  fs,
+  path,
+  https,
+  rootDir: __dirname,
+  networkInterfaces: () => os.networkInterfaces(),
+  getPort: () => PORT,
+  authRequired: () => ACCESS_TOKEN,
+  gitRun,
 });
 
 // Push API endpoints
@@ -6882,91 +6881,6 @@ app.get('/api/providers/stats', (req, res) => {
   }
 });
 
-// Version check — query GitHub Releases API for the latest stable tag and
-// compare it with the locally installed version (package.json).  Called by the
-// manage UI sidebar; also usable by the multicc update script.
-app.get('/api/version-check', async (req, res) => {
-  try {
-    const pkg = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'package.json'), 'utf8'));
-    const current = pkg.version || '0.0.0';
-
-    // Read the channel from .multicc_channel (written by install.sh).
-    let channel = 'dev';
-    try {
-      const ch = require('fs').readFileSync(require('path').join(__dirname, '.multicc_channel'), 'utf8');
-      const m = ch.match(/^# channel:\s*(\S+)/m);
-      if (m) channel = m[1];
-    } catch (_) { /* file may not exist (pre-channel installs) */ }
-
-    let latest = null;
-    let latestVersion = null;
-    let apiError = false;
-
-    // 1) Try the GitHub Releases API (15s timeout, no auth needed for public repos).
-    try {
-      const https = require('https');
-      const apiResp = await new Promise((resolve, reject) => {
-        const r = https.get(
-          'https://api.github.com/repos/lsjwzh/MultiCC/releases/latest',
-          { headers: { 'User-Agent': 'multicc-version-check/1.0', 'Accept': 'application/vnd.github+json' }, timeout: 15000 },
-          (resp) => {
-            let body = '';
-            resp.on('data', d => body += d);
-            resp.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-          }
-        );
-        r.on('timeout', () => { r.destroy(); reject(new Error('timeout')); });
-        r.on('error', reject);
-      });
-      latest = apiResp.tag_name || null;
-      if (latest) latestVersion = latest.replace(/^v/, '');
-    } catch (_) { apiError = true; }
-
-    // 2) Fallback: use git ls-remote to get the latest semver tag.
-    if (!latest) {
-      try {
-        const remoteTags = await gitRun(__dirname, [
-          'ls-remote', '--tags', 'https://github.com/lsjwzh/MultiCC.git', 'refs/tags/v*',
-        ], { timeout: 15000, kind: 'version-check' });
-        const tags = [...new Set(remoteTags
-          .split('\n')
-          .filter(Boolean)
-          .map(l => l.match(/refs\/tags\/(v\d+\.\d+\.\d+)/))
-          .filter(Boolean)
-          .map(m => m[1]))];
-        if (tags.length) {
-          const sorted = tags.sort((a, b) => compareSemver(a.replace(/^v/, ''), b.replace(/^v/, '')));
-          latest = sorted[sorted.length - 1];
-          latestVersion = latest.replace(/^v/, '');
-        }
-      } catch (_) { /* all paths failed */ }
-    }
-
-    const updateAvailable = latestVersion ? (compareSemver(current, latestVersion) < 0) : false;
-
-    res.json({
-      current,
-      channel,
-      latest: latest || null,
-      latestVersion: latestVersion || null,
-      updateAvailable,
-      apiError
-    });
-  } catch (e) {
-    res.json({ current: '0.0.0', channel: 'dev', latest: null, latestVersion: null, updateAvailable: false, apiError: true });
-  }
-});
-
-// Simple semver comparator (returns <0 if a < b, 0 if equal, >0 if a > b).
-function compareSemver(a, b) {
-  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const na = pa[i] || 0, nb = pb[i] || 0;
-    if (na !== nb) return na - nb;
-  }
-  return 0;
-}
-
 // Global Claude Code token usage, read from the claude CLI transcripts under
 // ~/.claude/projects (ground truth, covers ALL usage — not just multicc turns).
 // Independent of the per-provider stats above; grouped by model + day. Cached
@@ -7234,25 +7148,6 @@ app.get('/', (req, res, next) => {
   }
   if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
   res.redirect('/manage');
-});
-
-// APK info endpoint — returns file modification time
-app.get('/api/apk-info', (req, res) => {
-  const apkPath = path.join(__dirname, 'public', 'multicc.apk');
-  try {
-    const stat = fs.statSync(apkPath);
-    const info = { exists: true, mtime: stat.mtime.toISOString(), size: stat.size };
-    // Optional version sidecar written by scripts/publish-apk.sh — lets the
-    // updater show the real version instead of a generic "new version".
-    try {
-      const meta = JSON.parse(fs.readFileSync(apkPath + '.json', 'utf8'));
-      if (meta.versionName) info.versionName = meta.versionName;
-      if (meta.versionCode) info.versionCode = meta.versionCode;
-    } catch (_) {}
-    res.json(info);
-  } catch {
-    res.json({ exists: false });
-  }
 });
 
 // Temp artifacts produced by the multicc-artifact skill (served from
@@ -10705,16 +10600,36 @@ function runChatTurn(sessionName, text, opts = {}) {
       else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
       else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
       console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
-      if (
-        cs.cli === 'codex' &&
-        pendingStreamError &&
-        hasTurnOutput &&
-        !turn.resultDurable &&
-        !killReason &&
-        persisted.cliSessionId &&
-        (cs._codexStreamContinuationCount || 0) < CODEX_STREAM_DISCONNECT_CONTINUE_MAX
-      ) {
-        cs._codexStreamContinuationCount = (cs._codexStreamContinuationCount || 0) + 1;
+      const closeCheckpointKey = assistantCheckpointKey(cs);
+      const finalizePlan = planTurnFinalization({
+        current: true,
+        runnerKind: 'process',
+        cli: cs.cli,
+        code,
+        signal,
+        killReason,
+        apiError: !!runner.sawApiError,
+        adapterError: !!runner.adapterError,
+        retryBlockedByAdapterError: !!cs._adapterError,
+        retryPlanned: !!runner.retryPlanned,
+        resultEvent: !!runner.resultEvent,
+        resultDurable: !!turn.resultDurable,
+        hasOutput: hasTurnOutput,
+        sameDurablePartial: hasMatchingPartialCheckpoint(runner, closeCheckpointKey),
+        isRetry: !!isRetry,
+        recoveredTransport: recoveredCodexDisconnect,
+        pendingStreamError,
+        nativeSession: !!persisted.cliSessionId,
+        codexDisconnectAttempt: cs._codexStreamContinuationCount || 0,
+        freshStartAttempt: isRetry ? 1 : 0,
+        handoff: persisted.pendingCliHandoff,
+        auxUnhealthy: auxQueue.isUnhealthy(),
+      }, {
+        retry: { limits: { codexDisconnect: CODEX_STREAM_DISCONNECT_CONTINUE_MAX } },
+      });
+
+      if (finalizePlan.action === 'continue-codex') {
+        cs._codexStreamContinuationCount = finalizePlan.retry.attempt;
         cs._codexRecoveredDisconnect = false;
         cs._codexPendingStreamError = '';
         cs._codexPendingStreamErrorCount = 0;
@@ -10733,38 +10648,8 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.claudeProc = spawnChat(continueArgs, true);
         return;
       }
-      cs.isStreaming = false;
-      cs.streamReplay = [];
 
-      // A cross-CLI switch that restored a previous target-native session must
-      // fail closed if resume produces no output. Silently starting a fresh
-      // thread would erase target-side context while making the UI look
-      // continuous. The user can explicitly retry the switch with fresh:true;
-      // the pending checkpoint is retained until a successful target result.
-      const guardedHandoffResumeFailure = !!(
-        !isRetry
-        && persisted.pendingCliHandoff
-        && persisted.pendingCliHandoff.status === 'pending'
-        && persisted.pendingCliHandoff.reusedTarget
-        && persisted.pendingCliHandoff.toCli === cs.cli
-        && !cs.currentAssistantText
-        && !cs.currentToolCalls.length
-        && !killReason
-        && !cs._adapterError
-      );
-      if (guardedHandoffResumeFailure) {
-        cs._adapterError = 'cross-cli target resume failed';
-        chatBroadcast(sessionName, {
-          type: 'error',
-          error: `目标 ${cs.cli} 原生会话恢复失败；未自动创建新会话。请重新切换并选择“重置目标 CLI 会话”。`,
-        });
-      }
-
-      // If spawn yielded no assistant text and it's not a user-initiated kill, retry
-      // once with a fresh session id (covers resume-failed / session-id conflict cases).
-      // A reported adapter error is a real provider failure, not a
-      // resume glitch — retrying would just hit the same wall, so skip it.
-      if (!guardedHandoffResumeFailure && !isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length && !killReason && !cs._adapterError) {
+      if (finalizePlan.action === 'retry-fresh') {
         const stderrTail = stderrBuf.slice(-300).trim();
         const reason = pendingTransportError ? 'codex transport disconnected'
           : stderrTail.includes('already in use') ? 'session-id conflict'
@@ -10791,100 +10676,13 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.claudeProc = spawnChat(fallbackArgs, true);
         return;
       }
-
-      if (isRetry && !cs.currentAssistantText && !cs.currentToolCalls.length) {
-        const stderrTail = stderrBuf.slice(-300).trim();
-        chatBroadcast(sessionName, {
-          type: 'error',
-          error: pendingTransportError
-            ? `Codex 出错：${pendingTransportError}`
-            : stderrTail ? `${cs.cli} 无响应：${stderrTail}` : `${cs.cli} 无响应（exit ${code}${signal ? '/' + signal : ''}）`,
-        });
-      }
-
-      cs.claudeProc = null;
-
-      // Clear any pending incremental save timer — the full message is saved below.
-      const incrTimer = _incrSaveTimers.get(sessionName);
-      if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
-
-      let savedInClose = false;
-      const sawApi = !!runner.sawApiError;
-      const hadAdapterError = !!runner.adapterError && !recoveredCodexDisconnect;
-      const closeCanBeFinal = !!(
-        !killReason && !sawApi && !hadAdapterError && !runner.retryPlanned
-        && (runner.resultEvent || (kind === 'normal' && !isRetry))
-      );
-      const closeCheckpointKey = assistantCheckpointKey(cs);
-      const sameDurablePartial = hasMatchingPartialCheckpoint(runner, closeCheckpointKey);
-      if (!turn.resultDurable && (cs.currentAssistantText || cs.currentToolCalls.length)
-          && (runner.resultEvent || !sameDurablePartial)) {
-        savedInClose = persistFinalAssistantResult(sessionName, cs, turn, runner, {
-          role: 'assistant', content: cs.currentAssistantText,
-          tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-          cost: cs.currentCost, ts: Date.now(),
-          ...(!closeCanBeFinal ? { partial: true } : {}),
-        }, { final: closeCanBeFinal });
-        if (savedInClose) {
-          recordDurableTurnUsage(sessionName, runner, runner.pendingUsage);
-          cs.chatTurnCount++;
-        }
-      }
-      if (runner.resultEvent && !turn.resultDurable) {
-        chatBroadcast(sessionName, {
-          type: 'error',
-          error: '回复已生成但未能持久化，已停止回流和后续动作。',
-        });
-      }
-      if (recoveredCodexDisconnect && (savedInClose || turn.resultDurable)) {
-        chatBroadcast(sessionName, {
-          type: 'result',
-          total_cost_usd: null,
-          usage: {},
-          durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
-          num_turns: cs.chatTurnCount,
-        });
-        // intent_classify will be triggered by classifyTurnEnd below
-      }
-      const finalText = cs.currentAssistantText;
-      cs.currentAssistantText = '';
-      cs.currentToolCalls = [];
-      cs._resultSaved = false;
-      cs._adapterError = null;
-      cs._codexRecoveredDisconnect = false;
-      cs._codexPendingStreamError = '';
-      cs._codexPendingStreamErrorCount = 0;
-      cs._codexTransportError = '';
-      cs._codexStreamContinuationCount = 0;
-      // classify prompt + dispatchStateAction handles API errors via state E.
-      // Capture the flag before resetting so the branch below can reference it.
-      cs._sawApiError = false;
-
-      // Resting status — classifyTurnEnd is the single decider of D/C/W/E/P.
-      if (killReason) {
-        setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-      } else if (turn.resultDurable || sawApi || hadAdapterError || kind === 'nonzero_exit' || kind === 'signaled') {
-        classifyTurnEnd(cs, sessionName);
-        if (auxQueue.isUnhealthy()) {
-          setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-        }
-      } else {
-        setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-      }
-      chatBroadcast(sessionName, { type: 'stream_end' });
-
-      // Auto-return, gateway marker handling and post-turn triggers are all
-      // guarded by current runner ownership + a durable final result.
-      try {
-        runDurablePostTurn(sessionName, cs, persisted, turn, runner, finalText, {
-          interrupted: !!killReason || hadAdapterError || (!runner.resultEvent && kind !== 'normal'),
-          apiError: sawApi,
-          retryPlanned: runner.retryPlanned,
-          handoffResumeFailure: guardedHandoffResumeFailure,
-        });
-      } catch (e) {
-        console.error('[multicc/dispatch] post-turn hook failed:', e.message);
-      }
+      turnFinalizationExecutor.execute(finalizePlan, {
+        runnerKind: 'process', sessionName, cs, persisted, turn, runner,
+        code,
+        signal,
+        stderrTail: stderrBuf.slice(-300).trim(),
+        pendingTransportError,
+      });
     });
 
     return proc;
@@ -11325,113 +11123,87 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
   return true;
 }
 
+// The pure planner describes both runner endings; this injected host adapter is
+// the only place that maps those effects back to MultiCC runtime services.
+const turnFinalizationExecutor = createTurnFinalizationExecutor({
+  persistAssistant(context, append) {
+    return persistFinalAssistantResult(context.sessionName, context.cs, context.turn, context.runner, {
+      role: 'assistant',
+      content: context.cs.currentAssistantText,
+      tools: context.cs.currentToolCalls.length ? context.cs.currentToolCalls : undefined,
+      cost: context.cs.currentCost,
+      ts: Date.now(),
+      ...(append.partial ? { partial: true } : {}),
+    }, { final: append.final });
+  },
+  commitUsage(context) {
+    recordDurableTurnUsage(context.sessionName, context.runner, context.runner.pendingUsage);
+  },
+  broadcast: chatBroadcast,
+  cancelClassify,
+  clearIncrementalSave(sessionName) {
+    const timer = _incrSaveTimers.get(sessionName);
+    if (!timer) return;
+    clearTimeout(timer);
+    _incrSaveTimers.delete(sessionName);
+  },
+  setStatus(sessionName, status) {
+    setSessionStatus(sessionName, { status, currentFile: null });
+  },
+  classifyTurnEnd,
+  resetInterrupted: sessionName => waitInjector.resetInterrupted(sessionName),
+  resumeInterrupted: sessionName => waitInjector.resumeInterrupted(sessionName),
+  emitTurnOutcome,
+  runPostTurn(context, entry) {
+    runDurablePostTurn(
+      context.sessionName,
+      context.cs,
+      context.persisted,
+      context.turn,
+      context.runner,
+      context.finalText || '',
+      {
+        interrupted: entry.interrupted,
+        apiError: entry.apiError,
+        retryPlanned: entry.retryPlanned,
+        handoffResumeFailure: entry.handoffResumeFailure,
+      },
+    );
+  },
+  log(event, fields) {
+    if (event === 'interrupted-resume') {
+      console.log(`[multicc/chat] [${fields.sessionName}] (streaming) 非正常中断 (no result event, kill=none) → resume`);
+    }
+  },
+  logError(event, fields) {
+    if (event === 'post-turn-failed') console.error('[multicc/dispatch] post-turn hook failed:', fields.error.message);
+  },
+});
+
 // Process-independent end-of-turn cleanup for the streaming path. Guarded by
 // the turn sequence so a superseded (interrupted) turn's late completion can't
 // clobber the turn that replaced it.
 function finalizeStreamingTurn(sessionName, cs, persisted, seq, turn, runner) {
   if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
   if (!isCurrentTurnRunner(cs, turn, runner)) return;
-  cs.isStreaming = false;
-  cancelClassify(cs);
-  cs.streamReplay = [];
-  // applyClaudeChatEvent already saved on the `result` event (cs._resultSaved);
-  // this only fires for an interrupted/aborted turn that has partial output.
-  const killReason = runner.killReason || null;
-  const sawApi = !!runner.sawApiError;
-  const finalCandidate = !!(runner.resultEvent && !killReason && !sawApi && !runner.retryPlanned);
   const finalizeCheckpointKey = assistantCheckpointKey(cs);
-  const sameDurablePartial = hasMatchingPartialCheckpoint(runner, finalizeCheckpointKey);
-  if (!turn.resultDurable && (cs.currentAssistantText || cs.currentToolCalls.length)
-      && (runner.resultEvent || !sameDurablePartial)) {
-    const saved = persistFinalAssistantResult(sessionName, cs, turn, runner, {
-      role: 'assistant', content: cs.currentAssistantText,
-      tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-      cost: cs.currentCost, ts: Date.now(),
-      ...(!finalCandidate ? { partial: true } : {}),
-    }, { final: finalCandidate });
-    if (saved) {
-      recordDurableTurnUsage(sessionName, runner, runner.pendingUsage);
-      cs.chatTurnCount++;
-    }
-  }
-  const incrTimer = _incrSaveTimers.get(sessionName);
-  if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
-  const finalText = cs.currentAssistantText;
-  cs.currentAssistantText = '';
-  cs.currentToolCalls = [];
-  // A clean turn fired the `result` event (set _resultSaved); an interrupted /
-  // dropped turn lands here without it. Capture before the reset below.
-  const completedOk = turn.resultDurable;
-  cs._resultSaved = false;
-  // Why the turn ended, captured before reset: user_cancel / new_user_message are
-  // deliberate stops (never recovered); any other !completedOk end is a fault.
-  const userStopped = killReason === 'user_cancel' || killReason === 'new_user_message';
-  const handoff = persisted.pendingCliHandoff;
-  const guardedHandoffResumeFailure = !!(
-    !completedOk
-    && !userStopped
-    && handoff
-    && handoff.status === 'pending'
-    && handoff.reusedTarget
-    && handoff.toCli === persisted.cli
-  );
-  // classify prompt + dispatchStateAction handles API errors via state E → retry.
-  cs._sawApiError = false;
-  // Let classify decide the final status. If sawApi, always defer to classify.
-  // classify; otherwise emit the obvious outcome.
-  if (guardedHandoffResumeFailure) {
-    waitInjector.resetInterrupted(sessionName);
-    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-    chatBroadcast(sessionName, {
-      type: 'error',
-      error: '目标 Claude 原生会话恢复异常；未自动新建或重试。请重新切换并选择“重置目标 CLI 会话”。',
-    });
-  } else if (sawApi) {
-    classifyTurnEnd(cs, sessionName);
-  } else if (completedOk) {
-    // Clean end: the turn fired its `result` event — whether the task is done or
-    // the assistant paused to ask the user. Never auto-recovered. Clear the
-    // interrupt-resume counter so a past fault doesn't leak into the next turn.
-    waitInjector.resetInterrupted(sessionName);
-    classifyTurnEnd(cs, sessionName);
-    emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
-  } else if (runner.resultEvent) {
-    // The provider finished, but neither the result handler nor this finalize
-    // retry could commit the final assistant message. Do not ask the provider
-    // to generate it again and do not run post-turn effects; retain lineage so
-    // a later explicit recovery can complete safely.
-    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-    chatBroadcast(sessionName, {
-      type: 'error',
-      error: '回复已生成但未能持久化，已停止回流和后续动作。',
-    });
-  } else {
-    // 非正常中断: the stream ended WITHOUT a `result` event and WITHOUT an API error
-    // — the turn was cut (proc/stream died, connection dropped, truncated, watchdog
-    // kill, restart mid-turn). Absence of the `result` event is the DETERMINISTIC
-    // interrupt fingerprint — no LLM guess. Auto-recover it (the only non-fault case
-    // we recover) unless the user stopped it themselves. resumeInterrupted is
-    // hasWait-guarded + capped (MAX_RESUME_INTERRUPTED) against a drop-loop.
-    if (!killReason && waitInjector.resumeInterrupted(sessionName)) {
-      console.log(`[multicc/chat] [${sessionName}] (streaming) 非正常中断 (no result event, kill=${killReason || 'none'}) → resume`);
-    } else {
-      setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-    }
-  }
-  chatBroadcast(sessionName, { type: 'stream_end' });
-
-  // Gateway/dispatch回流 and trigger execution require the same durable/current
-  // proof as the per-process close path.
-  try {
-    runDurablePostTurn(sessionName, cs, persisted, turn, runner, finalText, {
-      interrupted: !completedOk || !!killReason,
-      apiError: sawApi,
-      retryPlanned: runner.retryPlanned,
-      handoffResumeFailure: guardedHandoffResumeFailure,
-    });
-  } catch (e) {
-    console.error('[multicc/dispatch] post-turn hook failed:', e.message);
-  }
+  const plan = planTurnFinalization({
+    current: true,
+    runnerKind: 'stream',
+    cli: persisted.cli || 'claude',
+    killReason: runner.killReason || null,
+    apiError: !!runner.sawApiError,
+    adapterError: !!runner.adapterError,
+    retryPlanned: !!runner.retryPlanned,
+    resultEvent: !!runner.resultEvent,
+    resultDurable: !!turn.resultDurable,
+    hasOutput: !!(cs.currentAssistantText || cs.currentToolCalls.length),
+    sameDurablePartial: hasMatchingPartialCheckpoint(runner, finalizeCheckpointKey),
+    handoff: persisted.pendingCliHandoff,
+  });
+  turnFinalizationExecutor.execute(plan, {
+    runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
+  });
 }
 
 // ── Chat mode: stream-json WebSocket ──
