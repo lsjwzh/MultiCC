@@ -265,7 +265,9 @@ function isLocalRequest(req) {
 }
 
 function isAuthenticated(req) {
-  if (!ACCESS_TOKEN) return !isExternalProxy(req);
+  // 无 token 时只放行真实本机 IP(isLocalRequest 看 req.ip,非 Host header,不可伪造)。
+  // 外部(含 Tailscale/局域网)一律拒绝,直到本机首次访问设好 ACCESS_TOKEN。
+  if (!ACCESS_TOKEN) return isLocalRequest(req);
   // Localhost allowed — unless it's a reverse proxy forwarding external traffic
   if (isLocalRequest(req)) return true;
   // Cookie auth (HMAC-signed, survives server restart)

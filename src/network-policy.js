@@ -22,9 +22,10 @@ function resolveNetworkPolicy(env = process.env) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Invalid PORT: ${env.PORT}`);
   if (!isLoopbackHost(host)) {
     if (!allowRemote) throw new Error(`Refusing non-loopback bind ${host}: set MULTICC_ALLOW_REMOTE=1 explicitly`);
-    if (!accessToken) throw new Error(`Refusing non-loopback bind ${host} without ACCESS_TOKEN`);
+    // ACCESS_TOKEN 不再在启动时强制:无 token 时运行期 isAuthenticated 只放行真实本机 IP
+    // (127.0.0.1,见 server.js),首次本机访问引导设置密码,设密码后外部凭密码访问。
+    // 安全由 IP-based 判断保证 — 非 loopback 来源一律拒绝,伪造 Host header 也绕不过。
   }
-  if (allowRemote && !accessToken) throw new Error('MULTICC_ALLOW_REMOTE=1 requires ACCESS_TOKEN');
   return { host, port, development, allowRemote, accessToken };
 }
 
