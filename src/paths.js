@@ -23,9 +23,21 @@ const path = require('path');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 
-// realpath-ify without throwing for missing paths (mirrors src/directories.js).
+// realpath-ify without throwing for missing paths. Resolve the nearest existing
+// ancestor first so macOS' /var -> /private/var symlink cannot make a missing
+// child look as if it were outside os.tmpdir().
 function realPathOf(p) {
-  try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); }
+  const abs = path.resolve(p);
+  let cursor = abs;
+  const tail = [];
+  while (!fs.existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return abs;
+    tail.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+  try { return path.join(fs.realpathSync(cursor), ...tail); }
+  catch (_) { return abs; }
 }
 
 // True if `p` resolves to $HOME, an ancestor of $HOME, or the filesystem root.
@@ -70,6 +82,7 @@ function createPaths({ dataDir } = {}) {
     journalDir: path.join(root, '.journal'),
     chatHistoryDir: path.join(root, 'chat_history'),
     eventsDir: path.join(root, 'events'),
+    bridgesDir: path.join(root, 'bridges'),
     // Meta files still owned by server.js modules — export the paths so future
     // consolidation can move them onto the store without another rename.
     notesFile: path.join(root, 'notes.json'),
@@ -83,6 +96,9 @@ function createPaths({ dataDir } = {}) {
     auxConfigFile: path.join(root, 'aux-config.json'),
     goalConfigFile: path.join(root, 'goal-config.json'),
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),
+    scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
+    voiceExamplesFile: path.join(root, 'voice_examples.json'),
+    whisperVocabFile: path.join(root, 'whisper_vocab.json'),
   };
 }
 

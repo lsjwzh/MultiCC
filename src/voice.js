@@ -7,10 +7,12 @@
 // would snapshot the value and miss later applyEnvUpdates() changes (the exact
 // stale-binding bug that splitting server.js could have introduced).
 const fs = require('fs');
-const path = require('path');
+const { createPaths } = require('./paths');
+const { atomicWriteJson } = require('./runtime-security');
 
-const VOICE_EXAMPLES_FILE = path.join(__dirname, '..', 'voice_examples.json');
-const WHISPER_VOCAB_FILE = path.join(__dirname, '..', 'whisper_vocab.json');
+const RUNTIME_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const VOICE_EXAMPLES_FILE = RUNTIME_PATHS.voiceExamplesFile;
+const WHISPER_VOCAB_FILE = RUNTIME_PATHS.whisperVocabFile;
 
 // Mutable runtime config, keyed by env var name for trivial applyEnvUpdates().
 const cfg = {
@@ -53,7 +55,7 @@ function appendVoiceExample(entry) {
   data.push(entry);
   if (data.length > 50) data = data.slice(-50);
   try {
-    fs.writeFileSync(VOICE_EXAMPLES_FILE, JSON.stringify(data, null, 2));
+    atomicWriteJson(VOICE_EXAMPLES_FILE, data);
   } catch (e) {
     console.error('[multicc] Failed to write voice_examples.json:', e.message);
   }
@@ -72,7 +74,7 @@ function loadWhisperVocab() {
 
 function saveWhisperVocab(vocab) {
   try {
-    fs.writeFileSync(WHISPER_VOCAB_FILE, JSON.stringify(vocab, null, 2));
+    atomicWriteJson(WHISPER_VOCAB_FILE, vocab);
   } catch (e) {
     console.error('[multicc] Failed to write whisper_vocab.json:', e.message);
   }

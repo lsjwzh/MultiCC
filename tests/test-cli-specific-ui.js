@@ -8,15 +8,18 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const puppeteer = require('puppeteer');
+const { assertTestDir } = require('../src/paths');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 3995;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'cli-specific-ui-test';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-cli-ui-'));
+const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const project = path.join(tmpRoot, 'project');
 const missingZcode = path.join(tmpRoot, 'missing-zcode');
 fs.mkdirSync(project, { recursive: true });
+fs.mkdirSync(dataRoot, { recursive: true });
 
 let server;
 let browser;
@@ -87,9 +90,7 @@ async function cleanup() {
   browser = null;
   try { if (dirId) await api('DELETE', `/api/directories/${dirId}?force=1`); } catch (_) {}
   await stopServer();
-  for (const file of ['sessions.json', 'directories.json', 'events', 'chat_history', 'token_usage.json', 'token_daily.json']) {
-    try { fs.rmSync(path.join(ROOT, file), { recursive: true, force: true }); } catch (_) {}
-  }
+  assertTestDir(tmpRoot);
   try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (_) {}
 }
 
@@ -99,6 +100,7 @@ async function cleanup() {
     env: {
       ...process.env,
       PORT: String(PORT), ACCESS_TOKEN: TOKEN,
+      MULTICC_DATA_DIR: dataRoot,
       CLAUDE_CMD: '/usr/bin/true', CODEX_CMD: '/usr/bin/true', OPENCODE_CMD: '/usr/bin/true',
       ZCODE_CMD: missingZcode,
     },
