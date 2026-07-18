@@ -8,19 +8,19 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../i18n.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
-import '../services/settings_service.dart';
 import '../screens/voice_call_screen.dart';
 
 // Goal precheck dimension keys → short chip labels (web/app kept in sync).
-const Map<String, String> _goalDimShort = {
-  'objective': '目标明确',
-  'criteria': '完成标准',
-  'scope': '范围清晰',
-  'executable': '可独立执行',
+Map<String, String> get _goalDimShort => {
+  'objective': t('goalObjective'),
+  'criteria': t('goalCriteria'),
+  'scope': t('goalScope'),
+  'executable': t('goalExecutable'),
 };
 
 class InputBar extends StatefulWidget {
@@ -217,9 +217,12 @@ class _InputBarState extends State<InputBar> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('🎤 语音识别', style: TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.w600)),
+                Text(
+                  '🎤 ${t('voiceRecognition')}',
+                  style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.w600),
+                ),
                 const SizedBox(height: 12),
-                const Text('原始识别', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                Text(t('voiceRawTranscript'), style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                 const SizedBox(height: 4),
                 TextField(
                   controller: rawCtrl,
@@ -235,7 +238,7 @@ class _InputBarState extends State<InputBar> {
                 ),
                 if (refinedText != null) ...[
                   const SizedBox(height: 12),
-                  const Text('AI 重排', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                  Text(t('aiRefine'), style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                   const SizedBox(height: 4),
                   Container(
                     padding: const EdgeInsets.all(10),
@@ -257,7 +260,7 @@ class _InputBarState extends State<InputBar> {
                           foregroundColor: const Color(0xFF8a909b),
                           side: const BorderSide(color: Color(0xFF20242b)),
                         ),
-                        child: const Text('取消'),
+                        child: Text(t('cancel')),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -283,7 +286,7 @@ class _InputBarState extends State<InputBar> {
                         ),
                         child: isRefining
                             ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8a909b)))
-                            : const Text('AI 重排'),
+                            : Text(t('aiRefine')),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -302,7 +305,7 @@ class _InputBarState extends State<InputBar> {
                           backgroundColor: const Color(0xFF22ab9c),
                           foregroundColor: Colors.white,
                         ),
-                        child: Text(refinedText != null ? '使用 AI' : '使用原文'),
+                        child: Text(refinedText != null ? t('useAiText') : t('useOriginalText')),
                       ),
                     ),
                   ],
@@ -361,8 +364,7 @@ class _InputBarState extends State<InputBar> {
   // instruction and send it through the normal sendMessage() path.
 
   String _goalWrap(String task) {
-    return '请以 Goal 模式执行以下任务：目标驱动、自主规划并一步步执行到完成；'
-        '遇到不明确处用合理默认推进并说明假设；完成后自检并验证结果是否达到完成标准。\n\n$task';
+    return t('goalExecutionPrompt', {'task': task});
   }
 
   List<String> _strList(dynamic v) =>
@@ -512,18 +514,18 @@ class _InputBarState extends State<InputBar> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text('🎯 Goal 模式发送', style: TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text('🎯 ${t('goalSendTitle')}', style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 6),
-                  const Text(
-                    '发送前先用辅助 AI 预检：目标是否明确、完成标准是否清晰、能否独立执行。不符合会给改写建议，确认或修改后再真正执行。',
-                    style: TextStyle(color: Color(0xFF8a909b), fontSize: 12, height: 1.4),
+                  Text(
+                    t('goalSendHint'),
+                    style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12, height: 1.4),
                   ),
                   const SizedBox(height: 12),
-                  const Text('任务', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                  Text(t('task'), style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                   const SizedBox(height: 4),
-                  _goalField(taskCtrl, 4, '描述你要达成的目标…'),
+                  _goalField(taskCtrl, 4, t('goalTaskHint')),
                   const SizedBox(height: 10),
-                  const Text('检查维度（本次预检，默认取设置里的全局配置）', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                  Text(t('goalDimensionsOnce'), style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                   const SizedBox(height: 6),
                   Wrap(
                     spacing: 8,
@@ -545,12 +547,12 @@ class _InputBarState extends State<InputBar> {
                     }).toList(),
                   ),
                   const SizedBox(height: 12),
-                  const Text('执行限制（本次发送，留空或 0 = 不限制）', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                  Text(t('goalLimits'), style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                   const SizedBox(height: 6),
                   Row(children: [
-                    Expanded(child: _goalNumField(roundsCtrl, '轮次上限 (--max-turns)', '40')),
+                    Expanded(child: _goalNumField(roundsCtrl, t('roundLimit'), '40')),
                     const SizedBox(width: 8),
-                    Expanded(child: _goalNumField(budgetCtrl, 'token 预算', '不限')),
+                    Expanded(child: _goalNumField(budgetCtrl, t('tokenBudget'), t('unlimited'))),
                   ]),
                   if (verdict != null) ...[
                     const SizedBox(height: 12),
@@ -562,17 +564,17 @@ class _InputBarState extends State<InputBar> {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        '${ok ? '✅ 符合 Goal 模式' : '⚠️ 建议先完善'}（符合度 ${verdict!['score'] ?? '-'}/100）',
+                        '${ok ? '✅ ${t('goalQualified')}' : '⚠️ ${t('goalNeedsWork')}'} (${t('goalScore', {'score': '${verdict!['score'] ?? '-'}'})})',
                         style: TextStyle(color: ok ? const Color(0xFF3fb950) : const Color(0xFFd29922), fontSize: 13, fontWeight: FontWeight.w600),
                       ),
                     ),
-                    _goalSection('待完善', _strList(verdict!['issues'])),
-                    _goalSection('需澄清', _strList(verdict!['questions'])),
-                    _goalSection('建议完成标准', _strList(verdict!['criteria'])),
+                    _goalSection(t('goalIssues'), _strList(verdict!['issues'])),
+                    _goalSection(t('goalQuestions'), _strList(verdict!['questions'])),
+                    _goalSection(t('goalSuggestedCriteria'), _strList(verdict!['criteria'])),
                     const SizedBox(height: 10),
-                    const Text('改写版（可编辑，将作为实际执行的任务）', style: TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
+                    Text(t('goalRevised'), style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12)),
                     const SizedBox(height: 4),
-                    _goalField(revisedCtrl, 5, '预检后这里给出可直接执行的版本'),
+                    _goalField(revisedCtrl, 5, t('goalRevisedHint')),
                   ],
                   if (error != null) ...[
                     const SizedBox(height: 8),
@@ -584,7 +586,7 @@ class _InputBarState extends State<InputBar> {
                       child: OutlinedButton(
                         onPressed: () => Navigator.pop(ctx),
                         style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF8a909b), side: const BorderSide(color: Color(0xFF20242b))),
-                        child: const Text('取消'),
+                        child: Text(t('cancel')),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -595,7 +597,7 @@ class _InputBarState extends State<InputBar> {
                             : () async {
                                 final task = taskCtrl.text.trim();
                                 if (task.isEmpty) {
-                                  setSheetState(() => error = '请先填写任务');
+                                  setSheetState(() => error = t('taskRequired'));
                                   return;
                                 }
                                 setSheetState(() {
@@ -610,14 +612,16 @@ class _InputBarState extends State<InputBar> {
                                     final r = (data['revised'] as String?)?.trim();
                                     revisedCtrl.text = (r != null && r.isNotEmpty) ? r : task;
                                   } else {
-                                    error = '预检失败：${data['error'] ?? '未知错误'}（可直接用原文发送）';
+                                    error = t('goalPrecheckFailed', {
+                                      'error': '${data['error'] ?? t('unknownError')}',
+                                    });
                                   }
                                 });
                               },
                         style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF8a909b), side: const BorderSide(color: Color(0xFF20242b))),
                         child: checking
                             ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF8a909b)))
-                            : Text(verdict == null ? '预检' : '重新预检'),
+                            : Text(verdict == null ? t('precheck') : t('recheck')),
                       ),
                     ),
                   ]),
@@ -628,7 +632,7 @@ class _InputBarState extends State<InputBar> {
                         child: TextButton(
                           onPressed: () => sendGoal(taskCtrl.text),
                           style: TextButton.styleFrom(foregroundColor: const Color(0xFF8a909b)),
-                          child: const Text('用原文发送'),
+                          child: Text(t('sendOriginal')),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -637,7 +641,7 @@ class _InputBarState extends State<InputBar> {
                         child: ElevatedButton(
                           onPressed: () => sendGoal(verdict != null ? (revisedCtrl.text.isNotEmpty ? revisedCtrl.text : taskCtrl.text) : taskCtrl.text),
                           style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF22ab9c), foregroundColor: Colors.white),
-                          child: Text(ok ? '以 Goal 模式发送' : '确认并发送'),
+                          child: Text(ok ? t('sendGoal') : t('confirmAndSend')),
                         ),
                       ),
                     ]),
@@ -748,7 +752,9 @@ class _InputBarState extends State<InputBar> {
                           const Icon(Icons.psychology_outlined, size: 14, color: Color(0xFFe7eaee)),
                           const SizedBox(width: 4),
                           Text(
-                            '子任务: ${subagentModelLabel ?? '随主'}',
+                            t('subtaskLabel', {
+                              'model': subagentModelLabel ?? t('followMain'),
+                            }),
                             style: const TextStyle(
                                 color: Color(0xFFe7eaee),
                                 fontSize: 11,
@@ -830,7 +836,11 @@ class _InputBarState extends State<InputBar> {
                         height: 1.4,
                       ),
                       decoration: InputDecoration(
-                        hintText: _isRecording ? '录音中…' : _isTranscribing ? '识别中…' : 'Type a message…',
+                        hintText: _isRecording
+                            ? t('recording')
+                            : _isTranscribing
+                            ? t('transcribing')
+                            : t('typeMessage'),
                         hintStyle: TextStyle(
                           color: _isRecording ? const Color(0xFFff6b63) : const Color(0xFF454b54),
                         ),
