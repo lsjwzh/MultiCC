@@ -303,6 +303,7 @@
   "cronNavHint": "Automatically wake a session to run instructions on schedule",
   "providerConfig": "Provider Configuration",
   "providerConfigHint": "Import, edit, delete and set defaults; sessions can override providers",
+  "providerDeleteLocalConfirm": "Delete only the MultiCC local copy \"{name}\"? This does not modify CC-Switch, and a future CC-Switch sync may import it again.",
   "auxAssistant": "AI Assistant",
   "auxAssistantHint": "Model configuration, health, session reclassification and task history",
   "agentResources": "Agent Resources / Cache",
