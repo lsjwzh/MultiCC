@@ -146,12 +146,47 @@ const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 let orchestrationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
+function recordProviderRouterShadowComparison(report) {
+  metrics.inc('multicc_provider_router_shadow_comparisons_total');
+  if (!report || report.error) metrics.inc('multicc_provider_router_shadow_errors_total');
+  if (report && !report.equal && !report.error) metrics.inc('multicc_provider_router_shadow_differences_total');
+  const differences = Array.isArray(report && report.differences)
+    ? report.differences.map(item => String(item && item.path || '')).filter(Boolean)
+    : [];
+  const fields = {
+    operation: String(report && report.operation || 'unknown'),
+    equal: !!(report && report.equal),
+    differenceCount: differences.length,
+    differencePaths: differences.slice(0, 100),
+    binding: report && report.binding ? {
+      sessionId: report.binding.sessionId,
+      cli: report.binding.cli,
+      providerId: report.binding.providerId,
+      roleKind: report.binding.roleKind,
+      agentRole: report.binding.agentRole,
+      routeName: report.binding.routeName,
+    } : null,
+    error: report && report.error ? {
+      code: report.error.code || null,
+      message: 'CPR shadow evaluation failed',
+    } : null,
+  };
+  if (report && report.equal) logger.info('provider_router_shadow_comparison', fields);
+  else logger.warn(report && report.error ? 'provider_router_shadow_error' : 'provider_router_shadow_difference', fields);
+}
 const providerRouterRuntime = createProviderRouterRuntime({
   env: process.env,
   providers,
   dataRoot: MULTICC_PATHS.root,
   codexHomesDir: providers.CODEX_HOMES_DIR,
+  onShadowDiff: recordProviderRouterShadowComparison,
   logger,
+});
+logger.info('provider_router_runtime', {
+  mode: providerRouterRuntime.mode,
+  portApiVersion: providerRouterRuntime.apiVersion,
+  routerApiVersion: providerRouterRuntime.routerApiVersion,
+  capabilities: providerRouterRuntime.routerCapabilities || {},
 });
 installConsoleRedaction(console);
 secureRuntimeData(MULTICC_PATHS);

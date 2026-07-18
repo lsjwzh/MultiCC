@@ -6,7 +6,46 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const express = require('express');
+
+const ORIGINAL_ENV = Object.freeze({
+  HOME: process.env.HOME,
+  USERPROFILE: process.env.USERPROFILE,
+  CODEX_HOME: process.env.CODEX_HOME,
+});
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-test-home-'));
+process.env.HOME = TEST_HOME;
+process.env.USERPROFILE = TEST_HOME;
+process.env.CODEX_HOME = path.join(TEST_HOME, '.codex');
+
+const TEST_SECRETS = Object.freeze([
+  'codex-test-global-access-token',
+  'codex-test-stale-import-token',
+  'codex-test-custom-api-key',
+  'codex-test-main-provider-key',
+  'codex-test-sub-provider-key',
+  'codex-test-local-proxy-key',
+]);
+
+function restoreTestEnvironment() {
+  for (const [name, value] of Object.entries(ORIGINAL_ENV)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  fs.rmSync(TEST_HOME, { recursive: true, force: true });
+}
+
+function redactFailure(error) {
+  let message = String(error && (error.stack || error.message) || error);
+  for (const secret of TEST_SECRETS) message = message.split(secret).join('[REDACTED]');
+  return message
+    .replace(/(Bearer\s+)[^\s'"`,]+/gi, '$1[REDACTED]')
+    .replace(/((?:access_token|OPENAI_API_KEY|authorization)\s*[:=]\s*["']?)[^\s,"'}]+/gi, '$1[REDACTED]');
+}
+
 const {
+  DEFAULT_CODEX_AGENT_ROLES,
+  DEFAULT_CODEX_SUBAGENT_PROVIDER,
+  LEGACY_CODEX_SUBAGENT_PROVIDER,
   mountCodexProxy,
   normalizeResponsesUsage,
 } = require('cli-provider-router');
@@ -26,7 +65,7 @@ async function test(name, fn) {
   } catch (error) {
     failed++;
     console.error(`  not ok - ${name}`);
-    console.error(`    ${error.stack || error.message}`);
+    console.error(`    ${redactFailure(error)}`);
   }
 }
 
@@ -54,7 +93,7 @@ function request({ port, path: pathname, body }) {
       headers: {
         'content-type': 'application/json',
         'content-length': String(payload.length),
-        authorization: 'Bearer multicc-local',
+        authorization: 'Bearer codex-test-local-proxy-key',
       },
     }, res => {
       const chunks = [];
@@ -106,6 +145,16 @@ function responsesSse(text, usage) {
 async function main() {
   console.log('\nCodex subagent provider routing tests');
 
+  await test('test process isolates CODEX_HOME and redacts credential failures', () => {
+    assert.strictEqual(process.env.CODEX_HOME, path.join(TEST_HOME, '.codex'));
+    assert.strictEqual(os.homedir(), TEST_HOME);
+    const failure = redactFailure(new Error(
+      `access_token=${TEST_SECRETS[0]} authorization=Bearer ${TEST_SECRETS[4]}`
+    ));
+    for (const secret of TEST_SECRETS) assert.doesNotMatch(failure, new RegExp(secret));
+    assert.match(failure, /\[REDACTED\]/);
+  });
+
   await test('Responses usage separates fresh input from cached input', () => {
     assert.deepStrictEqual(normalizeResponsesUsage({
       input_tokens: 100,
@@ -122,28 +171,29 @@ async function main() {
   await test('official Codex provider follows the current global OAuth login', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-auth-'));
     const home = path.join(root, 'home');
-    const globalAuth = path.join(root, 'global-auth.json');
+    const globalAuth = path.join(process.env.CODEX_HOME, 'auth.json');
     fs.mkdirSync(home);
-    fs.writeFileSync(globalAuth, JSON.stringify({ tokens: { access_token: 'current' } }));
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    fs.writeFileSync(globalAuth, JSON.stringify({ tokens: { access_token: TEST_SECRETS[0] } }));
     try {
       const source = materializeCodexAuth(home, {
-        auth: { tokens: { access_token: 'stale-import' } },
+        auth: { tokens: { access_token: TEST_SECRETS[1] } },
         config: 'model = "gpt-5.5"\n',
-      }, { globalAuthPath: globalAuth });
+      });
       assert.strictEqual(source, 'global');
       assert.strictEqual(
         JSON.parse(fs.readFileSync(path.join(home, 'auth.json'))).tokens.access_token,
-        'current'
+        TEST_SECRETS[0]
       );
 
       const custom = materializeCodexAuth(home, {
-        auth: { OPENAI_API_KEY: 'custom-key' },
+        auth: { OPENAI_API_KEY: TEST_SECRETS[2] },
         config: 'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://api.example/v1"\n',
-      }, { globalAuthPath: globalAuth });
+      });
       assert.strictEqual(custom, 'provider');
       assert.strictEqual(
         JSON.parse(fs.readFileSync(path.join(home, 'auth.json'))).OPENAI_API_KEY,
-        'custom-key'
+        TEST_SECRETS[2]
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -174,13 +224,27 @@ async function main() {
       });
 
       const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+      const subagentProviderHeader = `[model_providers.${DEFAULT_CODEX_SUBAGENT_PROVIDER}]`;
+      const subagentProviderStart = config.indexOf(subagentProviderHeader);
+      assert.notStrictEqual(subagentProviderStart, -1, `missing ${subagentProviderHeader}`);
+      const nextSectionStart = config.indexOf('\n[', subagentProviderStart + subagentProviderHeader.length);
+      const subagentProviderConfig = config.slice(
+        subagentProviderStart,
+        nextSectionStart === -1 ? config.length : nextSectionStart
+      );
       assert.match(config, /http:\/\/127\.0\.0\.1:3456\/codex-proxy\/main-provider\/session-1\/main/);
-      assert.match(config, /\[model_providers\.multicc_subagent\]/);
-      assert.match(config, /http:\/\/127\.0\.0\.1:3456\/codex-proxy\/sub-provider\/session-1\/sub/);
-      for (const role of ['default', 'worker', 'explorer']) {
+      assert.match(subagentProviderConfig, /base_url = "http:\/\/127\.0\.0\.1:3456\/codex-proxy\/sub-provider\/session-1\/sub"/);
+      assert.match(subagentProviderConfig, /wire_api = "responses"/);
+      assert.match(subagentProviderConfig, /requires_openai_auth = true/);
+      assert.notStrictEqual(DEFAULT_CODEX_SUBAGENT_PROVIDER, LEGACY_CODEX_SUBAGENT_PROVIDER);
+      assert.doesNotMatch(config, new RegExp(`\\[model_providers\\.${LEGACY_CODEX_SUBAGENT_PROVIDER}\\]`));
+      for (const role of Object.keys(DEFAULT_CODEX_AGENT_ROLES)) {
         const agent = fs.readFileSync(path.join(home, 'agents', `${role}.toml`), 'utf8');
         assert.match(agent, new RegExp(`name = "${role}"`));
-        assert.match(agent, /model_provider = "multicc_subagent"/);
+        const providerReference = agent.match(/^model_provider = "([^"]+)"$/m);
+        assert.ok(providerReference, `${role} must declare model_provider`);
+        assert.strictEqual(providerReference[1], DEFAULT_CODEX_SUBAGENT_PROVIDER);
+        assert.ok(config.includes(`[model_providers.${providerReference[1]}]`));
         assert.match(agent, /model = "sub-model"/);
       }
     } finally {
@@ -254,11 +318,11 @@ async function main() {
 
   const providers = {
     main: provider({
-      name: 'Main Responses', baseUrl: `${mainUpstream.url}/v1`, apiKey: 'main-secret',
+      name: 'Main Responses', baseUrl: `${mainUpstream.url}/v1`, apiKey: TEST_SECRETS[3],
       model: 'main-model', wireApi: 'responses',
     }),
     sub: provider({
-      name: 'Sub Chat', baseUrl: `${subUpstream.url}/v1`, apiKey: 'sub-secret',
+      name: 'Sub Chat', baseUrl: `${subUpstream.url}/v1`, apiKey: TEST_SECRETS[4],
       model: 'sub-model', wireApi: 'chat',
     }),
   };
@@ -283,7 +347,7 @@ async function main() {
       assert.strictEqual(response.status, 200);
       assert.strictEqual(response.body, responsesSse('MAIN_OK', mainUsage));
       assert.strictEqual(mainRequests[0].req.url, '/v1/responses');
-      assert.strictEqual(mainRequests[0].req.headers.authorization, 'Bearer main-secret');
+      assert.strictEqual(mainRequests[0].req.headers.authorization, `Bearer ${TEST_SECRETS[3]}`);
       assert.strictEqual(JSON.parse(mainRequests[0].body).model, 'main-model');
       assert.deepStrictEqual(usageEvents[0], {
         sessionId: 'session-1', role: 'main', providerId: 'main',
@@ -305,7 +369,7 @@ async function main() {
       const completed = JSON.parse(completedLine.slice(6));
       assert.strictEqual(completed.response.output[0].content[0].text, 'SUB_OK');
       assert.strictEqual(subRequests[0].req.url, '/v1/chat/completions');
-      assert.strictEqual(subRequests[0].req.headers.authorization, 'Bearer sub-secret');
+      assert.strictEqual(subRequests[0].req.headers.authorization, `Bearer ${TEST_SECRETS[4]}`);
       assert.strictEqual(JSON.parse(subRequests[0].body).model, 'sub-model');
       assert.deepStrictEqual(usageEvents[1], {
         sessionId: 'session-1', role: 'sub', providerId: 'sub',
@@ -341,6 +405,8 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(error.stack || error);
+  console.error(redactFailure(error));
   process.exitCode = 1;
+}).finally(() => {
+  restoreTestEnvironment();
 });
