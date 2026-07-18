@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/dispatch-request.schema.json",
+  "title": "Dispatch request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "message"],
+  "properties": {
+    "target": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "message": { "type": "string", "minLength": 1, "maxLength": 200000 }
+  }
+}

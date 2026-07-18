@@ -1,0 +1,96 @@
+{
+  "apiVersion": "v1",
+  "schemas": {
+    "session.schema.json": {
+      "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "autoDispatch", "createdAt", "lastActivity", "clients", "active", "mergeState"],
+      "properties": {
+        "id": { "type": "string" },
+        "dirId": { "type": ["string", "null"] },
+        "type": { "const": "session" },
+        "cli": { "enum": ["claude", "codex", "opencode", "zcode"] },
+        "kind": { "enum": ["chat", "terminal"] },
+        "label": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "effectiveModel": { "type": ["string", "null"] },
+        "effort": { "type": ["string", "null"] },
+        "effectiveEffort": { "type": ["string", "null"] },
+        "agent": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"] },
+        "subagent": { "type": ["object", "null"] },
+        "autoCommit": { "type": "boolean" },
+        "autoDispatch": { "type": "boolean" },
+        "createdAt": { "type": ["string", "null"] },
+        "lastActivity": { "type": ["string", "null"] },
+        "clients": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "mergeState": { "type": ["object", "null"] }
+      }
+    },
+    "provider.schema.json": {
+      "required": ["id", "appType", "protocol", "wireApi", "name", "source", "model", "modelOptions", "aliasOnly", "useChatResponsesProxy", "hasCredentials", "isOfficial"],
+      "properties": {
+        "id": { "type": "string" },
+        "appType": { "enum": ["claude", "codex"] },
+        "protocol": { "enum": ["anthropic", "openai"] },
+        "wireApi": { "type": ["string", "null"], "enum": ["messages", "responses", "chat-completions", null] },
+        "name": { "type": "string" },
+        "source": { "enum": ["local", "ccswitch"] },
+        "model": { "type": ["string", "null"] },
+        "modelOptions": { "type": "array" },
+        "aliasOnly": { "type": "boolean" },
+        "useChatResponsesProxy": { "type": "boolean" },
+        "hasCredentials": { "type": "boolean" },
+        "isOfficial": { "type": "boolean" }
+      }
+    },
+    "wait.schema.json": {
+      "required": ["id", "sessionId", "mode", "checks", "maxChecks", "intervalSec", "createdAt"],
+      "properties": {
+        "id": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "mode": { "enum": ["poll", "callback"] },
+        "checks": { "type": "integer" },
+        "maxChecks": { "type": ["integer", "null"] },
+        "intervalSec": { "type": ["number", "null"] },
+        "createdAt": { "type": ["string", "null"] }
+      }
+    },
+    "dispatch-request.schema.json": {
+      "required": ["target", "message"],
+      "properties": {
+        "target": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "dispatch-response.schema.json": {
+      "required": ["apiVersion", "requestId", "correlationId", "ok", "target", "chatId", "note"],
+      "properties": {
+        "apiVersion": { "const": "v1" },
+        "requestId": { "type": "string" },
+        "correlationId": { "type": "string" },
+        "ok": { "const": true },
+        "target": { "type": "string" },
+        "chatId": { "type": ["string", "null"] },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "error.schema.json": {
+      "required": ["apiVersion", "requestId", "correlationId", "ok", "error", "code"],
+      "properties": {
+        "apiVersion": { "const": "v1" },
+        "requestId": { "type": "string" },
+        "correlationId": { "type": "string" },
+        "ok": { "const": false },
+        "error": { "type": "string" },
+        "code": { "type": "string" }
+      }
+    },
+    "ws-envelope.schema.json": {
+      "required": ["apiVersion", "type"],
+      "properties": {
+        "apiVersion": { "const": "v1" },
+        "type": { "type": "string" }
+      }
+    }
+  }
+}
