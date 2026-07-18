@@ -117,13 +117,17 @@ function normalizeTurnRequest(input) {
   const originDispatchId = cleanId(input.originDispatchId, 'originDispatchId');
   const originTrigger = input.originTrigger === true;
   const originContinue = input.originContinue === true;
-  const originCount = Number(!!originDispatchId) + Number(originTrigger) + Number(originContinue);
-  if (originCount > 1) {
-    throw new TurnRequestError('invalid_origin', 'dispatch, trigger and continue origins are mutually exclusive');
+  // Dispatch/trigger describe durable lineage: who owns the eventual result.
+  // Continue describes only why this particular runner was launched. A retry
+  // or interruption-resume must be able to retain its dispatch/trigger lineage
+  // while also being a continuation. Keeping them orthogonal prevents a retry
+  // from silently turning into a normal user turn and consuming the wrong
+  // post-turn route.
+  if (originDispatchId && originTrigger) {
+    throw new TurnRequestError('invalid_origin', 'dispatch and trigger origins are mutually exclusive');
   }
   const originKind = originDispatchId ? 'dispatch'
-    : originTrigger ? 'trigger'
-      : originContinue ? 'continue' : 'user';
+    : originTrigger ? 'trigger' : 'user';
 
   const deliveryId = cleanId(input.deliveryId, 'deliveryId');
   const clientMsgId = cleanId(input.clientMsgId, 'clientMsgId') || deliveryId;
@@ -144,6 +148,7 @@ function normalizeTurnRequest(input) {
     }),
     retry,
     origin: Object.freeze({ kind: originKind, operationId: originDispatchId }),
+    launch: Object.freeze({ reason: originContinue ? 'continue' : 'request' }),
     identity: Object.freeze({ clientMsgId, deliveryId }),
     goalLimits: normalizeGoalLimits(input.goalLimits),
     background: Object.freeze({
@@ -180,7 +185,7 @@ function planTurnAdmission(request, facts = {}) {
   if (facts.sessionExists === false) {
     return Object.freeze({ decision: 'reject', reason: 'session-missing', trace: Object.freeze(trace), effects: Object.freeze([]) });
   }
-  if (request.origin.kind === 'continue' && facts.networkUnhealthy === true) {
+  if (request.launch.reason === 'continue' && facts.networkUnhealthy === true) {
     return Object.freeze({
       decision: 'hold', reason: 'network-unhealthy', trace: Object.freeze(trace),
       effects: Object.freeze([{ type: 'hold-turn', sessionId: request.sessionId, text: request.text }]),
