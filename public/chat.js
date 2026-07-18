@@ -4490,172 +4490,32 @@ function guessPastedFileName(file) {
 /* ── Voice Notifications (task complete / waiting for action) ── */
 const notifyBtn   = document.getElementById('notify-btn');
 const notifyToast = document.getElementById('notify-toast');
-function currentNotifySessionId() {
-  return _sessionName || sessionId || '';
-}
-let _notifyEnabled = typeof getTaskNotifyEnabled === 'function'
-  ? getTaskNotifyEnabled(_sessionName)
-  : true;
-let _notifyLastCompleted = 0;
-let _notifyLastAction = 0;
-let _notifyToastTimer = null;
-
-const NOTIFY_COOLDOWN = 8000;
-
-function updateNotifyBtn() {
-  if (!notifyBtn) return;
-  const pushInfo = typeof getPushInfo === 'function' ? getPushInfo() : null;
-  const pushOn = !!(pushInfo && pushInfo.subscribed);
-  if (_notifyEnabled) {
-    notifyBtn.style.background = '#1f6feb';
-    notifyBtn.style.borderColor = '#58a6ff';
-    notifyBtn.style.color = '#fff';
-    notifyBtn.title = pushOn ? '任务提醒 (系统通知已开启)' : '任务提醒 (点击开启系统通知)';
-  } else {
-    notifyBtn.style.background = '#21262d';
-    notifyBtn.style.borderColor = '#30363d';
-    notifyBtn.style.color = '#c9d1d9';
-    notifyBtn.title = '任务提醒 (已关闭)';
-  }
-}
-updateNotifyBtn();
-
-if (notifyBtn) {
-  notifyBtn.addEventListener('click', async () => {
-    const pushOn = typeof isPushSubscribed === 'function' && isPushSubscribed();
-    if (_notifyEnabled && pushOn) {
-      _notifyEnabled = false;
-      if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(currentNotifySessionId(), false);
-      updateNotifyBtn();
-      if (typeof unsubscribePush === 'function') await unsubscribePush();
-      updateNotifyBtn();
-      return;
-    }
-
-    _notifyEnabled = true;
-    if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(currentNotifySessionId(), true);
-    updateNotifyBtn();
-    if (typeof ensurePushSubscribed === 'function') {
-      const ok = await ensurePushSubscribed();
-      if (!ok) {
-        _notifyEnabled = false;
-        if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(currentNotifySessionId(), false);
-      }
-      updateNotifyBtn();
-    }
-  });
-}
-
-window.addEventListener('multicc-push-state', updateNotifyBtn);
-
-function refreshNotifyPreference() {
-  if (typeof getTaskNotifyEnabled === 'function') {
-    _notifyEnabled = getTaskNotifyEnabled(currentNotifySessionId());
-    updateNotifyBtn();
-  }
-}
-
-function showNotifyToast(text, type) {
-  if (!notifyToast) return;
-  const closeBtn = notifyToast.querySelector('.toast-close');
-  notifyToast.textContent = '';
-  notifyToast.appendChild(document.createTextNode(text + ' '));
-  notifyToast.appendChild(closeBtn);
-  notifyToast.className = type;
-  notifyToast.style.display = 'block';
-  if (_notifyToastTimer) clearTimeout(_notifyToastTimer);
-  // Running toasts are transient status updates — auto-dismiss faster.
-  const ttl = type === 'running' ? 8000 : 15000;
-  _notifyToastTimer = setTimeout(dismissNotifyToast, ttl);
-}
-
-function dismissNotifyToast() {
-  if (notifyToast) notifyToast.style.display = 'none';
-  if (_notifyToastTimer) { clearTimeout(_notifyToastTimer); _notifyToastTimer = null; }
-}
-
-if (notifyToast) {
-  notifyToast.addEventListener('click', dismissNotifyToast);
-}
-
-// When page becomes visible, stop any ongoing voice and dismiss toast
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    dismissNotifyToast();
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-  }
+const _chatNotifications = window.MultiCCChatNotifications.createNotificationController({
+  window,
+  document,
+  notifyBtn,
+  notifyToast,
+  getSessionId: () => _sessionName || sessionId || '',
+  getTaskNotifyEnabled: (id) => typeof getTaskNotifyEnabled === 'function' ? getTaskNotifyEnabled(id) : true,
+  setTaskNotifyEnabled: (id, enabled) => {
+    if (typeof setTaskNotifyEnabled === 'function') setTaskNotifyEnabled(id, enabled);
+  },
+  getPushInfo: () => typeof getPushInfo === 'function' ? getPushInfo() : null,
+  isPushSubscribed: () => typeof isPushSubscribed === 'function' && isPushSubscribed(),
+  ensurePushSubscribed: () => typeof ensurePushSubscribed === 'function' ? ensurePushSubscribed() : true,
+  unsubscribePush: () => typeof unsubscribePush === 'function' ? unsubscribePush() : undefined,
+  showLocalTaskNotification: (payload) => {
+    if (typeof showLocalTaskNotification === 'function') showLocalTaskNotification(payload);
+  },
 });
 
-function playDing(type) {
-  // Short pleasant chime via WebAudio — used when the chat tab is visible so
-  // the user gets an audible cue without a full voice announcement.
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    const ctx = new AC();
-    // completed: rising two-tone (C6 → G6)
-    // waiting: gentle single tone (E5)
-    // error: descending two-tone (G5 → Eb5) — alert but not alarming
-    const freqs = type === 'completed' ? [1046.5, 1567.98]
-      : type === 'error' ? [783.99, 622.25]
-      : [659.25];
-    const t0 = ctx.currentTime;
-    freqs.forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = f;
-      gain.gain.setValueAtTime(0.0001, t0 + i * 0.12);
-      gain.gain.exponentialRampToValueAtTime(0.25, t0 + i * 0.12 + 0.012);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.12 + 0.28);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(t0 + i * 0.12);
-      osc.stop(t0 + i * 0.12 + 0.3);
-    });
-    setTimeout(() => { try { ctx.close(); } catch (_) {} }, (freqs.length * 120 + 400));
-  } catch (_) {}
-}
-
-function speakNotify(text, type) {
-  if (!_notifyEnabled) return;
-
-  const now = Date.now();
-  if (type === 'completed') {
-    if (now - _notifyLastCompleted < NOTIFY_COOLDOWN) return;
-    _notifyLastCompleted = now;
-  } else {
-    if (now - _notifyLastAction < NOTIFY_COOLDOWN) return;
-    _notifyLastAction = now;
-  }
-
-  // When the chat tab is visible the user is already looking at it, so just
-  // play a short "ding" instead of a full voice announcement.
-  if (document.visibilityState === 'visible') {
-    playDing(type);
-    return;
-  }
-
-  showNotifyToast(text, type);
-
-  if (typeof showLocalTaskNotification === 'function') {
-    const sid = _sessionName || sessionId || 'chat';
-    showLocalTaskNotification({
-      sessionId: sid,
-      type: type === 'waiting' ? 'waiting' : 'completed',
-      title: type === 'waiting' ? `MultiCC #${sid}: 等待操作` : `MultiCC #${sid}: 完成`,
-      body: text,
-      url: location.pathname + location.search,
-    });
-  }
-
-  if (window.speechSynthesis) {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN';
-    utterance.rate = 1.1;
-    utterance.volume = 0.8;
-    window.speechSynthesis.speak(utterance);
-  }
-}
+// Compatibility names used by event handling above and older inline callers.
+function updateNotifyBtn() { return _chatNotifications.updateButton(); }
+function refreshNotifyPreference() { return _chatNotifications.refreshPreference(); }
+function showNotifyToast(text, type) { return _chatNotifications.showToast(text, type); }
+function dismissNotifyToast() { return _chatNotifications.dismissToast(); }
+function playDing(type) { return _chatNotifications.playDing(type); }
+function speakNotify(text, type) { return _chatNotifications.speak(text, type); }
 
 /* ── Dynamic title animation during streaming ── */
 let _titleTimer = null;

@@ -213,3 +213,18 @@
 3. HTTP 路由按领域逐批迁到 `asyncRoute → DomainError → presenter`；先选 directory/memo/memory/upload，再迁 git/session/orchestration/provider/voice。每批保持 legacy 顶层 `error` 和现有兼容字段。
 4. Web 继续迁 memo/通知/voice 共享 controller；在 inline handler 清理前不改 ESM。
 5. 最后拆 `ChatWsController` 和剩余 Flutter God Screen。删除旧实现必须以 shadow/characterization/isolated HTTP 证据为前提，不做一次性大爆炸重写。
+
+### 第三波（2026-07-18，已完成）
+
+- `runChatTurn` 已接入 turn request normalization、duplicate-first admission 和短生命周期 preparation lease。只有用户消息写盘、Provider route、runtime claim 三项 proof 齐全后才交给 Claude streaming 或 Codex process runner；同步失败与早退都会释放 claim。retry、post-turn 和 runner finalize 暂未迁移。
+- Claude 兼容不变量已锁定：duplicate 不分配原生 UUID；真正接纳的“已有历史、无 chat state、尚无原生 ID”请求仍按旧入口先分配 UUID，再按既有 resume 语义执行。Codex 断流续跑与 fresh retry 未改。
+- Dashboard Memo 已迁入 `public/memo-controller.js`，`manage.js` 约 7,353→7,246（-107）；Memo 区域不再直接 fetch、拼 token query 或用 innerHTML 渲染会话。
+- Chat 通知/提示音已迁入 `public/chat-notifications.js`，`chat.js` 约 5,557→5,417（-140）；错误通知保留 error 类型，通知跳转只白名单保留 session/cwd，Push toggle 串行化避免双击竞态。
+- 两份新 Web 测试已纳入默认 security 门。完整 `npm test` 与 `test:integration:isolated` 通过。
+- 本批为了明确 proof/lease 顺序，`server.js` 暂时净增长；下一批迁 retry/post-turn 时必须把 preparation composition 收进 `src/chat` host coordinator，不能继续在 God file 内堆状态机。
+
+### 第四波建议
+
+1. 先迁 Memo HTTP 三条路由到 `asyncRoute → DomainError → presenter`，消除原始 `e.message` 路径泄漏；同时让 `memo.html` 与 Chat 内 Memo 复用同一 controller，结束三套实现。
+2. 再把 retry policy 和 post-turn effect 接入生产，并将 preparation composition 从 `server.js` 下沉到可注入 coordinator。
+3. 完成上述两项后再拆 Chat WS controller；Flutter God Screen 作为独立批次，避免与 Web/host 热点交叉。
