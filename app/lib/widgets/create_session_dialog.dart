@@ -2,6 +2,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
 import '../models/agent_preset.dart';
 import '../services/settings_service.dart';
@@ -240,27 +241,27 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           context: context,
           builder: (c) => AlertDialog(
             backgroundColor: const Color(0xFF14171c),
-            title: const Text(
-              '替换当前内容?',
-              style: TextStyle(color: Color(0xFFe7eaee), fontSize: 15),
+            title: Text(
+              t('roleReplaceTitle'),
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 15),
             ),
-            content: const Text(
-              '角色框已有内容，使用模板会覆盖。',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 13),
+            content: Text(
+              t('roleReplaceBody'),
+              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 13),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(c, false),
-                child: const Text(
-                  '取消',
-                  style: TextStyle(color: Color(0xFF8a909b)),
+                child: Text(
+                  t('cancel'),
+                  style: const TextStyle(color: Color(0xFF8a909b)),
                 ),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(c, true),
-                child: const Text(
-                  '替换',
-                  style: TextStyle(color: Color(0xFFff6b63)),
+                child: Text(
+                  t('roleReplaceBtn'),
+                  style: const TextStyle(color: Color(0xFFff6b63)),
                 ),
               ),
             ],
@@ -276,7 +277,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('模板加载失败：$e')));
+      ).showSnackBar(SnackBar(content: Text(t('roleLoadFailed', {'error': '$e'}))));
     }
   }
 
@@ -335,7 +336,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     return AlertDialog(
       backgroundColor: const Color(0xFF0f1115),
       title: Text(
-        '新建 ${widget.cli.displayName} ${widget.kind == SessionKind.chat ? 'Chat' : 'Terminal'}',
+        t('createSessionTitle', {
+          'cli': widget.cli.displayName,
+          'kind': widget.kind == SessionKind.chat ? 'Chat' : 'Terminal',
+        }),
         style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
       ),
       content: SingleChildScrollView(
@@ -344,29 +348,29 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ── Name ──
-            const Text(
-              '会话名称',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+            Text(
+              t('sessionName'),
+              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
             ),
             const SizedBox(height: 4),
             TextField(
               controller: _nameCtrl,
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: sheetInputDecoration(hint: '可选，留空自动生成'),
+              decoration: sheetInputDecoration(hint: t('optionalAutoName')),
             ),
             const SizedBox(height: 12),
             // ── Role prompt with preset picker ──
             Row(
               children: [
-                const Text(
-                  '角色提示词',
-                  style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                Text(
+                  t('rolePrompt'),
+                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
                 ),
                 const Spacer(),
                 TextButton.icon(
                   icon: const Icon(Icons.auto_awesome, size: 14),
                   label: Text(
-                    _loadingPresets ? '加载中…' : '选择预设角色',
+                    _loadingPresets ? t('loading') : t('selectRolePreset'),
                     style: const TextStyle(fontSize: 12),
                   ),
                   style: TextButton.styleFrom(
@@ -384,7 +388,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               controller: _roleCtrl,
               maxLines: 3,
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: sheetInputDecoration(hint: '可选，留空继承Fleet默认'),
+              decoration: sheetInputDecoration(
+                hint: t('optionalInheritFleetRole'),
+              ),
             ),
             const SizedBox(height: 12),
             // ── Provider ──
@@ -400,19 +406,19 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               decoration: sheetInputDecoration(),
               items: [
                 if (!_hasConcreteDefaultProvider)
-                  const DropdownMenuItem(
+                  DropdownMenuItem(
                     value: '',
                     child: Text(
-                      '默认登录 / 订阅',
-                      style: TextStyle(color: Color(0xFFe7eaee)),
+                      t('defaultLogin'),
+                      style: const TextStyle(color: Color(0xFFe7eaee)),
                     ),
                   ),
                 ...widget.providers.map(
                   (p) => DropdownMenuItem(
                     value: p['id'] as String,
                     child: Text(
-                      '${p['id'] == widget.defaultProviderId ? '默认 · ' : ''}${p['name']}'
-                      '${p['isOfficial'] == true ? ' · 订阅' : ''}'
+                      '${p['id'] == widget.defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
+                      '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
                       '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
                       style: const TextStyle(color: Color(0xFFe7eaee)),
                     ),
@@ -423,9 +429,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             ),
             // ── Model (linked to provider) ──
             const SizedBox(height: 12),
-            const Text(
-              '模型',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+            Text(
+              t('model'),
+              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
             ),
             const SizedBox(height: 4),
             DropdownButtonFormField<String>(
@@ -445,9 +451,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 ),
                 DropdownMenuItem(
                   value: '__custom__',
-                  child: const Text(
-                    '自定义…',
-                    style: TextStyle(color: Color(0xFF8a909b)),
+                  child: Text(
+                    t('customOption'),
+                    style: const TextStyle(color: Color(0xFF8a909b)),
                   ),
                 ),
               ],
@@ -470,8 +476,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(
                   hint: _isClaude
-                      ? '模型 ID，如 claude-opus-4-8'
-                      : '模型 ID，如 gpt-5.5 / xopglm52',
+                      ? t('claudeModelIdHint')
+                      : t('codexModelIdHint'),
                 ),
                 autofocus: true,
               ),
@@ -513,8 +519,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(
                   hint: widget.cli == SessionCli.opencode
-                      ? '例如 build；留空使用默认 agent'
-                      : '已定义的 agent 名称；留空使用默认 agent',
+                      ? t('agentBuildHint')
+                      : t('agentNameHint'),
                 ).copyWith(counterText: ''),
               ),
             ],
@@ -524,7 +530,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(null),
-          child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+          child: Text(
+            t('cancel'),
+            style: const TextStyle(color: Color(0xFF8a909b)),
+          ),
         ),
         ElevatedButton(
           style: ElevatedButton.styleFrom(
@@ -532,7 +541,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
             foregroundColor: Colors.white,
           ),
           onPressed: _submit,
-          child: const Text('创建'),
+          child: Text(t('create')),
         ),
       ],
     );

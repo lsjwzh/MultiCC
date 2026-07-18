@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
@@ -64,8 +65,11 @@ class _ChatViewState extends State<ChatView> {
           SnackBar(
             content: Text(
               merged
-                  ? '✓ 已从 ${res['baseBranch'] ?? 'base'} 同步 ${res['commits']} 个提交'
-                  : (res['message']?.toString() ?? '已是最新'),
+                  ? t('syncSuccess', {
+                      'base': '${res['baseBranch'] ?? t('baseBranch')}',
+                      'n': '${res['commits'] ?? 0}',
+                    })
+                  : t('syncAlreadyLatest'),
             ),
           ),
         );
@@ -74,7 +78,9 @@ class _ChatViewState extends State<ChatView> {
           SnackBar(
             backgroundColor: const Color(0xFF3a1414),
             content: Text(
-              '✗ 同步冲突已 abort，worktree 未改动：${(res['conflicts'] as List).join(', ')}',
+              t('syncConflict', {
+                'files': (res['conflicts'] as List).join(', '),
+              }),
               style: const TextStyle(color: Color(0xFFff9b9b)),
             ),
             duration: const Duration(seconds: 6),
@@ -82,13 +88,21 @@ class _ChatViewState extends State<ChatView> {
         );
       } else {
         messenger.showSnackBar(
-          SnackBar(content: Text('✗ 同步失败：${res['error'] ?? '未知错误'}')),
+          SnackBar(
+            content: Text(
+              t('syncFailed', {
+                'error': '${res['error'] ?? t('unknownError')}',
+              }),
+            ),
+          ),
         );
       }
       _lastWarnedBehind = 0; // allow a fresh warning if it falls behind again
       await _refreshMergeStatus(sessionId);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('✗ 同步请求失败：$e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('syncRequestFailed', {'error': '$e'}))),
+      );
     } finally {
       if (mounted) setState(() => _syncing = false);
     }
@@ -142,7 +156,7 @@ class _ChatViewState extends State<ChatView> {
           SnackBar(
             backgroundColor: const Color(0xFF2d2108),
             content: Text(
-              '⚠ 当前 worktree 已落后 $base $behind 个提交，建议同步',
+              t('behindWarning', {'base': base, 'n': '$behind'}),
               style: const TextStyle(color: Color(0xFFf2cc60)),
             ),
             duration: const Duration(seconds: 5),
@@ -259,7 +273,9 @@ Future<void> _editRoleFromSession(
     }
   }
   if (s == null) {
-    messenger.showSnackBar(const SnackBar(content: Text('Session 信息未加载')));
+    messenger.showSnackBar(
+      SnackBar(content: Text(t('sessionInfoUnavailable'))),
+    );
     return;
   }
   final picked = await showRolePromptEditor(
@@ -274,13 +290,15 @@ Future<void> _editRoleFromSession(
       SnackBar(
         content: Text(
           picked.trim().isEmpty
-              ? '✓ 已清除会话角色（继承Fleet默认），下一轮对话生效'
-              : '✓ 角色提示词已更新，下一轮对话生效',
+              ? t('rolePromptSaved')
+              : t('rolePromptUpdated'),
         ),
       ),
     );
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('角色保存失败：$e')));
+    messenger.showSnackBar(
+      SnackBar(content: Text(t('rolePromptFailed', {'error': '$e'}))),
+    );
   }
 }
 
@@ -344,9 +362,9 @@ Future<void> _shareFromSession(
             borderRadius: BorderRadius.circular(12),
             side: const BorderSide(color: Color(0xFF20242b)),
           ),
-          title: const Text(
-            '分享会话',
-            style: TextStyle(color: Color(0xFFe7eaee), fontSize: 16),
+          title: Text(
+            t('shareSession'),
+            style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 16),
           ),
           content: SizedBox(
             width: 380,
@@ -355,14 +373,14 @@ Future<void> _shareFromSession(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    '接收方在浏览器打开链接即可。',
-                    style: TextStyle(color: Color(0xFF8b949e), fontSize: 12),
+                  Text(
+                    t('shareDesc'),
+                    style: const TextStyle(color: Color(0xFF8b949e), fontSize: 12),
                   ),
                   const SizedBox(height: 4),
-                  const Text(
-                    '「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码。',
-                    style: TextStyle(color: Color(0xFFe3853f), fontSize: 12),
+                  Text(
+                    t('shareOperateWarn'),
+                    style: const TextStyle(color: Color(0xFFe3853f), fontSize: 12),
                   ),
                   const SizedBox(height: 14),
                   // ── Access type ──
@@ -370,14 +388,14 @@ Future<void> _shareFromSession(
                     children: [
                       _expandedChoice(
                         'view',
-                        '只读查看',
+                        t('shareViewOnly'),
                         access,
                         (v) => setState(() => access = v),
                       ),
                       const SizedBox(width: 8),
                       _expandedChoice(
                         'operate',
-                        '可对话',
+                        t('shareOperate'),
                         access,
                         (v) => setState(() => access = v),
                       ),
@@ -391,19 +409,19 @@ Future<void> _shareFromSession(
                       color: Color(0xFFe7eaee),
                       fontSize: 14,
                     ),
-                    decoration: const InputDecoration(
-                      hintText: '密码（只读可留空；可对话必填）',
-                      hintStyle: TextStyle(
+                    decoration: InputDecoration(
+                      hintText: t('sharePassword'),
+                      hintStyle: const TextStyle(
                         color: Color(0xFF6e7681),
                         fontSize: 13,
                       ),
                       filled: true,
-                      fillColor: Color(0xFF1c2128),
-                      contentPadding: EdgeInsets.symmetric(
+                      fillColor: const Color(0xFF1c2128),
+                      contentPadding: const EdgeInsets.symmetric(
                         horizontal: 12,
                         vertical: 10,
                       ),
-                      border: OutlineInputBorder(
+                      border: const OutlineInputBorder(
                         borderRadius: BorderRadius.all(Radius.circular(8)),
                         borderSide: BorderSide(color: Color(0xFF20242b)),
                       ),
@@ -411,33 +429,33 @@ Future<void> _shareFromSession(
                   ),
                   const SizedBox(height: 10),
                   // ── Expiry ──
-                  const Text(
-                    '有效期',
-                    style: TextStyle(color: Color(0xFF8b949e), fontSize: 11),
+                  Text(
+                    t('shareExpiry'),
+                    style: const TextStyle(color: Color(0xFF8b949e), fontSize: 11),
                   ),
                   const SizedBox(height: 4),
                   Row(
                     children: [
                       _expiryChip(
-                        '永不过期',
+                        t('neverExpires'),
                         0,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
                       ),
                       _expiryChip(
-                        '1h',
+                        t('oneHour'),
                         1,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
                       ),
                       _expiryChip(
-                        '1天',
+                        t('oneDay'),
                         24,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
                       ),
                       _expiryChip(
-                        '7天',
+                        t('sevenDays'),
                         168,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
@@ -455,7 +473,7 @@ Future<void> _shareFromSession(
                           : () async {
                               final pw = pwCtrl.text.trim();
                               if (access == 'operate' && pw.isEmpty) {
-                                setState(() => error = '「可对话」必须设置密码');
+                                setState(() => error = t('sharePasswordRequired'));
                                 return;
                               }
                               setState(() {
@@ -498,7 +516,11 @@ Future<void> _shareFromSession(
                                 color: Colors.white,
                               ),
                             )
-                          : Text(url == null ? '生成链接' : '重新生成'),
+                          : Text(
+                              url == null
+                                  ? t('shareGenerate')
+                                  : t('shareRegenerate'),
+                            ),
                     ),
                   ),
                   if (error != null) ...[
@@ -536,7 +558,7 @@ Future<void> _shareFromSession(
                             onTap: () {
                               Clipboard.setData(ClipboardData(text: url!));
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('链接已复制')),
+                                SnackBar(content: Text(t('shareCopied'))),
                               );
                             },
                             child: const Icon(
@@ -551,9 +573,9 @@ Future<void> _shareFromSession(
                   ],
                   // ── Existing shares ──
                   const SizedBox(height: 18),
-                  const Text(
-                    '已有分享',
-                    style: TextStyle(
+                  Text(
+                    t('existingShares'),
+                    style: const TextStyle(
                       color: Color(0xFF8b949e),
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -575,9 +597,9 @@ Future<void> _shareFromSession(
                       ),
                     )
                   else if (shares.isEmpty)
-                    const Text(
-                      '暂无',
-                      style: TextStyle(color: Color(0xFF6e7681), fontSize: 13),
+                    Text(
+                      t('none'),
+                      style: const TextStyle(color: Color(0xFF6e7681), fontSize: 13),
                     )
                   else
                     ...shares.map(
@@ -593,7 +615,13 @@ Future<void> _shareFromSession(
                           if (ctx.mounted) {
                             ScaffoldMessenger.of(
                               context,
-                            ).showSnackBar(SnackBar(content: Text('撤销失败：$e')));
+                              ).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    t('shareRevokeFailed', {'error': '$e'}),
+                                  ),
+                                ),
+                              );
                           }
                         }
                       }),
@@ -605,9 +633,9 @@ Future<void> _shareFromSession(
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text(
-                '关闭',
-                style: TextStyle(color: Color(0xFF8b949e)),
+              child: Text(
+                t('close'),
+                style: const TextStyle(color: Color(0xFF8b949e)),
               ),
             ),
           ],
@@ -685,17 +713,24 @@ Widget _expiryChip(
 
 String _shareTypeLabel(Map<String, dynamic> s) {
   if (s['type'] == 'messages') {
-    return '📎 消息快照·${s['messageCount'] ?? 0}条${s['hasPassword'] == true ? '·密码' : ''}';
+    return '📎 ${t('shareSnapshotSummary', {
+      'n': '${s['messageCount'] ?? 0}',
+      'password': s['hasPassword'] == true ? t('sharePasswordSuffix') : '',
+    })}';
   }
-  if (s['access'] == 'operate') return '🔌 可对话';
-  if (s['hasPassword'] == true) return '🔒 密码查看';
-  return '🌐 公开查看';
+  if (s['access'] == 'operate') return '🔌 ${t('shareOperateBadge')}';
+  if (s['hasPassword'] == true) return '🔒 ${t('sharePasswordBadge')}';
+  return '🌐 ${t('sharePublicBadge')}';
 }
 
 Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
   final exp = s['expiresAt'] as int?;
   final expStr = exp != null && exp > 0
-      ? ' · 到期 ${DateTime.fromMillisecondsSinceEpoch(exp).toLocal().toString().substring(0, 16)}'
+      ? ' · ${t('expiresAt', {
+          'time': DateTime.fromMillisecondsSinceEpoch(
+            exp,
+          ).toLocal().toString().substring(0, 16),
+        })}'
       : '';
   final url = (s['url'] as String?) ?? '';
   return Container(
@@ -773,7 +808,7 @@ void _openMemoFromSession(BuildContext context, String sessionId) {
   if (s == null) {
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Session 信息未加载')));
+    ).showSnackBar(SnackBar(content: Text(t('sessionInfoUnavailable'))));
     return;
   }
   Directory? d;
@@ -786,7 +821,7 @@ void _openMemoFromSession(BuildContext context, String sessionId) {
   if (d == null) {
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('找不到对应Fleet')));
+    ).showSnackBar(SnackBar(content: Text(t('fleetNotFound'))));
     return;
   }
   Navigator.push(
@@ -806,24 +841,27 @@ Future<void> confirmMergeWorktree(
     context: context,
     builder: (_) => AlertDialog(
       backgroundColor: const Color(0xFF0f1115),
-      title: const Text(
-        '合并 worktree',
-        style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+      title: Text(
+        t('mergeTitle'),
+        style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
       ),
-      content: const Text(
-        '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-        style: TextStyle(color: Color(0xFFe7eaee)),
+      content: Text(
+        t('mergeBody'),
+        style: const TextStyle(color: Color(0xFFe7eaee)),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, false),
-          child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+          child: Text(
+            t('cancel'),
+            style: const TextStyle(color: Color(0xFF8a909b)),
+          ),
         ),
         TextButton(
           onPressed: () => Navigator.pop(context, true),
-          child: const Text(
-            '合并',
-            style: TextStyle(
+          child: Text(
+            t('merge'),
+            style: const TextStyle(
               color: Color(0xFF6aa3ff),
               fontWeight: FontWeight.w600,
             ),
@@ -834,7 +872,7 @@ Future<void> confirmMergeWorktree(
   );
   if (ok != true || !context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
-  messenger.showSnackBar(const SnackBar(content: Text('正在合并 worktree...')));
+  messenger.showSnackBar(SnackBar(content: Text(t('merging'))));
   try {
     final result = await SessionService(
       settings: settings,
@@ -844,12 +882,14 @@ Future<void> confirmMergeWorktree(
     String msg;
     if (result['ok'] == true) {
       msg = result['merged'] == true
-          ? '✓ 已合并 ${result['commits']} 个提交回基分支'
-          : '✓ ${result['message'] ?? '没有新提交需要合并'}';
+          ? t('merged', {'n': '${result['commits'] ?? 0}'})
+          : t('mergedNothing', {'msg': t('mergeNoNewCommits')});
     } else if (result['conflicts'] != null) {
-      msg = '⚠️ 合并冲突，已 abort：${(result['conflicts'] as List).join(', ')}';
+      msg = t('mergeConflict', {
+        'files': (result['conflicts'] as List).join(', '),
+      });
     } else {
-      msg = '合并失败：${result['error'] ?? ''}';
+      msg = t('mergeFailed', {'error': '${result['error'] ?? ''}'});
     }
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text(msg)));
@@ -862,19 +902,24 @@ Future<void> confirmMergeWorktree(
     }
   } catch (e) {
     messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(SnackBar(content: Text('合并请求失败：$e')));
+    messenger.showSnackBar(
+      SnackBar(content: Text(t('mergeRequestFailed', {'error': '$e'}))),
+    );
   }
 }
 
 
 String _mergeStatusText(Map<String, dynamic>? status) {
-  if (status?['mergeReady'] != true) return '当前 worktree 没有需要合并的内容。';
+  if (status?['mergeReady'] != true) return t('mergeNotReady');
   final bits = <String>[];
-  if (status?['dirty'] == true) bits.add('有未提交改动');
+  if (status?['dirty'] == true) bits.add(t('uncommittedChanges'));
   final ahead = (status?['ahead'] as num?)?.toInt() ?? 0;
-  if (ahead > 0) bits.add('$ahead 个提交领先');
-  final detail = bits.isEmpty ? '有可合并内容' : bits.join('，');
-  return '$detail，可合并回 ${status?['baseBranch'] ?? '基分支'}。';
+  if (ahead > 0) bits.add(t('commitsAhead', {'n': '$ahead'}));
+  final detail = bits.isEmpty ? t('mergeContentReady') : bits.join(', ');
+  return t('mergeReadyDetail', {
+    'detail': detail,
+    'base': '${status?['baseBranch'] ?? t('baseBranch')}',
+  });
 }
 
 class _MergeReadyBanner extends StatelessWidget {
