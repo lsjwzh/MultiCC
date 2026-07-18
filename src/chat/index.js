@@ -8,5 +8,7 @@ module.exports = {
   ...require('./turn-lifecycle'),
   ...require('./host-coordinator'),
   ...require('./host-runtime'),
+  ...require('./finalize-plan'),
+  ...require('./finalize-host'),
   ...require('./ports'),
 };

@@ -35,6 +35,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     _activeFleetDirId = dirId;
     notifyListeners();
   }
+
   void closeFleetDir() {
     _activeFleetDirId = null;
     notifyListeners();
@@ -49,15 +50,15 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   List<Directory> get directories => List.unmodifiable(_directories);
 
   // ── Global "waiting for input" aggregation ────────────────────────────────
-  // Each _DirectoryCard owns a WorkspaceService with a live status map; it
-  // reports its currently-waiting session ids here so the dashboard KPI can show
-  // a directory-spanning view (the app has no single global workspace socket).
+  // DashboardWorkspaceStore owns one WorkspaceService per directory and reports
+  // its currently-waiting session ids here so the dashboard KPI can show a
+  // directory-spanning view without cards owning transport lifecycles.
   final Map<String, Set<String>> _waitingByDir = {};
   Set<String> get waitingSessionIds =>
       _waitingByDir.values.expand((s) => s).toSet();
 
-  /// A _DirectoryCard reports the set of session ids waiting on user input in
-  /// its directory. Notifies listeners only when the aggregate actually changes.
+  /// The dashboard workspace store reports the set of session ids waiting on
+  /// user input in its directory. Notifies only when the aggregate changes.
   void reportWaiting(String dirId, Set<String> ids) {
     final prev = _waitingByDir[dirId] ?? const <String>{};
     if (prev.length == ids.length && prev.containsAll(ids)) return;
@@ -70,8 +71,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // ── Global "running / active" aggregation ─────────────────────────────────
-  // Same pattern as _waitingByDir, but for sessions that are actively
-  // executing (running / thinking / editing) — drives the 「活跃会话」KPI.
+  // Same pattern as _waitingByDir, but for sessions that are actively executing
+  // (running / thinking / editing) — drives the 「活跃会话」KPI.
   final Map<String, Set<String>> _runningByDir = {};
   Set<String> get runningSessionIds =>
       _runningByDir.values.expand((s) => s).toSet();
@@ -88,13 +89,12 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // ── Central live workspace status ─────────────────────────────────────────
-  // Each _DirectoryCard owns a WorkspaceService; it reports its full session →
-  // status map here so the dashboard popups can show live status / summary /
-  // run-time for every directory (mirrors the web's single `_workspaceStatus`).
+  // DashboardWorkspaceStore reports each directory's full session → status map
+  // here so dashboard popups can show live status / summary / run-time.
   final Map<String, Map<String, SessionStatus>> _statusByDir = {};
 
-  /// A _DirectoryCard reports its directory's live status map. Always notifies —
-  /// statuses change value (summary/run-time) without changing the id set.
+  /// The dashboard workspace store reports a directory's live status map.
+  /// Always notifies — values can change without the id set changing.
   void reportStatuses(String dirId, Map<String, SessionStatus> statuses) {
     if (statuses.isEmpty) {
       _statusByDir.remove(dirId);
@@ -480,7 +480,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     SessionCli cli, {
     bool fresh = false,
   }) async {
-    final config = await _sessionService.switchSessionCli(id, cli, fresh: fresh);
+    final config = await _sessionService.switchSessionCli(
+      id,
+      cli,
+      fresh: fresh,
+    );
     _providers[id]?.applyCliConfig(config);
     await loadDashboard();
     return config;
