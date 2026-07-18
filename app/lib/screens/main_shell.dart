@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:timeago/timeago.dart' as timeago;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
@@ -953,10 +952,7 @@ void _showSessionSheet(
                     final st = statusInfo(s, live);
                     final cliColor = cliBrandColor(s.cli);
                     final lastInteraction = sessionLastInteractionAt(s, live);
-                    final ago = timeago.format(
-                      lastInteraction,
-                      locale: 'en_short',
-                    );
+                    final ago = formatRelativeTime(lastInteraction);
                     final modelRaw = s.effectiveModel?.isNotEmpty == true
                         ? s.effectiveModel
                         : (s.model?.isNotEmpty == true ? s.model : null);

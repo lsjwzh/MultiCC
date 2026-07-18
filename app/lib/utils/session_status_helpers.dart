@@ -62,17 +62,41 @@ String wbStatusLabel(String? status) {
 ({Color color, String label, String emoji})? classifyBadge(String? s) {
   switch (s) {
     case 'D':
-      return (color: const Color(0xFF56d364), label: '已完成', emoji: '✅');
+      return (
+        color: const Color(0xFF56d364),
+        label: t('classifyDone'),
+        emoji: '✅',
+      );
     case 'C':
-      return (color: const Color(0xFF6cb6ff), label: '继续中', emoji: '▶️');
+      return (
+        color: const Color(0xFF6cb6ff),
+        label: t('classifyContinuing'),
+        emoji: '▶️',
+      );
     case 'W':
-      return (color: const Color(0xFFe3b341), label: '等待你', emoji: '⏸️');
+      return (
+        color: const Color(0xFFe3b341),
+        label: t('classifyWaitingUser'),
+        emoji: '⏸️',
+      );
     case 'B':
-      return (color: const Color(0xFFe3b341), label: '后台等待', emoji: '⏳');
+      return (
+        color: const Color(0xFFe3b341),
+        label: t('classifyWaitingBackground'),
+        emoji: '⏳',
+      );
     case 'E':
-      return (color: const Color(0xFFf85149), label: '接口异常', emoji: '⚠️');
+      return (
+        color: const Color(0xFFf85149),
+        label: t('classifyApiError'),
+        emoji: '⚠️',
+      );
     case 'P':
-      return (color: const Color(0xFF6cb6ff), label: '处理中', emoji: '🔄');
+      return (
+        color: const Color(0xFF6cb6ff),
+        label: t('classifyProcessing'),
+        emoji: '🔄',
+      );
     default:
       return null;
   }
@@ -118,6 +142,18 @@ DateTime sessionLastInteractionAt(Session session, SessionStatus? live) {
   return best;
 }
 
+String formatRelativeTime(DateTime value, {DateTime? now}) {
+  final diff = (now ?? DateTime.now()).difference(value);
+  if (diff.isNegative || diff.inMinutes < 1) return t('justNow');
+  if (diff.inHours < 1) {
+    return t('minutesAgo', {'n': '${diff.inMinutes}'});
+  }
+  if (diff.inDays < 1) {
+    return t('hoursAgo', {'n': '${diff.inHours}'});
+  }
+  return t('daysAgo', {'n': '${diff.inDays}'});
+}
+
 // ── 任务运行时长 ────────────────────────────────────────────────────────────
 // 从用户发出消息（runStartedAt）算起任务执行了多久；进行中实时累加，终止/等待
 // 时冻结到 runEndedAt。返回 null 表示无可用数据。
@@ -134,15 +170,24 @@ Duration? runDuration(SessionStatus? live) {
   return Duration(milliseconds: ms < 0 ? 0 : ms);
 }
 
-// 紧凑中文时长：12秒 / 3分20秒 / 1时05分。
 String formatRunDuration(Duration d) {
   final totalSec = d.inSeconds;
   final h = totalSec ~/ 3600;
   final m = (totalSec % 3600) ~/ 60;
   final sec = totalSec % 60;
-  if (h > 0) return '$h时${m.toString().padLeft(2, '0')}分';
-  if (m > 0) return '$m分${sec.toString().padLeft(2, '0')}秒';
-  return '$sec秒';
+  if (h > 0) {
+    return t('durationHoursMinutes', {
+      'h': '$h',
+      'm': m.toString().padLeft(2, '0'),
+    });
+  }
+  if (m > 0) {
+    return t('durationMinutesSeconds', {
+      'm': '$m',
+      's': sec.toString().padLeft(2, '0'),
+    });
+  }
+  return t('durationSeconds', {'s': '$sec'});
 }
 
 // 运行时长短语（带 ⏱），无数据返回空串。

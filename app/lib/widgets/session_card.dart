@@ -1,7 +1,6 @@
 // 会话卡片（目录/分组列表里的单卡，含状态/计时/git 等）。自 main_shell.dart 抽出。
 
 import 'package:flutter/material.dart';
-import 'package:timeago/timeago.dart' as timeago;
 
 import '../i18n.dart';
 import '../models/message.dart';
@@ -53,7 +52,7 @@ class SessionCard extends StatelessWidget {
     final cliColor = cliBrandColor(session.cli);
     final live = liveStatus;
     final lastInteraction = sessionLastInteractionAt(session, live);
-    final ago = timeago.format(lastInteraction, locale: 'en_short');
+    final ago = formatRelativeTime(lastInteraction);
     final statusColor = live != null
         ? wbStatusColor(live.status)
         : (session.active ? const Color(0xFF7fd49a) : const Color(0xFF5b616c));
