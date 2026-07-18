@@ -54,9 +54,10 @@ class VoiceSession {
     this.accumulatedText = '';
     
     const { wsUrl, asrProvider = 'auto' } = this.opts;
-    const asrWsUrl = `${wsUrl}/ws/voice`;
+    let asrWsUrl;
     
     try {
+      asrWsUrl = await window.multiccWsUrl(`${wsUrl}/ws/voice`);
       // Get microphone stream
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -188,7 +189,9 @@ class VoiceSession {
 
   async _startTts(text) {
     const { wsUrl, ttsProvider = 'edge' } = this.opts;
-    const ttsWsUrl = `${wsUrl}/ws/tts`;
+    let ttsWsUrl;
+    try { ttsWsUrl = await window.multiccWsUrl(`${wsUrl}/ws/tts`); }
+    catch (e) { if (this.opts.onError) this.opts.onError(e.message); return; }
 
     this.voiceOutput = new VoiceOutput({
       wsUrl: ttsWsUrl,
@@ -225,7 +228,7 @@ class VoiceSession {
     }
   }
 
-  _continueListening() {
+  async _continueListening() {
     // After TTS finishes or is interrupted, go back to listening
     this._setState('LISTENING');
     this.accumulatedText = '';
@@ -234,8 +237,11 @@ class VoiceSession {
     // Restart ASR
     if (this.voiceInput) {
       this.voiceInput.abort();
+      let asrWsUrl;
+      try { asrWsUrl = await window.multiccWsUrl(`${this.opts.wsUrl}/ws/voice`); }
+      catch (e) { if (this.opts.onError) this.opts.onError(e.message); return; }
       this.voiceInput = new VoiceStream({
-        wsUrl: `${this.opts.wsUrl}/ws/voice`,
+        wsUrl: asrWsUrl,
         provider: this.opts.asrProvider || 'auto',
         lang: 'zh',
         onText: (text, isFinal) => {

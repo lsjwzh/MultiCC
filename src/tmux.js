@@ -10,7 +10,9 @@ const { execFile } = require('child_process');
 const TMUX_PREFIX = 'multicc-';
 const TMUX_FIFO_DIR = path.join(os.tmpdir(), 'multicc-fifos');
 const TMUX_TIMEOUT_MS = 5000;
-fsp.mkdir(TMUX_FIFO_DIR, { recursive: true }).catch(() => {});
+const fifoDirReady = fsp.mkdir(TMUX_FIFO_DIR, { recursive: true, mode: 0o700 })
+  .then(() => fsp.chmod(TMUX_FIFO_DIR, 0o700))
+  .catch(() => {});
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -111,8 +113,10 @@ function openFifo(fifoPath) {
 
 async function startOutputCapture(id) {
   const fifoPath = fifoPathForSession(id);
+  await fifoDirReady;
   await fsp.unlink(fifoPath).catch(() => {});
   await run('mkfifo', [fifoPath]);
+  await fsp.chmod(fifoPath, 0o600);
   await run('tmux', ['pipe-pane', '-t', tmuxSessionName(id), `cat > '${fifoPath.replace(/'/g, `'\\''`)}'`]);
   const fd = await openFifo(fifoPath);
   const stream = new net.Socket({ fd, readable: true, writable: false });

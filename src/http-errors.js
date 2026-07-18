@@ -29,12 +29,35 @@ const crypto = require('crypto');
 // to fit in a mobile UI toast if we ever surface it.
 function makeRequestId() { return crypto.randomBytes(4).toString('hex'); }
 
+function cleanIncomingId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : null;
+}
+
 function requestIdMiddleware(req, res, next) {
-  const id = makeRequestId();
+  const headers = req.headers || {};
+  const id = cleanIncomingId(headers['x-request-id']) || makeRequestId();
+  const correlationId = cleanIncomingId(headers['x-correlation-id']) || id;
+  const startedAt = process.hrtime.bigint();
   req.id = id;
+  req.correlationId = correlationId;
   res.locals = res.locals || {};
   res.locals.requestId = id;
+  res.locals.correlationId = correlationId;
   res.setHeader('X-Multicc-Request-Id', id);
+  res.setHeader('X-Correlation-Id', correlationId);
+  if (typeof res.once === 'function') res.once('finish', () => {
+    const obs = req.app && req.app.locals && req.app.locals.observability;
+    if (!obs || !obs.logger) return;
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    obs.logger.info('http_request', {
+      requestId: id,
+      correlationId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      durationMs: Math.round(durationMs * 1000) / 1000,
+    });
+  });
   next();
 }
 
@@ -52,7 +75,12 @@ function safeErrorHandler(logger = console) {
     const status = Number.isInteger(err && err.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
     // Full details to logs, tagged with the request id. Never to the client.
     try {
-      logger.error(`[http:${rid}] ${req && req.method} ${req && req.originalUrl} → ${status}: ${err && err.stack || err && err.message || err}`);
+      const detail = err && (err.stack || err.message) || String(err);
+      if (logger && logger.error && logger.error.length >= 2) {
+        logger.error('http_error', { requestId: rid, correlationId: req && req.correlationId, method: req && req.method, path: req && req.path, status, detail });
+      } else {
+        logger.error(`[http:${rid}] ${req && req.method} ${req && req.path} → ${status}: ${detail}`);
+      }
     } catch (_) { /* logger explosion is not our problem */ }
 
     // Client body: never include err.message or err.stack unless the caller
@@ -90,4 +118,5 @@ module.exports = {
   asyncHandler,
   safeError,
   makeRequestId,
+  cleanIncomingId,
 };

@@ -23,6 +23,8 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const cliProviderRouter = require('cli-provider-router');
 const { createSqliteRuntime } = require('./sqlite-runtime');
+const { resolveDataDir } = require('./paths');
+const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('./runtime-security');
 
 const sqliteRuntime = createSqliteRuntime();
 
@@ -41,7 +43,7 @@ function resolveCcDb() {
   return CC_DB_DEFAULT; // return default path even if absent (caller checks)
 }
 // multicc's own store, in the project root (one level up from src/).
-const STORE_FILE = path.join(__dirname, '..', 'providers.json');
+const STORE_FILE = path.join(resolveDataDir(process.env.MULTICC_DATA_DIR), 'providers.json');
 // Per-provider CODEX_HOME dirs materialized on demand so codex sessions can
 // point at different auth/config without clobbering the global ~/.codex.
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
@@ -80,7 +82,7 @@ function loadStore() {
 }
 
 function saveStore(list) {
-  try { fs.writeFileSync(STORE_FILE, JSON.stringify(list, null, 2)); }
+  try { atomicWriteJson(STORE_FILE, list); }
   catch (e) { console.error('[multicc] save providers.json failed:', e.message); }
 }
 
@@ -686,7 +688,11 @@ function buildChildEnv(base, session, extra = {}) {
   };
 }
 
-const materializeCodexAuth = cliProviderRouter.materializeCodexAuth;
+function materializeCodexAuth(home, cfg) {
+  const result = cliProviderRouter.materializeCodexAuth(home, cfg);
+  secureFile(path.join(home, 'auth.json'));
+  return result;
+}
 
 // Compute env overrides + flags to apply when spawning a child for `session`.
 //   - env: object merged into the child's process env (only this child).
@@ -756,7 +762,8 @@ function resolveSpawnEnv(session) {
 
   try {
     const home = path.join(CODEX_HOMES_DIR, providerId);
-    fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+    ensurePrivateDir(home);
+    ensurePrivateDir(path.join(home, 'sessions'));
     materializeCodexAuth(home, cfg);
     if (cfg.config) {
       // cc-switch 导入的 config 可能带 model_catalog_json 指向 cc-switch 自己目录里的
@@ -765,7 +772,8 @@ function resolveSpawnEnv(session) {
       let toml = cfg.config;
       toml = toml.replace(/^model_catalog_json\s*=.*$/gm, '').replace(/\n{3,}/g, '\n\n');
       toml = toml.replace(/\[model_providers\]\s*\n\[model_providers\.custom\]/, '[model_providers.custom]');
-      fs.writeFileSync(path.join(home, 'config.toml'), toml);
+      const configFile = path.join(home, 'config.toml');
+      atomicWriteText(configFile, toml);
     }
     // Per-provider codex reads skills from $CODEX_HOME/skills, but
     // syncSharedSkills only populates the global ~/.codex/skills, so mirror it
@@ -802,9 +810,10 @@ function resolveSpawnEnv(session) {
 // Reads token_usage.json (persistent per-session accumulator) for cumulative
 // totals, and token_daily.json for today/week/month time-window breakdowns.
 // Sessions without a provider are grouped into "_default_".
-const SESSIONS_FILE = path.join(__dirname, '..', 'sessions.json');
-const TOKEN_USAGE_FILE = path.join(__dirname, '..', 'token_usage.json');
-const TOKEN_DAILY_FILE = path.join(__dirname, '..', 'token_daily.json');
+const PROVIDER_DATA_DIR = resolveDataDir(process.env.MULTICC_DATA_DIR);
+const SESSIONS_FILE = path.join(PROVIDER_DATA_DIR, 'sessions.json');
+const TOKEN_USAGE_FILE = path.join(PROVIDER_DATA_DIR, 'token_usage.json');
+const TOKEN_DAILY_FILE = path.join(PROVIDER_DATA_DIR, 'token_daily.json');
 
 // Returns the date-key string YYYY-MM-DD for a given Date.
 function dateKey(d) {

@@ -274,8 +274,7 @@ const _urlToken = new URLSearchParams(location.search).get('token') || '';
 
 /** Append token param to a URL string (handles both ? and & correctly) */
 function withToken(url) {
-  if (!_urlToken) return url;
-  return url + (url.includes('?') ? '&' : '?') + `token=${encodeURIComponent(_urlToken)}`;
+  return url;
 }
 
 /* ── Dynamic favicon + title from session ID ── */
@@ -491,7 +490,7 @@ function scheduleReconnect() {
 let _initialCwd = '';   // set by directory picker for new sessions
 let _initialId  = '';   // custom session ID from directory picker
 
-function connect() {
+async function connect() {
   // Cancel any pending reconnect
   if (_reconnectTimer) {
     clearTimeout(_reconnectTimer);
@@ -506,15 +505,16 @@ function connect() {
   setStatus('connecting', 'Connecting…');
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const urlToken = new URLSearchParams(location.search).get('token');
-  const tokenParam = urlToken ? `&token=${urlToken}` : '';
   const cwdParam = _initialCwd ? `&cwd=${encodeURIComponent(_initialCwd)}` : '';
   const idParam  = _initialId  ? `&newid=${encodeURIComponent(_initialId)}` : '';
-  const wsUrl = currentSessionId
-    ? `${proto}//${location.host}/?id=${currentSessionId}${tokenParam}`
-    : `${proto}//${location.host}/?_=1${tokenParam}${cwdParam}${idParam}`;
+  let wsUrl = currentSessionId
+    ? `${proto}//${location.host}/?id=${encodeURIComponent(currentSessionId)}`
+    : `${proto}//${location.host}/?_=1${cwdParam}${idParam}`;
   _initialCwd = '';  // only used once
   _initialId  = '';
+  try { wsUrl = await window.multiccWsUrl(wsUrl); }
+  catch (_) { if (gen === _wsGen) scheduleReconnect(); return; }
+  if (gen !== _wsGen) return;
   ws = new WebSocket(wsUrl);
 
   // ── Write batching: merge rapid output into single rAF-paced term.write() calls ──
@@ -1100,9 +1100,11 @@ function streamingAvailable() {
   return !!(s && (s.local?.ready || s.openai?.ready || s.volcano?.ready || s.funasr?.ready));
 }
 
-function startStreamingVoice() {
+async function startStreamingVoice() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = withToken(`${proto}//${location.host}/ws/voice`);
+  let wsUrl;
+  try { wsUrl = await window.multiccWsUrl(`${proto}//${location.host}/ws/voice`); }
+  catch (_) { return; }
   showVoicePanel('');
   vpRaw.placeholder = '聆听中…';
   vpStatus.textContent = '● 聆听中';

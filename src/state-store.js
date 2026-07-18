@@ -35,6 +35,7 @@ const path = require('path');
 
 const SCHEMA_KEY = '__multiccSchema';
 const DEFAULT_ROTATE = 3;
+let failureReporter = () => {};
 
 class CorruptedStateError extends Error {
   constructor(msg, meta) {
@@ -97,32 +98,55 @@ function rotateBackups(target, keep) {
 // Write payload durably: tmp file → fsync → rename → parent fsync.
 // Throws on any hard failure; caller decides what to do (usually: propagate to
 // the HTTP layer so the client doesn't get a false success).
-function writeJsonAtomic(target, payload, { rotate = DEFAULT_ROTATE, kind = 'unknown', schemaVersion = 1 } = {}) {
+function writeTextAtomic(target, text, { mode = 0o600, dirMode = 0o700, beforeRename } = {}) {
   const dir = path.dirname(target);
-  try { fs.mkdirSync(dir, { recursive: true }); }
-  catch (e) {
-    if (e.code !== 'EEXIST') throw new Error(`[state-store] mkdir ${dir}: ${e.message}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: dirMode });
+    fs.chmodSync(dir, dirMode);
   }
+  catch (e) {
+    if (e.code !== 'EEXIST') {
+      try { failureReporter(e, { operation: 'mkdir', target }); } catch (_) {}
+      throw new Error(`[state-store] mkdir ${dir}: ${e.message}`);
+    }
+  }
+  const tmp = `${target}.tmp.${process.pid}.${counter++}`;
+  let fd;
+  try {
+    fd = fs.openSync(tmp, 'w', mode);
+    fs.writeSync(fd, text);
+    tryFsync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    if (typeof beforeRename === 'function') beforeRename();
+    fs.renameSync(tmp, target);
+    fs.chmodSync(target, mode);
+    fsyncDir(dir);
+  } catch (e) {
+    try { failureReporter(e, { operation: 'atomic_write', target }); } catch (_) {}
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    throw e;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {}
+  }
+}
 
+function writeJsonAtomic(target, payload, { rotate = DEFAULT_ROTATE, kind = 'unknown', schemaVersion = 1 } = {}) {
   const env = envelope({ kind, schemaVersion, data: payload });
   env[SCHEMA_KEY].writtenAt = new Date().toISOString();
   const text = JSON.stringify(env, null, 2);
 
-  const tmp = `${target}.tmp.${process.pid}.${counter++}`;
-  let fd;
-  try {
-    fd = fs.openSync(tmp, 'w', 0o644);
-    fs.writeSync(fd, text);
-    tryFsync(fd);
-  } finally {
-    if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {}
-  }
-
-  rotateBackups(target, rotate);
-  fs.renameSync(tmp, target);
-  fsyncDir(dir);
+  writeTextAtomic(target, text, {
+    mode: 0o600,
+    dirMode: 0o700,
+    beforeRename: () => rotateBackups(target, rotate),
+  });
 }
 let counter = 0;
+
+function setFailureReporter(reporter) {
+  failureReporter = typeof reporter === 'function' ? reporter : () => {};
+}
 
 // Load a state file. Returns:
 //   { present: false }                        → target doesn't exist at all
@@ -196,9 +220,11 @@ function createStore({ file, kind, schemaVersion = 1, legacyIsArray = true, rota
 
 module.exports = {
   CorruptedStateError,
+  writeTextAtomic,
   writeJsonAtomic,
   readJson,
   recoverFromBackup,
   createStore,
   SCHEMA_KEY,
+  setFailureReporter,
 };
