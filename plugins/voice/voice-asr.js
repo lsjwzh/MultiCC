@@ -21,10 +21,14 @@
 
 const WebSocket = require('ws');
 const zlib = require('zlib');
+// In-process local ASR (SenseVoice via sherpa-onnx) — no upstream socket at all.
+const asrLocal = require('../../src/asr-local');
 
 // ── Provider config (mutated by server.js when settings change) ──
 const cfg = {
-  defaultProvider: process.env.ASR_PROVIDER || 'openai',
+  // 'auto' resolves per-session: local model when present, else first cloud
+  // provider with credentials (see resolveProvider).
+  defaultProvider: process.env.ASR_PROVIDER || 'auto',
 
   openai: {
     apiKey: process.env.OPENAI_REALTIME_API_KEY || '',
@@ -64,15 +68,29 @@ function applyConfig(updates) {
 // Which providers have enough config to actually run — surfaced to the UI so the
 // client knows what it can pick.
 function providerStatus() {
+  const local = asrLocal.status();
   return {
-    default: cfg.defaultProvider,
+    default: resolveProvider(cfg.defaultProvider),
+    local:   { ready: local.ready, model: local.model, loaded: local.loaded, sampleRate: local.sampleRate },
     openai:  { ready: !!cfg.openai.apiKey,  model: cfg.openai.model,  sampleRate: cfg.openai.sampleRate },
     volcano: { ready: !!(cfg.volcano.appId && cfg.volcano.accessToken), sampleRate: cfg.volcano.sampleRate },
     funasr:  { ready: !!cfg.funasr.url, mode: cfg.funasr.mode, sampleRate: cfg.funasr.sampleRate },
   };
 }
 
+// 'auto' picks the best available provider: local model beats any cloud hop,
+// then cloud providers in configured-credential order.
+function resolveProvider(requested) {
+  if (requested && requested !== 'auto') return requested;
+  if (asrLocal.isAvailable()) return 'local';
+  if (cfg.openai.apiKey) return 'openai';
+  if (cfg.volcano.appId && cfg.volcano.accessToken) return 'volcano';
+  if (cfg.funasr.url) return 'funasr';
+  return 'openai';
+}
+
 function targetSampleRate(provider) {
+  if (provider === 'local') return 16000;
   const p = (cfg[provider] || cfg.openai);
   return p.sampleRate || 16000;
 }
@@ -294,8 +312,18 @@ function volcanoSession(opts, cb) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Provider: local in-process ASR (SenseVoice + silero-VAD via sherpa-onnx).
+// No network at all — src/asr-local.js segments speech with VAD and emits a
+// final per segment. Same session interface as the socket-based providers.
+// ─────────────────────────────────────────────────────────────────────────────
+function localSession(opts, cb) {
+  return asrLocal.createStreamingSession(opts, cb);
+}
+
 function createAsrSession(provider, opts, cb) {
   switch (provider) {
+    case 'local':   return localSession(opts, cb);
     case 'volcano': return volcanoSession(opts, cb);
     case 'funasr':  return funasrSession(opts, cb);
     case 'openai':
@@ -334,7 +362,7 @@ function handleVoiceWs(ws, req, urlObj) {
     let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.type === 'start') {
       const requested = (msg.provider && msg.provider !== 'auto') ? msg.provider : cfg.defaultProvider;
-      provider = requested;
+      provider = resolveProvider(requested);
       try {
         upstream = createAsrSession(provider, { lang: msg.lang }, cb);
       } catch (e) { cb.onError(e.message); }

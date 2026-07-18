@@ -30,6 +30,7 @@
     "node-cron": "^4.2.1",
     "node-pty": "^1.0.0",
     "node-telegram-bot-api": "^0.66.0",
+    "sherpa-onnx-node": "^1.13.4",
     "web-push": "^3.6.7",
     "ws": "^8.16.0"
   }

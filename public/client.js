@@ -1097,7 +1097,7 @@ fetch(withToken('/api/settings/voice'))
 
 function streamingAvailable() {
   const s = _asrCfg && _asrCfg.status;
-  return !!(s && (s.openai?.ready || s.volcano?.ready || s.funasr?.ready));
+  return !!(s && (s.local?.ready || s.openai?.ready || s.volcano?.ready || s.funasr?.ready));
 }
 
 function startStreamingVoice() {

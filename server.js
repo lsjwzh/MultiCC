@@ -4763,6 +4763,9 @@ const {
   loadVoiceExamples, appendVoiceExample, loadWhisperVocab, saveWhisperVocab,
   extractCorrections, mergeWhisperVocab, buildWhisperPrompt, callVoiceAPI,
 } = voice;
+// Local ASR (SenseVoice via sherpa-onnx) — used by /api/voice/stt when the
+// model is present; falls back to the cloud Whisper path otherwise.
+const asrLocal = require('./src/asr-local');
 
 // ── File upload for chat mode ──
 app.post('/api/upload', upload.single('file'), (req, res) => {
@@ -5007,15 +5010,31 @@ app.post('/api/voice/stt', upload.single('file'), async (req, res) => {
     return res.status(400).json({ error: '未收到音频文件' });
   }
 
-  const apiKey = voice.cfg.WHISPER_API_KEY || voice.cfg.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'WHISPER_API_KEY 或 OPENROUTER_API_KEY 未设置' });
+  console.log(`[multicc/stt][${reqId}] File: ${req.file.originalname}, size: ${req.file.size}, mime: ${req.file.mimetype}`);
+
+  // ── Local ASR first (SenseVoice via sherpa-onnx, ~RTF 0.02 on Apple
+  // Silicon). Any failure falls through to the cloud Whisper path so a broken
+  // model install can't take voice input down.
+  if (asrLocal.isAvailable()) {
+    try {
+      const r = await asrLocal.transcribeBuffer(req.file.buffer, req.file.mimetype);
+      console.log(`[multicc/stt][${reqId}] Local ASR ok in ${r.ms}ms (decode ${r.decodeMs}ms + infer ${r.inferMs}ms, audio ${r.audioSec.toFixed(1)}s), text length: ${r.text.length}`);
+      return res.json({ text: r.text, duration_ms: r.ms, engine: 'local' });
+    } catch (err) {
+      console.error(`[multicc/stt][${reqId}] Local ASR failed, falling back to cloud:`, err.message);
+    }
   }
 
-  console.log(`[multicc/stt][${reqId}] File: ${req.file.originalname}, size: ${req.file.size}, mime: ${req.file.mimetype}`);
+  const apiKey = voice.cfg.WHISPER_API_KEY || voice.cfg.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: '本地 ASR 未就绪，且 WHISPER_API_KEY 或 OPENROUTER_API_KEY 未设置' });
+  }
+
   console.log(`[multicc/stt][${reqId}] Forwarding to ${voice.cfg.WHISPER_BASE_URL}/audio/transcriptions (model: ${voice.cfg.WHISPER_MODEL})`);
 
   const t0 = Date.now();
+  const abort = new AbortController();
+  const fetchTimeout = setTimeout(() => abort.abort(), 30000);
   try {
     const formData = new FormData();
     const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' });
@@ -5040,6 +5059,7 @@ app.post('/api/voice/stt', upload.single('file'), async (req, res) => {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: formData,
+      signal: abort.signal,
     });
 
     if (!response.ok) {
@@ -5051,11 +5071,14 @@ app.post('/api/voice/stt', upload.single('file'), async (req, res) => {
     const result = await response.json();
     const durationMs = Date.now() - t0;
     console.log(`[multicc/stt][${reqId}] Success in ${durationMs}ms, text length: ${(result.text || '').length}`);
-    res.json({ text: result.text || '', duration_ms: durationMs });
+    res.json({ text: result.text || '', duration_ms: durationMs, engine: 'cloud' });
   } catch (err) {
     const durationMs = Date.now() - t0;
-    console.error(`[multicc/stt][${reqId}] Error after ${durationMs}ms:`, err.message);
-    res.status(500).json({ error: err.message });
+    const msg = err.name === 'AbortError' ? '云端 Whisper 超时（30s）' : err.message;
+    console.error(`[multicc/stt][${reqId}] Error after ${durationMs}ms:`, msg);
+    res.status(500).json({ error: msg });
+  } finally {
+    clearTimeout(fetchTimeout);
   }
 });
 
@@ -5114,7 +5137,7 @@ app.get('/api/settings/voice', (req, res) => {
     whisperPrompt: env.WHISPER_PROMPT || process.env.WHISPER_PROMPT || '',
     // ── Streaming ASR (real-time dictation) ──
     asr: {
-      provider: env.ASR_PROVIDER || process.env.ASR_PROVIDER || 'openai',
+      provider: env.ASR_PROVIDER || process.env.ASR_PROVIDER || 'auto',
       status: voiceAsr.providerStatus(),
       openaiUrl: env.OPENAI_REALTIME_URL || process.env.OPENAI_REALTIME_URL || 'wss://api.openai.com/v1/realtime',
       openaiModel: env.OPENAI_REALTIME_MODEL || process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-transcribe',
