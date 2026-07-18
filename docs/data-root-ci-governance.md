@@ -3,6 +3,12 @@
 Reviewed: 2026-07-18. This document records items deliberately not deleted or
 moved in the Data root + CI P0/P1 batch.
 
+The phase-three machine-readable follow-up is
+`governance/runtime-write-inventory.json`; repository artifact policy and the
+reviewed historical baseline are documented in
+`docs/repository-artifact-governance.md`. Those files supersede the informal
+queue below for CI enforcement while preserving this original review record.
+
 ## Runtime paths not migrated in this batch
 
 `server.js` was explicitly out of scope. The following paths therefore remain
@@ -22,9 +28,10 @@ migration plans:
 - `src/providers.js`: `~/.multicc/codex-homes` and the external read-only
   `~/.cc-switch/cc-switch.db` source. The former needs a backward-compatible
   directory migration; the latter is owned by cc-switch.
-- `src/artifacts.js`, `src/detached.js`, bridge gateway working directories and
-  local ASR models under `~/.multicc`. These may contain large or live process
-  state, so moving them requires resumability and rollback tests.
+- `src/artifacts.js` and `src/detached.js` now place new writes under
+  `MULTICC_DATA_DIR`; their old locations are read-only compatibility sources.
+  Bridge gateway working directories and local ASR models remain inventoried
+  because they contain live workspaces or large externally-owned assets.
 
 Safe leaf-module paths migrated here are provider/token accounting, push,
 shares, tunnel config, voice examples/vocabulary, cron tasks, bridge configs,

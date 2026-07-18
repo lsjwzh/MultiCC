@@ -56,7 +56,7 @@ async function testSurvivesLauncherDeath() {
   // Spawn a child node that launches a 2s job then exits IMMEDIATELY. The job
   // must keep running and write its done-file after the launcher is gone.
   const script =
-    `const d=require(${JSON.stringify(require('path').resolve(__dirname, '../src/detached'))});` +
+    `const d=require(${JSON.stringify(path.resolve(__dirname, '../src/detached'))});` +
     `const j=d.launch({command:'sleep 2; echo SURVIVED; exit 0',label:'t2'});` +
     `process.stdout.write(j.id);process.exit(0);`;
   const id = cp.execSync(`node -e ${JSON.stringify(script)}`).toString().trim();
@@ -106,4 +106,8 @@ async function testWaitInjectorIntegration() {
   fs.rmSync(testRoot, { recursive: true, force: true });
   console.log('ALL PASS ✅');
   process.exit(0);
-})().catch(e => { console.error('FAIL ❌', e); process.exit(1); });
+})().catch(e => {
+  console.error('FAIL ❌', e);
+  try { assertTestDir(testRoot); fs.rmSync(testRoot, { recursive: true, force: true }); } catch (_) {}
+  process.exit(1);
+});

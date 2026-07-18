@@ -28,6 +28,13 @@ working directories. Registration endpoints may return a one-time callback
 secret to the caller that created it; that operational response must not be
 stored in status DTOs, logs, snapshots, or WebSocket events.
 
+Pure query, workspace, history and status-transition services now live under
+`src/session/`; see `docs/session-domain-boundaries.md`. They use injected ports
+and are intentionally not connected to the host yet. Until the compatibility
+switch is reviewed, `server.js` remains the active implementation for the v1
+routes and workspace/chat WebSocket paths; the new services are the tested
+target boundary, not a second runtime writer.
+
 ## Errors, request ids, and correlation ids
 
 Every request receives `X-Multicc-Request-Id`, `X-Correlation-Id`, and
