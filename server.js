@@ -55,7 +55,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
-const { execSync, execFileSync, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const { createUploadSuite, persistChatUpload, sendUploadError } = require('./src/upload-middleware');
 const chokidar = require('chokidar');
 const cron = require('node-cron');
@@ -926,7 +926,8 @@ async function recoverTmuxSessions() {
 const {
   WORKTREE_SUBDIR, gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
   gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeCommitAll, gitWorktreeMergeState, gitMergeBack,
-  gitSyncFromBase, gitRebaseResolve, defaultRepoActor,
+  gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
+  gitImportSessionBundle, defaultRepoActor,
 } = require('./src/git');
 
 // RepoActor operations are retained in a bounded in-memory history. Destructive
@@ -2930,22 +2931,14 @@ function cliHandoffSummary(session) {
   } : null;
 }
 
-function cliSwitchGitSnapshot(session) {
-  const cwd = cwdForSession(session);
-  const snapshot = { branch: session.branch || null, head: null, changes: [] };
+async function cliSwitchGitSnapshot(session) {
+  const fallback = { branch: session.branch || null, head: null, changes: [] };
   try {
-    snapshot.head = execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
-    }).trim() || null;
-  } catch (_) {}
-  try {
-    const out = execFileSync('git', ['-C', cwd, 'status', '--short'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
-      maxBuffer: 1024 * 1024,
-    });
-    snapshot.changes = out.split('\n').map(line => line.trimEnd()).filter(Boolean).slice(0, 100);
-  } catch (_) {}
-  return snapshot;
+    const snapshot = await gitWorktreeSnapshot(cwdForSession(session), session.branch || null);
+    return { branch: snapshot.branch, head: snapshot.head, changes: snapshot.changes };
+  } catch (_) {
+    return fallback;
+  }
 }
 
 function cliSwitchBusyState(sessionId) {
@@ -2987,7 +2980,7 @@ function performCliSwitch(session, targetCli, options = {}) {
     fromCli,
     toCli: targetCli,
     history,
-    git: cliSwitchGitSnapshot(session),
+    git: options.gitSnapshot || { branch: session.branch || null, head: null, changes: [] },
     now,
   });
 
@@ -3097,8 +3090,9 @@ app.post('/api/sessions/:id/switch-cli', asyncHandler(async (req, res) => {
       stream: activity.stream || null,
     });
   }
+  const gitSnapshot = await cliSwitchGitSnapshot(session);
   const switched = sessionPersistence.mutate('http.switch-cli', () =>
-    performCliSwitch(session, targetCli, { fresh }));
+    performCliSwitch(session, targetCli, { fresh, gitSnapshot }));
   res.json({
     ok: true,
     changed: true,
@@ -4166,12 +4160,13 @@ app.post('/api/sessions/:id/fork', asyncHandler(async (req, res) => {
   // is not context continuation. Seed the same one-shot checkpoint mechanism
   // used by cross-CLI switches; it is consumed only after the fork produces a
   // successful result.
+  const forkGitSnapshot = await cliSwitchGitSnapshot(r.session);
   const forkCheckpoint = buildHandoffCheckpoint({
     session: src,
     fromCli: src.cli,
     toCli: r.session.cli,
     history: sliced,
-    git: cliSwitchGitSnapshot(r.session),
+    git: forkGitSnapshot,
   });
   sessionPersistence.mutate('http.fork-session-finalize', () => {
     if (src.subagent && src.subagent.providerId && src.subagent.model) {
@@ -4250,7 +4245,7 @@ function bundleDecrypt(passphrase, enc) {
   return Buffer.concat([decipher.update(ct), decipher.final()]);
 }
 
-app.get('/api/sessions/:id/bundle', (req, res) => {
+app.get('/api/sessions/:id/bundle', asyncHandler(async (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   if (s.type === 'aux' || s.type === 'gateway') {
@@ -4311,30 +4306,22 @@ app.get('/api/sessions/:id/bundle', (req, res) => {
     try {
       if (s.worktreePath && s.branch && fs.existsSync(s.worktreePath)) {
         const dir = directories.get(s.dirId);
-        const base = dir && dir.baseBranch ? dir.baseBranch : 'main';
-        // Count unique commits on the session branch vs base. Zero → skip.
-        let unique = 0;
-        try {
-          const out = execFileSync('git', ['-C', s.worktreePath, 'rev-list',
-                                            '--count', `${base}..${s.branch}`],
-                                   { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-          unique = parseInt(out, 10) || 0;
-        } catch (_) { /* base may not be resolvable yet — fall back to full branch */ }
-        if (unique === 0) {
-          gitBundleNote = `no unique commits vs ${base} (already merged) — target's main has the work; no git payload needed`;
+        if (!dir) {
+          gitBundleNote = 'directory metadata missing — bundle has no git payload';
         } else {
           const tmp = path.join(os.tmpdir(), `multicc-bundle-${s.id}-${Date.now()}.bundle`);
-          // Range refspec `base..branch` packs only the session's own commits.
-          execFileSync('git', ['-C', s.worktreePath, 'bundle', 'create', tmp,
-                               `${base}..${s.branch}`], { encoding: 'buffer', stdio: ['ignore', 'ignore', 'pipe'] });
-          const stat = fs.statSync(tmp);
-          if (stat.size > MAX_BUNDLE_BYTES) {
-            fs.unlinkSync(tmp);
-            gitBundleNote = `git bundle too large (${(stat.size/1024/1024).toFixed(1)}MB > ${MAX_BUNDLE_BYTES/1024/1024}MB cap) — skipped; merge excess back to base first`;
-          } else {
-            gitBundleB64 = fs.readFileSync(tmp).toString('base64');
-            gitBundleNote = `${unique} unique commits, ${(stat.size/1024).toFixed(0)}KB bundle`;
-            fs.unlinkSync(tmp);
+          const result = await gitExportSessionBundle(dir, s, tmp, MAX_BUNDLE_BYTES);
+          if (result.unique === 0) {
+            gitBundleNote = `no unique commits vs ${result.baseBranch} (already merged) — target's main has the work; no git payload needed`;
+          } else if (result.tooLarge) {
+            gitBundleNote = `git bundle too large (${(result.size/1024/1024).toFixed(1)}MB > ${MAX_BUNDLE_BYTES/1024/1024}MB cap) — skipped; merge excess back to base first`;
+          } else if (result.bundlePath) {
+            try {
+              gitBundleB64 = (await fs.promises.readFile(result.bundlePath)).toString('base64');
+              gitBundleNote = `${result.unique} unique commits, ${(result.size/1024).toFixed(0)}KB bundle`;
+            } finally {
+              await fs.promises.rm(result.bundlePath, { force: true });
+            }
           }
         }
       } else {
@@ -4367,7 +4354,7 @@ app.get('/api/sessions/:id/bundle', (req, res) => {
   } catch (e) {
     res.status(500).json({ error: 'bundle failed: ' + e.message });
   }
-});
+}));
 
 // Import an encrypted bundle produced by GET /api/sessions/:id/bundle and
 // rebuild the session on THIS machine. The target directory (dirId) must be a
@@ -4441,33 +4428,24 @@ app.post('/api/sessions/import', asyncHandler(async (req, res) => {
       } catch (_) {}
     }
 
-    // 3) Overlay the bundle's git content onto the freshly-created worktree.
-    //    Fetch the bundle's branch into a temp ref, then reset the worktree's
-    //    HEAD to it so the working tree matches the source session.
+    // 3) Replay the bundle's unique commits onto the freshly-created worktree.
+    //    The Git adapter holds one RepoActor lease for fetch + replay, aborts
+    //    conflicts, and always deletes its temporary ref. Linear histories use
+    //    cherry-pick; histories containing merges preserve their topology.
     let gitRestored = false, gitNote = null;
     if (payload.gitBundleB64 && newSession.worktreePath && newSession.branch) {
       const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);
       try {
-        fs.writeFileSync(tmpBundle, Buffer.from(payload.gitBundleB64, 'base64'));
+        await fs.promises.writeFile(tmpBundle, Buffer.from(payload.gitBundleB64, 'base64'));
         const srcBranch = meta.branch || `multicc/${meta.id}`;
-        const incomingRef = `refs/heads/multicc-import-${newSid}`;
-        // Fetch the source branch from the bundle into a temp ref on the main repo.
-        execFileSync('git', ['-C', dir.path, 'fetch', '--no-tags', '-f', tmpBundle,
-                             `+${srcBranch}:${incomingRef}`],
-                     { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] });
-        // Reset the worktree's branch onto the incoming commit so its working
-        // tree and history mirror the source session. Use -C worktreePath so git
-        // resolves the branch the worktree is on.
-        execFileSync('git', ['-C', newSession.worktreePath, 'reset', '--hard', incomingRef],
-                     { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] });
-        // Drop the temp ref from the main repo (the worktree branch holds the history now).
-        try { execFileSync('git', ['-C', dir.path, 'update-ref', '-d', incomingRef],
-                           { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] }); } catch (_) {}
-        gitRestored = true;
+        const result = await gitImportSessionBundle(dir, newSession, tmpBundle, srcBranch);
+        gitRestored = !!result.restored;
+        if (!result.ok) gitNote = 'git restore failed: ' + (result.error || 'unknown error');
+        else if (!result.restored) gitNote = result.note || 'bundle contained no new commits';
       } catch (e) {
         gitNote = 'git restore failed: ' + e.message;
       } finally {
-        try { fs.unlinkSync(tmpBundle); } catch (_) {}
+        await fs.promises.rm(tmpBundle, { force: true }).catch(() => {});
       }
     } else {
       gitNote = payload.gitBundleNote || 'no git payload in bundle';
@@ -6017,12 +5995,12 @@ app.post('/api/settings/official-oauth', (req, res) => {
 });
 
 // macOS system power settings
-app.get('/api/settings/power', (req, res) => {
+app.get('/api/settings/power', async (req, res) => {
   if (!macosPower.isAvailable()) {
     return res.json({ available: false, enabled: false });
   }
   try {
-    res.json(macosPower.getLidSleepPrevention());
+    res.json(await macosPower.getLidSleepPrevention());
   } catch (error) {
     res.status(500).json({ available: true, error: error.message });
   }
@@ -6887,16 +6865,17 @@ app.get('/api/version-check', async (req, res) => {
     // 2) Fallback: use git ls-remote to get the latest semver tag.
     if (!latest) {
       try {
-        const cp = require('child_process');
-        const tags = cp.execSync("git ls-remote --tags https://github.com/lsjwzh/MultiCC.git 'refs/tags/v*'", { timeout: 15000, encoding: 'utf8' })
+        const remoteTags = await gitRun(__dirname, [
+          'ls-remote', '--tags', 'https://github.com/lsjwzh/MultiCC.git', 'refs/tags/v*',
+        ], { timeout: 15000, kind: 'version-check' });
+        const tags = [...new Set(remoteTags
           .split('\n')
           .filter(Boolean)
           .map(l => l.match(/refs\/tags\/(v\d+\.\d+\.\d+)/))
           .filter(Boolean)
-          .map(m => m[1]);
+          .map(m => m[1]))];
         if (tags.length) {
-          // sort semver and pick the highest
-          const sorted = cp.execSync('sort -V', { input: tags.join('\n'), encoding: 'utf8' }).trim().split('\n');
+          const sorted = tags.sort((a, b) => compareSemver(a.replace(/^v/, ''), b.replace(/^v/, '')));
           latest = sorted[sorted.length - 1];
           latestVersion = latest.replace(/^v/, '');
         }
@@ -11445,7 +11424,7 @@ function handleChatWs(ws, req, urlObj) {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
-  ws.on('message', (raw) => {
+  ws.on('message', async (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
       // Heartbeat is always allowed.
@@ -11502,6 +11481,10 @@ function handleChatWs(ws, req, urlObj) {
       if (msg.type === 'clear_history') {
         const h = chatHistories.get(sessionName);
         const keep = Math.max(0, parseInt(msg.keep || '0', 10) || 0);
+        const pExisting = persistedSessions.get(sessionName);
+        const gitSnapshot = pExisting && keep > 0
+          ? await cliSwitchGitSnapshot(pExisting)
+          : null;
         let retained = [];
         let memoryDistill = null;
         if (keep > 0 && h) {
@@ -11520,7 +11503,6 @@ function handleChatWs(ws, req, urlObj) {
         saveChatHistory(sessionName);
         // Reset every vendor-native session. Clearing only the active CLI lets
         // an old conversation reappear after switching away and back.
-        const pExisting = persistedSessions.get(sessionName);
         if (pExisting) {
           chatStream.close(sessionName);
           delete pExisting.pendingCliHandoff;
@@ -11531,7 +11513,7 @@ function handleChatWs(ws, req, urlObj) {
               fromCli: cs.cli,
               toCli: cs.cli,
               history: retained,
-              git: cliSwitchGitSnapshot(pExisting),
+              git: gitSnapshot,
             });
             checkpoint.reason = 'history_clear_keep';
             pExisting.pendingCliHandoff = {
@@ -12214,10 +12196,10 @@ function syncSharedSkills() {
 // ── AI-assisted skill conversion callback ──
 // When mechanical conversion is done, the converter queues deeper AI rewrites.
 // We spawn a one-shot background session to do the actual rewriting via Claude.
-skillConv.onAiConvertNeeded((batch) => {
-  // The detached conversion job needs a live session to host it (run-detached
-  // 404s on an unknown session id). Pick any non-aux claude session; the job
-  // writes to absolute paths so the host session's cwd is irrelevant.
+async function queueAiSkillConversions(batch) {
+  // The detached conversion job needs a live session to own its lifecycle.
+  // Pick any non-aux claude session; the job writes to absolute paths so the
+  // host session's cwd is otherwise irrelevant.
   const host = [...persistedSessions.values()].find(
     s => s.id !== AUX_SESSION_ID && (s.cli || 'claude') !== 'codex'
   );
@@ -12229,23 +12211,44 @@ skillConv.onAiConvertNeeded((batch) => {
     const spec = skillConv.buildAiConvertPrompt(skillName, provider);
     if (!spec) continue;
 
-    // Spawn as a detached task — multicc monitors it and injects results
-    // back into the current session when done.
+    // Materialize the prompt before launching so neither skill names nor prompt
+    // content are interpolated into shell syntax. The detached shell owns
+    // cleanup through its EXIT trap.
+    const promptFile = path.join(os.tmpdir(), `multicc-skillconv-${crypto.randomBytes(8).toString('hex')}.txt`);
+    await fs.promises.writeFile(promptFile, spec.prompt, { encoding: 'utf8', mode: 0o600 });
+    const shellQuote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
     const cmd = [
-      `mkdir -p "${spec.outputDir}"`,
-      // Write the prompt as a temp file so the agent can read it
-      `cat > /tmp/multicc-skillconv-${skillName}.txt << 'CONVEOF'`,
-      spec.prompt,
-      `CONVEOF`,
-      // Let the agent do the conversion via claude
-      `"${CLAUDE_CMD}" -p "$(cat /tmp/multicc-skillconv-${skillName}.txt)" --allowedTools "Bash,Read,Write,Edit" --output-format text --max-turns 3 2>&1`,
-    ].join(' && ');
-
-    const curlCmd = `curl -s ${process.env.MULTICC_BASE_URL || 'http://127.0.0.1:' + (process.env.PORT || 3000)}/api/sessions/${host.id}/run-detached -H 'Content-Type: application/json' -d '${JSON.stringify({ command: cmd, label: `skillconv-${skillName}→${provider}` })}'`;
-
+      `PROMPT_FILE=${shellQuote(promptFile)}`,
+      `trap 'rm -f -- "$PROMPT_FILE"' EXIT`,
+      `mkdir -p ${shellQuote(spec.outputDir)}`,
+      `${shellQuote(CLAUDE_CMD)} -p "$(cat "$PROMPT_FILE")" --allowedTools "Bash,Read,Write,Edit" --output-format text --max-turns 3 2>&1`,
+    ].join('; ');
     console.log(`[multicc/skills] queued AI conversion: ${skillName} → ${provider}`);
-    try { require('child_process').execSync(curlCmd, { timeout: 5000 }); } catch (e) { console.warn(`[multicc/skills] AI conversion submit failed (${skillName}->${provider}): ${e.message}`); }
+    try {
+      await orchestrationRuntime.startDetached({
+        sessionId: host.id,
+        idempotencyKey: null,
+        spec: {
+          command: cmd,
+          cwd: cwdForSession(host),
+          label: `skillconv-${skillName}→${provider}`,
+          daemon: false,
+          intervalSec: 10,
+          maxChecks: 360,
+          injectPrefix: `[技能转换完成] ${skillName} → ${provider}`,
+        },
+      });
+    } catch (e) {
+      await fs.promises.rm(promptFile, { force: true }).catch(() => {});
+      console.warn(`[multicc/skills] AI conversion submit failed (${skillName}->${provider}): ${e.message}`);
+    }
   }
+}
+
+skillConv.onAiConvertNeeded((batch) => {
+  void queueAiSkillConversions(batch).catch((e) => {
+    console.warn(`[multicc/skills] AI conversion batch failed: ${e.message}`);
+  });
 });
 
 let _skillsSyncWatcher = null;
