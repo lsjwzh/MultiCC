@@ -113,9 +113,10 @@ const {
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state-store');
 const stateTx = require('./src/state-tx');
+const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
-const { requestIdMiddleware, safeErrorHandler } = require('./src/http-errors');
+const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { toSessionDto } = require('./src/session-dto');
 const {
   createErrorDto,
@@ -490,7 +491,7 @@ function noteReportedModel(sessionName, model) {
   if (!p || p.reportedModel === model) return;
   p.reportedModel = model;
   rememberActiveCliState(p);
-  savePersistedSessions();
+  savePersistedSessionsBestEffort('runtime.reported-model');
 }
 
 // One-time startup backfill: sessions created before reportedModel existed can
@@ -536,7 +537,7 @@ function backfillReportedModels() {
     }
   }
   if (updated) {
-    savePersistedSessions();
+    savePersistedSessionsBestEffort('startup.reported-model-backfill');
     console.log(`[multicc] Backfilled reportedModel for ${updated} session(s) from CLI transcripts`);
   }
 }
@@ -1148,23 +1149,48 @@ function loadPersistedState() {
   return { directories: dirMap, persistedSessions: sessionMap, needsSave: false };
 }
 
-function savePersistedSessions() {
-  const data = [...persistedSessions.values()];
-  try {
-    sessionsStore.save(data);
-  } catch (e) {
-    // Base savePersistedSessions() is called from ~40 non-HTTP call sites that
-    // don't wrap it (background timers, teardown callbacks) — throwing here
-    // would crash the process on every hiccup. It's log-only; the HTTP-facing
-    // cross-file mutation (directory delete → state-tx.commitCrossFileWrite)
-    // DOES throw and turns save failures into a 500 with a torn-state journal
-    // that replays on next boot. That is the strong-consistency path.
-    console.error('[multicc] Failed to save sessions.json:', e.message);
-  }
-}
-
 const _state = loadPersistedState();
 const persistedSessions = _state.persistedSessions;
+
+// Host-injected store port. Production delegates directly to StateStore's
+// atomic tmp+fsync+rename write. Isolated integration tests may place a marker
+// inside their temporary MULTICC_DATA_DIR to inject EIO deterministically.
+const sessionStorePort = {
+  save(data) {
+    const marker = process.env.MULTICC_TEST_SESSION_PERSISTENCE_FAIL_FILE;
+    if (process.env.NODE_ENV === 'test' && marker) {
+      const root = path.resolve(MULTICC_PATHS.root);
+      const resolved = path.resolve(marker);
+      if ((resolved === root || resolved.startsWith(root + path.sep)) && fs.existsSync(resolved)) {
+        const error = new Error('injected sessions.json persistence failure');
+        error.code = 'EIO';
+        throw error;
+      }
+    }
+    return sessionsStore.save(data);
+  },
+};
+const sessionPersistence = createSessionPersistence({
+  records: persistedSessions,
+  store: sessionStorePort,
+  retryDelayMs: Math.max(50, Number(process.env.MULTICC_SESSION_PERSISTENCE_RETRY_MS) || 500),
+  maxRetries: 3,
+  onFailure: ({ error, mode, source, attempt, dirty }) => {
+    metrics.inc('multicc_session_persistence_failures_total');
+    logger.error('session_persistence_failure', {
+      mode, source, attempt, dirty, error: error && error.message,
+    });
+  },
+  onState: ({ dirty, retryAttempt, retryScheduled }) => {
+    metrics.set('multicc_session_persistence_dirty', dirty ? 1 : 0);
+    metrics.set('multicc_session_persistence_retry_attempt', retryAttempt);
+    metrics.set('multicc_session_persistence_retry_scheduled', retryScheduled ? 1 : 0);
+  },
+});
+
+function savePersistedSessionsBestEffort(source) {
+  return sessionPersistence.bestEffort(source);
+}
 
 // Schema vNext: preserve one native session/settings snapshot per CLI. Legacy
 // records keep their active top-level fields for backward compatibility; the
@@ -1191,10 +1217,13 @@ async function seedCommanderSession(dir) {
   }
   for (const cli of ['claude', 'codex']) {
     const label = cli === 'codex' ? '🫡 Agent Commander (Codex)' : '🫡 Agent Commander';
-    const r = await createSessionRecord({ dir, cli, kind: 'chat', label });
+    const r = await createSessionRecord({
+      dir, cli, kind: 'chat', label,
+      persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
+    });
     if (r.ok) {
       r.session.rolePrompt = commander.prompt;
-      savePersistedSessions();
+      savePersistedSessionsBestEffort('directory.seed-commander-role');
       appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
     } else {
       console.warn(`[multicc] seed ${cli} commander session failed for dir ${dir.id}: ${r.error}`);
@@ -1252,7 +1281,7 @@ async function destroySessionCascade(s, d, opts = {}) {
   try { fs.unlinkSync(chatHistoryPath(s.id)); } catch (_) {}
   teardownTriggers(s.id);
   purgeNotesForSession(s.id);
-  persistedSessions.delete(s.id);
+  if (opts.removeRecord !== false) persistedSessions.delete(s.id);
   invalidSessions.delete(s.id);
   workspaceStatus.delete(s.id);
   return {
@@ -1280,7 +1309,7 @@ const directoryModule = createDirectoryModule({
     listByDir: (dirId) => [...persistedSessions.values()].filter(s => s.dirId === dirId),
     seedCommander: seedCommanderSession,
     destroyCascade: destroySessionCascade,
-    persistRecords: savePersistedSessions,
+    persistRecords: () => sessionPersistence.mutate('http.directory-delete-fallback', () => {}),
     // Cross-file transaction needs the sessions payload at the moment of
     // journal-write, so it's captured alongside the directories payload.
     snapshotRecords: () => [...persistedSessions.values()],
@@ -1314,7 +1343,7 @@ function saveDirectories() { directoryModule.repo.save(); }
 
 if (_state.needsSave) {
   saveDirectories();
-  savePersistedSessions();
+  sessionPersistence.mutate('startup.schema-migration', () => {});
   console.log(`[multicc] Migration complete: ${directories.size} directories, ${persistedSessions.size} sessions`);
 }
 
@@ -1364,7 +1393,7 @@ async function initWorktrees() {
   }
   if (built > 0 || invalidSessions.size > 0) {
     saveDirectories();
-    savePersistedSessions();
+    savePersistedSessionsBestEffort('startup.worktree-migration');
   }
   console.log(`[multicc] worktrees: ${built} built, ${invalidSessions.size} session(s) invalid`);
   for (const [id, reason] of invalidSessions) {
@@ -1482,6 +1511,7 @@ async function ensureUltracodeWorkers(parentId) {
       provider: parent.provider || '',
       effort: 'xhigh',
       rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
+      persistence: 'bestEffort', persistenceSource: 'runtime.ultracode-worker-create',
     });
     if (!r.ok) console.warn(`[multicc/ultracode] failed to create worker ${id}: ${r.error}`);
   }
@@ -1671,6 +1701,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
             provider: dispatcher.provider || '',
             effort: 'xhigh',
             rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
+            persistence: 'bestEffort', persistenceSource: 'runtime.dispatch-worker-create',
           });
           if (created.ok) v = validateDispatchTarget(targetId, opts.replyTo || null);
         }
@@ -1692,6 +1723,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
       label: `${rec.label || targetId} (gw)`,
       id: `${targetId}-gw-chat`,
       ephemeral: true,
+      persistence: 'bestEffort', persistenceSource: 'runtime.gateway-chat-create',
     });
     if (!created.ok) return { ok: false, error: `创建临时 chat 失败：${created.error}` };
     chatId = created.id;
@@ -1985,7 +2017,7 @@ async function createSession(id) {
   // by scanning ~/.codex/sessions after the process boots.
   if (provider.name === 'claude' && !persisted.cliSessionId) {
     persisted.cliSessionId = crypto.randomUUID();
-    savePersistedSessions();
+    savePersistedSessionsBestEffort('runtime.terminal-session-id');
   }
 
   // Create tmux session if it doesn't already exist (it may survive server restarts)
@@ -2047,7 +2079,7 @@ async function createSession(id) {
         clearInterval(captureTimer);
         persisted.cliSessionId = captured;
         session.cliSessionId = captured;
-        savePersistedSessions();
+        savePersistedSessionsBestEffort('timer.codex-session-id-capture');
         console.log(`[multicc] Captured codex session id for ${id}: ${captured}`);
       } else if (attempts >= 30) {
         clearInterval(captureTimer);
@@ -2739,7 +2771,7 @@ app.get('/api/directories/:id/workspace', (req, res) => {
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
 // to create/reuse a named session (e.g. ephemeral gateway chats). Returns
 // { ok:true, id, session, reused? } or { ok:false, error }.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!['claude', 'codex', 'opencode', 'zcode'].includes(cli)) return { ok: false, error: 'cli must be claude, codex, opencode or zcode' };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -2809,13 +2841,32 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (rp) session.rolePrompt = rp;
   if (ephemeral) session.ephemeral = true;
   if (kind === 'chat') ensureCliStates(session);
-  persistedSessions.set(sid, session);
-  savePersistedSessions();
+  try {
+    if (persistence === 'required') {
+      sessionPersistence.mutate(persistenceSource, records => records.set(sid, session));
+    } else {
+      persistedSessions.set(sid, session);
+      savePersistedSessionsBestEffort(persistenceSource);
+    }
+  } catch (error) {
+    // The record never committed. Remove the just-created worktree so a failed
+    // HTTP create cannot leave either a session ghost or an unowned worktree.
+    try {
+      await gitWorktreeRemove(dir.path, worktreePath, branch, {
+        sessionId: sid, baseBranch: dir.baseBranch, force: true,
+      });
+    } catch (cleanupError) {
+      logger.error('session_create_rollback_cleanup_failed', {
+        sessionId: sid, error: cleanupError && cleanupError.message,
+      });
+    }
+    throw error;
+  }
   appendEvent(dir.id, 'session_created', `${cli} ${kind}${ephemeral ? ' (gw)' : ''}`, sid);
   return { ok: true, id: sid, session };
 }
 
-app.post('/api/directories/:id/sessions', async (req, res) => {
+app.post('/api/directories/:id/sessions', asyncHandler(async (req, res) => {
   const d = directories.get(req.params.id);
   if (!d) return res.status(404).json({ error: 'directory not found' });
   const cli = (req.body.cli || '').trim();
@@ -2827,10 +2878,13 @@ app.post('/api/directories/:id/sessions', async (req, res) => {
   // provider: omit → inherit global default; '' → explicit no-override; id → that provider.
   const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
   const rolePrompt = (req.body.rolePrompt || '').trim() || null;
-  const r = await createSessionRecord({ dir: d, cli, kind, label, model, provider, effort, agent, rolePrompt });
+  const r = await createSessionRecord({
+    dir: d, cli, kind, label, model, provider, effort, agent, rolePrompt,
+    persistence: 'required', persistenceSource: 'http.create-session',
+  });
   if (!r.ok) return res.status(400).json({ error: r.error });
   res.json(r.session);
-});
+}));
 
 function cliSwitchDefaults(cli) {
   // Match normal session creation exactly. OpenCode/ZCode share a provider
@@ -2955,7 +3009,6 @@ function performCliSwitch(session, targetCli, options = {}) {
     cliSwitch: { handoffId: handoff.id, fromCli, toCli: targetCli, reusedTarget: result.reused },
   });
   appendEvent(session.dirId, 'session_cli_changed', `${session.label || session.id}: ${fromCli} → ${targetCli}`, session.id);
-  savePersistedSessions();
   chatBroadcast(session.id, {
     type: 'cli_switched',
     cli: targetCli,
@@ -2988,7 +3041,7 @@ function consumePendingCliHandoff(sessionName) {
   };
   delete session.pendingCliHandoff;
   rememberActiveCliState(session);
-  savePersistedSessions();
+  savePersistedSessionsBestEffort('runtime.consume-cli-handoff');
   chatBroadcast(sessionName, {
     type: 'system', subtype: 'cli_handoff_applied',
     message: handoff.reason === 'history_clear_keep'
@@ -2998,7 +3051,7 @@ function consumePendingCliHandoff(sessionName) {
   return true;
 }
 
-app.post('/api/sessions/:id/switch-cli', (req, res) => {
+app.post('/api/sessions/:id/switch-cli', asyncHandler(async (req, res) => {
   const session = persistedSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   if (session.type === 'aux' || session.type === 'gateway') {
@@ -3011,7 +3064,7 @@ app.post('/api/sessions/:id/switch-cli', (req, res) => {
   }
   const fresh = !!(req.body && req.body.fresh);
   if ((session.cli || 'claude') === targetCli && !fresh) {
-    ensureCliStates(session);
+    sessionPersistence.mutate('http.switch-cli-noop', () => ensureCliStates(session));
     return res.json({
       ok: true, changed: false, cli: targetCli,
       cliStates: cliStateSummary(session),
@@ -3030,32 +3083,28 @@ app.post('/api/sessions/:id/switch-cli', (req, res) => {
       stream: activity.stream || null,
     });
   }
-  try {
-    const switched = performCliSwitch(session, targetCli, { fresh });
-    res.json({
-      ok: true,
-      changed: true,
-      cli: session.cli,
-      fromCli: switched.result.fromCli,
-      handoffId: switched.handoff.id,
-      reusedTarget: switched.result.reused,
-      fresh,
-      cliStates: cliStateSummary(session),
-      cliAvailability: availability,
-      effectiveModel: effectiveSessionModel(session),
-      effectiveEffort: effectiveSessionEffort(session),
-      provider: session.provider || null,
-      providerName: sessionProviderName(session),
-      model: session.model || null,
-      effort: session.effort || null,
-      agent: session.agent || null,
-      subagent: serializeSubagent(session.subagent),
-    });
-  } catch (error) {
-    console.error(`[multicc/cli-switch] ${session.id} → ${targetCli}:`, error);
-    res.status(500).json({ error: `CLI switch failed: ${error.message}` });
-  }
-});
+  const switched = sessionPersistence.mutate('http.switch-cli', () =>
+    performCliSwitch(session, targetCli, { fresh }));
+  res.json({
+    ok: true,
+    changed: true,
+    cli: session.cli,
+    fromCli: switched.result.fromCli,
+    handoffId: switched.handoff.id,
+    reusedTarget: switched.result.reused,
+    fresh,
+    cliStates: cliStateSummary(session),
+    cliAvailability: availability,
+    effectiveModel: effectiveSessionModel(session),
+    effectiveEffort: effectiveSessionEffort(session),
+    provider: session.provider || null,
+    providerName: sessionProviderName(session),
+    model: session.model || null,
+    effort: session.effort || null,
+    agent: session.agent || null,
+    subagent: serializeSubagent(session.subagent),
+  });
+}));
 
 // PATCH a session — supports display-name edits via label.
 app.patch('/api/sessions/:id', (req, res) => {
@@ -3069,9 +3118,15 @@ app.patch('/api/sessions/:id', (req, res) => {
       error: 'cli cannot be changed with PATCH; use POST /api/sessions/:id/switch-cli',
     });
   }
+  const mutation = sessionPersistence.begin('http.patch-session');
+  const rejectMutation = (status, body) => {
+    mutation.rollback();
+    return res.status(status).json(body);
+  };
+  try {
   if (req.body.label !== undefined) {
     const label = (req.body.label || '').toString().trim();
-    if (label.length > 80) return res.status(400).json({ error: 'label too long (max 80)' });
+    if (label.length > 80) return rejectMutation(400, { error: 'label too long (max 80)' });
     s.label = label || null;
     appendEvent(s.dirId, 'session_renamed', s.label || s.id, s.id);
   }
@@ -3079,7 +3134,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     const model = (req.body.model || '').toString().trim();
     // Allow `/` and `:` for OpenRouter-style ids and provider:model forms.
     if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
-      return res.status(400).json({ error: 'invalid model' });
+      return rejectMutation(400, { error: 'invalid model' });
     }
     s.model = model || null;
     // Non-Claude chat sessions spawn per turn. Claude chat keeps a warm
@@ -3091,22 +3146,22 @@ app.patch('/api/sessions/:id', (req, res) => {
   }
   if (req.body.effort !== undefined) {
     const effort = normalizeEffort(req.body.effort);
-    if (effort === undefined) return res.status(400).json({ error: 'invalid effort' });
-    if (!validEffortForCli(s.cli || 'claude', effort)) return res.status(400).json({ error: 'invalid reasoning level' });
+    if (effort === undefined) return rejectMutation(400, { error: 'invalid effort' });
+    if (!validEffortForCli(s.cli || 'claude', effort)) return rejectMutation(400, { error: 'invalid reasoning level' });
     s.effort = effort || null;
     if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
     appendEvent(s.dirId, 'session_effort_changed', `${s.label || s.id} → ${effectiveSessionEffort(s) || effortLabel(s.effort)}`, s.id);
   }
   if (req.body.agent !== undefined) {
     const agent = normalizeCliAgent(s.cli || 'claude', req.body.agent);
-    if (agent === undefined) return res.status(400).json({ error: 'agent is only supported by Claude/OpenCode and must be a valid agent name' });
+    if (agent === undefined) return rejectMutation(400, { error: 'agent is only supported by Claude/OpenCode and must be a valid agent name' });
     s.agent = agent;
     if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
     appendEvent(s.dirId, 'session_agent_changed', `${s.label || s.id} → ${s.agent || '默认 agent'}`, s.id);
   }
   if (req.body.rolePrompt !== undefined) {
     const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
-    if (rp.length > 40000) return res.status(400).json({ error: 'rolePrompt too long (max 40000)' });
+    if (rp.length > 40000) return rejectMutation(400, { error: 'rolePrompt too long (max 40000)' });
     // null clears the session override → it falls back to the directory default.
     s.rolePrompt = rp.trim() || null;
     if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
@@ -3123,10 +3178,10 @@ app.patch('/api/sessions/:id', (req, res) => {
       entries = memVal.filter(e => e && typeof e.text === 'string' && e.text.trim())
         .map(e => ({ type: MEMORY_TYPES.includes(e.type) ? e.type : 'fact', text: e.text.trim(), ts: e.ts || Date.now() }));
       const total = entries.reduce((s, e) => s + e.text.length, 0);
-      if (total > SESSION_MEMORY_MAX) return res.status(400).json({ error: `memory too long (max ${SESSION_MEMORY_MAX} chars)` });
+      if (total > SESSION_MEMORY_MAX) return rejectMutation(400, { error: `memory too long (max ${SESSION_MEMORY_MAX} chars)` });
     } else if (typeof memVal === 'string' && memVal.trim()) {
       // Legacy string format — auto-convert to a single fact entry.
-      if (memVal.length > SESSION_MEMORY_MAX) return res.status(400).json({ error: `memory too long (max ${SESSION_MEMORY_MAX})` });
+      if (memVal.length > SESSION_MEMORY_MAX) return rejectMutation(400, { error: `memory too long (max ${SESSION_MEMORY_MAX})` });
       entries = [{ type: 'fact', text: memVal.trim(), ts: 0 }];
     } else {
       entries = null;  // empty/null → clear
@@ -3158,7 +3213,7 @@ app.patch('/api/sessions/:id', (req, res) => {
   if (req.body.provider !== undefined) {
     // Per-session cc-switch provider. '' / null clears the override → default login.
     const v = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
-    if (!v.ok) return res.status(400).json({ error: 'invalid provider' });
+    if (!v.ok) return rejectMutation(400, { error: 'invalid provider' });
     const prevProvider = s.provider;
     s.provider = v.value;
     // Codex keeps each provider's threads under its own CODEX_HOME
@@ -3241,25 +3296,25 @@ app.patch('/api/sessions/:id', (req, res) => {
     const cli = s.cli || 'claude';
     const clearing = sa === null || sa === '' || (typeof sa === 'object' && Object.keys(sa).length === 0);
     if (!clearing && cli !== 'claude' && cli !== 'codex') {
-      return res.status(400).json({ error: 'subagent routing is only supported by Claude and Codex' });
+      return rejectMutation(400, { error: 'subagent routing is only supported by Claude and Codex' });
     }
     if (clearing) {
       s.subagent = null;
     } else if (typeof sa === 'object') {
       const subApp = (s.cli === 'codex') ? 'codex' : 'claude';
       const v = validProviderId(subApp, (sa.providerId || '').toString().trim());
-      if (!v.ok) return res.status(400).json({ error: 'invalid subagent provider' });
+      if (!v.ok) return rejectMutation(400, { error: 'invalid subagent provider' });
       const model = (sa.model || '').toString().trim();
-      if (!model) return res.status(400).json({ error: 'subagent model required' });
+      if (!model) return rejectMutation(400, { error: 'subagent model required' });
       if (s.cli === 'codex') {
-        if (!s.provider) return res.status(400).json({ error: 'Codex subagent routing requires a selected main provider' });
+        if (!s.provider) return rejectMutation(400, { error: 'Codex subagent routing requires a selected main provider' });
         if (!providers.codexProviderProxyable(v.value)) {
-          return res.status(400).json({ error: 'Codex subagent provider has no callable HTTP endpoint' });
+          return rejectMutation(400, { error: 'Codex subagent provider has no callable HTTP endpoint' });
         }
       }
       s.subagent = { providerId: v.value, model };
     } else {
-      return res.status(400).json({ error: 'invalid subagent' });
+      return rejectMutation(400, { error: 'invalid subagent' });
     }
     // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
     if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
@@ -3270,7 +3325,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
   }
   rememberActiveCliState(s);
-  savePersistedSessions();
+  mutation.commit();
   res.json({
     ...s,
     // The full checkpoint can contain recent visible conversation text. Keep
@@ -3282,6 +3337,10 @@ app.patch('/api/sessions/:id', (req, res) => {
     effectiveModel: effectiveSessionModel(s),
     effectiveEffort: effectiveSessionEffort(s),
   });
+  } catch (error) {
+    mutation.rollback();
+    throw error;
+  }
 });
 
 // ── Folder-based session memory: the human window into the same memory the ──
@@ -4039,7 +4098,7 @@ app.post('/api/sessions/:id/share-messages', (req, res) => {
 // memory; we therefore also copy the source session's private memory folder so the
 // forked session isn't blind to pre-window context. A `forkedFrom` meta record is
 // stamped as the first message of the new history.
-app.post('/api/sessions/:id/fork', async (req, res) => {
+app.post('/api/sessions/:id/fork', asyncHandler(async (req, res) => {
   const src = persistedSessions.get(req.params.id);
   if (!src) return res.status(404).json({ error: 'session not found' });
   if (src.type === 'aux' || src.type === 'gateway') {
@@ -4069,13 +4128,10 @@ app.post('/api/sessions/:id/fork', async (req, res) => {
     dir, cli: src.cli, kind: 'chat', label: label || `${src.label || src.id} · fork`,
     provider: src.provider == null ? undefined : src.provider,
     model: src.model, effort: src.effort, agent: src.agent, rolePrompt: src.rolePrompt,
+    persistence: 'required', persistenceSource: 'http.fork-session-create',
   });
   if (!r.ok) return res.status(400).json({ error: r.error });
   const newSid = r.id;
-  if (src.subagent && src.subagent.providerId && src.subagent.model) {
-    r.session.subagent = { providerId: src.subagent.providerId, model: src.subagent.model };
-    rememberActiveCliState(r.session);
-  }
 
   // Seed the new session's chat history with the sliced transcript. The forkedFrom
   // meta message goes first so the agent and UI can see this is a fork.
@@ -4103,16 +4159,21 @@ app.post('/api/sessions/:id/fork', async (req, res) => {
     history: sliced,
     git: cliSwitchGitSnapshot(r.session),
   });
-  r.session.pendingCliHandoff = {
-    id: `fork_${crypto.randomBytes(8).toString('hex')}`,
-    fromCli: src.cli,
-    toCli: r.session.cli,
-    createdAt: forkCheckpoint.createdAt,
-    status: 'pending',
-    reusedTarget: false,
-    checkpoint: forkCheckpoint,
-  };
-  savePersistedSessions();
+  sessionPersistence.mutate('http.fork-session-finalize', () => {
+    if (src.subagent && src.subagent.providerId && src.subagent.model) {
+      r.session.subagent = { providerId: src.subagent.providerId, model: src.subagent.model };
+    }
+    r.session.pendingCliHandoff = {
+      id: `fork_${crypto.randomBytes(8).toString('hex')}`,
+      fromCli: src.cli,
+      toCli: r.session.cli,
+      createdAt: forkCheckpoint.createdAt,
+      status: 'pending',
+      reusedTarget: false,
+      checkpoint: forkCheckpoint,
+    };
+    rememberActiveCliState(r.session);
+  });
 
   // Copy the source session's private memory folder (CLAUDE.md/AGENTS.md + any
   // notes) so pre-window distilled context survives into the fork. Best-effort.
@@ -4139,7 +4200,7 @@ app.post('/api/sessions/:id/fork', async (req, res) => {
       pendingCliHandoff: cliHandoffSummary(r.session),
     },
              forkedFrom: forkMeta.forkedFrom, replayedMessages: sliced.length });
-});
+}));
 
 // ── Cross-machine handoff (Happier-parity: move a live session to another machine) ──
 // Export an encrypted bundle carrying: session metadata, chat history, the
@@ -4301,7 +4362,7 @@ app.get('/api/sessions/:id/bundle', (req, res) => {
 // session to an already-configured provider on this machine, or omit to use the
 // default login. The bundle's provider env/codex files are kept in the session's
 // memory folder as `.handoff-provider.json` for reference/manual setup.
-app.post('/api/sessions/import', async (req, res) => {
+app.post('/api/sessions/import', asyncHandler(async (req, res) => {
   const b = req.body || {};
   const { salt, iv, ct, tag } = b;
   const passphrase = b.passphrase;
@@ -4332,6 +4393,7 @@ app.post('/api/sessions/import', async (req, res) => {
     label: labelOverride || (meta.label ? `${meta.label} · imported` : null),
     provider: targetProviderId === undefined ? undefined : (targetProviderId || ''),
     model: meta.model, effort: meta.effort, agent: meta.agent, rolePrompt: meta.rolePrompt,
+    persistence: 'required', persistenceSource: 'http.bundle-import-create',
   });
   if (!r.ok) return res.status(400).json({ error: r.error });
   const newSid = r.id;
@@ -4405,7 +4467,7 @@ app.post('/api/sessions/import', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: 'import failed (session record created): ' + e.message, sessionId: newSid });
   }
-});
+}));
 
 // ── Share recipient endpoints (NO ACCESS_TOKEN; gated by the share token only) ──
 // The page; the inline JS reads the token from the URL and self-gates.
@@ -4463,9 +4525,10 @@ app.post('/api/sessions/:id/triggers', (req, res) => {
   if (!s) return res.status(404).json({ error: 'session not found' });
   const v = validateTrigger(req.body || {});
   if (v.error) return res.status(400).json({ error: v.error });
-  if (!Array.isArray(s.triggers)) s.triggers = [];
-  s.triggers.push(v.trigger);
-  savePersistedSessions();
+  sessionPersistence.mutate('http.create-session-trigger', () => {
+    if (!Array.isArray(s.triggers)) s.triggers = [];
+    s.triggers.push(v.trigger);
+  });
   reconcileTriggers(s.id);
   appendEvent(s.dirId, 'trigger_added', triggerLabel(v.trigger), s.id);
   res.json(v.trigger);
@@ -4478,9 +4541,10 @@ app.put('/api/sessions/:id/triggers/:tid', (req, res) => {
   if (idx < 0) return res.status(404).json({ error: 'trigger not found' });
   const v = validateTrigger({ ...s.triggers[idx], ...req.body, id: req.params.tid });
   if (v.error) return res.status(400).json({ error: v.error });
-  v.trigger.lastFiredAt = s.triggers[idx].lastFiredAt; // preserve across edits
-  s.triggers[idx] = v.trigger;
-  savePersistedSessions();
+  sessionPersistence.mutate('http.update-session-trigger', () => {
+    v.trigger.lastFiredAt = s.triggers[idx].lastFiredAt; // preserve across edits
+    s.triggers[idx] = v.trigger;
+  });
   reconcileTriggers(s.id);
   res.json(v.trigger);
 });
@@ -4489,9 +4553,9 @@ app.delete('/api/sessions/:id/triggers/:tid', (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s || !Array.isArray(s.triggers)) return res.status(404).json({ error: 'not found' });
   const before = s.triggers.length;
-  s.triggers = s.triggers.filter((t) => t.id !== req.params.tid);
-  if (s.triggers.length === before) return res.status(404).json({ error: 'trigger not found' });
-  savePersistedSessions();
+  const next = s.triggers.filter((t) => t.id !== req.params.tid);
+  if (next.length === before) return res.status(404).json({ error: 'trigger not found' });
+  sessionPersistence.mutate('http.delete-session-trigger', () => { s.triggers = next; });
   reconcileTriggers(s.id);
   res.json({ ok: true });
 });
@@ -4502,7 +4566,7 @@ app.post('/api/sessions/:id/triggers/:tid/test', (req, res) => {
   if (!s || !Array.isArray(s.triggers)) return res.status(404).json({ error: 'not found' });
   const t = s.triggers.find((x) => x.id === req.params.tid);
   if (!t) return res.status(404).json({ error: 'trigger not found' });
-  fireTrigger(s.id, { ...t, enabled: true, cooldownMs: 0 }, 'manual-test');
+  fireTrigger(s.id, { ...t, enabled: true, cooldownMs: 0 }, 'manual-test', { persistence: 'required' });
   res.json({ ok: true });
 });
 
@@ -4636,7 +4700,7 @@ app.get('/api/git/log', async (req, res) => {
   }
 });
 
-app.delete('/api/sessions/:id', async (req, res) => {
+app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
   const id = req.params.id;
   const session = sessions.get(id);
   const chat = chatSessions.get(id);
@@ -4648,10 +4712,10 @@ app.delete('/api/sessions/:id', async (req, res) => {
   if (persisted) {
     const dir = directories.get(persisted.dirId);
     if (!dir) return res.status(404).json({ error: 'directory not found' });
-    const result = await destroySessionCascade(persisted, dir, { force });
+    const result = await destroySessionCascade(persisted, dir, { force, removeRecord: false });
     if (!result.ok) return res.status(409).json(result);
+    sessionPersistence.mutate('http.delete-session', records => records.delete(id));
     appendEvent(persisted.dirId, 'session_deleted', persisted.label || persisted.id, null);
-    savePersistedSessions();
     return res.json({ ...result, forced: force });
   } else if (!force) {
     return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be removed without force=1' });
@@ -4660,13 +4724,12 @@ app.delete('/api/sessions/:id', async (req, res) => {
     sessions.delete(id);
     chatSessions.delete(id);
   }
-  savePersistedSessions();
   res.json({ ok: true, forced: force });
-});
+}));
 
 // Relocate: moves a session to a different directory. Caller passes the target dirId.
 // (Old "change cwd" semantics are gone — cwd lives on the directory now.)
-app.post('/api/sessions/:id/relocate', async (req, res) => {
+app.post('/api/sessions/:id/relocate', asyncHandler(async (req, res) => {
   const id = req.params.id;
   const targetDirId = (req.body.dirId || '').trim();
   if (!targetDirId) return res.status(400).json({ error: 'dirId required (cwd is now owned by the directory)' });
@@ -4712,14 +4775,14 @@ app.post('/api/sessions/:id/relocate', async (req, res) => {
   });
   if (!relocated.ok) return res.status(relocated.blocked ? 409 : 500).json(relocated);
 
-  persisted.worktreePath = relocated.worktreePath;
-  persisted.branch = relocated.branch;
-
-  persisted.dirId = targetDirId;
-  // Clear cliSessionId so the new instance starts fresh in the new directory
-  persisted.cliSessionId = null;
+  sessionPersistence.mutate('http.relocate-session', () => {
+    persisted.worktreePath = relocated.worktreePath;
+    persisted.branch = relocated.branch;
+    persisted.dirId = targetDirId;
+    // Clear cliSessionId so the new instance starts fresh in the new directory.
+    persisted.cliSessionId = null;
+  });
   invalidSessions.delete(id);
-  savePersistedSessions();
 
   if (persisted.kind === 'terminal') {
     try {
@@ -4732,10 +4795,10 @@ app.post('/api/sessions/:id/relocate', async (req, res) => {
     operationId: relocated.operationId,
     queueDepth: relocated.queueDepth,
     backup: relocated.backup || null });
-});
+}));
 
 // ── Restart session (kill tmux + respawn CLI in same directory, fresh conversation) ──
-app.post('/api/sessions/:id/restart', async (req, res) => {
+app.post('/api/sessions/:id/restart', asyncHandler(async (req, res) => {
   const id = req.params.id;
   const oldSession = sessions.get(id);
   const persisted = persistedSessions.get(id);
@@ -4761,21 +4824,26 @@ app.post('/api/sessions/:id/restart', async (req, res) => {
   // codex generates a fresh thread on first turn). The worktree is kept across restarts;
   // only recreate it if it has gone missing.
   if (persisted) {
-    persisted.cliSessionId = null;
+    let nextWorktreePath = persisted.worktreePath;
+    let nextBranch = persisted.branch;
     const dir = directories.get(persisted.dirId);
     if (dir && (!persisted.worktreePath || !fs.existsSync(persisted.worktreePath))) {
       const ready = await ensureDirGitReady(dir);
       if (ready.ok) {
         try {
           const { worktreePath, branch } = await gitWorktreeAdd(dir.path, id, dir.baseBranch);
-          persisted.worktreePath = worktreePath;
-          persisted.branch = branch;
+          nextWorktreePath = worktreePath;
+          nextBranch = branch;
         } catch (e) {
           console.warn(`[multicc] restart: worktree recreate failed for ${id}: ${e.message}`);
         }
       }
     }
-    savePersistedSessions();
+    sessionPersistence.mutate('http.restart-session', () => {
+      persisted.cliSessionId = null;
+      persisted.worktreePath = nextWorktreePath;
+      persisted.branch = nextBranch;
+    });
   }
 
   try {
@@ -4787,7 +4855,7 @@ app.post('/api/sessions/:id/restart', async (req, res) => {
     console.error('[multicc] Restart failed:', err);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // ── Restart the whole multicc server (graceful) ──
 // A detached child re-launches us after we exit. Auth-gated (deliberately NOT
@@ -6280,10 +6348,14 @@ const auxQueue = {
       persistedSessions.set(AUX_SESSION_ID, {
         id: AUX_SESSION_ID, cwd: __dirname, createdAt: new Date(), type: 'aux', label: 'AI Assistant',
       });
-      savePersistedSessions();
+      savePersistedSessionsBestEffort('startup.aux-session-create');
     } else {
       const existing = persistedSessions.get(AUX_SESSION_ID);
-      if (existing.type !== 'aux') { existing.type = 'aux'; existing.label = 'AI Assistant'; savePersistedSessions(); }
+      if (existing.type !== 'aux') {
+        existing.type = 'aux';
+        existing.label = 'AI Assistant';
+        savePersistedSessionsBestEffort('startup.aux-session-repair');
+      }
     }
     console.log('[multicc/aux] AuxQueue initialized (direct HTTP)');
   },
@@ -7589,7 +7661,7 @@ function reconcileCodexRoleUsage(sessionName, usage) {
 wechatBridge.init({
   persistedSessions,
   chatSessions,
-  savePersistedSessions,
+  savePersistedSessions: () => savePersistedSessionsBestEffort('bridge.wechat-session-state'),
   chatBroadcast,
   port: PORT,
 });
@@ -7601,7 +7673,7 @@ app.use('/api/wechat', wechatBridge.router);
 feishuBridge.init({
   persistedSessions,
   chatSessions,
-  savePersistedSessions,
+  savePersistedSessions: () => savePersistedSessionsBestEffort('bridge.feishu-session-state'),
   chatBroadcast,
   port: PORT,
 });
@@ -7617,7 +7689,13 @@ for (const [mount, bridge] of [
   ['/api/discord', discordBridge],
   ['/api/slack', slackBridge],
 ]) {
-  bridge.init({ persistedSessions, chatSessions, savePersistedSessions, chatBroadcast, port: PORT });
+  bridge.init({
+    persistedSessions,
+    chatSessions,
+    savePersistedSessions: () => savePersistedSessionsBestEffort(`bridge.${mount.slice(5)}-session-state`),
+    chatBroadcast,
+    port: PORT,
+  });
   app.use(mount, bridge.router);
 }
 
@@ -8065,7 +8143,7 @@ function setTaskState(sessionId, patch, opts = {}) {
   const cur = getTaskState(persisted);
   const next = { ...cur, ...patch };
   persisted.taskState = next;
-  if (opts.save !== false) savePersistedSessions();
+  if (opts.save !== false) savePersistedSessionsBestEffort('runtime.task-state');
   // Push the aux classify result to the chat client so it can show what the
   // assistant currently thinks this session's goal/phase is. Cheap; only fires
   // when a chat WS is connected for this session.
@@ -8543,7 +8621,7 @@ function setSessionSummary(sessionId, summary) {
   if (tsChanged) persisted.summary = summary;
   if (tsChanged || persisted.taskState?.lastSummary !== summary) {
     setTaskState(sessionId, { lastSummary: summary, lastSummaryAt: ts }, { save: false });
-    savePersistedSessions();
+    savePersistedSessionsBestEffort('runtime.session-summary');
   }
   workspaceBroadcast(persisted.dirId, { type: 'summary', sessionId, summary, ts });
 }
@@ -8659,7 +8737,7 @@ function _persistMergedMemory(sessionId, fresh, eventDetail) {
   merged = _trimMemoryEntries(merged);
   persisted.memory = merged;
   writeAutoMemoryFile(persisted, merged);
-  savePersistedSessions();
+  savePersistedSessionsBestEffort('runtime.memory-distill');
   const totalLen = merged.reduce((sum, entry) => sum + (entry.text || '').length, 0);
   appendEvent(persisted.dirId, 'memory_updated', `${eventDetail}（${merged.length} 条，${totalLen} 字）`, sessionId);
   workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId });
@@ -8773,7 +8851,7 @@ ${transcript.slice(0, 12000)}
       if (current && lastMessageId) {
         current.memoryReviewCursorId = lastMessageId;
         current.memoryReviewAt = Date.now();
-        savePersistedSessions();
+        savePersistedSessionsBestEffort('runtime.memory-review-cursor');
       }
       return committed;
     })
@@ -8783,7 +8861,7 @@ ${transcript.slice(0, 12000)}
         // Retry promptly on the next completed turn instead of waiting another
         // full interval after a transient auxiliary-provider failure.
         current.memoryReviewTurnCount = Math.max(0, MEMORY_REVIEW_INTERVAL - 1);
-        savePersistedSessions();
+        savePersistedSessionsBestEffort('runtime.memory-review-retry');
       }
       console.warn(`[multicc/memory] periodic review ${sessionId} failed: ${error.message}`);
       return { updated: false, error: error.message };
@@ -8800,18 +8878,18 @@ function maybeSchedulePeriodicMemoryReview(sessionId) {
       || (persisted.kind && persisted.kind !== 'chat')) return;
   persisted.memoryReviewTurnCount = Math.max(0, Number(persisted.memoryReviewTurnCount) || 0) + 1;
   if (persisted.memoryReviewTurnCount < MEMORY_REVIEW_INTERVAL) {
-    savePersistedSessions();
+    savePersistedSessionsBestEffort('runtime.memory-review-counter');
     return;
   }
   if (auxQueue.isUnhealthy()) {
     // Preserve a near-due counter so a transient provider outage retries after
     // the next completed turn rather than silently postponing ten more turns.
     persisted.memoryReviewTurnCount = Math.max(0, MEMORY_REVIEW_INTERVAL - 1);
-    savePersistedSessions();
+    savePersistedSessionsBestEffort('runtime.memory-review-deferred');
     return;
   }
   persisted.memoryReviewTurnCount = 0;
-  savePersistedSessions();
+  savePersistedSessionsBestEffort('runtime.memory-review-start');
   reviewConversationIntoMemory(sessionId);
 }
 
@@ -9708,7 +9786,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       if (evt.sessionId && !persisted.cliSessionId) {
         persisted.cliSessionId = evt.sessionId;
         rememberActiveCliState(persisted);
-        savePersistedSessions();
+        savePersistedSessionsBestEffort('runtime.chat-session-id-capture');
         console.log(`[multicc/chat] [${sessionName}] captured ${provider.name} session id=${evt.sessionId}`);
       }
       continue;
@@ -10209,7 +10287,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     const csCli = persisted.cli || 'claude';
     if (csCli === 'claude' && !persisted.cliSessionId) {
       persisted.cliSessionId = crypto.randomUUID();
-      savePersistedSessions();
+      savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');
     }
     const hist = loadChatHistory(sessionName);
     cs = {
@@ -10590,7 +10668,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         if (cs.cli === 'claude') persisted.cliSessionId = crypto.randomUUID();
         else persisted.cliSessionId = null;  // codex will allocate on first turn
         rememberActiveCliState(persisted);
-        savePersistedSessions();
+        savePersistedSessionsBestEffort('runtime.chat-session-retry-reset');
         cs.chatTurnCount = 0;
         cs.isStreaming = true;
         cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the retry spawn (turnStartedAt may be >10min old)
@@ -11034,7 +11112,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
   if (!persisted._streamSessionId) {
     persisted._streamSessionId = crypto.randomUUID();
     rememberActiveCliState(persisted);
-    savePersistedSessions();
+    savePersistedSessionsBestEffort('runtime.streaming-session-id-allocate');
   }
   chatStream.ensure(sessionName, {
     cmd: invocation.cmd,
@@ -11045,7 +11123,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
     onNewSessionId: (newId) => {
       persisted._streamSessionId = newId;
       rememberActiveCliState(persisted);
-      savePersistedSessions();
+      savePersistedSessionsBestEffort('runtime.streaming-session-id-capture');
     },
     beforeSpawn: ({ sessionId }) => {
       const cleaned = typeof provider.prepareSpawn === 'function'
@@ -11207,7 +11285,7 @@ function handleChatWs(ws, req, urlObj) {
     // For codex: leave null; captured from `thread.started` event on first turn.
     if (cli === 'claude' && !persisted.cliSessionId) {
       persisted.cliSessionId = crypto.randomUUID();
-      savePersistedSessions();
+      savePersistedSessionsBestEffort('websocket.chat-session-id-allocate');
     }
 
     const history = loadChatHistory(sessionName);
@@ -11445,7 +11523,7 @@ function handleChatWs(ws, req, urlObj) {
             };
           }
           rememberActiveCliState(pExisting);
-          savePersistedSessions();
+          savePersistedSessionsBestEffort('websocket.clear-native-session-state');
           console.log(`[multicc/chat] Cleared history and reset ${cleared} native CLI session(s) for ${sessionName}`);
         }
         cs.chatTurnCount = 0;
@@ -11809,7 +11887,7 @@ function matchAnyGlob(p, globs) {
 }
 
 // Fire a trigger: cooldown + busy checks, then inject the prompt as a new turn.
-function fireTrigger(sessionId, trigger, reason) {
+function fireTrigger(sessionId, trigger, reason, opts = {}) {
   const persisted = persistedSessions.get(sessionId);
   if (!persisted || !trigger.enabled) return;
   const now = Date.now();
@@ -11822,14 +11900,21 @@ function fireTrigger(sessionId, trigger, reason) {
     if (!_deferredFire.has(key)) {
       _deferredFire.set(key, setTimeout(() => {
         _deferredFire.delete(key);
-        fireTrigger(sessionId, trigger, reason);
+        fireTrigger(sessionId, trigger, reason, opts);
       }, 6000));
     }
     return;
   }
   // Persist lastFiredAt on the live record (test triggers may be ephemeral copies).
   const live = (persisted.triggers || []).find((x) => x.id === trigger.id);
-  if (live) { live.lastFiredAt = now; savePersistedSessions(); }
+  if (live) {
+    if (opts.persistence === 'required') {
+      sessionPersistence.mutate('http.test-session-trigger', () => { live.lastFiredAt = now; });
+    } else {
+      live.lastFiredAt = now;
+      savePersistedSessionsBestEffort(`runtime.trigger-fired.${reason || 'unknown'}`);
+    }
+  }
   const prompt = (trigger.prompt && trigger.prompt.trim()) || DEFAULT_TRIGGER_PROMPT;
   appendEvent(persisted.dirId, 'trigger_fired', `${triggerLabel(trigger)} · ${reason}`, sessionId);
   chatBroadcast(sessionId, { type: 'system', subtype: 'trigger_fired', trigger: triggerLabel(trigger), reason });
@@ -12208,6 +12293,10 @@ Object.defineProperty(global, '_shuttingDownCoordinated', {
 shutdownCoordinator.onCheckpoint(() => {
   try { flushInFlightChats(); }
   catch (e) { console.error(`[multicc] shutdown flush error: ${e.message}`); }
+  // Teardown is explicitly best-effort: make one final attempt to flush any
+  // dirty runtime session snapshot, but never turn a transient EIO into an
+  // uncaught shutdown failure.
+  savePersistedSessionsBestEffort('teardown.checkpoint');
 });
 
 // Drain: give live turns time to reach their natural `result` event so their
@@ -12263,6 +12352,7 @@ shutdownCoordinator.onClose(() => new Promise(resolve => {
 // Stop orchestration after HTTP has stopped accepting callbacks.  Awaiting the
 // serialized worker/store tail guarantees no lease mutation is left half-run.
 shutdownCoordinator.onClose(() => orchestrationRuntime ? orchestrationRuntime.stop() : undefined);
+shutdownCoordinator.onClose(() => sessionPersistence.stop());
 
 function gracefulShutdown(sig) {
   if (_shuttingDown) return;
