@@ -1,8 +1,10 @@
 (function () {
   'use strict';
 
+  const SHARED = window.MULTICC_I18N_CATALOG || {};
   const I18N = {
     zh: {
+      ...(SHARED.zh || {}),
       cancel: '取消',
       confirm: '确认',
       create: '创建',
@@ -89,6 +91,7 @@
       language: '中/EN',
     },
     en: {
+      ...(SHARED.en || {}),
       cancel: 'Cancel',
       confirm: 'Confirm',
       create: 'Create',

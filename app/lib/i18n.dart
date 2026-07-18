@@ -28,13 +28,15 @@ class I18n {
 
     // Load zh (the authoritative dictionary)
     final zhSrc = await rootBundle.loadString('assets/i18n/zh.json');
-    final zhMap = (json.decode(zhSrc) as Map<String, dynamic>).cast<String, String>();
+    final zhMap = (json.decode(zhSrc) as Map<String, dynamic>)
+        .cast<String, String>();
     i._zh = zhMap;
 
     // En is a subset overlay — missing keys fall back to zh.
     try {
       final enSrc = await rootBundle.loadString('assets/i18n/en.json');
-      final enMap = (json.decode(enSrc) as Map<String, dynamic>).cast<String, String>();
+      final enMap = (json.decode(enSrc) as Map<String, dynamic>)
+          .cast<String, String>();
       i._en = enMap;
     } catch (_) {
       i._en = {};
