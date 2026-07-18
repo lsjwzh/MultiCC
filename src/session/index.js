@@ -5,4 +5,5 @@ module.exports = {
   ...require('./workspace-service'),
   ...require('./state-transition'),
   ...require('./chat-history-service'),
+  ...require('./adapters/chat-history-file-repository'),
 };

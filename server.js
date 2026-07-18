@@ -118,7 +118,8 @@ const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const {
-  compareWorkspaceSnapshots,
+  createChatHistoryFileRepository,
+  createChatHistoryService,
   createSessionQueryService,
   createSessionStateService,
   createWorkspaceService,
@@ -143,6 +144,7 @@ const { installWsBackpressure } = require('./src/ws-backpressure');
 const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 let orchestrationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
@@ -1182,12 +1184,9 @@ function loadPersistedState() {
     console.log('[multicc] Migrating sessions.json to directory-based schema...');
     const { newDirs, newSessions, chatHistoryRenames } = migrateOldSchema(rawSessions);
     // Rename chat_history files (old paired id → new chat session id)
-    const CHAT_DIR = MULTICC_PATHS.chatHistoryDir;
     for (const { from, to } of chatHistoryRenames) {
-      const src = path.join(CHAT_DIR, `${from}.json`);
-      const dst = path.join(CHAT_DIR, `${to}.json`);
       try {
-        if (fs.existsSync(src) && !fs.existsSync(dst)) fs.renameSync(src, dst);
+        chatHistoryRepository.renameSession(from, to);
       } catch (e) {
         console.warn(`[multicc] chat_history rename failed ${from} → ${to}: ${e.message}`);
       }
@@ -1332,8 +1331,11 @@ async function destroySessionCascade(s, d, opts = {}) {
   if (orchestrationRuntime) await orchestrationRuntime.cancelForSession(s.id);
   bgCompletionCoalescer.cancel(s.id); // drop any completions buffered for this now-deleted session
   share.removeForSession(s.id);
-  chatHistories.delete(s.id);
-  try { fs.unlinkSync(chatHistoryPath(s.id)); } catch (_) {}
+  try { chatHistoryService.deleteSession(s.id); }
+  catch (error) {
+    chatHistoryService.invalidate(s.id);
+    logger.warn('chat_history_delete_failed', { sessionId: s.id, error: error.message });
+  }
   teardownTriggers(s.id);
   purgeNotesForSession(s.id);
   if (opts.removeRecord !== false) persistedSessions.delete(s.id);
@@ -1682,14 +1684,16 @@ function validateDispatchTarget(targetId, fromSessionId = null) {
 
 // Remove the raw marker from the most recent persisted gateway assistant message.
 function stripMarkerFromGatewayHistory() {
-  const hist = chatHistories.get(GATEWAY_ID);
-  if (!hist) return;
+  const hist = loadChatHistory(GATEWAY_ID);
   for (let i = hist.length - 1; i >= 0; i--) {
     const m = hist[i];
     if (m.role !== 'assistant') continue;
     if (typeof m.content === 'string' && DISPATCH_RE.test(m.content)) {
       m.content = m.content.replace(DISPATCH_RE, '').replace(/\n{3,}/g, '\n\n').trim();
-      saveChatHistory(GATEWAY_ID);
+      try { chatHistoryService.replace(GATEWAY_ID, hist, { reason: 'strip-dispatch-marker' }); }
+      catch (error) {
+        logger.warn('chat_history_marker_strip_failed', { sessionId: GATEWAY_ID, error: error.message });
+      }
     }
     return;   // only inspect the latest assistant message
   }
@@ -2287,15 +2291,24 @@ const sessionQuery = createSessionQueryService({
       const chat = chatSessions.get(id);
       const kind = record.kind || 'terminal';
       const isChat = kind === 'chat';
+      const chatActive = !!chat && (chat.clients.size > 0 || chat.isStreaming);
+      const chatActivity = isChat ? chatLastActivity(id, chat) : null;
       return {
+        cwd: isChat ? cwdForSession(record) : (terminal ? terminal.cwd : record.cwd),
+        sessionCwd: cwdForSession(record),
+        createdAt: terminal ? terminal.createdAt : record.createdAt,
+        terminalActive: !!terminal,
+        terminalLastActivity: terminal ? terminal.lastActivity : null,
+        terminalClients: terminal ? terminal.clients.size : 0,
+        chatActive,
+        chatLastActivity: chatActivity,
+        chatClients: chat ? chat.clients.size : 0,
         effectiveModel: effectiveSessionModel(record),
         effectiveEffort: effectiveSessionEffort(record),
         subagent: serializeSubagent(record.subagent),
-        lastActivity: isChat ? chatLastActivity(id, chat) : (terminal ? terminal.lastActivity : null),
+        lastActivity: isChat ? chatActivity : (terminal ? terminal.lastActivity : null),
         clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
-        active: isChat
-          ? !!chat && (chat.clients.size > 0 || chat.isStreaming)
-          : !!terminal,
+        active: isChat ? chatActive : !!terminal,
         mergeState: record.dirId ? mergeStateCached(directories.get(record.dirId), record) : null,
       };
     },
@@ -2316,6 +2329,7 @@ const sessionWorkspace = createWorkspaceService({
       const task = getTaskState(persistedSessions.get(id));
       return {
         ...status,
+        currentFile: status.currentFile || null,
         pendingNotes: pendingNotesFor(id).length,
         summary: summary?.summary || null,
         summaryAt: summary?.ts || null,
@@ -2326,7 +2340,99 @@ const sessionWorkspace = createWorkspaceService({
     },
   },
 });
-const SESSION_DOMAIN_SHADOW = envEnabled(process.env.MULTICC_SESSION_DOMAIN_SHADOW);
+
+function legacySessionListPresenter({ record: p, runtime: live }) {
+  const useChatRuntime = p.kind === 'chat' || !live.terminalActive;
+  return {
+    id: p.id,
+    dirId: p.dirId || null,
+    cli: p.cli || 'claude',
+    kind: p.kind || 'terminal',
+    cliSessionId: p.cliSessionId || null,
+    label: p.label || null,
+    model: p.model || null,
+    effectiveModel: live.effectiveModel,
+    effort: p.effort || null,
+    effectiveEffort: live.effectiveEffort,
+    agent: p.agent || null,
+    rolePrompt: p.rolePrompt || null,
+    provider: p.provider || null,
+    subagent: live.subagent,
+    autoCommit: !!p.autoCommit,
+    autoDispatch: !!p.autoDispatch,
+    cliStates: cliStateSummary(p),
+    pendingCliHandoff: cliHandoffSummary(p),
+    cwd: live.sessionCwd,
+    createdAt: p.createdAt,
+    mergeState: live.mergeState,
+    lastActivity: p.kind === 'chat' ? live.chatLastActivity : live.terminalLastActivity,
+    clients: useChatRuntime ? live.chatClients : live.terminalClients,
+    active: useChatRuntime ? live.chatActive : true,
+  };
+}
+
+function legacyDirectorySessionPresenter({ record: p, runtime: live }) {
+  const useTerminalRuntime = p.kind === 'terminal';
+  return {
+    id: p.id, dirId: p.dirId, cli: p.cli, kind: p.kind,
+    cliSessionId: p.cliSessionId || null, label: p.label || null,
+    model: p.model || null, effort: p.effort || null,
+    effectiveEffort: live.effectiveEffort, agent: p.agent || null,
+    rolePrompt: p.rolePrompt || null, provider: p.provider || null,
+    subagent: live.subagent, cliStates: cliStateSummary(p),
+    pendingCliHandoff: cliHandoffSummary(p), createdAt: p.createdAt,
+    branch: p.branch || null, worktreePath: p.worktreePath || null,
+    invalid: invalidSessions.get(p.id) || null, mergeState: live.mergeState,
+    lastActivity: p.kind === 'chat' ? live.chatLastActivity : live.terminalLastActivity,
+    active: useTerminalRuntime ? live.terminalActive : live.chatActive,
+    clients: useTerminalRuntime ? live.terminalClients : live.chatClients,
+  };
+}
+
+function dashboardSessionPresenter({ record: p, runtime: live }) {
+  const task = getTaskState(p);
+  return {
+    id: p.id, label: p.label || null, cli: p.cli || 'claude',
+    kind: p.kind || 'terminal', active: !!live.active,
+    createdAt: p.createdAt || null, lastActivity: live.lastActivity,
+    classifyState: task.classifyState || null,
+    goal: task.goal || '', phase: task.phase || 'idle',
+  };
+}
+
+function legacyWorkspacePresenter({ session, facts }) {
+  const p = session.record;
+  const live = session.runtime;
+  return {
+    id: p.id, label: p.label || null, cli: p.cli || 'claude', kind: p.kind || 'terminal',
+    branch: p.branch || null, invalid: invalidSessions.get(p.id) || null,
+    status: facts.status, currentFile: facts.currentFile || null, lastActivity: facts.lastActivity,
+    runStartedAt: facts.runStartedAt || null, runEndedAt: facts.runEndedAt || null,
+    clients: live.clients || 0, pendingNotes: facts.pendingNotes,
+    mergeState: live.mergeState, summary: facts.summary || null,
+    summaryTs: facts.summaryAt || null, classifyState: facts.classifyState || null,
+    goal: facts.goal || '', phase: facts.phase || 'idle',
+  };
+}
+
+function legacySessionDetailPresenter({ record: p, runtime: live }) {
+  const cli = p.cli || 'claude';
+  const isClaudeChat = cli !== 'codex' && cli !== 'opencode' && cli !== 'zcode'
+    && p.kind !== 'terminal';
+  return {
+    id: p.id, cwd: live.cwd, createdAt: live.createdAt,
+    lastActivity: live.lastActivity, clients: live.clients || 0, active: !!live.active,
+    mergeState: live.mergeState, cli, model: p.model || null,
+    effectiveModel: live.effectiveModel, effort: p.effort || null,
+    effectiveEffort: live.effectiveEffort, agent: p.agent || null,
+    rolePrompt: p.rolePrompt || null, memory: p.memory || null,
+    provider: p.provider || null, subagent: live.subagent,
+    cliStates: cliStateSummary(p), cliAvailability: cliAvailabilitySummary(),
+    pendingCliHandoff: cliHandoffSummary(p), streaming: isClaudeChat,
+    autoContinue: p.autoContinue !== false, autoCommit: !!p.autoCommit,
+    autoDispatch: !!p.autoDispatch,
+  };
+}
 
 function sessionContractView(record) {
   return sessionQuery.project(record);
@@ -2352,19 +2458,16 @@ app.get('/api/v1/sessions/:id', (req, res) => {
 function workspaceContractView(snapshot) {
   return {
     directory: snapshot.directory,
-    sessions: snapshot.sessions.map(entry => ({
-      session: sessionQuery.get(entry.id),
-      status: entry.status,
-      statusUpdatedAt: entry.statusUpdatedAt,
-      runStartedAt: entry.runStartedAt,
-      runEndedAt: entry.runEndedAt,
-      pendingNotes: entry.pendingNotes,
-      summary: entry.summary,
-      summaryAt: entry.summaryAt,
-      classifyState: entry.classifyState,
-      goal: entry.goal,
-      phase: entry.phase,
-    })),
+    sessions: snapshot.sessions.map((entry) => {
+      const {
+        status, statusUpdatedAt, runStartedAt, runEndedAt, pendingNotes,
+        summary, summaryAt, classifyState, goal, phase, ...session
+      } = entry;
+      return {
+        session, status, statusUpdatedAt, runStartedAt, runEndedAt,
+        pendingNotes, summary, summaryAt, classifyState, goal, phase,
+      };
+    }),
     count: snapshot.count,
   };
 }
@@ -2384,52 +2487,7 @@ app.get('/api/v1/providers', (req, res) => {
 });
 
 app.get('/api/sessions', (req, res) => {
-  const list = [...persistedSessions.values()]
-    .filter(p => p.type !== 'aux' && p.type !== 'gateway')
-    .map(p => {
-      const active = sessions.get(p.id);
-      const activeChat = chatSessions.get(p.id);
-      const cwd = cwdForSession(p);
-      const base = {
-        id: p.id,
-        dirId: p.dirId || null,
-        cli: p.cli || 'claude',
-        kind: p.kind || 'terminal',
-        cliSessionId: p.cliSessionId || null,
-        label: p.label || null,
-        model: p.model || null,
-        effectiveModel: effectiveSessionModel(p),
-        effort: p.effort || null,
-        effectiveEffort: effectiveSessionEffort(p),
-        agent: p.agent || null,
-        rolePrompt: p.rolePrompt || null,
-        provider: p.provider || null,  // cc-switch provider id; null = default login
-        subagent: serializeSubagent(p.subagent),  // Task-tool subagent override; null = 随主
-        autoCommit: !!p.autoCommit,
-        autoDispatch: !!p.autoDispatch,
-        cliStates: cliStateSummary(p),
-        pendingCliHandoff: cliHandoffSummary(p),
-        cwd,
-        createdAt: p.createdAt,
-        mergeState: p.dirId ? mergeStateCached(directories.get(p.dirId), p) : null,
-      };
-      if (p.kind === 'chat' || active === undefined) {
-        // Chat sessions don't live in `sessions` (terminal) map; derive active state from chatSessions
-        const isChatActive = !!activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming);
-        return {
-          ...base,
-          lastActivity: p.kind === 'chat' ? chatLastActivity(p.id, activeChat) : null,
-          clients: activeChat ? activeChat.clients.size : 0,
-          active: isChatActive,
-        };
-      }
-      return {
-        ...base,
-        lastActivity: active.lastActivity,
-        clients: active.clients.size,
-        active: true,
-      };
-    });
+  const list = sessionQuery.list({ presenter: legacySessionListPresenter });
   const auxP = persistedSessions.get(AUX_SESSION_ID);
   if (auxP) {
     list.unshift({
@@ -2449,36 +2507,10 @@ app.get('/api/dashboard/sessions', (req, res) => {
   const { kind, active: activeParam } = req.query;
   const filterActive = activeParam === undefined ? null : activeParam === 'true';
 
-  const list = [...persistedSessions.values()]
-    .filter(p => p.type !== 'aux' && p.type !== 'gateway')
-    .filter(p => !kind || (p.kind || 'terminal') === kind)
-    .map(p => {
-      const activeChat = chatSessions.get(p.id);
-      const termSession = sessions.get(p.id);
-      let isActive;
-      let lastActivity;
-      if (p.kind === 'chat') {
-        isActive = !!activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming);
-        lastActivity = chatLastActivity(p.id, activeChat);
-      } else {
-        // terminal sessions are active when present in `sessions` map
-        isActive = !!termSession;
-        lastActivity = termSession ? termSession.lastActivity : null;
-      }
-      const ts = getTaskState(p);
-      return {
-        id: p.id,
-        label: p.label || null,
-        cli: p.cli || 'claude',
-        kind: p.kind || 'terminal',
-        active: isActive,
-        createdAt: p.createdAt || null,
-        lastActivity,
-        classifyState: ts.classifyState || null,
-        goal: ts.goal || '',
-        phase: ts.phase || 'idle',
-      };
-    })
+  const list = sessionQuery.list({
+    filter: p => !kind || (p.kind || 'terminal') === kind,
+    presenter: dashboardSessionPresenter,
+  })
     .filter(s => filterActive === null || s.active === filterActive);
 
   res.json({ sessions: list, count: list.length });
@@ -2486,28 +2518,19 @@ app.get('/api/dashboard/sessions', (req, res) => {
 
 // GET /api/dashboard/stats — aggregate statistics
 app.get('/api/dashboard/stats', (req, res) => {
-  const all = [...persistedSessions.values()]
-    .filter(p => p.type !== 'aux' && p.type !== 'gateway');
+  const all = sessionQuery.listContexts();
 
   let activeCount = 0;
   const byCli = {};
   const byKind = {};
 
-  for (const p of all) {
+  for (const { record: p, runtime: live } of all) {
     const cli = p.cli || 'claude';
     const k = p.kind || 'terminal';
     byCli[cli] = (byCli[cli] || 0) + 1;
     byKind[k] = (byKind[k] || 0) + 1;
 
-    const activeChat = chatSessions.get(p.id);
-    const termSession = sessions.get(p.id);
-    let isActive;
-    if (p.kind === 'chat') {
-      isActive = !!activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming);
-    } else {
-      isActive = !!termSession;
-    }
-    if (isActive) activeCount++;
+    if (live.active) activeCount++;
   }
 
   res.json({
@@ -2844,28 +2867,9 @@ app.post('/api/directories/:id/memo/send', (req, res) => {
 app.get('/api/directories/:id/sessions', (req, res) => {
   const d = directories.get(req.params.id);
   if (!d) return res.status(404).json({ error: 'directory not found' });
-  const owned = [...persistedSessions.values()]
-    .filter(s => s.dirId === d.id)
-    .map(s => {
-      const active = sessions.get(s.id);
-      const activeChat = chatSessions.get(s.id);
-      return {
-        id: s.id, dirId: s.dirId, cli: s.cli, kind: s.kind,
-        cliSessionId: s.cliSessionId || null, label: s.label || null,
-        model: s.model || null, effort: s.effort || null, effectiveEffort: effectiveSessionEffort(s), agent: s.agent || null, rolePrompt: s.rolePrompt || null,
-        provider: s.provider || null,  // cc-switch provider id; null = default login
-        subagent: serializeSubagent(s.subagent),  // Task-tool subagent override; null = 随主
-        cliStates: cliStateSummary(s), pendingCliHandoff: cliHandoffSummary(s),
-        createdAt: s.createdAt,
-        branch: s.branch || null,
-        worktreePath: s.worktreePath || null,
-        invalid: invalidSessions.get(s.id) || null,
-        mergeState: mergeStateCached(d, s),
-        lastActivity: s.kind === 'chat' ? chatLastActivity(s.id, activeChat) : active?.lastActivity || null,
-        active: s.kind === 'terminal' ? !!active : !!(activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming)),
-        clients: s.kind === 'terminal' ? (active?.clients.size || 0) : (activeChat?.clients.size || 0),
-      };
-    });
+  const owned = sessionQuery.list({
+    dirId: d.id, includeHidden: true, presenter: legacyDirectorySessionPresenter,
+  });
   res.json({ directory: d, sessions: owned });
 });
 
@@ -4100,13 +4104,8 @@ app.get('/api/debug/classify-test-cases', (req, res) => {
 app.delete('/api/sessions/:id/messages/:msgId', (req, res) => {
   const sessionName = req.params.id;
   if (!persistedSessions.get(sessionName)) return res.status(404).json({ error: 'session not found' });
-  const history = loadChatHistory(sessionName);
-  const idx = history.findIndex(m => m && m.id === req.params.msgId);
-  if (idx === -1) return res.status(404).json({ error: 'message not found' });
-  history.splice(idx, 1);
-  saveChatHistory(sessionName);
-  // All connected clients (including the initiator) drop the bubble on this event.
-  chatBroadcast(sessionName, { type: 'chat_msg_deleted', id: req.params.msgId });
+  const result = chatHistoryService.remove(sessionName, req.params.msgId);
+  if (!result.removed) return res.status(404).json({ error: 'message not found' });
   res.json({ ok: true });
 });
 
@@ -4144,32 +4143,14 @@ app.delete('/api/sessions/:id/share/:token', (req, res) => {
 // (when `before` is omitted) or the `limit` messages older than the entry with
 // id `before`. `hasMore` tells the client there's even older history to fetch.
 // Used by both the HTTP /history route and the initial WS chat_history push.
-function paginateChatHistory(history, { before, limit } = {}) {
-  const lim = Math.max(1, Math.min(100, parseInt(limit, 10) || CHAT_HISTORY_PAGE));
-  let end = history.length;
-  if (before) {
-    const idx = history.findIndex(m => m && m.id === before);
-    if (idx === -1) {
-      // `before` not found (deleted/unknown): return empty page, hasMore=false
-      // so the client stops paginating instead of looping.
-      return { messages: [], hasMore: false };
-    }
-    end = idx;
-  }
-  const start = Math.max(0, end - lim);
-  const messages = history.slice(start, end);
-  return { messages, hasMore: start > 0 };
-}
-
 app.get('/api/sessions/:id/history', (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
-  const history = loadChatHistory(req.params.id);
-  const page = paginateChatHistory(history, {
+  const page = chatHistoryService.paginate(req.params.id, {
     before: req.query.before && String(req.query.before),
     limit: req.query.limit && String(req.query.limit),
   });
-  res.json(page);
+  res.json({ messages: page.messages, hasMore: page.hasMore });
 });
 
 // Create a read-only snapshot share of selected messages (by index into history).
@@ -4247,8 +4228,7 @@ app.post('/api/sessions/:id/fork', asyncHandler(async (req, res) => {
     forkedFrom: { sessionId: src.id, atMessageId: atMessageId || null, atTs: sliced.length ? sliced[sliced.length - 1].ts : null },
   };
   const newHistory = [forkMeta, ...sliced];
-  chatHistories.set(newSid, newHistory);
-  saveChatHistory(newSid);
+  chatHistoryService.replace(newSid, newHistory, { reason: 'fork' });
 
   // A fork has a fresh vendor-native session, so copying display history alone
   // is not context continuation. Seed the same one-shot checkpoint mechanism
@@ -4497,8 +4477,7 @@ app.post('/api/sessions/import', asyncHandler(async (req, res) => {
   try {
     // 1) Restore chat history.
     if (Array.isArray(payload.messages)) {
-      chatHistories.set(newSid, payload.messages);
-      saveChatHistory(newSid);
+      chatHistoryService.replace(newSid, payload.messages, { reason: 'bundle-import' });
     }
 
     // 2) Restore memory files.
@@ -4658,46 +4637,9 @@ app.post('/api/sessions/:id/triggers/:tid/test', (req, res) => {
 
 app.get('/api/sessions/:id', (req, res) => {
   const id = req.params.id;
-  const active = sessions.get(id);
-  const persisted = persistedSessions.get(id);
-  if (!active && !persisted) return res.status(404).json({ error: 'Session not found' });
-  const dir = persisted?.dirId ? directories.get(persisted.dirId) : null;
-  const mergeState = persisted ? mergeStateCached(dir, persisted) : null;
-  const cli = persisted?.cli || 'claude';
-  const model = persisted?.model || null;
-  const effectiveModel = effectiveSessionModel(persisted);
-  const effort = persisted?.effort || null;
-  const effectiveEffort = effectiveSessionEffort(persisted);
-  const agent = persisted?.agent || null;
-  const cliAvailability = cliAvailabilitySummary();
-  // The session's own role override (null = inherits the directory default).
-  const rolePrompt = persisted?.rolePrompt || null;
-  const memory = persisted?.memory || null;  // distilled session memory
-  // streaming (流式常驻) is claude chat's only mode now — reported for back-compat
-  // with older clients but no longer toggleable. Reflect the effective behavior
-  // (always on for claude chat) rather than any stale persisted flag.
-  const isClaudeChat = persisted?.cli !== 'codex' && persisted?.cli !== 'opencode' && persisted?.cli !== 'zcode'
-    && persisted?.kind !== 'terminal';
-  const streaming = isClaudeChat;
-  // autoContinue is no longer user-facing; always true (classify gates the actual
-  // injection). Legacy sessions that predate the pinned field default to true too.
-  // tryAutoContinue is retired (0 call sites) — this field is vestigial.
-  const autoContinue = persisted?.autoContinue !== false;
-  const autoCommit = !!persisted?.autoCommit;
-  const autoDispatch = !!persisted?.autoDispatch;
-  const provider = persisted?.provider || null;  // cc-switch provider id; null = default login
-  const subagent = serializeSubagent(persisted?.subagent);  // Task-tool subagent override; null = 随主
-  const cliStates = cliStateSummary(persisted);
-  const pendingCliHandoff = cliHandoffSummary(persisted);
-  const activeChat = persisted?.kind === 'chat' ? chatSessions.get(id) : null;
-  const lastActivity = persisted?.kind === 'chat' ? chatLastActivity(id, activeChat) : null;
-  if (active) {
-    res.json({ id: active.id, cwd: active.cwd, createdAt: active.createdAt, lastActivity: active.lastActivity, clients: active.clients.size, active: true, mergeState, cli, model, effectiveModel, effort, effectiveEffort, agent, rolePrompt, memory, provider, subagent, cliStates, cliAvailability, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
-  } else if (persisted?.kind === 'chat') {
-    res.json({ id: persisted.id, cwd: cwdForSession(persisted), createdAt: persisted.createdAt, lastActivity, clients: activeChat ? activeChat.clients.size : 0, active: !!(activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming)), mergeState, cli, model, effectiveModel, effort, effectiveEffort, agent, rolePrompt, memory, provider, subagent, cliStates, cliAvailability, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
-  } else {
-    res.json({ id: persisted.id, cwd: persisted.cwd, createdAt: persisted.createdAt, lastActivity: null, clients: 0, active: false, mergeState, cli, model, effectiveModel, effort, effectiveEffort, agent, rolePrompt, memory, provider, subagent, cliStates, cliAvailability, pendingCliHandoff, streaming, autoContinue, autoCommit, autoDispatch });
-  }
+  const detail = sessionQuery.get(id, { includeHidden: true, presenter: legacySessionDetailPresenter });
+  if (!detail) return res.status(404).json({ error: 'Session not found' });
+  res.json(detail);
 });
 
 app.get('/api/sessions/:id/merge-status', (req, res) => {
@@ -6387,7 +6329,6 @@ const auxQueue = {
   // and the dashboard shows a non-dismissible red banner. Any success clears it.
   health: { consecutiveFails: 0, unhealthy: false, lastFailAt: null, lastFailMsg: '', sinceAt: null },
   clients: new Set(), // WebSocket clients watching aux events
-  history: [],        // loaded from chat_history/__aux__.json
 
   // Record a failed task. Cancelled tasks don't count (user-initiated).
   // Returns the updated health object.
@@ -6427,7 +6368,6 @@ const auxQueue = {
   },
 
   init() {
-    this.history = loadChatHistory(AUX_SESSION_ID);
     loadAuxConfig();
     // Register __aux__ as a special persisted session
     if (!persistedSessions.has(AUX_SESSION_ID)) {
@@ -7348,9 +7288,6 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 // ── Chat mode: message history ──
-const CHAT_HISTORY_DIR = MULTICC_PATHS.chatHistoryDir;
-try { ensurePrivateDir(CHAT_HISTORY_DIR); } catch (_) {}
-const MAX_CHAT_MESSAGES = 50;  // legacy rolling window (kept for reference)
 // Soft cap for full-history retention. chat_history is display-only (never fed
 // to the CLI - the CLI uses its own transcript via --resume), so we keep the
 // full conversation for pagination/scroll-back and only distill-into-memory at
@@ -7362,7 +7299,7 @@ const CHAT_HISTORY_SOFT_CAP = 10000;
 const CHAT_HISTORY_PAGE = 30;
 
 // ── Per-session token usage accumulator ──
-// chat_history has a rolling window (50 messages), so older usage data gets
+// chat_history has bounded retention, so sufficiently old usage data can be
 // trimmed. This file stores the CUMULATIVE total per session and never shrinks.
 const TOKEN_USAGE_FILE = MULTICC_PATHS.tokenUsageFile;
 // Real consumed input for a turn = fresh input + cache reads + cache writes.
@@ -7437,17 +7374,14 @@ function seedTokenUsageFromHistory() {
   if (typeof accum !== 'object' || Array.isArray(accum)) accum = {};
   let seeded = 0;
 
-  let files;
-  try { files = fs.readdirSync(CHAT_HISTORY_DIR); } catch (_) { return; }
-  for (const fname of files) {
-    if (!fname.endsWith('.json')) continue;
-    if (fname === '__aux__.json' || fname === '__gateway__.json') continue;
-    const sessionId = fname.replace(/\.json$/, '');
+  let sessionIds;
+  try { sessionIds = chatHistoryRepository.listSessionIds(); } catch (_) { return; }
+  for (const sessionId of sessionIds) {
+    if (sessionId === '__aux__' || sessionId === '__gateway__') continue;
     if (accum[sessionId]) continue;  // already tracked
 
     try {
-      const msgs = JSON.parse(fs.readFileSync(path.join(CHAT_HISTORY_DIR, fname), 'utf8'));
-      if (!Array.isArray(msgs)) continue;
+      const msgs = chatHistoryRepository.readStrict(sessionId);
       let inp = 0, out = 0, turns = 0;
       for (const m of msgs) {
         const u = m.usage;
@@ -7469,78 +7403,6 @@ function seedTokenUsageFromHistory() {
   }
 }
 
-// In-memory cache: sessionName → [ { role, content, ts, cost?, tools? } ]
-const chatHistories = new Map();
-
-function chatHistoryPath(sessionName) {
-  const safe = sessionName.replace(/[^a-zA-Z0-9_-]/g, '_') || '_default';
-  return path.join(CHAT_HISTORY_DIR, `${safe}.json`);
-}
-
-function loadChatHistory(sessionName) {
-  if (chatHistories.has(sessionName)) return chatHistories.get(sessionName);
-  try {
-    const data = JSON.parse(fs.readFileSync(chatHistoryPath(sessionName), 'utf8'));
-    // Sanitize empty thinking blocks from models like GLM that return
-    // thinking blocks with only whitespace; Claude API rejects these with
-    // HTTP 400 "each thinking block must contain non-whitespace thinking".
-    if (Array.isArray(data)) {
-      let cleaned = 0;
-      for (const msg of data) {
-        if (!msg || !Array.isArray(msg.content)) continue;
-        msg.content = msg.content.filter((block) => {
-          if (block && block.type === 'thinking' && (!block.thinking || !/\S/.test(block.thinking))) { cleaned++; return false; }
-          return true;
-        });
-      }
-      if (cleaned > 0) console.log(`[multicc] sanitized ${cleaned} empty thinking block(s) from ${data.length} messages`);
-      // Backfill ids on entries saved before per-message ids existed, so
-      // every replayed message is deletable. Persisted on the next save.
-      for (const msg of data) {
-        if (msg && msg.role && !msg.id) msg.id = newChatMsgId();
-      }
-    }
-    chatHistories.set(sessionName, data);
-    return data;
-  } catch (_) {
-    const arr = [];
-    chatHistories.set(sessionName, arr);
-    return arr;
-  }
-}
-
-function latestAssistantMessageAt(sessionName) {
-  const history = loadChatHistory(sessionName);
-  for (let i = history.length - 1; i >= 0; i--) {
-    const msg = history[i];
-    if (!msg || msg.role !== 'assistant') continue;
-    const ts = Number(msg.ts);
-    if (Number.isFinite(ts) && ts > 0) return new Date(ts);
-  }
-  return null;
-}
-
-function chatLastActivity(sessionName, activeChat) {
-  const saved = latestAssistantMessageAt(sessionName);
-  const live = activeChat?.lastActivity ? new Date(activeChat.lastActivity) : null;
-  if (saved && live && Number.isFinite(live.getTime())) {
-    return saved.getTime() >= live.getTime() ? saved : live;
-  }
-  return saved || (live && Number.isFinite(live.getTime()) ? live : null);
-}
-
-function saveChatHistory(sessionName) {
-  const history = chatHistories.get(sessionName);
-  if (!history) return false;
-  try {
-    atomicWriteJson(chatHistoryPath(sessionName), history);
-    return true;
-  } catch (e) {
-    console.error(`[multicc/chat] Failed to save history for ${sessionName}:`, e.message);
-    return false;
-  }
-}
-
 // Messages dropped by the rolling-window trim accumulate here per session; once
 // a batch builds up we distill them into memory before they're gone for good.
 const _droppedForMemory = new Map();  // sessionName → [msg, …]
@@ -7551,6 +7413,62 @@ const MEMORY_DISTILL_BATCH = 10;
 let _chatMsgIdSeq = 0;
 function newChatMsgId() {
   return 'm' + Date.now().toString(36) + '-' + (_chatMsgIdSeq++).toString(36);
+}
+
+function handleCommittedHistoryEvent(event) {
+  if (event.type === 'append') {
+    for (const dropped of event.dropped || []) {
+      if (event.sessionId === AUX_SESSION_ID || !dropped) continue;
+      const buffer = _droppedForMemory.get(event.sessionId) || [];
+      buffer.push(dropped);
+      if (buffer.length >= MEMORY_DISTILL_BATCH) {
+        distillHistoryIntoMemory(event.sessionId, buffer);
+        _droppedForMemory.set(event.sessionId, []);
+      } else {
+        _droppedForMemory.set(event.sessionId, buffer);
+      }
+    }
+    const message = event.message;
+    chatBroadcast(event.sessionId, {
+      type: 'chat_msg_meta', id: message.id, role: message.role, ts: message.ts,
+    });
+    if (!event.deduplicated && message.role === 'assistant' && !message._interim
+        && !message.cancelled && !message.partial && !message.error) {
+      setImmediate(() => maybeSchedulePeriodicMemoryReview(event.sessionId));
+    }
+  } else if (event.type === 'remove' && event.message) {
+    chatBroadcast(event.sessionId, { type: 'chat_msg_deleted', id: event.message.id });
+  }
+}
+
+const chatHistoryService = createChatHistoryService({
+  history: chatHistoryRepository,
+  idFactory: newChatMsgId,
+  maxMessages: CHAT_HISTORY_SOFT_CAP,
+  retentionPolicy: sessionName => sessionName === AUX_SESSION_ID
+    ? AUX_HISTORY_MAX
+    : CHAT_HISTORY_SOFT_CAP,
+  postPersist: handleCommittedHistoryEvent,
+  onPostPersistError: (error, event) => logger.warn('chat_history_post_persist_failed', {
+    sessionId: event.sessionId, operation: event.type, error: error.message,
+  }),
+});
+
+function loadChatHistory(sessionName) {
+  return chatHistoryService.read(sessionName);
+}
+
+function latestAssistantMessageAt(sessionName) {
+  return chatHistoryService.latestAssistantAt(sessionName);
+}
+
+function chatLastActivity(sessionName, activeChat) {
+  const saved = latestAssistantMessageAt(sessionName);
+  const live = activeChat?.lastActivity ? new Date(activeChat.lastActivity) : null;
+  if (saved && live && Number.isFinite(live.getTime())) {
+    return saved.getTime() >= live.getTime() ? saved : live;
+  }
+  return saved || (live && Number.isFinite(live.getTime()) ? live : null);
 }
 
 // Incremental save: flush the in-progress assistant message to chat_history
@@ -7564,99 +7482,40 @@ function scheduleIncrementalSave(sessionName, cs) {
   _incrSaveTimers.set(sessionName, setTimeout(() => {
     _incrSaveTimers.delete(sessionName);
     if (!cs.currentAssistantText || cs.currentAssistantText.length < 20) return;
-    const history = loadChatHistory(sessionName);
-    // Replace the last in-progress entry or append a new one
-    const last = history[history.length - 1];
     const interimMsg = {
       role: 'assistant', content: cs.currentAssistantText,
       tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
       ts: Date.now(), _interim: true,
     };
-    if (last && last.role === 'assistant' && last._interim) {
-      history[history.length - 1] = interimMsg;
-    } else {
-      if (!interimMsg.id) interimMsg.id = newChatMsgId();
-      history.push(interimMsg);
+    try { chatHistoryService.upsertInterim(sessionName, interimMsg); }
+    catch (error) {
+      console.error(`[multicc/chat] Failed to save interim history for ${sessionName}:`, error.message);
     }
-    saveChatHistory(sessionName);
   }, 5000));
 }
 
 function appendChatMessage(sessionName, msg) {
-  const history = loadChatHistory(sessionName);
   if (!msg.id) msg.id = newChatMsgId();
-
-  // A final assistant save (non-interim) supersedes any trailing interim
-  // entries from the same turn - drop them so they don't pile up as
-  // duplicate near-identical messages in the history.
-  if (msg.role === 'assistant' && !msg._interim) {
-    while (history.length > 0) {
-      const last = history[history.length - 1];
-      if (last && last.role === 'assistant' && last._interim) history.pop();
-      else break;
-    }
-  }
-
-  // Dedup: skip if the last message in history is an assistant with identical
-  // content and tools (guards against double-saves from stream-replay races).
-  if (msg.role === 'assistant' && history.length > 0) {
-    const prev = history[history.length - 1];
-    if (prev.role === 'assistant' &&
-        prev.content === msg.content &&
-        JSON.stringify(prev.tools || null) === JSON.stringify(msg.tools || null)) {
-      // Update usage/timing on the existing message instead of pushing a duplicate.
-      if (!prev.id) prev.id = newChatMsgId();
-      if (msg.usage) prev.usage = msg.usage;
-      if (msg.cost != null) prev.cost = msg.cost;
-      if (msg.durationMs != null) prev.durationMs = msg.durationMs;
-      if (msg.ts) prev.ts = msg.ts;
-      const saved = saveChatHistory(sessionName);
-      chatBroadcast(sessionName, { type: 'chat_msg_meta', id: prev.id, role: prev.role, ts: prev.ts });
-      return saved;
-    }
-  }
-
-  history.push(msg);
+  let afterCommit;
   if (msg && msg.role === 'assistant') {
     const ts = Number(msg.ts);
     const at = Number.isFinite(ts) && ts > 0 ? new Date(ts) : new Date();
     const cs = chatSessions.get(sessionName);
-    if (cs) cs.lastActivity = at;
     // Interaction latency: time from this turn's start (user submit / LLM call)
     // to the reply being saved. Stamped centrally so every completion path
     // (claude/codex, normal/cancelled/error) records it without duplication.
     if (msg.durationMs == null && cs && cs.turnStartedAt) {
       msg.durationMs = Math.max(0, at.getTime() - cs.turnStartedAt);
     }
+    afterCommit = () => { if (cs) cs.lastActivity = at; };
   }
-  // Full-history retention: only trim at the large soft cap (display-only data,
-  // not CLI context). Aux/gateway keep their own smaller rolling window.
-  const limit = sessionName === AUX_SESSION_ID ? AUX_HISTORY_MAX : CHAT_HISTORY_SOFT_CAP;
-  const isAux = sessionName === AUX_SESSION_ID;
-  while (history.length > limit) {
-    const dropped = history.shift();
-    // Don't distill the aux/gateway internal logs — only real chat sessions.
-    if (!isAux && dropped) {
-      const buf = _droppedForMemory.get(sessionName) || [];
-      buf.push(dropped);
-      if (buf.length >= MEMORY_DISTILL_BATCH) {
-        distillHistoryIntoMemory(sessionName, buf);
-        _droppedForMemory.set(sessionName, []);
-      } else {
-        _droppedForMemory.set(sessionName, buf);
-      }
-    }
+  try {
+    chatHistoryService.append(sessionName, msg, { afterCommit });
+    return true;
+  } catch (error) {
+    console.error(`[multicc/chat] Failed to save history for ${sessionName}:`, error.message);
+    return false;
   }
-  const saved = saveChatHistory(sessionName);
-  // Tell live clients the id this message was saved under, so the bubble
-  // already on screen becomes individually addressable (delete button).
-  chatBroadcast(sessionName, { type: 'chat_msg_meta', id: msg.id, role: msg.role, ts: msg.ts });
-  if (msg && msg.role === 'assistant' && !msg._interim && !msg.cancelled && !msg.partial && !msg.error) {
-    // Keep the user-visible turn fast. The review counter is persisted and the
-    // actual auxiliary review runs after the reply has already been saved.
-    setImmediate(() => maybeSchedulePeriodicMemoryReview(sessionName));
-  }
-  return saved;
 }
 
 // ── Chat sessions: session-level state for multi-client broadcast ──
@@ -8022,7 +7881,7 @@ function pruneErrorTurnPairs(sessionName) {
     }
   }
   if (removed > 0) {
-    saveChatHistory(sessionName);
+    chatHistoryService.replace(sessionName, history, { reason: 'prune-error-turn-pairs' });
     console.log(`[multicc/classify] ${sessionName} pruned ${removed} error+nudge pair(s)`);
   }
   return removed;
@@ -9041,44 +8900,8 @@ function setSessionStatus(sessionId, patch) {
 }
 
 function workspaceSnapshot(dirId) {
-  const out = [];
-  for (const s of persistedSessions.values()) {
-    if (s.dirId !== dirId || s.type === 'aux' || s.type === 'gateway') continue;
-    const st = workspaceStatus.get(s.id) || { status: 'idle', currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null };
-    const active = sessions.get(s.id);
-    const chat = chatSessions.get(s.id);
-    const sum = sessionSummaries.get(s.id) || null;
-    const ts = getTaskState(s);
-    out.push({
-      id: s.id, label: s.label || null, cli: s.cli || 'claude', kind: s.kind || 'terminal',
-      branch: s.branch || null, invalid: invalidSessions.get(s.id) || null,
-      status: st.status, currentFile: st.currentFile, lastActivity: st.lastActivity,
-      runStartedAt: st.runStartedAt || null, runEndedAt: st.runEndedAt || null,
-      clients: s.kind === 'chat' ? (chat?.clients.size || 0) : (active?.clients.size || 0),
-      pendingNotes: pendingNotesFor(s.id).length,
-      mergeState: mergeStateCached(directories.get(s.dirId), s),
-      summary: sum?.summary || null, summaryTs: sum?.ts || null,
-      classifyState: ts.classifyState || null,
-      goal: ts.goal || '', phase: ts.phase || 'idle',
-    });
-  }
-  if (SESSION_DOMAIN_SHADOW) {
-    try {
-      const comparison = compareWorkspaceSnapshots(out, sessionWorkspace.snapshot(dirId));
-      metrics.set('multicc_session_workspace_shadow_diffs', comparison.diffs.length);
-      if (!comparison.equal) {
-        logger.warn('session_workspace_shadow_diff', {
-          dirId,
-          count: comparison.diffs.length,
-          diffs: comparison.diffs,
-        });
-      }
-    } catch (error) {
-      metrics.inc('multicc_session_workspace_shadow_errors_total');
-      logger.warn('session_workspace_shadow_error', { dirId, error: error.message });
-    }
-  }
-  return out;
+  const snapshot = sessionWorkspace.snapshot(dirId, { presenter: legacyWorkspacePresenter });
+  return snapshot ? snapshot.sessions : [];
 }
 
 function handleWorkspaceWs(ws, req, urlObj) {
@@ -9654,8 +9477,8 @@ function resolveRolePrompt(persisted) {
 // content only). Used by resolveRolePrompt to keyword-match memory entries
 // against what the user is asking about right now.
 function getLatestUserMessage(sessionName) {
-  const history = chatHistories.get(sessionName);
-  if (!history || history.length === 0) return '';
+  const history = loadChatHistory(sessionName);
+  if (history.length === 0) return '';
   for (let i = history.length - 1; i >= 0; i--) {
     if (history[i].role === 'user' && typeof history[i].content === 'string') {
       return history[i].content;
@@ -10344,11 +10167,12 @@ function runChatTurn(sessionName, text, opts = {}) {
   // duplicate rewrites the cached history to disk (important after a previous
   // failed save) but never starts or interrupts another CLI turn.
   if (clientMsgId || deliveryId) {
-    const duplicate = loadChatHistory(sessionName).some(message => message && (
-      (clientMsgId && message.clientMsgId === clientMsgId)
-      || (deliveryId && message.deliveryId === deliveryId)
-    ));
-    if (duplicate) return saveChatHistory(sessionName);
+    if (clientMsgId && chatHistoryService.containsDelivery(sessionName, clientMsgId)) {
+      return chatHistoryService.hasPersistedDelivery(sessionName, clientMsgId);
+    }
+    if (deliveryId && chatHistoryService.containsDelivery(sessionName, deliveryId)) {
+      return chatHistoryService.hasPersistedDelivery(sessionName, deliveryId);
+    }
   }
   // ── Degrade防线 fail-loop 拦截（方案C）──────────────────────────────
   // 上游 API 不健康时，所有「系统自动注入」起的新 turn 只会立刻失败，反过来喂大
@@ -10884,10 +10708,7 @@ function orchestrationChatBusy(session) {
 function persistedOrchestrationDelivery(session, deliveryId) {
   if (!deliveryId) return false;
   try {
-    const history = JSON.parse(fs.readFileSync(chatHistoryPath(session), 'utf8'));
-    return Array.isArray(history) && history.some(message => message && (
-      message.deliveryId === deliveryId || message.clientMsgId === deliveryId
-    ));
+    return chatHistoryService.hasPersistedDelivery(session, deliveryId);
   } catch (_) {
     return false;
   }
@@ -11222,7 +11043,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
         ? provider.prepareSpawn({ sessionId })
         : 0;
       if (cleaned > 0) {
-        chatHistories.delete(sessionName);
+        chatHistoryService.invalidate(sessionName);
         console.log(`[multicc/chat] [${sessionName}] sanitized ${cleaned} empty thinking block(s) from session JSONL`);
       }
     },
@@ -11458,7 +11279,6 @@ function handleChatWs(ws, req, urlObj) {
   // Replay saved history + in-progress assistant response (if any).
   // Send only the newest page over WS on connect; older messages are fetched
   // on demand via GET /history?before=<id> as the user scrolls up.
-  const history = loadChatHistory(sessionName);
   // Only append an in-progress copy when the turn's output has NOT yet been
   // persisted. Between the `result` event (applyClaudeChatEvent saves it and
   // sets _resultSaved) and finalizeStreamingTurn (which clears
@@ -11466,7 +11286,8 @@ function handleChatWs(ws, req, urlObj) {
   // the already-saved assistant message — two identical bubbles. Guarding on
   // !_resultSaved closes that race (matches the "unsaved" intent below).
   const hasInProgress = !cs._resultSaved && !!(cs.currentAssistantText || cs.currentToolCalls.length);
-  const page = paginateChatHistory(history, { limit: CHAT_HISTORY_PAGE });
+  const canonicalPage = chatHistoryService.paginate(sessionName, { limit: CHAT_HISTORY_PAGE });
+  const page = { messages: canonicalPage.messages, hasMore: canonicalPage.hasMore };
   const replayMessages = [...page.messages];
   // Append unsaved in-progress response so reconnecting clients see current state
   if (hasInProgress) {
@@ -11569,7 +11390,7 @@ function handleChatWs(ws, req, urlObj) {
       }
 
       if (msg.type === 'clear_history') {
-        const h = chatHistories.get(sessionName);
+        const h = loadChatHistory(sessionName);
         const keep = Math.max(0, parseInt(msg.keep || '0', 10) || 0);
         const pExisting = persistedSessions.get(sessionName);
         const gitSnapshot = pExisting && keep > 0
@@ -11577,20 +11398,23 @@ function handleChatWs(ws, req, urlObj) {
           : null;
         let retained = [];
         let memoryDistill = null;
-        if (keep > 0 && h) {
+        let removed = [];
+        if (keep > 0) {
           // Keep the last N messages (typically user/assistant pairs), distill the rest.
           // If history is shorter than N, retain all of it rather than falling
           // through to the clear-all branch.
-          const removed = h.splice(0, Math.max(0, h.length - keep));
-          if (removed.length) memoryDistill = distillHistoryIntoMemory(sessionName, removed);
-          retained = h.slice();
+          const split = Math.max(0, h.length - keep);
+          removed = h.slice(0, split);
+          retained = h.slice(split);
         } else {
-          // Distill the soon-to-be-discarded conversation into long-lived session
-          // memory BEFORE wiping it (key problems + how they were solved).
-          if (h && h.length) memoryDistill = distillHistoryIntoMemory(sessionName, h.slice());
-          if (h) h.length = 0;
+          removed = h.slice();
         }
-        saveChatHistory(sessionName);
+        chatHistoryService.replace(sessionName, retained, {
+          reason: 'clear-history',
+          afterCommit: () => {
+            if (removed.length) memoryDistill = distillHistoryIntoMemory(sessionName, removed);
+          },
+        });
         // Reset every vendor-native session. Clearing only the active CLI lets
         // an old conversation reappear after switching away and back.
         if (pExisting) {
