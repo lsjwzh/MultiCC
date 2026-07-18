@@ -125,6 +125,15 @@ const {
   createWorkspaceService,
 } = require('./src/session');
 const {
+  TurnRequestError,
+  normalizeTurnRequest,
+  planTurnAdmission,
+  createDurableMessageProof,
+  createProviderRouteProof,
+  evaluateSpawnGuard,
+  createTurnRuntimeStore,
+} = require('./src/chat');
+const {
   createErrorDto,
   createWsEnvelope,
   requestContext,
@@ -145,6 +154,9 @@ const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
+// This runtime deliberately owns preparation only. The established streaming
+// and per-process runners keep their existing lifecycle after spawn is accepted.
+const chatTurnPreparationRuntime = createTurnRuntimeStore();
 let orchestrationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
@@ -10144,36 +10156,116 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
 }
 
 function runChatTurn(sessionName, text, opts = {}) {
-  const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits, bgTaskIds, bgToolUseIds } = opts;
-  const deliveryId = typeof opts.deliveryId === 'string' ? opts.deliveryId.trim().slice(0, 128) : '';
-  let clientMsgId = typeof opts.clientMsgId === 'string'
-    ? opts.clientMsgId.trim().slice(0, 128)
-    : deliveryId;
-  if (!clientMsgId) clientMsgId = deliveryId;
-  text = String(text || '').trim();
-  if (!text) return false;
-  if (_shuttingDown) {
-    logger.warn('chat_turn_rejected_shutdown', { sessionId: sessionName });
-    return false;
-  }
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
     return false;
   }
+
+  // Normalize once at the host boundary. Native CLI session ids and provider
+  // credentials stay outside the pure request; only proof of native history is
+  // admitted. Reuse the history read when a WS state has not been materialized.
+  const existingCs = chatSessions.get(sessionName);
+  let initialHistory = null;
+  const turnCount = existingCs
+    ? existingCs.chatTurnCount
+    : (initialHistory = loadChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
+  const turnCli = (existingCs && existingCs.cli) || persisted.cli || 'claude';
+  // Preserve the old host ordering without mutating a duplicate delivery: when
+  // no WS state exists, Claude allocates its UUID during accepted preparation,
+  // before deciding first-vs-resume. This future allocation is the only extra
+  // native-history proof admitted here; Codex and existing chat states continue
+  // to require an already persisted native session id.
+  const willAllocateClaudeNativeSession = !existingCs && turnCli === 'claude' && !persisted.cliSessionId;
+  let turnRequest;
+  try {
+    turnRequest = normalizeTurnRequest({
+      sessionId: sessionName,
+      text,
+      cli: turnCli,
+      turnCount,
+      hasNativeSession: !!persisted.cliSessionId || willAllocateClaudeNativeSession,
+      forceFirstTurn: typeof opts.isFirstTurn === 'boolean' ? opts.isFirstTurn : undefined,
+      requestId: opts.requestId,
+      clientMsgId: opts.clientMsgId,
+      deliveryId: opts.deliveryId,
+      originDispatchId: opts.originDispatchId,
+      originTrigger: opts.originTrigger,
+      originContinue: opts.originContinue,
+      goalLimits: opts.goalLimits,
+      bgTaskIds: opts.bgTaskIds,
+      bgToolUseIds: opts.bgToolUseIds,
+    });
+  } catch (error) {
+    const code = error instanceof TurnRequestError ? error.code : 'invalid_request';
+    logger.warn('chat_turn_rejected_invalid_request', { sessionId: sessionName, code });
+    return false;
+  }
+
+  text = turnRequest.text;
+  const clientMsgId = turnRequest.identity.clientMsgId || '';
+  const deliveryId = turnRequest.identity.deliveryId || '';
+  const originDispatchId = turnRequest.origin.operationId;
+  const originTrigger = turnRequest.origin.kind === 'trigger';
+  const originContinue = turnRequest.origin.kind === 'continue';
+  const goalLimits = turnRequest.goalLimits;
+  const bgTaskIds = turnRequest.background.taskIds;
+  const bgToolUseIds = turnRequest.background.toolUseIds;
+
   // Durable orchestration may replay an outbox claim after a crash in the
   // narrow window between history persistence and outbox acknowledgement.
   // Treat the persisted client/delivery id as the local idempotency key.  A
   // duplicate rewrites the cached history to disk (important after a previous
   // failed save) but never starts or interrupts another CLI turn.
+  let duplicateSeen = false;
+  let duplicatePersisted = false;
   if (clientMsgId || deliveryId) {
     if (clientMsgId && chatHistoryService.containsDelivery(sessionName, clientMsgId)) {
-      return chatHistoryService.hasPersistedDelivery(sessionName, clientMsgId);
-    }
-    if (deliveryId && chatHistoryService.containsDelivery(sessionName, deliveryId)) {
-      return chatHistoryService.hasPersistedDelivery(sessionName, deliveryId);
+      duplicateSeen = true;
+      duplicatePersisted = chatHistoryService.hasPersistedDelivery(sessionName, clientMsgId);
+    } else if (deliveryId && chatHistoryService.containsDelivery(sessionName, deliveryId)) {
+      duplicateSeen = true;
+      duplicatePersisted = chatHistoryService.hasPersistedDelivery(sessionName, deliveryId);
     }
   }
+
+  const streamBusy = turnRequest.cli === 'claude' && !!chatStream.status(sessionName)?.busy;
+  const admission = planTurnAdmission(turnRequest, {
+    duplicateSeen,
+    duplicatePersisted,
+    shuttingDown: _shuttingDown,
+    sessionExists: true,
+    networkUnhealthy: isNetworkUnhealthy(),
+    runningTurn: !!(existingCs && existingCs.claudeProc) || streamBusy,
+  });
+  if (admission.decision === 'duplicate') return admission.accepted;
+  if (admission.decision === 'reject') {
+    if (admission.reason === 'shutdown') logger.warn('chat_turn_rejected_shutdown', { sessionId: sessionName });
+    return false;
+  }
+  if (admission.decision === 'hold') {
+    holdSession(sessionName, 'classify-inject', text);
+    console.log(`[multicc/net] ${sessionName}: suppress system inject (originContinue) — network unhealthy, held for recovery`);
+    return false;
+  }
+
+  const turnId = `turn_${crypto.randomBytes(12).toString('hex')}`;
+  const claimed = chatTurnPreparationRuntime.claim(sessionName, turnId, {
+    cli: turnRequest.cli,
+    transport: turnRequest.execution.transport,
+  });
+  if (!claimed.ok) {
+    logger.warn('chat_turn_rejected_preparation_in_flight', { sessionId: sessionName, code: claimed.code });
+    return false;
+  }
+  let preparationOpen = true;
+  let preparationFailure = 'preparation-failed';
+  let cs = existingCs;
+  let runnerSuperseded = false;
+  let preparationStateActivated = false;
+  let messageDurable = false;
+
+  try {
   // ── Degrade防线 fail-loop 拦截（方案C）──────────────────────────────
   // 上游 API 不健康时，所有「系统自动注入」起的新 turn 只会立刻失败，反过来喂大
   // fail-loop（classify 判 E/P → 注入 → 失败 → recordApiError → 再 classify → 再注入…）。
@@ -10189,23 +10281,17 @@ function runChatTurn(sessionName, text, opts = {}) {
   // 抑制时不注入、改为 holdSession，等 recordApiSuccess → resumeHeldSessions 恢复接续。
   // 【顺序不变量】recordApiSuccess 必须先把 networkHealth.unhealthy 置 false 再调
   // resumeHeldSessions——否则恢复注入会被本 gate 误拦、held 会话永远无法接续。
-  if (originContinue && isNetworkUnhealthy()) {
-    holdSession(sessionName, 'classify-inject', text);
-    console.log(`[multicc/net] ${sessionName}: suppress system inject (originContinue) — network unhealthy, held for recovery`);
-    return false;
-  }
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
   if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); clearBgIdleTimer(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
-  let cs = chatSessions.get(sessionName);
   if (!cs) {
     const csCli = persisted.cli || 'claude';
     if (csCli === 'claude' && !persisted.cliSessionId) {
       persisted.cliSessionId = crypto.randomUUID();
       savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');
     }
-    const hist = loadChatHistory(sessionName);
+    const hist = initialHistory || loadChatHistory(sessionName);
     cs = {
       clients: new Set(),
       claudeProc: null,
@@ -10225,11 +10311,11 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
 
   cancelClassify(cs);
-  cancelClassify(cs);
   // Kill previous process if still running
   if (cs.claudeProc) {
     console.log(`[multicc/chat] [${sessionName}] New user_message while claude pid=${cs.claudeProc.pid} still running, killing previous turn`);
     cs._killReason = 'new_user_message';
+    runnerSuperseded = true;
     try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
     cs.claudeProc = null;
     cs.lineBuf = '';
@@ -10250,6 +10336,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     // _streamTurnSeq bump) and preserve its partial output before resetting.
     console.log(`[multicc/chat] [${sessionName}] (streaming) new message while turn busy → interrupting previous`);
     cs._killReason = 'new_user_message';
+    runnerSuperseded = true;
     cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1; // supersede the in-flight turn's finalize
     chatStream.cancel(sessionName);
     cs.isStreaming = false;
@@ -10277,11 +10364,19 @@ function runChatTurn(sessionName, text, opts = {}) {
     bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
     bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
   });
+  const durableMessageProof = createDurableMessageProof(turnRequest, { persisted: userMessageSaved });
   if (!userMessageSaved) {
+    preparationFailure = 'message-not-durable';
     console.error(`[multicc/chat] [${sessionName}] refusing turn: user message was not persisted`);
     chatBroadcast(sessionName, { type: 'error', error: '消息未能持久化，已安全停止本轮；系统稍后会重试。' });
     setSessionStatus(sessionName, { status: 'idle', currentFile: null });
     return false;
+  }
+  messageDurable = true;
+  const messageMarked = chatTurnPreparationRuntime.markMessageDurable(sessionName, turnId);
+  if (!messageMarked.ok) {
+    preparationFailure = messageMarked.code || 'message-proof-rejected';
+    throw new Error(`turn message proof rejected: ${preparationFailure}`);
   }
 
   // Reset accumulators
@@ -10294,6 +10389,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.currentToolCalls = [];
   cs.currentCost = null;
   cs.isStreaming = true;
+  preparationStateActivated = true;
   cs.turnStartedAt = Date.now();  // for per-reply interaction latency (durationMs)
   cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
   cs.streamReplay = [];
@@ -10323,7 +10419,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   const provider = providerFor(cs);
   // For claude: first turn → --session-id <uuid>, subsequent → --resume <uuid>.
   // For codex:  first turn → exec --json, subsequent → exec resume <id> --json.
-  const isFirstTurn = (typeof forceFirstTurn === 'boolean') ? forceFirstTurn : (cs.chatTurnCount === 0 || !persisted.cliSessionId);
+  const isFirstTurn = turnRequest.execution.isFirstTurn;
 
   // Unified message assembly (src/message-composer.js — message-builder Phase 2).
   // composeMessage builds the prompt text (cross-agent notes → gateway/dispatch →
@@ -10354,6 +10450,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     // instead of an uncaught throw that could crash the process through the
     // synchronous trigger path (bus.emit('chat:run')).
     console.error(`[multicc/chat] [${sessionName}] composeMessage failed, aborting turn: ${e && e.message ? e.message : e}`);
+    preparationFailure = 'message-compose-failed';
     try { chatBroadcast(sessionName, { type: 'error', error: `消息组装失败：${e && e.message ? e.message : e}` }); } catch (_) {}
     setSessionStatus(sessionName, { status: 'idle', currentFile: null });
     cs.isStreaming = false;
@@ -10373,6 +10470,26 @@ function runChatTurn(sessionName, text, opts = {}) {
     },
   };
   const invocation = provider.buildInvocation(invocationEnvelope);
+  const providerRouteProof = createProviderRouteProof(turnRequest, { resolved: true });
+  const routeMarked = chatTurnPreparationRuntime.markProviderRouteResolved(sessionName, turnId, { resolved: true });
+  if (!routeMarked.ok) {
+    preparationFailure = routeMarked.code || 'provider-route-proof-rejected';
+    throw new Error(`provider route proof rejected: ${preparationFailure}`);
+  }
+  const spawnGuard = evaluateSpawnGuard(turnRequest, {
+    message: durableMessageProof,
+    route: providerRouteProof,
+    runtime: chatTurnPreparationRuntime.claimProof(sessionName, turnId),
+  });
+  if (!spawnGuard.ok) {
+    preparationFailure = spawnGuard.code || 'spawn-proof-missing';
+    throw new Error(`turn spawn refused: ${(spawnGuard.missing || []).join(', ')}`);
+  }
+  const started = chatTurnPreparationRuntime.start(sessionName, turnId);
+  if (!started.ok) {
+    preparationFailure = started.code || 'runtime-start-rejected';
+    throw new Error(`turn runtime start rejected: ${preparationFailure}`);
+  }
 
   // ── Streaming path (claude only — always on) ──
   // Persistent process kept warm across turns so a turn that ends in a
@@ -10382,7 +10499,17 @@ function runChatTurn(sessionName, text, opts = {}) {
   // (the per-turn toggle was removed); non-claude CLIs use the per-turn spawn
   // path below, unchanged.
   if (cs.cli === 'claude') {
-    return runChatTurnStreaming(sessionName, cs, persisted, invocation, provider);
+    const accepted = runChatTurnStreaming(sessionName, cs, persisted, invocation, provider);
+    if (!accepted) {
+      preparationFailure = 'stream-runner-rejected';
+      return false;
+    }
+    const released = chatTurnPreparationRuntime.settle(sessionName, turnId, {
+      status: 'delegated', reason: 'claude-stream',
+    });
+    if (!released.ok) throw new Error(`turn preparation release rejected: ${released.code}`);
+    preparationOpen = false;
+    return true;
   }
 
   const args = [...invocation.args, invocation.payload];
@@ -10688,8 +10815,35 @@ function runChatTurn(sessionName, text, opts = {}) {
   };
 
   cs.claudeProc = spawnChat(args, false);
-
+  if (!cs.claudeProc) {
+    preparationFailure = 'process-runner-rejected';
+    return false;
+  }
+  const released = chatTurnPreparationRuntime.settle(sessionName, turnId, {
+    status: 'delegated', reason: 'cli-process',
+  });
+  if (!released.ok) throw new Error(`turn preparation release rejected: ${released.code}`);
+  preparationOpen = false;
   return true;
+  } catch (error) {
+    if (preparationFailure === 'preparation-failed') preparationFailure = 'preparation-exception';
+    console.error(`[multicc/chat] [${sessionName}] turn preparation failed before runner handoff: ${error && error.message ? error.message : error}`);
+    const publicError = messageDurable
+      ? '消息已保存，但本轮准备失败，尚未启动新的 CLI 请求。'
+      : '本轮准备失败，尚未启动新的 CLI 请求。';
+    try { chatBroadcast(sessionName, { type: 'error', error: publicError }); } catch (_) {}
+    if (cs && (runnerSuperseded || preparationStateActivated)) cs.isStreaming = false;
+    if (runnerSuperseded || preparationStateActivated) {
+      setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    }
+    return false;
+  } finally {
+    if (preparationOpen) {
+      chatTurnPreparationRuntime.settle(sessionName, turnId, {
+        status: 'failed', reason: preparationFailure,
+      });
+    }
+  }
 }
 // Chat domain owns runChatTurn; other domains reach it without require()-ing chat:
 //  • fire-and-forget (triggers): bus event 'chat:run'
