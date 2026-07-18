@@ -87,20 +87,20 @@ function createShutdownCoordinator({
   async function runDrains(graceMs) {
     if (state.drains.length === 0) return;
     const deadline = now() + graceMs;
-    const timers = [];
+    let timeoutHandle = null;
     const drainPromise = Promise.allSettled(state.drains.map(fn => {
       try { return Promise.resolve(fn({ deadline, graceMs })); }
       catch (e) { return Promise.reject(e); }
     }));
     const timeoutPromise = new Promise(resolve => {
-      const t = setTimeout(() => resolve('timeout'), graceMs);
-      // Don't keep the event loop alive on its own — if drains finish first
-      // this timer is unref'd out.
-      if (t.unref) t.unref();
-      timers.push(t);
+      timeoutHandle = setTimeout(() => resolve('timeout'), graceMs);
+      // DO NOT unref this timer. If we do, and a drain hooks a promise that
+      // never resolves (deliberately, e.g. a chat stream that got stuck), the
+      // event loop exits before the timeout fires and the coordinator sits
+      // there forever without running closers or calling exit.
     });
     const which = await Promise.race([drainPromise.then(() => 'drained'), timeoutPromise]);
-    for (const t of timers) clearTimeout(t);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     if (which === 'timeout') logger.warn(`[shutdown] drain grace ${graceMs}ms exceeded — moving on`);
   }
 
