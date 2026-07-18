@@ -1,0 +1,209 @@
+'use strict';
+
+const crypto = require('crypto');
+const {
+  admitOutboxItem,
+  hashPayload,
+  hashSecret,
+  normalizeJson,
+  timingSafeHashEqual,
+} = require('./outbox');
+
+function publicWait(wait) {
+  const copy = JSON.parse(JSON.stringify(wait));
+  delete copy.callbackTokenHash;
+  delete copy.resolutionPayloadHash;
+  return copy;
+}
+
+function createWaitService({
+  store,
+  now = Date.now,
+  cryptoImpl = crypto,
+  idFactory = () => `wait_${cryptoImpl.randomUUID()}`,
+  callbackTokenFactory = () => cryptoImpl.randomBytes(32).toString('base64url'),
+  callbackBaseUrl = '',
+  callbackUrlFactory,
+} = {}) {
+  if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
+    throw new TypeError('[wait-service] create requires an orchestration store');
+  }
+
+  function callbackUrl(id, token) {
+    if (typeof callbackUrlFactory === 'function') return callbackUrlFactory({ id, token });
+    if (!callbackBaseUrl) return null;
+    const base = String(callbackBaseUrl).replace(/\/+$/, '');
+    return `${base}/api/orchestration/waits/${encodeURIComponent(id)}/callback?token=${encodeURIComponent(token)}`;
+  }
+
+  async function register({
+    id = idFactory(),
+    sessionId,
+    mode = 'callback',
+    injectPrefix = '',
+    metadata = null,
+  } = {}) {
+    if (!id || typeof id !== 'string') throw new TypeError('[wait-service] wait id is required');
+    if (!sessionId || typeof sessionId !== 'string') {
+      throw new TypeError('[wait-service] sessionId is required');
+    }
+    if (!['callback', 'poll'].includes(mode)) {
+      throw new TypeError('[wait-service] mode must be callback or poll');
+    }
+
+    const token = mode === 'callback' ? String(callbackTokenFactory()) : null;
+    if (mode === 'callback' && !token) {
+      throw new Error('[wait-service] callbackTokenFactory returned an empty token');
+    }
+    const callbackTokenHash = token ? hashSecret(token, cryptoImpl) : null;
+    const normalizedMetadata = metadata === null ? null : normalizeJson(metadata);
+
+    const result = await store.mutate(draft => {
+      if (draft.waits[id]) {
+        const error = new Error(`wait ${id} already exists`);
+        error.code = 'WAIT_ALREADY_EXISTS';
+        error.statusCode = 409;
+        throw error;
+      }
+      const at = Number(now());
+      const wait = {
+        id,
+        sessionId,
+        mode,
+        status: 'pending',
+        injectPrefix: String(injectPrefix || ''),
+        metadata: normalizedMetadata,
+        callbackTokenHash,
+        createdAt: at,
+        updatedAt: at,
+        resolvedAt: null,
+        cancelledAt: null,
+        resolutionPayloadHash: null,
+        outboxId: null,
+      };
+      draft.waits[id] = wait;
+      return publicWait(wait);
+    });
+
+    return {
+      ...result,
+      ...(token ? { token, callbackUrl: callbackUrl(id, token) } : {}),
+    };
+  }
+
+  async function resolveInternal(id, payload, { callbackToken, expectedMode } = {}) {
+    if (!id || typeof id !== 'string') {
+      throw new TypeError('[wait-service] resolve requires wait id');
+    }
+    const normalizedPayload = normalizeJson(payload);
+    const payloadHash = hashPayload(normalizedPayload, cryptoImpl);
+
+    return store.mutate(draft => {
+      const wait = draft.waits[id];
+      if (!wait) return { ok: false, code: 'not_found' };
+      if (expectedMode && wait.mode !== expectedMode) {
+        return { ok: false, code: 'mode_mismatch' };
+      }
+      if (wait.mode === 'callback'
+          && !timingSafeHashEqual(wait.callbackTokenHash, callbackToken, cryptoImpl)) {
+        return { ok: false, code: 'invalid_token' };
+      }
+      if (wait.status === 'resolved') {
+        if (wait.resolutionPayloadHash === payloadHash) {
+          return {
+            ok: true,
+            idempotent: true,
+            waitId: wait.id,
+            outboxId: wait.outboxId,
+          };
+        }
+        return {
+          ok: false,
+          code: 'payload_conflict',
+          statusCode: 409,
+          waitId: wait.id,
+          outboxId: wait.outboxId,
+        };
+      }
+      if (wait.status !== 'pending') {
+        return { ok: false, code: 'not_pending', status: wait.status };
+      }
+
+      const at = Number(now());
+      const outboxId = `wait:${wait.id}`;
+      const admitted = admitOutboxItem(draft, {
+        id: outboxId,
+        sessionId: wait.sessionId,
+        payload: {
+          type: 'wait.resolved',
+          waitId: wait.id,
+          mode: wait.mode,
+          injectPrefix: wait.injectPrefix,
+          data: normalizedPayload,
+        },
+        source: { type: 'wait', waitId: wait.id },
+        now: at,
+      });
+
+      wait.status = 'resolved';
+      wait.resolvedAt = at;
+      wait.updatedAt = at;
+      wait.resolutionPayloadHash = payloadHash;
+      wait.outboxId = admitted.item.id;
+
+      return {
+        ok: true,
+        idempotent: admitted.idempotent,
+        waitId: wait.id,
+        outboxId: admitted.item.id,
+      };
+    });
+  }
+
+  async function resolveCallback(id, token, payload) {
+    return resolveInternal(id, payload, { callbackToken: token, expectedMode: 'callback' });
+  }
+
+  async function resolvePoll(id, payload) {
+    return resolveInternal(id, payload, { expectedMode: 'poll' });
+  }
+
+  async function cancel(id) {
+    return store.mutate(draft => {
+      const wait = draft.waits[id];
+      if (!wait) return { ok: false, code: 'not_found' };
+      if (wait.status === 'cancelled') return { ok: true, idempotent: true };
+      if (wait.status !== 'pending') {
+        return { ok: false, code: 'not_pending', status: wait.status };
+      }
+      const at = Number(now());
+      wait.status = 'cancelled';
+      wait.cancelledAt = at;
+      wait.updatedAt = at;
+      return { ok: true, idempotent: false };
+    });
+  }
+
+  async function get(id) {
+    return store.read(draft => draft.waits[id] ? publicWait(draft.waits[id]) : null);
+  }
+
+  async function list({ sessionId, status } = {}) {
+    return store.read(draft => Object.values(draft.waits)
+      .filter(wait => !sessionId || wait.sessionId === sessionId)
+      .filter(wait => !status || wait.status === status)
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+      .map(publicWait));
+  }
+
+  return Object.freeze({
+    register,
+    resolveCallback,
+    resolvePoll,
+    cancel,
+    get,
+    list,
+  });
+}
+
+module.exports = { createWaitService };
