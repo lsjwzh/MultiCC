@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/provider.schema.json",
+  "title": "Provider DTO v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "appType", "protocol", "wireApi", "name", "source", "model", "modelOptions", "aliasOnly", "useChatResponsesProxy", "hasCredentials", "isOfficial"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "appType": { "enum": ["claude", "codex"] },
+    "protocol": { "enum": ["anthropic", "openai"] },
+    "wireApi": { "type": ["string", "null"], "enum": ["messages", "responses", "chat-completions", null] },
+    "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "source": { "enum": ["local", "ccswitch"] },
+    "model": { "type": ["string", "null"], "maxLength": 160 },
+    "modelOptions": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 160 } },
+    "aliasOnly": { "type": "boolean" },
+    "useChatResponsesProxy": { "type": "boolean" },
+    "hasCredentials": { "type": "boolean" },
+    "isOfficial": { "type": "boolean" }
+  }
+}

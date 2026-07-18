@@ -1,0 +1,107 @@
+{
+  "examples": [
+    {
+      "name": "session",
+      "schema": "session.schema.json",
+      "value": {
+        "id": "session-1",
+        "dirId": "directory-1",
+        "type": "session",
+        "cli": "codex",
+        "kind": "chat",
+        "label": "Contract work",
+        "model": "gpt-5.1-codex",
+        "effectiveModel": "gpt-5.1-codex",
+        "effort": "high",
+        "effectiveEffort": "high",
+        "agent": null,
+        "provider": "provider-1",
+        "subagent": null,
+        "autoCommit": false,
+        "autoDispatch": true,
+        "createdAt": "2026-07-18T00:00:00.000Z",
+        "lastActivity": null,
+        "clients": 1,
+        "active": true,
+        "mergeState": { "ahead": 1, "behind": 0, "dirty": false, "mergeReady": true, "rebaseInProgress": false }
+      }
+    },
+    {
+      "name": "sessions response",
+      "schema": "sessions-response.schema.json",
+      "value": {
+        "apiVersion": "v1",
+        "requestId": "request-1",
+        "correlationId": "correlation-1",
+        "sessions": [],
+        "count": 0
+      }
+    },
+    {
+      "name": "provider",
+      "schema": "provider.schema.json",
+      "value": {
+        "id": "provider-1",
+        "appType": "claude",
+        "protocol": "anthropic",
+        "wireApi": "messages",
+        "name": "Provider One",
+        "source": "local",
+        "model": "model-1",
+        "modelOptions": ["model-1"],
+        "aliasOnly": false,
+        "useChatResponsesProxy": false,
+        "hasCredentials": true,
+        "isOfficial": false
+      }
+    },
+    {
+      "name": "wait",
+      "schema": "wait.schema.json",
+      "value": {
+        "id": "w_123",
+        "sessionId": "session-1",
+        "mode": "poll",
+        "checks": 2,
+        "maxChecks": 40,
+        "intervalSec": 15,
+        "createdAt": "2026-07-18T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "dispatch request",
+      "schema": "dispatch-request.schema.json",
+      "value": { "target": "session-2", "message": "Run deterministic tests" }
+    },
+    {
+      "name": "dispatch response",
+      "schema": "dispatch-response.schema.json",
+      "value": {
+        "apiVersion": "v1",
+        "requestId": "request-1",
+        "correlationId": "correlation-1",
+        "ok": true,
+        "target": "session-2",
+        "chatId": "chat-1",
+        "note": "accepted"
+      }
+    },
+    {
+      "name": "safe error",
+      "schema": "error.schema.json",
+      "value": {
+        "apiVersion": "v1",
+        "requestId": "request-1",
+        "correlationId": "correlation-1",
+        "ok": false,
+        "error": "request_error",
+        "code": "invalid_request"
+      }
+    },
+    {
+      "name": "websocket envelope",
+      "schema": "ws-envelope.schema.json",
+      "value": { "apiVersion": "v1", "type": "snapshot", "sessionId": "session-1", "revision": 7 }
+    }
+  ]
+}
