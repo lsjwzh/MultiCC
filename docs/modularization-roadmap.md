@@ -164,7 +164,7 @@
 | A1 | main_shell.dart 剩余 widget | 🔄 进行中 | — | 已拆 MiniBadge/AddSessionChip/GitStatusRow/KpiTile/ProjectStatPill；累计 4938→4707(-231)；余 SessionCard(886)/_DirectoryCard/_CreateSessionDialog 等大块（多需解耦顶层私有函数 _showSessionSheet/_sessionLastInteractionAt） |
 | A2 | chat_screen.dart widget | ⬜ | | |
 | B0 | server.js 工具函数组 → ctx | ⬜ | | |
-| B1 | server.js 首个领域（scan.js）跑通 mount | ⬜ | | |
+| B1 | server.js 首个领域（scan.js）跑通 mount | ✅ 完成 | 见第六波 | `/api/scan/history` 已走 `src/routes/scan.js` 窄依赖 mount |
 | B2.. | server.js 其余领域路由 | ⬜ | | |
 | C | manage.js / chat.js 模块化 | ⬜ | | |
 
@@ -263,3 +263,20 @@
 | `app/lib/screens/chat_screen.dart` | 1,675 | 继续拆 header/config/share/state ownership |
 
 保留风险：Memory DTO 为兼容 authenticated Dashboard 的“复制绝对路径”功能仍保留 `path`，远程已认证用户会看到本机目录结构；应在独立兼容批次改为 capability/config 或默认仅返回 `rel`。外部 dispatch delivery 仍不宣称 global exactly-once；本波只保证本进程 current/durable/once claim。
+
+## 大重构第六波实施结果（2026-07-18）
+
+- Chat 生产 host 已迁入 `src/chat/host-coordinator.js` 与 `host-runtime.js`。`server.js` 只注入 history、authoritative usage、broadcast、handoff 和 bus adapters；ownership、append/close finality、usage once、post-turn claim/plan 与 effect 映射不再在 God file 重复实现。
+- Claude stream 与 process runner 的 finality 继续分离；stale runner、explicit kill、retry、append 双失败和 usage 主写失败均 fail-closed。同步 production plan 明确 `deliveryProven:false`，没有把 EventEmitter 异步 dispatch 伪装成 durable receipt；proof-aware adapter 暂未接线。
+- 首个领域路由 `/api/scan/history` 已迁入 `src/routes/scan.js`，建立 `mount(app, deps)` 路由模板并保持旧 DTO/limit 语义。
+- Web Chat 的 Provider/model/effort/native-agent/subagent 配置迁入 `public/chat-ai-config.js`。Provider/session transport 复用 `MultiCCApi`，Provider 数据先经过 catalog 白名单；`public/chat.js` 5,294→4,928（-366），classic-script 与全局兼容 delegate 保留。
+- Flutter `_DirectoryCard` 迁入 `widgets/directory_card.dart`，使用不可变 ViewModel + callbacks，不直接依赖 `SessionManager`、`WorkspaceService`、Navigator 或祖先 State。`main_shell.dart` 约 2,976→2,403（约 -573）；宿主 `_DirectoryCardHost` 仍负责 manager/Workspace composition。
+- 当前热点约为：`server.js` 12,760、`manage.js` 6,511、`chat.js` 4,928、`main_shell.dart` 2,403、`chat_screen.dart` 1,675。`server.js` 相对本波基线净减 46 行，关键收益是状态机所有权已经移出而非机械搬行。
+- 验证：完整 `npm test`、`test:integration:isolated` 全绿；core 新门包含 Chat host 13 项与 scan route 3 项，security 83 项；Flutter 20/20，目标 analyze 0 issue，格式检查无变化。
+
+### 第六波后的下一步
+
+1. 把 process close 与 streaming finalize 的共同 effect/status 清理继续下沉，保留各 runner 的协议差异。
+2. 用 orchestration outbox receipt 接 `reservePostTurn/deliverPostTurn`，在此之前继续明确 dispatch `deliveryProven:false`。
+3. 按 scan 模板迁移 read-only/低依赖路由，再逐域接 `src/http` presenter；禁止一次性搬 100+ 路由。
+4. Web 下一批拆 WS transport/history/rendering；Flutter 用共享 Dashboard Workspace store 替换每卡独立连接，再缩小 `_DirectoryCardHost`。

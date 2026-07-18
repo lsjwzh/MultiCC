@@ -118,6 +118,7 @@ const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
+const { mountScanRoutes } = require('./src/routes/scan');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -135,14 +136,11 @@ const {
   createTurnRuntimeStore,
   createTurnLifecycle,
   createRunnerOwnership,
-  ownsCurrentRunner,
+  createChatHostRuntime,
   assignKillReason,
   recordResultEvent,
-  recordCloseResult,
   recordPartialCheckpoint,
   hasMatchingPartialCheckpoint,
-  claimDurableUsage,
-  claimPostTurn,
 } = require('./src/chat');
 const {
   createErrorDto,
@@ -7548,83 +7546,30 @@ function appendChatMessage(sessionName, msg) {
   }
 }
 
-// Result durability and post-turn ownership are deliberately separate from the
-// session-wide UI fields. A late close/finalize from a superseded runner must
-// never consume another turn's handoff/dispatch lineage or mark its result as
-// saved. These helpers are the single bridge between history persistence and
-// the turn-owned lifecycle model in src/chat/turn-lifecycle.js.
-function isCurrentTurnRunner(cs, turn, runner) {
-  return ownsCurrentRunner(cs && cs._activeTurn, cs && cs._activeRunner, turn, runner);
-}
-
-function persistFinalAssistantResult(sessionName, cs, turn, runner, message, options = {}) {
-  const current = isCurrentTurnRunner(cs, turn, runner);
-  if (!current) return false;
-  const persisted = appendChatMessage(sessionName, message);
-  const result = options.resultEvent === true
-    ? recordResultEvent(turn, runner, { current, persisted })
-    : recordCloseResult(turn, runner, { current, persisted, final: options.final === true });
-  cs._resultSaved = result.resultDurable === true;
-  return result.ok === true;
-}
-
-function assistantCheckpointKey(cs) {
-  return crypto.createHash('sha256').update(JSON.stringify({
-    text: cs && cs.currentAssistantText || '',
-    tools: cs && Array.isArray(cs.currentToolCalls) ? cs.currentToolCalls : [],
-    cost: cs && cs.currentCost == null ? null : cs.currentCost,
-  })).digest('hex');
-}
-
-function recordDurableTurnUsage(sessionName, runner, usage) {
-  if (!runner || runner.usageRecorded === true) return false;
-  const normalized = usage && typeof usage === 'object' ? usage : {};
-  // JavaScript execution is synchronous here: persist the authoritative main
-  // file first, then claim the in-memory once flag. A failed atomic write keeps
-  // the flag open so close/finalize can retry instead of permanently losing it.
-  if (!accumulateTokenUsage(sessionName, normalized)) return false;
-  const claimed = claimDurableUsage(runner, { resultDurable: true });
-  if (!claimed.ok) return false;
-  broadcastProviderTokenStats(sessionName);
-  broadcastRoleTokenStats(sessionName);
-  return true;
-}
-
-function runDurablePostTurn(sessionName, cs, persisted, turn, runner, finalText, facts = {}) {
-  const claimed = claimPostTurn(turn, runner, {
-    currentTurn: cs && cs._activeTurn,
-    currentRunner: cs && cs._activeRunner,
-    interrupted: facts.interrupted === true,
-    apiError: facts.apiError === true,
-    retryPlanned: facts.retryPlanned === true,
-    handoffResumeFailure: facts.handoffResumeFailure === true,
-  });
-  if (!claimed.ok) {
-    logger.info('chat_post_turn_suppressed', {
-      sessionId: sessionName, turnId: turn && turn.turnId,
-      runnerId: runner && runner.runnerId, reason: claimed.code,
-    });
-    return false;
-  }
-
-  // Handoff acknowledgement and every external routing effect occur only after
-  // a final assistant message has committed to chat history.
-  consumePendingCliHandoff(sessionName);
-  bus.emit('chat:turn-complete', sessionName, cs, {
-    turnId: turn.turnId, lineage: turn.lineage, resultDurable: true,
-  });
-  if (turn.lineage.kind === 'dispatch' && turn.lineage.operationId) {
-    bus.emit('chat:dispatch-complete', turn.lineage.operationId, sessionName, finalText);
-  } else if (persisted.type === 'gateway') {
-    bus.emit('chat:gateway-turn-complete', finalText);
-  } else if (persisted.type !== 'aux') {
-    maybeDispatchFromChatTurn(sessionName, finalText);
-  }
-  if (cs._continuationLineage && cs._continuationLineage.turnId === turn.turnId) {
-    cs._continuationLineage = null;
-  }
-  return true;
-}
+// The host coordinator owns result/usage/post-turn ordering. server.js supplies
+// only concrete persistence and broadcast ports; it no longer reimplements the
+// lifecycle state machine inline.
+const {
+  isCurrentTurnRunner,
+  assistantCheckpointKey,
+  persistFinalAssistantResult,
+  recordDurableTurnUsage,
+  runDurablePostTurn,
+} = createChatHostRuntime({
+  appendMessage: appendChatMessage,
+  persistUsage: accumulateTokenUsage,
+  afterUsageCommit: (sessionId) => {
+    broadcastProviderTokenStats(sessionId);
+    broadcastRoleTokenStats(sessionId);
+  },
+  getSessionState: (sessionId) => chatSessions.get(sessionId),
+  consumeHandoff: consumePendingCliHandoff,
+  emitTurnComplete: (sessionId, state, completion) => bus.emit('chat:turn-complete', sessionId, state, completion),
+  emitDispatchComplete: (operationId, sessionId, text) => bus.emit('chat:dispatch-complete', operationId, sessionId, text),
+  emitGatewayComplete: (text) => bus.emit('chat:gateway-turn-complete', text),
+  inspectDispatchMarkers: maybeDispatchFromChatTurn,
+  logSuppressed: (detail) => logger.info('chat_post_turn_suppressed', detail),
+});
 
 // ── Chat sessions: session-level state for multi-client broadcast ──
 // Keyed by sessionName, holds { claudeProc, lineBuf, clients, chatTurnCount,
@@ -8662,10 +8607,7 @@ function scanAndReclassify() {
 // GET /api/scan/history — debug: recent periodic-scan passes, newest first, each
 // with its per-session enqueue/skip decisions + reasons. In-memory ring only.
 //   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
-app.get('/api/scan/history', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit, 10) || 20, SCAN_HISTORY_MAX_PASSES);
-  res.json({ seq: scanHistory.seq, kept: scanHistory.passes.length, passes: scanHistory.passes.slice(0, limit) });
-});
+mountScanRoutes(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
 
 // Store an aux-AI task summary for a session and push it to the workspace board.
 function setSessionSummary(sessionId, summary) {
