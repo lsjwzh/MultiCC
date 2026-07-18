@@ -1,5 +1,10 @@
 'use strict';
 
+// Build sentinel — bump when shipping voice/HUD changes so users hitting a
+// stale cache immediately see a mismatch in devtools.
+window.__multiccClientBuild = 'voice-hud-2026-07-18b';
+console.log('[multicc] client.js build', window.__multiccClientBuild);
+
 // Simple HTML escape helper
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
