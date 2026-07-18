@@ -39,11 +39,11 @@
       "rationale": "Bridge cwd directories may be git repositories with resumable native agent state.",
       "migrationStrategy": "Add a bridge-workspace port, detect active sessions, then copy or relocate one bridge at a time with rollback markers.",
       "sources": [
-        { "file": "plugins/bridges/discord-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'discord-gateway');" },
-        { "file": "plugins/bridges/feishu-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'feishu-gateway');" },
-        { "file": "plugins/bridges/slack-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'slack-gateway');" },
-        { "file": "plugins/bridges/telegram-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'telegram-gateway');" },
-        { "file": "plugins/bridges/wechat-ilink.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'gateway');" }
+        { "file": "plugins/bridges/discord-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'discord-gateway');" },
+        { "file": "plugins/bridges/feishu-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'feishu-gateway');" },
+        { "file": "plugins/bridges/slack-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'slack-gateway');" },
+        { "file": "plugins/bridges/telegram-bridge.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'telegram-gateway');" },
+        { "file": "plugins/bridges/wechat-ilink.js", "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'gateway');" }
       ]
     },
     {
