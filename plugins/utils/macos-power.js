@@ -1,6 +1,6 @@
 'use strict';
 
-const { execFile, execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 
 function isAvailable(platform = process.platform) {
   return platform === 'darwin';
@@ -15,18 +15,6 @@ function parseLidSleepPrevention(output) {
   return values.length > 0 && values.every(value => value === 1);
 }
 
-function getLidSleepPrevention(options = {}) {
-  const platform = options.platform || process.platform;
-  if (!isAvailable(platform)) return { available: false, enabled: false };
-
-  const runSync = options.execFileSync || execFileSync;
-  const output = runSync('/usr/bin/pmset', ['-g'], {
-    encoding: 'utf8',
-    timeout: 5000,
-  });
-  return { available: true, enabled: parseLidSleepPrevention(output) };
-}
-
 function runFile(file, args, options, run = execFile) {
   return new Promise((resolve, reject) => {
     run(file, args, options, (error, stdout, stderr) => {
@@ -38,6 +26,17 @@ function runFile(file, args, options, run = execFile) {
       }
     });
   });
+}
+
+async function getLidSleepPrevention(options = {}) {
+  const platform = options.platform || process.platform;
+  if (!isAvailable(platform)) return { available: false, enabled: false };
+
+  const output = await runFile('/usr/bin/pmset', ['-g'], {
+    encoding: 'utf8',
+    timeout: 5000,
+  }, options.execFile || execFile);
+  return { available: true, enabled: parseLidSleepPrevention(output) };
 }
 
 async function setLidSleepPrevention(enabled, options = {}) {
@@ -56,7 +55,7 @@ async function setLidSleepPrevention(enabled, options = {}) {
     throw new Error(`Failed to update macOS power settings: ${error.message}`);
   }
 
-  const status = getLidSleepPrevention(options);
+  const status = await getLidSleepPrevention(options);
   if (status.enabled !== enabled) {
     throw new Error('macOS power setting did not take effect');
   }

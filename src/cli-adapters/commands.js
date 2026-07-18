@@ -3,145 +3,186 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
 
-function firstExisting(paths) {
-  return paths.find(p => p && fs.existsSync(p)) || null;
+const WINDOWS_DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
+
+function envValue(env, name) {
+  if (Object.prototype.hasOwnProperty.call(env, name)) return env[name];
+  const key = Object.keys(env).find(candidate => candidate.toUpperCase() === name);
+  return key ? env[key] : undefined;
 }
 
-function whichFromLoginShell(name, isWindows) {
-  if (isWindows) return null;
-  for (const sh of ['/bin/zsh', '/bin/bash']) {
-    if (!fs.existsSync(sh)) continue;
-    try {
-      const found = execSync(`${sh} -l -c 'which ${name} 2>/dev/null'`, {
-        encoding: 'utf8',
-        timeout: 5000,
-      }).trim().split(/\r?\n/)[0].trim();
-      if (found && fs.existsSync(found)) return found;
-    } catch (_) {}
+function normalizePathEntry(entry) {
+  const value = String(entry || '').trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function isRunnableFile(file, { isWindows, fsImpl = fs }) {
+  if (!file) return false;
+  try {
+    const stat = fsImpl.statSync(file);
+    if (!stat.isFile()) return false;
+    fsImpl.accessSync(file, isWindows ? fs.constants.F_OK : fs.constants.X_OK);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function executableNames(name, { isWindows, env }) {
+  if (!isWindows) return [name];
+  const extensions = String(envValue(env, 'PATHEXT') || WINDOWS_DEFAULT_PATHEXT)
+    .split(';')
+    .map(extension => extension.trim())
+    .filter(Boolean)
+    .map(extension => extension.startsWith('.') ? extension : `.${extension}`);
+  const lowerName = name.toLowerCase();
+  if (extensions.some(extension => lowerName.endsWith(extension.toLowerCase()))) return [name];
+  return [...new Set(extensions.map(extension => `${name}${extension}`))];
+}
+
+/**
+ * Resolve an executable without invoking a shell. On Windows, PATHEXT order is
+ * respected; on POSIX, candidates must have the executable bit set.
+ */
+function findExecutableOnPath(name, {
+  isWindows = process.platform === 'win32',
+  env = process.env,
+  fsImpl = fs,
+} = {}) {
+  if (!name) return null;
+  const separator = isWindows ? ';' : ':';
+  const searchPath = String(envValue(env, 'PATH') || '');
+  const directories = searchPath.split(separator).map(normalizePathEntry).filter(Boolean);
+  const names = executableNames(name, { isWindows, env });
+
+  for (const directory of directories) {
+    for (const candidateName of names) {
+      const candidate = path.join(directory, candidateName);
+      if (isRunnableFile(candidate, { isWindows, fsImpl })) return candidate;
+    }
   }
   return null;
 }
 
-function whichFromPath(name, isWindows, env = process.env) {
-  try {
-    const found = execSync(isWindows ? `where ${name}` : `which ${name}`, {
-      encoding: 'utf8',
-      env,
-      timeout: 5000,
-    }).trim().split(/\r?\n/)[0].trim();
-    return found || null;
-  } catch (_) {
-    return null;
-  }
+function firstRunnable(paths, context) {
+  return paths.find(candidate => isRunnableFile(candidate, context)) || null;
 }
 
-function resolveClaude(isWindows) {
-  if (process.env.CLAUDE_CMD) {
-    console.log(`[multicc] CLAUDE_CMD override: ${process.env.CLAUDE_CMD}`);
-    return process.env.CLAUDE_CMD;
+function createContext(options) {
+  return {
+    isWindows: options.isWindows ?? process.platform === 'win32',
+    env: options.env || process.env,
+    fsImpl: options.fsImpl || fs,
+    homeDir: options.homeDir || os.homedir(),
+    logger: options.logger || console,
+  };
+}
+
+function resolveClaude(context) {
+  const { isWindows, env, fsImpl, homeDir, logger } = context;
+  if (env.CLAUDE_CMD) {
+    logger.log(`[multicc] CLAUDE_CMD override: ${env.CLAUDE_CMD}`);
+    return env.CLAUDE_CMD;
   }
 
   const extraPaths = [
-    path.join(os.homedir(), '.local', 'bin'),
-    path.join(os.homedir(), '.local', 'share', 'claude', 'bin'),
-    path.join(os.homedir(), '.npm-global', 'bin'),
-    path.join(os.homedir(), '.npm', 'bin'),
+    path.join(homeDir, '.local', 'bin'),
+    path.join(homeDir, '.local', 'share', 'claude', 'bin'),
+    path.join(homeDir, '.npm-global', 'bin'),
+    path.join(homeDir, '.npm', 'bin'),
     '/usr/local/bin',
     '/opt/homebrew/bin',
     '/opt/homebrew/sbin',
   ];
-  const sep = isWindows ? ';' : ':';
-  const augmentedPath = [...new Set([...extraPaths, ...(process.env.PATH || '').split(sep)])].join(sep);
-  process.env.PATH = augmentedPath;
+  const separator = isWindows ? ';' : ':';
+  const currentPath = String(envValue(env, 'PATH') || '').split(separator).filter(Boolean);
+  const augmentedPath = [...new Set([...extraPaths, ...currentPath])].join(separator);
+  env.PATH = augmentedPath;
 
-  const shellHit = whichFromLoginShell('claude', isWindows);
-  if (shellHit) {
-    console.log(`[multicc] Found claude via login shell: ${shellHit}`);
-    return shellHit;
-  }
-
-  const pathHit = whichFromPath('claude', isWindows, { ...process.env, PATH: augmentedPath });
+  const pathHit = findExecutableOnPath('claude', {
+    isWindows,
+    env: { ...env, PATH: augmentedPath },
+    fsImpl,
+  });
   if (pathHit) {
-    console.log(`[multicc] Found claude via PATH: ${pathHit}`);
+    logger.log(`[multicc] Found claude via PATH: ${pathHit}`);
     return pathHit;
   }
 
-  const directHit = firstExisting(extraPaths.map(dir => path.join(dir, isWindows ? 'claude.exe' : 'claude')));
-  if (directHit) {
-    console.log(`[multicc] Found claude via direct check: ${directHit}`);
-    return directHit;
-  }
-
-  console.warn('[multicc] WARNING: Could not locate claude binary, falling back to "claude"');
+  logger.warn('[multicc] WARNING: Could not locate claude binary, falling back to "claude"');
   return isWindows ? 'claude.exe' : 'claude';
 }
 
-function resolveCodex(isWindows) {
-  if (process.env.CODEX_CMD) return process.env.CODEX_CMD;
-  if (isWindows && process.env.LOCALAPPDATA) {
-    const local = path.join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
+function resolveCodex(context) {
+  const { isWindows, env, fsImpl, homeDir } = context;
+  if (env.CODEX_CMD) return env.CODEX_CMD;
+  if (isWindows && env.LOCALAPPDATA) {
+    const local = path.join(env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
     try {
-      const localCandidates = fs.readdirSync(local, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => {
-          const exe = path.join(local, d.name, 'codex.exe');
-          try { return fs.existsSync(exe) ? { exe, mtimeMs: fs.statSync(exe).mtimeMs } : null; }
-          catch (_) { return null; }
+      const localCandidates = fsImpl.readdirSync(local, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => {
+          const exe = path.join(local, entry.name, 'codex.exe');
+          try {
+            if (!isRunnableFile(exe, { isWindows, fsImpl })) return null;
+            return { exe, mtimeMs: fsImpl.statSync(exe).mtimeMs };
+          } catch (_) {
+            return null;
+          }
         })
         .filter(Boolean)
         .sort((a, b) => b.mtimeMs - a.mtimeMs);
       if (localCandidates.length) return localCandidates[0].exe;
     } catch (_) {}
   }
-  const directHit = firstExisting([
+  const directHit = firstRunnable([
     '/opt/homebrew/bin/codex',
     '/usr/local/bin/codex',
-    path.join(os.homedir(), '.local', 'bin', 'codex'),
-    path.join(os.homedir(), '.cargo', 'bin', 'codex'),
-  ]);
+    path.join(homeDir, '.local', 'bin', 'codex'),
+    path.join(homeDir, '.cargo', 'bin', 'codex'),
+  ], context);
   if (directHit) return directHit;
-  return whichFromLoginShell('codex', isWindows) ||
-    whichFromPath('codex', isWindows) ||
-    (isWindows ? 'codex.exe' : 'codex');
+  return findExecutableOnPath('codex', context) || (isWindows ? 'codex.exe' : 'codex');
 }
 
-function resolveOpencode(isWindows) {
-  if (process.env.OPENCODE_CMD) return process.env.OPENCODE_CMD;
-  const directHit = firstExisting([
-    path.join(os.homedir(), '.opencode', 'bin', 'opencode'),
+function resolveOpencode(context) {
+  const { isWindows, env, homeDir } = context;
+  if (env.OPENCODE_CMD) return env.OPENCODE_CMD;
+  const directHit = firstRunnable([
+    path.join(homeDir, '.opencode', 'bin', 'opencode'),
     '/opt/homebrew/bin/opencode',
     '/usr/local/bin/opencode',
-    path.join(os.homedir(), '.local', 'bin', 'opencode'),
-  ]);
+    path.join(homeDir, '.local', 'bin', 'opencode'),
+  ], context);
   if (directHit) return directHit;
-  return whichFromLoginShell('opencode', isWindows) ||
-    whichFromPath('opencode', isWindows) ||
-    (isWindows ? 'opencode.exe' : 'opencode');
+  return findExecutableOnPath('opencode', context) || (isWindows ? 'opencode.exe' : 'opencode');
 }
 
-function resolveZcode(isWindows) {
-  if (process.env.ZCODE_CMD) return process.env.ZCODE_CMD;
-  const directHit = firstExisting([
+function resolveZcode(context) {
+  const { isWindows, env, homeDir } = context;
+  if (env.ZCODE_CMD) return env.ZCODE_CMD;
+  const directHit = firstRunnable([
     '/opt/homebrew/bin/zcode',
     '/usr/local/bin/zcode',
-    path.join(os.homedir(), '.local', 'bin', 'zcode'),
-    path.join(os.homedir(), '.zcode', 'bin', 'zcode'),
-  ]);
+    path.join(homeDir, '.local', 'bin', 'zcode'),
+    path.join(homeDir, '.zcode', 'bin', 'zcode'),
+  ], context);
   if (directHit) return directHit;
-  return whichFromLoginShell('zcode', isWindows) ||
-    whichFromPath('zcode', isWindows) ||
-    (isWindows ? 'zcode.exe' : 'zcode');
+  return findExecutableOnPath('zcode', context) || (isWindows ? 'zcode.exe' : 'zcode');
 }
 
-function resolveCliCommands({ isWindows = process.platform === 'win32' } = {}) {
+function resolveCliCommands(options = {}) {
+  const context = createContext(options);
   return {
-    claude: resolveClaude(isWindows),
-    codex: resolveCodex(isWindows),
-    opencode: resolveOpencode(isWindows),
-    zcode: resolveZcode(isWindows),
+    claude: resolveClaude(context),
+    codex: resolveCodex(context),
+    opencode: resolveOpencode(context),
+    zcode: resolveZcode(context),
   };
 }
 
-module.exports = { resolveCliCommands };
+module.exports = { findExecutableOnPath, resolveCliCommands };
