@@ -67,6 +67,7 @@ const bgState = new Map();      // session -> { count }  — run_in_background g
 const interruptState = new Map(); // session -> { count }  — unknown-interruption resume (G)
 const bgResultState = new Map();  // session -> { at }      - v2 bg-completion result just injected (de-dup window)
 let ticker = null;
+const pendingTimers = new Set(); // busy retries + delayed system injections
 
 const TICK_MS = 1000;
 const DEFAULTS = { intervalSec: 15, maxChecks: 40, timeoutSec: 1800 };
@@ -105,6 +106,34 @@ function startTicker() {
   if (ticker) return;
   ticker = setInterval(() => { tick().catch(() => {}); }, TICK_MS);
   if (ticker.unref) ticker.unref();
+}
+
+// Every one-shot timer owned by this module goes through this helper. Besides
+// making lifecycle cleanup deterministic, unref() means an otherwise idle
+// process is never kept alive solely by a delayed nudge or busy retry.
+function scheduleTimer(fn, delayMs) {
+  let handle = null;
+  handle = setTimeout(() => {
+    pendingTimers.delete(handle);
+    fn();
+  }, delayMs);
+  pendingTimers.add(handle);
+  if (handle && handle.unref) handle.unref();
+  return handle;
+}
+
+// Stop process-owned scheduling without discarding waits or per-session state.
+// init() can therefore restart the ticker and continue pending waits. Any
+// delayed nudge/busy retry that has not fired is cancelled: callers may enqueue
+// new work after a subsequent init(), but shutdown itself cannot be held open by
+// this module's timers.
+function stop() {
+  if (ticker) {
+    clearInterval(ticker);
+    ticker = null;
+  }
+  for (const handle of pendingTimers) clearTimeout(handle);
+  pendingTimers.clear();
 }
 
 // ── Registration (A/B) ──
@@ -362,7 +391,7 @@ const SYS_PREFIX = '🔇';
 const BUSY_MAX_ATTEMPTS = 300; // 5min @ 1s - generous; a live long turn never hits it
 function fireInject(session, text, attempt = 0, opts) {
   if (_isBusy(session) && attempt < BUSY_MAX_ATTEMPTS) {
-    setTimeout(() => fireInject(session, text, attempt + 1, opts), 1000);
+    scheduleTimer(() => fireInject(session, text, attempt + 1, opts), 1000);
     return;
   }
   if (attempt >= BUSY_MAX_ATTEMPTS) {
@@ -384,15 +413,22 @@ function injectSystemMsg(session, text, delayMs, opts) {
   const d = Number(delayMs);
   const delay = Number.isFinite(d) ? Math.max(0, d) : 0;
   const go = () => {
-    if (_isBusy(session)) { setTimeout(go, 1000); return; }
+    if (_isBusy(session)) { scheduleTimer(go, 1000); return; }
     Promise.resolve(_inject(session, msg, opts)).catch(e => _log(`[wait] system inject failed for ${session}: ${e.message}`));
   };
-  if (delay) { setTimeout(go, delay); return; }
+  if (delay) { scheduleTimer(go, delay); return; }
   go();
 }
 
 function stats() {
-  return { waits: waits.size, autoSessions: autoState.size, bgSessions: bgState.size, interruptSessions: interruptState.size };
+  return {
+    waits: waits.size,
+    autoSessions: autoState.size,
+    bgSessions: bgState.size,
+    interruptSessions: interruptState.size,
+    tickerRunning: !!ticker,
+    pendingTimers: pendingTimers.size,
+  };
 }
 
 // Busy-safe delivery of arbitrary text into a session as a new turn. Reuses the
@@ -403,7 +439,7 @@ function stats() {
 function safeInject(session, text) { fireInject(session, text); }
 
 module.exports = {
-  init, register, resolve, cancel, cancelForSession,
+  init, stop, register, resolve, cancel, cancelForSession,
   listForSession, hasWait, tick, autoContinue, resetAuto,
   bgCheck, resetBg, resumeInterrupted, resetInterrupted, stats, safeInject,
   injectSystemMsg, SYS_PREFIX,
