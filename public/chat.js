@@ -4830,6 +4830,8 @@ fetch(withToken('/api/settings/voice'))
 
 function _vhRenderRaw() {
   if (!_vhRawText) return;
+  // Don't stomp on the user's in-progress edit.
+  if (document.activeElement === _vhRawText) return;
   const committed = _hudRawFinal || '';
   const partial   = _hudRawPartial || '';
   _vhRawText.innerHTML = '';
@@ -4839,9 +4841,6 @@ function _vhRenderRaw() {
     s.className = 'vh-partial';
     s.textContent = (committed ? ' ' : '') + partial;
     _vhRawText.appendChild(s);
-  }
-  if (!committed && !partial) {
-    _vhRawText.innerHTML = '<span class="vh-partial">聆听中…</span>';
   }
 }
 
@@ -4888,7 +4887,10 @@ async function _vhRunRefine(raw) {
     if (seq !== _hudRefineSeq) return;
     if (data.ok && typeof data.text === 'string' && data.text.trim()) {
       _hudRefined = data.text.trim();
-      if (_vhRefText) _vhRefText.textContent = _hudRefined;
+      // Only push to the DOM if the user hasn't started editing the refined line.
+      if (_vhRefText && document.activeElement !== _vhRefText) {
+        _vhRefText.textContent = _hudRefined;
+      }
       if (_vhHud) _vhHud.classList.add('has-refined');
     }
   } catch (e) {
@@ -4897,6 +4899,31 @@ async function _vhRunRefine(raw) {
     if (_hudRefineAbort === ctrl) _hudRefineAbort = null;
     if (seq === _hudRefineSeq && _vhHud) _vhHud.classList.remove('refining');
   }
+}
+
+// Keep the backing state in sync with user edits so commit reads what they see.
+if (_vhRefText) {
+  _vhRefText.addEventListener('input', () => {
+    _hudRefined = (_vhRefText.textContent || '').trim();
+  });
+  // Enter in either line commits immediately (Shift+Enter inserts a newline).
+  _vhRefText.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      commitStreamingVoice();
+    }
+  });
+}
+if (_vhRawText) {
+  _vhRawText.addEventListener('input', () => {
+    _hudRawFinal = (_vhRawText.textContent || '').trim();
+  });
+  _vhRawText.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      commitStreamingVoice();
+    }
+  });
 }
 
 async function startStreamingVoice() {
@@ -4970,8 +4997,11 @@ async function commitStreamingVoice() {
     }
   }
 
-  const text = (_hudRefined || _hudRawFinal || '').trim();
-  const raw = (_hudRawFinal || '').trim();
+  // Read final text from the DOM so any user edits win over the internal state.
+  const refinedDom = (_vhRefText ? (_vhRefText.textContent || '').trim() : '') || _hudRefined;
+  const rawDom = (_vhRawText ? (_vhRawText.textContent || '').trim() : '') || _hudRawFinal;
+  const text = (refinedDom || rawDom).trim();
+  const raw = rawDom.trim();
   if (_vhHud) _vhHud.classList.remove('open');
   if (!text) return;
 
@@ -4982,7 +5012,9 @@ async function commitStreamingVoice() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
   send();
 
-  // Feedback (server ignores if userFinal === refined).
+  // Feedback (server ignores if userFinal === refined). Send the AI-refined
+  // value vs the user's actual final text so the vocabulary-learning loop
+  // captures real corrections even when the user edited mid-flight.
   fetch(withToken('/api/voice/feedback'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
