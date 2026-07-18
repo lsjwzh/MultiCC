@@ -86,6 +86,12 @@ const { createRoleTokenTracker } = require('./src/role-token-tracker');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
 const {
+  applyCuratedMemoryAction,
+  atomicWrite: atomicWriteMemoryFile,
+  readMemoryFolder: readFolderMemory,
+  scanMemoryContent,
+} = require('./src/memory-store');
+const {
   SUPPORTED_CHAT_CLIS,
   ensureCliStates,
   rememberActiveCliState,
@@ -2998,7 +3004,7 @@ app.patch('/api/sessions/:id', (req, res) => {
 });
 
 // ── Folder-based session memory: the human window into the same memory the ──
-// agent auto-reads/writes each turn. Two scopes: own (private to this session)
+// agent receives when a native CLI session starts. Two scopes: own (private)
 // and shared (all sessions in the directory). Each scope is a folder of .md.
 app.get('/api/sessions/:id/memory', (req, res) => {
   const persisted = persistedSessions.get(req.params.id);
@@ -3023,12 +3029,14 @@ app.put('/api/sessions/:id/memory', (req, res) => {
   const sc = scope === 'shared' ? 'shared' : 'own';
   const fn = safeMemFileName(name);
   if (!fn) return res.status(400).json({ error: 'invalid file name (must be a plain *.md name)' });
-  if (String(content || '').length > 40000) return res.status(400).json({ error: 'content too long (max 40000)' });
+  const body = String(content == null ? '' : content);
+  if (body.length > 40000) return res.status(400).json({ error: 'content too long (max 40000)' });
+  const threat = scanMemoryContent(body);
+  if (threat) return res.status(400).json({ error: `memory write blocked: ${threat}` });
   ensureMemoryDirs(persisted);
   const dir = memScopeDir(persisted, sc);
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, fn), String(content == null ? '' : content));
+    atomicWriteMemoryFile(path.join(dir, fn), body);
   } catch (e) { return res.status(500).json({ error: 'write failed: ' + e.message }); }
   if (persisted.dirId) workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId: persisted.id, scope: sc });
   res.json({ ok: true, files: listMemoryFiles(dir) });
@@ -3047,6 +3055,37 @@ app.delete('/api/sessions/:id/memory', (req, res) => {
   catch (e) { if (e.code !== 'ENOENT') return res.status(500).json({ error: 'delete failed: ' + e.message }); }
   if (persisted.dirId) workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId: persisted.id, scope: sc });
   res.json({ ok: true, files: listMemoryFiles(dir) });
+});
+
+// Curated-memory mutation path used by agents and humans who want Hermes-like
+// add/replace/remove semantics without rewriting a whole file. Writes a bounded
+// MEMORY.md in the selected scope with duplicate prevention, injection scanning
+// and atomic replace. The live CLI session keeps its frozen prompt snapshot;
+// the response contains the new live entries so the writer can use them now.
+app.post('/api/sessions/:id/memory/action', (req, res) => {
+  const persisted = persistedSessions.get(req.params.id);
+  if (!persisted) return res.status(404).json({ error: 'session not found' });
+  if (persisted.type === 'aux' || persisted.type === 'gateway') {
+    return res.status(400).json({ error: 'system sessions do not have curated memory' });
+  }
+  ensureMemoryDirs(persisted);
+  const scope = req.body?.scope === 'shared' ? 'shared' : 'own';
+  const result = applyCuratedMemoryAction({
+    dir: memScopeDir(persisted, scope),
+    action: String(req.body?.action || '').trim().toLowerCase(),
+    content: req.body?.content,
+    oldText: req.body?.oldText,
+    charLimit: scope === 'shared' ? SHARED_CURATED_MEM_CAP : SESSION_CURATED_MEM_CAP,
+  });
+  if (!result.ok) return res.status(400).json(result);
+  appendEvent(
+    persisted.dirId,
+    'memory_updated',
+    `${scope === 'shared' ? '公共' : '私有'}记忆：${result.message}`,
+    persisted.id,
+  );
+  workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId: persisted.id, scope });
+  res.json(result);
 });
 
 // ── Memory graph ──────────────────────────────────────────────────────────
@@ -7044,6 +7083,11 @@ function appendChatMessage(sessionName, msg) {
   // Tell live clients the id this message was saved under, so the bubble
   // already on screen becomes individually addressable (delete button).
   chatBroadcast(sessionName, { type: 'chat_msg_meta', id: msg.id, role: msg.role, ts: msg.ts });
+  if (msg && msg.role === 'assistant' && !msg._interim && !msg.cancelled && !msg.partial && !msg.error) {
+    // Keep the user-visible turn fast. The review counter is persisted and the
+    // actual auxiliary review runs after the reply has already been saved.
+    setImmediate(() => maybeSchedulePeriodicMemoryReview(sessionName));
+  }
 }
 
 // ── Chat sessions: session-level state for multi-client broadcast ──
@@ -8100,6 +8144,10 @@ function setSessionSummary(sessionId, summary) {
 }
 
 const SESSION_MEMORY_MAX = 8000;  // hard cap: total text length across all memory entries
+const MEMORY_REVIEW_INTERVAL = Math.max(0, parseInt(process.env.MULTICC_MEMORY_REVIEW_INTERVAL || '10', 10) || 0);
+const MEMORY_REVIEW_MAX_MESSAGES = 30;
+const _memoryReviewInFlight = new Map();   // sessionId → Promise
+const _memoryDistillPending = new Map();   // sessionId → Promise (Clear gate)
 
 // Memory entry types
 // decision=确认的技术决策, gotcha=踩过的坑/正确做法, preference=用户偏好/约束, todo=待跟进事项, fact=关键事实
@@ -8178,20 +8226,69 @@ function _mergeMemoryEntries(prior, fresh) {
   return out;
 }
 
+function _parseMemoryEntries(raw) {
+  let clean = String(raw || '').trim();
+  if (!clean || clean === '-' || clean === '—') return [];
+  clean = clean.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+  if (!clean || clean === '-' || clean === '—') return [];
+  const fresh = [];
+  for (const line of clean.split('\n')) {
+    const text = line.trim();
+    if (!text || text === '-' || text === '—') continue;
+    const match = text.match(/^\[(\w+)\]\s*(.*)$/);
+    let type = match ? match[1].toLowerCase() : 'fact';
+    const entryText = (match ? match[2] : text).trim();
+    if (!MEMORY_TYPES.includes(type)) type = 'fact';
+    if (entryText && !scanMemoryContent(entryText)) {
+      fresh.push({ type, text: entryText, ts: Date.now() });
+    }
+  }
+  return fresh;
+}
+
+function _persistMergedMemory(sessionId, fresh, eventDetail) {
+  if (!fresh.length) return { updated: false, entries: getMemoryEntries(persistedSessions.get(sessionId)) };
+  const persisted = persistedSessions.get(sessionId);
+  if (!persisted) return { updated: false, entries: [] };
+  let merged = _mergeMemoryEntries(getMemoryEntries(persisted), fresh);
+  merged = _trimMemoryEntries(merged);
+  persisted.memory = merged;
+  writeAutoMemoryFile(persisted, merged);
+  savePersistedSessions();
+  const totalLen = merged.reduce((sum, entry) => sum + (entry.text || '').length, 0);
+  appendEvent(persisted.dirId, 'memory_updated', `${eventDetail}（${merged.length} 条，${totalLen} 字）`, sessionId);
+  workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId });
+  return { updated: true, entries: merged, totalLen };
+}
+
+function _trackPendingMemoryDistill(sessionId, promise) {
+  const tracked = Promise.resolve(promise)
+    .catch(error => {
+      console.warn(`[multicc/memory] pending distill ${sessionId} failed: ${error.message}`);
+      return { updated: false, error: error.message };
+    })
+    .finally(() => {
+      if (_memoryDistillPending.get(sessionId) === tracked) _memoryDistillPending.delete(sessionId);
+    });
+  _memoryDistillPending.set(sessionId, tracked);
+  return tracked;
+}
+
 // Distill a chunk of about-to-be-discarded chat history into the session's
 // long-lived memory. We deliberately keep ONLY key problems and how they were
 // solved (decisions, fixes, gotchas, user preferences, unfinished threads) — not
 // ordinary task narration. Runs on the aux AI, merges incrementally with the
 // existing memory (de-dupes + compresses when near the cap), and is best-effort:
-// any failure leaves history-clearing unaffected. Fire-and-forget (no await).
+// any failure leaves history-clearing unaffected. Clear awaits this through a
+// first-turn gate; rolling-window trimming intentionally runs it in background.
 function distillHistoryIntoMemory(sessionId, messages) {
   const persisted = persistedSessions.get(sessionId);
-  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') return;
+  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') return Promise.resolve({ updated: false });
   const text = (messages || [])
     .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
     .map(m => `${m.role === 'user' ? '用户' : '助手'}: ${m.content.trim().slice(0, 2000)}`)
     .join('\n');
-  if (text.length < 40) return;  // nothing worth distilling
+  if (text.length < 40) return Promise.resolve({ updated: false });  // nothing worth distilling
   const prior = getMemoryEntries(persisted);
   const prompt =
 `你是会话记忆提炼器。下面是一段即将被清理/丢弃的对话。请只提炼出「值得长期记住的关键信息」，每条一行，格式为 \`[类型] 内容\`。
@@ -8209,49 +8306,108 @@ ${prior.length ? `【已有的会话记忆条目（请与新内容合并去重�
 ${text.slice(0, 12000)}
 
 请直接输出合并后的所有记忆条目（每行一条），不要解释、不要加标题。`;
-  if (auxQueue.isUnhealthy()) return;  // ④ degraded: skip memory distill; next history-clear retries
-  auxQueue.enqueue({ type: 'memory_distill', prompt, meta: { sessionId } })
+  if (auxQueue.isUnhealthy()) return Promise.resolve({ updated: false, skipped: 'aux unhealthy' });
+  return auxQueue.enqueue({ type: 'memory_distill', prompt, meta: { sessionId } })
     .then(result => {
-      let raw = (result && result.text || '').trim();
-      if (!raw || raw === '-' || raw === '—') return;
-      // Strip an accidental code fence / leading label the model may add.
-      raw = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
-      if (!raw || raw === '-' || raw === '—') return;
-
-      // Parse each line: [type] text
-      const fresh = [];
-      for (const line of raw.split('\n')) {
-        const t = line.trim();
-        if (!t || t === '-' || t === '—') continue;
-        let m = t.match(/^\[(\w+)\]\s*(.*)$/);
-        let type, entryText;
-        if (m) {
-          type = m[1].toLowerCase();
-          entryText = m[2].trim();
-        } else {
-          type = 'fact';
-          entryText = t;
-        }
-        if (!MEMORY_TYPES.includes(type)) type = 'fact';
-        if (!entryText) continue;
-        fresh.push({ type, text: entryText, ts: Date.now() });
+      const committed = _persistMergedMemory(sessionId, _parseMemoryEntries(result && result.text), '已提炼会话记忆');
+      if (committed.updated) {
+        console.log(`[multicc/memory] distilled ${sessionId}: memory now ${committed.entries.length} entries / ${committed.totalLen} chars`);
       }
-      if (!fresh.length) return;
-
-      const p = persistedSessions.get(sessionId);
-      if (!p) return;
-      const existing = getMemoryEntries(p);
-      let merged = _mergeMemoryEntries(existing, fresh);
-      merged = _trimMemoryEntries(merged);
-      p.memory = merged;
-      writeAutoMemoryFile(p, merged);   // mirror into the folder as _auto.md (single injected surface)
-      savePersistedSessions();
-      const totalLen = merged.reduce((s, e) => s + (e.text || '').length, 0);
-      appendEvent(p.dirId, 'memory_updated', `已提炼会话记忆（${merged.length} 条，${totalLen} 字）`, sessionId);
-      workspaceBroadcast(p.dirId, { type: 'memory', sessionId });
-      console.log(`[multicc/memory] distilled ${sessionId}: memory now ${merged.length} entries / ${totalLen} chars`);
+      return committed;
     })
-    .catch(e => console.warn(`[multicc/memory] distill ${sessionId} failed: ${e.message}`));
+    .catch(error => {
+      console.warn(`[multicc/memory] distill ${sessionId} failed: ${error.message}`);
+      return { updated: false, error: error.message };
+    });
+}
+
+function _memoryReviewMessages(sessionId, persisted) {
+  const history = loadChatHistory(sessionId);
+  let start = 0;
+  if (persisted.memoryReviewCursorId) {
+    const cursor = history.findIndex(message => message && message.id === persisted.memoryReviewCursorId);
+    if (cursor >= 0) start = cursor + 1;
+  }
+  return history.slice(start)
+    .filter(message => message && (message.role === 'user' || message.role === 'assistant')
+      && typeof message.content === 'string' && message.content.trim())
+    .slice(-MEMORY_REVIEW_MAX_MESSAGES);
+}
+
+function reviewConversationIntoMemory(sessionId) {
+  if (_memoryReviewInFlight.has(sessionId)) return _memoryReviewInFlight.get(sessionId);
+  const persisted = persistedSessions.get(sessionId);
+  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') return Promise.resolve({ updated: false });
+  if (auxQueue.isUnhealthy()) return Promise.resolve({ updated: false, skipped: 'aux unhealthy' });
+  const messages = _memoryReviewMessages(sessionId, persisted);
+  if (!messages.length) return Promise.resolve({ updated: false });
+  const lastMessageId = messages[messages.length - 1].id || null;
+  const transcript = messages.map(message =>
+    `${message.role === 'user' ? '用户' : '助手'}: ${message.content.trim().slice(0, 1800)}`
+  ).join('\n');
+  const prompt =
+`你是 MultiCC 的周期记忆复盘器。审查下面最近一段对话，只输出真正值得跨后续对话保留的稳定事实，每条一行，格式为 [类型] 内容。
+
+允许类型：
+- [preference] 用户明确且可复用的偏好、沟通方式、工作约束
+- [gotcha] 反复可能踩到的环境或工具陷阱，以及正确做法
+- [decision] 会长期影响后续工作的已确认方案或约定
+- [fact] 稳定的项目/环境事实
+
+不要保存任务进度、已完成工作日志、临时路径、一次性 TODO、普通过程或可轻易重新发现的知识。内容应是陈述性事实，不要写成命令。没有值得保存的内容时只输出 "-"。
+
+【最近对话】
+${transcript.slice(0, 12000)}
+
+直接输出条目，不要标题或解释。`;
+
+  const task = auxQueue.enqueue({ type: 'memory_review', prompt, meta: { sessionId } })
+    .then(result => {
+      const committed = _persistMergedMemory(sessionId, _parseMemoryEntries(result && result.text), '周期记忆复盘');
+      const current = persistedSessions.get(sessionId);
+      if (current && lastMessageId) {
+        current.memoryReviewCursorId = lastMessageId;
+        current.memoryReviewAt = Date.now();
+        savePersistedSessions();
+      }
+      return committed;
+    })
+    .catch(error => {
+      const current = persistedSessions.get(sessionId);
+      if (current) {
+        // Retry promptly on the next completed turn instead of waiting another
+        // full interval after a transient auxiliary-provider failure.
+        current.memoryReviewTurnCount = Math.max(0, MEMORY_REVIEW_INTERVAL - 1);
+        savePersistedSessions();
+      }
+      console.warn(`[multicc/memory] periodic review ${sessionId} failed: ${error.message}`);
+      return { updated: false, error: error.message };
+    })
+    .finally(() => _memoryReviewInFlight.delete(sessionId));
+  _memoryReviewInFlight.set(sessionId, task);
+  return task;
+}
+
+function maybeSchedulePeriodicMemoryReview(sessionId) {
+  if (!MEMORY_REVIEW_INTERVAL) return;
+  const persisted = persistedSessions.get(sessionId);
+  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway'
+      || (persisted.kind && persisted.kind !== 'chat')) return;
+  persisted.memoryReviewTurnCount = Math.max(0, Number(persisted.memoryReviewTurnCount) || 0) + 1;
+  if (persisted.memoryReviewTurnCount < MEMORY_REVIEW_INTERVAL) {
+    savePersistedSessions();
+    return;
+  }
+  if (auxQueue.isUnhealthy()) {
+    // Preserve a near-due counter so a transient provider outage retries after
+    // the next completed turn rather than silently postponing ten more turns.
+    persisted.memoryReviewTurnCount = Math.max(0, MEMORY_REVIEW_INTERVAL - 1);
+    savePersistedSessions();
+    return;
+  }
+  persisted.memoryReviewTurnCount = 0;
+  savePersistedSessions();
+  reviewConversationIntoMemory(sessionId);
 }
 
 function workspaceBroadcast(dirId, payload) {
@@ -8766,12 +8922,14 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
 //   memories/<dirId>/_shared/            ← shared across all sessions in the dir
 //   memories/<dirId>/sessions/<id>/      ← private to one session
 // The session's own primary file is named per CLI to match native conventions
-// (CLAUDE.md for claude, AGENTS.md for codex). The agent edits these with its
-// normal file tools to persist what it learns; every turn we read own+shared
-// and inject them into the role prompt (works for claude and codex alike).
+// (CLAUDE.md for claude, AGENTS.md for codex). Short facts use the controlled
+// memory endpoint; longer notes may use normal file tools. own+shared are read
+// when the native CLI context is created and remain a frozen prompt snapshot.
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
-const SESSION_MEM_CAP = 5000;   // chars of own-folder memory injected per turn
-const SHARED_MEM_CAP  = 4000;   // chars of shared-folder memory injected per turn
+const SESSION_MEM_CAP = 5000;   // chars of own-folder memory injected per native session
+const SHARED_MEM_CAP  = 4000;   // chars of shared-folder memory injected per native session
+const SESSION_CURATED_MEM_CAP = 2200;
+const SHARED_CURATED_MEM_CAP = 2200;
 
 function sessionMemoryDir(persisted) {
   return path.join(MEMORY_STORE_ROOT, String(persisted.dirId), 'sessions', String(persisted.id));
@@ -8808,7 +8966,7 @@ function ensureMemoryDirs(persisted) {
       fs.writeFileSync(readme,
 `# 公共记忆（本项目所有会话共享）
 
-> 这里的内容会注入到本目录下每一个会话的上下文。放跨会话复用的项目知识、约定、稳定事实。
+> 这里的内容会在本目录下原生 CLI 会话启动/重建时进入上下文快照。放跨会话复用的项目知识、约定、稳定事实。
 > 一事一文件、精炼；临时/私有的东西请写进各自会话的私有记忆文件夹，不要放这里。
 `);
     }
@@ -8834,31 +8992,11 @@ function writeAutoMemoryFile(persisted, entries) {
     if (!entries || !entries.length) { try { fs.unlinkSync(file); } catch (_) {} return; }
     const body = entries.map(e => `- [${e.type}] ${e.text}`).join('\n');
     fs.writeFileSync(file,
-`# 自动提炼记忆（辅助 AI 从被清理的历史中提炼；本文件会被自动覆盖，想长期保留请另写 .md）
+`# 自动提炼记忆（辅助 AI 从周期复盘或被清理的历史中提炼；本文件会被自动覆盖，想长期保留请另写 .md）
 
 ${body}
 `);
   } catch (_) { /* best-effort */ }
-}
-
-// Read all .md files in a folder, concatenated as labeled chunks, capped by chars.
-function readMemoryFolder(dir, capChars) {
-  let files;
-  try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md')).sort(); }
-  catch (_) { return ''; }
-  const out = []; let total = 0;
-  for (const f of files) {
-    let body;
-    try { body = fs.readFileSync(path.join(dir, f), 'utf8').trim(); } catch (_) { continue; }
-    if (!body) continue;
-    const chunk = `#### ${f}\n${body}`;
-    if (total + chunk.length > capChars) {
-      out.push('（… 记忆超出注入上限，其余已省略；需要时用 Read 工具直接读文件夹里的文件）');
-      break;
-    }
-    out.push(chunk); total += chunk.length;
-  }
-  return out.join('\n\n');
 }
 
 // Build the folder-memory injection block (own + shared) for a session. Returns
@@ -8867,12 +9005,19 @@ function buildFolderMemoryBlock(persisted) {
   if (!persisted || !persisted.dirId || !persisted.id) return null;
   if (persisted.type === 'aux' || persisted.type === 'gateway') return null;
   const { own, shared } = ensureMemoryDirs(persisted);
-  const ownText = readMemoryFolder(own, SESSION_MEM_CAP);
-  const sharedText = readMemoryFolder(shared, SHARED_MEM_CAP);
+  const ownText = readFolderMemory(own, SESSION_MEM_CAP, {
+    primaryNames: [primaryMemFileName(persisted.cli), 'AGENTS.md', 'CLAUDE.md', 'MEMORY.md'],
+  });
+  const sharedText = readFolderMemory(shared, SHARED_MEM_CAP, {
+    primaryNames: ['MEMORY.md'],
+  });
   return (
-`[记忆库｜每轮自动注入] 你有一个持久记忆文件夹（存在 multicc 数据区，不在本仓库、不进 git）。想长期记住的信息，用 Write/Edit 写进对应文件夹的 .md 文件即可，下一轮起自动带上；过时的删掉。
+`[记忆库｜原生会话快照] 你有一个持久记忆文件夹（存在 multicc 数据区，不在本仓库、不进 git）。以下正文会在原生 CLI 会话启动/重建时形成快照；会话中写入会立即落盘并由工具结果确认，但不会改写已经运行中的系统提示词。
 · 私有记忆（仅本会话可见）文件夹：${own}
 · 公共记忆（本项目所有会话共享）文件夹：${shared}
+· 保存短小、稳定的事实时，优先调用受控记忆接口（原子写入、去重、容量与安全检查）：
+  curl -s "$MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/memory/action" -H 'Content-Type: application/json' -d '{"action":"add","scope":"own","content":"要记住的事实"}'
+  action 可为 add / replace / remove；replace/remove 另传 oldText。跨会话项目事实用 scope=shared。较长的专题笔记仍可直接 Write/Edit 为独立 .md 文件。
 
 【私有记忆】
 ${ownText || '（空）'}
@@ -8911,7 +9056,7 @@ function memScopeDir(persisted, scope) {
 // Resolve the effective custom role prompt for a session: an explicit
 // session-level role wins; otherwise inherit the owning directory's default.
 // The distilled JSON memory (keyword-matched) and the folder-based memory
-// (own + shared) are appended so every turn carries them. Returns null when
+// (own + shared) are appended to the native-session startup prompt. Returns null when
 // nothing at all applies.
 function resolveRolePrompt(persisted) {
   if (!persisted) return null;
@@ -10596,17 +10741,18 @@ function handleChatWs(ws, req, urlObj) {
         const h = chatHistories.get(sessionName);
         const keep = Math.max(0, parseInt(msg.keep || '0', 10) || 0);
         let retained = [];
+        let memoryDistill = null;
         if (keep > 0 && h) {
           // Keep the last N messages (typically user/assistant pairs), distill the rest.
           // If history is shorter than N, retain all of it rather than falling
           // through to the clear-all branch.
           const removed = h.splice(0, Math.max(0, h.length - keep));
-          if (removed.length) distillHistoryIntoMemory(sessionName, removed);
+          if (removed.length) memoryDistill = distillHistoryIntoMemory(sessionName, removed);
           retained = h.slice();
         } else {
           // Distill the soon-to-be-discarded conversation into long-lived session
           // memory BEFORE wiping it (key problems + how they were solved).
-          if (h && h.length) distillHistoryIntoMemory(sessionName, h.slice());
+          if (h && h.length) memoryDistill = distillHistoryIntoMemory(sessionName, h.slice());
           if (h) h.length = 0;
         }
         saveChatHistory(sessionName);
@@ -10642,6 +10788,10 @@ function handleChatWs(ws, req, urlObj) {
           console.log(`[multicc/chat] Cleared history and reset ${cleared} native CLI session(s) for ${sessionName}`);
         }
         cs.chatTurnCount = 0;
+        // Clear resets all native contexts. Gate the first following turn until
+        // distillation has landed in _auto.md, otherwise that fresh context can
+        // freeze the old memory snapshot for its entire lifetime.
+        if (memoryDistill) _trackPendingMemoryDistill(sessionName, memoryDistill);
         return;
       }
 
@@ -10654,7 +10804,13 @@ function handleChatWs(ws, req, urlObj) {
         if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) {
           turnOpts.clientMsgId = msg.clientMsgId;
         }
-        runChatTurn(sessionName, msg.text, turnOpts);
+        const pendingMemory = _memoryDistillPending.get(sessionName);
+        if (pendingMemory) {
+          const queuedText = msg.text;
+          pendingMemory.finally(() => runChatTurn(sessionName, queuedText, turnOpts));
+        } else {
+          runChatTurn(sessionName, msg.text, turnOpts);
+        }
         return;
       }
     } catch (e) {

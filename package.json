@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node tests/test.js && node --test tests/test-sqlite-runtime.js && node tests/test-native-deps.js",
+    "test:memory": "node tests/test-memory-store.js && node tests/test-memory-api.js",
     "test:cli-switch": "node tests/test-cli-switch.js && node tests/test-cli-adapters.js && node tests/test-message-composer-golden.js && node tests/test-chat-stream-resume.js && node tests/test-cli-switch-api.js && node tests/test-cli-switch-failclosed.js && node tests/test-cli-specific-ui.js",
     "test:subagent-routing": "node tests/test-claude-subagent-routing.js",
     "test:subagent-live": "node tests/test-claude-subagent-live.js",
