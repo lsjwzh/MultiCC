@@ -310,7 +310,10 @@ class SessionCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        '落后 ${live!.baseBranch ?? 'base'} ${live.behind} 个提交',
+                        t('behindCommits', {
+                          'base': live!.baseBranch ?? t('baseBranch'),
+                          'n': '${live.behind}',
+                        }),
                         style: const TextStyle(
                           color: Color(0xFFf2cc60),
                           fontSize: 10,
@@ -358,7 +361,7 @@ class SessionCard extends StatelessWidget {
                         size: 18,
                         color: Color(0xFF8a909b),
                       ),
-                      tooltip: '更多操作',
+                      tooltip: t('moreActions'),
                       color: const Color(0xFF161b22),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 160),
@@ -395,28 +398,44 @@ class SessionCard extends StatelessWidget {
                         }
                       },
                       itemBuilder: (_) => [
-                        _menuItem('rename', Icons.edit_outlined, '改名'),
+                        _menuItem('rename', Icons.edit_outlined, t('rename')),
                         if (!mergeReady)
                           _menuItem(
                             'merge',
                             Icons.merge_type_rounded,
-                            '合并 worktree',
+                            t('mergeWorktree'),
                           ),
-                        _menuItem('diff', Icons.difference_outlined, '查看 Diff'),
-                        _menuItem('rebase', Icons.call_merge_rounded, 'Rebase 解决冲突'),
-                        _menuItem('relocate', Icons.drive_file_move_outline, '迁移到其他Fleet'),
-                        _menuItem('note', Icons.mail_outline_rounded, '留言'),
+                        _menuItem(
+                          'diff',
+                          Icons.difference_outlined,
+                          t('viewDiff'),
+                        ),
+                        _menuItem(
+                          'rebase',
+                          Icons.call_merge_rounded,
+                          t('rebaseResolve'),
+                        ),
+                        _menuItem(
+                          'relocate',
+                          Icons.drive_file_move_outline,
+                          t('relocateSession'),
+                        ),
+                        _menuItem(
+                          'note',
+                          Icons.mail_outline_rounded,
+                          t('leaveNote'),
+                        ),
                         if (session.isTerminal)
                           _menuItem(
                             'restart',
                             Icons.restart_alt_rounded,
-                            'Restart',
+                            t('restartSession'),
                           ),
                         const PopupMenuDivider(),
                         _menuItem(
                           'delete',
                           Icons.delete_outline_rounded,
-                          '删除',
+                          t('delete'),
                           danger: true,
                         ),
                       ],
@@ -458,9 +477,9 @@ class SessionCard extends StatelessWidget {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF0f1115),
-        title: const Text(
-          'Rename Session',
-          style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+        title: Text(
+          t('renameSessionTitle'),
+          style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
         ),
         content: TextField(
           controller: ctrl,
@@ -480,16 +499,16 @@ class SessionCard extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF8a909b)),
+            child: Text(
+              t('cancel'),
+              style: const TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, ctrl.text),
-            child: const Text(
-              'Save',
-              style: TextStyle(
+            child: Text(
+              t('save'),
+              style: const TextStyle(
                 color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
@@ -501,9 +520,11 @@ class SessionCard extends StatelessWidget {
     if (next == null) return;
     try {
       await mgr.renameSession(session.id, next.trim());
-      messenger.showSnackBar(const SnackBar(content: Text('Session renamed')));
+      messenger.showSnackBar(SnackBar(content: Text(t('renameSessionSaved'))));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Rename failed: $e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('renameSessionFailed', {'error': '$e'}))),
+      );
     }
   }
 
@@ -514,7 +535,7 @@ class SessionCard extends StatelessWidget {
     if (siblings.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('该Fleet下没有其他会话可留言')));
+      ).showSnackBar(SnackBar(content: Text(t('leaveNoteNoTarget'))));
       return;
     }
     final messenger = ScaffoldMessenger.of(context);
@@ -525,17 +546,17 @@ class SessionCard extends StatelessWidget {
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF0f1115),
-          title: const Text(
-            '留言',
-            style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+          title: Text(
+            t('leaveNoteTitle'),
+            style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                '留言会在对方下一轮对话开始时送达。',
-                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              Text(
+                t('leaveNoteHint'),
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
               ),
               const SizedBox(height: 10),
               DropdownButton<String>(
@@ -562,7 +583,7 @@ class SessionCard extends StatelessWidget {
                 maxLines: 4,
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: InputDecoration(
-                  hintText: '留言内容…',
+                  hintText: t('leaveNoteBody'),
                   hintStyle: const TextStyle(color: Color(0xFF454b54)),
                   filled: true,
                   fillColor: const Color(0xFF070809),
@@ -576,16 +597,16 @@ class SessionCard extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text(
-                '取消',
-                style: TextStyle(color: Color(0xFF8a909b)),
+              child: Text(
+                t('cancel'),
+                style: const TextStyle(color: Color(0xFF8a909b)),
               ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text(
-                '发送',
-                style: TextStyle(
+              child: Text(
+                t('leaveNoteSend'),
+                style: const TextStyle(
                   color: Color(0xFF6aa3ff),
                   fontWeight: FontWeight.w600,
                 ),
@@ -602,9 +623,11 @@ class SessionCard extends StatelessWidget {
       await SessionService(
         settings: settings,
       ).postNote(fromSessionId: session.id, toSessionId: targetId, body: body);
-      messenger.showSnackBar(const SnackBar(content: Text('留言已发送')));
+      messenger.showSnackBar(SnackBar(content: Text(t('leaveNoteSent'))));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('发送失败：$e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('leaveNoteFailed', {'error': '$e'}))),
+      );
     }
   }
 
@@ -613,24 +636,27 @@ class SessionCard extends StatelessWidget {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF0f1115),
-        title: const Text(
-          '合并 worktree',
-          style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+        title: Text(
+          t('mergeTitle'),
+          style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
         ),
-        content: const Text(
-          '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-          style: TextStyle(color: Color(0xFFe7eaee)),
+        content: Text(
+          t('mergeBody'),
+          style: const TextStyle(color: Color(0xFFe7eaee)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+            child: Text(
+              t('cancel'),
+              style: const TextStyle(color: Color(0xFF8a909b)),
+            ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text(
-              '合并',
-              style: TextStyle(
+            child: Text(
+              t('merge'),
+              style: const TextStyle(
                 color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
@@ -641,7 +667,7 @@ class SessionCard extends StatelessWidget {
     );
     if (ok != true || !context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(const SnackBar(content: Text('正在合并 worktree...')));
+    messenger.showSnackBar(SnackBar(content: Text(t('merging'))));
     try {
       final result = await SessionService(
         settings: settings,
@@ -651,11 +677,13 @@ class SessionCard extends StatelessWidget {
           (result['conflicts'] as List).isNotEmpty;
       final msg = result['ok'] == true
           ? (result['merged'] == true
-                ? '✓ 已合并 ${result['commits']} 个提交回基分支'
-                : '✓ ${result['message'] ?? '没有新提交需要合并'}')
+                ? t('merged', {'n': '${result['commits'] ?? 0}'})
+                : t('mergedNothing', {'msg': t('mergeNoNewCommits')}))
           : hasConflict
-          ? '⚠️ 合并冲突，已 abort：${(result['conflicts'] as List).join(', ')}'
-          : '合并失败：${result['error'] ?? ''}';
+          ? t('mergeConflict', {
+              'files': (result['conflicts'] as List).join(', '),
+            })
+          : t('mergeFailed', {'error': '${result['error'] ?? ''}'});
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text(msg)));
       if (hasConflict && context.mounted) {
@@ -667,7 +695,9 @@ class SessionCard extends StatelessWidget {
       }
     } catch (e) {
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(content: Text('合并请求失败：$e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('mergeRequestFailed', {'error': '$e'}))),
+      );
     }
   }
 
@@ -694,16 +724,17 @@ class SessionCard extends StatelessWidget {
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF0f1115),
-          title: const Text('Rebase 解决冲突',
-              style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7))),
+          title: Text(
+            t('rebaseResolve'),
+            style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                '解决 worktree 与基分支的冲突。选择「继续」表示冲突已解决并提交，'
-                '服务器会完成 rebase；选择「放弃」回滚到 rebase 前状态。',
-                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              Text(
+                t('rebaseResolveHint'),
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
               ),
               const SizedBox(height: 12),
               Column(
@@ -718,8 +749,13 @@ class SessionCard extends StatelessWidget {
                         if (v != null) setLocal(() => action = v);
                       },
                     ),
-                    title: const Text('继续（冲突已解决）',
-                        style: TextStyle(color: Color(0xFFe7eaee), fontSize: 13)),
+                    title: Text(
+                      t('rebaseContinueResolved'),
+                      style: const TextStyle(
+                        color: Color(0xFFe7eaee),
+                        fontSize: 13,
+                      ),
+                    ),
                   ),
                   ListTile(
                     dense: true,
@@ -731,8 +767,13 @@ class SessionCard extends StatelessWidget {
                         if (v != null) setLocal(() => action = v);
                       },
                     ),
-                    title: const Text('放弃（回滚）',
-                        style: TextStyle(color: Color(0xFFe7eaee), fontSize: 13)),
+                    title: Text(
+                      t('rebaseAbortRollback'),
+                      style: const TextStyle(
+                        color: Color(0xFFe7eaee),
+                        fontSize: 13,
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -741,13 +782,20 @@ class SessionCard extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+              child: Text(
+                t('cancel'),
+                style: const TextStyle(color: Color(0xFF8a909b)),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: Text(action == 'abort' ? '放弃' : '继续',
-                  style: const TextStyle(
-                      color: Color(0xFF6aa3ff), fontWeight: FontWeight.w600)),
+              child: Text(
+                action == 'abort' ? t('abortAction') : t('continueAction'),
+                style: const TextStyle(
+                  color: Color(0xFF6aa3ff),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ],
         ),
@@ -755,30 +803,45 @@ class SessionCard extends StatelessWidget {
     );
     if (ok != true || !context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(SnackBar(content: Text(action == 'abort' ? '正在放弃 rebase…' : '正在继续 rebase…')));
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          action == 'abort' ? t('rebaseAborting') : t('rebaseContinuing'),
+        ),
+      ),
+    );
     try {
-      final result = await SessionService(settings: settings)
-          .rebaseSession(session.id, action: action);
-      final hasConflict = result['conflicts'] is List &&
+      final result = await SessionService(
+        settings: settings,
+      ).rebaseSession(session.id, action: action);
+      final hasConflict =
+          result['conflicts'] is List &&
           (result['conflicts'] as List).isNotEmpty;
       final msg = result['ok'] == true
           ? (result['aborted'] == true
-                ? '✓ rebase 已放弃，worktree 回到同步前状态'
+                ? t('rebaseAborted')
                 : (result['done'] == true
-                      ? '✓ rebase 冲突已解决并完成同步'
-                      : '✓ rebase 已继续'))
+                      ? t('rebaseCompleted')
+                      : t('rebaseContinued')))
           : hasConflict
-          ? '⚠️ 仍有冲突：${(result['conflicts'] as List).join(', ')}'
-          : 'rebase 失败：${result['error'] ?? ''}';
+          ? t('rebaseStillConflicted', {
+              'files': (result['conflicts'] as List).join(', '),
+            })
+          : t('rebaseFailed', {'error': '${result['error'] ?? ''}'});
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text(msg)));
       if (hasConflict && context.mounted) {
         await showConflictDiffDialog(
-          context, sessionId: session.id, result: result);
+          context,
+          sessionId: session.id,
+          result: result,
+        );
       }
     } catch (e) {
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(content: Text('rebase 请求失败：$e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('rebaseRequestFailed', {'error': '$e'}))),
+      );
     }
   }
 
@@ -786,10 +849,13 @@ class SessionCard extends StatelessWidget {
   /// creates a fresh one in the target directory's repo. The session keeps its
   /// id but its worktreePath/branch/dirId change.
   Future<void> _relocateSession(BuildContext context) async {
-    final candidates = mgr.directories.where((d) => d.id != session.dirId).toList();
+    final candidates = mgr.directories
+        .where((d) => d.id != session.dirId)
+        .toList();
     if (candidates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('没有其他Fleet可迁移')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('relocateNoTarget'))));
       return;
     }
     String targetId = candidates.first.id;
@@ -798,15 +864,17 @@ class SessionCard extends StatelessWidget {
       builder: (_) => StatefulBuilder(
         builder: (context, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF0f1115),
-          title: const Text('迁移到其他Fleet',
-              style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7))),
+          title: Text(
+            t('relocateSession'),
+            style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                '在目标Fleet创建新 worktree，删除当前 worktree。会话 ID 与历史保留。',
-                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              Text(
+                t('relocateSessionHint'),
+                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
               ),
               const SizedBox(height: 10),
               DropdownButton<String>(
@@ -827,13 +895,20 @@ class SessionCard extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+              child: Text(
+                t('cancel'),
+                style: const TextStyle(color: Color(0xFF8a909b)),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('迁移',
-                  style: TextStyle(
-                      color: Color(0xFF6aa3ff), fontWeight: FontWeight.w600)),
+              child: Text(
+                t('relocateAction'),
+                style: const TextStyle(
+                  color: Color(0xFF6aa3ff),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ],
         ),
@@ -841,18 +916,21 @@ class SessionCard extends StatelessWidget {
     );
     if (ok != true || !context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(const SnackBar(content: Text('正在迁移会话…')));
+    messenger.showSnackBar(SnackBar(content: Text(t('relocatingSession'))));
     try {
-      final result = await SessionService(settings: settings)
-          .relocateSession(session.id, targetId);
+      final result = await SessionService(
+        settings: settings,
+      ).relocateSession(session.id, targetId);
       final msg = result['ok'] == true
-          ? '✓ 已迁移到目标Fleet'
-          : '迁移失败：${result['error'] ?? ''}';
+          ? t('relocatedSession')
+          : t('relocateFailed', {'error': '${result['error'] ?? ''}'});
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text(msg)));
     } catch (e) {
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(content: Text('迁移请求失败：$e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('relocateRequestFailed', {'error': '$e'}))),
+      );
     }
   }
 
@@ -861,9 +939,9 @@ class SessionCard extends StatelessWidget {
       await mgr.restartSession(session.id);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Session restarted'),
-            backgroundColor: Color(0xFF22ab9c),
+          SnackBar(
+            content: Text(t('restartDone')),
+            backgroundColor: const Color(0xFF22ab9c),
           ),
         );
       }
@@ -871,7 +949,7 @@ class SessionCard extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed: $e'),
+            content: Text(t('restartFailed', {'error': '$e'})),
             backgroundColor: const Color(0xFFff6b63),
           ),
         );
@@ -884,27 +962,27 @@ class SessionCard extends StatelessWidget {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF0f1115),
-        title: const Text(
-          'Delete Session',
-          style: TextStyle(color: Color(0xFFf2f4f7)),
+        title: Text(
+          t('deleteSessionConfirm'),
+          style: const TextStyle(color: Color(0xFFf2f4f7)),
         ),
         content: Text(
-          'Delete "${session.id}"?',
+          t('deleteSessionBody', {'id': session.id}),
           style: const TextStyle(color: Color(0xFFe7eaee)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF8a909b)),
+            child: Text(
+              t('cancel'),
+              style: const TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text(
-              'Delete',
-              style: TextStyle(color: Color(0xFFff6b63)),
+            child: Text(
+              t('delete'),
+              style: const TextStyle(color: Color(0xFFff6b63)),
             ),
           ),
         ],

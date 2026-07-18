@@ -1,14 +1,15 @@
 'use strict';
 // Characterization e2e for the Directory domain (fs/list + directories CRUD +
 // push/commit/uncommitted). Spawns an ISOLATED server instance from this repo
-// checkout (own PORT; runtime state files are gitignored so the instance boots
-// with an empty registry) and exercises every route's happy path + edge cases.
+// checkout (own PORT and data directory) and exercises every route's happy
+// path + edge cases.
 // Run BEFORE and AFTER refactoring — green on both = behavior equivalent.
 const { spawn, execSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path');
+const net = require('net');
 
-const PORT = 3996;
-const BASE = `http://127.0.0.1:${PORT}`;
+let port;
+let base;
 const ROOT = path.join(__dirname, '..');
 
 const T = Date.now(); const log = (...a) => console.log(`[${((Date.now() - T) / 1000).toFixed(1)}s]`, ...a);
@@ -16,21 +17,43 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; log('✅', m); } else { fail++; log('❌', m); } };
 const H = { 'Content-Type': 'application/json' };
 const api = async (m, p, b) => {
-  const r = await fetch(BASE + p, { method: m, headers: H, body: b ? JSON.stringify(b) : undefined });
+  const r = await fetch(base + p, { method: m, headers: H, body: b ? JSON.stringify(b) : undefined });
   const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = t; }
   return { status: r.status, j };
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const freePort = () => new Promise((resolve, reject) => {
+  const probe = net.createServer();
+  probe.unref();
+  probe.on('error', reject);
+  probe.listen(0, '127.0.0.1', () => {
+    const selected = probe.address().port;
+    probe.close(() => resolve(selected));
+  });
+});
 
 let srv;
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-dir-'));
+const dataRoot = path.join(tmpRoot, 'data');
 const projA = path.join(tmpRoot, 'proj-a');          // pre-created plain dir
 const projB = path.join(tmpRoot, 'proj-b');          // created via create:true
+fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(projA, { recursive: true });
 
 (async () => {
-  srv = spawn('node', ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
-  srv.stderr.on('data', () => {});
+  port = await freePort();
+  base = `http://127.0.0.1:${port}`;
+  srv = spawn('node', ['server.js'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), MULTICC_DATA_DIR: dataRoot },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let serverStderr = '';
+  srv.stdout.on('data', () => {});
+  srv.stderr.on('data', chunk => { serverStderr += chunk; });
+  srv.on('exit', code => {
+    if (code && serverStderr.trim()) console.error(serverStderr.trim());
+  });
   let up = false;
   for (let i = 0; i < 40; i++) {
     const r = await api('GET', '/api/directories').catch(() => ({ status: 0 }));
@@ -38,7 +61,7 @@ fs.mkdirSync(projA, { recursive: true });
     await sleep(500);
   }
   if (!up) { console.error('server did not come up'); process.exit(1); }
-  log('isolated server up on', PORT);
+  log('isolated server up on', port);
 
   // ── GET /api/fs/list ──
   let r = await api('GET', '/api/fs/list');
@@ -54,13 +77,22 @@ fs.mkdirSync(projA, { recursive: true });
 
   // ── POST /api/directories ──
   r = await api('POST', '/api/directories', { name: 'x' });
-  ok(r.status === 400 && r.j.error === 'name and path required', 'POST missing path → 400');
+  ok(
+    r.status === 400 &&
+      r.j.code === 'invalid' &&
+      r.j.error === 'name and path required',
+    'POST missing path → 400 with stable error code',
+  );
   r = await api('POST', '/api/directories', { name: 'home', path: os.homedir() });
   ok(r.status === 400 && r.j.error === '不允许选择 $HOME 或更高层目录', 'POST home dir → 400');
   r = await api('POST', '/api/directories', { name: 'nope', path: path.join(tmpRoot, 'missing') });
   ok(r.status === 400 && /path does not exist/.test(r.j.error), 'POST missing path without create → 400');
   r = await api('POST', '/api/directories', { name: 'A', path: projA });
-  ok(r.status === 200 && r.j.id && r.j.path === fs.realpathSync(projA) || (r.j.path === projA), 'POST register existing dir → 200');
+  ok(
+    r.status === 200 && r.j.id &&
+      (r.j.path === fs.realpathSync(projA) || r.j.path === projA),
+    'POST register existing dir → 200',
+  );
   const dirA = r.j;
   r = await api('POST', '/api/directories', { name: 'A2', path: projA });
   ok(r.status === 400 && /该路径已被目录/.test(r.j.error), 'POST duplicate path → 400');
@@ -128,11 +160,6 @@ fs.mkdirSync(projA, { recursive: true });
 
 function shutdown(code) {
   try { srv && srv.kill('SIGTERM'); } catch {}
-  // isolated instance state files live in the repo checkout (gitignored) — remove
-  // so repeated runs always start from an empty registry.
-  for (const f of ['sessions.json', 'directories.json', 'events', 'chat_history']) {
-    try { fs.rmSync(path.join(ROOT, f), { recursive: true, force: true }); } catch {}
-  }
   try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
   setTimeout(() => process.exit(code), 300);
 }

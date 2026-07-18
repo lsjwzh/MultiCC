@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/widgets.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
 import '../services/background_service.dart';
 import '../services/notification_service.dart';
@@ -364,10 +365,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     if (!_isInBackground && sessionId == _activeSessionId) return;
     final who = _displayTitleFor(sessionId);
     final outcome = state == 'waiting'
-        ? '等待交互'
+        ? t('waitingInteraction')
         : state == 'error'
-        ? '出现异常'
-        : '任务完成';
+        ? t('errorOccurred')
+        : t('taskCompleted');
     NotificationService.show(
       title: 'MultiCC · $who: $outcome',
       body: message.isNotEmpty ? message : who,

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
@@ -64,8 +65,11 @@ class _ChatViewState extends State<ChatView> {
           SnackBar(
             content: Text(
               merged
-                  ? '✓ 已从 ${res['baseBranch'] ?? 'base'} 同步 ${res['commits']} 个提交'
-                  : (res['message']?.toString() ?? '已是最新'),
+                  ? t('syncSuccess', {
+                      'base': '${res['baseBranch'] ?? t('baseBranch')}',
+                      'n': '${res['commits'] ?? 0}',
+                    })
+                  : t('syncAlreadyLatest'),
             ),
           ),
         );
@@ -74,7 +78,9 @@ class _ChatViewState extends State<ChatView> {
           SnackBar(
             backgroundColor: const Color(0xFF3a1414),
             content: Text(
-              '✗ 同步冲突已 abort，worktree 未改动：${(res['conflicts'] as List).join(', ')}',
+              t('syncConflict', {
+                'files': (res['conflicts'] as List).join(', '),
+              }),
               style: const TextStyle(color: Color(0xFFff9b9b)),
             ),
             duration: const Duration(seconds: 6),
@@ -82,13 +88,21 @@ class _ChatViewState extends State<ChatView> {
         );
       } else {
         messenger.showSnackBar(
-          SnackBar(content: Text('✗ 同步失败：${res['error'] ?? '未知错误'}')),
+          SnackBar(
+            content: Text(
+              t('syncFailed', {
+                'error': '${res['error'] ?? t('unknownError')}',
+              }),
+            ),
+          ),
         );
       }
       _lastWarnedBehind = 0; // allow a fresh warning if it falls behind again
       await _refreshMergeStatus(sessionId);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('✗ 同步请求失败：$e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text(t('syncRequestFailed', {'error': '$e'}))),
+      );
     } finally {
       if (mounted) setState(() => _syncing = false);
     }
@@ -142,7 +156,7 @@ class _ChatViewState extends State<ChatView> {
           SnackBar(
             backgroundColor: const Color(0xFF2d2108),
             content: Text(
-              '⚠ 当前 worktree 已落后 $base $behind 个提交，建议同步',
+              t('behindWarning', {'base': base, 'n': '$behind'}),
               style: const TextStyle(color: Color(0xFFf2cc60)),
             ),
             duration: const Duration(seconds: 5),
@@ -172,9 +186,14 @@ class _ChatViewState extends State<ChatView> {
               mergeReady: mergeReady,
               onMerge: () => _mergeCurrent(context, provider.sessionName),
               onRole: () => _editRoleFromSession(context, provider.sessionName),
-              onMemory: () => _editMemoryFromSession(context, provider.sessionName),
+              onMemory: () =>
+                  _editMemoryFromSession(context, provider.sessionName),
               onMemo: () => _openMemoFromSession(context, provider.sessionName),
-              onShare: () => _shareFromSession(context, provider.sessionName, widget.settings),
+              onShare: () => _shareFromSession(
+                context,
+                provider.sessionName,
+                widget.settings,
+              ),
             ),
             _CwdBar(mergeStatus: _mergeStatus),
             if (provider.hasClassify)
@@ -259,7 +278,9 @@ Future<void> _editRoleFromSession(
     }
   }
   if (s == null) {
-    messenger.showSnackBar(const SnackBar(content: Text('Session 信息未加载')));
+    messenger.showSnackBar(
+      SnackBar(content: Text(t('sessionInfoUnavailable'))),
+    );
     return;
   }
   final picked = await showRolePromptEditor(
@@ -273,14 +294,14 @@ Future<void> _editRoleFromSession(
     messenger.showSnackBar(
       SnackBar(
         content: Text(
-          picked.trim().isEmpty
-              ? '✓ 已清除会话角色（继承Fleet默认），下一轮对话生效'
-              : '✓ 角色提示词已更新，下一轮对话生效',
+          picked.trim().isEmpty ? t('rolePromptSaved') : t('rolePromptUpdated'),
         ),
       ),
     );
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('角色保存失败：$e')));
+    messenger.showSnackBar(
+      SnackBar(content: Text(t('rolePromptFailed', {'error': '$e'}))),
+    );
   }
 }
 
@@ -294,14 +315,11 @@ Future<void> _editMemoryFromSession(
   final mgr = Provider.of<SessionManager>(context, listen: false);
   Navigator.of(context).push(
     MaterialPageRoute<void>(
-      builder: (_) => MemoryScreen(
-        settings: mgr.settings,
-        sessionId: sessionId,
-      ),
+      builder: (_) =>
+          MemoryScreen(settings: mgr.settings, sessionId: sessionId),
     ),
   );
 }
-
 
 // Share a session externally. Mirrors the web share dialog: create link with
 // access type + optional password + expiry, list existing shares with type
@@ -344,9 +362,9 @@ Future<void> _shareFromSession(
             borderRadius: BorderRadius.circular(12),
             side: const BorderSide(color: Color(0xFF20242b)),
           ),
-          title: const Text(
-            '分享会话',
-            style: TextStyle(color: Color(0xFFe7eaee), fontSize: 16),
+          title: Text(
+            t('shareSession'),
+            style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 16),
           ),
           content: SizedBox(
             width: 380,
@@ -355,14 +373,20 @@ Future<void> _shareFromSession(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    '接收方在浏览器打开链接即可。',
-                    style: TextStyle(color: Color(0xFF8b949e), fontSize: 12),
+                  Text(
+                    t('shareDesc'),
+                    style: const TextStyle(
+                      color: Color(0xFF8b949e),
+                      fontSize: 12,
+                    ),
                   ),
                   const SizedBox(height: 4),
-                  const Text(
-                    '「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码。',
-                    style: TextStyle(color: Color(0xFFe3853f), fontSize: 12),
+                  Text(
+                    t('shareOperateWarn'),
+                    style: const TextStyle(
+                      color: Color(0xFFe3853f),
+                      fontSize: 12,
+                    ),
                   ),
                   const SizedBox(height: 14),
                   // ── Access type ──
@@ -370,14 +394,14 @@ Future<void> _shareFromSession(
                     children: [
                       _expandedChoice(
                         'view',
-                        '只读查看',
+                        t('shareViewOnly'),
                         access,
                         (v) => setState(() => access = v),
                       ),
                       const SizedBox(width: 8),
                       _expandedChoice(
                         'operate',
-                        '可对话',
+                        t('shareOperate'),
                         access,
                         (v) => setState(() => access = v),
                       ),
@@ -391,19 +415,19 @@ Future<void> _shareFromSession(
                       color: Color(0xFFe7eaee),
                       fontSize: 14,
                     ),
-                    decoration: const InputDecoration(
-                      hintText: '密码（只读可留空；可对话必填）',
-                      hintStyle: TextStyle(
+                    decoration: InputDecoration(
+                      hintText: t('sharePassword'),
+                      hintStyle: const TextStyle(
                         color: Color(0xFF6e7681),
                         fontSize: 13,
                       ),
                       filled: true,
-                      fillColor: Color(0xFF1c2128),
-                      contentPadding: EdgeInsets.symmetric(
+                      fillColor: const Color(0xFF1c2128),
+                      contentPadding: const EdgeInsets.symmetric(
                         horizontal: 12,
                         vertical: 10,
                       ),
-                      border: OutlineInputBorder(
+                      border: const OutlineInputBorder(
                         borderRadius: BorderRadius.all(Radius.circular(8)),
                         borderSide: BorderSide(color: Color(0xFF20242b)),
                       ),
@@ -411,33 +435,36 @@ Future<void> _shareFromSession(
                   ),
                   const SizedBox(height: 10),
                   // ── Expiry ──
-                  const Text(
-                    '有效期',
-                    style: TextStyle(color: Color(0xFF8b949e), fontSize: 11),
+                  Text(
+                    t('shareExpiry'),
+                    style: const TextStyle(
+                      color: Color(0xFF8b949e),
+                      fontSize: 11,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Row(
                     children: [
                       _expiryChip(
-                        '永不过期',
+                        t('neverExpires'),
                         0,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
                       ),
                       _expiryChip(
-                        '1h',
+                        t('oneHour'),
                         1,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
                       ),
                       _expiryChip(
-                        '1天',
+                        t('oneDay'),
                         24,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
                       ),
                       _expiryChip(
-                        '7天',
+                        t('sevenDays'),
                         168,
                         expiryHrs,
                         (v) => setState(() => expiryHrs = v),
@@ -455,7 +482,9 @@ Future<void> _shareFromSession(
                           : () async {
                               final pw = pwCtrl.text.trim();
                               if (access == 'operate' && pw.isEmpty) {
-                                setState(() => error = '「可对话」必须设置密码');
+                                setState(
+                                  () => error = t('sharePasswordRequired'),
+                                );
                                 return;
                               }
                               setState(() {
@@ -498,7 +527,11 @@ Future<void> _shareFromSession(
                                 color: Colors.white,
                               ),
                             )
-                          : Text(url == null ? '生成链接' : '重新生成'),
+                          : Text(
+                              url == null
+                                  ? t('shareGenerate')
+                                  : t('shareRegenerate'),
+                            ),
                     ),
                   ),
                   if (error != null) ...[
@@ -536,7 +569,7 @@ Future<void> _shareFromSession(
                             onTap: () {
                               Clipboard.setData(ClipboardData(text: url!));
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('链接已复制')),
+                                SnackBar(content: Text(t('shareCopied'))),
                               );
                             },
                             child: const Icon(
@@ -551,9 +584,9 @@ Future<void> _shareFromSession(
                   ],
                   // ── Existing shares ──
                   const SizedBox(height: 18),
-                  const Text(
-                    '已有分享',
-                    style: TextStyle(
+                  Text(
+                    t('existingShares'),
+                    style: const TextStyle(
                       color: Color(0xFF8b949e),
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -575,9 +608,12 @@ Future<void> _shareFromSession(
                       ),
                     )
                   else if (shares.isEmpty)
-                    const Text(
-                      '暂无',
-                      style: TextStyle(color: Color(0xFF6e7681), fontSize: 13),
+                    Text(
+                      t('none'),
+                      style: const TextStyle(
+                        color: Color(0xFF6e7681),
+                        fontSize: 13,
+                      ),
                     )
                   else
                     ...shares.map(
@@ -591,9 +627,13 @@ Future<void> _shareFromSession(
                           );
                         } catch (e) {
                           if (ctx.mounted) {
-                            ScaffoldMessenger.of(
-                              context,
-                            ).showSnackBar(SnackBar(content: Text('撤销失败：$e')));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  t('shareRevokeFailed', {'error': '$e'}),
+                                ),
+                              ),
+                            );
                           }
                         }
                       }),
@@ -605,9 +645,9 @@ Future<void> _shareFromSession(
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text(
-                '关闭',
-                style: TextStyle(color: Color(0xFF8b949e)),
+              child: Text(
+                t('close'),
+                style: const TextStyle(color: Color(0xFF8b949e)),
               ),
             ),
           ],
@@ -685,17 +725,17 @@ Widget _expiryChip(
 
 String _shareTypeLabel(Map<String, dynamic> s) {
   if (s['type'] == 'messages') {
-    return '📎 消息快照·${s['messageCount'] ?? 0}条${s['hasPassword'] == true ? '·密码' : ''}';
+    return '📎 ${t('shareSnapshotSummary', {'n': '${s['messageCount'] ?? 0}', 'password': s['hasPassword'] == true ? t('sharePasswordSuffix') : ''})}';
   }
-  if (s['access'] == 'operate') return '🔌 可对话';
-  if (s['hasPassword'] == true) return '🔒 密码查看';
-  return '🌐 公开查看';
+  if (s['access'] == 'operate') return '🔌 ${t('shareOperateBadge')}';
+  if (s['hasPassword'] == true) return '🔒 ${t('sharePasswordBadge')}';
+  return '🌐 ${t('sharePublicBadge')}';
 }
 
 Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
   final exp = s['expiresAt'] as int?;
   final expStr = exp != null && exp > 0
-      ? ' · 到期 ${DateTime.fromMillisecondsSinceEpoch(exp).toLocal().toString().substring(0, 16)}'
+      ? ' · ${t('expiresAt', {'time': DateTime.fromMillisecondsSinceEpoch(exp).toLocal().toString().substring(0, 16)})}'
       : '';
   final url = (s['url'] as String?) ?? '';
   return Container(
@@ -758,7 +798,6 @@ Widget _shareCard(Map<String, dynamic> s, VoidCallback onRevoke) {
   );
 }
 
-
 // Open the directory-memo screen for the given session's directory. Used by the
 // chat AppBar to expose the project memo without leaving the chat view.
 void _openMemoFromSession(BuildContext context, String sessionId) {
@@ -773,7 +812,7 @@ void _openMemoFromSession(BuildContext context, String sessionId) {
   if (s == null) {
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Session 信息未加载')));
+    ).showSnackBar(SnackBar(content: Text(t('sessionInfoUnavailable'))));
     return;
   }
   Directory? d;
@@ -786,7 +825,7 @@ void _openMemoFromSession(BuildContext context, String sessionId) {
   if (d == null) {
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('找不到对应Fleet')));
+    ).showSnackBar(SnackBar(content: Text(t('fleetNotFound'))));
     return;
   }
   Navigator.push(
@@ -806,24 +845,27 @@ Future<void> confirmMergeWorktree(
     context: context,
     builder: (_) => AlertDialog(
       backgroundColor: const Color(0xFF0f1115),
-      title: const Text(
-        '合并 worktree',
-        style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+      title: Text(
+        t('mergeTitle'),
+        style: const TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
       ),
-      content: const Text(
-        '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
-        style: TextStyle(color: Color(0xFFe7eaee)),
+      content: Text(
+        t('mergeBody'),
+        style: const TextStyle(color: Color(0xFFe7eaee)),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, false),
-          child: const Text('取消', style: TextStyle(color: Color(0xFF8a909b))),
+          child: Text(
+            t('cancel'),
+            style: const TextStyle(color: Color(0xFF8a909b)),
+          ),
         ),
         TextButton(
           onPressed: () => Navigator.pop(context, true),
-          child: const Text(
-            '合并',
-            style: TextStyle(
+          child: Text(
+            t('merge'),
+            style: const TextStyle(
               color: Color(0xFF6aa3ff),
               fontWeight: FontWeight.w600,
             ),
@@ -834,7 +876,7 @@ Future<void> confirmMergeWorktree(
   );
   if (ok != true || !context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
-  messenger.showSnackBar(const SnackBar(content: Text('正在合并 worktree...')));
+  messenger.showSnackBar(SnackBar(content: Text(t('merging'))));
   try {
     final result = await SessionService(
       settings: settings,
@@ -844,12 +886,14 @@ Future<void> confirmMergeWorktree(
     String msg;
     if (result['ok'] == true) {
       msg = result['merged'] == true
-          ? '✓ 已合并 ${result['commits']} 个提交回基分支'
-          : '✓ ${result['message'] ?? '没有新提交需要合并'}';
+          ? t('merged', {'n': '${result['commits'] ?? 0}'})
+          : t('mergedNothing', {'msg': t('mergeNoNewCommits')});
     } else if (result['conflicts'] != null) {
-      msg = '⚠️ 合并冲突，已 abort：${(result['conflicts'] as List).join(', ')}';
+      msg = t('mergeConflict', {
+        'files': (result['conflicts'] as List).join(', '),
+      });
     } else {
-      msg = '合并失败：${result['error'] ?? ''}';
+      msg = t('mergeFailed', {'error': '${result['error'] ?? ''}'});
     }
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text(msg)));
@@ -862,19 +906,23 @@ Future<void> confirmMergeWorktree(
     }
   } catch (e) {
     messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(SnackBar(content: Text('合并请求失败：$e')));
+    messenger.showSnackBar(
+      SnackBar(content: Text(t('mergeRequestFailed', {'error': '$e'}))),
+    );
   }
 }
 
-
 String _mergeStatusText(Map<String, dynamic>? status) {
-  if (status?['mergeReady'] != true) return '当前 worktree 没有需要合并的内容。';
+  if (status?['mergeReady'] != true) return t('mergeNotReady');
   final bits = <String>[];
-  if (status?['dirty'] == true) bits.add('有未提交改动');
+  if (status?['dirty'] == true) bits.add(t('uncommittedChanges'));
   final ahead = (status?['ahead'] as num?)?.toInt() ?? 0;
-  if (ahead > 0) bits.add('$ahead 个提交领先');
-  final detail = bits.isEmpty ? '有可合并内容' : bits.join('，');
-  return '$detail，可合并回 ${status?['baseBranch'] ?? '基分支'}。';
+  if (ahead > 0) bits.add(t('commitsAhead', {'n': '$ahead'}));
+  final detail = bits.isEmpty ? t('mergeContentReady') : bits.join(', ');
+  return t('mergeReadyDetail', {
+    'detail': detail,
+    'base': '${status?['baseBranch'] ?? t('baseBranch')}',
+  });
 }
 
 class _MergeReadyBanner extends StatelessWidget {
@@ -926,9 +974,9 @@ class _MergeReadyBanner extends StatelessWidget {
               minimumSize: Size.zero,
               side: const BorderSide(color: Color(0xFFe3b341)),
             ),
-            child: const Text(
-              '查看 Diff',
-              style: TextStyle(fontWeight: FontWeight.w600),
+            child: Text(
+              t('viewDiff'),
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
           ),
           const SizedBox(width: 6),
@@ -940,9 +988,9 @@ class _MergeReadyBanner extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               minimumSize: Size.zero,
             ),
-            child: const Text(
-              '合并',
-              style: TextStyle(fontWeight: FontWeight.w700),
+            child: Text(
+              t('merge'),
+              style: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ),
         ],
@@ -981,7 +1029,7 @@ class _BehindMainBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '当前 worktree 落后 $baseBranch $behind 个提交',
+              t('behindBanner', {'base': baseBranch, 'n': '$behind'}),
               style: const TextStyle(color: Color(0xFFf2cc60), fontSize: 12),
             ),
           ),
@@ -994,7 +1042,7 @@ class _BehindMainBanner extends StatelessWidget {
               minimumSize: Size.zero,
             ),
             child: Text(
-              syncing ? '同步中…' : '同步',
+              syncing ? t('syncing') : t('syncNow'),
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ),
@@ -1007,15 +1055,28 @@ class _BehindMainBanner extends StatelessWidget {
 class _AuxClassifyBar extends StatelessWidget {
   final String goal;
   final String phase;
+
   /// Live classify-state letter (D/C/W/B/E/P). Drives the pill tint, aligned
   /// with main_shell _classifyBadge and the web CLASSIFY_DISPLAY barTint.
   final String classifyState;
-  const _AuxClassifyBar({required this.goal, required this.phase, required this.classifyState});
+  const _AuxClassifyBar({
+    required this.goal,
+    required this.phase,
+    required this.classifyState,
+  });
 
-  static const _phaseLabels = {
-    'idle': '空闲', 'planning': '规划中', 'running': '进行中', 'editing': '编辑中',
-    'verifying': '验证中', 'waiting': '等待中', 'blocked': '受阻', 'reviewing': '复查中',
-    'completed': '已完成', 'done': '已完成', 'interrupted': '已中断',
+  String _phaseLabel(String value) => switch (value) {
+    'idle' => t('activityIdle'),
+    'planning' => t('phasePlanning'),
+    'running' => t('phaseRunning'),
+    'editing' => t('activityEditing'),
+    'verifying' => t('phaseVerifying'),
+    'waiting' => t('phaseWaiting'),
+    'blocked' => t('phaseBlocked'),
+    'reviewing' => t('phaseReviewing'),
+    'completed' || 'done' => t('phaseDone'),
+    'interrupted' => t('phaseInterrupted'),
+    _ => value,
   };
 
   @override
@@ -1060,7 +1121,7 @@ class _AuxClassifyBar extends StatelessWidget {
         phaseBorder = const Color(0xFF20242b);
         stateEmoji = '•';
     }
-    final phaseLabel = _phaseLabels[phase] ?? phase;
+    final phaseLabel = _phaseLabel(phase);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
@@ -1069,15 +1130,25 @@ class _AuxClassifyBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(Icons.auto_awesome_outlined, size: 14, color: Color(0xFF5b616c)),
+          const Icon(
+            Icons.auto_awesome_outlined,
+            size: 14,
+            color: Color(0xFF5b616c),
+          ),
           const SizedBox(width: 6),
           Expanded(
             child: Tooltip(
               message: goal,
-              child: Text(goal,
-                  style: const TextStyle(color: Color(0xFFc9ced6), fontSize: 12, height: 1.3),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
+              child: Text(
+                goal,
+                style: const TextStyle(
+                  color: Color(0xFFc9ced6),
+                  fontSize: 12,
+                  height: 1.3,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
           const SizedBox(width: 8),
@@ -1088,8 +1159,14 @@ class _AuxClassifyBar extends StatelessWidget {
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: phaseBorder),
             ),
-            child: Text('$stateEmoji $phaseLabel',
-                style: TextStyle(color: phaseColor, fontSize: 11, fontWeight: FontWeight.w600)),
+            child: Text(
+              '$stateEmoji $phaseLabel',
+              style: TextStyle(
+                color: phaseColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),
@@ -1171,9 +1248,9 @@ class _CwdBar extends StatelessWidget {
           const SizedBox(width: 8),
           GestureDetector(
             onTap: () => _showCwdDialog(context, provider),
-            child: const Text(
-              'Change',
-              style: TextStyle(fontSize: 11, color: Color(0xFF8a909b)),
+            child: Text(
+              t('changeDir'),
+              style: const TextStyle(fontSize: 11, color: Color(0xFF8a909b)),
             ),
           ),
         ],
@@ -1186,10 +1263,7 @@ class _CwdBar extends StatelessWidget {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text(
-          'Change Working Directory',
-          style: TextStyle(fontSize: 15),
-        ),
+        title: Text(t('changeCwdTitle'), style: const TextStyle(fontSize: 15)),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -1213,9 +1287,9 @@ class _CwdBar extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF8a909b)),
+            child: Text(
+              t('cancel'),
+              style: const TextStyle(color: Color(0xFF8a909b)),
             ),
           ),
           TextButton(
@@ -1226,9 +1300,9 @@ class _CwdBar extends StatelessWidget {
                 provider.changeCwd(newCwd);
               }
             },
-            child: const Text(
-              'Apply',
-              style: TextStyle(
+            child: Text(
+              t('apply'),
+              style: const TextStyle(
                 color: Color(0xFF6aa3ff),
                 fontWeight: FontWeight.w600,
               ),
@@ -1247,21 +1321,40 @@ const int _timeSeparatorGapMinutes = 5;
 /// Human-friendly time label for a chat separator, relative to now:
 /// today → "HH:mm", yesterday → "昨天 HH:mm", within a week → "周X HH:mm",
 /// same year → "M月d日 HH:mm", otherwise "yyyy年M月d日 HH:mm".
-String formatChatTime(DateTime t) {
+String formatChatTime(DateTime value) {
   final now = DateTime.now();
   final today = DateTime(now.year, now.month, now.day);
-  final day = DateTime(t.year, t.month, t.day);
+  final day = DateTime(value.year, value.month, value.day);
   final hm =
-      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+      '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
   final diffDays = today.difference(day).inDays;
   if (diffDays == 0) return hm;
-  if (diffDays == 1) return '昨天 $hm';
+  if (diffDays == 1) return t('yesterdayAt', {'time': hm});
   if (diffDays > 1 && diffDays < 7) {
-    const week = ['一', '二', '三', '四', '五', '六', '日'];
-    return '周${week[t.weekday - 1]} $hm';
+    final week = [
+      t('weekdayMon'),
+      t('weekdayTue'),
+      t('weekdayWed'),
+      t('weekdayThu'),
+      t('weekdayFri'),
+      t('weekdaySat'),
+      t('weekdaySun'),
+    ];
+    return t('weekdayAt', {'day': week[value.weekday - 1], 'time': hm});
   }
-  if (t.year == now.year) return '${t.month}月${t.day}日 $hm';
-  return '${t.year}年${t.month}月${t.day}日 $hm';
+  if (value.year == now.year) {
+    return t('monthDayAt', {
+      'month': '${value.month}',
+      'day': '${value.day}',
+      'time': hm,
+    });
+  }
+  return t('yearMonthDayAt', {
+    'year': '${value.year}',
+    'month': '${value.month}',
+    'day': '${value.day}',
+    'time': hm,
+  });
 }
 
 /// Centered, pill-shaped time label inserted between distant messages.
@@ -1312,7 +1405,8 @@ class _MessageListState extends State<_MessageList> {
     if (!widget.scrollCtrl.hasClients) return;
     final pos = widget.scrollCtrl.position;
     final atBottom = pos.pixels >= pos.maxScrollExtent - 60;
-    final settling = _scrollSettlingUntil != null &&
+    final settling =
+        _scrollSettlingUntil != null &&
         DateTime.now().isBefore(_scrollSettlingUntil!);
     if (atBottom && _userScrolled) {
       setState(() => _userScrolled = false);
@@ -1364,7 +1458,9 @@ class _MessageListState extends State<_MessageList> {
 
   void _scrollToBottom() {
     if (!widget.scrollCtrl.hasClients || _userScrolled) return;
-    _scrollSettlingUntil = DateTime.now().add(const Duration(milliseconds: 350));
+    _scrollSettlingUntil = DateTime.now().add(
+      const Duration(milliseconds: 350),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.scrollCtrl.hasClients) {
         widget.scrollCtrl.animateTo(
@@ -1394,10 +1490,9 @@ class _MessageListState extends State<_MessageList> {
             ? constraints.maxWidth
             : MediaQuery.of(context).size.width;
         final desktop = viewportWidth >= _chatDesktopBreakpoint;
-        final contentWidth =
-            desktop && viewportWidth > _chatMaxContentWidth
-                ? _chatMaxContentWidth
-                : viewportWidth;
+        final contentWidth = desktop && viewportWidth > _chatMaxContentWidth
+            ? _chatMaxContentWidth
+            : viewportWidth;
         final sidePadding =
             ((viewportWidth - contentWidth) / 2) +
             (desktop ? _chatDesktopSidePadding : _chatMobileSidePadding);
@@ -1439,15 +1534,20 @@ class _MessageListState extends State<_MessageList> {
                 child: Center(
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 4),
+                      horizontal: 12,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFF161b22),
                       border: Border.all(color: const Color(0xFF21262d)),
                       borderRadius: BorderRadius.circular(999),
                     ),
-                    child: const Text(
-                      '- 已是最早消息 -',
-                      style: TextStyle(color: Color(0xFF8b949e), fontSize: 12),
+                    child: Text(
+                      t('historyStart'),
+                      style: const TextStyle(
+                        color: Color(0xFF8b949e),
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ),
@@ -1460,25 +1560,33 @@ class _MessageListState extends State<_MessageList> {
                 child: Center(
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 4),
+                      horizontal: 12,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFF161b22),
                       border: Border.all(color: const Color(0xFF21262d)),
                       borderRadius: BorderRadius.circular(999),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(
+                        const SizedBox(
                           width: 12,
                           height: 12,
                           child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Color(0xFF8b949e)),
+                            strokeWidth: 2,
+                            color: Color(0xFF8b949e),
+                          ),
                         ),
-                        SizedBox(width: 6),
-                        Text('加载更早的消息…',
-                            style: TextStyle(
-                                color: Color(0xFF8b949e), fontSize: 12)),
+                        const SizedBox(width: 6),
+                        Text(
+                          t('loadingEarlierMessages'),
+                          style: const TextStyle(
+                            color: Color(0xFF8b949e),
+                            fontSize: 12,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1498,32 +1606,41 @@ class _MessageListState extends State<_MessageList> {
                     },
                     child: Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 7),
+                        horizontal: 14,
+                        vertical: 7,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFF1f6feb),
                         border: Border.all(color: const Color(0xFF388bfd)),
                         borderRadius: BorderRadius.circular(999),
                         boxShadow: const [
                           BoxShadow(
-                              color: Color(0x66000000),
-                              blurRadius: 12,
-                              offset: Offset(0, 3)),
+                            color: Color(0x66000000),
+                            blurRadius: 12,
+                            offset: Offset(0, 3),
+                          ),
                         ],
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.keyboard_arrow_down,
-                              color: Colors.white, size: 18),
+                          const Icon(
+                            Icons.keyboard_arrow_down,
+                            color: Colors.white,
+                            size: 18,
+                          ),
                           const SizedBox(width: 4),
                           Text(
                             provider.unreadCount > 0
-                                ? '${provider.unreadCount} 条新消息'
-                                : '回到底部',
+                                ? t('newMessagesCount', {
+                                    'n': '${provider.unreadCount}',
+                                  })
+                                : t('backToBottom'),
                             style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500),
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ],
                       ),

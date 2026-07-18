@@ -63,18 +63,22 @@ function saveSubscriptions() {
   }
 }
 
+function resolvePushPayload(payload, subscription) {
+  return typeof payload === 'function' ? payload(subscription) : payload;
+}
+
 // Send push notification to all subscribers (async, properly handles stale cleanup)
 async function sendPushToAll(payload) {
   if (subscriptions.size === 0) return;
-  const payloadStr = JSON.stringify(payload);
   const entries = [...subscriptions.entries()];
   const results = await Promise.allSettled(
-    entries.map(([endpoint, sub]) =>
-      webpush.sendNotification(sub, payloadStr).then(
+    entries.map(([endpoint, sub]) => {
+      const resolvedPayload = resolvePushPayload(payload, sub);
+      return webpush.sendNotification(sub, JSON.stringify(resolvedPayload)).then(
         () => ({ endpoint, ok: true }),
         err => ({ endpoint, ok: false, statusCode: err.statusCode, message: err.message })
-      )
-    )
+      );
+    })
   );
 
   const stale = [];
@@ -161,6 +165,7 @@ module.exports = {
   getHealthEntry,
   loadSubscriptions,
   saveSubscriptions,
+  resolvePushPayload,
   sendPushToAll,
   sendBarkNotification,
   sendWebhookNotification,

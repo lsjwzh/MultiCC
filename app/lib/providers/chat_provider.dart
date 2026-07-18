@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/widgets.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
 import '../services/notification_service.dart';
@@ -188,15 +189,15 @@ class ChatProvider extends ChangeNotifier {
 
         final model = msg['model']?.toString();
         _statusText = model != null
-            ? 'Connected · $model'
-            : 'Connected · ${_cli.name}';
+            ? t('connectedModel', {'model': model})
+            : t('connectedCli', {'cli': _cli.name});
 
         final serverStreaming = msg['is_streaming'] == true;
         if (serverStreaming && _currentMsg == null) {
           _ensureAssistantMsg();
         } else if (!serverStreaming && _currentMsg != null) {
           _finishStreaming();
-          _addSystemMsg('⚠️ Response completed while disconnected.');
+          _addSystemMsg(t('responseCompletedDisconnected'));
         }
         notifyListeners();
         break;
@@ -212,14 +213,20 @@ class ChatProvider extends ChangeNotifier {
         _cli = next;
         final model = msg['effectiveModel']?.toString();
         _statusText = model != null && model.isNotEmpty
-            ? 'Connected · $model'
-            : 'Connected · ${next.name}';
+            ? t('connectedModel', {'model': model})
+            : t('connectedCli', {'cli': next.name});
         final handoffId = msg['handoffId']?.toString();
         if (handoffId == null || handoffId != _lastCliSwitchHandoffId) {
           _lastCliSwitchHandoffId = handoffId;
-          final resumed = msg['reusedTarget'] == true ? '，已恢复该 CLI 的原会话' : '';
+          final resumed = msg['reusedTarget'] == true
+              ? t('cliSessionResumedSuffix')
+              : '';
           _addSystemMsg(
-            'CLI 已从 ${from.displayName} 切换到 ${next.displayName}$resumed；下一条消息会携带上下文交接。',
+            t('cliSwitched', {
+              'from': from.displayName,
+              'to': next.displayName,
+              'resumed': resumed,
+            }),
           );
         } else {
           notifyListeners();
@@ -279,7 +286,9 @@ class ChatProvider extends ChangeNotifier {
           // but don't fire a push notification — it's a status update, not an
           // alert. Only show if this session is active.
           if (isActive && !isInBackground) {
-            _statusText = notifyMsg.isNotEmpty ? notifyMsg : '任务进行中';
+            _statusText = notifyMsg.isNotEmpty
+                ? notifyMsg
+                : t('taskInProgress');
             notifyListeners();
           }
         } else {
@@ -289,23 +298,23 @@ class ChatProvider extends ChangeNotifier {
           String outcome;
           switch (cls) {
             case 'D':
-              outcome = '任务完成';
+              outcome = t('taskCompleted');
               break;
             case 'E':
-              outcome = 'API 异常';
+              outcome = t('apiError');
               break;
             case 'W':
-              outcome = '等待操作';
+              outcome = t('waitingAction');
               break;
             case 'B':
-              outcome = '等待后台';
+              outcome = t('waitingBackground');
               break;
             default:
               outcome = notifyState == 'waiting'
-                  ? '等待交互'
+                  ? t('waitingInteraction')
                   : notifyState == 'error'
-                      ? '出现异常'
-                      : '任务完成';
+                  ? t('errorOccurred')
+                  : t('taskCompleted');
           }
           _maybeNotify(outcome, notifyMsg);
         }
@@ -316,7 +325,7 @@ class ChatProvider extends ChangeNotifier {
         if (_isRecoverableCodexReconnectErrorText(errorText)) break;
         _addSystemMsg('Error: $errorText');
         _finishStreaming();
-        _maybeNotify('错误', errorText);
+        _maybeNotify(t('notificationErrorTitle'), errorText);
         notifyListeners();
         break;
 
@@ -672,16 +681,16 @@ class ChatProvider extends ChangeNotifier {
   // ── Public actions ─────────────────────────────────────────────────────────
 
   void sendMessage(String text, {bool goal = false, Map<String, dynamic>? goalLimits}) {
-    final t = text.trim();
-    if (t.isEmpty) return;
-    final ok = _service.send(t, goal: goal, goalLimits: goalLimits);
+    final message = text.trim();
+    if (message.isEmpty) return;
+    final ok = _service.send(message, goal: goal, goalLimits: goalLimits);
     if (!ok) {
       // Half-open / dead socket — don't pretend the message was sent.
-      _addSystemMsg('⚠️ 连接已断开，正在重连…重连后请重试。');
+      _addSystemMsg(t('connectionLostRetry'));
       notifyListeners();
       return;
     }
-    _messages.add(ChatMessage(role: MessageRole.user, content: t));
+    _messages.add(ChatMessage(role: MessageRole.user, content: message));
     // User just sent a message -> resume auto-follow at the bottom, clear any
     // unread pill (mirrors the web client's forceScrollToBottom on send).
     _userPinnedAway = false;
@@ -697,7 +706,7 @@ class ChatProvider extends ChangeNotifier {
   void cancel() {
     _service.cancel();
     _finishStreaming();
-    _addSystemMsg('已取消');
+    _addSystemMsg(t('cancelled'));
     notifyListeners();
   }
 
