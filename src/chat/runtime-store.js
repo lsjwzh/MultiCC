@@ -81,14 +81,27 @@ function createTurnRuntimeStore(options = {}) {
   }
 
   function abortPreparation(sessionId, turnId, reason = 'preparation-failed') {
-    const found = match(sessionId, turnId, ['preparing']);
+    return settle(sessionId, turnId, { status: 'failed', reason }, ['preparing']);
+  }
+
+  // The production host only owns the short preparation lease. Once the
+  // existing Claude/Codex runner accepts a spawn, its established lifecycle
+  // remains authoritative and this store returns to idle. The same primitive
+  // also releases either a preparing or just-authorized claim on every failure.
+  function settle(sessionId, turnId, outcome = {}, allowedPhases = ['preparing', 'running']) {
+    const found = match(sessionId, turnId, allowedPhases);
     if (!found.ok) return result(false, found.record, found.code);
     const idle = {
       sessionId,
       phase: 'idle',
       turnId: null,
       generation: found.record.generation,
-      lastOutcome: { turnId, status: 'failed', reason: String(reason), at: Number(now()) },
+      lastOutcome: {
+        turnId,
+        status: String(outcome.status || 'completed'),
+        reason: outcome.reason == null ? null : String(outcome.reason),
+        at: Number(now()),
+      },
     };
     sessions.set(sessionId, idle);
     return result(true, idle);
@@ -162,6 +175,7 @@ function createTurnRuntimeStore(options = {}) {
     markProviderRouteResolved,
     providerRouteFailed,
     abortPreparation,
+    settle,
     start,
     beginCleanup,
     cleanup,

@@ -71,6 +71,13 @@ test('force-first/resume/retry/dispatch metadata is explicit and illegal combina
   assert.throws(() => request({ retry: { strategy: 'resume' } }), /cannot be a first turn/);
 });
 
+test('Claude host pre-allocation proof preserves legacy resume intent for existing history', () => {
+  const turn = request({ cli: 'claude', turnCount: 3, hasNativeSession: true });
+  assert.equal(turn.execution.isFirstTurn, false);
+  assert.equal(turn.execution.resume, true);
+  assert.equal(turn.execution.historyIntent, 'resume');
+});
+
 test('duplicate delivery is checked before interrupt and never emits interruption effects', () => {
   const turn = request({ deliveryId: 'delivery-1' });
   const duplicate = planTurnAdmission(turn, {
@@ -158,6 +165,70 @@ test('provider route failure returns runtime to idle and never leaves running st
   const persistenceFailure = store.abortPreparation('s1', 't2', 'message-not-durable');
   assert.equal(persistenceFailure.state.phase, 'idle');
   assert.equal(persistenceFailure.state.lastOutcome.reason, 'message-not-durable');
+});
+
+test('preparation lease settles after runner handoff and releases every failure phase', () => {
+  const store = createTurnRuntimeStore({ now: () => 77 });
+  assert.equal(store.claim('s1', 'failed-before-spawn').ok, true);
+  const failed = store.settle('s1', 'failed-before-spawn', {
+    status: 'failed', reason: 'message-not-durable',
+  });
+  assert.equal(failed.ok, true);
+  assert.equal(failed.state.phase, 'idle');
+  assert.deepEqual(failed.state.lastOutcome, {
+    turnId: 'failed-before-spawn', status: 'failed', reason: 'message-not-durable', at: 77,
+  });
+
+  assert.equal(store.claim('s1', 'delegated', { cli: 'codex', transport: 'cli-process' }).ok, true);
+  store.markMessageDurable('s1', 'delegated');
+  store.markProviderRouteResolved('s1', 'delegated', { resolved: true });
+  assert.equal(store.start('s1', 'delegated').ok, true);
+  const delegated = store.settle('s1', 'delegated', {
+    status: 'delegated', reason: 'cli-process',
+  });
+  assert.equal(delegated.ok, true);
+  assert.equal(delegated.state.phase, 'idle');
+  assert.equal(store.claim('s1', 'next-turn').ok, true,
+    'the preparation lease must not replace the established runner lifecycle');
+});
+
+test('production cutover keeps duplicate, proof and runner ordering explicit', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const start = source.indexOf('function runChatTurn(sessionName, text, opts = {})');
+  const end = source.indexOf("bus.on('chat:run'", start);
+  assert.ok(start >= 0 && end > start, 'runChatTurn host boundary must exist');
+  const body = source.slice(start, end);
+  const at = (needle) => {
+    const index = body.indexOf(needle);
+    assert.ok(index >= 0, `production turn boundary must include ${needle}`);
+    return index;
+  };
+
+  const normalized = at('normalizeTurnRequest({');
+  const futureClaudeProof = at('const willAllocateClaudeNativeSession =');
+  const admission = at('planTurnAdmission(turnRequest');
+  const duplicateReturn = at("admission.decision === 'duplicate'");
+  const nativeAllocation = at('persisted.cliSessionId = crypto.randomUUID()');
+  const claim = at('chatTurnPreparationRuntime.claim(');
+  const interrupt = at('New user_message while claude pid=');
+  const append = at('const userMessageSaved = appendChatMessage(');
+  const durable = at('createDurableMessageProof(turnRequest');
+  const route = at('providerRouterRuntime.resolveSpawnEnv(persisted)');
+  const guard = at('evaluateSpawnGuard(turnRequest');
+  const authorize = at('chatTurnPreparationRuntime.start(');
+  const claudeRunner = at('runChatTurnStreaming(sessionName');
+  const codexRunner = at('cs.claudeProc = spawnChat(args, false)');
+  const failureRelease = at('if (preparationOpen)');
+
+  assert.ok(futureClaudeProof < normalized && normalized < admission);
+  assert.ok(admission < duplicateReturn && duplicateReturn < nativeAllocation,
+    'duplicate delivery must not allocate or mutate a native session');
+  assert.ok(duplicateReturn < claim);
+  assert.ok(claim < interrupt, 'claim must cover every interrupt/persist/route preparation effect');
+  assert.ok(interrupt < append && append < durable && durable < route);
+  assert.ok(route < guard && guard < authorize);
+  assert.ok(authorize < claudeRunner && authorize < codexRunner);
+  assert.ok(codexRunner < failureRelease, 'finally must release a failed preparation lease');
 });
 
 test('retry policy preserves current caps, delay and deterministic scheduling', () => {
