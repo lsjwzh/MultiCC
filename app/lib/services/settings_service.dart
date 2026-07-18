@@ -15,7 +15,10 @@ class ServerHistoryEntry {
     if (raw is! Map) return null;
     final host = (raw['host'] ?? '').toString();
     if (host.isEmpty) return null;
-    return ServerHistoryEntry(host: host, token: (raw['token'] ?? '').toString());
+    return ServerHistoryEntry(
+      host: host,
+      token: (raw['token'] ?? '').toString(),
+    );
   }
 }
 
@@ -61,8 +64,9 @@ class SettingsService {
       }
       _instance!.fontScale.value =
           _instance!._prefs.getDouble(_keyFontScale) ?? 1.0;
-      _instance!.language.value =
-          _instance!._prefs.getString(_keyLang) == 'en' ? 'en' : 'zh';
+      _instance!.language.value = _instance!._prefs.getString(_keyLang) == 'en'
+          ? 'en'
+          : 'zh';
     }
     return _instance!;
   }
@@ -114,13 +118,16 @@ class SettingsService {
   Future<void> rememberServer(String host, String token) async {
     final h = host.trim();
     if (h.isEmpty) return;
-    String norm(String v) => v.trim().replaceAll(RegExp(r'/+$'), '').toLowerCase();
+    String norm(String v) =>
+        v.trim().replaceAll(RegExp(r'/+$'), '').toLowerCase();
     final key = norm(h);
     final entries = serverHistory.where((e) => norm(e.host) != key).toList()
       ..insert(0, ServerHistoryEntry(host: h, token: token.trim()));
     final trimmed = entries.take(_serverHistoryMax).toList();
     await _prefs.setString(
-        _keyServerHistory, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
+      _keyServerHistory,
+      jsonEncode(trimmed.map((e) => e.toJson()).toList()),
+    );
   }
 
   /// Wipe all remembered server connections (privacy: e.g. shared phone).

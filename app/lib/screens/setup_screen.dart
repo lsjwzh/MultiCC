@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../i18n.dart';
 import '../providers/session_manager.dart';
 import '../services/settings_service.dart';
 import 'main_shell.dart';
@@ -35,7 +36,8 @@ class _SetupScreenState extends State<SetupScreen> {
     super.dispose();
   }
 
-  String _norm(String v) => v.trim().replaceAll(RegExp(r'/+$'), '').toLowerCase();
+  String _norm(String v) =>
+      v.trim().replaceAll(RegExp(r'/+$'), '').toLowerCase();
 
   Future<void> _clearHistory() async {
     await widget.settings.clearServerHistory();
@@ -46,10 +48,13 @@ class _SetupScreenState extends State<SetupScreen> {
   Future<void> _save() async {
     final host = _hostCtrl.text.trim();
     if (host.isEmpty) {
-      setState(() => _error = 'Server URL is required');
+      setState(() => _error = t('serverAddressRequired'));
       return;
     }
-    setState(() { _saving = true; _error = null; });
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
     final token = _tokenCtrl.text.trim();
     await widget.settings.save(host: host, token: token);
     await widget.settings.rememberServer(host, token);
@@ -95,6 +100,23 @@ class _SetupScreenState extends State<SetupScreen> {
                 ),
                 const SizedBox(height: 40),
 
+                SegmentedButton<String>(
+                  segments: [
+                    ButtonSegment(
+                      value: 'zh',
+                      label: Text(t('languageChinese')),
+                    ),
+                    ButtonSegment(
+                      value: 'en',
+                      label: Text(t('languageEnglish')),
+                    ),
+                  ],
+                  selected: {widget.settings.lang},
+                  onSelectionChanged: (selection) =>
+                      widget.settings.setLanguage(selection.first),
+                ),
+                const SizedBox(height: 16),
+
                 // Card
                 Container(
                   padding: const EdgeInsets.all(24),
@@ -106,9 +128,9 @@ class _SetupScreenState extends State<SetupScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text(
-                        'Server Configuration',
-                        style: TextStyle(
+                      Text(
+                        t('serverConnection'),
+                        style: const TextStyle(
                           color: Color(0xFFf2f4f7),
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -119,13 +141,21 @@ class _SetupScreenState extends State<SetupScreen> {
                       if (_history.isNotEmpty) ...[
                         Row(
                           children: [
-                            const Expanded(child: _FieldLabel('Recent Servers')),
+                            Expanded(child: _FieldLabel(t('recentServers'))),
                             InkWell(
                               onTap: _clearHistory,
-                              child: const Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                child: Text('Clear',
-                                    style: TextStyle(color: Color(0xFFff6b63), fontSize: 12)),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                  vertical: 2,
+                                ),
+                                child: Text(
+                                  t('clearAction'),
+                                  style: const TextStyle(
+                                    color: Color(0xFFff6b63),
+                                    fontSize: 12,
+                                  ),
+                                ),
                               ),
                             ),
                           ],
@@ -144,7 +174,7 @@ class _SetupScreenState extends State<SetupScreen> {
                         const SizedBox(height: 16),
                       ],
 
-                      _FieldLabel('Server URL'),
+                      _FieldLabel(t('serverUrl')),
                       const SizedBox(height: 6),
                       _Field(
                         controller: _hostCtrl,
@@ -153,11 +183,11 @@ class _SetupScreenState extends State<SetupScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      _FieldLabel('Access Token'),
+                      _FieldLabel(t('accessToken')),
                       const SizedBox(height: 6),
                       _Field(
                         controller: _tokenCtrl,
-                        hint: 'Leave empty if not required',
+                        hint: t('optionalIfUnset'),
                         obscure: true,
                       ),
 
@@ -165,7 +195,10 @@ class _SetupScreenState extends State<SetupScreen> {
                         const SizedBox(height: 12),
                         Text(
                           _error!,
-                          style: const TextStyle(color: Color(0xFFff6b63), fontSize: 13),
+                          style: const TextStyle(
+                            color: Color(0xFFff6b63),
+                            fontSize: 13,
+                          ),
                         ),
                       ],
 
@@ -189,9 +222,12 @@ class _SetupScreenState extends State<SetupScreen> {
                                   color: Colors.white,
                                 ),
                               )
-                            : const Text(
-                                'Connect',
-                                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                            : Text(
+                                t('connect'),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 15,
+                                ),
                               ),
                       ),
                     ],
@@ -240,18 +276,27 @@ class _HistoryDropdown extends StatelessWidget {
           isExpanded: true,
           dropdownColor: const Color(0xFF0f1115),
           icon: const Icon(Icons.history, color: Color(0xFF8a909b), size: 18),
-          hint: const Text('Select a saved server…',
-              style: TextStyle(color: Color(0xFF454b54), fontSize: 14)),
+          hint: Text(
+            t('selectFromHistory'),
+            style: const TextStyle(color: Color(0xFF454b54), fontSize: 14),
+          ),
           style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
           items: entries
-              .map((e) => DropdownMenuItem<ServerHistoryEntry>(
-                    value: e,
-                    child: Text(
-                      e.token.isEmpty ? e.host : '${e.host}  ·  token saved',
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 14),
+              .map(
+                (e) => DropdownMenuItem<ServerHistoryEntry>(
+                  value: e,
+                  child: Text(
+                    e.token.isEmpty
+                        ? e.host
+                        : '${e.host}  ·  ${t('tokenSaved')}',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFe7eaee),
+                      fontSize: 14,
                     ),
-                  ))
+                  ),
+                ),
+              )
               .toList(),
           onChanged: (e) {
             if (e != null) onSelected(e);
@@ -270,7 +315,11 @@ class _FieldLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12, fontWeight: FontWeight.w500),
+      style: const TextStyle(
+        color: Color(0xFF8a909b),
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+      ),
     );
   }
 }
@@ -313,7 +362,10 @@ class _Field extends StatelessWidget {
           borderRadius: BorderRadius.circular(6),
           borderSide: const BorderSide(color: Color(0xFF6aa3ff)),
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
       ),
     );
   }
