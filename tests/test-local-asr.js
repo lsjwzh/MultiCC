@@ -134,7 +134,10 @@ async function typelessBenchmark(limit) {
      WHERE audio_local_path IS NOT NULL AND refined_text IS NOT NULL AND refined_text != ''
      ORDER BY rowid DESC LIMIT ?`).all(limit * 2);
   db.close();
-  const env = loadEnv(path.join(__dirname, '..', '.env'));
+  let env = loadEnv(path.join(__dirname, '..', '.env'));
+  if (!env.WHISPER_API_KEY && !env.OPENROUTER_API_KEY && process.env.MULTICC_MAIN_ENV) {
+    env = loadEnv(process.env.MULTICC_MAIN_ENV);   // worktrees have no .env; point at the main repo copy
+  }
 
   const stats = { local: [], cloud: [] };
   let n = 0;
