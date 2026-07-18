@@ -91,13 +91,10 @@ function createWaitService({
     };
   }
 
-  async function resolveInternal(id, payload, { callbackToken, expectedMode } = {}) {
+  async function resolveInternal(id, payload, { callbackToken, expectedMode, deliveryText } = {}) {
     if (!id || typeof id !== 'string') {
       throw new TypeError('[wait-service] resolve requires wait id');
     }
-    const normalizedPayload = normalizeJson(payload);
-    const payloadHash = hashPayload(normalizedPayload, cryptoImpl);
-
     return store.mutate(draft => {
       const wait = draft.waits[id];
       if (!wait) return { ok: false, code: 'not_found' };
@@ -108,6 +105,11 @@ function createWaitService({
           && !timingSafeHashEqual(wait.callbackTokenHash, callbackToken, cryptoImpl)) {
         return { ok: false, code: 'invalid_token' };
       }
+      // Authenticate callback capabilities before normalizing or hashing an
+      // attacker-controlled payload.  The mutation remains serialized and the
+      // token comparison still always uses equal-length buffers.
+      const normalizedPayload = normalizeJson(payload);
+      const payloadHash = hashPayload(normalizedPayload, cryptoImpl);
       if (wait.status === 'resolved') {
         if (wait.resolutionPayloadHash === payloadHash) {
           return {
@@ -140,6 +142,7 @@ function createWaitService({
           mode: wait.mode,
           injectPrefix: wait.injectPrefix,
           data: normalizedPayload,
+          deliveryText: typeof deliveryText === 'string' ? deliveryText : null,
         },
         source: { type: 'wait', waitId: wait.id },
         now: at,
@@ -164,8 +167,8 @@ function createWaitService({
     return resolveInternal(id, payload, { callbackToken: token, expectedMode: 'callback' });
   }
 
-  async function resolvePoll(id, payload) {
-    return resolveInternal(id, payload, { expectedMode: 'poll' });
+  async function resolvePoll(id, payload, options = {}) {
+    return resolveInternal(id, payload, { expectedMode: 'poll', deliveryText: options.deliveryText });
   }
 
   async function cancel(id) {
@@ -181,6 +184,21 @@ function createWaitService({
       wait.cancelledAt = at;
       wait.updatedAt = at;
       return { ok: true, idempotent: false };
+    });
+  }
+
+  async function cancelForSession(sessionId) {
+    return store.mutate(draft => {
+      const at = Number(now());
+      let cancelled = 0;
+      for (const wait of Object.values(draft.waits)) {
+        if (wait.sessionId !== sessionId || wait.status !== 'pending') continue;
+        wait.status = 'cancelled';
+        wait.cancelledAt = at;
+        wait.updatedAt = at;
+        cancelled++;
+      }
+      return { ok: true, cancelled };
     });
   }
 
@@ -201,6 +219,7 @@ function createWaitService({
     resolveCallback,
     resolvePoll,
     cancel,
+    cancelForSession,
     get,
     list,
   });
