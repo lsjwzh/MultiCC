@@ -1309,7 +1309,7 @@ const directoryModule = createDirectoryModule({
     listByDir: (dirId) => [...persistedSessions.values()].filter(s => s.dirId === dirId),
     seedCommander: seedCommanderSession,
     destroyCascade: destroySessionCascade,
-    persistRecords: savePersistedSessions,
+    persistRecords: () => sessionPersistence.mutate('http.directory-delete-fallback', () => {}),
     // Cross-file transaction needs the sessions payload at the moment of
     // journal-write, so it's captured alongside the directories payload.
     snapshotRecords: () => [...persistedSessions.values()],
@@ -7661,7 +7661,7 @@ function reconcileCodexRoleUsage(sessionName, usage) {
 wechatBridge.init({
   persistedSessions,
   chatSessions,
-  savePersistedSessions,
+  savePersistedSessions: () => savePersistedSessionsBestEffort('bridge.wechat-session-state'),
   chatBroadcast,
   port: PORT,
 });
@@ -7673,7 +7673,7 @@ app.use('/api/wechat', wechatBridge.router);
 feishuBridge.init({
   persistedSessions,
   chatSessions,
-  savePersistedSessions,
+  savePersistedSessions: () => savePersistedSessionsBestEffort('bridge.feishu-session-state'),
   chatBroadcast,
   port: PORT,
 });
@@ -7689,7 +7689,13 @@ for (const [mount, bridge] of [
   ['/api/discord', discordBridge],
   ['/api/slack', slackBridge],
 ]) {
-  bridge.init({ persistedSessions, chatSessions, savePersistedSessions, chatBroadcast, port: PORT });
+  bridge.init({
+    persistedSessions,
+    chatSessions,
+    savePersistedSessions: () => savePersistedSessionsBestEffort(`bridge.${mount.slice(5)}-session-state`),
+    chatBroadcast,
+    port: PORT,
+  });
   app.use(mount, bridge.router);
 }
 
@@ -12287,6 +12293,10 @@ Object.defineProperty(global, '_shuttingDownCoordinated', {
 shutdownCoordinator.onCheckpoint(() => {
   try { flushInFlightChats(); }
   catch (e) { console.error(`[multicc] shutdown flush error: ${e.message}`); }
+  // Teardown is explicitly best-effort: make one final attempt to flush any
+  // dirty runtime session snapshot, but never turn a transient EIO into an
+  // uncaught shutdown failure.
+  savePersistedSessionsBestEffort('teardown.checkpoint');
 });
 
 // Drain: give live turns time to reach their natural `result` event so their
@@ -12342,6 +12352,7 @@ shutdownCoordinator.onClose(() => new Promise(resolve => {
 // Stop orchestration after HTTP has stopped accepting callbacks.  Awaiting the
 // serialized worker/store tail guarantees no lease mutation is left half-run.
 shutdownCoordinator.onClose(() => orchestrationRuntime ? orchestrationRuntime.stop() : undefined);
+shutdownCoordinator.onClose(() => sessionPersistence.stop());
 
 function gracefulShutdown(sig) {
   if (_shuttingDown) return;
