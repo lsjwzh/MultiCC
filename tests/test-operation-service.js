@@ -134,6 +134,10 @@ test('task ledger records terminal output and interrupts only unproven active ta
     detail: { lastOutput: 'verified output' },
   });
   await service.observeTask({
+    sessionId: 'parent', taskId: 'done-1', status: 'failed',
+    detail: { error: 'late contradictory event' },
+  });
+  await service.observeTask({
     sessionId: 'parent', taskId: 'live-1', status: 'running',
     detail: { kind: 'background-task', description: 'unproven task' },
   });
@@ -143,6 +147,7 @@ test('task ledger records terminal output and interrupts only unproven active ta
   const tasks = await service.listTasks({ sessionId: 'parent' });
   assert.equal(tasks.find(entry => entry.taskId === 'done-1').status, 'completed');
   assert.equal(tasks.find(entry => entry.taskId === 'done-1').lastOutput, 'verified output');
+  assert.equal(tasks.find(entry => entry.taskId === 'done-1').error, null);
   assert.equal(tasks.find(entry => entry.taskId === 'live-1').status, 'interrupted');
 
   const snapshot = await store.snapshot();

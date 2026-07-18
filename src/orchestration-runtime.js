@@ -510,7 +510,15 @@ function createOrchestrationRuntime({
       const request = operation.requestOutboxId
         ? await outbox.get(operation.requestOutboxId)
         : null;
-      if (request && ['pending', 'leased'].includes(request.state)) continue;
+      // A crash may occur after runChatTurn durably saved the dispatch user
+      // message but before the request lease was acknowledged. Treat that as
+      // delivered evidence during startup reconciliation; the regular outbox
+      // tick below will independently recover/ack the lease without replaying
+      // the target turn because hasPersistedDelivery() is the same guard.
+      const requestPersisted = request && ['pending', 'leased'].includes(request.state)
+        ? await hasPersistedDelivery(request.sessionId, request.id)
+        : false;
+      if (request && ['pending', 'leased'].includes(request.state) && !requestPersisted) continue;
       if (request && request.state === 'dead-letter') {
         await operations.completeDispatch(operation.id, {
           status: 'interrupted',
@@ -518,7 +526,7 @@ function createOrchestrationRuntime({
         });
         continue;
       }
-      if (!request || request.state !== 'delivered') continue;
+      if ((!request || request.state !== 'delivered') && !requestPersisted) continue;
       let recovered = null;
       try { recovered = await recoverDispatchResult(operation); }
       catch (error) { log(`[orchestration] dispatch ${operation.id} history recovery failed: ${error.message}`); }
@@ -541,7 +549,9 @@ function createOrchestrationRuntime({
   async function startDetached(spec = {}) {
     if (!detachedAdapter) throw new Error('detached adapter is not configured');
     const operation = await operations.admitDetached(spec);
-    await ensureDetachedOperation(operation);
+    if (!TERMINAL_OPERATION_STATES.has(operation.status)) {
+      await ensureDetachedOperation(operation);
+    }
     const current = await operations.get(operation.id);
     const state = await Promise.resolve(detachedAdapter.status(operation.externalId));
     return { operation: current, state, idempotent: operation.idempotent };
