@@ -10,6 +10,7 @@ const { safeCode, sanitizePublicText } = require('./public-safety');
 
 const DOMAIN_ERROR_MAP = Object.freeze({
   [DOMAIN_KINDS.BAD_REQUEST]: Object.freeze({ status: 400, code: 'invalid_request', error: 'request_error' }),
+  [DOMAIN_KINDS.PAYLOAD_TOO_LARGE]: Object.freeze({ status: 413, code: 'payload_too_large', error: 'payload_too_large' }),
   [DOMAIN_KINDS.NOT_FOUND]: Object.freeze({ status: 404, code: 'not_found', error: 'not_found' }),
   [DOMAIN_KINDS.CONFLICT]: Object.freeze({ status: 409, code: 'conflict', error: 'conflict' }),
   [DOMAIN_KINDS.RATE_LIMITED]: Object.freeze({ status: 429, code: 'rate_limited', error: 'rate_limited' }),

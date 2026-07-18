@@ -23,6 +23,12 @@ class FakeElement {
     this.listeners = {};
     this.onkeydown = null;
     this.focused = false;
+    const classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name),
+    };
   }
 
   appendChild(child) {
@@ -47,6 +53,7 @@ function createDocument() {
   const ids = [
     'memo-modal', 'memo-text', 'memo-status', 'memo-title', 'memo-subtitle',
     'memo-picker', 'memo-picker-preview', 'memo-picker-list',
+    'status', 'title-name', 'title-path', 'picker', 'picker-preview', 'picker-list',
   ];
   const elements = Object.fromEntries(ids.map(id => [id, new FakeElement(id)]));
   return {
@@ -106,6 +113,53 @@ test('memo endpoints are same-origin paths with encoded identifiers and no query
   assert.throws(() => memo.memoEndpoint('dir-1', '?token=secret'), /unsupported memo endpoint/);
 });
 
+test('shared client owns GET, PUT, send, DTOs, errors and session fallback resolution', async () => {
+  const calls = [];
+  const api = {
+    async json(url, options) {
+      calls.push({ url, options });
+      if (url === '/api/directories/dir%2Fone/memo' && !options) {
+        return { text: '# memo', path: '/repo/multicc.memo.md', exists: true, mtime: 3, token: 'drop' };
+      }
+      if (url === '/api/directories/dir%2Fone/memo' && options.method === 'PUT') {
+        return { ok: true, path: '/repo/multicc.memo.md', mtime: 4, secret: 'drop' };
+      }
+      if (url.endsWith('/memo/send')) return { ok: true, sentTo: 'chat-1', token: 'drop' };
+      if (url === '/api/directories') {
+        return { directories: [{ id: 'dir/one', name: 'Fleet', path: '/drop', token: 'drop' }] };
+      }
+      if (url === '/api/sessions/chat-1') return { id: 'chat-1' };
+      if (url === '/api/sessions') {
+        return { sessions: [{ id: 'chat-1', dirId: 'dir/one', kind: 'chat', token: 'drop' }] };
+      }
+      throw new Error(`unexpected ${url}`);
+    },
+    errorDisplay() { return { message: 'safe memo failure' }; },
+  };
+  const client = memo.createClient({ api });
+
+  assert.deepEqual(await client.loadMemo('dir/one'), {
+    text: '# memo', path: '/repo/multicc.memo.md', exists: true, mtime: 3,
+  });
+  assert.deepEqual(await client.saveMemo('dir/one', '# next'), {
+    ok: true, path: '/repo/multicc.memo.md', mtime: 4, sentTo: '',
+  });
+  assert.deepEqual(await client.sendLine('dir/one', 'ship', 'chat-1'), {
+    ok: true, path: '', mtime: 0, sentTo: 'chat-1',
+  });
+  assert.deepEqual(await client.listDirectories(), [{ id: 'dir/one', name: 'Fleet' }]);
+  assert.equal(await client.resolveDirectoryId({ sessionId: 'chat-1' }), 'dir/one');
+  assert.equal(client.errorMessage(new Error('Bearer secret /private/path')), 'safe memo failure');
+
+  assert.deepEqual(calls.slice(0, 3), [
+    { url: '/api/directories/dir%2Fone/memo', options: undefined },
+    { url: '/api/directories/dir%2Fone/memo', options: { method: 'PUT', json: { text: '# next' } } },
+    { url: '/api/directories/dir%2Fone/memo/send', options: { method: 'POST', json: { text: 'ship', sessionId: 'chat-1' } } },
+  ]);
+  assert.equal(JSON.stringify(await client.listSessions()).includes('drop'), false);
+  for (const call of calls) assert.doesNotMatch(call.url, /[?&](?:token|access_token)=/i);
+});
+
 test('controller loads, saves and sends through the shared API client', async () => {
   const document = createDocument();
   const calls = [];
@@ -150,7 +204,7 @@ test('controller loads, saves and sends through the shared API client', async ()
   assert.equal(document.elements['memo-status'].textContent, '已保存 · 12:34:56');
 
   document.elements['memo-text'].selectionStart = document.elements['memo-text'].value.indexOf('ship');
-  controller.memoSendCurrentLine();
+  await controller.memoSendCurrentLine();
   const list = document.elements['memo-picker-list'];
   assert.equal(list.children.length, 1);
   assert.equal(list.children[0].children.map(child => child.textContent).join('|'), '<Primary>| chat-1|waiting');
@@ -176,6 +230,8 @@ test('controller ignores stale loads and displays only API-safe errors', async (
     getDirectories: () => [{ id: 'dir-1', name: 'Fleet' }],
   });
   const pending = controller.openMemo('dir-1');
+  await Promise.resolve();
+  await Promise.resolve();
   controller.closeMemoModal();
   rejectRequest(new Error('Bearer secret-token at /Users/private/worktree'));
   await pending;
@@ -194,6 +250,66 @@ test('controller ignores stale loads and displays only API-safe errors', async (
   await failed.openMemo('dir-1');
   assert.equal(failedDocument.elements['memo-subtitle'].textContent, '加载失败：safe request failure');
   assert.equal(JSON.stringify(failedDocument.elements).includes('another-secret'), false);
+});
+
+test('async host adapters keep the newest open, class UI and shared session filter', async () => {
+  const document = createDocument();
+  const pending = new Map();
+  function deferred(id) {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    pending.set(id, { promise, resolve });
+    return promise;
+  }
+  const client = {
+    loadMemo: id => deferred(id),
+    saveMemo: async () => ({ ok: true }),
+    sendLine: async () => ({ ok: true }),
+    listDirectories: async () => [],
+    listSessions: async () => [
+      { id: 'chat-2', dirId: 'dir-2', kind: 'chat', type: '', label: 'Primary' },
+      { id: 'aux-2', dirId: 'dir-2', kind: 'chat', type: 'aux' },
+    ],
+    errorMessage: () => 'safe failure',
+  };
+  const controller = memo.createController({
+    client,
+    document,
+    getDirectories: async () => [
+      { id: 'dir-1', name: 'One' },
+      { id: 'dir-2', name: 'Two' },
+    ],
+    requireDirectory: true,
+    closeOnEscape: true,
+    ui: {
+      showModal: modal => modal.classList.add('open'),
+      hideModal: modal => modal.classList.remove('open'),
+      showPicker: picker => picker.classList.add('open'),
+      hidePicker: picker => picker.classList.remove('open'),
+    },
+  });
+
+  const first = controller.openMemo('dir-1');
+  await Promise.resolve();
+  await Promise.resolve();
+  const second = controller.openMemo('dir-2');
+  await Promise.resolve();
+  await Promise.resolve();
+  pending.get('dir-2').resolve({ text: 'newest', path: '/two', exists: true, mtime: 2 });
+  await second;
+  pending.get('dir-1').resolve({ text: 'stale', path: '/one', exists: true, mtime: 1 });
+  await first;
+
+  assert.equal(document.elements['memo-text'].value, 'newest');
+  assert.equal(document.elements['memo-title'].textContent, '📝 Two · 备忘');
+  assert.equal(document.elements['memo-modal'].classList.contains('open'), true);
+  document.elements['memo-text'].value = '- [ ] send newest';
+  document.elements['memo-text'].selectionStart = 8;
+  await controller.memoSendCurrentLine();
+  assert.equal(document.elements['memo-picker-list'].children.length, 1);
+  assert.equal(document.elements['memo-picker'].classList.contains('open'), true);
+  document.elements['memo-text'].onkeydown({ key: 'Escape', metaKey: false, ctrlKey: false });
+  assert.equal(document.elements['memo-modal'].classList.contains('open'), false);
 });
 
 test('manage loads the classic memo controller before page code and retains only UI glue', () => {
@@ -217,4 +333,55 @@ test('manage loads the classic memo controller before page code and retains only
   assert.doesNotMatch(memoBlock, /tokenQS/);
   assert.doesNotMatch(memoBlock, /\.innerHTML\s*=/);
   assert.ok(memoBlock.split(/\r?\n/).length < 40, 'manage.js memo block should remain UI glue');
+});
+
+test('Dashboard, Standalone and Chat load one classic client/controller with host-only UI glue', () => {
+  const manageHtml = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
+  const manage = fs.readFileSync(path.join(ROOT, 'public', 'manage.js'), 'utf8');
+  const memoHtml = fs.readFileSync(path.join(ROOT, 'public', 'memo.html'), 'utf8');
+  const chatHtml = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
+  const chat = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+
+  function position(html, source) {
+    const value = html.indexOf(`<script src="${source}"></script>`);
+    assert.ok(value >= 0, `${source} is missing`);
+    return value;
+  }
+
+  for (const html of [manageHtml, memoHtml, chatHtml]) {
+    assert.ok(position(html, 'auth-client.js') < position(html, 'api-client.js'));
+    assert.ok(position(html, 'api-client.js') < position(html, 'memo-controller.js'));
+    assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+(?:api-client|memo-controller)/i);
+  }
+  assert.ok(position(chatHtml, 'memo-controller.js') < position(chatHtml, 'chat-notifications.js'));
+  assert.ok(position(chatHtml, 'chat-notifications.js') < position(chatHtml, 'chat.js'));
+
+  const manageStart = manage.indexOf('// ── Per-directory memo');
+  const manageEnd = manage.indexOf('async function renameDirectory', manageStart);
+  const manageGlue = manage.slice(manageStart, manageEnd);
+  const chatStart = chat.indexOf('// Shared Memo protocol/controller');
+  const chatEnd = chat.indexOf('let isStreaming = false;', chatStart);
+  const chatGlue = chat.slice(chatStart, chatEnd);
+  const memoInlineStart = memoHtml.lastIndexOf('<script>');
+  const memoInline = memoHtml.slice(memoInlineStart, memoHtml.lastIndexOf('</script>'));
+
+  assert.match(manageGlue, /MultiCCMemo\.createController/);
+  assert.match(chatGlue, /MultiCCMemo\.createClient/);
+  assert.match(chatGlue, /MultiCCMemo\.createController/);
+  assert.match(memoInline, /MultiCCMemo\.createClient/);
+  assert.match(memoInline, /MultiCCMemo\.createController/);
+  assert.match(memoInline, /await memoClient\.resolveDirectoryId/);
+  assert.match(chatGlue, /await chatMemoClient\.resolveDirectoryId/);
+
+  for (const [host, glue] of [['Dashboard', manageGlue], ['Standalone', memoInline], ['Chat', chatGlue]]) {
+    assert.doesNotMatch(glue, /\bfetch\s*\(/, `${host} must not implement Memo fetch`);
+    assert.doesNotMatch(glue, /tokenQS|withToken/, `${host} must not add Memo URL credentials`);
+    assert.doesNotMatch(glue, /\/api\/directories\/.+\/memo/, `${host} must not own Memo endpoints`);
+    assert.doesNotMatch(glue, /lastIndexOf\(['"]\\n|\[ xX\]|\.filter\([^\n]+kind\s*===\s*['"]chat/, `${host} must not duplicate primitives`);
+    assert.doesNotMatch(glue, /error\.message|\.json\(\)\.catch/, `${host} must use the safe shared error boundary`);
+  }
+
+  assert.ok(manageGlue.split(/\r?\n/).length < 40);
+  assert.ok(chatGlue.split(/\r?\n/).length < 90);
+  assert.ok(memoInline.split(/\r?\n/).length < 80);
 });

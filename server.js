@@ -117,6 +117,7 @@ const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
+const { createMemoModule } = require('./src/memo');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -2818,63 +2819,16 @@ app.delete('/api/agent-resources/claude-sessions', (req, res) => {
 // persistence in repository.js — composed next to the persistence bootstrap.
 app.use(directoryModule.router);
 
-// ── Memo: per-directory <dir.path>/multicc.memo.md (markdown, user-owned) ──
-const MEMO_FILENAME = 'multicc.memo.md';
-const MEMO_MAX_BYTES = 5 * 1024 * 1024;   // 5 MiB sanity cap
-function memoPathFor(dir) { return path.join(dir.path, MEMO_FILENAME); }
-
-app.get('/api/directories/:id/memo', (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  const p = memoPathFor(d);
-  let text = '', mtime = 0, exists = false;
-  try {
-    text = fs.readFileSync(p, 'utf8');
-    mtime = fs.statSync(p).mtimeMs;
-    exists = true;
-  } catch (e) {
-    if (e.code !== 'ENOENT') return res.status(500).json({ error: e.message });
-  }
-  res.json({ path: p, text, mtime, exists });
-});
-
-app.put('/api/directories/:id/memo', (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  if (typeof req.body.text !== 'string') return res.status(400).json({ error: 'text must be a string' });
-  const text = req.body.text;
-  if (Buffer.byteLength(text, 'utf8') > MEMO_MAX_BYTES) {
-    return res.status(413).json({ error: 'memo too large (>5MB)' });
-  }
-  if (!fs.existsSync(d.path)) return res.status(400).json({ error: 'directory path missing' });
-  const p = memoPathFor(d);
-  try {
-    const tmp = p + '.tmp';
-    fs.writeFileSync(tmp, text, 'utf8');
-    fs.renameSync(tmp, p);
-    res.json({ path: p, mtime: fs.statSync(p).mtimeMs });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/directories/:id/memo/send', (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  const text = String(req.body.text || '').trim();
-  const sessionId = String(req.body.sessionId || '').trim();
-  if (!text) return res.status(400).json({ error: 'text required' });
-  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-  const target = persistedSessions.get(sessionId);
-  if (!target) return res.status(404).json({ error: 'session not found' });
-  if (target.dirId !== d.id) return res.status(400).json({ error: 'session is not in this directory' });
-  if (target.kind !== 'chat') return res.status(400).json({ error: '只能发送到 chat 类型的会话' });
-  const cs = chatSessions.get(sessionId);
-  if (cs && cs.claudeProc) return res.status(409).json({ error: '目标会话正在跑回合，稍后再试' });
-  const ok = runChatTurn(sessionId, text, {});
-  if (ok === false) return res.status(500).json({ error: '启动会话回合失败' });
-  res.json({ ok: true, sentTo: sessionId });
-});
+// Memo is a bounded host/controller. It owns validation and file I/O; errors
+// flow through src/http's branded mapping before the terminal safe handler.
+app.use(createMemoModule({
+  directories: { get: id => directories.get(id) },
+  sessions: { get: id => persistedSessions.get(id) },
+  runtime: {
+    getChatSession: id => chatSessions.get(id),
+    runTurn: (id, text, options) => runChatTurn(id, text, options),
+  },
+}).router);
 
 app.get('/api/directories/:id/sessions', (req, res) => {
   const d = directories.get(req.params.id);

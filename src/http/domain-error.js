@@ -5,6 +5,7 @@ const INFRASTRUCTURE_ERROR = Symbol('MultiCC.InfrastructureError');
 
 const DOMAIN_KINDS = Object.freeze({
   BAD_REQUEST: 'bad_request',
+  PAYLOAD_TOO_LARGE: 'payload_too_large',
   NOT_FOUND: 'not_found',
   CONFLICT: 'conflict',
   RATE_LIMITED: 'rate_limited',
