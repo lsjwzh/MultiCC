@@ -49,9 +49,9 @@
 	     call survives a screen lock / app switch. Without NSMicrophoneUsageDescription
 	     iOS hard-crashes on first mic access. -->
 	<key>NSMicrophoneUsageDescription</key>
-	<string>MultiCC 需要使用麦克风来进行语音输入与实时语音通话。</string>
+	<string>MultiCC uses the microphone for voice input and real-time voice calls.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>MultiCC 使用语音识别将你的语音指令转换为文字。</string>
+	<string>MultiCC uses speech recognition to convert voice commands into text.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

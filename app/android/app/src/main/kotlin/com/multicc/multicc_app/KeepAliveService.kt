@@ -98,8 +98,8 @@ class KeepAliveService : Service() {
             Notification.Builder(this)
         }
         return builder
-            .setContentTitle("MultiCC 正在后台保持连接")
-            .setContentText("会话连接保持在线，点按返回应用")
+            .setContentTitle(getString(R.string.keepalive_notification_title))
+            .setContentText(getString(R.string.keepalive_notification_body))
             .setSmallIcon(applicationInfo.icon)
             .setOngoing(true)
             .setContentIntent(pi)
@@ -111,9 +111,9 @@ class KeepAliveService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (nm.getNotificationChannel(CHANNEL_ID) != null) return
         val channel = NotificationChannel(
-            CHANNEL_ID, "后台连接", NotificationManager.IMPORTANCE_LOW,
+            CHANNEL_ID, getString(R.string.keepalive_channel_name), NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "保持会话连接在后台存活"
+            description = getString(R.string.keepalive_channel_description)
             setShowBadge(false)
         }
         nm.createNotificationChannel(channel)

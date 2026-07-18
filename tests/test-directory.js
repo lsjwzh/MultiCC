@@ -54,7 +54,12 @@ fs.mkdirSync(projA, { recursive: true });
 
   // ── POST /api/directories ──
   r = await api('POST', '/api/directories', { name: 'x' });
-  ok(r.status === 400 && r.j.error === 'name and path required', 'POST missing path → 400');
+  ok(
+    r.status === 400 &&
+      r.j.code === 'invalid' &&
+      r.j.error === 'name and path required',
+    'POST missing path → 400 with stable error code',
+  );
   r = await api('POST', '/api/directories', { name: 'home', path: os.homedir() });
   ok(r.status === 400 && r.j.error === '不允许选择 $HOME 或更高层目录', 'POST home dir → 400');
   r = await api('POST', '/api/directories', { name: 'nope', path: path.join(tmpRoot, 'missing') });

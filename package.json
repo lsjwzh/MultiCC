@@ -10,7 +10,7 @@
     "start": "node server.js",
     "i18n:generate": "node scripts/generate-i18n.js",
     "test:i18n": "node scripts/generate-i18n.js && node tests/test-i18n.js",
-    "test": "node tests/test.js && node --test tests/test-sqlite-runtime.js tests/test-security-observability.js && node tests/test-native-deps.js",
+    "test": "node tests/test.js && node --test tests/test-sqlite-runtime.js tests/test-security-observability.js tests/test-push-localization.js && node tests/test-native-deps.js",
     "test:state": "node tests/test-state-store.js && node tests/test-shutdown-http-errors.js && node tests/test-directory-service.js",
     "test:memory": "node tests/test-memory-store.js && node tests/test-memory-api.js",
     "test:cli-switch": "node tests/test-cli-switch.js && node tests/test-cli-adapters.js && node tests/test-message-composer-golden.js && node tests/test-chat-stream-resume.js && node tests/test-cli-switch-api.js && node tests/test-cli-switch-failclosed.js && node tests/test-cli-specific-ui.js",

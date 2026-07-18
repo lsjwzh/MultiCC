@@ -5980,23 +5980,29 @@ function triggerPush(sessionId, type, message) {
   const cwd = session ? session.cwd : '';
   const shortCwd = cwd.length > 30 ? '...' + cwd.slice(-27) : cwd;
 
-  const payload = {
-    title: type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
-      : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
-      : `MultiCC #${sessionId}: 完成`,
+  const payloadForLocale = (locale) => ({
+    title: locale === 'en'
+      ? type === 'waiting' ? `MultiCC #${sessionId}: Action Required`
+        : type === 'error' ? `MultiCC #${sessionId}: Error`
+        : `MultiCC #${sessionId}: Completed`
+      : type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
+        : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
+        : `MultiCC #${sessionId}: 完成`,
     body: `${message}\n${shortCwd}`,
     sessionId,
     type,
+    locale: locale === 'en' ? 'en' : 'zh',
     tag: `multicc-${sessionId}`,
     url: `/manage`,
-  };
+  });
+  const payload = payloadForLocale('zh');
 
   push.globalStats.lastPushTime = now;
   push.globalStats.lastPushType = type;
   push.globalStats.lastPushSessionId = sessionId;
 
   // Send to all channels in parallel
-  push.sendPushToAll(payload);
+  push.sendPushToAll((subscription) => payloadForLocale(subscription.locale));
   push.sendBarkNotification(payload.title, `${message} ${shortCwd}`, payload.url);
   push.sendWebhookNotification(payload);
 

@@ -26,6 +26,7 @@ self.addEventListener('push', (event) => {
     }
 
     title = payload.title || 'MultiCC';
+    const isZh = payload.locale === 'zh';
     options = {
       body: payload.body || payload.message || '',
       icon: '/icon.svg',
@@ -44,12 +45,12 @@ self.addEventListener('push', (event) => {
     // Add actions based on notification type
     if (payload.type === 'waiting') {
       options.actions = [
-        { action: 'open', title: 'Open Session' },
+        { action: 'open', title: isZh ? '打开会话' : 'Open Session' },
       ];
     } else if (payload.type === 'completed') {
       options.actions = [
-        { action: 'open', title: 'View' },
-        { action: 'dismiss', title: 'OK' },
+        { action: 'open', title: isZh ? '查看' : 'View' },
+        { action: 'dismiss', title: isZh ? '知道了' : 'OK' },
       ];
     }
   } catch (err) {
@@ -116,7 +117,10 @@ self.addEventListener('pushsubscriptionchange', (event) => {
         await fetch('/api/push/subscribe', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newSub.toJSON()),
+          body: JSON.stringify({
+            ...newSub.toJSON(),
+            locale: self.navigator.language?.toLowerCase().startsWith('zh') ? 'zh' : 'en',
+          }),
         });
 
         // Remove old subscription from server
