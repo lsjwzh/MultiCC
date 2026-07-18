@@ -6,6 +6,8 @@
   <meta name="theme-color" content="#0d1117" />
   <title>📝 Memo · MultiCC</title>
   <script src="auth-client.js"></script>
+  <script src="api-client.js"></script>
+  <script src="memo-controller.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
@@ -84,128 +86,58 @@
     let _dirId = params.get('dirId') || '';
     const _sessionId = params.get('sessionId') || '';
 
-    function setStatus(msg) { $('status').textContent = msg; }
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    }
+    const memoClient = window.MultiCCMemo.createClient({ api: window.MultiCCApi });
+    const memoController = window.MultiCCMemo.createController({
+      client: memoClient,
+      document,
+      ids: {
+        modal: null,
+        status: 'status',
+        title: 'title-name',
+        subtitle: 'title-path',
+        picker: 'picker',
+        pickerPreview: 'picker-preview',
+        pickerList: 'picker-list',
+      },
+      requireDirectory: false,
+      ui: {
+        showModal: () => {},
+        hideModal: () => {},
+        showPicker: picker => picker && picker.classList.add('open'),
+        hidePicker: picker => picker && picker.classList.remove('open'),
+        previewLength: 200,
+        onDirectory: directory => {
+          document.title = `📝 ${directory.name || directory.id} · Memo · MultiCC`;
+        },
+      },
+    });
+
+    function setStatus(message) { $('status').textContent = message; }
 
     async function bootstrap() {
       try {
-        if (!_dirId && _sessionId) {
-          const r = await fetch(`/api/sessions/${encodeURIComponent(_sessionId)}`);
-          if (!r.ok) throw new Error(`session not found (${r.status})`);
-          const s = await r.json();
-          _dirId = s.dirId || (s.persisted && s.persisted.dirId) || '';
-          if (!_dirId) {
-            // Some session endpoints don't return dirId; fall back to scanning /api/sessions
-            const all = await (await fetch('/api/sessions')).json();
-            const found = (Array.isArray(all) ? all : []).find(x => x.id === _sessionId);
-            if (found) _dirId = found.dirId || '';
-          }
-        }
+        _dirId = await memoClient.resolveDirectoryId({ dirId: _dirId, sessionId: _sessionId });
         if (!_dirId) { setStatus('缺少 dirId / sessionId 参数，或会话没有Fleet归属'); return; }
         await loadMemo();
-      } catch (e) { setStatus('初始化失败：' + e.message); }
+      } catch (error) {
+        setStatus('初始化失败：' + memoClient.errorMessage(error));
+      }
     }
 
     async function loadMemo() {
-      try {
-        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo`);
-        if (!r.ok) { setStatus('加载失败：HTTP ' + r.status); return; }
-        const data = await r.json();
-        $('memo-text').value = data.text || '';
-        $('title-path').textContent = `${data.path || ''}${data.exists ? '' : ' · 文件尚未创建（保存即创建）'}`;
-        try {
-          const dirs = await (await fetch('/api/directories')).json();
-          const d = (dirs || []).find(x => x.id === _dirId);
-          if (d) {
-            $('title-name').textContent = `📝 ${d.name} · 备忘`;
-            document.title = `📝 ${d.name} · Memo · MultiCC`;
-          }
-        } catch (_) {}
-        $('memo-text').focus();
-      } catch (e) { setStatus('加载失败：' + e.message); }
+      return memoController.openMemo(_dirId);
     }
 
-    async function saveMemo() {
-      if (!_dirId) return;
-      const text = $('memo-text').value;
-      setStatus('保存中…');
-      try {
-        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        });
-        if (!r.ok) { const e = await r.json().catch(() => ({})); setStatus('保存失败：' + (e.error || r.status)); return; }
-        setStatus(`已保存 · ${new Date().toLocaleTimeString()}`);
-      } catch (e) { setStatus('保存失败：' + e.message); }
-    }
-
-    function currentLineText() {
-      const ta = $('memo-text');
-      const v = ta.value;
-      const pos = ta.selectionStart;
-      const before = v.lastIndexOf('\n', Math.max(0, pos - 1));
-      const after = v.indexOf('\n', pos);
-      const start = before === -1 ? 0 : before + 1;
-      const end = after === -1 ? v.length : after;
-      let line = v.slice(start, end);
-      line = line.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/, '');
-      line = line.replace(/^\s*[-*+]\s+/, '');
-      line = line.replace(/^\s*\d+\.\s+/, '');
-      line = line.replace(/^\s*#+\s+/, '');
-      return line.trim();
-    }
-
-    async function openPicker() {
-      if (!_dirId) return;
-      const text = currentLineText();
-      if (!text) { setStatus('当前行为空，无法发送'); return; }
-      try {
-        const all = await (await fetch('/api/sessions')).json();
-        const sessions = (Array.isArray(all) ? all : [])
-          .filter(s => s.dirId === _dirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
-        if (!sessions.length) { setStatus('该Fleet还没有 chat 会话，请先新建一个'); return; }
-        $('picker-preview').textContent = text.length > 200 ? text.slice(0, 200) + '…' : text;
-        $('picker-list').innerHTML = sessions.map(s => {
-          const label = s.label && s.label !== s.id
-            ? `${escapeHtml(s.label)} <span style="color:#6e7681;">${escapeHtml(s.id)}</span>`
-            : escapeHtml(s.id);
-          return `<button class="btn" data-id="${escapeHtml(s.id)}"><span style="overflow:hidden;text-overflow:ellipsis;">${label}</span><span style="color:#6e7681;font-size:11px;flex-shrink:0;">${escapeHtml(s.kind || '')}</span></button>`;
-        }).join('');
-        for (const btn of $('picker-list').querySelectorAll('button')) {
-          btn.onclick = () => confirmSend(btn.getAttribute('data-id'));
-        }
-        $('picker').classList.add('open');
-      } catch (e) { setStatus('加载会话列表失败：' + e.message); }
-    }
-
-    function closePicker() { $('picker').classList.remove('open'); }
-
-    async function confirmSend(sessionId) {
-      closePicker();
-      const text = currentLineText();
-      if (!text) return;
-      setStatus(`发送到 ${sessionId}…`);
-      try {
-        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo/send`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, sessionId }),
-        });
-        if (!r.ok) { const e = await r.json().catch(() => ({})); setStatus('发送失败：' + (e.error || r.status)); return; }
-        setStatus(`已发送到 ${sessionId} · ${new Date().toLocaleTimeString()}`);
-      } catch (e) { setStatus('发送失败：' + e.message); }
-    }
+    const saveMemo = memoController.memoSave;
+    const currentLineText = memoController.memoCurrentLineText;
+    const openPicker = memoController.memoSendCurrentLine;
+    const closePicker = memoController.memoPickerClose;
+    const confirmSend = memoController.memoConfirmSend;
 
     $('save-btn').onclick = saveMemo;
     $('send-btn').onclick = openPicker;
     $('picker-cancel').onclick = closePicker;
-    $('memo-text').addEventListener('keydown', (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        saveMemo();
-      }
-    });
+    Object.assign(window, { bootstrap, loadMemo, saveMemo, currentLineText, openPicker, closePicker, confirmSend });
 
     Promise.resolve(window.multiccAuthReady).then(bootstrap);
   </script>

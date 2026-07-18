@@ -294,200 +294,77 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Open the project's memo (multicc.memo.md) as an in-page popup.
-async function openMemo() {
-  const mm = document.getElementById('memo-modal');
-  if (!mm) return;
-  if (mm.classList.contains('open')) { closeMemo(); return; }
-
-  // Resolve dirId from session info
-  let dirId = _memoDirId;
-  if (!dirId) {
-    try {
-      const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`));
-      if (r.ok) {
-        const s = await r.json();
-        dirId = s.dirId || (s.persisted && s.persisted.dirId) || '';
-      }
-    } catch (_) {}
-    if (!dirId) {
-      // Fallback: scan all sessions
-      try {
-        const all = await (await fetch(withToken('/api/sessions'))).json();
-        const found = (Array.isArray(all) ? all : []).find(x => x.id === _sessionName);
-        if (found) dirId = found.dirId || '';
-      } catch (_) {}
-    }
-    _memoDirId = dirId || '';
-  }
-
-  if (!dirId) {
-    const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '无法确定FleetID，会话可能没有归属Fleet';
-    mm.classList.add('open');
-    return;
-  }
-
-  await loadMemo();
-  mm.classList.add('open');
-  const ta = document.getElementById('memo-text');
-  if (ta) setTimeout(() => ta.focus(), 100);
-}
+// Shared Memo protocol/controller; this file keeps only the Chat-specific UI adapter.
+const chatMemoClient = window.MultiCCMemo.createClient({ api: window.MultiCCApi });
+const chatMemoController = window.MultiCCMemo.createController({
+  client: chatMemoClient,
+  document,
+  requireDirectory: false,
+  closeOnEscape: true,
+  ui: {
+    showModal: modal => modal && modal.classList.add('open'),
+    hideModal: modal => modal && modal.classList.remove('open'),
+    showPicker: picker => picker && picker.classList.add('open'),
+    hidePicker: picker => picker && picker.classList.remove('open'),
+    buttonClass: 'hdr-btn',
+    buttonStyle: 'width:100%;justify-content:space-between;text-align:left;',
+    previewLength: 200,
+  },
+});
 let _memoDirId = '';
 
-function closeMemo() {
-  const mm = document.getElementById('memo-modal');
-  if (mm) mm.classList.remove('open');
-  const picker = document.getElementById('memo-picker');
-  if (picker) picker.classList.remove('open');
-}
-
-async function loadMemo() {
-  const dirId = _memoDirId;
-  if (!dirId) return;
-  const statusEl = document.getElementById('memo-status');
+async function openMemo() {
+  const modal = document.getElementById('memo-modal');
+  if (!modal) return;
+  if (modal.classList.contains('open')) { closeMemo(); return; }
   try {
-    const r = await fetch(withToken(`/api/directories/${encodeURIComponent(dirId)}/memo`));
-    if (!r.ok) { if (statusEl) statusEl.textContent = '加载失败：HTTP ' + r.status; return; }
-    const data = await r.json();
-    const ta = document.getElementById('memo-text');
-    if (ta) ta.value = data.text || '';
-    const subEl = document.getElementById('memo-subtitle');
-    if (subEl) subEl.textContent = data.path || (data.exists ? '' : '· 文件尚未创建（保存即创建）');
-    // Update title with directory name
-    try {
-      const dirs = await (await fetch(withToken('/api/directories'))).json();
-      const d = (dirs || []).find(x => x.id === dirId);
-      if (d) {
-        const titleEl = document.getElementById('memo-title');
-        if (titleEl) titleEl.textContent = `📝 ${d.name} · 备忘`;
-      }
-    } catch (_) {}
-  } catch (e) { if (statusEl) statusEl.textContent = '加载失败：' + e.message; }
-}
-
-async function saveMemo() {
-  const dirId = _memoDirId;
-  if (!dirId) return;
-  const text = document.getElementById('memo-text')?.value;
-  if (text === undefined) return;
-  const statusEl = document.getElementById('memo-status');
-  if (statusEl) statusEl.textContent = '保存中…';
-  try {
-    const r = await fetch(withToken(`/api/directories/${encodeURIComponent(dirId)}/memo`), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+    _memoDirId = await chatMemoClient.resolveDirectoryId({
+      dirId: _memoDirId,
+      sessionId: _sessionName,
     });
-    if (!r.ok) { const e = await r.json().catch(() => ({})); if (statusEl) statusEl.textContent = '保存失败：' + (e.error || r.status); return; }
-    if (statusEl) statusEl.textContent = '已保存 · ' + new Date().toLocaleTimeString();
-  } catch (e) { if (statusEl) statusEl.textContent = '保存失败：' + e.message; }
-}
-
-function memoCurrentLineText() {
-  const ta = document.getElementById('memo-text');
-  if (!ta) return '';
-  const v = ta.value;
-  const pos = ta.selectionStart;
-  const before = v.lastIndexOf('\n', Math.max(0, pos - 1));
-  const after = v.indexOf('\n', pos);
-  const start = before === -1 ? 0 : before + 1;
-  const end = after === -1 ? v.length : after;
-  let line = v.slice(start, end);
-  line = line.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/, '');
-  line = line.replace(/^\s*[-*+]\s+/, '');
-  line = line.replace(/^\s*\d+\.\s+/, '');
-  line = line.replace(/^\s*#+\s+/, '');
-  return line.trim();
-}
-
-async function memoOpenPicker() {
-  const dirId = _memoDirId;
-  if (!dirId) return;
-  const text = memoCurrentLineText();
-  if (!text) {
-    const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '当前行为空，无法发送';
-    return;
-  }
-  try {
-    const all = await (await fetch(withToken('/api/sessions'))).json();
-    const sessions = (Array.isArray(all) ? all : [])
-      .filter(s => s.dirId === dirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
-    if (!sessions.length) {
-      const statusEl = document.getElementById('memo-status');
-      if (statusEl) statusEl.textContent = '该Fleet还没有 chat 会话，请先新建一个';
+    if (!_memoDirId) {
+      const status = document.getElementById('memo-status');
+      if (status) status.textContent = '无法确定FleetID，会话可能没有归属Fleet';
+      modal.classList.add('open');
       return;
     }
-    const preview = document.getElementById('memo-picker-preview');
-    if (preview) preview.textContent = text.length > 200 ? text.slice(0, 200) + '…' : text;
-    const list = document.getElementById('memo-picker-list');
-    if (list) {
-      list.innerHTML = sessions.map(s => {
-        const label = s.label && s.label !== s.id
-          ? `${escapeHtml(s.label)} <span style="color:#6e7681;">${escapeHtml(s.id)}</span>`
-          : escapeHtml(s.id);
-        return `<button class="hdr-btn" data-id="${escapeHtml(s.id)}" style="width:100%;justify-content:space-between;"><span style="overflow:hidden;text-overflow:ellipsis;text-align:left;">${label}</span><span style="color:#6e7681;font-size:11px;flex-shrink:0;">${escapeHtml(s.kind || '')}</span></button>`;
-      }).join('');
-      for (const btn of list.querySelectorAll('button')) {
-        btn.onclick = () => memoConfirmSend(btn.getAttribute('data-id'));
-      }
-    }
-    const picker = document.getElementById('memo-picker');
-    if (picker) picker.classList.add('open');
-  } catch (e) {
-    const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '加载会话列表失败：' + e.message;
+    await chatMemoController.openMemo(_memoDirId);
+  } catch (error) {
+    const status = document.getElementById('memo-status');
+    if (status) status.textContent = `加载失败：${chatMemoClient.errorMessage(error)}`;
+    modal.classList.add('open');
   }
 }
 
-function memoPickerClose() {
-  const picker = document.getElementById('memo-picker');
-  if (picker) picker.classList.remove('open');
+function closeMemo() { chatMemoController.closeMemoModal(); }
+function loadMemo() {
+  return _memoDirId ? chatMemoController.openMemo(_memoDirId) : Promise.resolve(false);
 }
+const saveMemo = chatMemoController.memoSave;
+const memoCurrentLineText = chatMemoController.memoCurrentLineText;
+const memoOpenPicker = chatMemoController.memoSendCurrentLine;
+const memoPickerClose = chatMemoController.memoPickerClose;
+const memoConfirmSend = chatMemoController.memoConfirmSend;
 
-async function memoConfirmSend(sessionId) {
-  memoPickerClose();
-  const dirId = _memoDirId;
-  const text = memoCurrentLineText();
-  if (!text || !dirId) return;
-  const statusEl = document.getElementById('memo-status');
-  if (statusEl) statusEl.textContent = `发送到 ${sessionId}…`;
-  try {
-    const r = await fetch(withToken(`/api/directories/${encodeURIComponent(dirId)}/memo/send`), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, sessionId }),
-    });
-    if (!r.ok) { const e = await r.json().catch(() => ({})); if (statusEl) statusEl.textContent = '发送失败：' + (e.error || r.status); return; }
-    if (statusEl) statusEl.textContent = '已发送到 ' + sessionId + ' · ' + new Date().toLocaleTimeString();
-  } catch (e) { if (statusEl) statusEl.textContent = '发送失败：' + e.message; }
-}
+Object.assign(window, {
+  openMemo,
+  closeMemo,
+  loadMemo,
+  saveMemo,
+  memoCurrentLineText,
+  memoOpenPicker,
+  memoPickerClose,
+  memoConfirmSend,
+});
 
-// Bind memo popup events after DOM loads
+// Chat owns only button/backdrop wiring; protocol, rendering and keyboard behavior are shared.
 document.addEventListener('DOMContentLoaded', () => {
-  const mm = document.getElementById('memo-modal');
-  if (!mm) return;
-  // Close on backdrop click
-  mm.addEventListener('click', (e) => { if (e.target === mm) closeMemo(); });
-  // Close button
-  const closeBtn = document.getElementById('memo-close-btn');
-  if (closeBtn) closeBtn.addEventListener('click', closeMemo);
-  // Save button
-  const saveBtn = document.getElementById('memo-save-btn');
-  if (saveBtn) saveBtn.addEventListener('click', saveMemo);
-  // Send line button
-  const sendBtn = document.getElementById('memo-send-btn');
-  if (sendBtn) sendBtn.addEventListener('click', memoOpenPicker);
-  // Ctrl/Cmd+S to save
-  const ta = document.getElementById('memo-text');
-  if (ta) {
-    ta.addEventListener('keydown', (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        saveMemo();
-      }
-      if (e.key === 'Escape') closeMemo();
-    });
-  }
+  const modal = document.getElementById('memo-modal');
+  if (!modal) return;
+  modal.addEventListener('click', event => { if (event.target === modal) closeMemo(); });
+  document.getElementById('memo-close-btn')?.addEventListener('click', closeMemo);
+  document.getElementById('memo-save-btn')?.addEventListener('click', saveMemo);
+  document.getElementById('memo-send-btn')?.addEventListener('click', memoOpenPicker);
 });
 let isStreaming = false;
 let _pendingCancel = false; // cancel requested while WS was disconnected
