@@ -4877,9 +4877,21 @@ app.post('/api/sessions/:id/restart', asyncHandler(async (req, res) => {
 // _shuttingDown, so reusing it here would abort the very shutdown we want. Once
 // a restart is scheduled we never reset it — the process is about to be replaced.
 let _restartScheduled = false;
+let _restartScheduledAt = 0;
+const RESTART_FLAG_TTL_MS = 30000;
 app.post('/api/restart', (req, res) => {
+  // Safety net: detached `./multicc restart` should replace us within ~2s. If
+  // we're still alive after RESTART_FLAG_TTL_MS the replacement failed (stale
+  // pidfile / multiple node server.js survivors — do_stop missed the live PID),
+  // so reset the flag instead of 409-ing "already in progress" forever.
+  if (_restartScheduled && Date.now() - _restartScheduledAt > RESTART_FLAG_TTL_MS) {
+    console.log('[multicc] /api/restart: previous restart did not replace this process after ' +
+      Math.round((Date.now() - _restartScheduledAt) / 1000) + 's — resetting flag to allow retry');
+    _restartScheduled = false;
+  }
   if (_shuttingDown || _restartScheduled) return res.status(409).json({ error: 'restart already in progress' });
   _restartScheduled = true;
+  _restartScheduledAt = Date.now();
   // Count sessions with a genuinely in-flight streaming turn (not a stale one)
   // so the client can warn the user those turns will be interrupted — their
   // partial output is flushed to disk by gracefulShutdown before exit.
