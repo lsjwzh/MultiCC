@@ -133,6 +133,16 @@ const {
   createProviderRouteProof,
   evaluateSpawnGuard,
   createTurnRuntimeStore,
+  createTurnLifecycle,
+  createRunnerOwnership,
+  ownsCurrentRunner,
+  assignKillReason,
+  recordResultEvent,
+  recordCloseResult,
+  recordPartialCheckpoint,
+  hasMatchingPartialCheckpoint,
+  claimDurableUsage,
+  claimPostTurn,
 } = require('./src/chat');
 const {
   createErrorDto,
@@ -1336,6 +1346,7 @@ async function destroySessionCascade(s, d, opts = {}) {
     if (chat._monitorShadows) {
       for (const taskId of [...chat._monitorShadows.keys()]) stopMonitorShadow(chat, taskId);
     }
+    assignKillReason(chat._activeRunner, 'session_delete');
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
     chatSessions.delete(s.id);
@@ -3017,6 +3028,7 @@ function cliSwitchBusyState(sessionId) {
 
 function resetChatRuntimeForCli(cs, session) {
   if (!cs) return;
+  assignKillReason(cs._activeRunner, 'cli_switch');
   if (cs.claudeProc) {
     try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
     cs.claudeProc = null;
@@ -3031,8 +3043,11 @@ function resetChatRuntimeForCli(cs, session) {
   cs.isStreaming = false;
   cs.streamReplay = [];
   cs._adapterError = null;
-  cs._killReason = null;
+  cs._activeRunner = null;
+  cs._activeTurn = null;
+  cs._continuationLineage = null;
   cs._resultSaved = false;
+  cs._sawApiError = false;
 }
 
 function performCliSwitch(session, targetCli, options = {}) {
@@ -4761,6 +4776,7 @@ app.post('/api/sessions/:id/relocate', asyncHandler(async (req, res) => {
         sessions.delete(id);
       }
       if (activeChat && force) {
+        assignKillReason(activeChat._activeRunner, 'relocate');
         if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
         chatStream.close(id);
         chatSessions.delete(id);
@@ -7311,7 +7327,7 @@ function consumedInput(u) {
   return (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
 }
 function accumulateTokenUsage(sessionName, usage) {
-  if (!usage || (!usage.input_tokens && !usage.output_tokens && !usage.cache_read_input_tokens && !usage.cache_creation_input_tokens)) return;
+  if (!usage || (!usage.input_tokens && !usage.output_tokens && !usage.cache_read_input_tokens && !usage.cache_creation_input_tokens)) return true;
   let data = {};
   try { data = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
   if (typeof data !== 'object' || Array.isArray(data)) data = {};
@@ -7322,9 +7338,11 @@ function accumulateTokenUsage(sessionName, usage) {
   data[sessionName] = cur;
   try { atomicWriteJson(TOKEN_USAGE_FILE, data); } catch (e) {
     console.error(`[multicc] Failed to save token usage: ${e.message}`);
+    return false;
   }
-  // ── Also write to per-day aggregation for time-window queries ──
+  // ── Main usage is durable; derive the per-day aggregation best-effort ──
   accumulateTokenDaily(sessionName, usage);
+  return true;
 }
 function getTokenUsage() {
   try { return JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) { return {}; }
@@ -7516,6 +7534,84 @@ function appendChatMessage(sessionName, msg) {
     console.error(`[multicc/chat] Failed to save history for ${sessionName}:`, error.message);
     return false;
   }
+}
+
+// Result durability and post-turn ownership are deliberately separate from the
+// session-wide UI fields. A late close/finalize from a superseded runner must
+// never consume another turn's handoff/dispatch lineage or mark its result as
+// saved. These helpers are the single bridge between history persistence and
+// the turn-owned lifecycle model in src/chat/turn-lifecycle.js.
+function isCurrentTurnRunner(cs, turn, runner) {
+  return ownsCurrentRunner(cs && cs._activeTurn, cs && cs._activeRunner, turn, runner);
+}
+
+function persistFinalAssistantResult(sessionName, cs, turn, runner, message, options = {}) {
+  const current = isCurrentTurnRunner(cs, turn, runner);
+  if (!current) return false;
+  const persisted = appendChatMessage(sessionName, message);
+  const result = options.resultEvent === true
+    ? recordResultEvent(turn, runner, { current, persisted })
+    : recordCloseResult(turn, runner, { current, persisted, final: options.final === true });
+  cs._resultSaved = result.resultDurable === true;
+  return result.ok === true;
+}
+
+function assistantCheckpointKey(cs) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    text: cs && cs.currentAssistantText || '',
+    tools: cs && Array.isArray(cs.currentToolCalls) ? cs.currentToolCalls : [],
+    cost: cs && cs.currentCost == null ? null : cs.currentCost,
+  })).digest('hex');
+}
+
+function recordDurableTurnUsage(sessionName, runner, usage) {
+  if (!runner || runner.usageRecorded === true) return false;
+  const normalized = usage && typeof usage === 'object' ? usage : {};
+  // JavaScript execution is synchronous here: persist the authoritative main
+  // file first, then claim the in-memory once flag. A failed atomic write keeps
+  // the flag open so close/finalize can retry instead of permanently losing it.
+  if (!accumulateTokenUsage(sessionName, normalized)) return false;
+  const claimed = claimDurableUsage(runner, { resultDurable: true });
+  if (!claimed.ok) return false;
+  broadcastProviderTokenStats(sessionName);
+  broadcastRoleTokenStats(sessionName);
+  return true;
+}
+
+function runDurablePostTurn(sessionName, cs, persisted, turn, runner, finalText, facts = {}) {
+  const claimed = claimPostTurn(turn, runner, {
+    currentTurn: cs && cs._activeTurn,
+    currentRunner: cs && cs._activeRunner,
+    interrupted: facts.interrupted === true,
+    apiError: facts.apiError === true,
+    retryPlanned: facts.retryPlanned === true,
+    handoffResumeFailure: facts.handoffResumeFailure === true,
+  });
+  if (!claimed.ok) {
+    logger.info('chat_post_turn_suppressed', {
+      sessionId: sessionName, turnId: turn && turn.turnId,
+      runnerId: runner && runner.runnerId, reason: claimed.code,
+    });
+    return false;
+  }
+
+  // Handoff acknowledgement and every external routing effect occur only after
+  // a final assistant message has committed to chat history.
+  consumePendingCliHandoff(sessionName);
+  bus.emit('chat:turn-complete', sessionName, cs, {
+    turnId: turn.turnId, lineage: turn.lineage, resultDurable: true,
+  });
+  if (turn.lineage.kind === 'dispatch' && turn.lineage.operationId) {
+    bus.emit('chat:dispatch-complete', turn.lineage.operationId, sessionName, finalText);
+  } else if (persisted.type === 'gateway') {
+    bus.emit('chat:gateway-turn-complete', finalText);
+  } else if (persisted.type !== 'aux') {
+    maybeDispatchFromChatTurn(sessionName, finalText);
+  }
+  if (cs._continuationLineage && cs._continuationLineage.turnId === turn.turnId) {
+    cs._continuationLineage = null;
+  }
+  return true;
 }
 
 // ── Chat sessions: session-level state for multi-client broadcast ──
@@ -9562,7 +9658,8 @@ function getRelevantMemoryEntries(query, entries, maxChars = 2000) {
 // persistent streaming path (runChatTurnStreaming) so the two never drift.
 // The `result` event is the turn boundary: it saves the assistant message,
 // returns the session to idle, and fires post-turn hooks.
-function applyClaudeChatEvent(cs, sessionName, evt, forward) {
+function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
+  if (!isCurrentTurnRunner(cs, turn, runner)) return;
   if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
   if (evt.type === 'assistant' && evt.message?.content) {
     for (const block of evt.message.content) {
@@ -9608,6 +9705,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
     // judges state E (API error) → retry inject picks up naturally.
     if (evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype))) {
       cs._sawApiError = true;
+      runner.sawApiError = true;
       recordApiError(evt.subtype || 'api_error');
     } else {
       recordApiSuccess();
@@ -9618,37 +9716,36 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
     // received the result event — token/timing footers only appeared after a
     // reload replayed chat_history.
     const usage = evt.usage || {};
+    runner.pendingUsage = usage;
     if (cs.currentAssistantText || cs.currentToolCalls.length) {
-      appendChatMessage(sessionName, {
+      const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
         role: 'assistant', content: cs.currentAssistantText,
         tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
         cost: cs.currentCost, usage: Object.keys(usage).length ? usage : undefined, ts: Date.now(),
-      });
-      accumulateTokenUsage(sessionName, usage);
-      broadcastProviderTokenStats(sessionName);
-      broadcastRoleTokenStats(sessionName);
-      cs.chatTurnCount++;
-      cs._resultSaved = true;
+      }, { resultEvent: true });
+      if (resultDurable) {
+        recordDurableTurnUsage(sessionName, runner, usage);
+        cs.chatTurnCount++;
+      }
       // Cancel any pending incremental-save timer: the final message is now
       // persisted, so a timer firing 0-5s later would append a stale _interim
       // AFTER the final — a duplicate bubble on reconnect. Mirrors the cancel
       // in the child-process close handler.
       const incrTimer = _incrSaveTimers.get(sessionName);
       if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
+    } else {
+      recordResultEvent(turn, runner, { current: true, persisted: false });
     }
-    if (cs._resultSaved) consumePendingCliHandoff(sessionName);
     // Include durationMs + num_turns in the result broadcast so clients
     // (web + app) can display per-message task timing without client-side
     // clock guesswork. durationMs is the wall-clock time from turnStartedAt
     // (user submit) to this result — "模型接到消息到输出完成的耗时".
     const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
     forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs, num_turns: cs.chatTurnCount });
-    // Let classify decide the final status; default to 'completed' until then.
-    setSessionStatus(sessionName, { status: 'completed', currentFile: null });
-    classifyTurnEnd(cs, sessionName);
-    // Anti-pattern guard (E): if this turn launched a run_in_background Bash and
-    // Decoupled via the bus so chat doesn't depend on the triggers domain.
-    bus.emit('chat:turn-complete', sessionName, cs);
+    // Final classification and all post-turn effects run from the owned
+    // close/finalize boundary. The result event alone is not enough: history
+    // persistence may have failed or a retry may still be planned.
+    setSessionStatus(sessionName, { status: cs._resultSaved ? 'completed' : 'idle', currentFile: null });
   }
   // Drop claude's `system init` — server already sent its own (but keep the
   // runtime-reported model before discarding).
@@ -9659,12 +9756,13 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward) {
 // Apply adapter-neutral events to server-owned chat state. Wire-format parsing
 // belongs to each CLI adapter; this function owns persistence, status and the
 // Claude-shaped event contract consumed by existing clients.
-function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, forward) {
+function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, forward, turn, runner) {
+  if (!isCurrentTurnRunner(cs, turn, runner)) return;
   const decoded = provider.decodeEvent(rawEvent) || [];
   for (const evt of (Array.isArray(decoded) ? decoded : [decoded])) {
     if (!evt) continue;
     if (evt.type === 'claude_event') {
-      applyClaudeChatEvent(cs, sessionName, evt.raw, forward);
+      applyClaudeChatEvent(cs, sessionName, evt.raw, forward, turn, runner);
       continue;
     }
     if (evt.type === 'session_init') {
@@ -9684,7 +9782,8 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       );
       if (resumeMismatch) {
         cs._adapterError = 'cross-cli target returned a different native session id';
-        cs._killReason = 'cli_resume_mismatch';
+        runner.adapterError = cs._adapterError;
+        assignKillReason(runner, 'cli_resume_mismatch');
         chatBroadcast(sessionName, {
           type: 'error',
           error: `目标 ${persisted.cli} 没有恢复预期的原生会话；未接受 CLI 返回的新会话。请重新切换并选择“重置目标 CLI 会话”。`,
@@ -9779,27 +9878,27 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
     if (evt.type === 'complete') {
       cs.currentCost = evt.cost == null ? null : evt.cost;
       const usage = evt.usage || {};
+      runner.pendingUsage = usage;
       reconcileCodexRoleUsage(sessionName, usage);
       if (cs.currentAssistantText || cs.currentToolCalls.length) {
-        appendChatMessage(sessionName, {
+        const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
           role: 'assistant', content: cs.currentAssistantText,
           tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
           cost: cs.currentCost, usage, ts: Date.now(),
-        });
-        accumulateTokenUsage(sessionName, usage);
-        broadcastProviderTokenStats(sessionName);
-        broadcastRoleTokenStats(sessionName);
-        cs.chatTurnCount++;
-        cs._resultSaved = true;
+        }, { resultEvent: true });
+        if (resultDurable) {
+          recordDurableTurnUsage(sessionName, runner, usage);
+          cs.chatTurnCount++;
+        }
+      } else {
+        recordResultEvent(turn, runner, { current: true, persisted: false });
       }
-      if (cs._resultSaved) consumePendingCliHandoff(sessionName);
       forward({
         type: 'result', total_cost_usd: cs.currentCost, usage,
         durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
         num_turns: cs.chatTurnCount,
       });
-      setSessionStatus(sessionName, { status: 'completed', currentFile: null });
-      classifyTurnEnd(cs, sessionName);
+      setSessionStatus(sessionName, { status: cs._resultSaved ? 'completed' : 'idle', currentFile: null });
       continue;
     }
     if (evt.type === 'error') {
@@ -9812,10 +9911,12 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       } else if (evt.kind === 'transport_disconnect') {
         cs._codexTransportError = evt.message;
         cs._sawApiError = true;
+        runner.sawApiError = true;
         recordApiError(evt.message);
         console.warn(`[multicc/chat] [${sessionName}] ${provider.name} transport disconnect: ${evt.message}`);
       } else {
         cs._adapterError = evt.message;
+        runner.adapterError = evt.message;
         forward({ type: 'error', error: `${evt.label || provider.name} 出错：${evt.message}` });
       }
     }
@@ -10165,6 +10266,10 @@ function runChatTurn(sessionName, text, opts = {}) {
   // native-history proof admitted here; Codex and existing chat states continue
   // to require an already persisted native session id.
   const willAllocateClaudeNativeSession = !existingCs && turnCli === 'claude' && !persisted.cliSessionId;
+  const inheritedLineage = opts.originContinue === true
+    && existingCs && existingCs._continuationLineage
+    ? existingCs._continuationLineage.lineage
+    : null;
   let turnRequest;
   try {
     turnRequest = normalizeTurnRequest({
@@ -10177,8 +10282,10 @@ function runChatTurn(sessionName, text, opts = {}) {
       requestId: opts.requestId,
       clientMsgId: opts.clientMsgId,
       deliveryId: opts.deliveryId,
-      originDispatchId: opts.originDispatchId,
-      originTrigger: opts.originTrigger,
+      originDispatchId: opts.originDispatchId
+        || (inheritedLineage && inheritedLineage.kind === 'dispatch' ? inheritedLineage.operationId : null),
+      originTrigger: opts.originTrigger === true
+        || !!(!opts.originDispatchId && inheritedLineage && inheritedLineage.kind === 'trigger'),
       originContinue: opts.originContinue,
       goalLimits: opts.goalLimits,
       bgTaskIds: opts.bgTaskIds,
@@ -10194,8 +10301,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   const clientMsgId = turnRequest.identity.clientMsgId || '';
   const deliveryId = turnRequest.identity.deliveryId || '';
   const originDispatchId = turnRequest.origin.operationId;
-  const originTrigger = turnRequest.origin.kind === 'trigger';
-  const originContinue = turnRequest.origin.kind === 'continue';
+  const originContinue = turnRequest.launch.reason === 'continue';
   const goalLimits = turnRequest.goalLimits;
   const bgTaskIds = turnRequest.background.taskIds;
   const bgToolUseIds = turnRequest.background.toolUseIds;
@@ -10238,6 +10344,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
 
   const turnId = `turn_${crypto.randomBytes(12).toString('hex')}`;
+  const turn = createTurnLifecycle(turnRequest, { turnId });
   const claimed = chatTurnPreparationRuntime.claim(sessionName, turnId, {
     cli: turnRequest.cli,
     transport: turnRequest.execution.transport,
@@ -10250,6 +10357,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   let preparationFailure = 'preparation-failed';
   let cs = existingCs;
   let runnerSuperseded = false;
+  let runnerHandedOff = false;
   let preparationStateActivated = false;
   let messageDurable = false;
 
@@ -10302,7 +10410,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // Kill previous process if still running
   if (cs.claudeProc) {
     console.log(`[multicc/chat] [${sessionName}] New user_message while claude pid=${cs.claudeProc.pid} still running, killing previous turn`);
-    cs._killReason = 'new_user_message';
+    assignKillReason(cs._activeRunner, 'new_user_message');
     runnerSuperseded = true;
     try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
     cs.claudeProc = null;
@@ -10323,7 +10431,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     // persistent process. Interrupt it (its finalize becomes a no-op via the
     // _streamTurnSeq bump) and preserve its partial output before resetting.
     console.log(`[multicc/chat] [${sessionName}] (streaming) new message while turn busy → interrupting previous`);
-    cs._killReason = 'new_user_message';
+    assignKillReason(cs._activeRunner, 'new_user_message');
     runnerSuperseded = true;
     cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1; // supersede the in-flight turn's finalize
     chatStream.cancel(sessionName);
@@ -10382,6 +10490,11 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
   cs.streamReplay = [];
   cs._resultSaved = false;
+  cs._adapterError = null;
+  cs._sawApiError = false;
+  cs._activeTurn = turn;
+  cs._activeRunner = null;
+  cs._continuationLineage = { turnId: turn.turnId, lineage: turn.lineage };
   // Reset the per-turn role breakdown (main vs sub) collected by the claude-proxy
   // onUsage hook. A new user turn starts a fresh "本轮" window, so stale subagent
   // totals from the previous turn must not bleed into the new one.
@@ -10398,10 +10511,8 @@ function runChatTurn(sessionName, text, opts = {}) {
   // once at turn end (classifyTurnEnd); the periodic scan re-judges non-D/W.
   cancelClassify(cs);
   emitRunningNotify(sessionName, `处理中：${(cs.currentTask && cs.currentTask.goal) || '新任务'}`);
-  // Marks this turn as initiated by an auto-trigger, so post-turn triggers
-  // don't recurse on their own output (see firePostTurnTriggers).
-  cs._originTrigger = !!originTrigger;
-  cs.originDispatchId = originDispatchId || null;
+  // Trigger/dispatch lineage is owned by `turn`; no session-global origin flag
+  // is written here, so a stale finalize cannot leak ancestry into a new turn.
   setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
 
   const provider = providerFor(cs);
@@ -10487,16 +10598,21 @@ function runChatTurn(sessionName, text, opts = {}) {
   // (the per-turn toggle was removed); non-claude CLIs use the per-turn spawn
   // path below, unchanged.
   if (cs.cli === 'claude') {
-    const accepted = runChatTurnStreaming(sessionName, cs, persisted, invocation, provider);
+    const accepted = runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, turn);
     if (!accepted) {
       preparationFailure = 'stream-runner-rejected';
       return false;
     }
+    runnerHandedOff = true;
     const released = chatTurnPreparationRuntime.settle(sessionName, turnId, {
       status: 'delegated', reason: 'claude-stream',
     });
-    if (!released.ok) throw new Error(`turn preparation release rejected: ${released.code}`);
     preparationOpen = false;
+    if (!released.ok) {
+      logger.error('chat_turn_preparation_release_failed_after_handoff', {
+        sessionId: sessionName, turnId, runner: 'claude-stream', code: released.code,
+      });
+    }
     return true;
   }
 
@@ -10546,12 +10662,18 @@ function runChatTurn(sessionName, text, opts = {}) {
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const runner = createRunnerOwnership(turn, {
+      runnerId: `proc_${proc.pid || 'pending'}_${crypto.randomBytes(6).toString('hex')}`,
+      kind: 'process',
+    });
+    cs._activeTurn = turn;
+    cs._activeRunner = runner;
     cs.claudeProc = proc;
 
     const spawnTs = Date.now();
     console.log(`[multicc/chat] [${sessionName}] ${cs.cli} spawned pid=${proc.pid} turn=${cs.chatTurnCount} isRetry=${!!isRetry} clients=${cs.clients.size}`);
     let stderrBuf = '';
-    const isActiveProc = () => cs.claudeProc === proc;
+    const isActiveProc = () => cs.claudeProc === proc && isCurrentTurnRunner(cs, turn, runner);
 
     // Normalize a single JSONL line into the claude-shaped event stream the frontend
     // already consumes. Returns an array of events to forward (may be empty), or null
@@ -10560,7 +10682,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       let evt;
       try { evt = JSON.parse(line); } catch { return; }
 
-      applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward);
+      applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
     };
 
     const forward = (evt) => {
@@ -10602,8 +10724,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       }
       cs.lineBuf = '';
       const durMs = Date.now() - spawnTs;
-      const killReason = cs._killReason || null;
-      cs._killReason = null;
+      const killReason = runner.killReason || null;
       const pendingStreamError = cs._codexPendingStreamError || '';
       const pendingTransportError = cs._codexTransportError || '';
       const pendingStreamErrorCount = cs._codexPendingStreamErrorCount || 0;
@@ -10615,7 +10736,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       const recoveredCodexDisconnect = (!!cs._codexRecoveredDisconnect || !!pendingStreamError) && hasTurnOutput;
       const diag = {
         session: sessionName, cli: cs.cli, pid: proc.pid, code, signal, durMs, killReason,
-        resultSaved: !!cs._resultSaved,
+        resultSaved: !!turn.resultDurable,
         gotText: (cs.currentAssistantText || '').length,
         toolCalls: cs.currentToolCalls.length,
         liveClients: cs.clients.size,
@@ -10628,13 +10749,13 @@ function runChatTurn(sessionName, text, opts = {}) {
       let kind = 'normal';
       if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
       else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
-      else if (!cs._resultSaved && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
+      else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
       console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
       if (
         cs.cli === 'codex' &&
         pendingStreamError &&
         hasTurnOutput &&
-        !cs._resultSaved &&
+        !turn.resultDurable &&
         !killReason &&
         persisted.cliSessionId &&
         (cs._codexStreamContinuationCount || 0) < CODEX_STREAM_DISCONNECT_CONTINUE_MAX
@@ -10654,6 +10775,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         chatBroadcast(sessionName, { type: 'system', subtype: 'warning', message: msg });
         setSessionStatus(sessionName, { status: 'running', currentFile: null });
         console.warn(`[multicc/chat] [${sessionName}] auto-continuing codex after response.completed disconnect #${cs._codexStreamContinuationCount}`);
+        runner.retryPlanned = true;
         cs.claudeProc = spawnChat(continueArgs, true);
         return;
       }
@@ -10711,6 +10833,7 @@ function runChatTurn(sessionName, text, opts = {}) {
           type: 'system', subtype: 'warning',
           message: `${cs.cli} 启动失败（${reason}），已用新会话重试`,
         });
+        runner.retryPlanned = true;
         cs.claudeProc = spawnChat(fallbackArgs, true);
         return;
       }
@@ -10732,16 +10855,34 @@ function runChatTurn(sessionName, text, opts = {}) {
       if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
 
       let savedInClose = false;
-      if (!cs._resultSaved && (cs.currentAssistantText || cs.currentToolCalls.length)) {
-        appendChatMessage(sessionName, {
+      const sawApi = !!runner.sawApiError;
+      const hadAdapterError = !!runner.adapterError && !recoveredCodexDisconnect;
+      const closeCanBeFinal = !!(
+        !killReason && !sawApi && !hadAdapterError && !runner.retryPlanned
+        && (runner.resultEvent || (kind === 'normal' && !isRetry))
+      );
+      const closeCheckpointKey = assistantCheckpointKey(cs);
+      const sameDurablePartial = hasMatchingPartialCheckpoint(runner, closeCheckpointKey);
+      if (!turn.resultDurable && (cs.currentAssistantText || cs.currentToolCalls.length)
+          && (runner.resultEvent || !sameDurablePartial)) {
+        savedInClose = persistFinalAssistantResult(sessionName, cs, turn, runner, {
           role: 'assistant', content: cs.currentAssistantText,
           tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
           cost: cs.currentCost, ts: Date.now(),
-        });
-        cs.chatTurnCount++;
-        savedInClose = true;
+          ...(!closeCanBeFinal ? { partial: true } : {}),
+        }, { final: closeCanBeFinal });
+        if (savedInClose) {
+          recordDurableTurnUsage(sessionName, runner, runner.pendingUsage);
+          cs.chatTurnCount++;
+        }
       }
-      if (recoveredCodexDisconnect && (savedInClose || cs._resultSaved)) {
+      if (runner.resultEvent && !turn.resultDurable) {
+        chatBroadcast(sessionName, {
+          type: 'error',
+          error: '回复已生成但未能持久化，已停止回流和后续动作。',
+        });
+      }
+      if (recoveredCodexDisconnect && (savedInClose || turn.resultDurable)) {
         chatBroadcast(sessionName, {
           type: 'result',
           total_cost_usd: null,
@@ -10755,7 +10896,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs.currentAssistantText = '';
       cs.currentToolCalls = [];
       cs._resultSaved = false;
-      const hadAdapterError = !!cs._adapterError && !recoveredCodexDisconnect; cs._adapterError = null;
+      cs._adapterError = null;
       cs._codexRecoveredDisconnect = false;
       cs._codexPendingStreamError = '';
       cs._codexPendingStreamErrorCount = 0;
@@ -10763,12 +10904,12 @@ function runChatTurn(sessionName, text, opts = {}) {
       cs._codexStreamContinuationCount = 0;
       // classify prompt + dispatchStateAction handles API errors via state E.
       // Capture the flag before resetting so the branch below can reference it.
-      const sawApi = cs._sawApiError; cs._sawApiError = false;
+      cs._sawApiError = false;
 
       // Resting status — classifyTurnEnd is the single decider of D/C/W/E/P.
       if (killReason) {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-      } else if (kind === 'normal' || sawApi || hadAdapterError || kind === 'nonzero_exit' || kind === 'signaled') {
+      } else if (turn.resultDurable || sawApi || hadAdapterError || kind === 'nonzero_exit' || kind === 'signaled') {
         classifyTurnEnd(cs, sessionName);
         if (auxQueue.isUnhealthy()) {
           setSessionStatus(sessionName, { status: 'idle', currentFile: null });
@@ -10778,22 +10919,15 @@ function runChatTurn(sessionName, text, opts = {}) {
       }
       chatBroadcast(sessionName, { type: 'stream_end' });
 
-      // Auto-回流: turn was dispatched on the gateway's behalf → push result back.
-      // Guarded: this runs inside a child-process 'close' handler, so an uncaught
-      // throw here would crash the whole server (no global handler).
+      // Auto-return, gateway marker handling and post-turn triggers are all
+      // guarded by current runner ownership + a durable final result.
       try {
-        if (cs.originDispatchId) {
-          const did = cs.originDispatchId;
-          cs.originDispatchId = null;
-          // Decoupled via the bus so chat doesn't depend on the gateway domain.
-          bus.emit('chat:dispatch-complete', did, sessionName, finalText);
-        } else if (persisted.type === 'gateway') {
-          // Gateway's own turn: detect a dispatch marker → stage pending confirmation.
-          bus.emit('chat:gateway-turn-complete', finalText);
-        } else if (persisted.type !== 'aux') {
-          // Any other chat session: a <<dispatch>> marker fans work out to siblings.
-          maybeDispatchFromChatTurn(sessionName, finalText);
-        }
+        runDurablePostTurn(sessionName, cs, persisted, turn, runner, finalText, {
+          interrupted: !!killReason || hadAdapterError || (!runner.resultEvent && kind !== 'normal'),
+          apiError: sawApi,
+          retryPlanned: runner.retryPlanned,
+          handoffResumeFailure: guardedHandoffResumeFailure,
+        });
       } catch (e) {
         console.error('[multicc/dispatch] post-turn hook failed:', e.message);
       }
@@ -10807,14 +10941,26 @@ function runChatTurn(sessionName, text, opts = {}) {
     preparationFailure = 'process-runner-rejected';
     return false;
   }
+  runnerHandedOff = true;
   const released = chatTurnPreparationRuntime.settle(sessionName, turnId, {
     status: 'delegated', reason: 'cli-process',
   });
-  if (!released.ok) throw new Error(`turn preparation release rejected: ${released.code}`);
   preparationOpen = false;
+  if (!released.ok) {
+    logger.error('chat_turn_preparation_release_failed_after_handoff', {
+      sessionId: sessionName, turnId, runner: 'cli-process', code: released.code,
+    });
+  }
   return true;
   } catch (error) {
     if (preparationFailure === 'preparation-failed') preparationFailure = 'preparation-exception';
+    if (runnerHandedOff) {
+      logger.error('chat_turn_host_error_after_runner_handoff', {
+        sessionId: sessionName, turnId, error: error && error.message,
+      });
+      preparationOpen = false;
+      return true;
+    }
     console.error(`[multicc/chat] [${sessionName}] turn preparation failed before runner handoff: ${error && error.message ? error.message : error}`);
     const publicError = messageDurable
       ? '消息已保存，但本轮准备失败，尚未启动新的 CLI 请求。'
@@ -11140,7 +11286,7 @@ app.get('/api/detached/:taskId', async (req, res) => {
 // UI sees identical events. The turn boundary is the `result` event (handled
 // inside applyClaudeChatEvent); finalizeStreamingTurn() then does the
 // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
-function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) {
+function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, turn) {
   // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
   // vars before applying the provider env, so the provider choice is always
   // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
@@ -11197,6 +11343,12 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
   // runChatTurn. Claim this turn's sequence number so a late finalize from a
   // superseded turn can't clobber us.
   const mySeq = cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1;
+  const runner = createRunnerOwnership(turn, {
+    runnerId: `stream_${mySeq}_${crypto.randomBytes(6).toString('hex')}`,
+    kind: 'stream', sequence: mySeq,
+  });
+  cs._activeTurn = turn;
+  cs._activeRunner = runner;
 
   const forward = (evt) => {
     cs.lastStreamAt = Date.now();  // watchdog: last live stream activity (stuck-isStreaming detection)
@@ -11207,12 +11359,13 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
 
   console.log(`[multicc/chat] [${sessionName}] (streaming) send turn=${cs.chatTurnCount} model=${persisted.model || 'default'} status=${JSON.stringify(chatStream.status(sessionName))}`);
   chatStream.send(sessionName, invocation.payload, (evt) => {
-    applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward);
+    if (!isCurrentTurnRunner(cs, turn, runner)) return;
+    applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
   })
-    .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq))
+    .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner))
     .catch((err) => {
       console.warn(`[multicc/chat] [${sessionName}] (streaming) turn ended early: ${err.message}`);
-      finalizeStreamingTurn(sessionName, cs, persisted, mySeq);
+      finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner);
     });
 
   return true;
@@ -11221,32 +11374,43 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
 // Process-independent end-of-turn cleanup for the streaming path. Guarded by
 // the turn sequence so a superseded (interrupted) turn's late completion can't
 // clobber the turn that replaced it.
-function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
+function finalizeStreamingTurn(sessionName, cs, persisted, seq, turn, runner) {
   if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
+  if (!isCurrentTurnRunner(cs, turn, runner)) return;
   cs.isStreaming = false;
   cancelClassify(cs);
   cs.streamReplay = [];
   // applyClaudeChatEvent already saved on the `result` event (cs._resultSaved);
   // this only fires for an interrupted/aborted turn that has partial output.
-  if (!cs._resultSaved && (cs.currentAssistantText || cs.currentToolCalls.length)) {
-    appendChatMessage(sessionName, {
+  const killReason = runner.killReason || null;
+  const sawApi = !!runner.sawApiError;
+  const finalCandidate = !!(runner.resultEvent && !killReason && !sawApi && !runner.retryPlanned);
+  const finalizeCheckpointKey = assistantCheckpointKey(cs);
+  const sameDurablePartial = hasMatchingPartialCheckpoint(runner, finalizeCheckpointKey);
+  if (!turn.resultDurable && (cs.currentAssistantText || cs.currentToolCalls.length)
+      && (runner.resultEvent || !sameDurablePartial)) {
+    const saved = persistFinalAssistantResult(sessionName, cs, turn, runner, {
       role: 'assistant', content: cs.currentAssistantText,
       tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
       cost: cs.currentCost, ts: Date.now(),
-    });
-    cs.chatTurnCount++;
+      ...(!finalCandidate ? { partial: true } : {}),
+    }, { final: finalCandidate });
+    if (saved) {
+      recordDurableTurnUsage(sessionName, runner, runner.pendingUsage);
+      cs.chatTurnCount++;
+    }
   }
+  const incrTimer = _incrSaveTimers.get(sessionName);
+  if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
   const finalText = cs.currentAssistantText;
   cs.currentAssistantText = '';
   cs.currentToolCalls = [];
   // A clean turn fired the `result` event (set _resultSaved); an interrupted /
   // dropped turn lands here without it. Capture before the reset below.
-  const completedOk = cs._resultSaved;
+  const completedOk = turn.resultDurable;
   cs._resultSaved = false;
   // Why the turn ended, captured before reset: user_cancel / new_user_message are
   // deliberate stops (never recovered); any other !completedOk end is a fault.
-  const killReason = cs._killReason || null;
-  cs._killReason = null;
   const userStopped = killReason === 'user_cancel' || killReason === 'new_user_message';
   const handoff = persisted.pendingCliHandoff;
   const guardedHandoffResumeFailure = !!(
@@ -11258,7 +11422,7 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
     && handoff.toCli === persisted.cli
   );
   // classify prompt + dispatchStateAction handles API errors via state E → retry.
-  const sawApi = cs._sawApiError; cs._sawApiError = false;
+  cs._sawApiError = false;
   // Let classify decide the final status. If sawApi, always defer to classify.
   // classify; otherwise emit the obvious outcome.
   if (guardedHandoffResumeFailure) {
@@ -11275,7 +11439,18 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
     // the assistant paused to ask the user. Never auto-recovered. Clear the
     // interrupt-resume counter so a past fault doesn't leak into the next turn.
     waitInjector.resetInterrupted(sessionName);
+    classifyTurnEnd(cs, sessionName);
     emitTurnOutcome(sessionName, { status: 'completed', notifyState: 'completed', message: '任务完成', alert: false });
+  } else if (runner.resultEvent) {
+    // The provider finished, but neither the result handler nor this finalize
+    // retry could commit the final assistant message. Do not ask the provider
+    // to generate it again and do not run post-turn effects; retain lineage so
+    // a later explicit recovery can complete safely.
+    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    chatBroadcast(sessionName, {
+      type: 'error',
+      error: '回复已生成但未能持久化，已停止回流和后续动作。',
+    });
   } else {
     // 非正常中断: the stream ended WITHOUT a `result` event and WITHOUT an API error
     // — the turn was cut (proc/stream died, connection dropped, truncated, watchdog
@@ -11283,7 +11458,7 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
     // interrupt fingerprint — no LLM guess. Auto-recover it (the only non-fault case
     // we recover) unless the user stopped it themselves. resumeInterrupted is
     // hasWait-guarded + capped (MAX_RESUME_INTERRUPTED) against a drop-loop.
-    if (!userStopped && waitInjector.resumeInterrupted(sessionName)) {
+    if (!killReason && waitInjector.resumeInterrupted(sessionName)) {
       console.log(`[multicc/chat] [${sessionName}] (streaming) 非正常中断 (no result event, kill=${killReason || 'none'}) → resume`);
     } else {
       setSessionStatus(sessionName, { status: 'idle', currentFile: null });
@@ -11291,18 +11466,15 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq) {
   }
   chatBroadcast(sessionName, { type: 'stream_end' });
 
-  // Gateway/dispatch回流 — same hooks the per-turn close handler fires.
+  // Gateway/dispatch回流 and trigger execution require the same durable/current
+  // proof as the per-process close path.
   try {
-    if (guardedHandoffResumeFailure) return;
-    if (cs.originDispatchId) {
-      const did = cs.originDispatchId;
-      cs.originDispatchId = null;
-      bus.emit('chat:dispatch-complete', did, sessionName, finalText);
-    } else if (persisted.type === 'gateway') {
-      bus.emit('chat:gateway-turn-complete', finalText);
-    } else if (persisted.type !== 'aux') {
-      maybeDispatchFromChatTurn(sessionName, finalText);
-    }
+    runDurablePostTurn(sessionName, cs, persisted, turn, runner, finalText, {
+      interrupted: !completedOk || !!killReason,
+      apiError: sawApi,
+      retryPlanned: runner.retryPlanned,
+      handoffResumeFailure: guardedHandoffResumeFailure,
+    });
   } catch (e) {
     console.error('[multicc/dispatch] post-turn hook failed:', e.message);
   }
@@ -11502,7 +11674,7 @@ function handleChatWs(ws, req, urlObj) {
         cancelClassify(cs);
         if (cs.cli === 'claude' && chatStream.isAlive(sessionName)) {
           console.log(`[multicc/chat] [${sessionName}] (streaming) cancel requested by user`);
-          cs._killReason = 'user_cancel';
+          assignKillReason(cs._activeRunner, 'user_cancel');
           // proc death → finalizeStreamingTurn fires (stream_end + idle). Don't
           // bump the seq here so that finalize is NOT superseded.
           chatStream.cancel(sessionName);
@@ -11511,7 +11683,7 @@ function handleChatWs(ws, req, urlObj) {
         }
         if (cs.claudeProc) {
           console.log(`[multicc/chat] [${sessionName}] Cancel requested by user, killing claude pid=${cs.claudeProc.pid}`);
-          cs._killReason = 'user_cancel';
+          assignKillReason(cs._activeRunner, 'user_cancel');
           try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
           cs.claudeProc = null;
           cs.lineBuf = '';
@@ -11987,10 +12159,12 @@ function fireTrigger(sessionId, trigger, reason, opts = {}) {
   bus.emit('chat:run', sessionId, prompt, { originTrigger: true });
 }
 
-// Called after every chat turn's `result`. Fires post-turn triggers, but never
-// on a turn that an auto-trigger itself started (cs._originTrigger) — no loop.
-function firePostTurnTriggers(sessionId, cs) {
-  if (cs && cs._originTrigger) return;
+// Called only after a current runner has durably committed its final result.
+// Trigger lineage is turn-owned so a retry retains the recursion guard without
+// leaking it into a later user turn.
+function firePostTurnTriggers(sessionId, cs, completion) {
+  if (!completion || completion.resultDurable !== true) return;
+  if (completion.lineage && completion.lineage.kind === 'trigger') return;
   const persisted = persistedSessions.get(sessionId);
   if (!persisted || !Array.isArray(persisted.triggers)) return;
   for (const t of persisted.triggers) {
@@ -12363,7 +12537,7 @@ function flushInFlightChats() {
     const hasTools = !!(cs.currentToolCalls && cs.currentToolCalls.length);
     if (!hasText && !hasTools) continue;
     try {
-      appendChatMessage(name, {
+      const saved = appendChatMessage(name, {
         role: 'assistant',
         content: cs.currentAssistantText || '',
         tools: hasTools ? cs.currentToolCalls : undefined,
@@ -12371,8 +12545,17 @@ function flushInFlightChats() {
         ts: Date.now(),
         partial: true,   // saved mid-turn on shutdown; may be incomplete
       });
-      cs._resultSaved = true;
-      n++;
+      if (saved) {
+        const turn = cs._activeTurn;
+        const runner = cs._activeRunner;
+        if (turn && runner && isCurrentTurnRunner(cs, turn, runner)) {
+          recordPartialCheckpoint(turn, runner, {
+            current: true, persisted: true, checkpointKey: assistantCheckpointKey(cs),
+          });
+        }
+        cs._resultSaved = true;
+        n++;
+      }
     } catch (_) {}
   }
   return n;
@@ -12442,6 +12625,7 @@ function closeWebSocketRuntime() {
 async function closeSessionRuntime() {
   for (const [name, cs] of chatSessions) {
     try { cancelClassify(cs); } catch (_) {}
+    if (cs) assignKillReason(cs._activeRunner, 'shutdown');
     try { chatStream.close(name); } catch (_) {}
     if (cs && cs.claudeProc) {
       try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}

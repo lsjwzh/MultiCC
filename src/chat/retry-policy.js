@@ -60,6 +60,7 @@ function decideRetry(input = {}, deps = {}) {
     return schedule('resume', 'api-error', attempt, delays.apiError, deps, { capped: false });
   }
   if (event === 'interrupted') {
+    if (input.killReason) return terminal('interrupted', 'explicit-lifecycle-stop');
     if (input.userStopped === true) return terminal('interrupted', 'user-stopped');
     if (input.hasExplicitWait === true) {
       return Object.freeze({ action: 'wait', classification: 'interrupted', reason: 'explicit-wait', cleanup: true });

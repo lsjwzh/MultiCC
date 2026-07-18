@@ -5,5 +5,6 @@ module.exports = {
   ...require('./retry-policy'),
   ...require('./post-turn-router'),
   ...require('./runtime-store'),
+  ...require('./turn-lifecycle'),
   ...require('./ports'),
 };
