@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/workspace.schema.json",
+  "title": "Workspace snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["directory", "sessions", "count"],
+  "properties": {
+    "directory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "label": { "type": ["string", "null"], "maxLength": 160 }
+      }
+    },
+    "sessions": { "type": "array", "items": { "$ref": "workspace-entry.schema.json" } },
+    "count": { "type": "integer", "minimum": 0 }
+  }
+}

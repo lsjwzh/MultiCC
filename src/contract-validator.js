@@ -164,6 +164,13 @@ function assertBackwardCompatible(baseline, registry) {
     for (const [property, constraint] of Object.entries(expected.properties || {})) {
       const current = schema.properties && schema.properties[property];
       if (!current) { errors.push(`${file}: property removed: ${property}`); continue; }
+      if (constraint.$ref !== undefined && current.$ref !== constraint.$ref) {
+        errors.push(`${file}.${property}: ref changed`);
+      }
+      if (constraint.items && constraint.items.$ref !== undefined
+        && (!current.items || current.items.$ref !== constraint.items.$ref)) {
+        errors.push(`${file}.${property}: item ref changed`);
+      }
       const oldTypes = Array.isArray(constraint.type) ? constraint.type : (constraint.type ? [constraint.type] : []);
       const newTypes = Array.isArray(current.type) ? current.type : (current.type ? [current.type] : []);
       for (const type of oldTypes) if (!newTypes.includes(type)) errors.push(`${file}.${property}: no longer accepts type ${type}`);

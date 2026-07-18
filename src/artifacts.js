@@ -20,7 +20,11 @@ const ARTIFACTS_DIR = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).art
 // through ARTIFACTS_DIR. Exporting the resolved path lets child agents and the
 // bundled skill agree even when MULTICC_DATA_DIR uses its default.
 const LEGACY_ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');
-if (!process.env.MULTICC_ARTIFACTS_DIR) process.env.MULTICC_ARTIFACTS_DIR = ARTIFACTS_DIR;
+// This environment variable is an output of the resolved data-root policy, not
+// an independent input. Always replace a stale inherited value so child agents
+// cannot escape an explicitly isolated MULTICC_DATA_DIR and write artifacts
+// back into another service instance or the source checkout.
+process.env.MULTICC_ARTIFACTS_DIR = ARTIFACTS_DIR;
 
 // Matches the auth-whitelist regex in server.js. Keep them in sync.
 const ARTIFACT_PATH_RE = /^\/artifacts\/[A-Za-z0-9_-]+(?:\/|$)/;
