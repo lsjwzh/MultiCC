@@ -105,7 +105,6 @@
       "migrationStrategy": "Keep OS-temp ownership, enforce private modes and lifecycle cleanup, and never treat these paths as durable API fields.",
       "sources": [
         { "file": "server.js", "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);" },
-        { "file": "server.js", "anchor": "fs.writeFileSync(tmpPath, req.file.buffer, { mode: 0o600 });" },
         { "file": "server.js", "anchor": "fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'), { mode: 0o600 });" }
       ]
     },

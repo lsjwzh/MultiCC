@@ -24,7 +24,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npm run test:deterministic
+      - name: Run deterministic, architecture, and repository governance suites
+        run: npm run test:deterministic
       - name: Validate API schemas, golden payloads, and compatibility
         run: npm run test:contracts
       - run: npm run test:native

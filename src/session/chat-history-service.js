@@ -25,6 +25,7 @@ function createChatHistoryService({ history, idFactory, clock = Date.now, maxMes
   if (!Number.isSafeInteger(maxMessages) || maxMessages < 1) {
     throw new TypeError('[session] maxMessages must be a positive integer');
   }
+  const cache = new Map();
 
   function normalize(source) {
     if (!Array.isArray(source)) return [];
@@ -36,11 +37,20 @@ function createChatHistoryService({ history, idFactory, clock = Date.now, maxMes
   }
 
   function read(sessionId) {
-    return normalize(history.read(String(sessionId)));
+    const key = String(sessionId);
+    if (!cache.has(key)) cache.set(key, normalize(history.read(key)));
+    return jsonClone(cache.get(key));
   }
 
   function persist(sessionId, messages) {
-    history.write(String(sessionId), jsonClone(messages));
+    const key = String(sessionId);
+    const snapshot = jsonClone(messages);
+    history.write(key, snapshot);
+    cache.set(key, snapshot);
+  }
+
+  function invalidate(sessionId) {
+    cache.delete(String(sessionId));
   }
 
   function append(sessionId, value) {
@@ -131,7 +141,7 @@ function createChatHistoryService({ history, idFactory, clock = Date.now, maxMes
     return null;
   }
 
-  return Object.freeze({ append, latestAssistantAt, paginate, read, remove, replace });
+  return Object.freeze({ append, invalidate, latestAssistantAt, paginate, read, remove, replace });
 }
 
 module.exports = { cleanThinkingBlocks, createChatHistoryService };
