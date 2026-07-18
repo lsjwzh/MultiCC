@@ -1356,7 +1356,11 @@ const directoryModule = createDirectoryModule({
     invalidatePushCache: (p, b) => gitPush.invalidate(p, b),
     statusPorcelain: (p) => gitRunQueued(p, ['status', '--porcelain']),
     stageAll: (p) => gitRunQueued(p, ['add', '-A']),
-    commit: (p, m) => gitRunQueued(p, ['commit', '-m', m]),
+    commit: (p, m) => gitRunQueued(p, [
+      '-c', 'user.email=multicc@local',
+      '-c', 'user.name=multicc',
+      'commit', '-m', m,
+    ]),
     ensureReady: ensureDirGitReady,
     unmarkReady: (id) => { gitReadyDirs.delete(id); },
   },
