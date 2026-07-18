@@ -35,7 +35,6 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     _activeFleetDirId = dirId;
     notifyListeners();
   }
-
   void closeFleetDir() {
     _activeFleetDirId = null;
     notifyListeners();
@@ -481,11 +480,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     SessionCli cli, {
     bool fresh = false,
   }) async {
-    final config = await _sessionService.switchSessionCli(
-      id,
-      cli,
-      fresh: fresh,
-    );
+    final config = await _sessionService.switchSessionCli(id, cli, fresh: fresh);
     _providers[id]?.applyCliConfig(config);
     await loadDashboard();
     return config;

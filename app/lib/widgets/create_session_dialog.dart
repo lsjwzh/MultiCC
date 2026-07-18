@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
 
+
 // ── New-session dialog with role presets + provider→model linkage ───────────
 
 class CreateSessionResult {
@@ -156,6 +157,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     return _isClaude ? kClaudeModelOptions : const [];
   }
 
+
   String _providerIdForPresetDefault(AgentPreset preset) {
     final declared = preset.defaultProviderId ?? '';
     if (declared.isNotEmpty &&
@@ -173,9 +175,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       }
       for (final p in widget.providers) {
         final name = (p['name'] ?? '').toString().toLowerCase();
-        if (name.contains('讯飞') ||
-            name.contains('xf') ||
-            name.contains('maas')) {
+        if (name.contains('讯飞') || name.contains('xf') || name.contains('maas')) {
           return p['id'] as String;
         }
       }
@@ -183,9 +183,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (key == 'openai-codex') {
       for (final p in widget.providers) {
         final name = (p['name'] ?? '').toString().toLowerCase();
-        if (name.contains('openai') ||
-            name.contains('codex 官方') ||
-            name.contains('官方')) {
+        if (name.contains('openai') || name.contains('codex 官方') || name.contains('官方')) {
           return p['id'] as String;
         }
       }
@@ -277,9 +275,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(t('roleLoadFailed', {'error': '$e'}))),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('roleLoadFailed', {'error': '$e'}))));
     }
   }
 
@@ -366,10 +364,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               children: [
                 Text(
                   t('rolePrompt'),
-                  style: const TextStyle(
-                    color: Color(0xFF8a909b),
-                    fontSize: 11,
-                  ),
+                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
                 ),
                 const Spacer(),
                 TextButton.icon(
@@ -500,18 +495,15 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(),
                 items: widget.cli.effortOptions
-                    .map(
-                      (e) => DropdownMenuItem(
-                        value: e,
-                        child: Text(
-                          _isClaude ? e : effortShortNameForCli(widget.cli, e),
-                          style: const TextStyle(color: Color(0xFFe7eaee)),
-                        ),
-                      ),
-                    )
+                    .map((e) => DropdownMenuItem(
+                          value: e,
+                          child: Text(
+                            _isClaude ? e : effortShortNameForCli(widget.cli, e),
+                            style: const TextStyle(color: Color(0xFFe7eaee)),
+                          ),
+                        ))
                     .toList(),
-                onChanged: (v) =>
-                    setState(() => _pickedEffort = v ?? _defaultEffort),
+                onChanged: (v) => setState(() => _pickedEffort = v ?? _defaultEffort),
               ),
             ],
             if (widget.cli.supportsAgent) ...[
