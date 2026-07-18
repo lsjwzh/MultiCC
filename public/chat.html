@@ -145,10 +145,17 @@
       white-space: nowrap;
     }
     @media (max-width: 760px) {
-      #header { gap: 6px; }
+      #header { gap: 6px; padding: 8px; }
       #header-more-wrap { display: inline-flex; }
-      #session-title { max-width: 34vw; }
+      #session-title { order: 2; flex: 1 1 45%; max-width: none; }
+      #status { margin-left: auto; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
+      #reconnect-btn, #cli-btn, #merge-btn, #header-more-btn { min-height: 40px; min-width: 40px; }
+      #cli-btn { margin-left: auto; }
       #model-btn, #provider-btn, #role-btn, #memory-btn, #auto-commit-btn, #share-btn { max-width: 100%; }
+      #header-more-menu > .hdr-btn,
+      #header-more-menu #clear-ctx-wrap,
+      #header-more-menu #clear-ctx-btn { width: 100%; min-height: 44px; }
+      #header-more-menu #clear-ctx-wrap { display: flex; }
     }
 
     /* Session identity (directory / alias) shown in the header */
@@ -256,6 +263,7 @@
 
     .msg {
       max-width: 92%;
+      min-width: 0;
       padding: 10px 14px;
       border-radius: 12px;
       font-size: 14px;
@@ -381,10 +389,14 @@
       background: #0d1117; border: 1px solid #21262d; border-radius: 8px;
       padding: 12px; margin: 8px 0; overflow-x: auto; font-size: 13px; line-height: 1.5;
       max-width: 100%;
+      min-width: 0;
     }
     .msg.assistant pre code {
       background: none !important; padding: 0 !important;
       font-family: 'Cascadia Code', 'Fira Code', monospace;
+      display: block;
+      width: max-content;
+      min-width: 100%;
     }
 
     /* ── Tool call cards ── */
@@ -1037,6 +1049,25 @@
         max-width: none;
       }
       #messages { padding: 12px; }
+      .msg { max-width: 96%; }
+      .msg.assistant { max-width: 100%; }
+      #input-bar textarea,
+      #cwd-modal-inner input,
+      #goal-modal-inner textarea,
+      #memo-text,
+      #voice-panel textarea { font-size: 16px; }
+      #debug-panel { width: 100vw; max-width: 100vw; }
+    }
+
+    @media (max-width: 420px) {
+      #input-bar { flex-wrap: wrap; align-items: stretch; padding: 7px 8px; }
+      #input-bar textarea { order: 1; flex: 1 1 calc(100% - 52px); min-height: 44px; }
+      #send-btn, #cancel-btn { order: 1; width: 44px; height: 44px; flex: 0 0 44px; }
+      #mic-btn, #attach-btn, #goal-btn { order: 2; width: 44px; height: 40px; }
+      #pre-input-bar { flex-wrap: wrap; gap: 6px; padding: 5px 10px; }
+      #subagent-pill { margin-left: 0 !important; }
+      #merge-hint { bottom: calc(105px + env(safe-area-inset-bottom)); flex-wrap: wrap; }
+      #merge-hint .merge-hint-text { flex-basis: 100%; }
     }
 
     /* ── CWD change modal ── */
@@ -1217,6 +1248,9 @@
     }
     @media (max-width: 660px) {
       #memo-modal-inner { min-width: 94vw; max-width: 98vw; width: 94vw; min-height: 80vh; }
+      #memo-modal-head { flex-wrap: wrap; }
+      #memo-modal-head > div:first-child { flex-basis: 100% !important; }
+      #memo-modal-head .hdr-btn { min-height: 40px; flex: 1; }
     }
     #memo-modal-head {
       display: flex;
@@ -1410,7 +1444,7 @@
     <span id="session-title" title="会话身份：Fleet / 别名"></span>
     <button id="reconnect-btn" class="hdr-btn" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
     <span class="hdr-spacer"></span>
-    <button class="hdr-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
+    <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
     <button id="notify-btn" class="hdr-btn" title="语音通知 (点击开启/关闭)">&#128276;</button>
     <button id="s2s-btn" class="hdr-btn" title="S2S 语音对话模式 (点击开启/关闭)">&#127897;</button>
     <button id="dbg-btn" class="hdr-btn" title="Debug 面板">&#128027;</button>
@@ -1638,17 +1672,9 @@
   <script src="i18n.js"></script>
   <script src="shared/models.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.1/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/core.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/bash.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/json.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/typescript.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/css.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/xml.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/java.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/go.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/rust.min.js"></script>
+  <!-- Browser bundle: /lib/languages/*.js are CommonJS modules and throw
+       `module is not defined` when loaded directly in a page. -->
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
   <script src="voice-output.js"></script>
   <script src="vad-monitor.js"></script>
   <script src="voice-stream.js"></script>

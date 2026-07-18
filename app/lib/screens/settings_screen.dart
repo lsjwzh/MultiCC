@@ -14,6 +14,7 @@ import '../theme.dart';
 import '../widgets/model_picker.dart';
 import 'agent_resources_screen.dart';
 import 'aux_screen.dart';
+import 'bridge_settings_screen.dart';
 import 'cron_screen.dart';
 import 'dashboard_screen.dart';
 import 'events_screen.dart';
@@ -624,11 +625,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _NavTile(
                 icon: Icons.dataset_outlined,
                 title: 'Agent 资源 / 缓存',
-                subtitle: 'Skills、Claude 历史会话清理、临时上传缓存',
+                subtitle: 'Skills、技能同步、Claude 历史会话、临时上传缓存',
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute<void>(
                     builder: (_) => AgentResourcesScreen(settings: widget.settings),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              _NavTile(
+                icon: Icons.hub_outlined,
+                title: '消息桥接',
+                subtitle: 'Feishu / Telegram / Discord / Slack / 微信 Gateway',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => BridgeSettingsScreen(settings: widget.settings),
                   ),
                 ),
               ),
@@ -637,7 +650,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _Section(
             title: '服务端设置',
             children: [
-              const _Hint('以下设置读写服务器全局配置。带密钥的项（语音密钥、推送通道、WeChat 桥接等）仍需在网页管理台配置；密码类项仅服务器本机可改。'),
+              const _Hint('以下设置读写服务器全局配置。消息桥接与推送凭证可在 App 中管理；微信首次扫码和语音密钥仍需网页管理台。密码类项仅服务器本机可改。'),
               const SizedBox(height: 10),
               // Access token (remote-login password) — masked preview + edit.
               const Text('访问密码 (Access Token)',

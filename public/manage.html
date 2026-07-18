@@ -395,6 +395,12 @@
       .dir-block.dir-card{min-height:180px}
       .dir-header{padding:12px 14px 10px}
       .dir-preview{padding:10px 14px 14px}
+      #topbar{padding:8px 12px;gap:7px;min-height:58px}
+      #topbar .crumb{font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+      #topbar .topspace{min-width:0}
+      #sidebar{padding:14px 12px 28px}
+      #topbar .icon-btn{width:40px;height:40px;flex-basis:40px}
+      #topbar .btn.primary{height:42px;padding:0 10px}
     }
     #nav-toggle{display:none}
 
@@ -461,6 +467,18 @@
     @media (max-width:640px){
       .lean{align-items:flex-start;flex-wrap:wrap}
       .lean-actions{width:100%;padding-left:18px;justify-content:flex-start}
+      .setting-row input,.setting-row select,.setting-row textarea,
+      .resource-toolbar input,.resource-toolbar select{font-size:16px}
+      .btn,.icon-btn,.hdr-btn{min-height:40px}
+      #topbar{padding-inline:8px;gap:6px}
+      #topbar .crumb small{display:none}
+      #topbar .btn.primary{font-size:0;min-width:78px}
+      #topbar .btn.primary::after{content:'+ Fleet';font-size:13px}
+      #topbar-help,#topbar-refresh{display:none}
+      #kpi-row{gap:8px;margin-bottom:18px}
+      .kpi{padding:12px}
+      .settings-card .sc-body{padding:14px}
+      .modal-card{max-width:calc(100vw - 24px)}
     }
   </style>
 </head>
@@ -521,8 +539,8 @@
       <div class="topspace"></div>
       <div class="search"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索Fleet / 会话…" oninput="filterDirs(this.value)" /></div>
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
-      <button class="icon-btn" onclick="startOnboarding()" title="引导">❓</button>
-      <button class="icon-btn" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
+      <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" title="引导">❓</button>
+      <button class="icon-btn" id="topbar-refresh" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
       <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建Fleet</button>
     </header>
 
