@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,6 +10,7 @@ import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
+import '../services/dashboard_workspace_store.dart';
 import '../services/workspace_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
@@ -34,10 +36,35 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> {
+  late final DashboardWorkspaceStore _workspaceStore;
+
+  @override
+  void initState() {
+    super.initState();
+    _workspaceStore = DashboardWorkspaceStore(settings: widget.settings);
+  }
+
+  @override
+  void dispose() {
+    _workspaceStore.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final mgr = context.watch<SessionManager>();
     final active = mgr.activeProvider;
+
+    // MainShell owns one workspace connection per directory. Cards and the
+    // fleet detail panel observe immutable projections from this shared store;
+    // neither consumer can reconnect or dispose the underlying socket.
+    _workspaceStore.onNotify = mgr.handleWorkspaceNotify;
+    _workspaceStore.onDirectorySnapshot = (dirId, snapshot) {
+      mgr.reportWaiting(dirId, snapshot.waitingSessionIds);
+      mgr.reportRunning(dirId, snapshot.runningSessionIds);
+      mgr.reportStatuses(dirId, snapshot.statuses);
+    };
+    _workspaceStore.syncDirectories(mgr.directories.map((dir) => dir.id));
 
     // A notification tap resolved to a terminal session — push its screen once
     // this frame is done (can't navigate during build).
@@ -79,7 +106,10 @@ class _MainShellState extends State<MainShell> {
         resizeToAvoidBottomInset: false,
         body: Stack(
           children: [
-            _DirectoryListBody(settings: widget.settings),
+            _DirectoryListBody(
+              settings: widget.settings,
+              workspaceStore: _workspaceStore,
+            ),
             // Fleet (directory) detail panel - lives in the Stack UNDER the chat
             // sheet. Opening a session from it overlays the chat on top; closing
             // the chat returns here (not to the bare dashboard).
@@ -89,6 +119,7 @@ class _MainShellState extends State<MainShell> {
                 settings: widget.settings,
                 mgr: mgr,
                 dirId: mgr.activeFleetDirId!,
+                workspaceStore: _workspaceStore,
               ),
             if (active != null)
               _ChatSheet(
@@ -298,7 +329,11 @@ class _SheetHandle extends StatelessWidget {
 
 class _DirectoryListBody extends StatefulWidget {
   final SettingsService settings;
-  const _DirectoryListBody({required this.settings});
+  final DashboardWorkspaceStore workspaceStore;
+  const _DirectoryListBody({
+    required this.settings,
+    required this.workspaceStore,
+  });
 
   @override
   State<_DirectoryListBody> createState() => _DirectoryListBodyState();
@@ -558,6 +593,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                           directory: dir,
                           settings: widget.settings,
                           mgr: mgr,
+                          workspaceStore: widget.workspaceStore,
                           onDragHover: (dirId) {
                             if (_dragHoverDirId != dirId) {
                               setState(() => _dragHoverDirId = dirId);
@@ -1220,11 +1256,13 @@ class _FleetDetailSheet extends StatefulWidget {
   final SettingsService settings;
   final SessionManager mgr;
   final String dirId;
+  final DashboardWorkspaceStore workspaceStore;
   const _FleetDetailSheet({
     super.key,
     required this.settings,
     required this.mgr,
     required this.dirId,
+    required this.workspaceStore,
   });
 
   @override
@@ -1232,7 +1270,7 @@ class _FleetDetailSheet extends StatefulWidget {
 }
 
 class _FleetDetailSheetState extends State<_FleetDetailSheet> {
-  late final WorkspaceService _workspace;
+  late final ValueListenable<DirectoryWorkspaceSnapshot> _workspace;
   List<Map<String, dynamic>> _providers = const [];
 
   Directory get _dir {
@@ -1249,12 +1287,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   @override
   void initState() {
     super.initState();
-    _workspace = WorkspaceService(
-      settings: widget.settings,
-      dirId: widget.dirId,
-    );
-    _workspace.onNotify = widget.mgr.handleWorkspaceNotify;
-    _workspace.connect();
+    widget.workspaceStore.ensureDirectory(widget.dirId);
+    _workspace = widget.workspaceStore.listenableFor(widget.dirId)!;
     _loadProviders();
   }
 
@@ -1270,12 +1304,6 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
             .toList();
       });
     } catch (_) {}
-  }
-
-  @override
-  void dispose() {
-    _workspace.dispose();
-    super.dispose();
   }
 
   void _openSession(Session session) {
@@ -1420,6 +1448,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
         child: AnimatedBuilder(
           animation: Listenable.merge([_workspace, widget.mgr]),
           builder: (context, _) {
+            final workspace = _workspace.value;
             final dir = _dir;
             final groups = widget.mgr.sessionsByCliKind(dir.id);
             final hasSessions = dir.totalSessions > 0;
@@ -1573,7 +1602,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                         ],
                       ),
                       EventTimeline(
-                        events: _workspace.events,
+                        events: workspace.events,
                         initiallyOpen: false,
                         maxEvents: 3,
                         maxExpandedHeight: 120,
@@ -1607,8 +1636,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                           sessions: groups['claude_terminal']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
-                          statuses: _workspace.statuses,
-                          pendingNotes: _workspace.pendingNotes,
+                          statuses: workspace.statuses,
+                          pendingNotes: workspace.pendingNotes,
                           providers: _providers,
                           onOpen: _openSession,
                         ),
@@ -1618,8 +1647,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                           sessions: groups['claude_chat']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
-                          statuses: _workspace.statuses,
-                          pendingNotes: _workspace.pendingNotes,
+                          statuses: workspace.statuses,
+                          pendingNotes: workspace.pendingNotes,
                           providers: _providers,
                           onOpen: _openSession,
                         ),
@@ -1629,8 +1658,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                           sessions: groups['codex_terminal']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
-                          statuses: _workspace.statuses,
-                          pendingNotes: _workspace.pendingNotes,
+                          statuses: workspace.statuses,
+                          pendingNotes: workspace.pendingNotes,
                           providers: _providers,
                           onOpen: _openSession,
                         ),
@@ -1640,8 +1669,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                           sessions: groups['codex_chat']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
-                          statuses: _workspace.statuses,
-                          pendingNotes: _workspace.pendingNotes,
+                          statuses: workspace.statuses,
+                          pendingNotes: workspace.pendingNotes,
                           providers: _providers,
                           onOpen: _openSession,
                         ),
@@ -1652,8 +1681,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                             sessions: groups['opencode_terminal']!,
                             mgr: widget.mgr,
                             settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
+                            statuses: workspace.statuses,
+                            pendingNotes: workspace.pendingNotes,
                             providers: _providers,
                             onOpen: _openSession,
                           ),
@@ -1664,8 +1693,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                             sessions: groups['opencode_chat']!,
                             mgr: widget.mgr,
                             settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
+                            statuses: workspace.statuses,
+                            pendingNotes: workspace.pendingNotes,
                             providers: _providers,
                             onOpen: _openSession,
                           ),
@@ -1676,8 +1705,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                             sessions: groups['zcode_terminal']!,
                             mgr: widget.mgr,
                             settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
+                            statuses: workspace.statuses,
+                            pendingNotes: workspace.pendingNotes,
                             providers: _providers,
                             onOpen: _openSession,
                           ),
@@ -1688,8 +1717,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                             sessions: groups['zcode_chat']!,
                             mgr: widget.mgr,
                             settings: widget.settings,
-                            statuses: _workspace.statuses,
-                            pendingNotes: _workspace.pendingNotes,
+                            statuses: workspace.statuses,
+                            pendingNotes: workspace.pendingNotes,
                             providers: _providers,
                             onOpen: _openSession,
                           ),
@@ -1710,6 +1739,7 @@ class _DirectoryCardHost extends StatefulWidget {
   final Directory directory;
   final SettingsService settings;
   final SessionManager mgr;
+  final DashboardWorkspaceStore workspaceStore;
   final void Function(String dirId)? onDragHover;
   final void Function(String dirId)? onDragLeave;
   final void Function(String sourceId, String targetId)? onDrop;
@@ -1720,6 +1750,7 @@ class _DirectoryCardHost extends StatefulWidget {
     required this.directory,
     required this.settings,
     required this.mgr,
+    required this.workspaceStore,
     this.onDragHover,
     this.onDragLeave,
     this.onDrop,
@@ -1731,83 +1762,48 @@ class _DirectoryCardHost extends StatefulWidget {
 }
 
 class _DirectoryCardHostState extends State<_DirectoryCardHost> {
-  late final WorkspaceService _workspace;
+  late final ValueListenable<DirectoryWorkspaceSnapshot> _workspace;
 
   @override
   void initState() {
     super.initState();
-    _workspace = WorkspaceService(
-      settings: widget.settings,
-      dirId: widget.directory.id,
-    );
-    _workspace.onNotify = widget.mgr.handleWorkspaceNotify;
-    _workspace.addListener(_onStatusChange);
-    _workspace.connect();
-  }
-
-  @override
-  void dispose() {
-    _workspace.removeListener(_onStatusChange);
-    _workspace.dispose();
-    widget.mgr.reportWaiting(
-      widget.directory.id,
-      const {},
-    ); // drop stale entries
-    widget.mgr.reportRunning(widget.directory.id, const {});
-    widget.mgr.reportStatuses(widget.directory.id, const {});
-    super.dispose();
-  }
-
-  void _onStatusChange() {
-    // Report this directory's waiting sessions up to the manager so the global
-    // "等待输入" KPI reflects every directory, then repaint the card.
-    final waiting = _workspace.statuses.entries
-        .where((e) => e.value.status == 'waiting')
-        .map((e) => e.key)
-        .toSet();
-    widget.mgr.reportWaiting(widget.directory.id, waiting);
-    // Likewise report sessions that are busy right now (running / thinking /
-    // editing) so the 「活跃会话」KPI counts only sessions actually executing.
-    const busy = {'running', 'thinking', 'editing'};
-    final running = _workspace.statuses.entries
-        .where((e) => busy.contains(e.value.status))
-        .map((e) => e.key)
-        .toSet();
-    widget.mgr.reportRunning(widget.directory.id, running);
-    // Report the full live status map so the dashboard popups can show each
-    // session's real-time status / summary / run-time (mirrors web).
-    widget.mgr.reportStatuses(widget.directory.id, _workspace.statuses);
-    if (mounted) setState(() {});
+    widget.workspaceStore.ensureDirectory(widget.directory.id);
+    _workspace = widget.workspaceStore.listenableFor(widget.directory.id)!;
   }
 
   @override
   Widget build(BuildContext context) {
-    final view = DirectoryCardViewModel.fromModels(
-      directory: widget.directory,
-      sessions: widget.mgr.sessions,
-      statuses: _workspace.statuses,
-      events: _workspace.events,
-    );
-    return DirectoryCard(
-      key: ValueKey('directory-card-${widget.directory.id}'),
-      view: view,
-      callbacks: DirectoryCardCallbacks(
-        onOpen: () => widget.mgr.openFleetDir(widget.directory.id),
-        onOpenMemo: () => Navigator.push(
-          context,
-          MaterialPageRoute<void>(
-            builder: (_) =>
-                MemoScreen(directory: widget.directory, mgr: widget.mgr),
+    return ValueListenableBuilder<DirectoryWorkspaceSnapshot>(
+      valueListenable: _workspace,
+      builder: (context, workspace, _) {
+        final view = DirectoryCardViewModel.fromModels(
+          directory: widget.directory,
+          sessions: widget.mgr.sessions,
+          statuses: workspace.statuses,
+          events: workspace.events,
+        );
+        return DirectoryCard(
+          key: ValueKey('directory-card-${widget.directory.id}'),
+          view: view,
+          callbacks: DirectoryCardCallbacks(
+            onOpen: () => widget.mgr.openFleetDir(widget.directory.id),
+            onOpenMemo: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    MemoScreen(directory: widget.directory, mgr: widget.mgr),
+              ),
+            ),
+            onShowUncommitted: () => _showUncommittedFiles(context),
+            onRename: () => _confirmRenameDirectory(context),
+            onDelete: () => _confirmDeleteDirectory(context),
+            onDragHover: widget.onDragHover,
+            onDragLeave: widget.onDragLeave,
+            onDrop: widget.onDrop,
+            onDragEnd: widget.onDragEnd,
           ),
-        ),
-        onShowUncommitted: () => _showUncommittedFiles(context),
-        onRename: () => _confirmRenameDirectory(context),
-        onDelete: () => _confirmDeleteDirectory(context),
-        onDragHover: widget.onDragHover,
-        onDragLeave: widget.onDragLeave,
-        onDrop: widget.onDrop,
-        onDragEnd: widget.onDragEnd,
-      ),
+        );
+      },
     );
   }
 
