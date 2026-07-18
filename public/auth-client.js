@@ -1,12 +1,35 @@
 'use strict';
 
+function multiccTokenFreeRelativeUrl(rawHref, baseHref) {
+  const clean = new URL(rawHref, baseHref);
+  clean.searchParams.delete('token');
+  return clean.pathname + clean.search + clean.hash;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { multiccTokenFreeRelativeUrl };
+}
+
 // Exchange legacy `?token=` bootstrap links for an HttpOnly cookie, then keep
 // credentials out of REST and WebSocket URLs. All same-origin fetches carry the
 // bootstrap token as a header only until the exchange succeeds.
 (function installMulticcAuthClient() {
+  if (typeof window === 'undefined') return;
   const params = new URLSearchParams(location.search);
   let bootstrapToken = params.get('token') || '';
   const nativeFetch = window.fetch.bind(window);
+
+  // Capture the legacy bootstrap token in memory and scrub the address bar
+  // synchronously, before any page script can copy it into a request, DOM node,
+  // retry URL, log entry, or navigation target. Other query params and the hash
+  // are preserved verbatim by URLSearchParams/URL serialization.
+  if (params.has('token')) {
+    history.replaceState(
+      history.state,
+      '',
+      multiccTokenFreeRelativeUrl(location.href, location.href),
+    );
+  }
 
   function isSameOrigin(input) {
     try {
@@ -26,17 +49,10 @@
     return nativeFetch(input, options);
   };
 
-  function removeTokenFromAddress() {
-    const clean = new URL(location.href);
-    clean.searchParams.delete('token');
-    history.replaceState(history.state, '', clean.pathname + clean.search + clean.hash);
-  }
-
   const ready = bootstrapToken
     ? window.fetch('/api/auth/exchange', { method: 'POST', credentials: 'same-origin' })
       .then(res => {
         if (!res.ok) throw new Error(`auth exchange failed: HTTP ${res.status}`);
-        removeTokenFromAddress();
         bootstrapToken = '';
       })
       .catch(err => { console.warn('[multicc/auth] bootstrap exchange failed', err.message); })
@@ -46,6 +62,7 @@
   window.multiccWsUrl = async function multiccWsUrl(rawUrl) {
     await ready;
     const url = new URL(rawUrl, location.href);
+    url.searchParams.delete('token');
     const res = await window.fetch('/api/auth/ws-ticket', {
       method: 'POST',
       credentials: 'same-origin',

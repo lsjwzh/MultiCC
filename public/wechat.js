@@ -1,8 +1,5 @@
 'use strict';
 
-const _urlToken = new URLSearchParams(location.search).get('token');
-function tokenQS(prefix) { return _urlToken ? `${prefix}token=${_urlToken}` : ''; }
-
 let evtSource = null;
 let isRunning = false;
 let loginPollTimer = null;
@@ -64,7 +61,7 @@ function showStatus(text, isError) {
 async function getQRCode() {
   setLoginStatus('获取二维码中...', 'login-wait');
   try {
-    const res = await fetch('/api/wechat/qrcode' + tokenQS('?'));
+    const res = await fetch('/api/wechat/qrcode');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
@@ -85,7 +82,7 @@ async function getQRCode() {
 
 async function pollLoginStatus() {
   try {
-    const res = await fetch('/api/wechat/login-status' + tokenQS('?'));
+    const res = await fetch('/api/wechat/login-status');
     const data = await res.json();
     if (data.status === 'confirmed') {
       stopLoginPoll();
@@ -105,7 +102,7 @@ function stopLoginPoll() {
 
 async function logout() {
   try {
-    await fetch('/api/wechat/logout' + tokenQS('?'), { method: 'POST' });
+    await fetch('/api/wechat/logout', { method: 'POST' });
     showLoggedIn(false);
     setRunning(false);
     disconnectSSE();
@@ -118,7 +115,7 @@ async function logout() {
 /* ── Config ── */
 async function loadConfig() {
   try {
-    const res = await fetch('/api/wechat/config' + tokenQS('?'));
+    const res = await fetch('/api/wechat/config');
     const cfg = await res.json();
     document.getElementById('cfg-idle').value = cfg.outputIdle || 5000;
     document.getElementById('cfg-session').dataset.pending = cfg.defaultSession || '';
@@ -128,7 +125,7 @@ async function loadConfig() {
 
 async function loadSessions() {
   try {
-    const res = await fetch('/api/sessions' + tokenQS('?'));
+    const res = await fetch('/api/sessions');
     const sessions = await res.json();
     const sel = document.getElementById('cfg-session');
     const pending = sel.dataset.pending || sel.value;
@@ -150,7 +147,7 @@ async function saveConfig() {
     outputIdle: Number(document.getElementById('cfg-idle').value) || 5000,
   };
   try {
-    const res = await fetch('/api/wechat/config' + tokenQS('?'), {
+    const res = await fetch('/api/wechat/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -169,7 +166,7 @@ async function startBridge() {
     outputIdle: Number(document.getElementById('cfg-idle').value) || 5000,
   };
   try {
-    const res = await fetch('/api/wechat/start' + tokenQS('?'), {
+    const res = await fetch('/api/wechat/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -186,7 +183,7 @@ async function startBridge() {
 
 async function stopBridge() {
   try {
-    await fetch('/api/wechat/stop' + tokenQS('?'), { method: 'POST' });
+    await fetch('/api/wechat/stop', { method: 'POST' });
     setRunning(false);
     disconnectSSE();
     showStatus('桥接已停止');
@@ -198,7 +195,7 @@ async function stopBridge() {
 /* ── SSE Log Stream ── */
 function connectSSE() {
   disconnectSSE();
-  evtSource = new EventSource('/api/wechat/events' + tokenQS('?'));
+  evtSource = new EventSource('/api/wechat/events');
   evtSource.onmessage = (e) => {
     try { appendLog(JSON.parse(e.data)); } catch (_) {}
   };
@@ -240,7 +237,7 @@ async function sendMsg() {
 
   const target = document.getElementById('send-target').value;
   try {
-    const res = await fetch('/api/wechat/send' + tokenQS('?'), {
+    const res = await fetch('/api/wechat/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, target }),
@@ -266,13 +263,13 @@ function toggleConfig() {
 /* ── Check Status on Load ── */
 async function checkStatus() {
   try {
-    const res = await fetch('/api/wechat/status' + tokenQS('?'));
+    const res = await fetch('/api/wechat/status');
     const data = await res.json();
     showLoggedIn(data.loggedIn);
     if (data.running) {
       setRunning(true);
       connectSSE();
-      const logRes = await fetch('/api/wechat/log' + tokenQS('?'));
+      const logRes = await fetch('/api/wechat/log');
       const entries = await logRes.json();
       for (const e of entries) appendLog(e);
     }
@@ -280,5 +277,7 @@ async function checkStatus() {
 }
 
 /* ── Init ── */
-loadConfig().then(() => loadSessions());
-checkStatus();
+Promise.resolve(window.multiccAuthReady).then(() => {
+  loadConfig().then(() => loadSessions());
+  checkStatus();
+});
