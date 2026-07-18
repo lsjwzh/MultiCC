@@ -119,9 +119,10 @@ const {
   normalizeRedirect,
   escapeHtmlAttribute,
 } = require('./src/auth-security');
-const { envEnabled, resolveNetworkPolicy, findAvailablePort } = require('./src/network-policy');
+const { envEnabled, resolveNetworkPolicy, selectListenPort } = require('./src/network-policy');
 const { createObservability, installConsoleRedaction } = require('./src/observability');
 const { installWsBackpressure } = require('./src/ws-backpressure');
+const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const observability = createObservability({ service: 'multicc' });
@@ -161,9 +162,13 @@ function parseCookies(header) {
 }
 
 function isExternalProxy(req) {
-  // Reverse proxy (Tailscale, ngrok, etc.) connects from localhost but serves external users
-  const host = (req.headers.host || '').split(':')[0];
-  return host.endsWith('.ts.net') || host.endsWith('.ngrok.io') || host.endsWith('.ngrok-free.app');
+  // Reverse proxies connect from loopback but retain a public Host header. Treat
+  // every non-loopback Host on a loopback socket as external, not just a small
+  // suffix allowlist (custom PhDDNS/ngrok domains are common).
+  const rawHost = String(req.headers.host || '').trim().toLowerCase();
+  const host = rawHost.startsWith('[') ? rawHost.slice(1, rawHost.indexOf(']')) : rawHost.split(':')[0];
+  const localHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  return !localHost || host.endsWith('.ts.net') || host.endsWith('.ngrok.io') || host.endsWith('.ngrok-free.app');
 }
 
 // True only for requests physically originating from this machine (not a
@@ -175,7 +180,7 @@ function isLocalRequest(req) {
 }
 
 function isAuthenticated(req) {
-  if (!ACCESS_TOKEN) return true;
+  if (!ACCESS_TOKEN) return !isExternalProxy(req);
   // Localhost allowed — unless it's a reverse proxy forwarding external traffic
   if (isLocalRequest(req)) return true;
   // Cookie auth (HMAC-signed, survives server restart)
@@ -254,7 +259,7 @@ app.use(requestIdMiddleware);
     // Allow login page, static assets
     if (req.path === '/login' || req.path === '/logout') return next();
     if (req.path === '/healthz' || req.path === '/readyz') return next();
-    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json|apk)$/i.test(req.path)) return next();
+    if (!req.path.startsWith('/api/') && /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json|apk)$/i.test(req.path)) return next();
     // Wait-callback endpoint is secured by its own per-wait token so external
     // (off-box) systems can deliver results without the ACCESS_TOKEN cookie.
     if (req.method === 'POST' && /^\/api\/wait\/[^/]+\/resolve$/.test(req.path)) return next();
@@ -309,22 +314,16 @@ app.post('/api/auth/ws-ticket', express.json({ limit: '4kb' }), (req, res) => {
 });
 
 let serviceReady = false;
-app.get('/healthz', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()), requestId: req.id });
-});
-app.get('/readyz', (req, res) => {
-  const ready = serviceReady && !_shuttingDown;
-  res.set('Cache-Control', 'no-store');
-  res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready', requestId: req.id });
-});
+const healthHandlers = createHealthHandlers({ isReady: () => serviceReady && !_shuttingDown });
+app.get('/healthz', healthHandlers.healthz);
+app.get('/readyz', healthHandlers.readyz);
 app.get('/metrics', (req, res) => {
   let activeTurns = 0;
   for (const [name, cs] of chatSessions) {
     if (cs && (cs.claudeProc || cs.isStreaming || (chatStream.status(name) && chatStream.status(name).busy))) activeTurns++;
   }
   const waitStats = waitInjector.stats();
-  res.type('text/plain; version=0.0.4').send(metrics.render({
+  res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8').send(metrics.render({
     ...observability.eventLoopMetrics(),
     multicc_active_turns: activeTurns,
     multicc_ws_clients: wss.clients.size,
@@ -5628,6 +5627,8 @@ app.get('/api/settings/tunnel', (req, res) => {
 
 app.post('/api/settings/tunnel', (req, res) => {
   const b = req.body || {};
+  const enabling = !!(b.phddns && b.phddns.enabled) || !!(b.tailscale && (b.tailscale.enabled || b.tailscale.funnel));
+  if (enabling && !ACCESS_TOKEN) return res.status(400).json({ error: '开启外网访问前必须先设置 ACCESS_TOKEN' });
   const update = {};
   if (b.phddns && typeof b.phddns === 'object') {
     update.phddns = {};
@@ -5662,6 +5663,7 @@ app.post('/api/tunnel/restart/:provider', async (req, res) => {
 app.post('/api/tunnel/funnel', async (req, res) => {
   try {
     const on = !!(req.body && req.body.on);
+    if (on && !ACCESS_TOKEN) return res.status(400).json({ error: '开启公网 Funnel 前必须先设置 ACCESS_TOKEN' });
     const port = req.body && Number(req.body.port);
     const result = await tunnel.setFunnel(on, port);
     const status = await tunnel.funnelStatus();
@@ -5712,9 +5714,15 @@ app.post('/api/settings/access-token', (req, res) => {
     return res.status(400).json({ error: '无有效改动' });
   }
   const token = raw.trim();
+  const tunnelConfig = tunnel.getStatus().config || {};
+  const publicTunnelEnabled = !!(tunnelConfig.phddns && tunnelConfig.phddns.enabled)
+    || !!(tunnelConfig.tailscale && (tunnelConfig.tailscale.enabled || tunnelConfig.tailscale.funnel));
+  if (!token && (networkPolicy.allowRemote || publicTunnelEnabled)) {
+    return res.status(400).json({ error: '当前已允许远程/公网访问，请先关闭外网入口再清空 ACCESS_TOKEN' });
+  }
   writeEnvFile({ ACCESS_TOKEN: token });
   process.env.ACCESS_TOKEN = token;
-  ACCESS_TOKEN = token; // hot-reload: signToken/isAuthenticated read this live
+  ACCESS_TOKEN = token; // hot-reload: authSecurity/isAuthenticated read this live
   console.log(`[multicc/auth] ACCESS_TOKEN ${token ? 'updated' : 'cleared'} via localhost UI`);
   res.json({ ok: true, hasToken: !!token });
 });
@@ -11047,19 +11055,19 @@ wss.on('connection', async (ws, req) => {
   // External WebSockets exchange the normal HTTP auth for a one-use, path-bound
   // ticket. Local bridges remain ticket-free. Old cookie/query WS auth is an
   // explicit migration opt-in and is counted so operators can remove it.
-  if (ACCESS_TOKEN && !sharePerm) {
+  if (!sharePerm) {
     const ip = req.socket.remoteAddress;
     const isLocal = (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') && !isExternalProxy(req);
     const cookies = parseCookies(req.headers.cookie);
-    const ticket = authSecurity.consumeWsTicket(urlObj.searchParams.get('ticket'), urlObj.pathname);
-    const legacyCookie = ALLOW_LEGACY_WS_COOKIE && cookies.multicc_auth && authSecurity.verifyCookie(cookies.multicc_auth);
-    const legacyToken = ALLOW_LEGACY_WS_TOKEN && authSecurity.verifyAccessToken(urlObj.searchParams.get('token'));
+    const ticket = ACCESS_TOKEN && authSecurity.consumeWsTicket(urlObj.searchParams.get('ticket'), urlObj.pathname);
+    const legacyCookie = ACCESS_TOKEN && ALLOW_LEGACY_WS_COOKIE && cookies.multicc_auth && authSecurity.verifyCookie(cookies.multicc_auth);
+    const legacyToken = ACCESS_TOKEN && ALLOW_LEGACY_WS_TOKEN && authSecurity.verifyAccessToken(urlObj.searchParams.get('token'));
     if (ticket) ws._correlationId = ticket.correlationId || ticket.requestId;
     if (legacyCookie || legacyToken) {
       metrics.inc('multicc_ws_legacy_auth_total');
       logger.warn('legacy_ws_auth', { path: urlObj.pathname, mode: legacyToken ? 'query' : 'cookie', ip });
     }
-    if (!isLocal && !ticket && !legacyCookie && !legacyToken) {
+    if (!isLocal && (!ACCESS_TOKEN || (!ticket && !legacyCookie && !legacyToken))) {
       metrics.inc('multicc_ws_auth_denied_total');
       ws.close(4003, 'Forbidden');
       return;
@@ -11828,7 +11836,7 @@ app.use(safeErrorHandler(logger));
   if (networkPolicy.development) {
     try {
       const requestedPort = PORT;
-      PORT = await findAvailablePort(PORT, BIND_HOST);
+      PORT = await selectListenPort(networkPolicy);
       if (PORT !== requestedPort) {
         logger.warn('development_port_fallback', { requestedPort, selectedPort: PORT, host: BIND_HOST });
       }

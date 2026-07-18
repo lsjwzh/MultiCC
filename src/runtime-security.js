@@ -31,6 +31,7 @@ function secureRuntimeData(paths) {
     if (!/File$/.test(key)) continue;
     if (typeof file !== 'string' || !path.isAbsolute(file)) continue;
     secureFile(file);
+    for (let i = 1; i <= 3; i++) secureFile(`${file}.bak${i}`);
   }
 }
 

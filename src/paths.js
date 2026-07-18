@@ -78,6 +78,8 @@ function createPaths({ dataDir } = {}) {
     tokenByRoleFile: path.join(root, 'token_by_role.json'),
     providersFile: path.join(root, 'providers.json'),
     sharesFile: path.join(root, 'shares.json'),
+    pushSubscriptionsFile: path.join(root, 'push_subscriptions.json'),
+    tunnelConfigFile: path.join(root, 'tunnel-config.json'),
     auxConfigFile: path.join(root, 'aux-config.json'),
     goalConfigFile: path.join(root, 'goal-config.json'),
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),

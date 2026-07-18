@@ -44,4 +44,9 @@ async function findAvailablePort(startPort, host, { maxTries = 100 } = {}) {
   throw new Error(`No available port from ${startPort} on ${host}`);
 }
 
-module.exports = { envEnabled, isLoopbackHost, resolveNetworkPolicy, findAvailablePort };
+async function selectListenPort(policy, finder = findAvailablePort) {
+  if (!policy || !policy.development) return policy.port;
+  return finder(policy.port, policy.host);
+}
+
+module.exports = { envEnabled, isLoopbackHost, resolveNetworkPolicy, findAvailablePort, selectListenPort };

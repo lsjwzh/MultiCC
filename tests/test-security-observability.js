@@ -12,11 +12,13 @@ const {
   normalizeRedirect,
   timingSafeEqualText,
 } = require('../src/auth-security');
-const { resolveNetworkPolicy } = require('../src/network-policy');
+const { resolveNetworkPolicy, selectListenPort } = require('../src/network-policy');
 const { createLogger, createMetrics, redact } = require('../src/observability');
 const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security');
 const { createPaths } = require('../src/paths');
 const { installWsBackpressure } = require('../src/ws-backpressure');
+const { requestIdMiddleware } = require('../src/http-errors');
+const { createHealthHandlers } = require('../src/health');
 
 test('network defaults to loopback and remote binding fails closed', () => {
   assert.deepStrictEqual(resolveNetworkPolicy({}), {
@@ -30,6 +32,15 @@ test('network defaults to loopback and remote binding fails closed', () => {
     host: '0.0.0.0', port: 4312, development: false, allowRemote: true, accessToken: 'secret',
   });
   assert.equal(resolveNetworkPolicy({ HOST: '::1', NODE_ENV: 'development' }).development, true);
+});
+
+test('production keeps the requested port while development may select a fallback', async () => {
+  let calls = 0;
+  const finder = async (port, host) => { calls++; assert.equal(host, '127.0.0.1'); return port + 1; };
+  assert.equal(await selectListenPort({ port: 3000, host: '127.0.0.1', development: false }, finder), 3000);
+  assert.equal(calls, 0);
+  assert.equal(await selectListenPort({ port: 3000, host: '127.0.0.1', development: true }, finder), 3001);
+  assert.equal(calls, 1);
 });
 
 test('auth cookie is timing-safe, versioned, and expires server-side', () => {
@@ -105,6 +116,53 @@ test('structured logger and metrics redact secrets', () => {
   metrics.set('multicc_ws_clients', 3);
   assert.match(metrics.render(), /multicc_persistence_failures_total 1/);
   assert.match(metrics.render(), /multicc_ws_clients 3/);
+});
+
+test('request middleware propagates request and correlation IDs', () => {
+  const events = [];
+  const req = {
+    headers: { 'x-request-id': 'request-123', 'x-correlation-id': 'correlation-456' },
+    method: 'GET', path: '/healthz',
+    app: { locals: { observability: { logger: { info: (event, fields) => events.push({ event, fields }) } } } },
+  };
+  const res = new EventEmitter();
+  res.locals = {};
+  res.statusCode = 200;
+  const headers = {};
+  res.setHeader = (name, value) => { headers[name] = value; };
+  let next = false;
+  requestIdMiddleware(req, res, () => { next = true; });
+  res.emit('finish');
+  assert.equal(next, true);
+  assert.equal(req.id, 'request-123');
+  assert.equal(req.correlationId, 'correlation-456');
+  assert.equal(headers['X-Correlation-Id'], 'correlation-456');
+  assert.equal(events[0].event, 'http_request');
+  assert.equal(events[0].fields.correlationId, 'correlation-456');
+});
+
+test('health stays live while readiness follows startup state', () => {
+  let ready = false;
+  const handlers = createHealthHandlers({ isReady: () => ready, uptime: () => 12.9 });
+  function response() {
+    return {
+      code: 200, body: null, headers: {},
+      set(name, value) { this.headers[name] = value; return this; },
+      status(code) { this.code = code; return this; },
+      json(body) { this.body = body; return this; },
+    };
+  }
+  const health = response();
+  handlers.healthz({ id: 'r1' }, health);
+  assert.equal(health.code, 200);
+  assert.deepStrictEqual(health.body, { status: 'ok', uptimeSeconds: 12, requestId: 'r1' });
+  const before = response();
+  handlers.readyz({ id: 'r2' }, before);
+  assert.equal(before.code, 503);
+  ready = true;
+  const after = response();
+  handlers.readyz({ id: 'r3' }, after);
+  assert.equal(after.code, 200);
 });
 
 class FakeWs extends EventEmitter {
