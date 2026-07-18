@@ -213,6 +213,9 @@ function createOrchestrationRuntime({
       let cancelledOperations = 0;
       let cancelledTasks = 0;
       const detachedExternalIds = [];
+      const ownedOperationIds = new Set(Object.values(draft.operations)
+        .filter(operation => operation.ownerSessionId === sessionId)
+        .map(operation => operation.id));
       for (const wait of Object.values(draft.waits)) {
         if (wait.sessionId !== sessionId || wait.status !== 'pending') continue;
         wait.status = 'cancelled';
@@ -221,7 +224,10 @@ function createOrchestrationRuntime({
         cancelled++;
       }
       for (const item of Object.values(draft.outbox)) {
-        if (item.sessionId !== sessionId || !['pending', 'leased'].includes(item.state)) continue;
+        const belongsToOwnedOperation = item.source?.type === 'operation'
+          && ownedOperationIds.has(item.source.operationId);
+        if ((item.sessionId !== sessionId && !belongsToOwnedOperation)
+            || !['pending', 'leased'].includes(item.state)) continue;
         item.state = 'cancelled';
         item.updatedAt = at;
         item.leasedAt = null;
@@ -586,6 +592,11 @@ function createOrchestrationRuntime({
     stopped = true;
     if (timer) clearIntervalFn(timer);
     timer = null;
+    // Graceful shutdown kills CLI-owned Agent/Task subprocesses. Record that
+    // fact before flushing; the notification remains in the same durable
+    // outbox and is delivered after the next start. Detached OS jobs and
+    // dispatches are intentionally left active for their dedicated reconcile.
+    await operations.interruptActiveTasks();
     await tickTail;
     await store.flush();
   }

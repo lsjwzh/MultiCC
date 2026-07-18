@@ -34,6 +34,7 @@ function createDetached({
   pathImpl = nodePath,
   spawnImpl = childProcess.spawn,
   now = Date.now,
+  killImpl = process.kill.bind(process),
   isProcessAlive = pid => {
     if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 0) return false;
     try { process.kill(Number(pid), 0); return true; }
@@ -199,9 +200,9 @@ function createDetached({
     const current = status(rawId);
     if (!current) return { ok: false, code: 'not_found' };
     if (!current.running || !current.pid) return { ok: true, idempotent: true };
-    try { process.kill(-current.pid, 'SIGTERM'); }
+    try { killImpl(-current.pid, 'SIGTERM'); }
     catch (_) {
-      try { process.kill(current.pid, 'SIGTERM'); } catch (_) {}
+      try { killImpl(current.pid, 'SIGTERM'); } catch (_) {}
     }
     return { ok: true, idempotent: false, pid: current.pid };
   }

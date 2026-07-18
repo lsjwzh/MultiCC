@@ -1237,6 +1237,9 @@ async function destroySessionCascade(s, d, opts = {}) {
     sessions.delete(s.id);
   }
   if (chat) {
+    if (chat._monitorShadows) {
+      for (const taskId of [...chat._monitorShadows.keys()]) stopMonitorShadow(chat, taskId);
+    }
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
     chatSessions.delete(s.id);
@@ -5053,6 +5056,9 @@ async function executeDispatchContract(fromId, body, options = {}) {
     };
   } catch (error) {
     logger.error('dispatch_failed', { fromId, target, error: error && error.message });
+    if (error && error.statusCode === 409) {
+      return { status: 409, error: error.message, code: 'dispatch_conflict' };
+    }
     return { status: 500, error: 'internal_error', code: 'internal_error' };
   }
 }
@@ -10959,14 +10965,33 @@ app.post('/api/sessions/:id/run-detached', async (req, res) => {
 
 // Inspect detached tasks (survives restart — read from disk).
 app.get('/api/sessions/:id/detached', async (req, res) => {
-  const operations = await orchestrationRuntime.operations.list({ kind: 'detached' });
+  const session = persistedSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  const operations = await orchestrationRuntime.operations.list({
+    kind: 'detached',
+    ownerSessionId: session.id,
+  });
   const byExternalId = new Map(operations.map(operation => [operation.externalId, operation]));
   res.json({
-    tasks: detached.list().map(task => {
+    tasks: detached.list().filter(task => byExternalId.has(task.id)).map(task => {
       const operation = byExternalId.get(task.id);
       return operation ? { ...task, operationId: operation.id, status: operation.status } : task;
     }),
   });
+});
+
+// CLI Agent/Task processes remain owned by their native CLI.  This endpoint is
+// deliberately an observation ledger: it reports the last durable fact but
+// does not imply that a running task can survive a MultiCC process restart.
+app.get('/api/sessions/:id/tasks', async (req, res) => {
+  const session = persistedSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  try {
+    const tasks = await orchestrationRuntime.operations.listTasks({ sessionId: session.id });
+    res.json({ tasks, count: tasks.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 app.get('/api/detached/:taskId', async (req, res) => {
   const st = detached.status(req.params.taskId);

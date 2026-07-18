@@ -220,7 +220,13 @@ test('session teardown atomically cancels pending waits and admitted deliveries'
   await runtime.resolveCallback(resolved.id, resolved.token, 'ready');
 
   const result = await runtime.cancelForSession('A');
-  assert.deepEqual(result, { ok: true, cancelled: 1, cancelledDeliveries: 1 });
+  assert.deepEqual(result, {
+    ok: true,
+    cancelled: 1,
+    cancelledDeliveries: 1,
+    cancelledOperations: 0,
+    cancelledTasks: 0,
+  });
   assert.equal((await runtime.waits.get(pending.id)).status, 'cancelled');
   assert.equal((await runtime.outbox.get(`wait:${resolved.id}`)).state, 'cancelled');
   assert.equal(runtime.hasPending('A'), false);
