@@ -59,10 +59,10 @@ function dirUnsuitableReason(exceeded) {
 // existing repo — huge gitignored logs/build output (and nested git repos, which
 // `ls-files` reports as a single dir entry, not their contents) must not count.
 // Returns null if the dir isn't a usable repo, so callers fall back to a raw walk.
-function dirSuitabilityViaGit(dirPath) {
-  if (!gitIsRepo(dirPath)) return null;
+async function dirSuitabilityViaGit(dirPath) {
+  if (!await gitIsRepo(dirPath)) return null;
   let out;
-  try { out = gitRun(dirPath, ['ls-files', '-o', '-m', '-z', '--exclude-standard']); }
+  try { out = await gitRun(dirPath, ['ls-files', '-o', '-m', '-z', '--exclude-standard']); }
   catch { return null; }
   let files = 0, bytes = 0;
   const deadline = Date.now() + DIR_SCAN_TIME_MS;
@@ -80,9 +80,9 @@ function dirSuitabilityViaGit(dirPath) {
   return { ok: true };
 }
 
-function dirSuitability(dirPath) {
+async function dirSuitability(dirPath) {
   // Prefer git's own view when the dir is already a repo (respects .gitignore).
-  const viaGit = dirSuitabilityViaGit(dirPath);
+  const viaGit = await dirSuitabilityViaGit(dirPath);
   if (viaGit) return viaGit;
   // Fallback: raw filesystem walk for not-yet-initialised dirs (e.g. ~/Downloads).
   let files = 0, bytes = 0, exceeded = null;
