@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const stateStore = require('./state-store');
+const { validateUsageObserved } = require('./usage-observed');
 
 function emptyBucket() {
   return { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0 };
@@ -51,6 +52,24 @@ function localDayKey(date) {
     + String(date.getDate()).padStart(2, '0');
 }
 
+function usageObservedToRoleTokenInfo(value) {
+  const event = validateUsageObserved(value);
+  if (event.coverage !== 'observed' || !event.tokens) return null;
+  return Object.freeze({
+    sessionId: event.sessionId,
+    role: event.roleKind,
+    providerId: event.providerId,
+    providerName: event.providerName,
+    model: event.model,
+    usage: Object.freeze({
+      inputTokens: event.tokens.input,
+      outputTokens: event.tokens.output,
+      cacheWrite: event.tokens.cacheWrite,
+      cacheRead: event.tokens.cacheRead,
+    }),
+  });
+}
+
 function createRoleTokenTracker({
   filePath,
   now = () => new Date(),
@@ -59,6 +78,7 @@ function createRoleTokenTracker({
 } = {}) {
   if (!filePath) throw new Error('role token tracker requires filePath');
   const runtime = new Map();
+  const observedEventIds = new Set();
 
   function accumulate(info) {
     if (!info || !info.sessionId || !info.usage || !hasUsage(info.usage)) return false;
@@ -132,12 +152,25 @@ function createRoleTokenTracker({
     };
   }
 
+  function accumulateObserved(value) {
+    const event = validateUsageObserved(value);
+    if (observedEventIds.has(event.eventId)) return false;
+    const info = usageObservedToRoleTokenInfo(event);
+    if (!info || !accumulate(info)) return false;
+    observedEventIds.add(event.eventId);
+    if (observedEventIds.size > 50_000) {
+      observedEventIds.delete(observedEventIds.values().next().value);
+    }
+    return true;
+  }
+
   function reset(sessionId) {
     runtime.delete(sessionId);
   }
 
   return {
     accumulate,
+    accumulateObserved,
     snapshot,
     reset,
     readLedger: () => readLedger(filePath, fsImpl),
@@ -150,4 +183,5 @@ module.exports = {
   hasUsage,
   addUsage,
   localDayKey,
+  usageObservedToRoleTokenInfo,
 };

@@ -264,7 +264,7 @@ const providersStub = {
 function claudeAdapterWith(disallowed) {
   return createClaudeAdapter({
     cmd: 'claude', args: [], chatDisallowedTools: disallowed || [],
-    multiccImgHint: IMG_HINT, providers: providersStub,
+    multiccImgHint: IMG_HINT, resolveSessionWireModel: providersStub.resolveSessionWireModel,
     claudeDefaultModel: () => 'claude-default',
     cliEffortLevel, normalizeEffort,
     debugLogClaudeInvoke: () => {},

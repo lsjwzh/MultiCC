@@ -11,7 +11,7 @@ function createClaudeAdapter(deps) {
     args = [],
     chatDisallowedTools = [],
     multiccImgHint,
-    providers,
+    resolveSessionWireModel,
     claudeDefaultModel,
     cliEffortLevel,
     normalizeEffort,
@@ -36,7 +36,7 @@ function createClaudeAdapter(deps) {
     buildInvocation(env) {
       const so = env.spawnOpts;
       const sysPrompt = env.systemPrompt;
-      const model = providers.resolveSessionWireModel(so.rawModel, {
+      const model = resolveSessionWireModel(so.rawModel, {
         providerModel: so.providerModel,
         providerModels: so.providerModels,
         skipDefaultModel: so.skipDefaultModel,

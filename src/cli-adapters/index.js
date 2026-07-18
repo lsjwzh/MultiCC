@@ -18,7 +18,7 @@ function createCliAdapters(deps) {
       args: deps.claudeArgs,
       chatDisallowedTools: deps.claudeChatDisallowedTools,
       multiccImgHint: deps.multiccImgHint,
-      providers: deps.providers,
+      resolveSessionWireModel: deps.resolveSessionWireModel,
       claudeDefaultModel: deps.claudeDefaultModel,
       cliEffortLevel: deps.cliEffortLevel,
       normalizeEffort: deps.normalizeEffort,
