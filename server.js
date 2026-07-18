@@ -113,6 +113,7 @@ const {
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state-store');
 const stateTx = require('./src/state-tx');
+const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler } = require('./src/http-errors');
 const {
@@ -126,6 +127,7 @@ const { installWsBackpressure } = require('./src/ws-backpressure');
 const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+let orchestrationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
 const providerRouterRuntime = createProviderRouterRuntime({
@@ -336,7 +338,7 @@ app.get('/metrics', (req, res) => {
     multicc_active_turns: activeTurns,
     multicc_ws_clients: wss.clients.size,
     multicc_git_queue_depth: gitQueueDepth(),
-    multicc_active_waits: waitStats.waits,
+    multicc_active_waits: waitStats.waits + (orchestrationRuntime ? orchestrationRuntime.pendingCount() : 0),
     multicc_ready: serviceReady && !_shuttingDown ? 1 : 0,
   }));
 });
@@ -1230,6 +1232,7 @@ async function destroySessionCascade(s, d, opts = {}) {
     chatSessions.delete(s.id);
   }
   waitInjector.cancelForSession(s.id);
+  if (orchestrationRuntime) await orchestrationRuntime.cancelForSession(s.id);
   bgCompletionCoalescer.cancel(s.id); // drop any completions buffered for this now-deleted session
   share.removeForSession(s.id);
   chatHistories.delete(s.id);
@@ -7199,11 +7202,13 @@ function chatLastActivity(sessionName, activeChat) {
 
 function saveChatHistory(sessionName) {
   const history = chatHistories.get(sessionName);
-  if (!history) return;
+  if (!history) return false;
   try {
     atomicWriteJson(chatHistoryPath(sessionName), history);
+    return true;
   } catch (e) {
     console.error(`[multicc/chat] Failed to save history for ${sessionName}:`, e.message);
+    return false;
   }
 }
 
@@ -7276,9 +7281,9 @@ function appendChatMessage(sessionName, msg) {
       if (msg.cost != null) prev.cost = msg.cost;
       if (msg.durationMs != null) prev.durationMs = msg.durationMs;
       if (msg.ts) prev.ts = msg.ts;
-      saveChatHistory(sessionName);
+      const saved = saveChatHistory(sessionName);
       chatBroadcast(sessionName, { type: 'chat_msg_meta', id: prev.id, role: prev.role, ts: prev.ts });
-      return;
+      return saved;
     }
   }
 
@@ -7313,7 +7318,7 @@ function appendChatMessage(sessionName, msg) {
       }
     }
   }
-  saveChatHistory(sessionName);
+  const saved = saveChatHistory(sessionName);
   // Tell live clients the id this message was saved under, so the bubble
   // already on screen becomes individually addressable (delete button).
   chatBroadcast(sessionName, { type: 'chat_msg_meta', id: msg.id, role: msg.role, ts: msg.ts });
@@ -7322,6 +7327,7 @@ function appendChatMessage(sessionName, msg) {
     // actual auxiliary review runs after the reply has already been saved.
     setImmediate(() => maybeSchedulePeriodicMemoryReview(sessionName));
   }
+  return saved;
 }
 
 // ── Chat sessions: session-level state for multi-client broadcast ──
@@ -9939,13 +9945,29 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
 
 function runChatTurn(sessionName, text, opts = {}) {
   const { isFirstTurn: forceFirstTurn, originDispatchId, originTrigger, originContinue, goalLimits, bgTaskIds, bgToolUseIds } = opts;
-  const clientMsgId = typeof opts.clientMsgId === 'string' ? opts.clientMsgId.trim().slice(0, 128) : '';
+  const deliveryId = typeof opts.deliveryId === 'string' ? opts.deliveryId.trim().slice(0, 128) : '';
+  let clientMsgId = typeof opts.clientMsgId === 'string'
+    ? opts.clientMsgId.trim().slice(0, 128)
+    : deliveryId;
+  if (!clientMsgId) clientMsgId = deliveryId;
   text = String(text || '').trim();
   if (!text) return false;
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
     return false;
+  }
+  // Durable orchestration may replay an outbox claim after a crash in the
+  // narrow window between history persistence and outbox acknowledgement.
+  // Treat the persisted client/delivery id as the local idempotency key.  A
+  // duplicate rewrites the cached history to disk (important after a previous
+  // failed save) but never starts or interrupts another CLI turn.
+  if (clientMsgId || deliveryId) {
+    const duplicate = loadChatHistory(sessionName).some(message => message && (
+      (clientMsgId && message.clientMsgId === clientMsgId)
+      || (deliveryId && message.deliveryId === deliveryId)
+    ));
+    if (duplicate) return saveChatHistory(sessionName);
   }
   // ── Degrade防线 fail-loop 拦截（方案C）──────────────────────────────
   // 上游 API 不健康时，所有「系统自动注入」起的新 turn 只会立刻失败，反过来喂大
@@ -10042,12 +10064,19 @@ function runChatTurn(sessionName, text, opts = {}) {
   // attribute this message back to the task(s) / tool_use block that originated
   // it. Omitted (undefined, not null) for ordinary user messages and every other
   // inject path, so old history and other callers are completely unaffected.
-  appendChatMessage(sessionName, {
+  const userMessageSaved = appendChatMessage(sessionName, {
     role: 'user', content: text, ts: Date.now(),
     clientMsgId: clientMsgId || undefined,
+    deliveryId: deliveryId || undefined,
     bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
     bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
   });
+  if (!userMessageSaved) {
+    console.error(`[multicc/chat] [${sessionName}] refusing turn: user message was not persisted`);
+    chatBroadcast(sessionName, { type: 'error', error: '消息未能持久化，已安全停止本轮；系统稍后会重试。' });
+    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    return false;
+  }
 
   // Reset accumulators
   cs.currentAssistantText = '';
@@ -10463,6 +10492,48 @@ bus.on('chat:run', (sessionName, text, opts) => runChatTurn(sessionName, text, o
 services.provide('chat.runTurn', runChatTurn);
 
 // ── Wait injector: continue a session when external data arrives (A/B/D) ──
+function orchestrationChatBusy(session) {
+  const cs = chatSessions.get(session);
+  if (cs && cs.claudeProc) return true;
+  const st = chatStream.status(session);
+  return !!(st && st.busy);
+}
+
+function persistedOrchestrationDelivery(session, deliveryId) {
+  if (!deliveryId) return false;
+  try {
+    const history = JSON.parse(fs.readFileSync(chatHistoryPath(session), 'utf8'));
+    return Array.isArray(history) && history.some(message => message && (
+      message.deliveryId === deliveryId || message.clientMsgId === deliveryId
+    ));
+  } catch (_) {
+    return false;
+  }
+}
+
+function probeExplicitWait(metadata) {
+  if (metadata.pollUrl) {
+    return fetch(metadata.pollUrl).then(response => response.text());
+  }
+  return new Promise(resolve => {
+    require('child_process').exec(
+      metadata.pollCmd,
+      { cwd: metadata.cwd, timeout: 20000, maxBuffer: 1024 * 1024, env: process.env },
+      (err, stdout, stderr) => resolve(`${stdout || ''}${stderr || ''}`),
+    );
+  });
+}
+
+orchestrationRuntime = createOrchestrationRuntime({
+  file: MULTICC_PATHS.orchestrationFile,
+  runChatTurn,
+  isBusy: orchestrationChatBusy,
+  hasPersistedDelivery: persistedOrchestrationDelivery,
+  probe: probeExplicitWait,
+  workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
+  log: message => console.log('[multicc/wait]', message),
+});
+
 waitInjector.init({
   // All continuations route through runChatTurn → streaming sessions get the
   // warm process (queued if busy), default sessions get a --resume turn.
@@ -10470,12 +10541,8 @@ waitInjector.init({
   // forwarded so an injected continuation can carry origin metadata onto the
   // saved user message. originContinue stays the default for every inject path.
   inject: (session, text, opts) => runChatTurn(session, text, { originContinue: true, ...(opts || {}) }),
-  isBusy: (session) => {
-    const cs = chatSessions.get(session);
-    if (cs && cs.claudeProc) return true;
-    const st = chatStream.status(session);
-    return !!(st && st.busy);
-  },
+  isBusy: orchestrationChatBusy,
+  hasExplicitWait: session => orchestrationRuntime.hasPending(session),
   exec: (cmd, cwd) => new Promise((resolve) => {
     require('child_process').exec(cmd, { cwd, timeout: 20000, maxBuffer: 1024 * 1024, env: process.env },
       (err, stdout, stderr) => resolve({ stdout: stdout || '', stderr: stderr || '', code: err ? (err.code || 1) : 0 }));
@@ -10487,38 +10554,92 @@ waitInjector.init({
 // needs to pause for external data instead of ending the turn dead.
 //   poll:     { mode:'poll', pollCmd|pollUrl, untilContains|untilRegex, intervalSec?, maxChecks?, injectPrefix? }
 //   callback: { mode:'callback', injectPrefix?, timeoutSec? } → returns a callbackUrl
-app.post('/api/sessions/:id/wait', (req, res) => {
+app.post('/api/sessions/:id/wait', async (req, res) => {
   const s = persistedSessions.get(req.params.id);
   if (!s) return res.status(404).json({ error: 'session not found' });
   const b = req.body || {};
   try {
-    const reg = waitInjector.register({
+    const reg = await orchestrationRuntime.register({
       session: s.id, mode: b.mode, cwd: cwdForSession(s),
       pollCmd: b.pollCmd, pollUrl: b.pollUrl,
       untilContains: b.untilContains, untilRegex: b.untilRegex,
       intervalSec: b.intervalSec, maxChecks: b.maxChecks,
       injectPrefix: b.injectPrefix, timeoutSec: b.timeoutSec,
     });
-    const callbackUrl = `${req.protocol}://${req.get('host')}/api/wait/${reg.id}/resolve?token=${reg.token}`;
-    res.json({ ok: true, ...reg, callbackUrl });
+    const callbackUrl = reg.token
+      ? `${req.protocol}://${req.get('host')}/api/wait/${reg.id}/resolve?token=${reg.token}`
+      : null;
+    res.json({ ok: true, ...reg, callbackUrl, status: reg.status || 'pending' });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Resolve a callback wait — the external system POSTs its result here. Secured
 // by the per-wait token (exempt from ACCESS_TOKEN so off-box callers can reach it).
-app.post('/api/wait/:wid/resolve', (req, res) => {
-  const token = req.query.token || req.headers['x-wait-token'] || (req.body && req.body.token);
-  const data = (req.body && req.body.data !== undefined) ? req.body.data : (req.body ?? '');
-  const r = waitInjector.resolve(req.params.wid, token, data);
-  res.status(r.ok ? 200 : 400).json(r);
+app.post('/api/wait/:wid/resolve', async (req, res) => {
+  const body = req.body;
+  const token = req.query.token || req.headers['x-wait-token'] || (body && body.token);
+  let data;
+  if (body && body.data !== undefined) {
+    data = body.data;
+  } else if (body && typeof body === 'object' && !Array.isArray(body)) {
+    data = { ...body };
+    delete data.token; // raw callback capabilities must never enter durable payloads
+  } else {
+    data = body ?? '';
+  }
+  try {
+    const r = await orchestrationRuntime.resolveCallback(req.params.wid, token, data);
+    const statusCode = r.ok ? 200
+      : r.code === 'invalid_token' ? 403
+        : r.code === 'not_found' ? 404
+          : r.code === 'payload_conflict' ? 409
+            : 400;
+    const legacyError = r.code === 'invalid_token' ? 'bad token'
+      : r.code === 'not_found' ? 'wait not found'
+        : r.code === 'payload_conflict' ? 'callback payload conflicts with resolved wait'
+          : r.code;
+    res.status(statusCode).json({
+      ...r,
+      ...(r.ok ? {} : { error: legacyError }),
+      duplicate: !!(r.ok && r.idempotent),
+      status: r.status || (r.ok ? 'resolved' : undefined),
+    });
+  } catch (e) {
+    res.status(e.statusCode || 400).json({ ok: false, error: e.message });
+  }
 });
 
-app.get('/api/sessions/:id/waits', (req, res) => {
-  res.json({ waits: waitInjector.listForSession(req.params.id), stats: waitInjector.stats() });
+app.get('/api/sessions/:id/waits', async (req, res) => {
+  try {
+    const durableWaits = await orchestrationRuntime.listForSession(req.params.id);
+    const legacyWaits = waitInjector.listForSession(req.params.id).map(wait => ({ ...wait, status: 'pending' }));
+    const durableStats = await orchestrationRuntime.stats();
+    const legacyStats = waitInjector.stats();
+    res.json({
+      waits: [...durableWaits, ...legacyWaits],
+      stats: {
+        ...legacyStats,
+        ...durableStats,
+        waits: durableStats.waits + legacyStats.waits,
+        legacyWaits: legacyStats.waits,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.delete('/api/wait/:wid', (req, res) => {
-  res.json(waitInjector.cancel(req.params.wid));
+app.delete('/api/wait/:wid', async (req, res) => {
+  try {
+    let result = await orchestrationRuntime.cancel(req.params.wid);
+    if (!result.ok && result.code === 'not_found') {
+      const legacy = waitInjector.cancel(req.params.wid);
+      result = legacy.ok ? { ...legacy, status: 'cancelled' } : result;
+    }
+    res.status(result.ok ? 200 : result.code === 'not_found' ? 404 : 409).json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ── Detached tasks ──
@@ -11833,6 +11954,10 @@ shutdownCoordinator.onClose(() => new Promise(resolve => {
   } catch (_) { resolve(); }
 }));
 
+// Stop orchestration after HTTP has stopped accepting callbacks.  Awaiting the
+// serialized worker/store tail guarantees no lease mutation is left half-run.
+shutdownCoordinator.onClose(() => orchestrationRuntime ? orchestrationRuntime.stop() : undefined);
+
 function gracefulShutdown(sig) {
   if (_shuttingDown) return;
   // Ignore SIGTERM by default to prevent accidental shutdowns from arbitrary
@@ -11860,6 +11985,7 @@ app.use(safeErrorHandler(logger));
   // recovery has completed. The work itself is asynchronous, so this gates
   // readiness without blocking timers or other event-loop work.
   await startupRepoReady;
+  await orchestrationRuntime.start();
   if (networkPolicy.development) {
     try {
       const requestedPort = PORT;

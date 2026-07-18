@@ -11,6 +11,7 @@ sessions.json
 memories/
 directories.json
 scheduled_tasks.json
+orchestration.json
 shares.json
 aux-config.json
 notes.json
