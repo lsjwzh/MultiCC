@@ -257,9 +257,21 @@ function mount(app) {
 function init(injected) {
   deps = injected;
   load();
-  if (timer) clearInterval(timer);
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
   timer = setInterval(tick, 30000);
+  if (timer.unref) timer.unref();
   console.log(`[multicc/cron] scheduler started, ${tasks.length} task(s) loaded`);
 }
 
-module.exports = { init, mount, cronValidate, cronNext, _fireTask: fireTask };
+// Idempotent lifecycle hook for graceful shutdown. Loaded tasks and injected
+// dependencies stay in memory so init() can restart scheduling later.
+function stop() {
+  if (!timer) return;
+  clearInterval(timer);
+  timer = null;
+}
+
+module.exports = { init, stop, mount, cronValidate, cronNext, _fireTask: fireTask };

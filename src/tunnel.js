@@ -251,6 +251,16 @@ function init() {
   console.log(`[multicc/tunnel] monitor ready (phddns:${config.phddns.enabled?'on':'off'}/${a.phddns?'installed':'missing'}, tailscale:${config.tailscale.enabled?'on':'off'}/${a.tailscale?'installed':'missing'})`);
 }
 
+// Stop the process-owned monitor interval. This is intentionally idempotent so
+// the shutdown coordinator can call it from more than one cleanup path. Runtime
+// provider state and the loaded config are retained; a later init() resumes the
+// monitor without losing counters or creating a second interval.
+function stop() {
+  if (!timer) return;
+  clearInterval(timer);
+  timer = null;
+}
+
 // Merge a partial config update, persist, and reload the loop. Resets a
 // provider's fail/restart counters when it gets toggled on.
 function applyConfig(update) {
@@ -297,4 +307,4 @@ async function restartNow(name) {
   }
 }
 
-module.exports = { init, applyConfig, getStatus, restartNow, loadConfig, availability, setFunnel, funnelStatus, ipv6Status };
+module.exports = { init, stop, applyConfig, getStatus, restartNow, loadConfig, availability, setFunnel, funnelStatus, ipv6Status };
