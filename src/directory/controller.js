@@ -25,14 +25,14 @@ function createDirectoryRouter(service) {
 
   router.get('/api/directories', wrap(async (req, res) => send(res, await service.listAnnotated())));
 
-  router.post('/api/directories', wrap((req, res) => send(res, service.register({
+  router.post('/api/directories', wrap(async (req, res) => send(res, await service.register({
     name: req.body.name, path: req.body.path, create: req.body.create,
   }))));
 
-  router.patch('/api/directories/:id', wrap((req, res) => send(res, service.update(req.params.id, req.body || {}))));
+  router.patch('/api/directories/:id', wrap(async (req, res) => send(res, await service.update(req.params.id, req.body || {}))));
 
-  router.delete('/api/directories/:id', wrap((req, res) =>
-    send(res, service.remove(req.params.id, { force: req.query.force === '1' }))));
+  router.delete('/api/directories/:id', wrap(async (req, res) =>
+    send(res, await service.remove(req.params.id, { force: req.query.force === '1' }))));
 
   router.post('/api/directories/:id/push', wrap(async (req, res) => send(res, await service.push(req.params.id))));
 

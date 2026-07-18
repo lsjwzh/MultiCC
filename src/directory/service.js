@@ -22,7 +22,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
   assertPort('fsPort', fsPort, FS_PORT);
   assertPort('helpers', helpers, HELPER_PORT);
 
-  const dirBaseBranch = (d) => d.baseBranch || git.baseBranch(d.path);
+  const dirBaseBranch = async (d) => d.baseBranch || await git.baseBranch(d.path);
 
   // Browse / autocomplete filesystem directories for the "new directory" picker.
   // Given a partial path (parent exists but the full path doesn't), returns the
@@ -81,7 +81,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
       }
       let pushState;
       try {
-        pushState = await git.pushState(d.path, dirBaseBranch(d));
+        pushState = await git.pushState(d.path, await dirBaseBranch(d));
       } catch (error) {
         pushState = { available: false, hasRemote: false, ahead: 0, behind: 0, reason: error.message };
       }
@@ -90,7 +90,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     return ok(list);
   }
 
-  function register({ name, path: rawPath, create }) {
+  async function register({ name, path: rawPath, create }) {
     const dirName = (name || '').trim();
     const raw = (rawPath || '').trim();
     const wantCreate = create === true || create === 'true';
@@ -115,7 +115,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     const dir = { id: newId(), name: dirName, path: resolvedPath, createdAt: new Date().toISOString() };
     repo.add(dir);
     // Force the directory to be a usable git repo (worktree isolation depends on it).
-    const ready = git.ensureReady(dir);
+    const ready = await git.ensureReady(dir);
     if (!ready.ok) {
       repo.remove(dir.id);
       return err('invalid', helpers.friendlyDirReason(ready.reason));
@@ -123,12 +123,12 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     repo.save();
     // Seed a default Agent Commander chat session so a fleet conductor is ready
     // out of the box. Best-effort: failure is logged but never blocks creation.
-    try { sessions.seedCommander(dir); }
+    try { await sessions.seedCommander(dir); }
     catch (e) { console.warn(`[multicc] seed commander session error for dir ${dir.id}: ${e.message}`); }
     return ok(dir);
   }
 
-  function update(id, body) {
+  async function update(id, body) {
     const d = repo.get(id);
     if (!d) return err('not_found', 'directory not found');
     if (body.name) d.name = String(body.name).trim();
@@ -144,7 +144,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         d.path = resolved;
         // Path changed → re-verify git readiness for the new location.
         git.unmarkReady(d.id);
-        const ready = git.ensureReady(d);
+        const ready = await git.ensureReady(d);
         if (!ready.ok) return err('invalid', `无法将目录初始化为 git 仓库: ${ready.reason}`);
       }
     }
@@ -158,7 +158,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     return ok(d);
   }
 
-  function remove(id, { force } = {}) {
+  async function remove(id, { force } = {}) {
     const d = repo.get(id);
     if (!d) return err('not_found', 'directory not found');
     // Refuse to delete a non-empty directory unless force is passed.
@@ -174,7 +174,10 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     // still linger" (or vice versa). Behaviour without a `tx` binding falls
     // back to the pre-transaction "save each, then persist sessions" order,
     // which is what unit tests still exercise.
-    for (const s of owned) sessions.destroyCascade(s, d);
+    for (const s of owned) {
+      const destroyed = await sessions.destroyCascade(s, d, { force });
+      if (destroyed && destroyed.ok === false) return err('invalid', destroyed.error, destroyed);
+    }
     repo.remove(d.id);
     if (tx && tx.commitCrossFileWrite) {
       try {
@@ -210,7 +213,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     const d = repo.get(id);
     if (!d) return err('not_found', 'directory not found');
     try {
-      const result = await git.push(d.path, dirBaseBranch(d));
+      const result = await git.push(d.path, await dirBaseBranch(d));
       events.append(d.id, 'pushed', result.pushed
         ? `${result.before.ahead} 个提交 → ${result.before.remote}/${result.before.remoteBranch}`
         : '无待推送提交');
@@ -245,14 +248,15 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     const d = repo.get(id);
     if (!d) return err('not_found', 'directory not found');
     try {
-      const ps = await git.pushState(d.path, dirBaseBranch(d), { force: true });
+      const branch = await dirBaseBranch(d);
+      const ps = await git.pushState(d.path, branch, { force: true });
       if (ps.dirty === 0) return ok({ ok: true, committed: false, pushState: ps });
       const msg = (message ? String(message) : '').trim()
         || `multicc: 提交未跟踪改动（${new Date().toISOString().slice(0, 19).replace('T', ' ')}）`;
       await git.stageAll(d.path);
       await git.commit(d.path, msg);
-      git.invalidatePushCache(d.path, dirBaseBranch(d));
-      const after = await git.pushState(d.path, dirBaseBranch(d), { force: true });
+      git.invalidatePushCache(d.path, branch);
+      const after = await git.pushState(d.path, branch, { force: true });
       events.append(d.id, 'committed', `提交 ${after.ahead > ps.ahead ? after.ahead - ps.ahead : ps.dirty} 个未提交改动`);
       return ok({ ok: true, committed: true, pushState: after });
     } catch (error) {
