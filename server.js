@@ -1743,6 +1743,7 @@ function addPendingDispatch(dispatcherId, dispatchId, targetId) {
   const cs = chatSessions.get(dispatcherId);
   if (!cs || !cs.currentTask) return;
   cs.currentTask.pendingDispatches = cs.currentTask.pendingDispatches || [];
+  if (cs.currentTask.pendingDispatches.some(entry => entry.dispatchId === dispatchId)) return;
   cs.currentTask.pendingDispatches.push({ dispatchId, targetId, sentAt: Date.now() });
   // Phase: still working, but now blocked on workers. Surface as waiting.
   if (cs.currentTask.phase !== 'done') cs.currentTask.phase = 'awaiting_workers';
@@ -10971,12 +10972,11 @@ app.get('/api/sessions/:id/detached', async (req, res) => {
     kind: 'detached',
     ownerSessionId: session.id,
   });
-  const byExternalId = new Map(operations.map(operation => [operation.externalId, operation]));
   res.json({
-    tasks: detached.list().filter(task => byExternalId.has(task.id)).map(task => {
-      const operation = byExternalId.get(task.id);
-      return operation ? { ...task, operationId: operation.id, status: operation.status } : task;
-    }),
+    tasks: operations.map(operation => {
+      const task = detached.status(operation.externalId);
+      return task ? { ...task, operationId: operation.id, status: operation.status } : null;
+    }).filter(Boolean),
   });
 });
 

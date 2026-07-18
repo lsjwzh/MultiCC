@@ -251,6 +251,9 @@ function createOperationService({
       if (!operation || operation.kind !== 'detached') return { ok: false, code: 'not_found' };
       const label = operation.spec.label || operation.spec.command.slice(0, 60);
       const status = result.status || (result.exitCode === 0 ? 'completed' : 'failed');
+      if (!TERMINAL_OPERATION_STATES.has(status)) {
+        throw new TypeError(`invalid detached completion status: ${status}`);
+      }
       const marker = result.exitCode == null ? '' : `__MULTICC_DETACHED_DONE__ exit=${result.exitCode}\n`;
       const text = result.deliveryText || `${operation.spec.injectPrefix || `[后台任务完成] ${label}`}\n${marker}----- output tail -----\n${result.logTail || ''}`;
       return completeOperationDraft(draft, operation, result, {
@@ -270,6 +273,9 @@ function createOperationService({
       const operation = draft.operations[id];
       if (!operation || operation.kind !== 'dispatch') return { ok: false, code: 'not_found' };
       const status = result.status || 'completed';
+      if (!TERMINAL_OPERATION_STATES.has(status)) {
+        throw new TypeError(`invalid dispatch completion status: ${status}`);
+      }
       const targetId = operation.spec.targetId;
       const label = operation.spec.targetLabel
         ? `${targetId}（${operation.spec.targetLabel}）`
@@ -321,7 +327,7 @@ function createOperationService({
         };
         draft.tasks[id] = task;
       }
-      if (TERMINAL_TASK_STATES.has(task.status) && !TERMINAL_TASK_STATES.has(status)) {
+      if (TERMINAL_TASK_STATES.has(task.status) && task.status !== status) {
         return { ...publicTask(task), idempotent: true };
       }
       task.status = status;
