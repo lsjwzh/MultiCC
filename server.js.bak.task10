@@ -172,7 +172,7 @@ function isAuthenticated(req) {
   button:hover{background:#2ea043}
 </style></head><body>
 <div class="box">
-  <div class="logo">Web<span>CC</span></div>
+  <div class="logo">Multi<span>CC</span></div>
   ${error}
   <form method="POST" action="/login">
     <input type="hidden" name="redirect" value="${redirect.replace(/"/g, '&quot;')}">
