@@ -52,6 +52,173 @@ async function gitBaseBranch(dirPath) {
   })).then(result => result.branch);
 }
 
+async function gitWorktreeSnapshot(worktreePath, branch = null) {
+  if (!worktreePath) throw new Error('worktreePath is required');
+  return defaultRepoActor.run(worktreePath, 'worktree-snapshot', async ({ execGit }) => {
+    const resolvedBranch = branch || await baseBranchWith(execGit, worktreePath);
+    const head = await execGit(worktreePath, ['rev-parse', 'HEAD']);
+    const changes = String(await execGit(worktreePath, ['status', '--short']) || '')
+      .split(/\r?\n/)
+      .map(line => line.trimEnd())
+      .filter(Boolean)
+      .slice(0, 100);
+    return { ok: true, branch: resolvedBranch, head, changes };
+  });
+}
+
+async function gitExportSessionBundle(dir, session, tmpPath, maxBytes = Infinity) {
+  if (!dir || !dir.path) throw new Error('dir.path is required');
+  if (!session || !session.branch) throw new Error('session.branch is required');
+  if (!tmpPath) throw new Error('tmpPath is required');
+  const limit = Number.isFinite(Number(maxBytes)) && Number(maxBytes) >= 0
+    ? Number(maxBytes)
+    : Infinity;
+
+  return defaultRepoActor.run(dir.path, 'session-bundle-export', async ({ execGit, progress }) => {
+    const baseBranch = dir.baseBranch || await baseBranchWith(execGit, dir.path);
+    const unique = parseInt(await execGit(dir.path,
+      ['rev-list', '--count', `${baseBranch}..${session.branch}`]) || '0', 10);
+    if (!unique) {
+      await fsp.rm(tmpPath, { force: true }).catch(() => {});
+      return {
+        ok: true,
+        bundlePath: null,
+        baseBranch,
+        branch: session.branch,
+        unique: 0,
+        size: 0,
+        note: 'no unique commits',
+      };
+    }
+
+    progress('bundle-create', { branch: session.branch, baseBranch, unique });
+    await fsp.mkdir(path.dirname(tmpPath), { recursive: true });
+    await fsp.rm(tmpPath, { force: true });
+    try {
+      // Naming the branch (rather than only a raw commit hash) ensures the
+      // bundle contains a fetchable refs/heads/<branch> entry. Excluding the
+      // base keeps the payload limited to commits unique to this session.
+      await execGit(dir.path, ['bundle', 'create', tmpPath, session.branch, `^${baseBranch}`]);
+      const stat = await fsp.stat(tmpPath);
+      if (stat.size > limit) {
+        await fsp.rm(tmpPath, { force: true });
+        return {
+          ok: false,
+          tooLarge: true,
+          bundlePath: null,
+          baseBranch,
+          branch: session.branch,
+          unique,
+          size: stat.size,
+          maxBytes: limit,
+          note: 'bundle exceeds size limit',
+        };
+      }
+      return {
+        ok: true,
+        bundlePath: tmpPath,
+        baseBranch,
+        branch: session.branch,
+        unique,
+        size: stat.size,
+        note: null,
+      };
+    } catch (error) {
+      await fsp.rm(tmpPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  }, { sessionId: session.id });
+}
+
+async function gitImportSessionBundle(dir, session, tmpBundle, sourceBranch) {
+  if (!dir || !dir.path) throw new Error('dir.path is required');
+  if (!session || !session.worktreePath) throw new Error('session.worktreePath is required');
+  if (!tmpBundle) throw new Error('tmpBundle is required');
+  if (!sourceBranch) throw new Error('sourceBranch is required');
+
+  return defaultRepoActor.run(dir.path, 'session-bundle-import', async ({ execGit, progress, operationId: id }) => {
+    const worktreePath = session.worktreePath;
+    const originalHead = await execGit(worktreePath, ['rev-parse', 'HEAD']);
+    const initialStatus = await execGit(worktreePath, ['status', '--porcelain']);
+    if (initialStatus) {
+      return { ok: false, blocked: true, reasons: ['dirty'], restored: false,
+        error: 'bundle import requires a clean target worktree' };
+    }
+
+    const safeId = String(id).replace(/[^A-Za-z0-9._/-]/g, '-');
+    const incomingRef = `refs/multicc/import/${safeId}`;
+    const sourceRef = String(sourceBranch).startsWith('refs/')
+      ? String(sourceBranch)
+      : `refs/heads/${sourceBranch}`;
+    let cherryPickStarted = false;
+    let mergeStarted = false;
+    let commits = [];
+    try {
+      progress('bundle-fetch', { sourceRef, incomingRef });
+      await execGit(dir.path, ['fetch', '--no-tags', tmpBundle, `+${sourceRef}:${incomingRef}`]);
+      const mergeBase = await execGit(worktreePath, ['merge-base', 'HEAD', incomingRef]);
+      commits = lines(await execGit(worktreePath, ['rev-list', '--reverse', `${mergeBase}..${incomingRef}`]));
+      if (!commits.length) {
+        return { ok: true, restored: false, commits: 0, mergeBase, originalHead,
+          note: 'bundle has no commits to import' };
+      }
+
+      const mergeCommits = lines(await execGit(worktreePath,
+        ['rev-list', '--min-parents=2', `${mergeBase}..${incomingRef}`]));
+      let strategy = 'cherry-pick';
+      if (mergeCommits.length) {
+        // A cherry-pick sequence cannot assign a different mainline to each
+        // merge commit. Preserve that topology with one non-fast-forward merge
+        // instead; `merge --abort` has the same all-or-nothing property.
+        strategy = 'merge';
+        progress('merge', { commits: commits.length, mergeCommits: mergeCommits.length });
+        mergeStarted = true;
+        await execGit(worktreePath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
+          'merge', '--no-ff', '--no-edit', incomingRef]);
+        mergeStarted = false;
+      } else {
+        progress('cherry-pick', { commits: commits.length });
+        cherryPickStarted = true;
+        // Execute the whole sequence in one command so `cherry-pick --abort`
+        // restores the exact pre-import HEAD even when a later commit conflicts.
+        await execGit(worktreePath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
+          'cherry-pick', ...commits]);
+        cherryPickStarted = false;
+      }
+      return {
+        ok: true,
+        restored: true,
+        commits: commits.length,
+        strategy,
+        mergeBase,
+        originalHead,
+        head: await execGit(worktreePath, ['rev-parse', 'HEAD']),
+      };
+    } catch (error) {
+      let abortError = null;
+      if (cherryPickStarted || mergeStarted) {
+        try { await execGit(worktreePath, [mergeStarted ? 'merge' : 'cherry-pick', '--abort']); }
+        catch (abortFailure) { abortError = errorText(abortFailure); }
+      }
+      const head = await execGit(worktreePath, ['rev-parse', 'HEAD']).catch(() => '');
+      const status = await execGit(worktreePath, ['status', '--porcelain']).catch(() => '');
+      return {
+        ok: false,
+        restored: false,
+        commits: commits.length,
+        originalHead,
+        head,
+        clean: !status,
+        aborted: (cherryPickStarted || mergeStarted) && !abortError,
+        abortError,
+        error: errorText(error) || 'bundle import failed',
+      };
+    } finally {
+      try { await execGit(dir.path, ['update-ref', '-d', incomingRef]); } catch (_) {}
+    }
+  }, { sessionId: session.id });
+}
+
 async function ensureExcludedWith(execGit, dirPath) {
   const gitDir = await execGit(dirPath, ['rev-parse', '--git-dir']);
   const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(dirPath, gitDir);
@@ -492,6 +659,9 @@ module.exports = {
   gitIsRepo,
   gitHasCommit,
   gitBaseBranch,
+  gitWorktreeSnapshot,
+  gitExportSessionBundle,
+  gitImportSessionBundle,
   gitEnsureExcluded,
   gitWorktreeAdd,
   gitWorktreeRemove,
