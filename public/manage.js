@@ -6494,7 +6494,7 @@ function editProvider(appType, id) {
 }
 
 async function deleteProvider(appType, id, name) {
-  if (!confirm(`删除 provider「${name}」？（会从 cc-switch 移除）`)) return;
+  if (!confirm(tt('providerDeleteLocalConfirm', { name }))) return;
   try {
     const res = await fetch(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
     const d = await res.json().catch(() => ({}));
