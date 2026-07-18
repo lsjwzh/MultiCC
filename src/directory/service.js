@@ -9,11 +9,12 @@
 const path = require('path');
 const crypto = require('crypto');
 const { assertPort, REPOSITORY_PORT, GIT_PORT, SESSION_PORT, EVENT_PORT, FS_PORT, HELPER_PORT } = require('./ports');
+const stateTx = require('../state-tx');
 
 const ok = (data) => ({ ok: true, data });
 const err = (code, message, extra) => ({ ok: false, code, message, ...(extra ? { extra } : {}) });
 
-function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, newId = () => crypto.randomUUID() }) {
+function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, tx, newId = () => crypto.randomUUID() }) {
   assertPort('repository', repo, REPOSITORY_PORT);
   assertPort('git', git, GIT_PORT);
   assertPort('sessions', sessions, SESSION_PORT);
@@ -166,10 +167,42 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
       return err('invalid', `directory has ${owned.length} session(s); pass ?force=1 to delete them too`,
         { sessions: owned.map(s => s.id) });
     }
+    // Mutate the in-memory Maps for both files first — this is what makes the
+    // pair consistent. Only THEN write both to disk under a single journalled
+    // transaction: on crash-mid-write, boot replay re-issues both writes from
+    // the journal, so users never observe "directory gone but its sessions
+    // still linger" (or vice versa). Behaviour without a `tx` binding falls
+    // back to the pre-transaction "save each, then persist sessions" order,
+    // which is what unit tests still exercise.
     for (const s of owned) sessions.destroyCascade(s, d);
     repo.remove(d.id);
-    repo.save();
-    sessions.persistRecords();
+    if (tx && tx.commitCrossFileWrite) {
+      try {
+        tx.commitCrossFileWrite({
+          kind: 'delete-directory',
+          reason: `dir=${id} force=${!!force}`,
+          files: [
+            {
+              path: tx.directoriesFile, payload: repo.snapshot(),
+              kind: 'directories', schemaVersion: 1,
+            },
+            {
+              path: tx.sessionsFile, payload: sessions.snapshotRecords(),
+              kind: 'sessions', schemaVersion: 1,
+            },
+          ],
+        });
+      } catch (e) {
+        // The in-memory state is already updated; we can't un-cascade a tmux
+        // kill. Surface as an internal error — the boot journal will retry the
+        // writes on next start. This is the "HTTP only 200 on real success"
+        // guarantee.
+        return err('internal', `persist failed: ${e.message}`);
+      }
+    } else {
+      repo.save();
+      sessions.persistRecords();
+    }
     return ok({ ok: true, removedSessions: owned.length });
   }
 

@@ -21,6 +21,11 @@ module.exports = {
     autorestart: true,
     max_restarts: 20,
     min_uptime: '10s',
-    kill_timeout: 10000,
+    // kill_timeout must exceed SHUTDOWN_GRACE_MS (60_000ms) in server.js —
+    // otherwise PM2's SIGKILL fires while the ShutdownCoordinator is still
+    // draining in-flight chat turns / running closers, and partial assistant
+    // text never reaches the checkpoint step. 75s gives 15s of headroom over
+    // the drain window for closers (HTTP graceful close, WS flush, etc.).
+    kill_timeout: 75000,
   }],
 };
