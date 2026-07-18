@@ -1441,52 +1441,52 @@
     <span class="logo">Multi<span>CC</span></span>
     <span class="badge">Chat</span>
     <span id="status">Connecting...</span>
-    <span id="session-title" title="会话身份：Fleet / 别名"></span>
-    <button id="reconnect-btn" class="hdr-btn" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
+    <span id="session-title" data-i18n-title="sessionIdentity" title="会话身份：Fleet / 别名"></span>
+    <button id="reconnect-btn" class="hdr-btn" data-i18n-title="forceReconnect" title="强制重连（连接卡住时点这里；长按可刷新页面）">&#8635;</button>
     <span class="hdr-spacer"></span>
     <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
-    <button id="notify-btn" class="hdr-btn" title="语音通知 (点击开启/关闭)">&#128276;</button>
-    <button id="s2s-btn" class="hdr-btn" title="S2S 语音对话模式 (点击开启/关闭)">&#127897;</button>
-    <button id="dbg-btn" class="hdr-btn" title="Debug 面板">&#128027;</button>
-    <button class="hdr-btn" id="cli-btn" title="切换此逻辑会话使用的 CLI；上下文通过结构化 checkpoint 交接">CLI</button>
-    <button class="hdr-btn" id="model-btn" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn" id="effort-btn" title="切换该会话的思考努力程度（Claude，会在下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn" id="provider-btn" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
-    <button class="hdr-btn" id="role-btn" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
-    <button class="hdr-btn" id="memory-btn" title="会话记忆库：原生 CLI 会话启动时形成快照，支持私有与项目共享记忆" data-i18n="memory">🧠 记忆</button>
+    <button id="notify-btn" class="hdr-btn" data-i18n-title="taskNotificationToggle" title="任务通知开关">&#128276;</button>
+    <button id="s2s-btn" class="hdr-btn" data-i18n-title="voiceConversationToggle" title="S2S 语音对话模式开关">&#127897;</button>
+    <button id="dbg-btn" class="hdr-btn" data-i18n-title="debugPanel" title="Debug 面板">&#128027;</button>
+    <button class="hdr-btn" id="cli-btn" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
+    <button class="hdr-btn" id="model-btn" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn" id="effort-btn" data-i18n-title="switchEffort" title="切换该会话的思考努力程度（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn" id="provider-btn" data-i18n-title="switchProvider" title="切换该会话使用的 Provider（下一轮对话生效）" style="display:none"></button>
+    <button class="hdr-btn" id="role-btn" data-i18n-title="editRolePrompt" title="设置该会话的角色提示词（下一轮对话生效）" data-i18n="role">🎭 角色</button>
+    <button class="hdr-btn" id="memory-btn" data-i18n-title="openMemoryLibrary" title="会话记忆库" data-i18n="memory">🧠 记忆</button>
     <button class="hdr-btn" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="任务完成后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
-    <button class="hdr-btn" id="share-btn" title="把此会话分享到外部（网页链接：只读 / 密码 / 可对话）" data-i18n="share">🔗 分享</button>
+    <button class="hdr-btn" id="share-btn" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">🔗 分享</button>
     <span id="header-more-wrap">
       <button class="hdr-btn" id="header-more-btn" data-i18n="more">更多</button>
       <span id="header-more-menu"></span>
     </span>
     <button class="hdr-btn" id="merge-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支" data-i18n="merge">合并</button>
     <span class="hdr-menu-wrap" id="clear-ctx-wrap">
-      <button class="hdr-btn" id="clear-ctx-btn" title="Clear context" data-i18n="clear">Clear</button>
+      <button class="hdr-btn" id="clear-ctx-btn" data-i18n-title="clearHistory" title="Clear context" data-i18n="clear">Clear</button>
       <span class="hdr-drop-menu" id="clear-ctx-menu" style="display:none">
         <button data-action="clear-all" data-i18n="clearHistory">清空全部</button>
         <label style="display:flex;align-items:center;gap:4px;padding:6px 8px;font-size:12px;color:var(--faint);white-space:nowrap">
           <input id="clear-keep-n" type="number" min="1" max="999" value="5" style="width:44px;font-size:12px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)">
           <span data-i18n="clearKeepLast">保留最近 N 条</span>
         </label>
-        <button data-action="clear-keep" class="primary" style="width:100%">确认</button>
+        <button data-action="clear-keep" class="primary" style="width:100%" data-i18n="confirm">确认</button>
       </span>
     </span>
-    <button class="hdr-btn" id="memo-btn" title="项目备忘 (multicc.memo.md)" onclick="openMemo()">📝</button>
+    <button class="hdr-btn" id="memo-btn" data-i18n-title="projectMemo" title="项目备忘 (multicc.memo.md)" onclick="openMemo()">📝</button>
   </div>
 
   <!-- CWD bar -->
   <div id="cwd-bar">
     <span id="cwd-icon">&#128193;</span>
     <span id="cwd-path">-</span>
-    <button id="cwd-change" style="display:none" data-i18n="changeDir">Change</button>
+    <button id="cwd-change" style="display:none" data-i18n-title="changeCwdTitle" data-i18n="changeDir">Change</button>
   </div>
 
   <!-- Worktree branch + behind-base indicator (populated by applyBehindStatus) -->
   <div id="worktree-bar"></div>
 
   <!-- AI assistant classify bar: what aux thinks this session's goal/phase/state is -->
-  <div id="aux-classify-bar" title="AI 助手对当前会话的理解（目标 · 阶段 · 状态），由辅助模型自动判断">
+  <div id="aux-classify-bar" data-i18n-title="auxClassifyHint" title="AI 助手对当前会话的理解（目标 · 阶段 · 状态），由辅助模型自动判断">
     <span class="ac-icon">🎯</span>
     <span class="ac-goal" id="ac-goal"></span>
     <span class="ac-state" id="ac-state"></span>
@@ -1669,6 +1669,7 @@
     </div>
   </div>
 
+  <script src="i18n-catalog.js"></script>
   <script src="i18n.js"></script>
   <script src="shared/models.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.1/marked.min.js"></script>

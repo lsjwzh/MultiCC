@@ -493,22 +493,22 @@
       </div>
     </a>
 
-    <div class="nav-label">Workspace</div>
-    <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> 概览 <span class="badge" id="nav-dir-count">0</span></button>
-    <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> 记忆图谱 <span class="badge" id="nav-memory-count">0</span></button>
+    <div class="nav-label" data-i18n="workspace">Workspace</div>
+    <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span data-i18n="overview">概览</span> <span class="badge" id="nav-dir-count">0</span></button>
+    <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> <span data-i18n="memoryGraph">记忆图谱</span> <span class="badge" id="nav-memory-count">0</span></button>
 
-    <div class="nav-label">Settings</div>
-    <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> 定时任务 <span class="badge" id="nav-cron-count">0</span></button>
-    <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> 语音 Voice</button>
-    <button class="nav-item" data-view="goal" onclick="setView('goal')"><span class="ic">🎯</span> Goal 预检</button>
-    <button class="nav-item" data-view="provider" onclick="setView('provider')"><span class="ic">⇄</span> Provider</button>
-    <button class="nav-item" data-view="global" onclick="setView('global')"><span class="ic">⚙</span> 全局配置</button>
-    <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> 推送 Push</button>
-    <button class="nav-item" data-view="tunnel" onclick="setView('tunnel')"><span class="ic">🌐</span> 外网穿透</button>
-    <button class="nav-item" data-view="bridges" onclick="setView('bridges')"><span class="ic">🌉</span> 消息桥接 Bridges</button>
-    <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> Agent 资源</button>
-    <button class="nav-item" data-view="skillsync" onclick="setView('skillsync')"><span class="ic">⟳</span> 技能同步 <span class="badge" id="nav-skillsync-count">0</span></button>
-    <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> 临时上传</button>
+    <div class="nav-label" data-i18n="settingsTitle">Settings</div>
+    <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> <span data-i18n="cronTasks">定时任务</span> <span class="badge" id="nav-cron-count">0</span></button>
+    <button class="nav-item" data-view="voice" onclick="setView('voice')"><span class="ic">🎙</span> <span data-i18n="voiceSettings">语音设置</span></button>
+    <button class="nav-item" data-view="goal" onclick="setView('goal')"><span class="ic">🎯</span> <span data-i18n="goalPrecheck">Goal 预检</span></button>
+    <button class="nav-item" data-view="provider" onclick="setView('provider')"><span class="ic">⇄</span> <span data-i18n="providerConfig">Provider 配置</span></button>
+    <button class="nav-item" data-view="global" onclick="setView('global')"><span class="ic">⚙</span> <span data-i18n="globalConfig">全局配置</span></button>
+    <button class="nav-item" data-view="push" onclick="setView('push')"><span class="ic">🔔</span> <span data-i18n="pushNotifications">推送通知</span></button>
+    <button class="nav-item" data-view="tunnel" onclick="setView('tunnel')"><span class="ic">🌐</span> <span data-i18n="tunnel">外网穿透</span></button>
+    <button class="nav-item" data-view="bridges" onclick="setView('bridges')"><span class="ic">🌉</span> <span data-i18n="messageBridges">消息桥接</span></button>
+    <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> <span data-i18n="agentResources">Agent 资源</span></button>
+    <button class="nav-item" data-view="skillsync" onclick="setView('skillsync')"><span class="ic">⟳</span> <span data-i18n="skillSync">技能同步</span> <span class="badge" id="nav-skillsync-count">0</span></button>
+    <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> <span data-i18n="temporaryUploads">临时上传</span></button>
 
     <!-- Version check: shown at the bottom of the sidebar, always visible -->
     <div id="version-bar" style="margin-top:auto;padding:10px 4px 6px;border-top:1px solid var(--line)">
@@ -526,20 +526,20 @@
       <a class="hdr-btn" href="/multicc.apk" id="apk-btn" title="Download Android App">APK</a>
       <button class="hdr-btn" id="qr-btn" onclick="showQR()" title="Scan QR to open on mobile">QR</button>
       <button class="hdr-btn" id="push-toggle" onclick="togglePush()" title="Enable push notifications">Push</button>
-      <button class="hdr-btn" id="svc-restart-btn" onclick="restartMulticcService()" title="重启 multicc 服务（优雅：先保存在途消息，再自动重连）">🔄 重启</button>
-      <a class="hdr-btn" href="/logout" title="退出登录">退出</a>
+      <button class="hdr-btn" id="svc-restart-btn" onclick="restartMulticcService()" data-i18n-title="restartServiceHint" title="重启 multicc 服务">🔄 <span data-i18n="restartService">重启</span></button>
+      <a class="hdr-btn" href="/logout" data-i18n-title="logout"><span data-i18n="logout">退出登录</span></a>
     </div>
   </aside>
 
   <!-- ── Main ── -->
   <main id="main">
     <header id="topbar">
-      <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" title="菜单">☰</button>
-      <div class="crumb" id="crumb">概览 <small id="crumb-sub"></small></div>
+      <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" data-i18n-title="menu" title="菜单">☰</button>
+      <div class="crumb" id="crumb"><span data-i18n="overview">概览</span> <small id="crumb-sub"></small></div>
       <div class="topspace"></div>
       <div class="search"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索Fleet / 会话…" oninput="filterDirs(this.value)" /></div>
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
-      <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" title="引导">❓</button>
+      <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" data-i18n-title="onboarding" title="引导">❓</button>
       <button class="icon-btn" id="topbar-refresh" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
       <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建Fleet</button>
     </header>
@@ -550,7 +550,7 @@
         <!-- ─── Overview view ─── -->
         <section class="view active" data-view="overview">
           <div id="kpi-row"></div>
-          <div class="sec-head"><h2>Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="directories">Fleet</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="aux-section"></div>
           <div id="directory-list"></div>
         </section>
@@ -652,8 +652,8 @@
             #mem-file-card .mf-del{color:#f85149}
             #mem-file-card .mf-save{background:#238636;border-color:#2ea043;color:#fff}
           </style>
-          <div class="sec-head"><h2>记忆图谱 <span id="mem-graph-count-pill" style="color:var(--faint);font-weight:400;font-size:12px"></span></h2><div class="line"></div>
-            <button class="btn btn-sm" onclick="loadMemoryGraph(undefined, true)">刷新</button>
+          <div class="sec-head"><h2><span data-i18n="memoryGraph">记忆图谱</span> <span id="mem-graph-count-pill" style="color:var(--faint);font-weight:400;font-size:12px"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadMemoryGraph(undefined, true)" data-i18n="refresh">刷新</button>
           </div>
           <div id="mem-tabs">
             <button class="mtab active" data-memtab="graph" onclick="setMemTab('graph')">🕸 图谱</button>
@@ -698,9 +698,9 @@
 
         <!-- ─── Scheduled Tasks ─── -->
         <section class="view" data-view="cron">
-          <div class="sec-head"><h2>定时任务 <span id="cron-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
-            <button class="btn btn-sm" onclick="loadCronTasks()">刷新</button>
-            <button class="btn btn-green btn-sm" onclick="openCronModal()">＋ 新建</button>
+          <div class="sec-head"><h2><span data-i18n="cronTasks">定时任务</span> <span id="cron-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadCronTasks()" data-i18n="refresh">刷新</button>
+            <button class="btn btn-green btn-sm" onclick="openCronModal()">＋ <span data-i18n="create">新建</span></button>
           </div>
           <p class="sec-desc">所有 agent / 你创建的定时任务，到点自动新建会话执行你写的 prompt。</p>
           <div class="settings-card" style="max-width:none">
@@ -712,7 +712,7 @@
 
         <!-- ─── Voice ─── -->
         <section class="view" data-view="voice">
-          <div class="sec-head"><h2>语音设置</h2><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="voiceSettings">语音设置</h2><div class="line"></div></div>
           <div class="settings-card">
             <div class="sc-header">实时语音识别 — 流式 ASR（豆包式体验）</div>
             <div class="sc-body">
@@ -746,23 +746,23 @@
 
         <!-- ─── Goal precheck ─── -->
         <section class="view" data-view="goal">
-          <div class="sec-head"><h2>Goal 预检设置</h2><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="goalPrecheck">Goal 预检设置</h2><div class="line"></div></div>
           <p class="sec-desc">以 Goal 模式发送任务前，辅助 AI 会按下面启用的维度检查任务是否合格；不合格会给出改写建议。可在聊天的 🎯 弹窗里临时调整本次检查的维度。</p>
           <div class="settings-card">
             <div class="sc-header">检查维度（限制项）</div>
             <div class="sc-body">
               <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
                 <input type="checkbox" id="goal-dim-objective" style="margin:0" />
-                <b style="min-width:96px">目标明确</b><span style="color:var(--faint);font-size:12px">清楚要达成什么结果，而非含糊方向</span></label>
+                <b style="min-width:96px" data-i18n="goalObjective">目标明确</b><span style="color:var(--faint);font-size:12px" data-i18n="goalObjectiveHint">清楚要达成什么结果，而非含糊方向</span></label>
               <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
                 <input type="checkbox" id="goal-dim-criteria" style="margin:0" />
-                <b style="min-width:96px">完成标准明确</b><span style="color:var(--faint);font-size:12px">有可判断「做完了」的验收标准或可观察产出</span></label>
+                <b style="min-width:96px" data-i18n="goalCriteria">完成标准明确</b><span style="color:var(--faint);font-size:12px" data-i18n="goalCriteriaHint">有可判断「做完了」的验收标准或可观察产出</span></label>
               <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
                 <input type="checkbox" id="goal-dim-scope" style="margin:0" />
-                <b style="min-width:96px">范围清晰</b><span style="color:var(--faint);font-size:12px">边界明确，不至于无限发散</span></label>
+                <b style="min-width:96px" data-i18n="goalScope">范围清晰</b><span style="color:var(--faint);font-size:12px" data-i18n="goalScopeHint">边界明确，不至于无限发散</span></label>
               <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
                 <input type="checkbox" id="goal-dim-executable" style="margin:0" />
-                <b style="min-width:96px">可独立执行</b><span style="color:var(--faint);font-size:12px">无需追问关键信息即可开工，或缺失能合理默认</span></label>
+                <b style="min-width:96px" data-i18n="goalExecutable">可独立执行</b><span style="color:var(--faint);font-size:12px" data-i18n="goalExecutableHint">无需追问关键信息即可开工，或缺失能合理默认</span></label>
               <div class="setting-row"><label>通过分数阈值</label><input id="goal-min-score" type="number" min="0" max="100" style="max-width:100px" /><span style="font-size:12px;color:var(--faint)">符合度低于此分判为「建议完善」；0 = 不强制</span></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveGoalSettings()">Save</button><span class="status-text" id="goal-status"></span></div>
@@ -771,7 +771,7 @@
 
         <!-- ─── Provider (cc-switch) ─── -->
         <section class="view" data-view="provider">
-          <div class="sec-head"><h2>Provider 配置</h2><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="providerConfig">Provider 配置</h2><div class="line"></div></div>
           <p class="sec-desc">由 <b>multicc 自己管理</b>（存于项目内 providers.json），可在此自由增删改。<b>cc-switch</b> 仅作为导入来源——点下方「从 cc-switch 导入」把它的 provider 同步进来（可重复同步，不重复）。每个会话可单独选用一个 provider，spawn 时只给该会话的进程注入对应配置（claude 注入 ANTHROPIC_*，codex 用独立 CODEX_HOME），会话间互相独立。「全局默认」= 新建会话自动套用；「默认登录」= 走本机订阅 / OAuth。</p>
 
           <div class="settings-card">
@@ -1659,6 +1659,7 @@
     </div>
   </div>
 
+  <script src="i18n-catalog.js"></script>
   <script src="i18n.js"></script>
   <script src="shared/models.js"></script>
   <script src="qrcode.min.js"></script>

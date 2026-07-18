@@ -1413,7 +1413,7 @@ function _chatAlert(message, opts = {}) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const okBtn = document.createElement('button');
-    okBtn.className = 'btn btn-green'; okBtn.textContent = opts.okText || '知道了';
+    okBtn.className = 'btn btn-green'; okBtn.textContent = opts.okText || tt('acknowledge');
     row.appendChild(okBtn);
     box.appendChild(row);
     overlay.appendChild(box);
@@ -1432,11 +1432,11 @@ function attachDeleteButton(msgEl) {
   if (!msgEl || !msgEl.dataset.msgId || msgEl.querySelector('.msg-del')) return;
   const btn = document.createElement('button');
   btn.className = 'msg-del';
-  btn.title = '删除这条消息（仅从聊天记录移除）';
+  btn.title = tt('msgDeleteAction');
   btn.innerHTML = '&#10005;';
   btn.onclick = async (e) => {
     e.stopPropagation();
-    const go = await _chatConfirm('删除这条消息？仅从聊天记录移除，不可恢复。', { danger: true, okText: '删除' });
+    const go = await _chatConfirm(tt('msgDeleteConfirm'), { danger: true, okText: tt('delete') });
     if (!go) return;
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
@@ -1444,10 +1444,10 @@ function attachDeleteButton(msgEl) {
         msgEl.remove();  // server also broadcasts chat_msg_deleted; removal is idempotent
       } else {
         const err = await r.json().catch(() => null);
-        _chatAlert('删除失败：' + ((err && err.error) || r.status), { danger: true });
+        _chatAlert(tt('msgDeleteFailed', { error: ((err && err.error) || r.status) }), { danger: true });
       }
     } catch (err) {
-      _chatAlert('删除失败：' + err.message, { danger: true });
+      _chatAlert(tt('msgDeleteFailed', { error: err.message }), { danger: true });
     }
   };
   msgEl.appendChild(btn);
@@ -1466,12 +1466,11 @@ function attachForkButton(msgEl) {
   if (msgEl.classList.contains('system')) return;
   const btn = document.createElement('button');
   btn.className = 'msg-fork';
-  btn.title = '从此处分叉出新会话（保留到该点的上下文与记忆）';
+  btn.title = tt('msgForkAction');
   btn.innerHTML = '&#9741;';   // ⧉ branch symbol
   btn.onclick = async (e) => {
     e.stopPropagation();
-    const prompt = '从此条消息处分叉出新会话？\n新会话将继承到该点的对话上下文与会话记忆，并在新标签页打开。';
-    const go = await _chatConfirm(prompt, { okText: '分叉' });
+    const go = await _chatConfirm(tt('msgForkConfirm'), { okText: tt('msgForkTitle') });
     if (!go) return;
     btn.disabled = true;
     const orig = btn.innerHTML;
@@ -1491,7 +1490,7 @@ function attachForkButton(msgEl) {
       // Lightweight in-place toast via the existing debug-log channel.
       dbg('chat', `已分叉: ${newId} (replay ${n} 条) → 新标签页已打开`);
     } catch (err) {
-      _chatAlert('分叉失败：' + err.message, { danger: true });
+      _chatAlert(tt('msgForkFailed', { error: err.message }), { danger: true });
     } finally {
       btn.disabled = false;
       btn.innerHTML = orig;
@@ -1505,18 +1504,18 @@ function attachForkButton(msgEl) {
 // Keyed by classify-state LETTER (D/C/W/B/E/P) — single source of truth for
 // all frontend display: bar badge, voice, ding, toast.
 const _CLASSIFY_DISPLAY = {
-  D: { label: '已完成', barTint: 'completed', voice: '任务已完成', ding: 'completed' },
-  C: { label: '继续中', barTint: 'running',    voice: null,            ding: null },
-  W: { label: '等待用户', barTint: 'waiting',   voice: '等待你的操作',   ding: 'waiting' },
-  B: { label: '后台等待', barTint: 'waiting',   voice: '等待后台任务',   ding: 'waiting' },
-  E: { label: 'API 异常', barTint: 'error',     voice: 'API 异常中断，等待重试中', ding: 'error' },
-  P: { label: '处理中',   barTint: 'running',   voice: null,            ding: null },
+  D: { label: tt('classifyDone'), barTint: 'completed', voice: tt('voiceTaskCompleted'), ding: 'completed' },
+  C: { label: tt('classifyContinuing'), barTint: 'running', voice: null, ding: null },
+  W: { label: tt('classifyWaitingUser'), barTint: 'waiting', voice: tt('voiceWaitingAction'), ding: 'waiting' },
+  B: { label: tt('classifyWaitingBackground'), barTint: 'waiting', voice: tt('voiceWaitingBackground'), ding: 'waiting' },
+  E: { label: tt('classifyApiError'), barTint: 'error', voice: tt('voiceApiInterrupted'), ding: 'error' },
+  P: { label: tt('classifyProcessing'), barTint: 'running', voice: null, ding: null },
 };
 function _classifyDisp(cls) { return _CLASSIFY_DISPLAY[cls] || _CLASSIFY_DISPLAY['W']; }
 
 const _PHASE_LABELS = {
-  planning: '规划中', implementing: '实现中', verifying: '验证中',
-  wrapping: '收尾中', done: '已完成',
+  planning: tt('phasePlanning'), implementing: tt('phaseImplementing'), verifying: tt('phaseVerifying'),
+  wrapping: tt('phaseWrapping'), done: tt('phaseDone'),
 };
 function _phaseLabel(ph) { return _PHASE_LABELS[ph] || ''; }
 
@@ -2539,7 +2538,7 @@ function mergeStatusText(st) {
   if (!st || (!st.mergeReady && !(st.dirty || st.ahead > 0))) return tt('worktreeClean');
   // Dirty/ahead exist but merge is blocked — show why.
   if (!st.mergeReady && !st.baseCheckedOut) {
-    return `Worktree has changes but cannot merge — ${st.baseBranch || 'main'} is not the active branch in the main directory.`;
+    return tt('mergeBlockedBranch', { base: st.baseBranch || 'main' });
   }
   const bits = [];
   if (st.dirty) bits.push(tt('dirtyChanges'));
@@ -2724,7 +2723,7 @@ function confirmInPage(message) {
     const card = document.createElement('div');
     card.style.cssText = 'width:min(92vw,420px);background:#0f1115;border:1px solid #30363d;border-radius:10px;box-shadow:0 18px 60px #000c;color:#e7eaee;overflow:hidden;';
     const title = document.createElement('div');
-    title.textContent = '合并 worktree';
+    title.textContent = tt('mergeTitle');
     title.style.cssText = 'padding:14px 16px;border-bottom:1px solid #20242b;font-size:15px;font-weight:700;color:#f2f4f7;';
     const body = document.createElement('div');
     body.textContent = message;
@@ -2732,10 +2731,10 @@ function confirmInPage(message) {
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #20242b;';
     const cancel = document.createElement('button');
-    cancel.textContent = '取消';
+    cancel.textContent = tt('cancel');
     cancel.style.cssText = 'border:1px solid #30363d;background:#161b22;color:#c9d1d9;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
     const ok = document.createElement('button');
-    ok.textContent = '合并';
+    ok.textContent = tt('merge');
     ok.style.cssText = 'border:1px solid #58a6ff;background:#1f6feb;color:#fff;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
     const finish = (value) => {
       document.removeEventListener('keydown', onKey);
@@ -2776,15 +2775,15 @@ function promptInPage(title, defaultValue) {
     input.value = defaultValue || '';
     input.maxLength = 80;
     input.style.cssText = 'width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:9px 11px;font-size:14px;color:#e7eaee;outline:none;';
-    input.placeholder = '会话别名（留空则重置为 id）';
+    input.placeholder = tt('sessionAliasHint');
     body.append(input);
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #20242b;';
     const cancel = document.createElement('button');
-    cancel.textContent = '取消';
+    cancel.textContent = tt('cancel');
     cancel.style.cssText = 'border:1px solid #30363d;background:#161b22;color:#c9d1d9;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
     const ok = document.createElement('button');
-    ok.textContent = '保存';
+    ok.textContent = tt('save');
     ok.style.cssText = 'border:1px solid #58a6ff;background:#1f6feb;color:#fff;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
     const finish = (value) => {
       document.removeEventListener('keydown', onKey);
@@ -2809,7 +2808,7 @@ function promptInPage(title, defaultValue) {
 
 // Double-click the header session title to rename it.
 async function renameSessionFromChat() {
-  if (!_sessionName) { addSystemMsg('无 session id，无法改名'); return; }
+  if (!_sessionName) { addSystemMsg(tt('sessionIdMissing')); return; }
   let current = _sessionName;
   try {
     const r = await fetch(withToken('/api/sessions'));
@@ -2818,9 +2817,9 @@ async function renameSessionFromChat() {
     const s = list.find(x => x.id === _sessionName);
     if (s && s.label) current = s.label;
   } catch (_) {}
-  const next = await promptInPage('重命名会话', current);
+  const next = await promptInPage(tt('renameSessionTitle'), current);
   if (next === null) return;
-  if (next.length > 80) { addSystemMsg('名称过长（最多 80 字符）'); return; }
+  if (next.length > 80) { addSystemMsg(tt('nameTooLong', { n: 80 })); return; }
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
       method: 'PATCH',
@@ -2828,39 +2827,38 @@ async function renameSessionFromChat() {
       body: JSON.stringify({ label: next }),
     });
     const data = await res.json();
-    if (!res.ok) { addSystemMsg('改名失败：' + (data.error || `HTTP ${res.status}`)); return; }
-    addSystemMsg(next ? `✓ 会话已改名为 ${next}` : '✓ 会话名称已重置');
+    if (!res.ok) { addSystemMsg(tt('renameSessionFailed', { error: data.error || `HTTP ${res.status}` })); return; }
+    addSystemMsg(next ? `${tt('renameSessionSaved')}: ${next}` : tt('sessionNameReset'));
     await loadSessionIdentity();
   } catch (e) {
-    addSystemMsg('改名失败：' + e.message);
+    addSystemMsg(tt('renameSessionFailed', { error: e.message }));
   }
 }
 
 async function requestMerge() {
-  if (!_sessionName) { addSystemMsg('无 session id，无法合并 worktree'); return; }
+  if (!_sessionName) { addSystemMsg(tt('sessionIdMissing')); return; }
   const prompt = _mergeReady
     ? tt('mergeWorktreeConfirmReady')
     : tt('mergeWorktreeConfirm');
   if (!await confirmInPage(prompt)) return;
-  addSystemMsg('正在合并 worktree...');
+  addSystemMsg(tt('mergingWorktree'));
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge`), { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
       addSystemMsg(data.merged
         ? `✓ 已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}${data.syncedBack ? '，并已自动把基分支同步回本 worktree' : ''}`
-        : `✓ ${data.message || '没有新提交需要合并'}`);
+        : tt('mergedNothing', { msg: data.message || tt('worktreeClean') }));
       applyMergeStatus({ mergeReady: false, dirty: false, ahead: 0 });
       // Auto-sync may have changed the behind count — re-fetch real state.
       refreshMergeStatus();
     } else if (res.status === 409) {
-      addSystemMsg('⚠️ 合并冲突，已 abort，基分支未改动。冲突文件：' + (data.conflicts || []).join(', '));
-      addSystemMsg('请打开一个该Fleet的终端会话手动解决冲突。');
+      addSystemMsg(tt('mergeConflict', { files: (data.conflicts || []).join(', ') }));
     } else {
-      addSystemMsg('合并失败：' + (data.error || `HTTP ${res.status}`));
+      addSystemMsg(tt('mergeFailed', { error: data.error || `HTTP ${res.status}` }));
     }
   } catch (e) {
-    addSystemMsg('合并请求失败：' + e.message);
+    addSystemMsg(tt('mergeRequestFailed', { error: e.message }));
   }
 }
 
@@ -3747,8 +3745,8 @@ function updateRoleBtn() {
   const set = !!(_sessionRole && _sessionRole.trim());
   roleBtn.textContent = set ? tt('roleSet') : tt('role');
   roleBtn.title = set
-    ? '该会话已设角色提示词，点击修改（下一轮对话生效）'
-    : '设置该会话的角色提示词（下一轮对话生效）';
+    ? tt('rolePromptSet')
+    : tt('editRolePrompt');
 }
 
 // ── Agent-preset (role library) helpers for the web role editor ──
@@ -3782,26 +3780,26 @@ function showRolePromptEditor(current) {
     box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:94vw;';
     const msg = document.createElement('div');
     msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:10px;';
-    msg.textContent = '该会话的角色提示词（下一轮对话生效）';
+    msg.textContent = tt('rolePrompt');
     box.appendChild(msg);
 
     // Preset-role picker — mirrors the app's role library; featured pinned first.
     const presetRow = document.createElement('div');
     presetRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px;';
     const presetLabel = document.createElement('span');
-    presetLabel.textContent = '预设角色';
+    presetLabel.textContent = tt('rolePresets');
     presetLabel.style.cssText = 'font-size:12px;color:#8b949e;white-space:nowrap;';
     const presetSel = document.createElement('select');
     presetSel.style.cssText = 'flex:1;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none;';
     const ph = document.createElement('option');
-    ph.value = ''; ph.textContent = '从预设角色填入…（加载中）';
+    ph.value = ''; ph.textContent = tt('rolePresets');
     presetSel.appendChild(ph);
     presetRow.appendChild(presetLabel);
     presetRow.appendChild(presetSel);
     box.appendChild(presetRow);
     fetchAgentPresetIndex().then((idx) => {
-      if (!idx) { ph.textContent = '预设角色加载失败'; return; }
-      ph.textContent = '从预设角色填入…';
+      if (!idx) { ph.textContent = tt('rolePresetsFailed'); return; }
+      ph.textContent = tt('rolePresets');
       const presets = idx.presets || [];
       const byId = {};
       for (const p of presets) byId[p.id] = p;
@@ -3835,28 +3833,28 @@ function showRolePromptEditor(current) {
       const prompt = await fetchAgentPresetPrompt(id);
       presetSel.disabled = false;
       if (prompt) { ta.value = prompt; ta.focus(); }
-      else addSystemMsg('预设角色加载失败');
+      else addSystemMsg(tt('rolePresetsFailed'));
     });
 
     const ta = document.createElement('textarea');
     ta.value = current || '';
-    ta.placeholder = '例如：你是开发保姆，被触发时用 multicc-trigger skill 检查 git 改动并提醒提交和测试，不要擅自改代码。';
+    ta.placeholder = tt('rolePlaceholder');
     ta.rows = 8;
     ta.style.cssText = 'width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;line-height:1.5;padding:10px;outline:none;resize:vertical;margin-bottom:6px;font-family:inherit;';
     box.appendChild(ta);
 
     const hint = document.createElement('div');
     hint.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
-    hint.textContent = '留空＝清除（会话将继承Fleet默认角色）。Ctrl/⌘+Enter 保存。';
+    hint.textContent = tt('rolePromptDesc');
     box.appendChild(hint);
 
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancel = document.createElement('button');
-    cancel.textContent = '取消';
+    cancel.textContent = tt('cancel');
     cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
     const ok = document.createElement('button');
-    ok.textContent = '保存';
+    ok.textContent = tt('save');
     ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
     row.appendChild(cancel); row.appendChild(ok);
     box.appendChild(row);
@@ -3865,7 +3863,7 @@ function showRolePromptEditor(current) {
 
     const close = (result) => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(result); };
     const accept = () => {
-      if (ta.value.length > 8000) { addSystemMsg('角色提示词过长（上限 8000 字）'); return; }
+      if (ta.value.length > 8000) { addSystemMsg(tt('roleTooLong', { n: 8000 })); return; }
       close(ta.value);
     };
     const reject = () => close(null);
@@ -3891,14 +3889,14 @@ roleBtn?.addEventListener('click', async () => {
       body: JSON.stringify({ rolePrompt: next }),
     });
     const data = await res.json();
-    if (!res.ok) { addSystemMsg('角色保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
+    if (!res.ok) { addSystemMsg(tt('rolePromptFailed', { error: data.error || `HTTP ${res.status}` })); return; }
     _sessionRole = data.rolePrompt || '';
     updateRoleBtn();
     addSystemMsg(_sessionRole
-      ? '✓ 角色提示词已更新，下一轮对话生效'
-      : '✓ 已清除会话角色（继承Fleet默认），下一轮对话生效');
+      ? tt('rolePromptUpdated')
+      : tt('rolePromptSaved'));
   } catch (e) {
-    addSystemMsg('角色保存失败：' + e.message);
+    addSystemMsg(tt('rolePromptFailed', { error: e.message }));
   }
 });
 
@@ -3937,7 +3935,7 @@ async function openMemoryEditor() {
     const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`));
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     data = await r.json();
-  } catch (e) { addSystemMsg('记忆读取失败：' + e.message); return; }
+  } catch (e) { addSystemMsg(tt('memSaveFailed') + ': ' + e.message); return; }
 
   const model = {
     own:    { dir: (data.own && data.own.dir) || '', primary: (data.own && data.own.primary) || 'CLAUDE.md', files: {} },
@@ -3957,28 +3955,28 @@ async function openMemoryEditor() {
 
   const title = document.createElement('div');
   title.style.cssText = 'color:#f0f6fc;font-size:14px;font-weight:600;';
-  title.textContent = '🧠 会话记忆库';
+  title.textContent = tt('memTitle');
   const msg = document.createElement('div');
   msg.style.cssText = 'color:#8b949e;font-size:12px;line-height:1.5;';
-  msg.textContent = '记忆在原生 CLI 会话启动/重建时形成快照；写入会立即持久化，下次重建快照生效。私有＝仅本会话；公共＝本项目所有会话共享。辅助 AI 会周期复盘稳定事实，Clear 时也会提炼即将移除的历史。';
+  msg.textContent = tt('memIntro');
 
   const tabs = document.createElement('div');
   tabs.style.cssText = 'display:flex;gap:6px;';
   const tabOwn = document.createElement('button');
   const tabShared = document.createElement('button');
   const tabStyle = (a) => `background:${a?'#1f6feb':'#21262d'};border:1px solid ${a?'#388bfd':'#30363d'};border-radius:6px;color:${a?'#fff':'#c9d1d9'};font-size:12px;padding:5px 12px;cursor:pointer;`;
-  tabOwn.textContent = '私有（仅本会话）';
-  tabShared.textContent = '公共（项目共享）';
+  tabOwn.textContent = tt('memScopeOwn');
+  tabShared.textContent = tt('memScopeShared');
 
   const fileRow = document.createElement('div');
   fileRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
   const sel = document.createElement('select');
   sel.style.cssText = 'flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px;';
   const newBtn = document.createElement('button');
-  newBtn.textContent = '＋新建';
+  newBtn.textContent = `＋${tt('create')}`;
   newBtn.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;';
   const delBtn = document.createElement('button');
-  delBtn.textContent = '🗑删除';
+  delBtn.textContent = `🗑${tt('delete')}`;
   delBtn.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;';
 
   const ta = document.createElement('textarea');
@@ -3989,7 +3987,7 @@ async function openMemoryEditor() {
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
   const closeBtn = document.createElement('button');
-  closeBtn.textContent = '关闭';
+  closeBtn.textContent = tt('close');
   closeBtn.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
   const saveBtn = document.createElement('button');
   saveBtn.textContent = tt('save');
@@ -4020,42 +4018,42 @@ async function openMemoryEditor() {
   tabShared.onclick = () => switchScope('shared');
   sel.onchange = () => { commit(); curName = sel.value; ta.value = model[scope].files[curName] || ''; pathHint.textContent = (model[scope].dir || '') + '/' + curName; };
   newBtn.onclick = () => {
-    let n = (prompt('新建记忆文件名（.md）：', '') || '').trim();
+    let n = (prompt(tt('memNewFileTitle'), '') || '').trim();
     if (!n) return;
     if (!/\.md$/i.test(n)) n += '.md';
-    if (!/^[\w.\- 一-龥]+\.md$/i.test(n)) { addSystemMsg('文件名不合法（仅字母/数字/中文/._- 加 .md）'); return; }
+    if (!/^[\w.\- 一-龥]+\.md$/i.test(n)) { addSystemMsg(tt('memNameInvalid')); return; }
     commit();
     if (!(n in model[scope].files)) model[scope].files[n] = '';
     curName = n; renderFiles();
   };
   delBtn.onclick = async () => {
     if (!curName) return;
-    if (!confirm(`删除 ${scope === 'own' ? '私有' : '公共'}记忆文件「${curName}」？不可恢复。`)) return;
+    if (!confirm(tt('memDeleteConfirm', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }))) return;
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope, name: curName }),
       });
-      if (!r.ok) { const d = await r.json().catch(() => ({})); addSystemMsg('删除失败：' + (d.error || ('HTTP ' + r.status))); return; }
-    } catch (e) { addSystemMsg('删除失败：' + e.message); return; }
+      if (!r.ok) { const d = await r.json().catch(() => ({})); addSystemMsg(tt('memDeleteFailed') + ': ' + (d.error || ('HTTP ' + r.status))); return; }
+    } catch (e) { addSystemMsg(tt('memDeleteFailed') + ': ' + e.message); return; }
     delete model[scope].files[curName];
     curName = Object.keys(model[scope].files).sort()[0] || '';
     renderFiles();
-    addSystemMsg('✓ 已删除记忆文件');
+    addSystemMsg(tt('memDeleted'));
   };
   saveBtn.onclick = async () => {
     commit();
-    if (!curName) { addSystemMsg('没有选中的文件'); return; }
+    if (!curName) { addSystemMsg(tt('memNoSelection')); return; }
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/memory`), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope, name: curName, content: model[scope].files[curName] }),
       });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { addSystemMsg('保存失败：' + (d.error || ('HTTP ' + r.status))); return; }
-      addSystemMsg(`✓ 已保存 ${scope === 'own' ? '私有' : '公共'}记忆 / ${curName}`);
+      if (!r.ok) { addSystemMsg(tt('memSaveFailed') + ': ' + (d.error || ('HTTP ' + r.status))); return; }
+      addSystemMsg(tt('memSaved', { scope: scope === 'own' ? tt('memScopeOwn') : tt('memScopeShared'), name: curName }));
       updateMemoryBtn();
-    } catch (e) { addSystemMsg('保存失败：' + e.message); }
+    } catch (e) { addSystemMsg(tt('memSaveFailed') + ': ' + e.message); }
   };
 
   const close = () => { document.removeEventListener('keydown', onKey, true); overlay.remove(); };
@@ -4198,12 +4196,12 @@ async function shareApi(method, p, body) {
 
 function shareRow(s) {
   const lvl = s.type === 'messages'
-    ? `📎 消息快照·${s.messageCount || 0}条${s.hasPassword ? '·密码' : ''}`
-    : (s.access === 'operate' ? '可对话' : (s.hasPassword ? '密码查看' : '公开查看'));
+    ? `📎 ${tt('shareMessages')} · ${s.messageCount || 0}`
+    : (s.access === 'operate' ? tt('shareOperate') : tt('shareViewOnly'));
   const exp = s.expiresAt ? `，到期 ${new Date(s.expiresAt).toLocaleString()}` : '';
   return `<div class="share-row" data-token="${s.token}" style="border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;">
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;"><b style="color:#79c0ff;">${lvl}</b><span style="color:#8b949e;">${exp}</span></div>
-    <div style="display:flex;gap:6px;align-items:center;"><input readonly value="${s.url}" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;padding:5px 7px;font-family:var(--mono,monospace);"><button data-copy="${s.url}" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;">复制</button><button data-del="${s.token}" style="background:#2d1418;border:1px solid #5c2228;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;">撤销</button></div>
+    <div style="display:flex;gap:6px;align-items:center;"><input readonly value="${s.url}" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;padding:5px 7px;font-family:var(--mono,monospace);"><button data-copy="${s.url}" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;">${tt('copy')}</button><button data-del="${s.token}" style="background:#2d1418;border:1px solid #5c2228;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;">${tt('revoke')}</button></div>
   </div>`;
 }
 
@@ -4213,24 +4211,24 @@ async function openShareDialog() {
   const box = document.createElement('div');
   box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:94vw;max-height:90vh;overflow:auto;color:#c9d1d9;';
   box.innerHTML = `
-    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">分享此会话（外部网页链接）</div>
-    <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:10px;">接收方在浏览器打开链接即可。<b style="color:#f0883e;">「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码、谨慎分享。</b></div>
-    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:#1b2330;border:1px solid #2d3a4f;border-radius:6px;color:#79c0ff;font-size:12px;padding:6px 10px;cursor:pointer;">✂️ 改为分享指定消息（只读快照）…</button></div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSession')}</div>
+    <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:10px;">${tt('shareDesc')} <b style="color:#f0883e;">${tt('shareOperateWarn')}</b></div>
+    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:#1b2330;border:1px solid #2d3a4f;border-radius:6px;color:#79c0ff;font-size:12px;padding:6px 10px;cursor:pointer;">✂️ ${tt('shareSelectedMessages')}</button></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
       <select id="sh-access" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-        <option value="view">只读查看</option>
-        <option value="operate">可对话（需密码）</option>
+        <option value="view">${tt('shareViewOnly')}</option>
+        <option value="operate">${tt('shareOperate')}</option>
       </select>
-      <input id="sh-pw" placeholder="密码（可读可留空；可对话必填）" style="flex:1;min-width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <input id="sh-pw" placeholder="${tt('sharePassword')}" style="flex:1;min-width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
       <select id="sh-exp" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-        <option value="0">永不过期</option><option value="1">1 小时</option><option value="24">1 天</option><option value="168">7 天</option>
+        <option value="0">${tt('neverExpires')}</option><option value="1">${tt('oneHour')}</option><option value="24">${tt('oneDay')}</option><option value="168">${tt('sevenDays')}</option>
       </select>
-      <button id="sh-create" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 14px;cursor:pointer;">生成链接</button>
+      <button id="sh-create" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 14px;cursor:pointer;">${tt('shareGenerate')}</button>
     </div>
     <div id="sh-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">已有分享：</div>
-    <div id="sh-list"><div style="color:#8b949e;font-size:12px;">加载中…</div></div>
-    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="sh-close" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">关闭</button></div>`;
+    <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">${tt('existingShares')}</div>
+    <div id="sh-list"><div style="color:#8b949e;font-size:12px;">${tt('loading')}</div></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="sh-close" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button></div>`;
   overlay.appendChild(box); document.body.appendChild(overlay);
   const close = () => overlay.remove();
   box.querySelector('#sh-close').onclick = close;
@@ -4240,7 +4238,7 @@ async function openShareDialog() {
   const listEl = box.querySelector('#sh-list');
 
   async function refresh() {
-    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : '<div style="color:#8b949e;font-size:12px;">暂无</div>'; }
+    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : `<div style="color:#8b949e;font-size:12px;">${tt('none')}</div>`; }
     catch (e) { listEl.innerHTML = `<div style="color:#f85149;font-size:12px;">${e.message}</div>`; }
   }
   // Use event delegation on listEl so bind() is never needed — handlers survive
@@ -4250,31 +4248,31 @@ async function openShareDialog() {
     if (!btn) return;
     if (btn.hasAttribute('data-copy')) {
       navigator.clipboard?.writeText(btn.dataset.copy);
-      btn.textContent = '已复制';
-      setTimeout(() => { if (btn.isConnected) btn.textContent = '复制'; }, 1200);
+      btn.textContent = tt('shareCopied');
+      setTimeout(() => { if (btn.isConnected) btn.textContent = tt('copy'); }, 1200);
     } else if (btn.hasAttribute('data-del')) {
-      if (!confirm('撤销这个分享链接？')) return;
+      if (!confirm(tt('revokeShareConfirm'))) return;
       const token = btn.dataset.del;
       if (!token) return;
       btn.disabled = true;
-      btn.textContent = '撤销中…';
+      btn.textContent = tt('revoking');
       shareApi('DELETE', '/share/' + encodeURIComponent(token))
         .then(() => refresh())
         .catch(e => alert(e.message))
-        .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = '撤销'; } });
+        .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = tt('revoke'); } });
     }
   });
   box.querySelector('#sh-create').onclick = async () => {
     const access = box.querySelector('#sh-access').value;
     const password = box.querySelector('#sh-pw').value.trim();
     const hrs = parseInt(box.querySelector('#sh-exp').value, 10);
-    if (access === 'operate' && !password) { msg.textContent = '「可对话」必须设置密码'; msg.style.color = '#f85149'; return; }
+    if (access === 'operate' && !password) { msg.textContent = tt('sharePasswordRequired'); msg.style.color = '#f85149'; return; }
     const body = { access };
     if (password) body.password = password;
     if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
     try {
       const d = await shareApi('POST', '/share', body);
-      msg.style.color = '#3fb950'; msg.textContent = '已生成：' + d.url;
+      msg.style.color = '#3fb950'; msg.textContent = tt('generatedLink', { url: d.url });
       navigator.clipboard?.writeText(d.url);
       box.querySelector('#sh-pw').value = '';
       refresh();
@@ -4292,34 +4290,34 @@ async function openMessagePicker() {
   const box = document.createElement('div');
   box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:620px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;color:#c9d1d9;';
   box.innerHTML = `
-    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">分享指定消息（只读快照）</div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">勾选要分享的消息；生成的是固定快照，原会话变动或删除都不影响。</div>
-    <div id="mp-list" style="flex:1;overflow:auto;border:1px solid #30363d;border-radius:8px;padding:6px;margin-bottom:10px;min-height:120px;">加载中…</div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSelectedMessages')}</div>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">${tt('shareSelectedMessagesHint')}</div>
+    <div id="mp-list" style="flex:1;overflow:auto;border:1px solid #30363d;border-radius:8px;padding:6px;margin-bottom:10px;min-height:120px;">${tt('loading')}</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-      <label style="font-size:12px;color:#8b949e;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="mp-all"> 全选</label>
-      <span id="mp-count" style="font-size:12px;color:#8b949e;">已选 0 条</span>
-      <input id="mp-pw" placeholder="密码（可留空=公开）" style="flex:1;min-width:140px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <label style="font-size:12px;color:#8b949e;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="mp-all"> ${tt('selectAll')}</label>
+      <span id="mp-count" style="font-size:12px;color:#8b949e;">${tt('selectedCount', { n: 0 })}</span>
+      <input id="mp-pw" placeholder="${tt('publicIfEmpty')}" style="flex:1;min-width:140px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
       <select id="mp-exp" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-        <option value="0">永不过期</option><option value="24">1 天</option><option value="168">7 天</option></select>
+        <option value="0">${tt('neverExpires')}</option><option value="24">${tt('oneDay')}</option><option value="168">${tt('sevenDays')}</option></select>
     </div>
     <div id="mp-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;">
-      <button id="mp-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">关闭</button>
-      <button id="mp-go" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">生成链接</button>
+      <button id="mp-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button>
+      <button id="mp-go" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('shareGenerate')}</button>
     </div>`;
   overlay.appendChild(box); document.body.appendChild(overlay);
   const close = () => overlay.remove();
   box.querySelector('#mp-cancel').onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   const listEl = box.querySelector('#mp-list'), countEl = box.querySelector('#mp-count'), msgEl = box.querySelector('#mp-msg');
-  const updateCount = () => { countEl.textContent = `已选 ${listEl.querySelectorAll('input[type=checkbox]:checked').length} 条`; };
+  const updateCount = () => { countEl.textContent = tt('selectedCount', { n: listEl.querySelectorAll('input[type=checkbox]:checked').length }); };
 
   let msgs = [];
   try {
     const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history`));
     const d = await r.json(); msgs = d.messages || [];
   } catch (e) { listEl.textContent = '加载失败：' + e.message; return; }
-  if (!msgs.length) { listEl.textContent = '暂无消息'; return; }
+  if (!msgs.length) { listEl.textContent = tt('noMessages'); return; }
   const escH = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   listEl.innerHTML = msgs.map((m, i) => {
     const who = m.role === 'user' ? '我' : 'AI';
@@ -4333,7 +4331,7 @@ async function openMessagePicker() {
 
   box.querySelector('#mp-go').onclick = async () => {
     const indices = [...listEl.querySelectorAll('input[type=checkbox]:checked')].map(c => parseInt(c.dataset.i, 10));
-    if (!indices.length) { msgEl.style.color = '#f85149'; msgEl.textContent = '请至少选择一条消息'; return; }
+    if (!indices.length) { msgEl.style.color = '#f85149'; msgEl.textContent = tt('selectAtLeastOneMessage'); return; }
     const password = box.querySelector('#mp-pw').value.trim();
     const hrs = parseInt(box.querySelector('#mp-exp').value, 10);
     const body = { indices }; if (password) body.password = password; if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
@@ -4341,7 +4339,7 @@ async function openMessagePicker() {
       const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/share-messages`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await res.json(); if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
       navigator.clipboard?.writeText(d.url);
-      msgEl.style.color = '#3fb950'; msgEl.textContent = '已生成并复制：' + d.url;
+      msgEl.style.color = '#3fb950'; msgEl.textContent = tt('generatedAndCopied', { url: d.url });
     } catch (e) { msgEl.style.color = '#f85149'; msgEl.textContent = e.message; }
   };
 }
@@ -4364,11 +4362,11 @@ function doClear(keepN) {
     const msgs = [...messagesEl.querySelectorAll('.msg:not(.system-msg)')];
     const remove = msgs.slice(0, Math.max(0, msgs.length - keepN));
     remove.forEach(el => el.remove());
-    if (remove.length) addSystemMsg('Cleared ' + remove.length + ' earlier messages；保留的最近 ' + keepN + ' 条会作为新上下文检查点发送，全部 CLI 原生上下文已重置');
-    else addSystemMsg('保留当前消息并重置全部 CLI 原生上下文；最近消息会作为新上下文检查点发送');
+    if (remove.length) addSystemMsg(tt('contextKept', { removed: remove.length, kept: keepN }));
+    else addSystemMsg(tt('contextResetKept'));
   } else {
     messagesEl.innerHTML = '';
-    addSystemMsg('Chat cleared；全部 CLI 原生上下文已重置');
+    addSystemMsg(tt('contextCleared'));
   }
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'clear_history', keep: keepN }));

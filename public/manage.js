@@ -62,18 +62,18 @@ function formatSize(bytes) {
 }
 
 function formatTime(iso) {
-  if (!iso) return 'N/A';
+  if (!iso) return tt('notAvailable');
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function formatRelative(iso) {
-  if (!iso) return 'N/A';
+  if (!iso) return tt('notAvailable');
   const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (diff < 5) return 'just now';
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 5) return tt('justNow');
+  if (diff < 60) return tt('secondsAgo', { n: diff });
+  if (diff < 3600) return tt('minutesAgo', { n: Math.floor(diff / 60) });
+  return tt('hoursAgo', { n: Math.floor(diff / 3600) });
 }
 
 function formatDuration(sec) {
@@ -1388,13 +1388,13 @@ function ensureTaskScrollerKeyframes(count, rowH) {
 
 function defaultActivityText(status) {
   switch (status) {
-    case 'thinking': return '🤔 正在思考...';
-    case 'editing': return '✏️ 正在编辑文件';
-    case 'running': return '⚙️ 正在执行命令';
-    case 'waiting': return '⏳ 等待用户输入';
-    case 'completed': return '✅ 已完成';
-    case 'error': return '❌ 出现异常';
-    case 'idle': return '💤 空闲';
+    case 'thinking': return `🤔 ${tt('activityThinking')}`;
+    case 'editing': return `✏️ ${tt('activityEditing')}`;
+    case 'running': return `⚙️ ${tt('activityRunning')}`;
+    case 'waiting': return `⏳ ${tt('activityWaiting')}`;
+    case 'completed': return `✅ ${tt('activityCompleted')}`;
+    case 'error': return `❌ ${tt('activityError')}`;
+    case 'idle': return `💤 ${tt('activityIdle')}`;
     default: return '...';
   }
 }
@@ -3062,12 +3062,12 @@ const _workspaceSummaries = new Map(); // sessionId → { summary, ts } — 最�
 
 // Mirrors server.js CLASSIFY_DISPLAY — one-letter state → display info
 const _CLASSIFY_BADGE = {
-  D: { label: '✅', tint: 'completed', title: '已完成' },
-  C: { label: '▶️', tint: 'running',   title: '继续中' },
-  W: { label: '⏸️', tint: 'waiting',   title: '等待用户' },
-  B: { label: '⏳', tint: 'waiting',   title: '后台等待' },
-  E: { label: '⚠️', tint: 'error',     title: 'API 异常' },
-  P: { label: '🔄', tint: 'running',   title: '处理中' },
+  D: { label: '✅', tint: 'completed', title: tt('classifyDone') },
+  C: { label: '▶️', tint: 'running', title: tt('classifyContinuing') },
+  W: { label: '⏸️', tint: 'waiting', title: tt('classifyWaitingUser') },
+  B: { label: '⏳', tint: 'waiting', title: tt('classifyWaitingBackground') },
+  E: { label: '⚠️', tint: 'error', title: tt('classifyApiError') },
+  P: { label: '🔄', tint: 'running', title: tt('classifyProcessing') },
 };
 
 function wbStatusInfo(status) {
