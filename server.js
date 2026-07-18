@@ -120,6 +120,7 @@ const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/h
 const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
 const { mountSystemRoutes } = require('./src/routes/system');
+const { mountHostReadRoutes, resolveNotifySettingsUpdates } = require('./src/routes/host-read');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -160,6 +161,7 @@ const {
   escapeHtmlAttribute,
 } = require('./src/auth-security');
 const { envEnabled, resolveNetworkPolicy, selectListenPort } = require('./src/network-policy');
+const { isLocalRequest } = require('./src/request-locality');
 const { createObservability, installConsoleRedaction } = require('./src/observability');
 const { installWsBackpressure } = require('./src/ws-backpressure');
 const { createHealthHandlers } = require('./src/health');
@@ -249,26 +251,10 @@ function parseCookies(header) {
   return cookies;
 }
 
-function isExternalProxy(req) {
-  // Reverse proxies connect from loopback but retain a public Host header. Treat
-  // every non-loopback Host on a loopback socket as external, not just a small
-  // suffix allowlist (custom PhDDNS/ngrok domains are common).
-  const rawHost = String(req.headers.host || '').trim().toLowerCase();
-  const host = rawHost.startsWith('[') ? rawHost.slice(1, rawHost.indexOf(']')) : rawHost.split(':')[0];
-  const localHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-  return !localHost || host.endsWith('.ts.net') || host.endsWith('.ngrok.io') || host.endsWith('.ngrok-free.app');
-}
-
-// True only for requests physically originating from this machine (not a
-// reverse proxy forwarding external traffic). Used both for the localhost
-// auth bypass and to gate editing the access token.
-function isLocalRequest(req) {
-  const ip = req.ip || req.connection.remoteAddress;
-  return (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') && !isExternalProxy(req);
-}
-
 function isAuthenticated(req) {
-  // 无 token 时只放行真实本机 IP(isLocalRequest 看 req.ip,非 Host header,不可伪造)。
+  // 无 token 时只放行真实 loopback transport peer；isLocalRequest 以
+  // req.socket.remoteAddress 为权威，并在任何 forwarded/proxy 元数据存在时
+  // fail-closed。Host 仍须是 localhost/loopback，不能单独授予本机权限。
   // 外部(含 Tailscale/局域网)一律拒绝,直到本机首次访问设好 ACCESS_TOKEN。
   if (!ACCESS_TOKEN) return isLocalRequest(req);
   // Localhost allowed — unless it's a reverse proxy forwarding external traffic
@@ -5823,11 +5809,20 @@ mountSystemRoutes(app, {
   gitRun,
 });
 
-// Push API endpoints
-app.get('/api/push/vapid-key', (req, res) => {
-  res.json({ publicKey: vapidKeys.pubKey });
+// Read-only host control-plane endpoints share one narrow boundary. Mutable
+// counterparts remain below until their persistence/auth semantics are split.
+mountHostReadRoutes(app, {
+  getVapidPublicKey: () => vapidKeys.pubKey,
+  push,
+  tunnel,
+  getAccessToken: () => ACCESS_TOKEN,
+  isLocalRequest,
+  getProxyEnabled: () => CLAUDE_PROXY_ENABLED,
+  getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
+  macosPower,
 });
 
+// Push API endpoints
 app.post('/api/push/subscribe', (req, res) => {
   const sub = req.body;
   if (!sub || !sub.endpoint) return res.status(400).json({ error: 'Invalid subscription' });
@@ -5851,25 +5846,6 @@ app.post('/api/push/validate', (req, res) => {
   const { endpoint } = req.body || {};
   if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' });
   res.json({ known: push.subscriptions.has(endpoint) });
-});
-
-// Push health status
-app.get('/api/push/health', (req, res) => {
-  const subs = [];
-  for (const [endpoint] of push.subscriptions) {
-    const h = push.healthStats.get(endpoint) || { successCount: 0, failCount: 0, lastSuccessTime: 0, lastFailTime: 0, lastFailReason: '', consecutiveFails: 0 };
-    subs.push({
-      endpointShort: endpoint.length > 50 ? endpoint.slice(0, 35) + '...' + endpoint.slice(-12) : endpoint,
-      ...h,
-    });
-  }
-  res.json({
-    subscriptions: subs,
-    subscriptionCount: push.subscriptions.size,
-    global: push.globalStats,
-    bark: { configured: !!push.cfg.BARK_URL, ...push.barkHealth },
-    webhook: { configured: !!push.cfg.WEBHOOK_URL, ...push.webhookHealth },
-  });
 });
 
 // Test push notification
@@ -5901,28 +5877,13 @@ app.post('/api/push/test-webhook', (req, res) => {
   res.json({ ok: true });
 });
 
-// Notification settings (Bark / Webhook)
-app.get('/api/settings/notify', (req, res) => {
-  res.json({
-    barkUrl: push.cfg.BARK_URL ? push.cfg.BARK_URL.replace(/\/[^/]{8,}$/, '/****') : '',
-    hasBark: !!push.cfg.BARK_URL,
-    webhookUrl: push.cfg.WEBHOOK_URL || '',
-    hasWebhook: !!push.cfg.WEBHOOK_URL,
-  });
-});
-
 app.post('/api/settings/notify', (req, res) => {
-  const { barkUrl, webhookUrl } = req.body || {};
-  const updates = {};
-  if (typeof barkUrl === 'string') updates.BARK_URL = barkUrl;
-  if (typeof webhookUrl === 'string') updates.WEBHOOK_URL = webhookUrl;
+  // GET returns opaque placeholders rather than channel secrets. Treat an
+  // unchanged placeholder as "keep current"; a real empty string remains an
+  // explicit clear operation, and a new URL replaces the current value.
+  const updates = resolveNotifySettingsUpdates(req.body || {}, push.cfg);
   if (Object.keys(updates).length > 0) { writeEnvFile(updates); push.applyEnvUpdates(updates); }
   res.json({ ok: true });
-});
-
-// ── External tunnel monitor (花生壳 / Tailscale) ──
-app.get('/api/settings/tunnel', (req, res) => {
-  res.json(tunnel.getStatus());
 });
 
 app.post('/api/settings/tunnel', (req, res) => {
@@ -5973,38 +5934,9 @@ app.post('/api/tunnel/funnel', async (req, res) => {
   }
 });
 
-// Read-only Funnel status (CLI output).
-app.get('/api/tunnel/funnel', async (req, res) => {
-  try {
-    res.json({ status: await tunnel.funnelStatus() });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Read-only IPv6 reachability detection (host global IPv6 + tailscale netcheck).
-// Lets the UI show whether remote clients can reach this host via a direct IPv6
-// path instead of a DERP relay.
-app.get('/api/tunnel/ipv6', async (req, res) => {
-  try {
-    res.json(await tunnel.ipv6Status());
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // ── Access token (external-access login password) ──
 // Readable anywhere (masked); editable ONLY from localhost. Persisted to .env
 // and hot-reloaded so changes apply without a server restart.
-app.get('/api/settings/access-token', (req, res) => {
-  const t = ACCESS_TOKEN || '';
-  res.json({
-    hasToken: !!t,
-    masked: t ? (t.length > 4 ? '****' + t.slice(-4) : '****') : '',
-    canEdit: isLocalRequest(req),
-  });
-});
-
 app.post('/api/settings/access-token', (req, res) => {
   if (!isLocalRequest(req)) {
     return res.status(403).json({ error: '访问密码仅可在本机 (localhost) 打开本页时修改' });
@@ -6027,10 +5959,6 @@ app.post('/api/settings/access-token', (req, res) => {
   res.json({ ok: true, hasToken: !!token });
 });
 
-// ── Claude Code per-session/per-role proxy global toggle (live, persisted) ──
-app.get('/api/settings/proxy', (req, res) => {
-  res.json({ enabled: CLAUDE_PROXY_ENABLED });
-});
 app.post('/api/settings/proxy', (req, res) => {
   if (!isLocalRequest(req)) return res.status(403).json({ error: '仅可在本机修改' });
   if (typeof (req.body && req.body.enabled) !== 'boolean') return res.status(400).json({ error: 'enabled 必须是布尔' });
@@ -6041,12 +5969,6 @@ app.post('/api/settings/proxy', (req, res) => {
   res.json({ ok: true, enabled: CLAUDE_PROXY_ENABLED });
 });
 
-// ── Route claude-official (OAuth subscription) through the proxy — default OFF ──
-// Opt-in only: enabling makes official sessions replay their Keychain OAuth token
-// through the proxy so their subagents can route to cheap providers (⚠️ ToS risk).
-app.get('/api/settings/official-oauth', (req, res) => {
-  res.json({ enabled: CLAUDE_OFFICIAL_VIA_PROXY });
-});
 app.post('/api/settings/official-oauth', (req, res) => {
   if (!isLocalRequest(req)) return res.status(403).json({ error: '仅可在本机修改' });
   if (typeof (req.body && req.body.enabled) !== 'boolean') return res.status(400).json({ error: 'enabled 必须是布尔' });
@@ -6055,18 +5977,6 @@ app.post('/api/settings/official-oauth', (req, res) => {
   writeEnvFile({ CLAUDE_OFFICIAL_VIA_PROXY: req.body.enabled ? '1' : '0' });          // persists across restarts
   console.log(`[multicc/proxy] official-via-proxy (OAuth replay) ${req.body.enabled ? 'enabled' : 'disabled'} via UI`);
   res.json({ ok: true, enabled: CLAUDE_OFFICIAL_VIA_PROXY });
-});
-
-// macOS system power settings
-app.get('/api/settings/power', async (req, res) => {
-  if (!macosPower.isAvailable()) {
-    return res.json({ available: false, enabled: false });
-  }
-  try {
-    res.json(await macosPower.getLidSleepPrevention());
-  } catch (error) {
-    res.status(500).json({ available: true, error: error.message });
-  }
 });
 
 app.post('/api/settings/power', async (req, res) => {
@@ -11554,7 +11464,7 @@ wss.on('connection', async (ws, req) => {
   // explicit migration opt-in and is counted so operators can remove it.
   if (!sharePerm) {
     const ip = req.socket.remoteAddress;
-    const isLocal = (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') && !isExternalProxy(req);
+    const isLocal = isLocalRequest(req);
     const cookies = parseCookies(req.headers.cookie);
     const ticket = ACCESS_TOKEN && authSecurity.consumeWsTicket(urlObj.searchParams.get('ticket'), urlObj.pathname);
     const legacyCookie = ACCESS_TOKEN && ALLOW_LEGACY_WS_COOKIE && cookies.multicc_auth && authSecurity.verifyCookie(cookies.multicc_auth);

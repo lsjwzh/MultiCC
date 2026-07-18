@@ -88,10 +88,13 @@ void main() {
 
   test('publishes immutable projections and aggregate status sets', () {
     final observed = <DirectoryWorkspaceSnapshot>[];
-    store.onDirectorySnapshot = (dirId, snapshot) {
-      expect(dirId, 'alpha');
-      observed.add(snapshot);
-    };
+    store.configureCallbacks(
+      onDirectorySnapshot: (dirId, snapshot) {
+        expect(dirId, 'alpha');
+        observed.add(snapshot);
+      },
+      onNotify: (_, _, _) {},
+    );
     store.syncDirectories(['alpha']);
 
     services['alpha']!.publish(
@@ -125,12 +128,14 @@ void main() {
   test('forwards notifications and disposes removed connections', () async {
     final notifications = <String>[];
     final cleared = <String>[];
-    store.onNotify = (sessionId, state, message) {
-      notifications.add('$sessionId:$state:$message');
-    };
-    store.onDirectorySnapshot = (dirId, snapshot) {
-      if (snapshot.statuses.isEmpty) cleared.add(dirId);
-    };
+    store.configureCallbacks(
+      onNotify: (sessionId, state, message) {
+        notifications.add('$sessionId:$state:$message');
+      },
+      onDirectorySnapshot: (dirId, snapshot) {
+        if (snapshot.statuses.isEmpty) cleared.add(dirId);
+      },
+    );
     store.syncDirectories(['alpha', 'beta']);
     services['alpha']!.publishNotification('session-1', 'done', 'finished');
 
@@ -141,6 +146,55 @@ void main() {
     expect(services['alpha']!.disposeCalls, 1);
     expect(services['beta']!.disposeCalls, 0);
     expect(cleared, ['alpha']);
+  });
+
+  test(
+    'remove then same-tick re-add invalidates the old empty report',
+    () async {
+      final observed = <String>[];
+      store.configureCallbacks(
+        onNotify: (_, _, _) {},
+        onDirectorySnapshot: (dirId, snapshot) {
+          observed.add('$dirId:${snapshot.statuses.keys.join(',')}');
+        },
+      );
+      store.syncDirectories(['alpha']);
+      final removedService = services['alpha']!;
+      store.syncDirectories(const []);
+      store.syncDirectories(['alpha']);
+      final replacementService = services['alpha']!;
+      replacementService.publish(
+        nextStatuses: const {'new': SessionStatus(status: 'running')},
+      );
+
+      await Future<void>.delayed(Duration.zero);
+
+      expect(identical(removedService, replacementService), isFalse);
+      expect(observed, ['alpha:new']);
+      expect(store.snapshotFor('alpha').statuses.keys, {'new'});
+    },
+  );
+
+  test('removed service clears and guards its notification callback', () {
+    final notifications = <String>[];
+    store.configureCallbacks(
+      onDirectorySnapshot: (_, _) {},
+      onNotify: (sessionId, state, message) {
+        notifications.add('$sessionId:$state:$message');
+      },
+    );
+    store.syncDirectories(['alpha']);
+    final removedService = services['alpha']!;
+    final staleNotify = removedService.onNotify!;
+
+    store.syncDirectories(const []);
+    store.syncDirectories(['alpha']);
+    final replacementService = services['alpha']!;
+    staleNotify('stale', 'done', 'old service');
+    replacementService.publishNotification('current', 'done', 'new service');
+
+    expect(removedService.onNotify, isNull);
+    expect(notifications, ['current:done:new service']);
   });
 
   test('store disposal closes every remaining connection once', () {
