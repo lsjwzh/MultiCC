@@ -214,7 +214,10 @@ const mergeHintBtn = document.getElementById('merge-hint-btn');
 const headerMoreBtn = document.getElementById('header-more-btn');
 const headerMoreMenu = document.getElementById('header-more-menu');
 const headerMoreWrap = document.getElementById('header-more-wrap');
-const HEADER_MORE_IDS = ['model-btn', 'role-btn', 'memory-btn', 'auto-commit-btn', 'share-btn'];
+const HEADER_MORE_IDS = [
+  'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
+  'memory-btn', 'auto-commit-btn', 'share-btn', 'clear-ctx-wrap', 'memo-btn',
+];
 
 function syncHeaderMoreMenu() {
   if (!headerMoreMenu || !headerMoreWrap) return;

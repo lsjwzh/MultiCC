@@ -18,7 +18,6 @@
 
   // ── DOM helpers ──────────────────────────────────────────────
   function el(id) { return document.getElementById(id); }
-  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
   function text(t) { return document.createTextNode(t); }
 
   // ── Time formatting ──────────────────────────────────────────
@@ -112,12 +111,10 @@
 
   // ── Rendering: Sessions table ───────────────────────────────
   function renderSessions(data) {
-    var tbody = el('sessions-tbody');
     var wrap = el('table-wrap');
 
     if (!data || !data.sessions || data.sessions.length === 0) {
       wrap.style.display = 'block';
-      clear(tbody);
       var empty = document.createElement('div');
       empty.className = 'empty-state';
       empty.innerHTML = '<div class="icon">📭</div><div>没有符合条件的会话</div>';
@@ -149,27 +146,27 @@
       // Active dot
       var activeClass = s.active ? 'yes' : 'no';
       var activeTitle = s.active ? '活跃' : '非活跃';
-      tr.appendChild(td('<span class="active-dot ' + activeClass + '" title="' + activeTitle + '"></span>'));
+      tr.appendChild(td('<span class="active-dot ' + activeClass + '" title="' + activeTitle + '"></span><span class="mobile-status-text">' + activeTitle + '</span>', '状态'));
 
       // ID
-      tr.appendChild(td('<span class="mono">' + esc(s.id || '-') + '</span>'));
+      tr.appendChild(td('<span class="mono">' + esc(s.id || '-') + '</span>', 'ID'));
 
       // Label
-      tr.appendChild(td(esc(s.label || s.id || '-')));
+      tr.appendChild(td(esc(s.label || s.id || '-'), '标签'));
 
       // CLI
       var cliCls = s.cli === 'claude' ? 'claude' : s.cli === 'codex' ? 'codex' : 'other';
-      tr.appendChild(td('<span class="cli-badge"><span class="cli-dot ' + cliCls + '"></span>' + esc(s.cli || '-') + '</span>'));
+      tr.appendChild(td('<span class="cli-badge"><span class="cli-dot ' + cliCls + '"></span>' + esc(s.cli || '-') + '</span>', 'CLI'));
 
       // Kind
       var kindCls = s.kind || 'other';
-      tr.appendChild(td('<span class="kind-badge ' + kindCls + '">' + esc(s.kind || '-') + '</span>'));
+      tr.appendChild(td('<span class="kind-badge ' + kindCls + '">' + esc(s.kind || '-') + '</span>', '类型'));
 
       // Created at
-      tr.appendChild(td('<span class="mono">' + formatAbsolute(s.createdAt) + '</span>'));
+      tr.appendChild(td('<span class="mono">' + formatAbsolute(s.createdAt) + '</span>', '创建'));
 
       // Last activity
-      tr.appendChild(td('<span class="mono">' + formatRelative(s.lastActivity) + '</span>'));
+      tr.appendChild(td('<span class="mono">' + formatRelative(s.lastActivity) + '</span>', '活动'));
 
       tbodyEl.appendChild(tr);
     });
@@ -179,8 +176,9 @@
     el('session-count').textContent = String(data.sessions.length);
   }
 
-  function td(html) {
+  function td(html, label) {
     var tdEl = document.createElement('td');
+    if (label) tdEl.setAttribute('data-label', label);
     tdEl.innerHTML = html;
     return tdEl;
   }
@@ -231,8 +229,8 @@
         lastFetchOk = false;
       }
       // If we have no data yet, show loading state
-      if (!el('sessions-tbody').children.length && !el('table-wrap').querySelector('.sessions-table')) {
-        var wrap = el('table-wrap');
+      var wrap = el('table-wrap');
+      if (!wrap.querySelector('.sessions-table')) {
         wrap.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><div>等待 API 可用…</div></div>';
       }
     });
