@@ -129,13 +129,14 @@
       ]
     },
     {
-      "id": "legacy-detached-reader",
-      "classification": "compatibility-read",
+      "id": "legacy-detached-location",
+      "classification": "migration-required",
       "owner": "detached task adapter",
-      "rationale": "Status/list must find jobs launched before the data-root migration, but all new jobs write under MULTICC_DATA_DIR.",
-      "migrationStrategy": "Retain read fallback until the maximum supported detached-job retention window has elapsed.",
+      "rationale": "Explicit MULTICC_DATA_DIR instances are isolated, while installs without that setting retain the historical ~/.multicc/detached root so in-flight job evidence remains discoverable.",
+      "migrationStrategy": "Make the configured MultiCC data root mandatory, add a read-only fallback for historical jobs, and remove writes to the legacy root after the detached-job retention window.",
       "sources": [
-        { "file": "src/detached.js", "anchor": "const LEGACY_BASE_DIR = path.join(os.homedir(), '.multicc', 'detached');" }
+        { "file": "src/detached.js", "anchor": "const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');" },
+        { "file": "src/paths.js", "anchor": "? path.join(os.homedir(), '.multicc', 'detached')" }
       ]
     },
     {
