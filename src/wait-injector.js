@@ -59,6 +59,7 @@ let _inject = async () => {};   // (session, text, opts?) => Promise   — runCh
 let _exec = async () => ({ stdout: '', code: 1 }); // (cmd, cwd) => {stdout, stderr, code}
 let _isBusy = () => false;      // (session) => bool             — is a turn in flight
 let _log = () => {};
+let _hasExplicitWait = () => false; // durable explicit waits live outside this module
 
 const waits = new Map();        // waitId -> wait spec/state
 const autoState = new Map();    // session -> { count, lastHash }
@@ -91,11 +92,12 @@ const BG_RESULT_DEDUP_MS = 60000;
 function genId() { return 'w_' + crypto.randomBytes(6).toString('hex'); }
 function genToken() { return crypto.randomBytes(16).toString('hex'); }
 
-function init({ inject, exec, isBusy, log } = {}) {
+function init({ inject, exec, isBusy, log, hasExplicitWait } = {}) {
   if (inject) _inject = inject;
   if (exec) _exec = exec;
   if (isBusy) _isBusy = isBusy;
   if (log) _log = log;
+  if (hasExplicitWait) _hasExplicitWait = hasExplicitWait;
   startTicker();
 }
 
@@ -161,7 +163,8 @@ function listForSession(session) {
 
 function hasWait(session) {
   for (const w of waits.values()) if (w.session === session) return true;
-  return false;
+  try { return !!_hasExplicitWait(session); }
+  catch (_) { return false; }
 }
 
 // ── Callback resolution (A) ──
