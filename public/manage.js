@@ -1822,141 +1822,34 @@ async function submitNewDirectory() {
 }
 
 // ── Per-directory memo (multicc.memo.md, plain markdown) ──
-let _memoDirId = null;
-
-function openMemo(dirId) {
-  const dir = (_cachedDirectories || []).find(d => d.id === dirId);
-  if (!dir) { showToast('Directory not found', true); return; }
-  _memoDirId = dirId;
-  const modal = document.getElementById('memo-modal');
-  const ta = document.getElementById('memo-text');
-  const statusEl = document.getElementById('memo-status');
-  document.getElementById('memo-title').textContent = `📝 ${dir.name} · 备忘`;
-  document.getElementById('memo-subtitle').textContent = '加载中…';
-  ta.value = '';
-  statusEl.textContent = '';
-  modal.style.display = 'flex';
-  // Ctrl/Cmd+S to save
-  ta.onkeydown = (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-      e.preventDefault();
-      memoSave();
-    }
-  };
-  fetch(`/api/directories/${encodeURIComponent(dirId)}/memo${tokenQS('?')}`)
-    .then(r => r.json())
-    .then(data => {
-      ta.value = data.text || '';
-      document.getElementById('memo-subtitle').textContent =
-        `${data.path || ''}${data.exists ? '' : ' · 文件尚未创建（保存即创建）'}`;
-      ta.focus();
-    })
-    .catch(e => {
-      document.getElementById('memo-subtitle').textContent = '加载失败：' + e.message;
-    });
-}
-
-function closeMemoModal() {
-  const ta = document.getElementById('memo-text');
-  if (ta) ta.onkeydown = null;
-  document.getElementById('memo-modal').style.display = 'none';
-  memoPickerClose();
-  _memoDirId = null;
-}
-
-async function memoSave() {
-  if (!_memoDirId) return;
-  const text = document.getElementById('memo-text').value;
-  const statusEl = document.getElementById('memo-status');
-  statusEl.textContent = '保存中…';
-  try {
-    const res = await fetch(`/api/directories/${encodeURIComponent(_memoDirId)}/memo${tokenQS('?')}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      statusEl.textContent = '保存失败：' + (err.error || res.status);
-      return;
-    }
-    statusEl.textContent = `已保存 · ${new Date().toLocaleTimeString()}`;
-  } catch (e) {
-    statusEl.textContent = '保存失败：' + e.message;
-  }
-}
-
-// Pull the cursor's line text out of the textarea, stripped of a leading
-// markdown list/checkbox marker so what we send is just the task content.
-function memoCurrentLineText() {
-  const ta = document.getElementById('memo-text');
-  if (!ta) return '';
-  const v = ta.value;
-  const pos = ta.selectionStart;
-  const before = v.lastIndexOf('\n', Math.max(0, pos - 1));
-  const after = v.indexOf('\n', pos);
-  const start = before === -1 ? 0 : before + 1;
-  const end = after === -1 ? v.length : after;
-  let line = v.slice(start, end);
-  line = line.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/, '');   // - [ ] / - [x]
-  line = line.replace(/^\s*[-*+]\s+/, '');                // - / * / +
-  line = line.replace(/^\s*\d+\.\s+/, '');                // 1.
-  line = line.replace(/^\s*#+\s+/, '');                   // headings
-  return line.trim();
-}
-
-function memoSendCurrentLine() {
-  if (!_memoDirId) return;
-  const text = memoCurrentLineText();
-  const statusEl = document.getElementById('memo-status');
-  if (!text) { statusEl.textContent = '当前行为空，无法发送'; return; }
-  const sessions = (_cachedSessions || [])
-    .filter(s => s.dirId === _memoDirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
-  if (!sessions.length) {
-    statusEl.textContent = '该Fleet还没有 chat 会话，请先新建一个';
-    return;
-  }
-  const preview = text.length > 120 ? text.slice(0, 120) + '…' : text;
-  document.getElementById('memo-picker-preview').textContent = preview;
-  const listEl = document.getElementById('memo-picker-list');
-  listEl.innerHTML = sessions.map(s => {
-    const cs = _sessionStatus.get(s.id);
-    const status = (cs && cs.status) || (s.active ? 'active' : 'idle');
-    const label = s.label && s.label !== s.id ? `${escapeHtml(s.label)} <span style="color:#6e7681;">${escapeHtml(s.id)}</span>` : escapeHtml(s.id);
-    const safeId = escapeHtml(s.id).replace(/'/g, "\\'");
-    return `<button class="btn" style="text-align:left;padding:8px 10px;display:flex;justify-content:space-between;gap:10px;" onclick="memoConfirmSend('${safeId}')"><span style="overflow:hidden;text-overflow:ellipsis;">${label}</span><span style="color:#6e7681;font-size:11px;flex-shrink:0;">${escapeHtml(status)}</span></button>`;
-  }).join('');
-  document.getElementById('memo-picker').style.display = 'flex';
-}
-
-function memoPickerClose() {
-  const p = document.getElementById('memo-picker');
-  if (p) p.style.display = 'none';
-}
-
-async function memoConfirmSend(sessionId) {
-  if (!_memoDirId) return;
-  const text = memoCurrentLineText();
-  if (!text) return;
-  memoPickerClose();
-  const statusEl = document.getElementById('memo-status');
-  statusEl.textContent = `发送到 ${sessionId}…`;
-  try {
-    const res = await fetch(`/api/directories/${encodeURIComponent(_memoDirId)}/memo/send${tokenQS('?')}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, sessionId }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      statusEl.textContent = '发送失败：' + (err.error || res.status);
-      return;
-    }
-    statusEl.textContent = `已发送到 ${sessionId} · ${new Date().toLocaleTimeString()}`;
-  } catch (e) {
-    statusEl.textContent = '发送失败：' + e.message;
-  }
-}
+// Network/DTO/state handling lives in memo-controller.js; this file only
+// injects dashboard caches and exposes the legacy globals used by inline UI.
+const memoController = window.MultiCCMemo.createController({
+  api: window.MultiCCApi,
+  document,
+  getDirectories: () => _cachedDirectories || [],
+  getSessions: () => _cachedSessions || [],
+  getSessionStatus: id => _sessionStatus.get(id),
+  notify: showToast,
+});
+const {
+  openMemo,
+  closeMemoModal,
+  memoSave,
+  memoCurrentLineText,
+  memoSendCurrentLine,
+  memoPickerClose,
+  memoConfirmSend,
+} = memoController;
+Object.assign(window, {
+  openMemo,
+  closeMemoModal,
+  memoSave,
+  memoCurrentLineText,
+  memoSendCurrentLine,
+  memoPickerClose,
+  memoConfirmSend,
+});
 
 async function renameDirectory(id) {
   const dir = _cachedDirectories.find(d => d.id === id);
