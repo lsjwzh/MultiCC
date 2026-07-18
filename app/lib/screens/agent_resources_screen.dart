@@ -5,7 +5,7 @@ import '../services/settings_service.dart';
 import '../theme.dart';
 
 /// Agent 资源与缓存。镜像网页管理台的「Agent 资源」+「临时上传」面板：
-/// 查看已安装 Skills、Claude 历史会话（按天清理）、以及服务器临时上传缓存（一键清理）。
+/// 查看 Skills、同步状态、Claude 历史会话和服务器临时上传缓存。
 class AgentResourcesScreen extends StatefulWidget {
   final SettingsService settings;
   const AgentResourcesScreen({super.key, required this.settings});
@@ -22,6 +22,7 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
   Map<String, dynamic>? _skills;
   Map<String, dynamic>? _history;
   Map<String, dynamic>? _uploads;
+  Map<String, dynamic>? _skillSync;
   bool _busy = false;
 
   @override
@@ -40,12 +41,14 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
         _manage.fetchSkills(),
         _manage.fetchClaudeHistory(),
         _manage.fetchUploadStats(),
+        _manage.fetchSkillSyncStatus(),
       ]);
       if (!mounted) return;
       setState(() {
         _skills = r[0];
         _history = r[1];
         _uploads = r[2];
+        _skillSync = r[3];
         _loading = false;
       });
     } catch (e) {
@@ -72,6 +75,20 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
       await _refresh();
     } catch (e) {
       _snack('清理失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _runSkillSync() async {
+    setState(() => _busy = true);
+    try {
+      final result = await _manage.runSkillSync();
+      if (!mounted) return;
+      setState(() => _skillSync = result);
+      _snack('技能同步完成：链接 ${result['linkCount'] ?? 0} · 转换 ${result['convCount'] ?? 0}');
+    } catch (e) {
+      _snack('技能同步失败：$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -172,6 +189,8 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
                     padding: const EdgeInsets.all(14),
                     children: [
                       _skillsSection(),
+                      const SizedBox(height: 18),
+                      _skillSyncSection(),
                       const SizedBox(height: 18),
                       _historySection(),
                       const SizedBox(height: 18),
@@ -289,6 +308,44 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
     );
   }
 
+  Widget _skillSyncSection() {
+    final sync = _skillSync ?? const <String, dynamic>{};
+    final status = (sync['status'] ?? 'never-synced').toString();
+    final error = sync['error']?.toString();
+    final queue = sync['aiQueue'] is Map ? sync['aiQueue'] as Map : const {};
+    return _Card(
+      title: '技能同步',
+      subtitle: '$status · ${_formatSyncTime(sync['ts'])}',
+      trailing: TextButton.icon(
+        onPressed: _busy ? null : _runSkillSync,
+        icon: const Icon(Icons.sync_rounded, size: 17, color: AppColors.accent),
+        label: const Text('立即同步', style: TextStyle(color: AppColors.accent, fontSize: 12.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _MetricChip('链接', sync['linkCount'] ?? 0),
+              _MetricChip('跳过', sync['skipCount'] ?? 0),
+              _MetricChip('转换', sync['convCount'] ?? 0),
+              _MetricChip('反向导入', sync['reverseImportCount'] ?? 0),
+              _MetricChip('内置安装', sync['bundledInstallCount'] ?? 0),
+              _MetricChip('共享', sync['sharedSkillCount'] ?? 0),
+              _MetricChip('AI 队列', queue['queueLength'] ?? 0),
+            ],
+          ),
+          if (error != null && error.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(error, style: const TextStyle(color: AppColors.danger, fontSize: 12)),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _uploadsSection() {
     final total = (_uploads?['totalSize'] as num?)?.toInt() ?? 0;
     return _Card(
@@ -314,6 +371,16 @@ String _fmtBytes(int bytes) {
     u++;
   }
   return '${v.toStringAsFixed(u == 0 ? 0 : 1)} ${units[u]}';
+}
+
+String _formatSyncTime(dynamic raw) {
+  DateTime? value;
+  if (raw is num && raw > 0) value = DateTime.fromMillisecondsSinceEpoch(raw.toInt());
+  if (raw is String && raw.isNotEmpty) value = DateTime.tryParse(raw);
+  if (value == null) return '尚未同步';
+  final local = value.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${local.year}-${two(local.month)}-${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
 }
 
 class _Card extends StatelessWidget {
@@ -366,6 +433,22 @@ class _Muted extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Text(text,
       style: const TextStyle(color: AppColors.faint, fontSize: 12, height: 1.4));
+}
+
+class _MetricChip extends StatelessWidget {
+  final String label;
+  final Object value;
+  const _MetricChip(this.label, this.value);
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        decoration: BoxDecoration(
+          color: AppColors.bg,
+          border: Border.all(color: AppColors.line),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text('$label $value', style: const TextStyle(color: AppColors.muted, fontSize: 11.5)),
+      );
 }
 
 class _ErrorView extends StatelessWidget {

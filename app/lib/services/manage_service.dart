@@ -382,6 +382,103 @@ class ManageService {
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
   }
 
+  // ── Skill synchronization ─────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> fetchSkillSyncStatus() async {
+    final res = await http
+        .get(Uri.parse(_url('/api/skill-sync/status')), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  Future<Map<String, dynamic>> runSkillSync() async {
+    final res = await http
+        .post(Uri.parse(_url('/api/skill-sync/run')), headers: _headers)
+        .timeout(const Duration(seconds: 45));
+    if (res.statusCode >= 400) _throw(res);
+    final body = (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    return body['result'] is Map
+        ? (body['result'] as Map).cast<String, dynamic>()
+        : body;
+  }
+
+  // ── Message bridges ───────────────────────────────────────────────────────
+
+  static const _bridgePlatforms = {'feishu', 'telegram', 'discord', 'slack', 'wechat'};
+
+  String _bridgePath(String platform, String suffix) {
+    if (!_bridgePlatforms.contains(platform)) {
+      throw ArgumentError.value(platform, 'platform', 'unsupported bridge');
+    }
+    return '/api/$platform/$suffix';
+  }
+
+  Future<Map<String, dynamic>> fetchBridgeStatus(String platform) async {
+    final res = await http
+        .get(Uri.parse(_url(_bridgePath(platform, 'status'))), headers: _headers)
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  Future<Map<String, dynamic>> fetchBridgeConfig(String platform) async {
+    final res = await http
+        .get(Uri.parse(_url(_bridgePath(platform, 'config'))), headers: _headers)
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  Future<void> saveBridgeConfig(String platform, Map<String, dynamic> config) async {
+    final res = await http
+        .post(Uri.parse(_url(_bridgePath(platform, 'config'))),
+            headers: _headers, body: jsonEncode(config))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  Future<void> setBridgeRunning(String platform, bool running) async {
+    final res = await http
+        .post(Uri.parse(_url(_bridgePath(platform, running ? 'start' : 'stop'))),
+            headers: _headers)
+        .timeout(const Duration(seconds: 30));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  Future<Map<String, dynamic>> setBridgeGateway(String platform, String cli) async {
+    final res = await http
+        .put(Uri.parse(_url(_bridgePath(platform, 'gateway'))),
+            headers: _headers, body: jsonEncode({'cli': cli}))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  Future<void> resetBridgeGateway(String platform) async {
+    final res = await http
+        .post(Uri.parse(_url(_bridgePath(platform, 'gateway/reset'))), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  Future<void> deleteBridgeGateway(String platform) async {
+    final res = await http
+        .delete(Uri.parse(_url(_bridgePath(platform, 'gateway'))), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchBridgeLog(String platform) async {
+    final res = await http
+        .get(Uri.parse(_url(_bridgePath(platform, 'log'))), headers: _headers)
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode >= 400) _throw(res);
+    final list = jsonDecode(utf8.decode(res.bodyBytes));
+    if (list is! List) return const [];
+    return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
+  }
+
   // ── Server-side config: token usage / access-token / official-oauth ─────────
   // These were web-dashboard-only; now surfaced in the app so phone clients can
   // read them. Write endpoints are localhost-only on the server, so a remote
