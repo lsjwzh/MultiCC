@@ -54,7 +54,6 @@ const WebSocket = require('ws');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const net = require('net');
 const { StringDecoder } = require('string_decoder');
 const { execSync, execFileSync, spawn } = require('child_process');
 const multer = require('multer');
@@ -72,7 +71,7 @@ const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./plugins/utils/macos-power');
 const gitPush = require('./plugins/utils/git-push');
-const { runGit: gitRunQueued } = require('./src/git-queue');
+const { runGit: gitRunQueued, queueDepth: gitQueueDepth, makeTtlCache } = require('./src/git-queue');
 
 const crypto = require('crypto');
 const bus = require('./src/bus');
@@ -115,28 +114,40 @@ const stateStore = require('./src/state-store');
 const stateTx = require('./src/state-tx');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler } = require('./src/http-errors');
+const {
+  createAuthSecurity,
+  normalizeRedirect,
+  escapeHtmlAttribute,
+} = require('./src/auth-security');
+const { envEnabled, resolveNetworkPolicy, findAvailablePort } = require('./src/network-policy');
+const { createObservability, installConsoleRedaction } = require('./src/observability');
+const { installWsBackpressure } = require('./src/ws-backpressure');
+const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const observability = createObservability({ service: 'multicc' });
+const { logger, metrics } = observability;
+installConsoleRedaction(console);
+secureRuntimeData(MULTICC_PATHS);
+stateStore.setFailureReporter((error, meta) => {
+  metrics.inc('multicc_persistence_failures_total');
+  logger.error('persistence_failure', { ...meta, error: error && error.message });
+});
+const networkPolicy = resolveNetworkPolicy(process.env);
 const app = express();
+app.locals.observability = observability;
 
 // ── Access token authentication (cookie-based login) ──
 // `let` (not const): editable at runtime via /api/settings/access-token from
 // localhost, hot-reloaded without restart (persisted to .env).
-let ACCESS_TOKEN = process.env.ACCESS_TOKEN;
+let ACCESS_TOKEN = networkPolicy.accessToken;
+const authSecurity = createAuthSecurity({ getSecret: () => ACCESS_TOKEN });
+const ALLOW_LEGACY_TOKEN_QUERY = envEnabled(process.env.MULTICC_ALLOW_LEGACY_TOKEN_QUERY);
+const ALLOW_LEGACY_WS_TOKEN = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_TOKEN);
+const ALLOW_LEGACY_WS_COOKIE = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_COOKIE);
 
-// Signed cookie: no server-side storage needed, survives restarts
-function signToken(data) {
-  return crypto.createHmac('sha256', ACCESS_TOKEN).update(data).digest('hex');
-}
-
-function generateAuthCookie() {
-  const payload = Date.now().toString(36);
-  return payload + '.' + signToken(payload);
-}
-
-function verifyAuthCookie(cookie) {
-  if (!cookie || !cookie.includes('.')) return false;
-  const [payload, sig] = cookie.split('.');
-  return sig === signToken(payload);
+function authCookieHeader(req, value = authSecurity.createCookie()) {
+  const secure = req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  return `multicc_auth=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`;
 }
 
 function parseCookies(header) {
@@ -169,10 +180,13 @@ function isAuthenticated(req) {
   if (isLocalRequest(req)) return true;
   // Cookie auth (HMAC-signed, survives server restart)
   const cookies = parseCookies(req.headers.cookie);
-  if (cookies.multicc_auth && verifyAuthCookie(cookies.multicc_auth)) return true;
-  // Query param / header (backwards compat for API / WebSocket)
-  const token = req.query.token || req.headers['x-access-token'];
-  if (token === ACCESS_TOKEN) return true;
+  if (cookies.multicc_auth && authSecurity.verifyCookie(cookies.multicc_auth)) return true;
+  if (authSecurity.verifyAccessToken(req.headers['x-access-token'])) return true;
+  if (ALLOW_LEGACY_TOKEN_QUERY && authSecurity.verifyAccessToken(req.query.token)) {
+    metrics.inc('multicc_auth_legacy_query_total');
+    logger.warn('legacy_token_query', { requestId: req.id, path: req.path });
+    return true;
+  }
   return false;
 }
 
@@ -186,7 +200,7 @@ app.use(requestIdMiddleware);
   // Login page & handler
   app.get('/login', (req, res) => {
     const error = req.query.error ? '<p style="color:#f85149;margin-bottom:16px;">密码错误</p>' : '';
-    const redirect = req.query.redirect || '/';
+    const redirect = normalizeRedirect(req.query.redirect);
     res.type('html').send(`<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -213,7 +227,7 @@ app.use(requestIdMiddleware);
   <div class="logo">Multi<span>CC</span></div>
   ${error}
   <form method="POST" action="/login">
-    <input type="hidden" name="redirect" value="${redirect.replace(/"/g, '&quot;')}">
+    <input type="hidden" name="redirect" value="${escapeHtmlAttribute(redirect)}">
     <input type="password" name="password" placeholder="输入访问密码" autofocus>
     <button type="submit">登录</button>
   </form>
@@ -221,11 +235,9 @@ app.use(requestIdMiddleware);
   });
 
   app.post('/login', express.urlencoded({ extended: false }), (req, res) => {
-    const redirect = req.body.redirect || '/';
-    if (req.body.password === ACCESS_TOKEN) {
-      const authCookie = generateAuthCookie();
-      res.setHeader('Set-Cookie',
-        `multicc_auth=${authCookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}`);
+    const redirect = normalizeRedirect(req.body.redirect);
+    if (authSecurity.verifyAccessToken(req.body.password)) {
+      res.setHeader('Set-Cookie', authCookieHeader(req));
       res.redirect(redirect);
     } else {
       res.redirect(`/login?error=1&redirect=${encodeURIComponent(redirect)}`);
@@ -241,6 +253,7 @@ app.use(requestIdMiddleware);
   app.use((req, res, next) => {
     // Allow login page, static assets
     if (req.path === '/login' || req.path === '/logout') return next();
+    if (req.path === '/healthz' || req.path === '/readyz') return next();
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json|apk)$/i.test(req.path)) return next();
     // Wait-callback endpoint is secured by its own per-wait token so external
     // (off-box) systems can deliver results without the ACCESS_TOKEN cookie.
@@ -254,6 +267,16 @@ app.use(requestIdMiddleware);
     // unguessable capability token, so artifact links open without ACCESS_TOKEN —
     // same model as /share/:token above (keep regex in sync with src/artifacts.js).
     if (/^\/artifacts\/[A-Za-z0-9_-]+(?:\/|$)/.test(req.path)) return next();
+    // Migration bridge for old bookmarked `?token=` document URLs. Only the
+    // top-level HTML navigation is accepted; API and WebSocket query auth stay
+    // disabled unless the explicit legacy flag above is set. auth-client.js
+    // exchanges this for a cookie and immediately removes it from the address.
+    if (req.method === 'GET' && !req.path.startsWith('/api/') && authSecurity.verifyAccessToken(req.query.token)) {
+      metrics.inc('multicc_auth_bootstrap_query_total');
+      logger.warn('bootstrap_token_query', { requestId: req.id, path: req.path });
+      res.setHeader('Set-Cookie', authCookieHeader(req));
+      return next();
+    }
     if (isAuthenticated(req)) return next();
     // Redirect HTML requests to login, reject API calls with 403
     if (req.headers.accept?.includes('text/html') || (!req.path.startsWith('/api/') && req.method === 'GET')) {
@@ -264,43 +287,56 @@ app.use(requestIdMiddleware);
   });
 }
 
-let PORT = parseInt(process.env.PORT || '3000', 10);
-const server = http.createServer(app);
-
-// Auto-select next available port if the requested one is in use.
-async function findAvailablePort(startPort) {
-  const net = require('net');
-  const maxTries = 100;
-  for (let i = 0; i < maxTries; i++) {
-    const port = startPort + i;
-    const result = await new Promise((resolve) => {
-      const server = net.createServer();
-      server.once('error', () => resolve(false));
-      server.once('listening', () => {
-        server.once('close', () => resolve(true));
-        server.close();
-      });
-      server.listen(port, '127.0.0.1');
-    });
-    if (result) {
-      if (port !== startPort) {
-        console.log(`[multicc] Port ${startPort} in use, auto-switching to ${port}`);
-        // Write back the new port to .env so future starts use it.
-        const envPath = require('path').join(__dirname, '.env');
-        try {
-          const fs = require('fs');
-          if (fs.existsSync(envPath)) {
-            let content = fs.readFileSync(envPath, 'utf8');
-            content = content.replace(/^PORT=.*/m, `PORT=${port}`);
-            fs.writeFileSync(envPath, content);
-          }
-        } catch (_) {}
-      }
-      return port;
-    }
+app.post('/api/auth/exchange', (req, res) => {
+  if (!ACCESS_TOKEN || !authSecurity.verifyAccessToken(req.headers['x-access-token'])) {
+    return res.status(403).json({ error: 'Forbidden: invalid access token' });
   }
-  throw new Error(`No available port between ${startPort} and ${startPort + maxTries}`);
-}
+  res.setHeader('Set-Cookie', authCookieHeader(req));
+  res.status(204).end();
+});
+
+app.post('/api/auth/ws-ticket', express.json({ limit: '4kb' }), (req, res) => {
+  try {
+    const issued = authSecurity.issueWsTicket(req.body && req.body.path || '/', {
+      correlationId: req.correlationId || req.id,
+      requestId: req.id,
+    });
+    res.set('Cache-Control', 'no-store');
+    res.json(issued);
+  } catch (_) {
+    res.status(400).json({ error: 'invalid WebSocket path' });
+  }
+});
+
+let serviceReady = false;
+app.get('/healthz', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()), requestId: req.id });
+});
+app.get('/readyz', (req, res) => {
+  const ready = serviceReady && !_shuttingDown;
+  res.set('Cache-Control', 'no-store');
+  res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready', requestId: req.id });
+});
+app.get('/metrics', (req, res) => {
+  let activeTurns = 0;
+  for (const [name, cs] of chatSessions) {
+    if (cs && (cs.claudeProc || cs.isStreaming || (chatStream.status(name) && chatStream.status(name).busy))) activeTurns++;
+  }
+  const waitStats = waitInjector.stats();
+  res.type('text/plain; version=0.0.4').send(metrics.render({
+    ...observability.eventLoopMetrics(),
+    multicc_active_turns: activeTurns,
+    multicc_ws_clients: wss.clients.size,
+    multicc_git_queue_depth: gitQueueDepth(),
+    multicc_active_waits: waitStats.waits,
+    multicc_ready: serviceReady && !_shuttingDown ? 1 : 0,
+  }));
+});
+
+let PORT = networkPolicy.port;
+const BIND_HOST = networkPolicy.host;
+const server = http.createServer(app);
 
 const wss = new WebSocket.Server({ server });
 const isWindows = process.platform === 'win32';
@@ -1073,7 +1109,7 @@ function loadPersistedState() {
     console.log('[multicc] Migrating sessions.json to directory-based schema...');
     const { newDirs, newSessions, chatHistoryRenames } = migrateOldSchema(rawSessions);
     // Rename chat_history files (old paired id → new chat session id)
-    const CHAT_DIR = path.join(__dirname, 'chat_history');
+    const CHAT_DIR = MULTICC_PATHS.chatHistoryDir;
     for (const { from, to } of chatHistoryRenames) {
       const src = path.join(CHAT_DIR, `${from}.json`);
       const dst = path.join(CHAT_DIR, `${to}.json`);
@@ -2064,7 +2100,7 @@ async function createSession(id) {
 // each request to its actual (role, provider, model) — independent of the
 // session's main provider — and stash a per-turn runtime breakdown so the chat
 // frontend can show "本轮 主 A / 辅 B" instead of a single merged number.
-const TOKEN_BY_ROLE_FILE = path.join(__dirname, 'token_by_role.json');
+const TOKEN_BY_ROLE_FILE = MULTICC_PATHS.tokenByRoleFile;
 // In-memory current-turn snapshots and the persistent per-day × role × provider
 // ledger share one tested implementation. The proxy callback is the only source
 // that knows both the real upstream and whether a request came from a subagent.
@@ -4974,7 +5010,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   const ext = path.extname(req.file.originalname).replace(/[^a-z0-9.]/gi, '').slice(0, 12) || 'bin';
   const safeName = `multicc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext.startsWith('.') ? ext : '.' + ext}`;
   const tmpPath = path.join(os.tmpdir(), safeName);
-  fs.writeFileSync(tmpPath, req.file.buffer);
+  fs.writeFileSync(tmpPath, req.file.buffer, { mode: 0o600 });
   console.log(`[multicc] Uploaded: ${tmpPath} (${req.file.originalname})`);
   res.json({ path: tmpPath, name: req.file.originalname });
 });
@@ -5313,7 +5349,9 @@ function writeEnvFile(updates) {
   for (const [k, v] of Object.entries(updates)) {
     if (!written.has(k) && v != null) lines.push(`${k}=${v}`);
   }
-  fs.writeFileSync(ENV_PATH, lines.join('\n') + '\n');
+  let parentMode = 0o755;
+  try { parentMode = fs.statSync(path.dirname(ENV_PATH)).mode & 0o777; } catch (_) {}
+  atomicWriteText(ENV_PATH, lines.join('\n') + '\n', { dirMode: parentMode });
 }
 
 // DEFAULT_CLI belonged to the removed Aux CLI fallback. Migrate persisted
@@ -5483,7 +5521,7 @@ app.get('/api/server-info', (req, res) => {
     if (ip !== '127.0.0.1') break;
   }
   const url = `http://${ip}:${PORT}`;
-  res.json({ ip, port: PORT, proto: 'http', url, token: ACCESS_TOKEN || '' });
+  res.json({ ip, port: PORT, proto: 'http', url, authRequired: !!ACCESS_TOKEN });
 });
 
 // Push API endpoints
@@ -5966,7 +6004,7 @@ const AUX_HISTORY_MAX = 200;
 // stateless single-turn tasks (intent classify, summary, voice refine). It
 // selects a wire protocol first, then one callable provider and model. Aux never
 // spawns a CLI; providers without HTTP credentials are excluded from the picker.
-const AUX_CONFIG_FILE = path.join(__dirname, 'aux-config.json');
+const AUX_CONFIG_FILE = MULTICC_PATHS.auxConfigFile;
 let auxConfig = { protocol: 'anthropic', providerId: null, model: null };
 function normalizeAuxProtocol(v) {
   return String(v || '').toLowerCase() === 'openai' ? 'openai' : 'anthropic';
@@ -5985,7 +6023,7 @@ function loadAuxConfig() {
   } catch (_) { /* no config yet → defaults */ }
 }
 function saveAuxConfig() {
-  try { fs.writeFileSync(AUX_CONFIG_FILE, JSON.stringify(auxConfig, null, 2)); } catch (_) {}
+  try { atomicWriteJson(AUX_CONFIG_FILE, auxConfig); } catch (_) {}
 }
 
 const auxQueue = {
@@ -6340,7 +6378,7 @@ const GOAL_ROUNDS_DEFAULT = 0;     // fallback round cap when a send omits it (0
 const GOAL_BUDGET_DEFAULT = 0;     // fallback budget (0 = unlimited)
 const GOAL_ROUNDS_MAX = 200;       // sanity ceiling for --max-turns
 const GOAL_BUDGET_MAX = 5000000;   // sanity ceiling for the advisory token budget
-const GOAL_CONFIG_FILE = path.join(__dirname, 'goal-config.json');
+const GOAL_CONFIG_FILE = MULTICC_PATHS.goalConfigFile;
 
 function clampInt(v, lo, hi, dflt) {
   let n = parseInt(v, 10);
@@ -6383,7 +6421,7 @@ let goalConfig;
 try { goalConfig = normalizeGoalConfig(JSON.parse(fs.readFileSync(GOAL_CONFIG_FILE, 'utf8'))); }
 catch (_) { goalConfig = normalizeGoalConfig(null); }
 function saveGoalConfig() {
-  try { fs.writeFileSync(GOAL_CONFIG_FILE, JSON.stringify(goalConfig, null, 2)); }
+  try { atomicWriteJson(GOAL_CONFIG_FILE, goalConfig); }
   catch (e) { console.warn('[multicc/goal] save config failed:', e.message); }
 }
 
@@ -6477,14 +6515,14 @@ app.post('/api/goal/precheck', (req, res) => {
 // ── Per-session providers (backed by cc-switch) ──────────────────────────────
 // Global default provider per CLI; new sessions inherit it. Stored separately
 // from cc-switch's own "current" selection so multicc stays independent.
-const PROVIDER_DEFAULTS_FILE = path.join(__dirname, 'provider-defaults.json');
+const PROVIDER_DEFAULTS_FILE = MULTICC_PATHS.providerDefaultsFile;
 let providerDefaults = { claude: null, codex: null };
 try {
   const d = JSON.parse(fs.readFileSync(PROVIDER_DEFAULTS_FILE, 'utf8'));
   providerDefaults = { claude: d.claude || null, codex: d.codex || null };
 } catch (_) { /* none yet */ }
 function saveProviderDefaults() {
-  try { fs.writeFileSync(PROVIDER_DEFAULTS_FILE, JSON.stringify(providerDefaults, null, 2)); }
+  try { atomicWriteJson(PROVIDER_DEFAULTS_FILE, providerDefaults); }
   catch (e) { console.error('[multicc] save provider-defaults failed:', e.message); }
 }
 // Validate a provider id exists for the given cli; '' / null clears the override.
@@ -6857,7 +6895,6 @@ app.put('/api/provider-defaults', (req, res) => {
 app.get('/', (req, res, next) => {
   if (req.query.id === '__aux__') {
     const params = new URLSearchParams();
-    if (req.query.token) params.set('token', String(req.query.token));
     params.set('focus', 'aux');
     res.redirect(`/manage.html?${params.toString()}`);
     return;
@@ -6944,8 +6981,8 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 // ── Chat mode: message history ──
-const CHAT_HISTORY_DIR = path.join(__dirname, 'chat_history');
-try { fs.mkdirSync(CHAT_HISTORY_DIR, { recursive: true }); } catch (_) {}
+const CHAT_HISTORY_DIR = MULTICC_PATHS.chatHistoryDir;
+try { ensurePrivateDir(CHAT_HISTORY_DIR); } catch (_) {}
 const MAX_CHAT_MESSAGES = 50;  // legacy rolling window (kept for reference)
 // Soft cap for full-history retention. chat_history is display-only (never fed
 // to the CLI - the CLI uses its own transcript via --resume), so we keep the
@@ -6960,7 +6997,7 @@ const CHAT_HISTORY_PAGE = 30;
 // ── Per-session token usage accumulator ──
 // chat_history has a rolling window (50 messages), so older usage data gets
 // trimmed. This file stores the CUMULATIVE total per session and never shrinks.
-const TOKEN_USAGE_FILE = path.join(__dirname, 'token_usage.json');
+const TOKEN_USAGE_FILE = MULTICC_PATHS.tokenUsageFile;
 // Real consumed input for a turn = fresh input + cache reads + cache writes.
 // Anthropic's input_tokens EXCLUDES cache_read/cache_creation, but those are
 // real billed/consumed context tokens — counting only input_tokens undercounts
@@ -6979,7 +7016,7 @@ function accumulateTokenUsage(sessionName, usage) {
   cur.outputTokens += usage.output_tokens || 0;
   cur.turnCount += 1;
   data[sessionName] = cur;
-  try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(data, null, 2)); } catch (e) {
+  try { atomicWriteJson(TOKEN_USAGE_FILE, data); } catch (e) {
     console.error(`[multicc] Failed to save token usage: ${e.message}`);
   }
   // ── Also write to per-day aggregation for time-window queries ──
@@ -6992,7 +7029,7 @@ function getTokenUsage() {
 // ── Per-provider daily token aggregation ──
 // token_daily.json: { "YYYY-MM-DD": { "<providerId>": { inputTokens, outputTokens, turnCount }, ... } }
 // Enables "today / this week / this month" queries per provider.
-const TOKEN_DAILY_FILE = path.join(__dirname, 'token_daily.json');
+const TOKEN_DAILY_FILE = MULTICC_PATHS.tokenDailyFile;
 
 function accumulateTokenDaily(sessionName, usage) {
   const inp = consumedInput(usage);
@@ -7020,7 +7057,7 @@ function accumulateTokenDaily(sessionName, usage) {
   dayEntry[providerId] = prov;
   daily[dateKey] = dayEntry;
 
-  try { fs.writeFileSync(TOKEN_DAILY_FILE, JSON.stringify(daily, null, 2)); } catch (e) {
+  try { atomicWriteJson(TOKEN_DAILY_FILE, daily); } catch (e) {
     console.error(`[multicc] Failed to save daily token usage: ${e.message}`);
   }
 }
@@ -7060,7 +7097,7 @@ function seedTokenUsageFromHistory() {
   }
 
   if (seeded > 0) {
-    try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(accum, null, 2)); } catch (_) {}
+    try { atomicWriteJson(TOKEN_USAGE_FILE, accum); } catch (_) {}
     console.log(`[multicc] Seeded token_usage.json from chat_history: ${seeded} session(s)`);
   }
 }
@@ -7129,7 +7166,7 @@ function saveChatHistory(sessionName) {
   const history = chatHistories.get(sessionName);
   if (!history) return;
   try {
-    fs.writeFileSync(chatHistoryPath(sessionName), JSON.stringify(history, null, 2));
+    atomicWriteJson(chatHistoryPath(sessionName), history);
   } catch (e) {
     console.error(`[multicc/chat] Failed to save history for ${sessionName}:`, e.message);
   }
@@ -8717,9 +8754,9 @@ function handleMetaWs(ws, req) {
 // Each directory has an append-only event log (events/<dirId>.jsonl) and a shared
 // pool of notes. A note left for another agent is delivered passively — prepended
 // to that agent's next chat turn.
-const EVENTS_DIR = path.join(__dirname, 'events');
-try { fs.mkdirSync(EVENTS_DIR, { recursive: true }); } catch (_) {}
-const NOTES_FILE = path.join(__dirname, 'notes.json');
+const EVENTS_DIR = MULTICC_PATHS.eventsDir;
+try { ensurePrivateDir(EVENTS_DIR); } catch (_) {}
+const NOTES_FILE = MULTICC_PATHS.notesFile;
 const eventRing = new Map();   // dirId → event[] (last 200, lazy-loaded)
 let notes = [];                // [{ id, dirId, fromSessionId, fromLabel, toSessionId, body, ts, delivered, deliveredAt }]
 
@@ -8732,7 +8769,7 @@ function loadNotes() {
   }
 }
 function saveNotes() {
-  try { fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2)); }
+  try { atomicWriteJson(NOTES_FILE, notes); }
   catch (e) { console.error('[multicc] save notes.json failed:', e.message); }
 }
 loadNotes();
@@ -8766,7 +8803,7 @@ function appendEvent(dirId, type, detail, sessionId) {
   const ring = recentEvents(dirId);
   ring.push(evt);
   if (ring.length > 200) ring.shift();
-  try { fs.appendFileSync(path.join(EVENTS_DIR, `${dirId}.jsonl`), JSON.stringify(evt) + '\n'); }
+  try { fs.appendFileSync(path.join(EVENTS_DIR, `${dirId}.jsonl`), JSON.stringify(evt) + '\n', { mode: 0o600 }); }
   catch (_) {}
   workspaceBroadcast(dirId, { type: 'event', event: evt });
 }
@@ -10991,6 +11028,10 @@ function handleChatWs(ws, req, urlObj) {
 // ── WebSocket connections ──
 wss.on('connection', async (ws, req) => {
   const urlObj = new URL(req.url, 'http://localhost');
+  installWsBackpressure(ws, {
+    onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
+    onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
+  });
 
   // Share-scoped chat WS: a valid share token for the requested session grants
   // access WITHOUT ACCESS_TOKEN, scoped to that one session at its access level.
@@ -11003,15 +11044,23 @@ wss.on('connection', async (ws, req) => {
     if (!sharePerm) { ws.close(4003, 'Forbidden'); return; }
   }
 
-  // Auth check for WebSocket (cookie, token param, or localhost) — bypassed when
-  // a valid share scope is present.
+  // External WebSockets exchange the normal HTTP auth for a one-use, path-bound
+  // ticket. Local bridges remain ticket-free. Old cookie/query WS auth is an
+  // explicit migration opt-in and is counted so operators can remove it.
   if (ACCESS_TOKEN && !sharePerm) {
     const ip = req.socket.remoteAddress;
     const isLocal = (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') && !isExternalProxy(req);
     const cookies = parseCookies(req.headers.cookie);
-    const hasCookie = cookies.multicc_auth && verifyAuthCookie(cookies.multicc_auth);
-    const hasToken = urlObj.searchParams.get('token') === ACCESS_TOKEN;
-    if (!isLocal && !hasCookie && !hasToken) {
+    const ticket = authSecurity.consumeWsTicket(urlObj.searchParams.get('ticket'), urlObj.pathname);
+    const legacyCookie = ALLOW_LEGACY_WS_COOKIE && cookies.multicc_auth && authSecurity.verifyCookie(cookies.multicc_auth);
+    const legacyToken = ALLOW_LEGACY_WS_TOKEN && authSecurity.verifyAccessToken(urlObj.searchParams.get('token'));
+    if (ticket) ws._correlationId = ticket.correlationId || ticket.requestId;
+    if (legacyCookie || legacyToken) {
+      metrics.inc('multicc_ws_legacy_auth_total');
+      logger.warn('legacy_ws_auth', { path: urlObj.pathname, mode: legacyToken ? 'query' : 'cookie', ip });
+    }
+    if (!isLocal && !ticket && !legacyCookie && !legacyToken) {
+      metrics.inc('multicc_ws_auth_denied_total');
       ws.close(4003, 'Forbidden');
       return;
     }
@@ -11169,7 +11218,7 @@ wss.on('connection', async (ws, req) => {
           || (mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8);
         const safeName = `multicc_${Date.now()}.${ext}`;
         const tmpPath = path.join(os.tmpdir(), safeName);
-        fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'));
+        fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'), { mode: 0o600 });
         console.log(`[multicc] Saved upload: ${tmpPath}`);
         ws.send(JSON.stringify({ type: 'file_saved', tempId, path: tmpPath, name }));
       }
@@ -11769,22 +11818,33 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
 // generic {error, requestId} so clients can't fingerprint the filesystem.
 // Registered LAST so every route falls through here.
-app.use(safeErrorHandler(console));
+app.use(safeErrorHandler(logger));
 
 (async () => {
   // Do not accept API/WS traffic until legacy worktrees are migrated and tmux
   // recovery has completed. The work itself is asynchronous, so this gates
   // readiness without blocking timers or other event-loop work.
   await startupRepoReady;
-  try {
-    PORT = await findAvailablePort(PORT);
-  } catch (err) {
-    console.error(`[multicc] ${err.message}`);
-    process.exit(1);
+  if (networkPolicy.development) {
+    try {
+      const requestedPort = PORT;
+      PORT = await findAvailablePort(PORT, BIND_HOST);
+      if (PORT !== requestedPort) {
+        logger.warn('development_port_fallback', { requestedPort, selectedPort: PORT, host: BIND_HOST });
+      }
+    } catch (err) {
+      logger.error('listen_failed', { host: BIND_HOST, port: PORT, error: err.message });
+      process.exit(1);
+    }
   }
-  server.listen(PORT, () => {
-    console.log(`\n  MultiCC is running at http://localhost:${PORT}\n`);
-    console.log(`  Manage sessions at http://localhost:${PORT}/manage\n`);
+  server.once('error', err => {
+    logger.error('listen_failed', { host: BIND_HOST, port: PORT, error: err.message, code: err.code });
+    process.exit(1);
+  });
+  server.listen(PORT, BIND_HOST, () => {
+    logger.info('server_listening', { host: BIND_HOST, port: PORT, remote: !networkPolicy.allowRemote ? false : true, development: networkPolicy.development });
+    console.log(`\n  MultiCC is running at http://${BIND_HOST.includes(':') ? `[${BIND_HOST}]` : BIND_HOST}:${PORT}\n`);
+    console.log(`  Manage sessions at http://${BIND_HOST.includes(':') ? `[${BIND_HOST}]` : BIND_HOST}:${PORT}/manage\n`);
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
     seedTokenUsageFromHistory();
     backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
@@ -11808,5 +11868,6 @@ app.use(safeErrorHandler(console));
     setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
     setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS).unref();
+    serviceReady = true;
   });
 })();

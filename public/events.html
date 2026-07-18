@@ -52,13 +52,12 @@
   </div>
   <div id="count"></div>
   <div id="body"><div class="empty">加载中…</div></div>
+  <script src="auth-client.js"></script>
   <script>
     const params = new URLSearchParams(location.search);
     const dirId = params.get('dirId') || '';
-    const urlToken = params.get('token') || '';
-    const tokenQS = (p) => urlToken ? `${p}token=${encodeURIComponent(urlToken)}` : '';
-    const dirsApi = `/api/directories${tokenQS('?')}`;
-    const eventsApi = `/api/directories/${encodeURIComponent(dirId)}/events${tokenQS('?')}`;
+    const dirsApi = '/api/directories';
+    const eventsApi = `/api/directories/${encodeURIComponent(dirId)}/events`;
 
     function eventLabel(evt) {
       const who = evt.sessionLabel || evt.sessionId || '';

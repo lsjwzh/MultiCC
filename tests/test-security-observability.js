@@ -1,0 +1,156 @@
+'use strict';
+
+const assert = require('assert');
+const { EventEmitter } = require('events');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const test = require('node:test');
+
+const {
+  createAuthSecurity,
+  normalizeRedirect,
+  timingSafeEqualText,
+} = require('../src/auth-security');
+const { resolveNetworkPolicy } = require('../src/network-policy');
+const { createLogger, createMetrics, redact } = require('../src/observability');
+const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security');
+const { createPaths } = require('../src/paths');
+const { installWsBackpressure } = require('../src/ws-backpressure');
+
+test('network defaults to loopback and remote binding fails closed', () => {
+  assert.deepStrictEqual(resolveNetworkPolicy({}), {
+    host: '127.0.0.1', port: 3000, development: false, allowRemote: false, accessToken: '',
+  });
+  assert.throws(() => resolveNetworkPolicy({ HOST: '0.0.0.0' }), /MULTICC_ALLOW_REMOTE/);
+  assert.throws(() => resolveNetworkPolicy({ HOST: '0.0.0.0', MULTICC_ALLOW_REMOTE: '1' }), /ACCESS_TOKEN/);
+  assert.deepStrictEqual(resolveNetworkPolicy({
+    HOST: '0.0.0.0', PORT: '4312', MULTICC_ALLOW_REMOTE: 'true', ACCESS_TOKEN: 'secret',
+  }), {
+    host: '0.0.0.0', port: 4312, development: false, allowRemote: true, accessToken: 'secret',
+  });
+  assert.equal(resolveNetworkPolicy({ HOST: '::1', NODE_ENV: 'development' }).development, true);
+});
+
+test('auth cookie is timing-safe, versioned, and expires server-side', () => {
+  let clock = 1_700_000_000_000;
+  let nonce = 0;
+  const auth = createAuthSecurity({
+    getSecret: () => 'correct horse battery staple',
+    now: () => clock,
+    randomBytes: size => Buffer.alloc(size, ++nonce),
+    cookieTtlMs: 10_000,
+  });
+  const cookie = auth.createCookie();
+  assert.equal(auth.verifyCookie(cookie), true);
+  assert.equal(auth.verifyCookie(cookie.slice(0, -1) + (cookie.endsWith('A') ? 'B' : 'A')), false);
+  clock += 10_001;
+  assert.equal(auth.verifyCookie(cookie), false);
+  assert.equal(timingSafeEqualText('same', 'same'), true);
+  assert.equal(timingSafeEqualText('short', 'longer'), false);
+});
+
+test('redirect accepts only same-site relative paths', () => {
+  assert.equal(normalizeRedirect('/manage?focus=aux#x'), '/manage?focus=aux#x');
+  for (const unsafe of ['https://evil.test/', '//evil.test/', '/\\evil.test/', 'javascript:alert(1)', '\n/evil']) {
+    assert.equal(normalizeRedirect(unsafe), '/');
+  }
+});
+
+test('WebSocket tickets are short-lived, path-bound, and single-use', () => {
+  let clock = 10_000;
+  let nonce = 0;
+  const auth = createAuthSecurity({
+    getSecret: () => 'secret',
+    now: () => clock,
+    randomBytes: size => Buffer.alloc(size, ++nonce),
+    ticketTtlMs: 1_000,
+  });
+  const first = auth.issueWsTicket('/ws/chat', { correlationId: 'corr-1' });
+  assert.deepStrictEqual(auth.consumeWsTicket(first.ticket, '/ws/chat'), {
+    correlationId: 'corr-1', path: '/ws/chat', expiresAt: 11_000,
+  });
+  assert.equal(auth.consumeWsTicket(first.ticket, '/ws/chat'), null);
+  const wrongScope = auth.issueWsTicket('/ws/chat');
+  assert.equal(auth.consumeWsTicket(wrongScope.ticket, '/ws/voice'), null);
+  assert.equal(auth.consumeWsTicket(wrongScope.ticket, '/ws/chat'), null);
+  const expired = auth.issueWsTicket('/ws/chat');
+  clock += 1_001;
+  assert.equal(auth.consumeWsTicket(expired.ticket, '/ws/chat'), null);
+});
+
+test('runtime JSON writes are atomic and private', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-security-'));
+  const paths = createPaths({ dataDir: root });
+  secureRuntimeData(paths);
+  atomicWriteJson(paths.providersFile, { providers: [{ token: 'secret' }] });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(paths.providersFile, 'utf8')), { providers: [{ token: 'secret' }] });
+  assert.equal(fs.statSync(root).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(paths.chatHistoryDir).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(paths.providersFile).mode & 0o777, 0o600);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('structured logger and metrics redact secrets', () => {
+  const lines = [];
+  const sink = { log: line => lines.push(line), warn: line => lines.push(line), error: line => lines.push(line) };
+  const logger = createLogger({ sink, now: () => new Date('2025-01-01T00:00:00Z') });
+  logger.info('provider_call', { accessToken: 'top-secret', detail: 'Authorization: Bearer abc123 token=xyz' });
+  const record = JSON.parse(lines[0]);
+  assert.equal(record.accessToken, '[REDACTED]');
+  assert.doesNotMatch(record.detail, /abc123|xyz/);
+  assert.equal(redact('https://x.test/?token=secret'), 'https://x.test/?token=[REDACTED]');
+  const metrics = createMetrics();
+  metrics.inc('multicc_persistence_failures_total');
+  metrics.set('multicc_ws_clients', 3);
+  assert.match(metrics.render(), /multicc_persistence_failures_total 1/);
+  assert.match(metrics.render(), /multicc_ws_clients 3/);
+});
+
+class FakeWs extends EventEmitter {
+  constructor() {
+    super();
+    this.bufferedAmount = 0;
+    this.sent = [];
+    this.closed = null;
+  }
+  send(data, _options, callback) {
+    this.sent.push(String(data));
+    if (callback) callback();
+  }
+  close(code, reason) {
+    this.closed = { code, reason };
+    this.emit('close');
+  }
+  terminate() { this.closed = { terminated: true }; }
+}
+
+test('WebSocket backpressure coalesces snapshots and disconnects on bounded overflow', () => {
+  const metrics = new Map();
+  const onMetric = (name, value = 1, op) => metrics.set(name, op === 'set' ? value : (metrics.get(name) || 0) + value);
+  const slow = new FakeWs();
+  slow.bufferedAmount = 100;
+  const transport = installWsBackpressure(slow, {
+    limits: { highWaterBytes: 10, maxQueueBytes: 1000, maxQueueMessages: 3, retryMs: 1000 },
+    onMetric,
+  });
+  slow.send(JSON.stringify({ type: 'snapshot', dirId: 'd', value: 1 }));
+  slow.send(JSON.stringify({ type: 'snapshot', dirId: 'd', value: 2 }));
+  assert.equal(transport.stats().queueMessages, 1);
+  assert.equal(metrics.get('multicc_ws_messages_coalesced_total'), 1);
+  slow.bufferedAmount = 0;
+  transport.flush();
+  assert.match(slow.sent[0], /"value":2/);
+
+  const overflow = new FakeWs();
+  overflow.bufferedAmount = 100;
+  installWsBackpressure(overflow, {
+    limits: { highWaterBytes: 10, maxQueueBytes: 1000, maxQueueMessages: 1, retryMs: 1000 },
+    onMetric,
+  });
+  overflow.send('first');
+  overflow.send('second');
+  assert.equal(overflow.closed.code, 1013);
+  assert.ok(metrics.get('multicc_ws_queue_overflows_total') >= 1);
+  assert.ok(metrics.get('multicc_ws_backpressure_disconnects_total') >= 1);
+});

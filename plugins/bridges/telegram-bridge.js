@@ -20,6 +20,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+const { bridgeConfigFile, saveBridgeConfig } = require('./secure-config');
 
 // node-telegram-bot-api is loaded lazily so the rest of MultiCC keeps working
 // even when the dependency has not been installed yet.
@@ -36,7 +37,7 @@ function loadTelegram() {
 
 const router = express.Router();
 
-const CONFIG_FILE = path.join(__dirname, 'telegram-config.json');
+const CONFIG_FILE = bridgeConfigFile('telegram-config.json', path.join(__dirname, 'telegram-config.json'));
 const GATEWAY_SESSION_ID = '__telegram_gateway__';
 const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'telegram-gateway');
 
@@ -46,7 +47,7 @@ function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
   catch (_) { return { botToken: '' }; }
 }
-function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
+function saveConfig(cfg) { saveBridgeConfig(CONFIG_FILE, cfg); }
 
 // ── Injected deps ──
 let _persistedSessions = null;

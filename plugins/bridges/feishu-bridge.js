@@ -26,6 +26,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+const { bridgeConfigFile, saveBridgeConfig } = require('./secure-config');
 
 // @larksuiteoapi/node-sdk is loaded lazily so the rest of MultiCC keeps working
 // even when the dependency has not been installed yet.
@@ -42,7 +43,7 @@ function loadLark() {
 
 const router = express.Router();
 
-const CONFIG_FILE = path.join(__dirname, 'feishu-config.json');
+const CONFIG_FILE = bridgeConfigFile('feishu-config.json', path.join(__dirname, 'feishu-config.json'));
 const GATEWAY_SESSION_ID = '__feishu_gateway__';
 const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'feishu-gateway');
 
@@ -52,7 +53,7 @@ function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
   catch (_) { return { appId: '', appSecret: '', domain: 'feishu' }; }
 }
-function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
+function saveConfig(cfg) { saveBridgeConfig(CONFIG_FILE, cfg); }
 
 // ── Injected deps ──
 let _persistedSessions = null;

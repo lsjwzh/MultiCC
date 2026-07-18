@@ -18,10 +18,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const WebSocket = require('ws');
+const { bridgeConfigFile, saveBridgeConfig } = require('./secure-config');
 
 const router = express.Router();
 
-const CONFIG_FILE = path.join(__dirname, 'wechat-config.json');
+const CONFIG_FILE = bridgeConfigFile('wechat-config.json', path.join(__dirname, 'wechat-config.json'));
 const ILINK_LOGIN_URL = 'https://ilinkai.weixin.qq.com';
 const CHANNEL_VERSION = '1.0.2';
 
@@ -37,7 +38,7 @@ function loadConfig() {
     return { outputIdle: 5000, botToken: '', baseUrl: '' };
   }
 }
-function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
+function saveConfig(cfg) { saveBridgeConfig(CONFIG_FILE, cfg); }
 
 // ── Injected deps ──
 let _persistedSessions = null;
