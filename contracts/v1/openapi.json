@@ -33,6 +33,19 @@
         }
       }
     },
+    "/api/v1/directories/{id}/workspace": {
+      "parameters": [{ "$ref": "#/components/parameters/DirectoryId" }],
+      "get": {
+        "operationId": "getWorkspaceV1",
+        "responses": {
+          "200": {
+            "description": "Path-free workspace and bounded session facts",
+            "content": { "application/json": { "schema": { "$ref": "schemas/workspace-response.schema.json" } } }
+          },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/v1/providers": {
       "get": {
         "operationId": "listProvidersV1",
@@ -86,6 +99,10 @@
   "components": {
     "parameters": {
       "SessionId": {
+        "name": "id", "in": "path", "required": true,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 160 }
+      },
+      "DirectoryId": {
         "name": "id", "in": "path", "required": true,
         "schema": { "type": "string", "minLength": 1, "maxLength": 160 }
       }

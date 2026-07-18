@@ -8,6 +8,17 @@ const SUPPORTED_CLIS = new Set(['claude', 'codex', 'opencode', 'zcode']);
 const SUPPORTED_KINDS = new Set(['chat', 'terminal']);
 const SENSITIVE_KEY = /(?:token|secret|password|stack|(?:^|_)path|cwd|cliSessionId|worktree)/i;
 
+function sanitizePublicText(value, max = 1000) {
+  if (value === undefined || value === null || value === '') return null;
+  return String(value)
+    .replace(/\bBearer\s+[^\s]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk|gh[pousr])[-_][A-Za-z0-9_-]{8,}\b/g, '[redacted]')
+    .replace(/\b(api[_-]?key|token|secret|password)\s*([:=])\s*["']?[^\s,;"']+/gi, '$1$2[redacted]')
+    .replace(/[A-Za-z]:\\(?:[^\\\s]+\\){1,}[^\s]*/g, '[path]')
+    .replace(/(?:\/[A-Za-z0-9._~@+-]+){2,}/g, '[path]')
+    .slice(0, max);
+}
+
 function nullableString(value, max = 512) {
   if (value === undefined || value === null || value === '') return null;
   return String(value).slice(0, max);
@@ -88,5 +99,6 @@ module.exports = {
   SUPPORTED_CLIS,
   SUPPORTED_KINDS,
   assertDtoSafe,
+  sanitizePublicText,
   toSessionDto,
 };

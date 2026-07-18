@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/workspace-entry.schema.json",
+  "title": "Workspace session entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session", "status", "statusUpdatedAt", "runStartedAt", "runEndedAt", "pendingNotes", "summary", "summaryAt", "classifyState", "goal", "phase"],
+  "properties": {
+    "session": { "$ref": "session.schema.json" },
+    "status": { "enum": ["idle", "thinking", "editing", "running", "waiting", "completed", "error"] },
+    "statusUpdatedAt": { "type": ["string", "null"], "format": "date-time" },
+    "runStartedAt": { "type": ["string", "null"], "format": "date-time" },
+    "runEndedAt": { "type": ["string", "null"], "format": "date-time" },
+    "pendingNotes": { "type": "integer", "minimum": 0 },
+    "summary": { "type": ["string", "null"], "maxLength": 1000 },
+    "summaryAt": { "type": ["string", "null"], "format": "date-time" },
+    "classifyState": { "type": ["string", "null"], "maxLength": 40 },
+    "goal": { "type": "string", "maxLength": 1000 },
+    "phase": { "type": "string", "maxLength": 80 }
+  }
+}

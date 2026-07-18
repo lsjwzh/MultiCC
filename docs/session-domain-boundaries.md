@@ -2,10 +2,10 @@
 
 Reviewed: 2026-07-18.
 
-The third boundary-extraction phase introduces a host-independent session
-bounded context under `src/session/`. It is deliberately not wired into
-`server.js` yet: the host remains a high-conflict integration surface while
-durable orchestration and provider routing are changing in parallel.
+The session bounded context under `src/session/` is host-independent. Its
+query and state-transition services are now composed into `server.js`; the
+bounded workspace projection is exposed through a versioned endpoint while
+the legacy workspace payload remains available during client migration.
 
 ## Modules and ports
 
@@ -30,23 +30,45 @@ Architecture tests enforce those dependency rules. DTO tests inject records
 containing `token`, native ids, `cwd`, worktree paths and stacks and verify that
 none crosses the public boundary.
 
-## Deliberately not wired
+## Host composition and compatibility
 
-The existing v1 session routes, workspace WebSocket snapshot and chat-history
-functions still execute their established implementations in `server.js`.
-Replacing them requires a small host composition change plus compatibility
-characterization for legacy unversioned routes and live WebSocket payloads.
-That integration should occur only after the durable/provider hotspots settle;
-this phase does not duplicate writes or partially switch readers.
+The following paths now use the bounded context:
 
-The intended follow-up is:
+- `/api/v1/sessions` and `/api/v1/sessions/:id` use
+  `createSessionQueryService()` through narrow records/runtime ports;
+- `setSessionStatus()` delegates run-segment and pending-work transitions to
+  `createSessionStateService()`, retaining only Map writes and broadcasts in
+  the host;
+- `/api/v1/directories/:id/workspace` uses `createWorkspaceService()` and a
+  versioned, path-free workspace contract;
+- `MULTICC_SESSION_DOMAIN_SHADOW=1` compares the legacy workspace snapshot
+  against the bounded projection. Diagnostics are capped and contain field
+  names only, never mismatched values.
 
-1. compose concrete ports from the existing maps/repositories at startup;
-2. dual-run projections in tests and compare legacy/v1 payloads;
-3. switch v1 queries and workspace snapshots first;
-4. switch chat-history mutation only after incremental-save, memory-distillation
+The unversioned session and workspace REST/WS payloads remain unchanged because
+the current Web and Flutter clients still consume native ids, worktree/current
+file details, epoch timestamps and extended merge diagnostics. They must move
+to the v1 contracts before those compatibility fields can be retired.
+
+## Chat-history migration gate
+
+The production chat-history mutation path is intentionally not partially
+switched. It still owns incremental saves, memory distillation, delivery-id
+proof for the durable outbox, broadcasts and periodic memory review. Running a
+second cache beside that path would create stale reads and false acknowledgments.
+
+The bounded service now has the prerequisites for a later atomic cutover:
+single interim upsert, exact unknown-cursor behavior, per-session retention,
+delete, strict on-disk delivery proof and cache-safe write failure semantics.
+The remaining step is to express host side effects as explicit post-persist
+ports and cut all history reads/writes together.
+
+The remaining follow-up is:
+
+1. migrate Web/Flutter workspace clients to the path-free v1 DTO/WS surface;
+2. switch chat-history mutation only after incremental-save, memory-distillation
    and broadcast side effects are expressed as explicit host ports;
-5. remove the old functions after a compatibility window.
+3. remove the old functions after a compatibility window.
 
 ## Sensitive-data rule
 
