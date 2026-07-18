@@ -1,495 +1,405 @@
-// Git + worktree operations. Pure functions: every input arrives as an argument
-// (dirPath / dir / session), nothing reads global state. server.js keeps the
-// stateful bits (gitReadyDirs, invalidSessions) and the directory-suitability
-// helpers; it imports these by destructuring, so existing call sites are unchanged.
-//
-// Every session runs in an isolated git worktree under
-// <dir>/.multicc-worktrees/<sessionId> on its own branch `multicc/<sessionId>`.
-// Work is collected back via an explicit merge.
-const fs = require('fs');
-const path = require('path');
-const { execFileSync } = require('child_process');
+'use strict';
 
+const fs = require('fs');
+const fsp = fs.promises;
+const os = require('os');
+const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const { defaultRepoActor, DEFAULT_TIMEOUT_MS } = require('./repo-actor');
+
+const execFileAsync = promisify(execFile);
 const WORKTREE_SUBDIR = '.multicc-worktrees';
 
-// Hard ceiling for any single synchronous git invocation. Because gitRun uses
-// execFileSync, it blocks the whole Node event loop for its entire duration —
-// so a git command that hangs (unreachable remote, a credential prompt, a stuck
-// lock) freezes the ENTIRE multicc server: it keeps accept()ing TCP but never
-// runs any JS, so every URL (local + tunnels) returns HTTP 000. The timeout is
-// the backstop that guarantees the loop always gets unblocked.
-const GIT_TIMEOUT_MS = 20000;
-
-// Env that makes git fail fast instead of blocking forever on interactive
-// credential/passphrase prompts (stdin is /dev/null here, so any prompt would
-// hang until the timeout — this turns those into an immediate error instead).
-const GIT_NONINTERACTIVE_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: '0',   // never prompt for username/password on the terminal
-  GIT_ASKPASS: '/usr/bin/false', // no GUI/helper askpass
-  SSH_ASKPASS: '/usr/bin/false',
-  GIT_SSH_COMMAND: 'ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new -oConnectTimeout=10',
-};
-
-function gitRun(cwd, args) {
-  return execFileSync('git', args, {
-    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
-    env: GIT_NONINTERACTIVE_ENV, maxBuffer: 32 * 1024 * 1024,
-  }).trim();
+function lines(value) {
+  return String(value || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 }
 
-function gitIsRepo(dirPath) {
-  try { return gitRun(dirPath, ['rev-parse', '--is-inside-work-tree']) === 'true'; }
-  catch { return false; }
+function errorText(error) {
+  return String(error && error.stderr || error && error.message || error || '').trim();
 }
 
-function gitHasCommit(dirPath) {
-  try { gitRun(dirPath, ['rev-parse', 'HEAD']); return true; }
-  catch { return false; }
+async function gitRun(cwd, args, opts = {}) {
+  return defaultRepoActor.runGit(cwd, args, opts);
 }
 
-function gitBaseBranch(dirPath) {
+async function gitIsRepo(dirPath) {
+  try { return await gitRun(dirPath, ['rev-parse', '--is-inside-work-tree']) === 'true'; }
+  catch (_) { return false; }
+}
+
+async function gitHasCommit(dirPath) {
+  try { await gitRun(dirPath, ['rev-parse', 'HEAD']); return true; }
+  catch (_) { return false; }
+}
+
+async function baseBranchWith(execGit, dirPath) {
   try {
-    const b = gitRun(dirPath, ['symbolic-ref', '--short', 'HEAD']);
-    if (b) return b;
+    const branch = await execGit(dirPath, ['symbolic-ref', '--short', 'HEAD']);
+    if (branch) return branch;
   } catch (_) {}
   try {
-    const b = gitRun(dirPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    if (b && b !== 'HEAD') return b;
+    const branch = await execGit(dirPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (branch && branch !== 'HEAD') return branch;
   } catch (_) {}
   return 'main';
 }
 
-// Add `.multicc-worktrees/` to .git/info/exclude (does not touch the user's tracked .gitignore).
-function gitEnsureExcluded(dirPath) {
-  try {
-    const gitDir = gitRun(dirPath, ['rev-parse', '--git-dir']);
-    const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(dirPath, gitDir);
-    const excludeFile = path.join(absGitDir, 'info', 'exclude');
-    let content = '';
-    try { content = fs.readFileSync(excludeFile, 'utf8'); } catch (_) {}
-    if (!content.split('\n').some(l => l.trim() === WORKTREE_SUBDIR + '/')) {
-      fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
-      fs.appendFileSync(excludeFile, (content && !content.endsWith('\n') ? '\n' : '') + WORKTREE_SUBDIR + '/\n');
-    }
-  } catch (e) {
-    console.warn('[multicc] gitEnsureExcluded failed:', e.message);
+async function gitBaseBranch(dirPath) {
+  return defaultRepoActor.run(dirPath, 'base-branch', async ({ execGit }) => ({
+    ok: true,
+    branch: await baseBranchWith(execGit, dirPath),
+  })).then(result => result.branch);
+}
+
+async function ensureExcludedWith(execGit, dirPath) {
+  const gitDir = await execGit(dirPath, ['rev-parse', '--git-dir']);
+  const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(dirPath, gitDir);
+  const excludeFile = path.join(absGitDir, 'info', 'exclude');
+  let content = '';
+  try { content = await fsp.readFile(excludeFile, 'utf8'); } catch (_) {}
+  if (!content.split(/\r?\n/).some(line => line.trim() === `${WORKTREE_SUBDIR}/`)) {
+    await fsp.mkdir(path.dirname(excludeFile), { recursive: true });
+    await fsp.appendFile(excludeFile, `${content && !content.endsWith('\n') ? '\n' : ''}${WORKTREE_SUBDIR}/\n`);
   }
 }
 
-// Create (or re-attach) the worktree for a session. Returns { worktreePath, branch }.
-function gitWorktreeAdd(dirPath, sessionId, baseBranch) {
-  const wtPath = path.join(dirPath, WORKTREE_SUBDIR, sessionId);
-  const branch = `multicc/${sessionId}`;
-  fs.mkdirSync(path.join(dirPath, WORKTREE_SUBDIR), { recursive: true });
-  try { gitRun(dirPath, ['worktree', 'prune']); } catch (_) {}
-  if (fs.existsSync(wtPath)) return { worktreePath: wtPath, branch };  // already there
-  let branchExists = false;
-  try { gitRun(dirPath, ['rev-parse', '--verify', branch]); branchExists = true; } catch (_) {}
-  if (branchExists) {
-    gitRun(dirPath, ['worktree', 'add', wtPath, branch]);
-  } else {
-    gitRun(dirPath, ['worktree', 'add', wtPath, '-b', branch, baseBranch]);
-  }
-  return { worktreePath: wtPath, branch };
-}
-
-function gitWorktreeRemove(dirPath, worktreePath, branch) {
-  try { gitRun(dirPath, ['worktree', 'remove', '--force', worktreePath]); }
-  catch (e) { console.warn('[multicc] worktree remove failed:', e.message); }
-  if (branch) { try { gitRun(dirPath, ['branch', '-D', branch]); } catch (_) {} }
-  try { gitRun(dirPath, ['worktree', 'prune']); } catch (_) {}
-}
-
-// Stage + commit everything in a worktree. Returns true if a commit was actually made.
-function gitWorktreeCommitAll(worktreePath, message) {
-  gitRun(worktreePath, ['add', '-A']);
+async function gitEnsureExcluded(dirPath) {
   try {
-    gitRun(worktreePath, ['diff', '--cached', '--quiet']);
-    return false;  // exit 0 → nothing staged
-  } catch (_) { /* exit 1 → there are staged changes */ }
-  gitRun(worktreePath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
+    return await defaultRepoActor.run(dirPath, 'ensure-excluded', async ({ execGit }) => {
+      await ensureExcludedWith(execGit, dirPath);
+      return { ok: true };
+    });
+  } catch (error) {
+    console.warn('[multicc] gitEnsureExcluded failed:', error.message);
+    return { ok: false, error: error.message };
+  }
+}
+
+async function commitAllWith(execGit, worktreePath, message) {
+  await execGit(worktreePath, ['add', '-A']);
+  try {
+    await execGit(worktreePath, ['diff', '--cached', '--quiet']);
+    return false;
+  } catch (_) {}
+  await execGit(worktreePath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
     'commit', '-m', message]);
   return true;
 }
 
-// Detect whether the worktree is parked mid-rebase (the state gitSyncFromBase
-// leaves behind on conflict so the user can resolve by hand). Returns the list
-// of still-conflicted files, or null when no rebase is in progress. We locate
-// git's rebase scratch dir via `rev-parse --git-path` so this works for linked
-// worktrees (where the real .git lives under <main>/.git/worktrees/<id>/).
-function gitRebaseConflicts(wtPath) {
-  if (!wtPath || !fs.existsSync(wtPath)) return null;
+async function gitWorktreeCommitAll(worktreePath, message, opts = {}) {
+  return defaultRepoActor.run(worktreePath, 'commit-all', async ({ execGit, progress }) => {
+    progress('commit');
+    return { ok: true, committed: await commitAllWith(execGit, worktreePath, message) };
+  }, opts).then(result => opts.withMetadata ? result : result.committed);
+}
+
+async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
+  const worktreePath = path.join(dirPath, WORKTREE_SUBDIR, sessionId);
+  const branch = `multicc/${sessionId}`;
+  return defaultRepoActor.run(dirPath, 'worktree-add', async ({ execGit, progress }) => {
+    progress('prepare');
+    await fsp.mkdir(path.join(dirPath, WORKTREE_SUBDIR), { recursive: true });
+    try { await execGit(dirPath, ['worktree', 'prune']); } catch (_) {}
+    try {
+      const stat = await fsp.stat(worktreePath);
+      if (stat.isDirectory()) return { ok: true, worktreePath, branch, existing: true };
+    } catch (_) {}
+    let branchExists = false;
+    try { await execGit(dirPath, ['rev-parse', '--verify', branch]); branchExists = true; } catch (_) {}
+    progress('create', { worktreePath, branch });
+    await execGit(dirPath, branchExists
+      ? ['worktree', 'add', worktreePath, branch]
+      : ['worktree', 'add', worktreePath, '-b', branch, baseBranch]);
+    return { ok: true, worktreePath, branch, existing: false };
+  }, { ...opts, sessionId });
+}
+
+async function rebaseConflictsWith(execGit, worktreePath) {
+  if (!worktreePath || !fs.existsSync(worktreePath)) return null;
   let inProgress = false;
   try {
     for (const which of ['rebase-merge', 'rebase-apply']) {
-      const p = gitRun(wtPath, ['rev-parse', '--git-path', which]);
-      const abs = path.isAbsolute(p) ? p : path.join(wtPath, p);
-      if (fs.existsSync(abs)) { inProgress = true; break; }
+      const gitPath = await execGit(worktreePath, ['rev-parse', '--git-path', which]);
+      const absolute = path.isAbsolute(gitPath) ? gitPath : path.join(worktreePath, gitPath);
+      if (fs.existsSync(absolute)) { inProgress = true; break; }
     }
   } catch (_) { return null; }
   if (!inProgress) return null;
-  let files = [];
-  try {
-    files = gitRun(wtPath, ['diff', '--name-only', '--diff-filter=U'])
-      .split('\n').map(s => s.trim()).filter(Boolean);
-  } catch (_) {}
-  return files;
+  try { return lines(await execGit(worktreePath, ['diff', '--name-only', '--diff-filter=U'])); }
+  catch (_) { return []; }
 }
 
-function gitWorktreeMergeState(dir, session) {
-  if (!dir || !session || !session.worktreePath || !session.branch) {
-    return { mergeReady: false, dirty: false, ahead: 0, reason: 'no-worktree' };
-  }
-  const wtPath = session.worktreePath;
-  const baseBranch = dir.baseBranch || gitBaseBranch(dir.path);
+async function gitRebaseConflicts(worktreePath) {
+  return defaultRepoActor.run(worktreePath, 'rebase-state', async ({ execGit }) => ({
+    ok: true,
+    conflicts: await rebaseConflictsWith(execGit, worktreePath),
+  })).then(result => result.conflicts);
+}
+
+async function worktreeSafetyWith(execGit, dirPath, worktreePath, branch, baseBranch) {
   let dirty = false;
+  let unmerged = 0;
   let ahead = 0;
-  let behind = 0;
-  let baseCheckedOut = true;
-
-  // A worktree parked mid-rebase (a prior sync hit conflicts the user must
-  // resolve) is reported first: its index is half-applied, so the ahead/behind
-  // counts below would be meaningless and merging must be blocked until the
-  // rebase is finished or aborted.
-  const conflictFiles = gitRebaseConflicts(wtPath);
-  if (conflictFiles) {
-    return {
-      mergeReady: false,
-      dirty: true,
-      ahead: 0,
-      behind: 0,
-      baseBranch,
-      branch: session.branch,
-      baseCheckedOut: gitBaseBranch(dir.path) === baseBranch,
-      conflict: true,
-      conflictFiles,
-    };
+  if (worktreePath && fs.existsSync(worktreePath)) {
+    try { dirty = (await execGit(worktreePath, ['status', '--porcelain'])).length > 0; } catch (_) {}
   }
+  if (branch) {
+    try { ahead = parseInt(await execGit(dirPath, ['rev-list', '--count', `${baseBranch}..${branch}`]) || '0', 10); } catch (_) {}
+    unmerged = ahead;
+  }
+  return { dirty, ahead, unmerged, baseBranch };
+}
 
-  try {
-    dirty = fs.existsSync(wtPath) && gitRun(wtPath, ['status', '--porcelain']).length > 0;
-  } catch (_) {}
-  try {
-    // ahead = commits on the worktree branch not yet in base; behind = commits on
-    // base not yet in the worktree branch (i.e. how stale this worktree is vs main).
-    const counts = gitRun(dir.path, ['rev-list', '--left-right', '--count', `${baseBranch}...${session.branch}`]);
-    const m = counts.split(/\s+/);
-    behind = parseInt(m[0] || '0', 10);   // base has, branch lacks
-    ahead = parseInt(m[1] || '0', 10);    // branch has, base lacks
-  } catch (_) {}
-  try {
-    baseCheckedOut = gitBaseBranch(dir.path) === baseBranch;
-  } catch (_) {}
+function backupName(sessionId) {
+  const safe = String(sessionId || 'session').replace(/[^A-Za-z0-9._-]/g, '-');
+  return `refs/multicc/backups/${safe}/${new Date().toISOString().replace(/[:.]/g, '-')}`;
+}
 
-  // mergeReady requires combined with the ability to actually merge.
-  // If base is not checked out in the main dir no merge can succeed despite
-  // dirty or ahead changes; gate it so the UI indicator is truthful.
-  // `ahead` counts commits, but sync via rebase means a clean worktree never
-  // accumulates empty merge commits, so a positive `ahead` now reflects real
-  // content. We still require an actual diff to avoid flagging a branch that is
-  // only topologically ahead (e.g. legacy empty merge commits from before the
-  // rebase switch) as mergeable.
-  // `git diff --quiet` exits non-zero (throws) when there IS a diff; reuse that.
-  let hasContentDiff = ahead > 0;
-  if (ahead > 0) {
-    try {
-      gitRun(dir.path, ['diff', '--quiet', `${baseBranch}...${session.branch}`]);
-      hasContentDiff = false; // exit 0 → no content difference
-    } catch (_) {
-      hasContentDiff = true;  // non-zero → real changes
+async function backupBeforeForce(execGit, dirPath, worktreePath, branch, sessionId, operationId) {
+  const ref = backupName(sessionId);
+  const source = branch || (worktreePath ? 'HEAD' : null);
+  if (source) await execGit(dirPath, ['update-ref', ref, source]);
+  const commonDirRaw = await execGit(dirPath, ['rev-parse', '--git-common-dir']);
+  const commonDir = path.isAbsolute(commonDirRaw) ? commonDirRaw : path.resolve(dirPath, commonDirRaw);
+  const backupDir = path.join(commonDir, 'multicc-backups', operationId);
+  await fsp.mkdir(backupDir, { recursive: true });
+  let bundle = null;
+  if (source) {
+    bundle = path.join(backupDir, 'repository.bundle');
+    await execGit(dirPath, ['bundle', 'create', bundle, ref]);
+  }
+  let patch = null;
+  if (worktreePath && fs.existsSync(worktreePath)) {
+    const diff = await execGit(worktreePath, ['diff', '--binary', 'HEAD']).catch(() => '');
+    if (diff) {
+      patch = path.join(backupDir, 'dirty.patch');
+      await fsp.writeFile(patch, diff, 'utf8');
     }
+    const untracked = await execGit(worktreePath, ['ls-files', '--others', '--exclude-standard']).catch(() => '');
+    if (untracked) await fsp.writeFile(path.join(backupDir, 'untracked-files.txt'), `${untracked}\n`, 'utf8');
   }
-  const canMerge = dirty || (ahead > 0 && hasContentDiff);
+  return { ref, bundle, patch, backupDir };
+}
+
+async function gitWorktreeRemove(dirPath, worktreePath, branch, opts = {}) {
+  const sessionId = opts.sessionId || path.basename(worktreePath || branch || 'session');
+  return defaultRepoActor.run(dirPath, 'worktree-remove', async ({ execGit, progress, operationId: id }) => {
+    const baseBranch = opts.baseBranch || await baseBranchWith(execGit, dirPath);
+    const safety = await worktreeSafetyWith(execGit, dirPath, worktreePath, branch, baseBranch);
+    const reasons = [];
+    if (safety.dirty) reasons.push('dirty');
+    if (safety.unmerged > 0) reasons.push('unmerged');
+    if (reasons.length && !opts.force) {
+      return { ok: false, blocked: true, reasons, safety, error: `worktree removal refused: ${reasons.join(', ')}` };
+    }
+    let backup = null;
+    if (opts.force) {
+      progress('backup');
+      backup = await backupBeforeForce(execGit, dirPath, worktreePath, branch, sessionId, id);
+    }
+    progress('remove');
+    if (worktreePath && fs.existsSync(worktreePath)) {
+      await execGit(dirPath, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), worktreePath]);
+    }
+    if (branch) {
+      try { await execGit(dirPath, ['branch', opts.force ? '-D' : '-d', branch]); } catch (error) {
+        if (!opts.force) return { ok: false, blocked: true, reasons: ['unmerged'], backup, error: errorText(error) };
+        throw error;
+      }
+    }
+    try { await execGit(dirPath, ['worktree', 'prune']); } catch (_) {}
+    return { ok: true, removed: true, backup, safety };
+  }, { ...opts, sessionId });
+}
+
+async function mergeStateWith(execGit, dir, session) {
+  if (!dir || !session || !session.worktreePath || !session.branch) {
+    return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'no-worktree' };
+  }
+  const worktreePath = session.worktreePath;
+  const baseBranch = dir.baseBranch || await baseBranchWith(execGit, dir.path);
+  const conflictFiles = await rebaseConflictsWith(execGit, worktreePath);
+  if (conflictFiles) {
+    return { mergeReady: false, dirty: true, ahead: 0, behind: 0, baseBranch,
+      branch: session.branch, baseCheckedOut: true, conflict: true, conflictFiles };
+  }
+  const safety = await worktreeSafetyWith(execGit, dir.path, worktreePath, session.branch, baseBranch);
+  let behind = 0;
+  try {
+    const [left] = String(await execGit(dir.path, ['rev-list', '--left-right', '--count', `${baseBranch}...${session.branch}`])).split(/\s+/);
+    behind = parseInt(left || '0', 10);
+  } catch (_) {}
+  const current = await baseBranchWith(execGit, dir.path);
+  let hasContentDiff = safety.ahead > 0;
+  if (safety.ahead > 0) {
+    try { await execGit(dir.path, ['diff', '--quiet', `${baseBranch}...${session.branch}`]); hasContentDiff = false; }
+    catch (_) { hasContentDiff = true; }
+  }
   return {
-    mergeReady: canMerge && baseCheckedOut,
-    dirty,
-    ahead,
-    behind,
-    baseBranch,
-    branch: session.branch,
-    baseCheckedOut,
-    conflict: false,
+    mergeReady: (safety.dirty || (safety.ahead > 0 && hasContentDiff)) && current === baseBranch,
+    dirty: safety.dirty, ahead: safety.ahead, behind, baseBranch, branch: session.branch,
+    baseCheckedOut: current === baseBranch, conflict: false,
   };
 }
 
-// Syntax gate for merges. Every JS file changed by a merge must parse with
-// `node --check`; otherwise a session that commits a broken server.js (missing
-// paren, duplicate declaration, …) would silently crash multicc on its next
-// restart — and the base branch is exactly what multicc runs from. Returns a
-// (possibly empty) list of { file, error }. JS-only by design; non-JS changes
-// and non-Node projects pass through untouched. A tooling failure (can't list
-// diff / file vanished) never blocks a merge — only a real parse error does.
-function checkMergedJsSyntax(dirPath, fromRef, toRef) {
+async function gitWorktreeMergeState(dir, session, opts = {}) {
+  if (!dir || !session) return { mergeReady: false, dirty: false, ahead: 0, reason: 'no-worktree' };
+  return defaultRepoActor.run(dir.path, 'merge-state', async ({ execGit }) => ({
+    ok: true,
+    state: await mergeStateWith(execGit, dir, session),
+  }), opts).then(result => result.state);
+}
+
+async function checkMergedJsSyntax(worktreePath, fromRef, toRef, execGit) {
   let changed = [];
   try {
-    changed = gitRun(dirPath, ['diff', '--name-only', '--diff-filter=ACMR', fromRef, toRef])
-      .split('\n').map(s => s.trim()).filter(Boolean)
-      .filter(f => /\.(c|m)?js$/.test(f) && !f.includes('node_modules/') && !f.includes(WORKTREE_SUBDIR + '/'));
+    changed = lines(await execGit(worktreePath, ['diff', '--name-only', '--diff-filter=ACMR', fromRef, toRef]))
+      .filter(file => /\.(c|m)?js$/.test(file) && !file.includes('node_modules/') && !file.includes(`${WORKTREE_SUBDIR}/`));
   } catch (_) { return []; }
   const errors = [];
-  for (const rel of changed) {
-    const abs = path.join(dirPath, rel);
-    if (!fs.existsSync(abs)) continue;          // deleted/renamed-away — nothing to parse
+  for (const relative of changed) {
+    const absolute = path.join(worktreePath, relative);
+    if (!fs.existsSync(absolute)) continue;
     try {
-      execFileSync(process.execPath, ['--check', abs], {
-        stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+      await execFileAsync(process.execPath, ['--check', absolute], {
+        encoding: 'utf8', timeout: DEFAULT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
       });
-    } catch (e) {
-      const out = (e.stderr ? String(e.stderr) : e.message || '');
-      const line = out.split('\n').map(l => l.trim()).find(l => /SyntaxError|Error:/.test(l)) || 'parse failed';
-      errors.push({ file: rel, error: line });
+    } catch (error) {
+      const line = errorText(error).split(/\r?\n/).map(s => s.trim()).find(s => /SyntaxError|Error:/.test(s)) || 'parse failed';
+      errors.push({ file: relative, error: line });
     }
   }
   return errors;
 }
 
-// Commit pending work in the worktree, then merge its branch into the base branch.
-// ⚠️ Validation runs FIRST so a failing precondition (wrong base checked out, etc.)
-// never leaves orphaned commits on the worktree branch with no path to merge.
-function gitMergeBack(dir, session) {
-  const dirPath = dir.path;
-  const branch = session.branch;
-  const baseBranch = dir.baseBranch || gitBaseBranch(dirPath);
-  const wtPath = session.worktreePath;
-  if (!branch || !wtPath) return { ok: false, error: 'session has no worktree' };
-
-  // ── Phase 1: validate preconditions (no side effects yet) ──
-  const curBranch = gitBaseBranch(dirPath);
-  if (curBranch !== baseBranch) {
-    return { ok: false, error:
-      `base branch '${baseBranch}' is not checked out in the main directory (currently on '${curBranch}'); merge manually` };
-  }
-
-  // ── Phase 2: commit local work into the session branch ──
-  let committed = false;
-  if (fs.existsSync(wtPath)) {
-    try {
-      committed = gitWorktreeCommitAll(wtPath,
-        `multicc: session ${session.id} @ ${new Date().toISOString()}`);
-    } catch (e) {
-      return { ok: false, error: `commit failed: ${e.message}` };
+async function gitMergeBack(dir, session, opts = {}) {
+  if (!dir || !session || !session.branch || !session.worktreePath) return { ok: false, error: 'session has no worktree' };
+  return defaultRepoActor.run(dir.path, 'merge-back', async ({ execGit, progress, operationId: id }) => {
+    const dirPath = dir.path;
+    const branch = session.branch;
+    const worktreePath = session.worktreePath;
+    const baseBranch = dir.baseBranch || await baseBranchWith(execGit, dirPath);
+    if (await baseBranchWith(execGit, dirPath) !== baseBranch) {
+      return { ok: false, blocked: true, reasons: ['base-not-checked-out'], error: `base branch '${baseBranch}' is not checked out` };
     }
-  }
+    const mainDirty = (await execGit(dirPath, ['status', '--porcelain'])).length > 0;
+    if (mainDirty) return { ok: false, blocked: true, reasons: ['base-dirty'], error: 'base worktree is dirty' };
 
-  // ── Phase 3: count ahead; early exit if nothing to merge ──
-  let ahead = 0;
-  try { ahead = parseInt(gitRun(dirPath, ['rev-list', '--count', `${baseBranch}..${branch}`]) || '0', 10); }
-  catch (_) {}
-  if (ahead === 0) return { ok: true, merged: false, committed, message: '没有新提交需要合并' };
+    progress('commit-session');
+    const committed = await commitAllWith(execGit, worktreePath,
+      `multicc: session ${session.id} @ ${new Date().toISOString()}`);
+    const ahead = parseInt(await execGit(dirPath, ['rev-list', '--count', `${baseBranch}..${branch}`]) || '0', 10);
+    if (!ahead) return { ok: true, merged: false, committed, message: '没有新提交需要合并' };
 
-  // ── Phase 4: merge & validate ──
-  let preMergeHead = '';
-  try { preMergeHead = gitRun(dirPath, ['rev-parse', 'HEAD']); } catch (_) {}
-
-  try {
-    gitRun(dirPath, ['merge', '--no-ff', '-m', `multicc: merge ${branch}`, branch]);
-
-    // Syntax gate: a session that committed code that won't parse must not land
-    // on base (which multicc itself runs from). If anything is broken, undo the
-    // merge so base stays exactly as it was, and report back to the author.
-    const syntaxErrors = preMergeHead ? checkMergedJsSyntax(dirPath, preMergeHead, 'HEAD') : [];
-    if (syntaxErrors.length > 0) {
-      try { gitRun(dirPath, ['reset', '--hard', preMergeHead]); } catch (_) {}
-      return {
-        ok: false,
-        syntaxErrors,
-        error: `合并被拒绝：${syntaxErrors.length} 个文件语法错误，base 分支未改动。请在 worktree 修好再合并：\n` +
-          syntaxErrors.map(e => `  · ${e.file}: ${e.error}`).join('\n'),
-      };
-    }
-    // Merge succeeded. The base now has a merge commit the worktree branch lacks,
-    // so the session would immediately show as "behind base" and require a manual
-    // sync click. Auto-pull it back so the worktree stays in lock-step with base.
-    // The worktree branch is a strict ancestor of the new merge commit, so this is
-    // always a conflict-free fast-forward; treat any failure as non-fatal.
-    let syncedBack = false;
+    const baseHead = await execGit(dirPath, ['rev-parse', baseBranch]);
+    const tempRef = `refs/multicc/integration/${id}`;
+    const integrationPath = path.join(os.tmpdir(), `multicc-integration-${id}`);
+    let integrationAdded = false;
     try {
-      const s = gitSyncFromBase(dir, session);
-      syncedBack = !!(s && s.ok && s.merged);
-    } catch (_) {}
-    return { ok: true, merged: true, committed, commits: ahead, syncedBack };
-  } catch (e) {
-    let conflicts = [];
-    let conflictDiff = '';
-    let conflictDiffTruncated = false;
-    try {
-      conflicts = gitRun(dirPath, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean);
-    } catch (_) {}
-    if (conflicts.length > 0) {
-      const maxDiff = 1024 * 1024;
-      try {
-        conflictDiff = execFileSync('git', ['diff', '--no-color', '--diff-filter=U'], {
-          cwd: dirPath, encoding: 'utf8', maxBuffer: maxDiff + 16 * 1024,
-          timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', env: GIT_NONINTERACTIVE_ENV,
-        });
-        if (conflictDiff.length > maxDiff) {
-          conflictDiff = conflictDiff.slice(0, maxDiff);
-          conflictDiffTruncated = true;
-        }
-      } catch (diffErr) {
-        conflictDiffTruncated = diffErr.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-        conflictDiff = conflictDiffTruncated
-          ? '(conflict diff exceeds 1MB cap — too large to display in browser)'
-          : '';
+      progress('integration-prepare');
+      await execGit(dirPath, ['update-ref', tempRef, baseHead]);
+      await execGit(dirPath, ['worktree', 'add', '--detach', integrationPath, tempRef]);
+      integrationAdded = true;
+      progress('integration-merge');
+      await execGit(integrationPath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
+        'merge', '--no-ff', '-m', `multicc: merge ${branch}`, branch]);
+      const integrationHead = await execGit(integrationPath, ['rev-parse', 'HEAD']);
+      progress('validate');
+      const syntaxErrors = await checkMergedJsSyntax(integrationPath, baseHead, integrationHead, execGit);
+      if (syntaxErrors.length) {
+        return { ok: false, syntaxErrors, integrationRef: tempRef,
+          error: `合并被拒绝：${syntaxErrors.length} 个文件语法错误；用户主工作区未改动` };
       }
+      progress('publish');
+      await execGit(dirPath, ['merge', '--ff-only', integrationHead]);
+      let syncedBack = false;
+      try {
+        await execGit(worktreePath, ['merge', '--ff-only', baseBranch]);
+        syncedBack = true;
+      } catch (_) {}
+      return { ok: true, merged: true, committed, commits: ahead, syncedBack, integrationRef: tempRef };
+    } catch (error) {
+      let conflicts = [];
+      let conflictDiff = '';
+      if (integrationAdded) {
+        try { conflicts = lines(await execGit(integrationPath, ['diff', '--name-only', '--diff-filter=U'])); } catch (_) {}
+        if (conflicts.length) {
+          try { conflictDiff = (await execGit(integrationPath, ['diff', '--no-color', '--diff-filter=U'], { maxBuffer: 1024 * 1024 })).slice(0, 1024 * 1024); } catch (_) {}
+        }
+      }
+      return { ok: false, conflicts, conflictDiff, error: conflicts.length
+        ? '合并冲突仅发生在 integration worktree；用户主工作区未改动'
+        : errorText(error) || 'merge failed' };
+    } finally {
+      if (integrationAdded) {
+        try { await execGit(dirPath, ['worktree', 'remove', '--force', integrationPath]); } catch (_) { await fsp.rm(integrationPath, { recursive: true, force: true }); }
+      }
+      try { await execGit(dirPath, ['update-ref', '-d', tempRef]); } catch (_) {}
     }
-    try { gitRun(dirPath, ['merge', '--abort']); } catch (_) {}
-    if (conflicts.length > 0) {
-      return {
-        ok: false,
-        conflicts,
-        conflictDiff,
-        conflictDiffTruncated,
-        error: '合并冲突 — 已 abort，基分支未改动',
-      };
-    }
-    const details = e.stderr ? String(e.stderr).trim() : e.message;
-    return { ok: false, error: details || 'merge failed' };
-  }
+  }, { ...opts, sessionId: session.id });
 }
 
-// Pull the base branch INTO the session's worktree branch (the inverse of
-// gitMergeBack): brings a stale worktree up to date with main. Runs entirely
-// inside the worktree, so it does NOT require base to be checked out in the main
-// dir. Auto-commits dirty changes first so nothing is lost and a dirty tree
-// doesn't block the rebase.
-//
-// We REBASE onto base rather than merge: a clean worktree fast-forwards with no
-// commit, and any real local commits replay on top of base, so the branch never
-// accumulates empty "Merge branch 'main'" commits that make it look topologically
-// ahead while carrying no content (the bug this replaced).
-//
-// Conflict handling is governed by opts.abortOnConflict:
-//   • false (default, a user-initiated sync): leave the rebase PARKED at the
-//     conflicting commit so the user can resolve it by hand in the worktree
-//     (edit → git add → git rebase --continue). Returns { conflicts, rebaseInProgress }.
-//   • true (automatic sibling sync after someone merged into base): abort and
-//     leave the worktree untouched, so an unattended session is never dropped
-//     mid-rebase. The conflict is surfaced via merge state for the user to sync
-//     manually when ready.
-function gitSyncFromBase(dir, session, opts = {}) {
-  const abortOnConflict = !!opts.abortOnConflict;
-  const dirPath = dir.path;
-  const branch = session.branch;
-  const baseBranch = dir.baseBranch || gitBaseBranch(dirPath);
-  const wtPath = session.worktreePath;
-  if (!branch || !wtPath || !fs.existsSync(wtPath)) {
+async function gitSyncFromBase(dir, session, opts = {}) {
+  if (!dir || !session || !session.branch || !session.worktreePath || !fs.existsSync(session.worktreePath)) {
     return { ok: false, error: 'session has no worktree' };
   }
-
-  // If a previous sync left this worktree parked mid-rebase, don't start another
-  // one on top of it — report the existing conflict so the UI keeps prompting.
-  const parked = gitRebaseConflicts(wtPath);
-  if (parked) {
-    return {
-      ok: false,
-      conflicts: parked,
-      rebaseInProgress: true,
-      error: `worktree 仍处于 rebase 冲突中（${parked.length} 个文件未解决），请先解决或 abort`,
-    };
-  }
-
-  // Stash-free safety: commit any uncommitted work first.
-  let committed = false;
-  try {
-    committed = gitWorktreeCommitAll(wtPath,
-      `multicc: auto-commit before sync @ ${new Date().toISOString()}`);
-  } catch (e) {
-    return { ok: false, error: `commit failed: ${e.message}` };
-  }
-
-  // How many commits is the worktree behind base?
-  let behind = 0;
-  try { behind = parseInt(gitRun(dirPath, ['rev-list', '--count', `${branch}..${baseBranch}`]) || '0', 10); }
-  catch (_) {}
-  if (behind === 0) return { ok: true, merged: false, committed, message: '已是最新，无需同步' };
-
-  try {
-    gitRun(wtPath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
-      'rebase', baseBranch]);
-    return { ok: true, merged: true, committed, commits: behind, baseBranch };
-  } catch (e) {
-    let conflicts = [];
-    try {
-      conflicts = gitRun(wtPath, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean);
-    } catch (_) {}
-    if (conflicts.length > 0) {
-      if (abortOnConflict) {
-        try { gitRun(wtPath, ['rebase', '--abort']); } catch (_) {}
-        return {
-          ok: false,
-          conflicts,
-          rebaseInProgress: false,
-          error: `与 ${baseBranch} 存在冲突（${conflicts.length} 个文件）— 已 abort，worktree 未改动，请手动同步后解决`,
-        };
-      }
-      // User-initiated: keep the rebase parked for manual resolution.
-      return {
-        ok: false,
-        conflicts,
-        rebaseInProgress: true,
-        committed,
-        error: `与 ${baseBranch} 存在冲突（${conflicts.length} 个文件）— rebase 已暂停，请在 worktree 解决后继续`,
-      };
+  return defaultRepoActor.run(dir.path, 'sync-from-base', async ({ execGit, progress, operationId: id }) => {
+    const worktreePath = session.worktreePath;
+    const baseBranch = dir.baseBranch || await baseBranchWith(execGit, dir.path);
+    const parked = await rebaseConflictsWith(execGit, worktreePath);
+    if (parked) return { ok: false, conflicts: parked, rebaseInProgress: true, error: 'worktree 仍处于 rebase 冲突中' };
+    const safety = await worktreeSafetyWith(execGit, dir.path, worktreePath, session.branch, baseBranch);
+    if (safety.dirty && !opts.force) {
+      return { ok: false, skipped: true, blocked: true, reasons: ['dirty'], safety, error: 'dirty worktree: sync/rebase refused' };
     }
-    // No conflict markers but rebase still failed: abort to leave a clean tree.
-    try { gitRun(wtPath, ['rebase', '--abort']); } catch (_) {}
-    const details = e.stderr ? String(e.stderr).trim() : e.message;
-    return { ok: false, error: details || 'sync failed' };
-  }
+    let backup = null;
+    let committed = false;
+    if (safety.dirty && opts.force) {
+      backup = await backupBeforeForce(execGit, dir.path, worktreePath, session.branch, session.id, id);
+      committed = await commitAllWith(execGit, worktreePath, `multicc: forced sync backup @ ${new Date().toISOString()}`);
+    }
+    const behind = parseInt(await execGit(dir.path, ['rev-list', '--count', `${session.branch}..${baseBranch}`]) || '0', 10);
+    if (!behind) return { ok: true, merged: false, committed, backup, message: '已是最新，无需同步' };
+    try {
+      progress('rebase');
+      await execGit(worktreePath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc', 'rebase', baseBranch]);
+      return { ok: true, merged: true, committed, commits: behind, baseBranch, backup };
+    } catch (error) {
+      const conflicts = lines(await execGit(worktreePath, ['diff', '--name-only', '--diff-filter=U']).catch(() => ''));
+      if (conflicts.length && !opts.abortOnConflict) {
+        return { ok: false, conflicts, rebaseInProgress: true, committed, backup, error: `与 ${baseBranch} 存在冲突，rebase 已暂停` };
+      }
+      try { await execGit(worktreePath, ['rebase', '--abort']); } catch (_) {}
+      return { ok: false, conflicts, rebaseInProgress: false, committed, backup,
+        error: conflicts.length ? `与 ${baseBranch} 存在冲突，已 abort` : errorText(error) };
+    }
+  }, { ...opts, sessionId: session.id });
 }
 
-// Resolve a parked rebase: continue it (after the user staged their fixes) or
-// abort it (give up and return the worktree to its pre-sync branch tip).
-// Used by the "继续 / 放弃" controls the conflict banner exposes.
-function gitRebaseResolve(dir, session, action) {
-  const wtPath = session.worktreePath;
-  if (!wtPath || !fs.existsSync(wtPath)) return { ok: false, error: 'session has no worktree' };
-  if (!gitRebaseConflicts(wtPath)) {
-    return { ok: false, error: '当前没有进行中的 rebase' };
+async function gitRebaseResolve(dir, session, action, opts = {}) {
+  if (!dir || !session || !session.worktreePath || !fs.existsSync(session.worktreePath)) {
+    return { ok: false, error: 'session has no worktree' };
   }
-  if (action === 'abort') {
-    try {
-      gitRun(wtPath, ['rebase', '--abort']);
+  return defaultRepoActor.run(dir.path, 'rebase-resolve', async ({ execGit }) => {
+    const worktreePath = session.worktreePath;
+    if (!await rebaseConflictsWith(execGit, worktreePath)) return { ok: false, error: '当前没有进行中的 rebase' };
+    if (action === 'abort') {
+      await execGit(worktreePath, ['rebase', '--abort']);
       return { ok: true, aborted: true };
-    } catch (e) {
-      return { ok: false, error: e.stderr ? String(e.stderr).trim() : e.message };
     }
-  }
-  // continue: stage whatever the user resolved, then advance the rebase.
-  try {
-    gitRun(wtPath, ['add', '-A']);
-  } catch (_) {}
-  // Still-unmerged files mean the user hasn't finished; refuse to continue.
-  const remaining = gitRebaseConflicts(wtPath) || [];
-  const stillConflicted = (() => {
-    try { return gitRun(wtPath, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean); }
-    catch (_) { return remaining; }
-  })();
-  if (stillConflicted.length > 0) {
-    return { ok: false, conflicts: stillConflicted, rebaseInProgress: true,
-      error: `仍有 ${stillConflicted.length} 个文件存在冲突标记，请全部解决后再继续` };
-  }
-  try {
-    gitRun(wtPath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc',
-      'rebase', '--continue'], );
-  } catch (e) {
-    // Continuing can surface the NEXT commit's conflicts; report them, still parked.
-    let conflicts = [];
-    try { conflicts = gitRun(wtPath, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean); }
-    catch (_) {}
-    if (conflicts.length > 0) {
-      return { ok: false, conflicts, rebaseInProgress: true,
-        error: `下一个提交又出现 ${conflicts.length} 个冲突文件，请继续解决` };
+    await execGit(worktreePath, ['add', '-A']);
+    const conflicts = lines(await execGit(worktreePath, ['diff', '--name-only', '--diff-filter=U']).catch(() => ''));
+    if (conflicts.length) return { ok: false, conflicts, rebaseInProgress: true, error: '仍有冲突文件' };
+    try {
+      await execGit(worktreePath, ['-c', 'user.email=multicc@local', '-c', 'user.name=multicc', 'rebase', '--continue'],
+        { env: { GIT_EDITOR: 'true' } });
+    } catch (error) {
+      const next = lines(await execGit(worktreePath, ['diff', '--name-only', '--diff-filter=U']).catch(() => ''));
+      return { ok: false, conflicts: next, rebaseInProgress: true, error: errorText(error) };
     }
-    return { ok: false, error: e.stderr ? String(e.stderr).trim() : e.message };
-  }
-  // Rebase may still be in progress if more commits remain but applied cleanly;
-  // loop is handled by git itself, so a success here means fully done.
-  const done = !gitRebaseConflicts(wtPath);
-  return { ok: true, continued: true, done };
+    return { ok: true, continued: true, done: !await rebaseConflictsWith(execGit, worktreePath) };
+  }, { ...opts, sessionId: session.id });
 }
 
 module.exports = {
@@ -507,4 +417,6 @@ module.exports = {
   gitSyncFromBase,
   gitRebaseConflicts,
   gitRebaseResolve,
+  checkMergedJsSyntax,
+  defaultRepoActor,
 };
