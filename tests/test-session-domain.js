@@ -11,12 +11,7 @@ const { createChatHistoryService } = require('../src/session/chat-history-servic
 const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
 const { createSessionQueryService } = require('../src/session/query-service');
 const { createSessionStateService, transitionSessionState } = require('../src/session/state-transition');
-const {
-  MAX_WORKSPACE_DIFFS,
-  compareWorkspaceSnapshots,
-  createWorkspaceService,
-  workspaceEntry,
-} = require('../src/session/workspace-service');
+const { createWorkspaceService } = require('../src/session/workspace-service');
 
 function assertNoSensitiveKeys(value) {
   const forbidden = /(?:token|secret|password|stack|(?:^|_)path|cwd|nativeSessionId|cliSessionId|worktree)/i;
@@ -52,6 +47,35 @@ test('session query projects only the bounded public DTO', () => {
   assertNoSensitiveKeys(list);
 });
 
+test('legacy and v1 presenters reuse one canonical session context', () => {
+  const source = [{ id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat', createdAt: 10 }];
+  let runtimeReads = 0;
+  const service = createSessionQueryService({
+    records: { list: () => source, get: id => source.find(item => item.id === id) },
+    runtime: { read: () => {
+      runtimeReads += 1;
+      return { active: true, clients: 3, lastActivity: new Date(20), effectiveModel: 'gpt-test' };
+    } },
+  });
+  const contexts = service.listContexts({ dirId: 'd1' });
+  const v1 = service.presentContext(contexts[0]);
+  const legacy = service.presentContext(contexts[0], ({ record, runtime }) => ({
+    id: record.id, cli: record.cli, active: runtime.active,
+    clients: runtime.clients, lastActivity: runtime.lastActivity,
+    legacyOnly: 'preserved',
+  }));
+  assert.equal(runtimeReads, 1, 'both presenters consume the same runtime snapshot');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify({
+      id: legacy.id, cli: legacy.cli, active: legacy.active,
+      clients: legacy.clients, lastActivity: legacy.lastActivity,
+    })),
+    { id: v1.id, cli: v1.cli, active: v1.active, clients: v1.clients, lastActivity: v1.lastActivity },
+  );
+  assert.equal(legacy.legacyOnly, 'preserved');
+  assert.equal(v1.legacyOnly, undefined);
+});
+
 test('workspace aggregation selects safe facts and never exposes directory/session internals', () => {
   const session = {
     id: 's1', dirId: 'd1', type: 'session', cli: 'claude', kind: 'chat', label: null,
@@ -60,7 +84,12 @@ test('workspace aggregation selects safe facts and never exposes directory/sessi
     createdAt: null, lastActivity: null, clients: 0, active: false, mergeState: null,
   };
   const service = createWorkspaceService({
-    sessionQuery: { list: ({ dirId }) => dirId === 'd1' ? [session] : [] },
+    sessionQuery: {
+      listContexts: ({ dirId }) => dirId === 'd1'
+        ? [{ record: { id: 's1', dirId: 'd1' }, runtime: {} }]
+        : [],
+      presentContext: () => session,
+    },
     directories: {
       get: id => id === 'd1' ? { id: 'd1', name: 'Workspace', path: '/secret/root', token: 'x' } : null,
       list: () => [{ id: 'd1', name: 'Workspace', path: '/secret/root' }],
@@ -89,79 +118,36 @@ test('workspace aggregation selects safe facts and never exposes directory/sessi
   assert.equal(service.fleet().count, 1);
 });
 
-test('workspace shadow comparison normalizes legacy epochs against bounded timestamps', () => {
-  const session = {
-    id: 's1', dirId: 'd1', type: 'session', cli: 'claude', kind: 'chat', label: 'Safe',
-    model: null, effectiveModel: null, effort: null, effectiveEffort: null, agent: null,
-    provider: null, subagent: null, autoCommit: false, autoDispatch: false,
-    createdAt: null, lastActivity: '2026-07-18T01:00:00.000Z', clients: 2, active: true,
-    mergeState: { ahead: 2, behind: 1, dirty: true, mergeReady: false, rebaseInProgress: true },
+test('legacy and v1 workspace views consume the same canonical session and facts', () => {
+  const record = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat' };
+  const runtime = { active: true, clients: 2 };
+  const bounded = {
+    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', label: null,
+    model: null, effectiveModel: null, effort: null, effectiveEffort: null,
+    agent: null, provider: null, subagent: null, autoCommit: false,
+    autoDispatch: false, createdAt: null, lastActivity: null, clients: 2,
+    active: true, mergeState: null,
   };
-  const bounded = workspaceEntry(session, {
-    status: 'running', lastActivity: 1784336461000, runStartedAt: 1784336400000,
-    runEndedAt: null, pendingNotes: 3, summary: 'bounded summary', summaryAt: 1784336460000,
-    classifyState: 'P', goal: 'ship safely', phase: 'testing',
+  const query = {
+    listContexts: () => [{ record, runtime }],
+    presentContext: () => bounded,
+  };
+  const facts = { status: 'running', lastActivity: 99, pendingNotes: 4 };
+  const service = createWorkspaceService({
+    sessionQuery: query,
+    directories: { get: () => ({ id: 'd1', label: 'D' }), list: () => [{ id: 'd1', label: 'D' }] },
+    workspaceFacts: { read: () => facts },
   });
-  const legacy = [{
-    id: 's1', status: 'running', clients: 2, pendingNotes: 3,
-    summary: 'bounded summary', summaryTs: 1784336460000,
-    classifyState: 'P', goal: 'ship safely', phase: 'testing',
-    lastActivity: 1784336461000, runStartedAt: 1784336400000, runEndedAt: null,
-    currentFile: '/private/repository/server.js', branch: 'private-branch',
-    mergeState: {
-      ahead: 2, behind: 1, dirty: true, mergeReady: false, rebaseInProgress: true,
-      baseBranch: 'main', conflictFiles: ['/private/repository/secret.js'],
-    },
-  }];
-
-  assert.deepEqual(compareWorkspaceSnapshots(legacy, { sessions: [bounded] }), {
-    equal: true,
-    diffs: [],
-  });
-});
-
-test('workspace shadow comparison reports only bounded allowlisted differences', () => {
-  const legacy = [{
-    id: 's1', status: 'running', clients: 1, pendingNotes: 1,
-    summary: 'token sk-super-secret at /Users/private/project', summaryTs: 1000,
-    classifyState: 'P', goal: 'read /Users/private/project', phase: 'coding',
-    lastActivity: 2000, runStartedAt: 1500, runEndedAt: null,
-    mergeState: { ahead: 1, behind: 2, dirty: true, mergeReady: false, rebaseInProgress: true },
-  }, { id: 'legacy-only' }];
-  const bounded = { sessions: [{
-    id: 's1', status: 'waiting', clients: 2, pendingNotes: 3,
-    summary: 'different password secret', summaryAt: '1970-01-01T00:00:02.000Z',
-    classifyState: 'W', goal: 'different', phase: 'review',
-    statusUpdatedAt: '1970-01-01T00:00:03.000Z',
-    runStartedAt: '1970-01-01T00:00:02.500Z', runEndedAt: '1970-01-01T00:00:04.000Z',
-    mergeState: { ahead: 4, behind: 5, dirty: false, mergeReady: true, rebaseInProgress: false },
-  }, { id: 'bounded-only' }] };
-
-  const result = compareWorkspaceSnapshots(legacy, bounded);
-  assert.equal(result.equal, false);
-  const fields = new Set(result.diffs.map(item => item.field));
-  for (const field of [
-    'status', 'clients', 'pendingNotes', 'summary', 'classifyState', 'goal', 'phase',
-    'statusUpdatedAt', 'runStartedAt', 'runEndedAt', 'summaryAt',
-    'mergeState.ahead', 'mergeState.behind', 'mergeState.dirty',
-    'mergeState.mergeReady', 'mergeState.rebaseInProgress', 'session',
-  ]) assert.equal(fields.has(field), true, field);
-  const serialized = JSON.stringify(result);
-  for (const forbidden of ['sk-super-secret', 'password secret', '/Users/', 'private/project']) {
-    assert.equal(serialized.includes(forbidden), false, forbidden);
-  }
-});
-
-test('workspace shadow comparison caps its diagnostic result', () => {
-  const legacy = [];
-  const bounded = { sessions: [] };
-  for (let index = 0; index < MAX_WORKSPACE_DIFFS + 25; index++) {
-    legacy.push({ id: `s-${String(index).padStart(3, '0')}`, status: 'idle' });
-    bounded.sessions.push({ id: `s-${String(index).padStart(3, '0')}`, status: 'running' });
-  }
-  const result = compareWorkspaceSnapshots(legacy, bounded);
-  assert.equal(result.equal, false);
-  assert.equal(result.diffs.length, MAX_WORKSPACE_DIFFS);
+  const v1 = service.snapshot('d1').sessions[0];
+  const legacy = service.snapshot('d1', { presenter: ({ session, facts: projectedFacts }) => ({
+    id: session.record.id, active: session.runtime.active,
+    clients: session.runtime.clients, status: projectedFacts.status,
+    pendingNotes: projectedFacts.pendingNotes, legacyOnly: true,
+  }) }).sessions[0];
+  assert.deepEqual(
+    { id: legacy.id, active: legacy.active, clients: legacy.clients, status: legacy.status, pendingNotes: legacy.pendingNotes },
+    { id: v1.id, active: v1.active, clients: v1.clients, status: v1.status, pendingNotes: v1.pendingNotes },
+  );
 });
 
 test('session state transitions preserve run segments and pending work forces waiting', () => {
@@ -303,6 +289,46 @@ test('chat history write failure leaves the committed cache unchanged', () => {
   assert.deepEqual(service.read('s1').map(message => message.content), ['committed']);
 });
 
+test('chat history post-persist ports run only after durable write and cannot roll back it', () => {
+  const store = new Map();
+  const order = [];
+  const callbackErrors = [];
+  let failWrites = false;
+  const service = createChatHistoryService({
+    history: {
+      read: id => store.get(id) || [],
+      write: (id, messages) => {
+        order.push('write');
+        if (failWrites) throw new Error('injected write failure');
+        store.set(id, messages);
+      },
+      deleteSession: id => store.delete(id),
+      hasPersistedDelivery: (id, deliveryId) => (store.get(id) || []).some(message =>
+        message.deliveryId === deliveryId || message.clientMsgId === deliveryId),
+    },
+    idFactory: () => 'm1',
+    postPersist: event => {
+      order.push(`global:${event.type}`);
+      assert.equal(Object.isFrozen(event), true);
+    },
+    onPostPersistError: error => callbackErrors.push(error.message),
+  });
+  service.append('s1', { role: 'user', content: 'committed', deliveryId: 'delivery-1' }, {
+    afterCommit: () => { order.push('local'); throw new Error('broadcast failed'); },
+  });
+  assert.deepEqual(order, ['write', 'global:append', 'local']);
+  assert.deepEqual(callbackErrors, ['broadcast failed']);
+  assert.equal(service.containsDelivery('s1', 'delivery-1'), true);
+  assert.equal(service.hasPersistedDelivery('s1', 'delivery-1'), true);
+
+  failWrites = true;
+  assert.throws(() => service.append('s1', { role: 'assistant', content: 'not committed' }, {
+    afterCommit: () => order.push('must-not-run'),
+  }), /injected write failure/);
+  assert.equal(order.includes('must-not-run'), false);
+  assert.deepEqual(service.read('s1').map(message => message.content), ['committed']);
+});
+
 test('chat history deletes the repository before invalidating its cache', () => {
   let stored = [{ id: 'm1', role: 'user', content: 'first' }];
   let failDelete = true;
@@ -337,6 +363,11 @@ test('chat history file adapter stays under the supplied data root and writes pr
   assert.deepEqual(repository.read('../unsafe'), [{ role: 'user', content: 'safe' }]);
   assert.equal(fs.statSync(repository.root).mode & 0o777, 0o700);
   assert.equal(fs.statSync(repository.fileFor('../unsafe')).mode & 0o777, 0o600);
+  assert.deepEqual(repository.listSessionIds(), ['___unsafe']);
+  assert.equal(repository.renameSession('../unsafe', 'renamed'), true);
+  assert.equal(repository.renameSession('../unsafe', 'renamed-again'), false);
+  assert.deepEqual(repository.listSessionIds(), ['renamed']);
+  assert.equal(fs.statSync(repository.fileFor('renamed')).mode & 0o777, 0o600);
 });
 
 test('chat history file adapter strictly proves persisted deliveries and deletes sessions', (t) => {
