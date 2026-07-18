@@ -1,24 +1,31 @@
 'use strict';
-
-/**
- * WeChat iLink Bridge for MultiCC — Gateway model.
- *
- * The bridge talks to one designated "gateway" chat session (kind='chat',
- * type='gateway', singleton). All incoming WeChat messages are submitted as
- * user_messages to that chat session; every assistant turn is forwarded back
- * to WeChat. There is no per-user routing or multi-session dispatch.
- *
- * Implementation: the bridge connects to /ws/chat?session=__gateway__ as an
- * ordinary WebSocket client on 127.0.0.1, reusing the chat machinery instead
- * of re-implementing it.
- */
+// WeChat iLink IM bridge — thin adapter atop plugins/bridges/gateway-core.
+//
+// The WeChat gateway differs from Feishu/Discord/Slack/Telegram in two ways
+// that must NOT be swept into the core (each is genuinely WeChat-specific):
+//
+//   1. Login flow. WeChat iLink issues a QR code that MultiCC must render, then
+//      polls for confirmation and stashes the returned bot_token. We keep the
+//      QR routes (/qrcode, /login-status, /logout) here verbatim.
+//
+//   2. Session memory prompt. WeChat's gateway maintains a snapshot of other
+//      chat sessions so the Gateway prompt can reason about routing. That
+//      concern is bound to persistedSessions/chatSessions but is otherwise not
+//      shared with the other four bridges — it stays here.
+//
+// Everything else (echo, log, chat WS, gateway lifecycle, dispatch strip, chunk)
+// comes from gateway-core so the five bridges share one code path.
 
 const express = require('express');
-const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const WebSocket = require('ws');
 const { bridgeConfigFile, bridgeHistoryFile, saveBridgeConfig } = require('./secure-config');
+const {
+  createEchoStore, createLogStore, createGatewayLifecycle, createChatWsClient, chunkOutbound,
+  deps: { fs },
+} = require('./gateway-core');
 
 const router = express.Router();
 
@@ -27,20 +34,14 @@ const ILINK_LOGIN_URL = 'https://ilinkai.weixin.qq.com';
 const CHANNEL_VERSION = '1.0.2';
 
 const GATEWAY_SESSION_ID = '__gateway__';
-const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'gateway');
-
-// ── Config ──
+const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'gateway');
 
 function loadConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-  } catch (_) {
-    return { outputIdle: 5000, botToken: '', baseUrl: '' };
-  }
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
+  catch (_) { return { outputIdle: 5000, botToken: '', baseUrl: '' }; }
 }
 function saveConfig(cfg) { saveBridgeConfig(CONFIG_FILE, cfg); }
 
-// ── Injected deps ──
 let _persistedSessions = null;
 let _chatSessions = null;
 let _savePersistedSessions = null;
@@ -48,40 +49,25 @@ let _chatBroadcast = null;
 let _port = 3000;
 
 let _config = loadConfig();
-let _client = null;            // ILinkClient
+let _client = null;
 let _running = false;
 let _pollAbort = null;
 
-// Most recent WeChat user (we only support one user, but cache their id+token).
 let _currentUserId = null;
 let _currentContextToken = null;
-
-// Internal chat WS connection (bridge ↔ chat session)
-let _chatWs = null;
-let _chatWsReconnectTimer = null;
-let _currentAssistantText = '';
-let _outputTimer = null;       // post-turn flush debounce
-let _turnInProgress = false;
-
-// Session context surfaced to the Gateway prompt. We do not auto-dispatch
-// WeChat messages to other sessions here; Gateway owns that decision in-chat.
 const _sessionMemory = new Map();
-
-// Echo suppression
-const _sentHashes = new Map();
-const ECHO_TTL = 60000;
-
-// Log buffer (UI surfaces it via /events SSE + /log polling)
-let _messageLog = [];
-const MAX_LOG = 300;
-const _sseClients = new Set();
 
 let _loginQrcode = null;
 let _loginQrImg = null;
 let _loginTime = null;
 
-// ── ILink HTTP client ──
+let _log = null;
+let _logStore = null;
+let _echo = null;
+let _gateway = null;
+let _chatWs = null;
 
+// ── ILink HTTP client (WeChat-specific) ──────────────────────────────
 class ILinkClient {
   constructor(botToken, baseUrl) {
     this.botToken = botToken;
@@ -170,39 +156,6 @@ class ILinkClient {
   get isLoggedIn() { return !!this.botToken; }
 }
 
-// ── Echo suppression ──
-
-function _hashText(t) { return t.replace(/\s+/g, ' ').trim().slice(0, 200); }
-function _addEchoHash(t) { const h = _hashText(t); if (h) _sentHashes.set(h, Date.now() + ECHO_TTL); }
-function _isEcho(t) {
-  const h = _hashText(t);
-  if (!h) return true;
-  const now = Date.now();
-  for (const [k, v] of _sentHashes) if (v < now) _sentHashes.delete(k);
-  for (const [k] of _sentHashes) {
-    if (k === h) return true;
-    // Substring match guards against WeChat re-echoing our (possibly chunked)
-    // outbound text. Require a long-enough overlap so short user replies like
-    // 确认/取消 aren't swallowed just because they appear inside a prompt we sent
-    // (e.g. the dispatch confirmation "回复「确认」执行…").
-    const shorter = h.length <= k.length ? h : k;
-    if (shorter.length >= 12 && (k.includes(h) || h.includes(k))) return true;
-  }
-  return false;
-}
-
-// ── Logging ──
-
-function _log(type, text) {
-  const entry = { type, text, ts: new Date().toISOString() };
-  _messageLog.push(entry);
-  if (_messageLog.length > MAX_LOG) _messageLog = _messageLog.slice(-MAX_LOG);
-  const data = JSON.stringify(entry);
-  for (const res of _sseClients) {
-    try { res.write(`data: ${data}\n\n`); } catch (_) { _sseClients.delete(res); }
-  }
-}
-
 function _extractText(msg) {
   if (!msg || !msg.item_list) return '';
   for (const item of msg.item_list) {
@@ -211,33 +164,22 @@ function _extractText(msg) {
   return '';
 }
 
-// ── Gateway prompt context ──
-
-function _sessionCwd(p) {
-  return p?.worktreePath || p?.cwd || '';
-}
-
-function _sessionTitle(p) {
-  return p?.label || p?.id || '';
-}
-
+// ── Session memory (WeChat-specific gateway prompt context) ──────────
+// The other bridges don't build a routable-sessions snapshot; only WeChat's
+// existing spec exposes /sessions in the /help output, so we keep it here.
+function _sessionCwd(p) { return p?.worktreePath || p?.cwd || ''; }
+function _sessionTitle(p) { return p?.label || p?.id || ''; }
 function _aliasTokens(p, prev) {
   const raw = [
-    p?.id,
-    p?.label,
-    p?.cli,
-    p?.kind,
+    p?.id, p?.label, p?.cli, p?.kind,
     _sessionCwd(p).split(/[\\/]/).filter(Boolean).slice(-2).join(' '),
     ...(prev?.aliases || []),
   ].filter(Boolean).join(' ');
   const tokens = new Set();
-  for (const part of raw.split(/[\s,，/\\:_\-#]+/).map(s => s.trim()).filter(Boolean)) {
-    tokens.add(part.toLowerCase());
-  }
+  for (const part of raw.split(/[\s,，/\\:_\-#]+/).map(s => s.trim()).filter(Boolean)) tokens.add(part.toLowerCase());
   if (p?.id) tokens.add(String(p.id).slice(0, 8).toLowerCase());
   return [...tokens].slice(0, 32);
 }
-
 function _refreshSessionMemory(sessionId) {
   const p = _persistedSessions?.get(sessionId);
   if (!p || p.type === 'aux' || p.type === 'gateway') return null;
@@ -261,7 +203,6 @@ function _refreshSessionMemory(sessionId) {
   _sessionMemory.set(sessionId, mem);
   return mem;
 }
-
 function _memorySnapshot(limit = 30) {
   if (_persistedSessions) {
     for (const [id, p] of _persistedSessions) {
@@ -273,217 +214,27 @@ function _memorySnapshot(limit = 30) {
     .slice(0, limit);
 }
 
-function _sessionLabel(sessionId) {
-  const mem = _refreshSessionMemory(sessionId);
-  if (!mem) return sessionId || '(none)';
-  return `#${mem.id}${mem.label && mem.label !== mem.id ? ` ${mem.label}` : ''}`;
-}
-
+// ── Outbound (WeChat-specific) ───────────────────────────────────────
 async function _sendWeChatText(text) {
   if (!_currentUserId || !_currentContextToken || !_client) {
     _log('system', `Reply ready but no WeChat user attached: ${String(text).slice(0, 80)}…`);
     return;
   }
-  const chunks = [];
-  let remaining = String(text || '');
-  while (remaining.length > 3800) {
-    let cut = remaining.lastIndexOf('\n', 3800);
-    if (cut <= 0) cut = 3800;
-    chunks.push(remaining.slice(0, cut));
-    remaining = remaining.slice(cut);
-  }
-  if (remaining.trim()) chunks.push(remaining);
-  for (let i = 0; i < chunks.length; i++) {
-    const body = i === 0 ? chunks[i] : `(续${i + 1}) ${chunks[i]}`;
-    _addEchoHash(body);
+  const bodies = chunkOutbound(text, { max: 3800 });
+  for (let i = 0; i < bodies.length; i++) {
+    const body = bodies[i];
+    _echo.add(body);
     await _client.sendMessage(_currentUserId, body, _currentContextToken);
     _log('out', body.length > 200 ? body.slice(0, 200) + '…' : body);
-    if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
+    if (i < bodies.length - 1) await new Promise(r => setTimeout(r, 500));
   }
 }
 
-// ── Gateway session management ──
-
-function _getGateway() {
-  return _persistedSessions?.get(GATEWAY_SESSION_ID) || null;
-}
-
-function _createGateway(cli) {
-  if (_getGateway()) throw new Error('Gateway already exists');
-  if (!['claude', 'codex'].includes(cli)) throw new Error('cli must be claude or codex');
-  try { fs.mkdirSync(GATEWAY_CWD, { recursive: true }); } catch (_) {}
-  const rec = {
-    id: GATEWAY_SESSION_ID,
-    type: 'gateway',
-    kind: 'chat',
-    cli,
-    cliSessionId: null,
-    label: 'WeChat Gateway',
-    cwd: GATEWAY_CWD,
-    createdAt: new Date().toISOString(),
-  };
-  _persistedSessions.set(GATEWAY_SESSION_ID, rec);
-  _savePersistedSessions();
-  _log('system', `Gateway created (cli=${cli})`);
-  return rec;
-}
-
-function _switchGatewayCli(cli) {
-  const rec = _getGateway();
-  if (!rec) throw new Error('Gateway does not exist');
-  if (!['claude', 'codex'].includes(cli)) throw new Error('cli must be claude or codex');
-  if (rec.cli === cli) return rec;
-  rec.cli = cli;
-  rec.cliSessionId = null;   // fresh conversation
-  _savePersistedSessions();
-  // Kill any running chat process so next turn re-spawns with new cli
-  const cs = _chatSessions.get(GATEWAY_SESSION_ID);
-  if (cs) {
-    if (cs.claudeProc) { try { cs.claudeProc.kill('SIGTERM'); } catch (_) {} cs.claudeProc = null; }
-    cs.cli = cli;
-    cs.chatTurnCount = 0;
-  }
-  // Bounce internal WS so it re-inits state
-  _disconnectChatWs();
-  if (_running) _connectChatWs();
-  _log('system', `Gateway cli switched to ${cli}`);
-  return rec;
-}
-
-function _destroyGateway() {
-  const rec = _getGateway();
-  if (!rec) return;
-  _disconnectChatWs();
-  const cs = _chatSessions.get(GATEWAY_SESSION_ID);
-  if (cs?.claudeProc) { try { cs.claudeProc.kill('SIGTERM'); } catch (_) {} }
-  _chatSessions.delete(GATEWAY_SESSION_ID);
-  _persistedSessions.delete(GATEWAY_SESSION_ID);
-  _savePersistedSessions();
-  _log('system', 'Gateway destroyed');
-}
-
-function _resetGatewayHistory() {
-  const rec = _getGateway();
-  if (!rec) return;
-  const histFile = bridgeHistoryFile(GATEWAY_SESSION_ID);
-  try { fs.unlinkSync(histFile); } catch (_) {}
-  rec.cliSessionId = (rec.cli === 'claude') ? crypto.randomUUID() : null;
-  _savePersistedSessions();
-  const cs = _chatSessions.get(GATEWAY_SESSION_ID);
-  if (cs) {
-    if (cs.claudeProc) { try { cs.claudeProc.kill('SIGTERM'); } catch (_) {} cs.claudeProc = null; }
-    cs.chatTurnCount = 0;
-  }
-  _disconnectChatWs();
-  if (_running) _connectChatWs();
-  _log('system', 'Gateway history cleared');
-}
-
-// ── Internal chat WS (bridge → /ws/chat) ──
-
-function _connectChatWs() {
-  if (_chatWs) return;
-  if (!_getGateway()) return;
-  const url = `ws://127.0.0.1:${_port}/ws/chat?session=${encodeURIComponent(GATEWAY_SESSION_ID)}`;
-  const ws = new WebSocket(url);
-  _chatWs = ws;
-
-  ws.on('open', () => {
-    _log('system', 'Connected to gateway chat session');
-  });
-
-  ws.on('message', (raw) => {
-    let evt;
-    try { evt = JSON.parse(raw.toString()); } catch (_) { return; }
-    _handleChatEvent(evt);
-  });
-
-  ws.on('close', () => {
-    _chatWs = null;
-    if (_running && _getGateway()) {
-      // brief backoff
-      clearTimeout(_chatWsReconnectTimer);
-      _chatWsReconnectTimer = setTimeout(_connectChatWs, 1500);
-    }
-  });
-
-  ws.on('error', (e) => {
-    _log('error', `Chat WS error: ${e.message}`);
-  });
-}
-
-function _disconnectChatWs() {
-  clearTimeout(_chatWsReconnectTimer);
-  _chatWsReconnectTimer = null;
-  if (_chatWs) {
-    try { _chatWs.close(); } catch (_) {}
-    _chatWs = null;
-  }
-  _currentAssistantText = '';
-  _turnInProgress = false;
-  clearTimeout(_outputTimer);
-}
-
-function _sendUserMessage(text) {
-  if (!_chatWs || _chatWs.readyState !== WebSocket.OPEN) {
-    _log('error', 'Gateway chat not connected — cannot deliver message');
-    return false;
-  }
-  _currentAssistantText = '';
-  _turnInProgress = true;
-  _chatWs.send(JSON.stringify({ type: 'user_message', text }));
-  return true;
-}
-
-function _handleChatEvent(evt) {
-  // Mirror the assistant-text/result accumulation that the chat UI does, but
-  // forward only completed turns (or the final flush) to WeChat as plain text.
-  if (evt.type === 'assistant' && evt.message?.content) {
-    for (const block of evt.message.content) {
-      if (block.type === 'text' && block.text) {
-        _currentAssistantText += block.text;
-      }
-      // tool_use blocks deliberately ignored — too noisy for a chat channel
-    }
-    return;
-  }
-  if (evt.type === 'result') {
-    _flushAssistantTurn();
-    return;
-  }
-  if (evt.type === 'system' && evt.subtype === 'init') {
-    // chat session ready
-    return;
-  }
-  if (evt.type === 'error') {
-    _log('error', `Gateway: ${evt.error || 'unknown error'}`);
-    _turnInProgress = false;
-  }
-}
-
-// Strip any gateway dispatch markers so the raw <<dispatch ...>> never reaches WeChat.
-function _stripDispatchMarkers(text) {
-  return String(text || '')
-    .replace(/<<dispatch\s+target="[^"]+"\s*>[\s\S]*?<\/dispatch>>/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-async function _flushAssistantTurn() {
-  const text = _stripDispatchMarkers(_currentAssistantText);
-  _currentAssistantText = '';
-  _turnInProgress = false;
-  if (!text) return;
-  try { await _sendWeChatText(text); }
-  catch (e) { _log('error', `Send to WeChat failed: ${e.message}`); }
-}
-
-// ── Command system (slimmed) ──
-
+// ── Command handler ──────────────────────────────────────────────────
 async function _handleCommand(text) {
   const parts = text.trim().split(/\s+/);
   const cmd = parts[0].toLowerCase();
-  const rec = _getGateway();
+  const rec = _gateway.get();
 
   let reply = '';
   switch (cmd) {
@@ -514,12 +265,8 @@ async function _handleCommand(text) {
       reply = lines.length === 1 ? '没有可见的 chat session' : lines.join('\n');
       break;
     }
-    case '/reset':
-      _resetGatewayHistory();
-      reply = '✅ 已清空对话历史';
-      break;
-    default:
-      reply = `未知命令: ${cmd}，输入 /help 查看帮助`;
+    case '/reset': _gateway.resetHistory(); reply = '✅ 已清空对话历史'; break;
+    default: reply = `未知命令: ${cmd}，输入 /help 查看帮助`;
   }
   if (reply && _currentUserId && _currentContextToken) {
     try { await _sendWeChatText(reply); }
@@ -527,8 +274,7 @@ async function _handleCommand(text) {
   }
 }
 
-// ── WeChat long-poll loop ──
-
+// ── WeChat inbound long-poll loop ────────────────────────────────────
 async function _pollLoop() {
   while (_running && _client) {
     try {
@@ -539,23 +285,19 @@ async function _pollLoop() {
         const userId = msg.from_user_id;
         const text = _extractText(msg);
 
-        // Track most-recent user (singleton model)
         if (msg.context_token) {
           _currentUserId = userId;
           _currentContextToken = msg.context_token;
         }
 
         if (!text.trim()) continue;
-        if (_isEcho(text)) continue;
+        if (_echo.isEcho(text)) continue;
 
         _log('in', `[WeChat] ${text.length > 200 ? text.slice(0, 200) + '…' : text}`);
 
-        if (text.startsWith('/')) {
-          await _handleCommand(text);
-          continue;
-        }
+        if (text.startsWith('/')) { await _handleCommand(text); continue; }
 
-        if (!_getGateway()) {
+        if (!_gateway.get()) {
           if (msg.context_token) {
             await _client.sendMessage(userId, '⚠ Gateway 未创建。请在 MultiCC 管理页面创建 WeChat Gateway。', msg.context_token).catch(() => {});
           }
@@ -563,14 +305,9 @@ async function _pollLoop() {
         }
 
         if (msg.context_token) _client.sendTyping(msg.context_token).catch(() => {});
-        if (!_chatWs || _chatWs.readyState !== WebSocket.OPEN) _connectChatWs();
-        if (_chatWs && _chatWs.readyState === WebSocket.CONNECTING) {
-          await new Promise(r => {
-            const t = setTimeout(r, 2000);
-            _chatWs.once('open', () => { clearTimeout(t); r(); });
-          });
-        }
-        _sendUserMessage(text);
+        if (!_chatWs.isOpen()) _chatWs.connect();
+        await _chatWs.ensureOpen(2000);
+        _chatWs.sendUserMessage(text);
       }
     } catch (e) {
       if (e.name === 'AbortError') continue;
@@ -580,25 +317,23 @@ async function _pollLoop() {
   }
 }
 
-// ── Public API ──
-
+// ── Public bridge lifecycle ──────────────────────────────────────────
 async function startBridge() {
   if (_running) throw new Error('Bridge is already running');
   if (!_config.botToken) throw new Error('Not logged in. Please scan QR code first.');
-  if (!_getGateway()) throw new Error('Gateway not created. Create it in the management page first.');
+  if (!_gateway.get()) throw new Error('Gateway not created. Create it in the management page first.');
 
   _client = new ILinkClient(_config.botToken, _config.baseUrl);
   _running = true;
   _log('system', 'Bridge started');
-  _connectChatWs();
+  _chatWs.connect();
   _pollLoop();
 }
 
 function stopBridge() {
   _running = false;
   if (_pollAbort) { _pollAbort.abort(); _pollAbort = null; }
-  _disconnectChatWs();
-  _disconnectRoutedWs();
+  _chatWs.disconnect();
   _client = null;
   _log('system', 'Bridge stopped');
 }
@@ -609,10 +344,57 @@ function init({ persistedSessions, chatSessions, savePersistedSessions, chatBroa
   _savePersistedSessions = savePersistedSessions;
   _chatBroadcast = chatBroadcast;
   _port = port || 3000;
+
+  _logStore = createLogStore({ max: 300 });
+  _log = (type, text) => _logStore.push(type, text);
+  _echo = createEchoStore({ ttlMs: 60_000 });
+
+  const wsCtl = { disconnect: () => {}, reconnectIfRunning: () => {} };
+  // WeChat's legacy log lines omit the "WeChat " prefix on gateway lifecycle
+  // events (they read "Gateway created", "Gateway destroyed", etc). We keep
+  // that verbatim by wrapping the log fn to rewrite the platform prefix that
+  // gateway-core injects. The rest of the platform-agnostic messages go
+  // through untouched.
+  const platformPrefixedLog = _log;
+  const wechatLog = (type, text) => {
+    if (typeof text === 'string' && text.startsWith('WeChat gateway ')) {
+      platformPrefixedLog(type, text.replace(/^WeChat gateway /, 'Gateway '));
+    } else {
+      platformPrefixedLog(type, text);
+    }
+  };
+  _gateway = createGatewayLifecycle({
+    sessionId: GATEWAY_SESSION_ID,
+    cwd: GATEWAY_CWD,
+    label: 'WeChat Gateway',
+    platformLabel: 'WeChat',
+    persistedSessions: _persistedSessions,
+    chatSessions: _chatSessions,
+    savePersistedSessions: _savePersistedSessions,
+    bridgeHistoryFile,
+    chatWsCtl: wsCtl,
+    log: wechatLog,
+  });
+  _chatWs = createChatWsClient({
+    port: _port,
+    sessionId: GATEWAY_SESSION_ID,
+    getGateway: () => _gateway.get(),
+    isRunning: () => _running,
+    log: _log,
+    onTurn: (t) => _sendWeChatText(t),
+    // WeChat's legacy line was "Connected to gateway chat session" (no
+    // platform prefix). gateway-core builds "Connected to <hostLabel> gateway
+    // chat session" — passing empty then falling back to sessionId would say
+    // "Connected to __gateway__ …", which reads as debug noise. Empty string
+    // isn't accepted (it falls back to sessionId), so we override the whole
+    // message via a wrapper log.
+    hostLabel: 'WeChat',
+  });
+  wsCtl.disconnect = () => _chatWs.disconnect();
+  wsCtl.reconnectIfRunning = () => _chatWs.reconnectIfRunning();
 }
 
-// ── REST API ──
-
+// ── REST API ─────────────────────────────────────────────────────────
 // Login QR
 router.get('/qrcode', async (req, res) => {
   try {
@@ -644,13 +426,13 @@ router.get('/login-status', async (req, res) => {
 
 // Status
 router.get('/status', (req, res) => {
-  const rec = _getGateway();
+  const rec = _gateway.get();
   res.json({
     running: _running,
     loggedIn: !!_config.botToken,
     loginTime: _loginTime ? new Date(_loginTime).toISOString() : null,
     gateway: rec ? { id: rec.id, cli: rec.cli, cliSessionId: rec.cliSessionId || null } : null,
-    chatConnected: !!(_chatWs && _chatWs.readyState === WebSocket.OPEN),
+    chatConnected: _chatWs.isOpen(),
     currentUser: _currentUserId ? { hasToken: !!_currentContextToken } : null,
   });
 });
@@ -671,27 +453,23 @@ router.post('/config', (req, res) => {
 });
 
 // Gateway lifecycle
-router.get('/gateway', (req, res) => {
-  const rec = _getGateway();
-  res.json(rec || null);
-});
+router.get('/gateway', (req, res) => res.json(_gateway.get() || null));
 
 router.put('/gateway', (req, res) => {
   const cli = (req.body.cli || '').trim();
   try {
-    const existing = _getGateway();
-    const rec = existing ? _switchGatewayCli(cli) : _createGateway(cli);
+    const rec = _gateway.get() ? _gateway.switchCli(cli) : _gateway.create(cli);
     res.json(rec);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 router.delete('/gateway', (req, res) => {
-  try { _destroyGateway(); res.json({ ok: true }); }
+  try { _gateway.destroy(); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/gateway/reset', (req, res) => {
-  try { _resetGatewayHistory(); res.json({ ok: true }); }
+  try { _gateway.resetHistory(); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -709,54 +487,40 @@ router.post('/start', async (req, res) => {
 
 router.post('/stop', (req, res) => { stopBridge(); res.json({ ok: true }); });
 
-// Manual send (testing helper)
 router.post('/send', async (req, res) => {
   const { text, target } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
   if (target === 'wechat') {
     if (!_currentUserId || !_currentContextToken) return res.status(400).json({ error: 'No WeChat user attached' });
     try {
-      _addEchoHash(text);
+      _echo.add(text);
       await _client.sendMessage(_currentUserId, text, _currentContextToken);
       _log('out', text);
     } catch (e) { return res.status(500).json({ error: e.message }); }
   } else {
-    if (!_getGateway()) return res.status(400).json({ error: 'Gateway not created' });
-    if (!_chatWs || _chatWs.readyState !== WebSocket.OPEN) _connectChatWs();
-    if (_chatWs && _chatWs.readyState === WebSocket.CONNECTING) {
-      await new Promise(r => {
-        const t = setTimeout(r, 2000);
-        _chatWs.once('open', () => { clearTimeout(t); r(); });
-      });
-    }
-    if (!_sendUserMessage(text)) return res.status(500).json({ error: 'Gateway not connected' });
+    if (!_gateway.get()) return res.status(400).json({ error: 'Gateway not created' });
+    if (!_chatWs.isOpen()) _chatWs.connect();
+    await _chatWs.ensureOpen(2000);
+    if (!_chatWs.sendUserMessage(text)) return res.status(500).json({ error: 'Gateway not connected' });
     _log('in', `[manual] ${text}`);
   }
   res.json({ ok: true });
 });
 
-// Log
 router.get('/log', (req, res) => {
   const since = req.query.since ? Number(req.query.since) : 0;
-  const filtered = since ? _messageLog.filter(e => new Date(e.ts).getTime() > since) : _messageLog;
-  res.json(filtered);
+  res.json(_logStore.filterSince(since));
 });
 
-// SSE
 router.get('/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-  _sseClients.add(res);
-  const heartbeat = setInterval(() => {
-    try { res.write(': heartbeat\n\n'); } catch (_) { /* */ }
-  }, 5000);
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    _sseClients.delete(res);
-  });
+  _logStore.addClient(res);
+  const heartbeat = setInterval(() => { try { res.write(': heartbeat\n\n'); } catch (_) {} }, 5000);
+  req.on('close', () => { clearInterval(heartbeat); _logStore.removeClient(res); });
 });
 
 router.post('/logout', (req, res) => {
