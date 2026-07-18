@@ -54,6 +54,7 @@ function tmpDir(label) {
     ok(p.journalDir === path.join(d, '.journal'), 'createPaths: journalDir under override');
     ok(p.bridgesDir === path.join(d, 'bridges'), 'createPaths: bridgesDir under override');
     ok(p.scheduledTasksFile === path.join(d, 'scheduled_tasks.json'), 'createPaths: cron store under override');
+    ok(p.orchestrationFile === path.join(d, 'orchestration.json'), 'createPaths: orchestration store under override');
     ok(p.voiceExamplesFile === path.join(d, 'voice_examples.json'), 'createPaths: voice examples under override');
     ok(p.whisperVocabFile === path.join(d, 'whisper_vocab.json'), 'createPaths: whisper vocab under override');
   }

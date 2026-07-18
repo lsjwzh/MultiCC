@@ -5,11 +5,13 @@ const wait = require('../src/wait-injector');
 const injected = [];               // [{session, text}]
 let pollOutput = 'status: pending';  // exec returns this
 let busy = false;
+let durablePending = false;
 
 wait.init({
   inject: async (session, text) => { injected.push({ session, text }); },
   exec: async () => ({ stdout: pollOutput, code: 0 }),
   isBusy: () => busy,
+  hasExplicitWait: session => durablePending && session === 'durable-session',
   log: () => {},
 });
 
@@ -64,6 +66,11 @@ const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✅', msg); } els
   injected.length = 0;
   wait.register({ session: 's5', mode: 'callback' });
   ok(wait.autoContinue('s5') === false, 'auto-continue skipped when explicit wait pending');
+  durablePending = true;
+  ok(wait.hasWait('durable-session'), 'durable explicit wait is visible to compatibility guards');
+  ok(wait.autoContinue('durable-session') === false, 'auto-continue skips durable explicit wait without owning it');
+  durablePending = false;
+  ok(!wait.hasWait('durable-session'), 'durable guard clears without an in-memory shadow wait');
 
   // ── E: run_in_background nudge ──
   console.log('E. bgCheck (run_in_background guard)');
