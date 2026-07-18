@@ -8,13 +8,16 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { assertTestDir } = require('../src/paths');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 3998;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'cli-switch-api-test';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-cli-switch-'));
+const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const project = path.join(tmpRoot, 'project');
+fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
 
 let server;
@@ -55,16 +58,14 @@ async function waitForServer() {
 
 function cleanup() {
   try { if (server) server.kill('SIGTERM'); } catch (_) {}
-  for (const file of ['sessions.json', 'directories.json', 'events', 'chat_history', 'token_usage.json', 'token_daily.json']) {
-    try { fs.rmSync(path.join(ROOT, file), { recursive: true, force: true }); } catch (_) {}
-  }
+  assertTestDir(tmpRoot);
   try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (_) {}
 }
 
 (async () => {
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN },
+    env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let stderr = '';
@@ -142,7 +143,8 @@ function cleanup() {
   response = await api('POST', `/api/sessions/${sessionId}/switch-cli`, { cli: 'opencode', fresh: true });
   ok(response.status === 200 && response.data.changed && response.data.fresh, 'explicit same-CLI native reset');
 
-  const records = JSON.parse(fs.readFileSync(path.join(ROOT, 'sessions.json'), 'utf8'));
+  const sessionDocument = JSON.parse(fs.readFileSync(path.join(dataRoot, 'sessions.json'), 'utf8'));
+  const records = Array.isArray(sessionDocument) ? sessionDocument : sessionDocument.data;
   const persisted = records.find(item => item.id === sessionId);
   ok(!!persisted?.cliStates?.claude && !!persisted?.cliStates?.codex && !!persisted?.cliStates?.opencode,
     'all visited CLI states persisted');

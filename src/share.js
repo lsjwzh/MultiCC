@@ -20,13 +20,12 @@
 // share or about ACCESS_TOKEN.
 
 const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
-const { resolveDataDir } = require('./paths');
+const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
 const { timingSafeEqualText } = require('./auth-security');
 
-const FILE = path.join(resolveDataDir(process.env.MULTICC_DATA_DIR), 'shares.json');
+const FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).sharesFile;
 let shares = {}; // token -> record
 
 function load() { try { shares = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch { shares = {}; } }

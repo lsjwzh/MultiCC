@@ -11,12 +11,11 @@
 //   • maxRestartsPerHour  — hard cap; over it the provider is parked
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
 const { execFile } = require('child_process');
-const { resolveDataDir } = require('./paths');
+const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
 
-const CONFIG_FILE = path.join(resolveDataDir(process.env.MULTICC_DATA_DIR), 'tunnel-config.json');
+const CONFIG_FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).tunnelConfigFile;
 const TAILSCALE_BIN = '/usr/local/bin/tailscale';
 const PHDDNS_APP = '/Applications/PhDDNS.app';
 

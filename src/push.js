@@ -11,14 +11,13 @@
 //  • Bark/Webhook URLs are hot-reloaded from the settings route; they live in
 //    the mutable `cfg` singleton (read as `push.cfg.X`, never destructured).
 const fs = require('fs');
-const path = require('path');
-const { resolveDataDir } = require('./paths');
+const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
 const http = require('http');
 const https = require('https');
 const webpush = require('web-push');
 
-const PUSH_SUBS_FILE = path.join(resolveDataDir(process.env.MULTICC_DATA_DIR), 'push_subscriptions.json');
+const PUSH_SUBS_FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).pushSubscriptionsFile;
 
 // Hot-reloadable channel config (Bark / Webhook).
 const cfg = {

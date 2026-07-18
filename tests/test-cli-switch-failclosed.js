@@ -8,18 +8,21 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
+const { assertTestDir } = require('../src/paths');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 3996;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'cli-switch-failclosed-test';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-cli-failclosed-'));
+const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const project = path.join(tmpRoot, 'project');
 const fakeCli = path.join(tmpRoot, 'fake-opencode.js');
 const countFile = path.join(tmpRoot, 'invocations');
 const fakeClaude = path.join(tmpRoot, 'fake-claude.js');
 const claudeCountFile = path.join(tmpRoot, 'claude-invocations');
 fs.mkdirSync(project, { recursive: true });
+fs.mkdirSync(dataRoot, { recursive: true });
 fs.writeFileSync(fakeCli, `#!/usr/bin/env node
 const fs = require('fs');
 const countFile = ${JSON.stringify(countFile)};
@@ -121,9 +124,7 @@ async function stopServer() {
 async function cleanup() {
   try { if (dirId) await api('DELETE', `/api/directories/${dirId}?force=1`); } catch (_) {}
   await stopServer();
-  for (const file of ['sessions.json', 'directories.json', 'events', 'chat_history', 'token_usage.json', 'token_daily.json']) {
-    try { fs.rmSync(path.join(ROOT, file), { recursive: true, force: true }); } catch (_) {}
-  }
+  assertTestDir(tmpRoot);
   try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (_) {}
 }
 
@@ -134,6 +135,7 @@ async function cleanup() {
       ...process.env,
       PORT: String(PORT),
       ACCESS_TOKEN: TOKEN,
+      MULTICC_DATA_DIR: dataRoot,
       OPENCODE_CMD: fakeCli,
       CLAUDE_CMD: fakeClaude,
       CODEX_CMD: '/usr/bin/true',
