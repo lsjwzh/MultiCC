@@ -44,15 +44,6 @@ function checkNativeDeps({
     failures.push({ dependency: 'better-sqlite3', message: errorMessage(error) });
   }
 
-  try {
-    const pty = requireFn('node-pty');
-    if (!pty || typeof pty.spawn !== 'function') {
-      throw new Error('module loaded without a spawn() function');
-    }
-  } catch (error) {
-    failures.push({ dependency: 'node-pty', message: errorMessage(error) });
-  }
-
   const onlyBetterSqlite = failures.length === 1
     && failures[0].dependency === 'better-sqlite3';
 
@@ -66,7 +57,6 @@ function checkNativeDeps({
     runtime: runtimeDetails(runtime),
     rebuildCommands: {
       'better-sqlite3': `cd ${shellQuote(cwd)} && npm rebuild better-sqlite3 --foreground-scripts`,
-      'node-pty': `cd ${shellQuote(cwd)} && npm rebuild node-pty --foreground-scripts`,
     },
   };
 }

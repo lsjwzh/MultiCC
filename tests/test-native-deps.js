@@ -5,7 +5,6 @@ const path = require('path');
 const {
   EXIT_BETTER_SQLITE_ONLY,
   EXIT_OK,
-  EXIT_OTHER_FAILURE,
   checkNativeDeps,
   formatReport,
 } = require('../scripts/check-native-deps');
@@ -17,7 +16,7 @@ const runtime = {
   arch: 'arm64',
 };
 
-function fakeRequire({ sqliteError, ptyError, onClose } = {}) {
+function fakeRequire({ sqliteError, onClose } = {}) {
   return name => {
     if (name === 'better-sqlite3') {
       return class FakeDatabase {
@@ -30,10 +29,6 @@ function fakeRequire({ sqliteError, ptyError, onClose } = {}) {
           if (onClose) onClose();
         }
       };
-    }
-    if (name === 'node-pty') {
-      if (ptyError) throw ptyError;
-      return { spawn() {} };
     }
     throw new Error(`unexpected require: ${name}`);
   };
@@ -73,15 +68,5 @@ assert.ok(
   sqliteReport.includes("cd '/tmp/MultiCC user'\"'\"'s copy'"),
   'repair path must be shell quoted'
 );
-
-const ptyFailure = checkNativeDeps({
-  requireFn: fakeRequire({ ptyError: new Error('native PTY unavailable') }),
-  runtime,
-  cwd: '/tmp/MultiCC',
-});
-assert.strictEqual(ptyFailure.ok, false);
-assert.strictEqual(ptyFailure.onlyBetterSqlite, false);
-assert.strictEqual(ptyFailure.exitCode, EXIT_OTHER_FAILURE);
-assert.match(formatReport(ptyFailure), /npm rebuild node-pty --foreground-scripts/);
 
 console.log('Native dependency check tests passed');
