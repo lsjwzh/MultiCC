@@ -8,8 +8,11 @@ import '../services/notification_service.dart';
 import '../services/settings_service.dart';
 
 bool _isRecoverableCodexReconnectErrorText(String text) {
-  return RegExp(r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(').hasMatch(text) &&
-      (text.contains('stream disconnected before completion') || text.contains('response.completed'));
+  return RegExp(
+        r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(',
+      ).hasMatch(text) &&
+      (text.contains('stream disconnected before completion') ||
+          text.contains('response.completed'));
 }
 
 class ChatProvider extends ChangeNotifier {
@@ -102,6 +105,7 @@ class ChatProvider extends ChangeNotifier {
   String get classifyGoal => _classifyGoal;
   String _classifyPhase = '';
   String get classifyPhase => _classifyPhase;
+
   /// Live classify-state letter (D/C/W/B/E/P) - drives the bar's tint.
   /// Server sends this as `classifyState` in the task_state event (the old
   /// `lifecycle` field was removed in 98c2674 / unified in 38bb6ce).
@@ -117,8 +121,8 @@ class ChatProvider extends ChangeNotifier {
     required this.sessionCwd,
     SessionCli initialCli = SessionCli.claude,
     this.onSessionConfigChanged,
-  })  : displayName = displayName ?? sessionName,
-        dirName = dirName ?? '' {
+  }) : displayName = displayName ?? sessionName,
+       dirName = dirName ?? '' {
     _cwd = sessionCwd;
     _cli = initialCli;
     _initService();
@@ -329,56 +333,61 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         break;
 
-      case 'chat_msg_meta': {
-        // Server saved a message and assigned its history id. Tag the newest
-        // still-un-id'd bubble of that role so its delete button goes live
-        // (matches web: tag last bubble of role that has no msgId yet).
-        final p = evt.payload as Map<String, dynamic>;
-        final id = p['id']?.toString();
-        final role = p['role']?.toString();
-        if (id != null && id.isNotEmpty && role != null) {
-          final wantUser = role == 'user';
-          for (var i = _messages.length - 1; i >= 0; i--) {
-            final m = _messages[i];
-            final isUser = m.role == MessageRole.user;
-            if (isUser == wantUser) {
-              if (m.id == null || m.id!.isEmpty) {
-                m.id = id;
-                notifyListeners();
+      case 'chat_msg_meta':
+        {
+          // Server saved a message and assigned its history id. Tag the newest
+          // still-un-id'd bubble of that role so its delete button goes live
+          // (matches web: tag last bubble of role that has no msgId yet).
+          final p = evt.payload as Map<String, dynamic>;
+          final id = p['id']?.toString();
+          final role = p['role']?.toString();
+          if (id != null && id.isNotEmpty && role != null) {
+            final wantUser = role == 'user';
+            for (var i = _messages.length - 1; i >= 0; i--) {
+              final m = _messages[i];
+              final isUser = m.role == MessageRole.user;
+              if (isUser == wantUser) {
+                if (m.id == null || m.id!.isEmpty) {
+                  m.id = id;
+                  notifyListeners();
+                }
+                break;
               }
-              break;
             }
           }
+          break;
         }
-        break;
-      }
 
-      case 'chat_msg_deleted': {
-        // Broadcast after a successful delete from any client. Idempotent:
-        // the initiator already removed it locally; this just syncs other
-        // clients (and is a no-op if the id is already gone).
-        final p = evt.payload as Map<String, dynamic>;
-        final id = p['id']?.toString();
-        if (id != null && id.isNotEmpty) removeMessageById(id);
-        break;
-      }
+      case 'chat_msg_deleted':
+        {
+          // Broadcast after a successful delete from any client. Idempotent:
+          // the initiator already removed it locally; this just syncs other
+          // clients (and is a no-op if the id is already gone).
+          final p = evt.payload as Map<String, dynamic>;
+          final id = p['id']?.toString();
+          if (id != null && id.isNotEmpty) removeMessageById(id);
+          break;
+        }
 
-      case 'task_state': {
-        // aux classify verdict for this session: {goal, phase, classifyState}.
-        // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
-        // renderAuxClassify.
-        final p = evt.payload as Map<String, dynamic>;
-        _classifyGoal = (p['goal'] ?? '').toString().trim();
-        _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
-        _classifyState = (p['classifyState'] ?? '').toString().toUpperCase();
-        notifyListeners();
-        break;
-      }
+      case 'task_state':
+        {
+          // aux classify verdict for this session: {goal, phase, classifyState}.
+          // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
+          // renderAuxClassify.
+          final p = evt.payload as Map<String, dynamic>;
+          _classifyGoal = (p['goal'] ?? '').toString().trim();
+          _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
+          _classifyState = (p['classifyState'] ?? '').toString().toUpperCase();
+          notifyListeners();
+          break;
+        }
 
       case 'role_token_stats':
         // Server pushes per-role token accounting after each turn:
         // payload.role = { main: {…}, sub: {…}|null, subByProvider: […] }
-        _lastRoleTokens = (evt.payload as Map<String, dynamic>)['role'] as Map<String, dynamic>?;
+        _lastRoleTokens =
+            (evt.payload as Map<String, dynamic>)['role']
+                as Map<String, dynamic>?;
         notifyListeners();
         break;
     }
@@ -463,7 +472,9 @@ class ChatProvider extends ChangeNotifier {
     // finishing streaming (because _finishStreaming() sets _currentMsg to null)
     if (_currentMsg != null) {
       if (msg['usage'] != null) {
-        _currentMsg!.usage = MessageUsage.fromJson(msg['usage'] as Map<String, dynamic>);
+        _currentMsg!.usage = MessageUsage.fromJson(
+          msg['usage'] as Map<String, dynamic>,
+        );
       }
 
       // Compute main-model tokens saved by offloading to sub-roles.
@@ -643,7 +654,10 @@ class ChatProvider extends ChangeNotifier {
     _historyLoading = true;
     notifyListeners();
     try {
-      final page = await _service.fetchHistoryPage(beforeId: cursor, limit: limit);
+      final page = await _service.fetchHistoryPage(
+        beforeId: cursor,
+        limit: limit,
+      );
       if (page.messages.isEmpty) {
         _historyExhausted = true;
         _historyHasMore = false;
@@ -680,17 +694,21 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Public actions ─────────────────────────────────────────────────────────
 
-  void sendMessage(String text, {bool goal = false, Map<String, dynamic>? goalLimits}) {
-    final t = text.trim();
-    if (t.isEmpty) return;
-    final ok = _service.send(t, goal: goal, goalLimits: goalLimits);
+  void sendMessage(
+    String text, {
+    bool goal = false,
+    Map<String, dynamic>? goalLimits,
+  }) {
+    final message = text.trim();
+    if (message.isEmpty) return;
+    final ok = _service.send(message, goal: goal, goalLimits: goalLimits);
     if (!ok) {
       // Half-open / dead socket — don't pretend the message was sent.
       _addSystemMsg(t('connectionLostRetry'));
       notifyListeners();
       return;
     }
-    _messages.add(ChatMessage(role: MessageRole.user, content: t));
+    _messages.add(ChatMessage(role: MessageRole.user, content: message));
     // User just sent a message -> resume auto-follow at the bottom, clear any
     // unread pill (mirrors the web client's forceScrollToBottom on send).
     _userPinnedAway = false;

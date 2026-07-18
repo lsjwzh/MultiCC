@@ -67,8 +67,6 @@ dependencies:
   # Terminal emulator widget
   xterm: ^4.0.0
 
-  # Time formatting
-  timeago: ^3.7.0
   http_parser: ^4.1.2
   flutter_local_notifications: ^20.1.0
   url_launcher: ^6.3.2

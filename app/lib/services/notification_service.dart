@@ -9,8 +9,9 @@ class NotificationService {
   /// Whether to request iOS notification permission at init. Defaults to true;
   /// set `--dart-define=SKIP_NOTIF_PROMPT=true` to suppress the launch-time
   /// permission alert (used for automated simulator runs).
-  static const bool _requestNotifPermission =
-      !bool.fromEnvironment('SKIP_NOTIF_PROMPT');
+  static const bool _requestNotifPermission = !bool.fromEnvironment(
+    'SKIP_NOTIF_PROMPT',
+  );
 
   /// Last time a notification fired for each id — used to de-dup the same
   /// verdict arriving over both the chat socket and the workspace socket.
@@ -43,7 +44,9 @@ class NotificationService {
       await _plugin
           .initialize(
             settings: InitializationSettings(
-              android: const AndroidInitializationSettings('@mipmap/ic_launcher'),
+              android: const AndroidInitializationSettings(
+                '@mipmap/ic_launcher',
+              ),
               iOS: DarwinInitializationSettings(
                 requestAlertPermission: _requestNotifPermission,
                 requestBadgePermission: _requestNotifPermission,

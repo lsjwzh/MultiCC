@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "MultiCC uses the microphone for voice input and real-time voice calls.";
+"NSSpeechRecognitionUsageDescription" = "MultiCC uses speech recognition to convert voice commands into text.";
