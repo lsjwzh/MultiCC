@@ -198,6 +198,19 @@ function safeProviderSummary(provider, appType, id) {
   const modelOptions = Array.isArray(provider.modelOptions)
     ? provider.modelOptions
     : (Array.isArray(provider.models) ? provider.models : (provider.models ? [provider.models] : []));
+  const aliasMap = {};
+  if (provider.aliasMap && typeof provider.aliasMap === 'object' && !Array.isArray(provider.aliasMap)) {
+    for (const [tier, entry] of Object.entries(provider.aliasMap)) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        aliasMap[tier] = Object.freeze({
+          model: entry.model == null ? '' : String(entry.model),
+          name: entry.name == null ? '' : String(entry.name),
+        });
+      } else if (entry != null) {
+        aliasMap[tier] = Object.freeze({ model: String(entry), name: '' });
+      }
+    }
+  }
   return Object.freeze({
     id: String(provider.id || id || ''),
     appType: String(provider.appType || appType || ''),
@@ -206,6 +219,9 @@ function safeProviderSummary(provider, appType, id) {
     baseUrl: baseUrl == null ? null : scrubString(baseUrl, new Set()),
     model: provider.model == null ? null : String(provider.model),
     modelOptions: Object.freeze(modelOptions.map(String)),
+    aliasMap: Object.freeze(aliasMap),
+    protocol: provider.protocol == null ? null : String(provider.protocol),
+    wireApi: provider.wireApi == null ? null : String(provider.wireApi),
     aliasOnly: !!provider.aliasOnly,
     useChatResponsesProxy: !!provider.useChatResponsesProxy,
     isOfficial: !!provider.isOfficial,
@@ -323,7 +339,9 @@ function createProviderRouterPort(options = {}) {
     const cprCall = () => router.buildChildEnv(base, routerInput(value), extra);
     if (mode === 'legacy') return legacyCall();
     if (mode === 'cpr') return cprCall();
-    return shadow('buildChildEnv', value, legacyCall, cprCall);
+    // Child-env construction may materialize Codex auth/config.  Shadow mode
+    // evaluates only the pure summary/model/spawn projections.
+    return legacyCall();
   }
 
   function resolveWireModel(model, resolution = {}) {
@@ -335,15 +353,21 @@ function createProviderRouterPort(options = {}) {
   }
 
   function providerSummary(appType, providerId) {
-    let provider;
-    if (mode === 'legacy') {
-      provider = requireMethod(legacy, 'getProviderSummary', 'legacy')(appType, providerId);
-    } else if (typeof providerStore.getProviderSummary === 'function') {
-      provider = providerStore.getProviderSummary(appType, providerId);
-    } else {
-      provider = providerStore.getProvider(appType, providerId);
-    }
-    return safeProviderSummary(provider, appType, providerId);
+    const legacyCall = () => safeProviderSummary(
+      requireMethod(legacy, 'getProviderSummary', 'legacy')(appType, providerId),
+      appType,
+      providerId,
+    );
+    const cprCall = () => safeProviderSummary(
+      typeof providerStore.getProviderSummary === 'function'
+        ? providerStore.getProviderSummary(appType, providerId)
+        : providerStore.getProvider(appType, providerId),
+      appType,
+      providerId,
+    );
+    if (mode === 'legacy') return legacyCall();
+    if (mode === 'cpr') return cprCall();
+    return shadow('providerSummary', null, legacyCall, cprCall);
   }
 
   function normalizeUsage(input, binding = null) {
@@ -360,7 +384,9 @@ function createProviderRouterPort(options = {}) {
     );
     if (mode === 'legacy') return legacyCall();
     if (mode === 'cpr') return cprCall();
-    return shadow('normalizeUsage', value, legacyCall, cprCall);
+    // Usage is an event stream, not a pure query: comparing it would duplicate
+    // normalization side effects and lies outside the read-only shadow scope.
+    return legacyCall();
   }
 
   // Only protocol mounts enter the port. CPR service, CC-Switch takeover,
@@ -376,6 +402,15 @@ function createProviderRouterPort(options = {}) {
     const onUsageObserved = typeof mountOptions.onUsageObserved === 'function'
       ? mountOptions.onUsageObserved
       : null;
+    if (mountOptions.protocols != null && !Array.isArray(mountOptions.protocols)) {
+      throw new ProviderRouterPortError('protocols must be an array', 'PROXY_PROTOCOL_INVALID');
+    }
+    const protocols = mountOptions.protocols == null
+      ? ['claude', 'codex']
+      : [...new Set(mountOptions.protocols.map(String))];
+    if (protocols.some(protocol => protocol !== 'claude' && protocol !== 'codex')) {
+      throw new ProviderRouterPortError('protocols may contain only claude and codex', 'PROXY_PROTOCOL_INVALID');
+    }
     const common = {
       getProvider,
       ...(embeddingPaths ? {
@@ -389,15 +424,20 @@ function createProviderRouterPort(options = {}) {
       ...(mountOptions.proxyBaseUrl ? { proxyBaseUrl: String(mountOptions.proxyBaseUrl) } : {}),
       onUsageEvent: onUsageObserved ? event => onUsageObserved(normalizeUsage(event)) : undefined,
     };
-    const claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(
-      app,
-      { ...common, ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}) },
-    );
-    const codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
-      app,
-      { ...common, ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
-    );
-    return Object.freeze({ claude, codex });
+    const mounted = {};
+    if (protocols.includes('claude')) {
+      mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(
+        app,
+        { ...common, ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}) },
+      );
+    }
+    if (protocols.includes('codex')) {
+      mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
+        app,
+        { ...common, ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
+      );
+    }
+    return Object.freeze(mounted);
   }
 
   return Object.freeze({

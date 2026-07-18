@@ -82,6 +82,8 @@ const providers = require('./src/providers');
 const { executeAuxHttp } = require('./src/aux-http');
 const tokenGlobal = require('./src/token-global');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
+const { createProviderRouterRuntime } = require('./src/provider-router-runtime');
+const { findProviderReferences } = require('./src/provider-references');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
 const {
@@ -100,7 +102,6 @@ const {
   buildHandoffCheckpoint,
   renderHandoffPrompt,
 } = require('./src/cli-switch');
-const { mountCodexProxy, mountClaudeProxy } = require('cli-provider-router');
 // Data-directory + persistence infrastructure. MULTICC_DATA_DIR (defaults to
 // __dirname) is the ONE knob to swap where state lives; every file path used to
 // resolve state (sessions.json, directories.json, journal, chat history, …)
@@ -127,6 +128,13 @@ const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } 
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
+const providerRouterRuntime = createProviderRouterRuntime({
+  env: process.env,
+  providers,
+  dataRoot: MULTICC_PATHS.root,
+  codexHomesDir: providers.CODEX_HOMES_DIR,
+  logger,
+});
 installConsoleRedaction(console);
 secureRuntimeData(MULTICC_PATHS);
 stateStore.setFailureReporter((error, meta) => {
@@ -414,7 +422,7 @@ function effectiveSessionModel(session) {
     const providerId = session.provider;
     if (providerId) {
       try {
-        const am = providers.getProviderSummary(appType, providerId)?.aliasMap;
+        const am = providerRouterRuntime.getProviderSummary(appType, providerId)?.aliasMap;
         const entry = am && am[session.model];
         if (entry && entry.model) return entry.model;
       } catch (_) { /* fall through */ }
@@ -424,7 +432,7 @@ function effectiveSessionModel(session) {
   const providerId = session.provider;
   if (providerId) {
     try {
-      const p = providers.getProviderSummary(appType, providerId);
+      const p = providerRouterRuntime.getProviderSummary(appType, providerId);
       if (p && p.model) return p.model;
       // Claude provider with custom base URL but no explicit ANTHROPIC_MODEL:
       // the provider's own env decides at spawn time; we have no concrete value
@@ -445,7 +453,7 @@ function effectiveSessionModel(session) {
 function effectiveSubagentModel(sa) {
   if (!sa || !sa.providerId || !sa.model) return null;
   try {
-    const am = providers.getProviderSummary('claude', sa.providerId)?.aliasMap;
+    const am = providerRouterRuntime.getProviderSummary('claude', sa.providerId)?.aliasMap;
     const entry = am && am[sa.model];
     if (entry && entry.model) return entry.model;
   } catch (_) { /* fall through */ }
@@ -530,7 +538,7 @@ function providerDefaultModel(appType, providerId) {
     return appType === 'claude' ? claudeDefaultModel() : null;
   }
   try {
-    const p = providers.getProviderSummary(appType, providerId);
+    const p = providerRouterRuntime.getProviderSummary(appType, providerId);
     if (!p) return null;
     // Alias-only relays (e.g. iFlytek) declare only alias targets and reject them
     // as literal --model values — never stamp one onto a session. Use the safe
@@ -555,7 +563,7 @@ function sessionProviderName(session) {
   const providerId = session && session.provider;
   if (!providerId) return null;
   try {
-    return providers.getProviderSummary(appTypeForCli(session.cli), providerId)?.name || providerId;
+    return providerRouterRuntime.getProviderSummary(appTypeForCli(session.cli), providerId)?.name || providerId;
   } catch (_) {
     return providerId;
   }
@@ -752,7 +760,7 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
   codexEnvConstraint: CODEX_ENV_CONSTRAINT,
   codexStayAlivePrompt: CODEX_STAY_ALIVE_PROMPT,
   multiccImgHint: MULTICC_IMG_HINT,
-  providers,
+  resolveSessionWireModel: providerRouterRuntime.resolveSessionWireModel,
   claudeDefaultModel,
   cliEffortLevel,
   normalizeEffort,
@@ -1901,7 +1909,7 @@ async function createSession(id) {
   // tmuxCreateSession) so terminal sessions honor their provider too — without
   // this they silently fell back to the default login. The codex session-id
   // capture below also uses this provider's CODEX_HOME.
-  const provEnv = providers.resolveSpawnEnv(persisted);
+  const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
   // tmux panes inherit the tmux *server's* global env (captured at its first
   // launch), which may carry ANTHROPIC_* routing vars leaked from the shell that
   // started multicc. For claude sessions, explicitly blank every routing key the
@@ -2109,15 +2117,22 @@ function recordRoleTokenUsage(info) {
   // usage must still appear in the live 主/辅 split without waiting for another turn.
   broadcastRoleTokenStats(info.sessionId);
 }
-mountClaudeProxy(app, { getProvider: providers.getProvider, onUsage: recordRoleTokenUsage });
+function recordUsageObserved(event) {
+  if (!roleTokenTracker.accumulateObserved(event)) return;
+  broadcastRoleTokenStats(event.sessionId);
+}
+providerRouterRuntime.mountProtocolProxies(app, {
+  protocols: ['claude'],
+  onUsageObserved: recordUsageObserved,
+});
 app.use(express.json({ limit: '50mb' }));
 
 // Codex Responses↔Chat 协议转换代理（国产服务商 DeepSeek/GLM/Qwen/MiniMax）。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
-mountCodexProxy(app, {
-  getProvider: providers.getProvider,
+providerRouterRuntime.mountProtocolProxies(app, {
+  protocols: ['codex'],
   getPort: () => PORT,
-  onUsage: recordRoleTokenUsage,
+  onUsageObserved: recordUsageObserved,
 });
 
 app.get('/api/sessions', (req, res) => {
@@ -2434,7 +2449,7 @@ function enrichAgentPresetDefaults(preset) {
   const defaultProviderId = resolveAgentPresetProviderId(preset);
   const cli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
   const defaultProviderName = defaultProviderId
-    ? (providers.getProviderSummary(cli, defaultProviderId)?.name || defaultProviderId)
+    ? (providerRouterRuntime.getProviderSummary(cli, defaultProviderId)?.name || defaultProviderId)
     : null;
   return { ...preset, defaultProviderId, defaultProviderName };
 }
@@ -3100,7 +3115,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     // Chat sessions pick it up on the next per-turn spawn; a warm streaming
     // process must be torn down so it relaunches with the new env.
     if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
-    const pname = v.value ? (providers.getProviderSummary(s.cli === 'codex' ? 'codex' : 'claude', v.value)?.name || v.value) : '默认登录';
+    const pname = v.value ? (providerRouterRuntime.getProviderSummary(s.cli === 'codex' ? 'codex' : 'claude', v.value)?.name || v.value) : '默认登录';
     appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
     // Push current classify state to chat so the classify bar updates immediately
     // (otherwise the chat page shows stale / blank until the next classify run).
@@ -3143,7 +3158,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
     const subApp2 = (s.cli === 'codex') ? 'codex' : 'claude';
     const saName = s.subagent
-      ? `${providers.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
+      ? `${providerRouterRuntime.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
       : '默认(随主)';
     appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
   }
@@ -4083,7 +4098,7 @@ app.get('/api/sessions/:id/bundle', (req, res) => {
     // 2) Provider state: env (claude ANTHROPIC_*, codex CODEX_HOME pointer)
     //    plus, for codex, the auth.json/config.toml file contents so the
     //    target machine can reconstruct the codex home.
-    const provEnv = providers.resolveSpawnEnv(s);
+    const provEnv = providerRouterRuntime.resolveSpawnEnv(s);
     const providerState = {
       providerId: s.provider, providerName: provEnv.providerName,
       env: provEnv.env || {}, codexFiles: {},
@@ -6541,7 +6556,7 @@ function saveProviderDefaults() {
 function validProviderId(cli, id) {
   if (id == null || id === '') return { ok: true, value: null };
   const appType = cli === 'codex' ? 'codex' : 'claude';
-  if (!providers.getProviderSummary(appType, String(id))) return { ok: false };
+  if (!providerRouterRuntime.getProviderSummary(appType, String(id))) return { ok: false };
   return { ok: true, value: String(id) };
 }
 
@@ -6734,13 +6749,21 @@ app.patch('/api/providers/:appType/:id', (req, res) => {
 
 app.delete('/api/providers/:appType/:id', (req, res) => {
   try {
-    const removed = providers.deleteProvider(req.params.appType, req.params.id);
-    // Clear any default that pointed at the deleted provider.
-    let changed = false;
-    for (const cli of ['claude', 'codex']) {
-      if (providerDefaults[cli] === req.params.id) { providerDefaults[cli] = null; changed = true; }
+    const references = findProviderReferences({
+      appType: req.params.appType,
+      providerId: req.params.id,
+      sessions: persistedSessions,
+      defaults: providerDefaults,
+      aux: auxConfig,
+    });
+    if (references.length) {
+      return res.status(409).json({
+        error: 'provider is still referenced',
+        code: 'PROVIDER_IN_USE',
+        references,
+      });
     }
-    if (changed) saveProviderDefaults();
+    const removed = providers.deleteProvider(req.params.appType, req.params.id);
     res.json({ ok: removed });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -7379,7 +7402,7 @@ function reconcileCodexRoleUsage(sessionName, usage) {
   };
   if (missing.inputTokens + missing.outputTokens + missing.cacheWrite + missing.cacheRead === 0) return;
   const providerId = persisted.provider || '_default_';
-  const summary = persisted.provider ? providers.getProviderSummary('codex', persisted.provider) : null;
+  const summary = persisted.provider ? providerRouterRuntime.getProviderSummary('codex', persisted.provider) : null;
   recordRoleTokenUsage({
     sessionId: sessionName,
     role: 'main',
@@ -10104,7 +10127,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   const promptText = renderPrompt(envelope);
   // Provider routing is resolved before every invocation so all runners consume
   // the same adapter-produced command contract.
-  const provEnv = providers.resolveSpawnEnv(persisted);
+  const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
   const invocationEnvelope = {
     ...envelope,
     spawnOpts: {
@@ -10149,7 +10172,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     // buildChildEnv strips inherited ANTHROPIC_* routing vars (which may have
     // leaked into the multicc server's own env) before applying the session's
     // provider env, so the per-session provider choice is always authoritative.
-    const { env: childEnv } = providers.buildChildEnv(process.env, persisted, {
+    const { env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
       TERM: 'dumb', NO_COLOR: '1',
       // Let the bundled multicc-trigger skill know who it is and where the
       // localhost API lives, so it can register/manage triggers for us.
@@ -10562,7 +10585,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider) 
   // vars before applying the provider env, so the provider choice is always
   // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
   // passed through; chat-stream uses it verbatim (no second process.env merge).
-  const { env: childEnv } = providers.buildChildEnv(process.env, persisted, {
+  const { env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
     TERM: 'dumb', NO_COLOR: '1',
     MULTICC_SESSION_ID: sessionName,
     MULTICC_DIR_ID: persisted.dirId || '',

@@ -7,7 +7,7 @@ const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 
 const claude = createClaudeAdapter({
-  cmd: 'claude', providers: { resolveSessionWireModel: model => model },
+  cmd: 'claude', resolveSessionWireModel: model => model,
   claudeDefaultModel: () => null, cliEffortLevel: () => null,
   normalizeEffort: () => null, debugLogClaudeInvoke: () => {},
 });
