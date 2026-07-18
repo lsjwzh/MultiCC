@@ -21,34 +21,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// realPathOf / isHomeOrAbove now live in the shared path-safety module so paths.js
+// and directories.js can never diverge again. Re-exported below for API compat.
+const { realPathOf, isHomeOrAbove } = require('./path-safety');
+
 const PKG_ROOT = path.resolve(__dirname, '..');
-
-// realpath-ify without throwing for missing paths. Resolve the nearest existing
-// ancestor first so macOS' /var -> /private/var symlink cannot make a missing
-// child look as if it were outside os.tmpdir().
-function realPathOf(p) {
-  const abs = path.resolve(p);
-  let cursor = abs;
-  const tail = [];
-  while (!fs.existsSync(cursor)) {
-    const parent = path.dirname(cursor);
-    if (parent === cursor) return abs;
-    tail.unshift(path.basename(cursor));
-    cursor = parent;
-  }
-  try { return path.join(fs.realpathSync(cursor), ...tail); }
-  catch (_) { return abs; }
-}
-
-// True if `p` resolves to $HOME, an ancestor of $HOME, or the filesystem root.
-function isHomeOrAbove(p) {
-  const rp = realPathOf(p);
-  const rh = realPathOf(os.homedir());
-  if (rp === rh) return true;
-  if (rh === rp || rh.startsWith(rp + path.sep)) return true;
-  if (rp === path.parse(rp).root) return true;
-  return false;
-}
 
 // Return the effective data directory for this process.
 //

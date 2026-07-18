@@ -1153,7 +1153,6 @@ express                 ^4.18.2        HTTP server and routing
 ws                      ^8.16.0        WebSocket server
 multer                  ^2.2.0         Bounded multipart file uploads
 web-push                ^3.6.7         VAPID push notifications
-node-pty                ^1.0.0         PTY fallback (terminal recovery)
 node-cron               ^4.2.1         Per-session schedule triggers
 chokidar                ^5.0.0         File-change triggers
 @larksuiteoapi/node-sdk ^1.67.0        Feishu/Lark long-connection bridge

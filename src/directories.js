@@ -7,10 +7,13 @@
 // never destructured). git helpers come from src/git.js. Imported into server.js
 // by destructuring, so existing call sites are unchanged.
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const state = require('./state');
 const { gitIsRepo, gitRun, WORKTREE_SUBDIR } = require('./git');
+// Shared with src/paths.js — the robust, symlink-ancestor-aware implementations.
+// (Previously duplicated here with a bare fs.realpathSync that threw for
+// not-yet-existing paths and did not collapse ancestor symlinks.)
+const { isHomeOrAbove, realPathOf } = require('./path-safety');
 
 // Reject directories that are far too large/heavy to be a session workspace.
 // The initial `git add -A` is run synchronously and would otherwise hash the
@@ -18,21 +21,6 @@ const { gitIsRepo, gitRun, WORKTREE_SUBDIR } = require('./git');
 const DIR_MAX_FILES = 50000;                       // > this many files → unsuitable
 const DIR_MAX_BYTES = 2 * 1024 * 1024 * 1024;      // > 2 GB of content → unsuitable
 const DIR_SCAN_TIME_MS = 3000;                     // hard ceiling on the scan itself
-
-// True if the path is the home directory, an ancestor of it, or a filesystem root.
-function isHomeOrAbove(p) {
-  const real = (x) => { try { return fs.realpathSync(x); } catch { return path.resolve(x); } };
-  const rp = real(p);
-  const rh = real(os.homedir());
-  if (rp === rh) return true;
-  if (rh === rp || rh.startsWith(rp + path.sep)) return true;  // rp is an ancestor of home
-  if (rp === path.parse(rp).root) return true;
-  return false;
-}
-
-function realPathOf(p) {
-  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
-}
 
 // Find an already-registered directory whose physical path matches `resolvedPath`.
 function findDirByPath(resolvedPath, excludeId) {
