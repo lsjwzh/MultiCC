@@ -9,11 +9,12 @@
 const path = require('path');
 const crypto = require('crypto');
 const { assertPort, REPOSITORY_PORT, GIT_PORT, SESSION_PORT, EVENT_PORT, FS_PORT, HELPER_PORT } = require('./ports');
+const stateTx = require('../state-tx');
 
 const ok = (data) => ({ ok: true, data });
 const err = (code, message, extra) => ({ ok: false, code, message, ...(extra ? { extra } : {}) });
 
-function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, newId = () => crypto.randomUUID() }) {
+function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, tx, newId = () => crypto.randomUUID() }) {
   assertPort('repository', repo, REPOSITORY_PORT);
   assertPort('git', git, GIT_PORT);
   assertPort('sessions', sessions, SESSION_PORT);
