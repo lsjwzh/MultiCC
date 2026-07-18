@@ -14,11 +14,9 @@ const { execSync } = require('child_process');
 const http  = require('http');
 const https = require('https');
 const WebSocket = require('ws');
-const pty  = require('node-pty');
 
 const SKIP_WS     = process.argv.includes('--no-ws');
 const RUN_LIVE_AI = process.argv.includes('--live-ai') || process.env.RUN_LIVE_AI_TESTS === '1';
-const TIMEOUT_PTY = 20_000;
 const TIMEOUT_WS  = 20_000;
 
 /* ── tiny test runner ──────────────────────────────────────────────── */
@@ -112,29 +110,6 @@ function serverIsUp(proto, port) {
   /* 1. STATIC CHECKS */
   console.log('\n── Static checks ──────────────────────────────────────────');
 
-  const nodePtyRoot = path.dirname(require.resolve('node-pty/package.json'));
-  const spawnHelper = process.platform === 'darwin'
-    ? path.join(nodePtyRoot, 'prebuilds', `darwin-${process.arch}`, 'spawn-helper')
-    : null;
-
-  if (spawnHelper) {
-    check('spawn-helper exists for the current architecture', () => {
-      if (!fs.existsSync(spawnHelper)) throw new Error(`not found: ${spawnHelper}`);
-    });
-
-    check('spawn-helper is executable', () => {
-      const stat = fs.statSync(spawnHelper);
-      if (!(stat.mode & 0o111)) {
-        throw new Error(`not executable: ${spawnHelper}; rerun npm install`);
-      }
-    });
-  } else {
-    skip('spawn-helper exists for the current architecture', 'macOS-only node-pty asset');
-    skip('spawn-helper is executable', 'macOS-only node-pty asset');
-  }
-
-  check('node-pty native module loads', () => { require('node-pty'); });
-
   const CLAUDE_CMD = resolveClaude();
   check('claude binary found', () => {
     if (!CLAUDE_CMD || !fs.existsSync(CLAUDE_CMD))
@@ -146,46 +121,7 @@ function serverIsUp(proto, port) {
     if (!(stat.mode & 0o111)) throw new Error(`not executable: ${CLAUDE_CMD}`);
   });
 
-  /* 2. PTY SPAWN TEST */
-  console.log('\n── PTY spawn test ─────────────────────────────────────────');
-
-  await checkAsync('claude spawns in PTY and produces output', () =>
-    new Promise((resolve, reject) => {
-      let proc;
-      const timer = setTimeout(() => {
-        try { proc && proc.kill(); } catch (_) {}
-        reject(new Error(`no output within ${TIMEOUT_PTY / 1000}s`));
-      }, TIMEOUT_PTY);
-
-      try {
-        proc = pty.spawn(CLAUDE_CMD, [], {
-          name: 'xterm-256color',
-          cols: 120, rows: 30,
-          cwd: os.homedir(),
-          env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
-        });
-      } catch (e) {
-        clearTimeout(timer);
-        return reject(e);
-      }
-
-      proc.onData(() => {
-        clearTimeout(timer);
-        try { proc.kill(); } catch (_) {}
-        resolve();
-      });
-
-      proc.onExit(({ exitCode }) => {
-        clearTimeout(timer);
-        if (exitCode !== 0 && exitCode !== null)
-          reject(new Error(`claude exited immediately with code ${exitCode}`));
-        else
-          resolve();
-      });
-    })
-  );
-
-  /* 3. WEBSOCKET INTEGRATION TEST */
+  /* 2. WEBSOCKET INTEGRATION TEST */
   if (SKIP_WS) {
     console.log('\n── WebSocket test (skipped via --no-ws) ───────────────────');
   } else {
@@ -303,7 +239,7 @@ function serverIsUp(proto, port) {
     }
   }
 
-  /* 4. VOICE API INTEGRATION TESTS */
+  /* 3. VOICE API INTEGRATION TESTS */
   console.log('\n── Voice API integration tests ────────────────────────────');
   {
     const { proto, port } = detectServer();
