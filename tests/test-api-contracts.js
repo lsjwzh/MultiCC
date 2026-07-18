@@ -62,6 +62,7 @@ test('all v1 schemas and OpenAPI references are self-contained and valid', () =>
   for (const endpoint of [
     '/api/v1/sessions',
     '/api/v1/sessions/{id}',
+    '/api/v1/directories/{id}/workspace',
     '/api/v1/providers',
     '/api/v1/sessions/{id}/waits',
     '/api/v1/sessions/{id}/dispatch',
@@ -166,7 +167,7 @@ test('WebSocket envelope is additive and dispatch result uses the same metadata 
   assertValid('dispatch-response.schema.json', dispatch);
 });
 
-test('v1 compatibility baseline catches required-field, property, enum, and const breaks', () => {
+test('v1 compatibility baseline catches required-field, property, enum, const, and ref breaks', () => {
   const baseline = readJson(path.join(CONTRACT_DIR, 'compatibility-baseline.json'));
   assert.deepEqual(assertBackwardCompatible(baseline, registry), { compatible: true, errors: [] });
 
@@ -178,20 +179,41 @@ test('v1 compatibility baseline catches required-field, property, enum, and cons
   brokenSession.required.push('futureRequiredField');
   brokenRegistry.set('session.schema.json', brokenSession);
   brokenRegistry.set(brokenSession.$id, brokenSession);
+
+  const brokenWorkspaceEntry = structuredClone(schema('workspace-entry.schema.json'));
+  brokenWorkspaceEntry.properties.session.$ref = 'provider.schema.json';
+  brokenRegistry.set('workspace-entry.schema.json', brokenWorkspaceEntry);
+  brokenRegistry.set(brokenWorkspaceEntry.$id, brokenWorkspaceEntry);
+  const brokenWorkspace = structuredClone(schema('workspace.schema.json'));
+  brokenWorkspace.properties.sessions.items.$ref = 'provider.schema.json';
+  brokenRegistry.set('workspace.schema.json', brokenWorkspace);
+  brokenRegistry.set(brokenWorkspace.$id, brokenWorkspace);
+  const brokenWorkspaceResponse = structuredClone(schema('workspace-response.schema.json'));
+  brokenWorkspaceResponse.properties.workspace.$ref = 'provider.schema.json';
+  brokenRegistry.set('workspace-response.schema.json', brokenWorkspaceResponse);
+  brokenRegistry.set(brokenWorkspaceResponse.$id, brokenWorkspaceResponse);
+
   const result = assertBackwardCompatible(baseline, brokenRegistry);
   assert.equal(result.compatible, false);
   assert.ok(result.errors.some(item => item.includes('required fields changed')));
   assert.ok(result.errors.some(item => item.includes('property removed: model')));
   assert.ok(result.errors.some(item => item.includes('enum value removed')));
   assert.ok(result.errors.some(item => item.includes('const changed')));
+  assert.ok(result.errors.filter(item => item.includes('ref changed')).length >= 3);
 });
 
 test('server composition uses canonical adapters without replacing legacy endpoints', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  assert.ok(source.includes("const { toSessionDto } = require('./src/session-dto')"));
+  assert.ok(source.includes("} = require('./src/session')"));
+  assert.ok(source.includes('createSessionQueryService'));
+  assert.ok(source.includes('createSessionStateService'));
+  assert.ok(source.includes('const sessionQuery = createSessionQueryService({'));
+  assert.ok(source.includes('const sessionState = createSessionStateService({'));
+  assert.ok(source.includes('const sessionWorkspace = createWorkspaceService({'));
   assert.ok(source.includes("app.get('/api/v1/sessions'"));
   assert.ok(source.includes("app.get('/api/sessions'"));
   assert.ok(source.includes("app.get('/api/v1/providers'"));
+  assert.ok(source.includes("app.get('/api/v1/directories/:id/workspace'"));
   assert.ok(source.includes("app.get('/api/v1/sessions/:id/waits'"));
   assert.ok(source.includes("app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler)"));
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));

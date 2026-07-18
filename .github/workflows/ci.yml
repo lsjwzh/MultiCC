@@ -29,3 +29,22 @@ jobs:
       - name: Validate API schemas, golden payloads, and compatibility
         run: npm run test:contracts
       - run: npm run test:native
+
+  isolated-integration:
+    name: Isolated HTTP and restart integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Run isolated server integration without live AI
+        env:
+          CLAUDE_CMD: /bin/true
+          CODEX_CMD: /bin/true
+          OPENCODE_CMD: /bin/true
+          ZCODE_CMD: /bin/true
+        run: npm run test:integration:isolated

@@ -38,6 +38,7 @@ key.pem
 
 # Backup files
 *.bak
+*.bak[0-9]*
 app_capacitor_bak/
 
 # Flutter build artifacts

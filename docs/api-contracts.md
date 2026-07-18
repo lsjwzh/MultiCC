@@ -11,6 +11,7 @@ The initial v1 endpoints are:
 
 - `GET /api/v1/sessions`
 - `GET /api/v1/sessions/{id}`
+- `GET /api/v1/directories/{id}/workspace`
 - `GET /api/v1/providers`
 - `GET /api/v1/sessions/{id}/waits`
 - `POST /api/v1/sessions/{id}/dispatch`
@@ -28,12 +29,12 @@ working directories. Registration endpoints may return a one-time callback
 secret to the caller that created it; that operational response must not be
 stored in status DTOs, logs, snapshots, or WebSocket events.
 
-Pure query, workspace, history and status-transition services now live under
-`src/session/`; see `docs/session-domain-boundaries.md`. They use injected ports
-and are intentionally not connected to the host yet. Until the compatibility
-switch is reviewed, `server.js` remains the active implementation for the v1
-routes and workspace/chat WebSocket paths; the new services are the tested
-target boundary, not a second runtime writer.
+Pure query, workspace, history and status-transition services live under
+`src/session/`; see `docs/session-domain-boundaries.md`. Query, state transition
+and the v1 workspace projection are composed through injected host ports. The
+legacy workspace/chat WebSocket payloads remain unchanged during client
+migration, and chat-history mutation remains a single runtime writer until its
+post-persist side effects are fully ported.
 
 ## Errors, request ids, and correlation ids
 

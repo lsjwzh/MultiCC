@@ -117,7 +117,12 @@ const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
-const { toSessionDto } = require('./src/session-dto');
+const {
+  compareWorkspaceSnapshots,
+  createSessionQueryService,
+  createSessionStateService,
+  createWorkspaceService,
+} = require('./src/session');
 const {
   createErrorDto,
   createWsEnvelope,
@@ -2228,38 +2233,64 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onUsageObserved: recordUsageObserved,
 });
 
-// Bounded v1 session view. Native ids, filesystem paths, prompts/memory and
-// process internals never cross this boundary. Legacy routes remain additive
-// compatibility surfaces while clients migrate to /api/v1.
-function sessionContractView(p) {
-  const terminal = sessions.get(p.id);
-  const chat = chatSessions.get(p.id);
-  const kind = p.kind || 'terminal';
-  const isChat = kind === 'chat';
-  const active = isChat
-    ? !!chat && (chat.clients.size > 0 || chat.isStreaming)
-    : !!terminal;
-  return toSessionDto({
-    id: p.id,
-    dirId: p.dirId || null,
-    cli: p.cli || 'claude',
-    kind,
-    label: p.label || null,
-    model: p.model || null,
-    effectiveModel: effectiveSessionModel(p),
-    effort: p.effort || null,
-    effectiveEffort: effectiveSessionEffort(p),
-    agent: p.agent || null,
-    provider: p.provider || null,
-    subagent: serializeSubagent(p.subagent),
-    autoCommit: !!p.autoCommit,
-    autoDispatch: !!p.autoDispatch,
-    createdAt: p.createdAt,
-    lastActivity: isChat ? chatLastActivity(p.id, chat) : (terminal ? terminal.lastActivity : null),
-    clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
-    active,
-    mergeState: p.dirId ? mergeStateCached(directories.get(p.dirId), p) : null,
-  });
+// Compose the host-independent session query boundary. Native ids, filesystem
+// paths, prompts/memory and process internals never enter these narrow ports or
+// cross the v1 DTO boundary. Legacy routes remain additive compatibility
+// surfaces while clients migrate to /api/v1.
+const sessionQuery = createSessionQueryService({
+  records: {
+    list: () => persistedSessions.values(),
+    get: id => persistedSessions.get(id),
+  },
+  runtime: {
+    read: (id, record) => {
+      const terminal = sessions.get(id);
+      const chat = chatSessions.get(id);
+      const kind = record.kind || 'terminal';
+      const isChat = kind === 'chat';
+      return {
+        effectiveModel: effectiveSessionModel(record),
+        effectiveEffort: effectiveSessionEffort(record),
+        subagent: serializeSubagent(record.subagent),
+        lastActivity: isChat ? chatLastActivity(id, chat) : (terminal ? terminal.lastActivity : null),
+        clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
+        active: isChat
+          ? !!chat && (chat.clients.size > 0 || chat.isStreaming)
+          : !!terminal,
+        mergeState: record.dirId ? mergeStateCached(directories.get(record.dirId), record) : null,
+      };
+    },
+  },
+});
+const sessionWorkspace = createWorkspaceService({
+  sessionQuery,
+  directories: {
+    list: () => directories.values(),
+    get: id => directories.get(id),
+  },
+  workspaceFacts: {
+    read: id => {
+      const status = workspaceStatus.get(id) || {
+        status: 'idle', lastActivity: 0, runStartedAt: null, runEndedAt: null,
+      };
+      const summary = sessionSummaries.get(id) || null;
+      const task = getTaskState(persistedSessions.get(id));
+      return {
+        ...status,
+        pendingNotes: pendingNotesFor(id).length,
+        summary: summary?.summary || null,
+        summaryAt: summary?.ts || null,
+        classifyState: task.classifyState || null,
+        goal: task.goal || '',
+        phase: task.phase || 'idle',
+      };
+    },
+  },
+});
+const SESSION_DOMAIN_SHADOW = envEnabled(process.env.MULTICC_SESSION_DOMAIN_SHADOW);
+
+function sessionContractView(record) {
+  return sessionQuery.project(record);
 }
 
 function v1Error(req, res, status, message, code) {
@@ -2267,18 +2298,42 @@ function v1Error(req, res, status, message, code) {
 }
 
 app.get('/api/v1/sessions', (req, res) => {
-  const list = [...persistedSessions.values()]
-    .filter(p => p.type !== 'aux' && p.type !== 'gateway')
-    .map(sessionContractView);
+  const list = sessionQuery.list();
   res.json(withApiMeta({ sessions: list, count: list.length }, requestContext(req, res)));
 });
 
 app.get('/api/v1/sessions/:id', (req, res) => {
-  const persisted = persistedSessions.get(req.params.id);
-  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') {
+  const session = sessionQuery.get(req.params.id);
+  if (!session) {
     return v1Error(req, res, 404, 'session not found', 'session_not_found');
   }
-  res.json(withApiMeta({ session: sessionContractView(persisted) }, requestContext(req, res)));
+  res.json(withApiMeta({ session }, requestContext(req, res)));
+});
+
+function workspaceContractView(snapshot) {
+  return {
+    directory: snapshot.directory,
+    sessions: snapshot.sessions.map(entry => ({
+      session: sessionQuery.get(entry.id),
+      status: entry.status,
+      statusUpdatedAt: entry.statusUpdatedAt,
+      runStartedAt: entry.runStartedAt,
+      runEndedAt: entry.runEndedAt,
+      pendingNotes: entry.pendingNotes,
+      summary: entry.summary,
+      summaryAt: entry.summaryAt,
+      classifyState: entry.classifyState,
+      goal: entry.goal,
+      phase: entry.phase,
+    })),
+    count: snapshot.count,
+  };
+}
+
+app.get('/api/v1/directories/:id/workspace', (req, res) => {
+  const snapshot = sessionWorkspace.snapshot(req.params.id);
+  if (!snapshot) return v1Error(req, res, 404, 'directory not found', 'directory_not_found');
+  res.json(withApiMeta({ workspace: workspaceContractView(snapshot) }, requestContext(req, res)));
 });
 
 app.get('/api/v1/providers', (req, res) => {
@@ -8916,43 +8971,23 @@ workspaceBroadcast = function (dirId, payload) {
   metaBroadcast({ ...payload, dirId });
 };
 
-// Statuses where the agent is actively working a turn (the run-time clock ticks).
-// Everything else — completed / idle / error / waiting — is a resting state that
-// freezes the clock.
-function isRunningStatus(s) { return s === 'thinking' || s === 'editing' || s === 'running'; }
+const sessionState = createSessionStateService({
+  clock: Date.now,
+  hasPendingWork: sessionId => {
+    const pending = chatSessions.get(sessionId)?.currentTask?.pendingDispatches;
+    return !!(pending && pending.length > 0);
+  },
+});
 
 // Update a session's live status and push the delta to workspace subscribers.
 function setSessionStatus(sessionId, patch) {
   const persisted = persistedSessions.get(sessionId);
   if (!persisted || persisted.type === 'aux') return;
   const prev = workspaceStatus.get(sessionId) || { status: 'idle', currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null };
-  const now = Date.now();
-  const nextStatus = patch.status !== undefined ? patch.status : prev.status;
-  // Run-time tracking: stamp runStartedAt when a turn begins (resting → working),
-  // freeze runEndedAt when it ends (working → resting). Mid-turn transitions
-  // between working states (thinking↔editing↔running) keep the original start.
-  let runStartedAt = prev.runStartedAt || null;
-  let runEndedAt = prev.runEndedAt !== undefined ? prev.runEndedAt : null;
-  const wasRunning = !!prev.runStartedAt && !prev.runEndedAt;
-  if (isRunningStatus(nextStatus)) {
-    if (!wasRunning) { runStartedAt = now; runEndedAt = null; }  // a new run segment begins
-  } else if (wasRunning) {
-    runEndedAt = now;  // the run just ended at a resting state — freeze the clock
-  }
-  // Dispatch idle fix: if this session has dispatched workers still awaiting
-  // 回流 (pendingDispatches), don't let it rest at idle/completed — show
-  // 'waiting' so the board reflects "等 worker 回报" instead of a misleading idle.
-  let effectiveStatus = nextStatus;
-  if (!isRunningStatus(nextStatus) && nextStatus !== 'waiting') {
-    const cs = chatSessions.get(sessionId);
-    const pending = cs?.currentTask?.pendingDispatches;
-    if (pending && pending.length > 0) effectiveStatus = 'waiting';
-  }
+  const transition = sessionState.transition(sessionId, prev, patch);
   const next = {
-    status: effectiveStatus,
+    ...transition.state,
     currentFile: patch.currentFile !== undefined ? patch.currentFile : prev.currentFile,
-    lastActivity: now,
-    runStartedAt, runEndedAt,
   };
   workspaceStatus.set(sessionId, next);
   // Only broadcast when the status or current file actually changed — callers may
@@ -8987,6 +9022,22 @@ function workspaceSnapshot(dirId) {
       classifyState: ts.classifyState || null,
       goal: ts.goal || '', phase: ts.phase || 'idle',
     });
+  }
+  if (SESSION_DOMAIN_SHADOW) {
+    try {
+      const comparison = compareWorkspaceSnapshots(out, sessionWorkspace.snapshot(dirId));
+      metrics.set('multicc_session_workspace_shadow_diffs', comparison.diffs.length);
+      if (!comparison.equal) {
+        logger.warn('session_workspace_shadow_diff', {
+          dirId,
+          count: comparison.diffs.length,
+          diffs: comparison.diffs,
+        });
+      }
+    } catch (error) {
+      metrics.inc('multicc_session_workspace_shadow_errors_total');
+      logger.warn('session_workspace_shadow_error', { dirId, error: error.message });
+    }
   }
   return out;
 }
