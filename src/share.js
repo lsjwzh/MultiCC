@@ -22,12 +22,15 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { resolveDataDir } = require('./paths');
+const { atomicWriteJson } = require('./runtime-security');
+const { timingSafeEqualText } = require('./auth-security');
 
-const FILE = path.join(__dirname, '..', 'shares.json');
+const FILE = path.join(resolveDataDir(process.env.MULTICC_DATA_DIR), 'shares.json');
 let shares = {}; // token -> record
 
 function load() { try { shares = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch { shares = {}; } }
-function save() { try { fs.writeFileSync(FILE, JSON.stringify(shares, null, 2)); } catch (e) { console.error('[share] save failed:', e.message); } }
+function save() { try { atomicWriteJson(FILE, shares); } catch (e) { console.error('[share] save failed:', e.message); } }
 load();
 
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
@@ -136,7 +139,7 @@ function access(token, { cookies = {}, password } = {}) {
   if (!r.pwHash) return { access: r.access, sessionId: r.sessionId }; // public link
   // Password-gated: accept a valid auth cookie or a correct inline password.
   const cookieName = `multicc_share_${token}`;
-  if (cookies[cookieName] && cookies[cookieName] === authCookieValue(r)) return { access: r.access, sessionId: r.sessionId };
+  if (cookies[cookieName] && timingSafeEqualText(cookies[cookieName], authCookieValue(r))) return { access: r.access, sessionId: r.sessionId };
   if (password && verifyPassword(token, password)) return { access: r.access, sessionId: r.sessionId };
   return null;
 }

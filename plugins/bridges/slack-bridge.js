@@ -21,6 +21,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+const { bridgeConfigFile, saveBridgeConfig } = require('./secure-config');
 
 // @slack/bolt is loaded lazily so the rest of MultiCC keeps working even when
 // the dependency has not been installed yet.
@@ -37,7 +38,7 @@ function loadSlack() {
 
 const router = express.Router();
 
-const CONFIG_FILE = path.join(__dirname, 'slack-config.json');
+const CONFIG_FILE = bridgeConfigFile('slack-config.json', path.join(__dirname, 'slack-config.json'));
 const GATEWAY_SESSION_ID = '__slack_gateway__';
 const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'slack-gateway');
 
@@ -47,7 +48,7 @@ function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
   catch (_) { return { botToken: '', appToken: '' }; }
 }
-function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
+function saveConfig(cfg) { saveBridgeConfig(CONFIG_FILE, cfg); }
 
 // ── Injected deps ──
 let _persistedSessions = null;

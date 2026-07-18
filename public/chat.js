@@ -24,7 +24,10 @@ async function initVoiceOutput() {
 async function speakText(text) {
   if (!_ttsEnabled || !text || _voiceOutputInstance) return;
 
-  const wsUrl = `ws${location.protocol.slice(4)}//${location.host}/ws/tts`;
+  const rawWsUrl = `ws${location.protocol.slice(4)}//${location.host}/ws/tts`;
+  let wsUrl;
+  try { wsUrl = await window.multiccWsUrl(rawWsUrl); }
+  catch (_) { return; }
 
   _voiceOutputInstance = new VoiceOutput({
     wsUrl,
@@ -70,15 +73,13 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
 /* ── Config ── */
 const _params = new URLSearchParams(location.search);
-const _token = _params.get('token') || '';
 let _cwd = _params.get('cwd') || '';
 const _sessionName = _params.get('session') || '';  // dashboard session name
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 
 function withToken(url) {
-  if (!_token) return url;
-  return url + (url.includes('?') ? '&' : '?') + `token=${encodeURIComponent(_token)}`;
+  return url;
 }
 
 /* ── Dynamic favicon + title from session name ── */
@@ -636,24 +637,32 @@ let _disconnectEpisodeId = 0;
 let _lastReconnectNoticeEpisode = 0;
 let _lastInitInfoLine = '';
 let _hiddenAt = 0;
+let _wsConnectGeneration = 0;
 
-function connect() {
+async function connect() {
   if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  const generation = ++_wsConnectGeneration;
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let url = `${proto}//${location.host}/ws/chat`;
   const params = [];
-  if (_token) params.push(`token=${encodeURIComponent(_token)}`);
   if (_cwd) params.push(`cwd=${encodeURIComponent(_cwd)}`);
   if (_sessionName) params.push(`session=${encodeURIComponent(_sessionName)}`);
   if (sessionId) params.push(`resume=${encodeURIComponent(sessionId)}`);
   if (params.length) url += '?' + params.join('&');
 
+  try { url = await window.multiccWsUrl(url); }
+  catch (_) {
+    if (generation === _wsConnectGeneration) _reconnectTimer = setTimeout(connect, 1000);
+    return;
+  }
+  if (generation !== _wsConnectGeneration) return;
+
   ws = new WebSocket(url);
   statusEl.textContent = 'Connecting...';
   statusEl.className = '';
 
-  dbg('ws', `connect() → ${url.replace(/token=[^&]*/, 'token=***')}`);
+  dbg('ws', `connect() → ${url.replace(/ticket=[^&]*/, 'ticket=***')}`);
 
   ws.onopen = () => {
     // During a restart the OLD server stays reachable until the detached
