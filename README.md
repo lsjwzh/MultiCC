@@ -1151,14 +1151,14 @@ In `/manage` → Bridges section, select the platform, enter your bot token or a
 ```
 express                 ^4.18.2        HTTP server and routing
 ws                      ^8.16.0        WebSocket server
-multer                  ^1.4.5-lts.1   Multipart file uploads
+multer                  ^2.2.0         Bounded multipart file uploads
 web-push                ^3.6.7         VAPID push notifications
 node-pty                ^1.0.0         PTY fallback (terminal recovery)
 node-cron               ^4.2.1         Per-session schedule triggers
 chokidar                ^5.0.0         File-change triggers
 @larksuiteoapi/node-sdk ^1.67.0        Feishu/Lark long-connection bridge
 discord.js              ^14.16.0       Discord Gateway bridge
-node-telegram-bot-api   ^0.66.0        Telegram Bot bridge
+node-telegram-bot-api   ^1.2.0         Telegram Bot bridge (lazy adapter)
 @slack/bolt             ^4.2.0         Slack Socket Mode bridge
 ```
 
