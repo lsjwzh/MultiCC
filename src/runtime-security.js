@@ -15,7 +15,7 @@ function secureFile(file) {
 }
 
 function secureRuntimeData(paths) {
-  const dirs = [paths.chatHistoryDir, paths.eventsDir, paths.journalDir].filter(Boolean);
+  const dirs = [paths.chatHistoryDir, paths.eventsDir, paths.journalDir, paths.detachedDir].filter(Boolean);
   if (paths.root && paths.root !== paths.pkgRoot) dirs.unshift(paths.root);
   for (const dir of dirs) {
     ensurePrivateDir(dir);
