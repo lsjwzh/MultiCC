@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/ws-envelope.schema.json",
+  "title": "WebSocket compatibility envelope v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["apiVersion", "type"],
+  "properties": {
+    "apiVersion": { "const": "v1" },
+    "type": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "requestId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
+    "correlationId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" }
+  }
+}

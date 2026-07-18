@@ -1,0 +1,100 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "MultiCC bounded API",
+    "version": "v1",
+    "description": "Versioned, additive contract surface. Legacy unversioned routes remain available during migration."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [{ "url": "/" }],
+  "paths": {
+    "/api/v1/sessions": {
+      "get": {
+        "operationId": "listSessionsV1",
+        "responses": {
+          "200": {
+            "description": "Bounded session DTOs",
+            "content": { "application/json": { "schema": { "$ref": "schemas/sessions-response.schema.json" } } }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}": {
+      "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+      "get": {
+        "operationId": "getSessionV1",
+        "responses": {
+          "200": {
+            "description": "One bounded session DTO",
+            "content": { "application/json": { "schema": { "$ref": "schemas/session-response.schema.json" } } }
+          },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/providers": {
+      "get": {
+        "operationId": "listProvidersV1",
+        "parameters": [{
+          "name": "appType", "in": "query", "required": false,
+          "schema": { "enum": ["claude", "codex"] }
+        }],
+        "responses": {
+          "200": {
+            "description": "Credential-free provider summaries",
+            "content": { "application/json": { "schema": { "$ref": "schemas/providers-response.schema.json" } } }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/waits": {
+      "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+      "get": {
+        "operationId": "listWaitsV1",
+        "responses": {
+          "200": {
+            "description": "Wait status without commands, callback secrets, URLs or paths",
+            "content": { "application/json": { "schema": { "$ref": "schemas/waits-response.schema.json" } } }
+          },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/dispatch": {
+      "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+      "post": {
+        "operationId": "dispatchV1",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "schemas/dispatch-request.schema.json" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Dispatch accepted",
+            "content": { "application/json": { "schema": { "$ref": "schemas/dispatch-response.schema.json" } } }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "SessionId": {
+        "name": "id", "in": "path", "required": true,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 160 }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Safe error response with request correlation",
+        "content": { "application/json": { "schema": { "$ref": "schemas/error.schema.json" } } }
+      }
+    }
+  }
+}

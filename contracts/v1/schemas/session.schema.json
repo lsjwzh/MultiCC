@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/session.schema.json",
+  "title": "Session DTO v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "autoDispatch", "createdAt", "lastActivity", "clients", "active", "mergeState"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "dirId": { "type": ["string", "null"], "maxLength": 160 },
+    "type": { "const": "session" },
+    "cli": { "enum": ["claude", "codex", "opencode", "zcode"] },
+    "kind": { "enum": ["chat", "terminal"] },
+    "label": { "type": ["string", "null"], "maxLength": 160 },
+    "model": { "type": ["string", "null"], "maxLength": 160 },
+    "effectiveModel": { "type": ["string", "null"], "maxLength": 160 },
+    "effort": { "type": ["string", "null"], "maxLength": 80 },
+    "effectiveEffort": { "type": ["string", "null"], "maxLength": 80 },
+    "agent": { "type": ["string", "null"], "maxLength": 160 },
+    "provider": { "type": ["string", "null"], "maxLength": 160 },
+    "subagent": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["providerId", "model", "effectiveModel"],
+      "properties": {
+        "providerId": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "effectiveModel": { "type": ["string", "null"], "maxLength": 160 }
+      }
+    },
+    "autoCommit": { "type": "boolean" },
+    "autoDispatch": { "type": "boolean" },
+    "createdAt": { "type": ["string", "null"], "format": "date-time" },
+    "lastActivity": { "type": ["string", "null"], "format": "date-time" },
+    "clients": { "type": "integer", "minimum": 0 },
+    "active": { "type": "boolean" },
+    "mergeState": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["ahead", "behind", "dirty", "mergeReady", "rebaseInProgress"],
+      "properties": {
+        "ahead": { "type": "number", "minimum": 0 },
+        "behind": { "type": "number", "minimum": 0 },
+        "dirty": { "type": "boolean" },
+        "mergeReady": { "type": "boolean" },
+        "rebaseInProgress": { "type": "boolean" }
+      }
+    }
+  }
+}

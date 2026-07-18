@@ -116,6 +116,16 @@ const stateTx = require('./src/state-tx');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler } = require('./src/http-errors');
+const { toSessionDto } = require('./src/session-dto');
+const {
+  createErrorDto,
+  createWsEnvelope,
+  requestContext,
+  toDispatchResultDto,
+  toProviderDto,
+  toWaitDto,
+  withApiMeta,
+} = require('./src/api-contract');
 const {
   createAuthSecurity,
   normalizeRedirect,
@@ -2136,6 +2146,67 @@ providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
   getPort: () => PORT,
   onUsageObserved: recordUsageObserved,
+});
+
+// Bounded v1 session view. Native ids, filesystem paths, prompts/memory and
+// process internals never cross this boundary. Legacy routes remain additive
+// compatibility surfaces while clients migrate to /api/v1.
+function sessionContractView(p) {
+  const terminal = sessions.get(p.id);
+  const chat = chatSessions.get(p.id);
+  const kind = p.kind || 'terminal';
+  const isChat = kind === 'chat';
+  const active = isChat
+    ? !!chat && (chat.clients.size > 0 || chat.isStreaming)
+    : !!terminal;
+  return toSessionDto({
+    id: p.id,
+    dirId: p.dirId || null,
+    cli: p.cli || 'claude',
+    kind,
+    label: p.label || null,
+    model: p.model || null,
+    effectiveModel: effectiveSessionModel(p),
+    effort: p.effort || null,
+    effectiveEffort: effectiveSessionEffort(p),
+    agent: p.agent || null,
+    provider: p.provider || null,
+    subagent: serializeSubagent(p.subagent),
+    autoCommit: !!p.autoCommit,
+    autoDispatch: !!p.autoDispatch,
+    createdAt: p.createdAt,
+    lastActivity: isChat ? chatLastActivity(p.id, chat) : (terminal ? terminal.lastActivity : null),
+    clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
+    active,
+    mergeState: p.dirId ? mergeStateCached(directories.get(p.dirId), p) : null,
+  });
+}
+
+function v1Error(req, res, status, message, code) {
+  return res.status(status).json(createErrorDto({ ...requestContext(req, res), message, code }));
+}
+
+app.get('/api/v1/sessions', (req, res) => {
+  const list = [...persistedSessions.values()]
+    .filter(p => p.type !== 'aux' && p.type !== 'gateway')
+    .map(sessionContractView);
+  res.json(withApiMeta({ sessions: list, count: list.length }, requestContext(req, res)));
+});
+
+app.get('/api/v1/sessions/:id', (req, res) => {
+  const persisted = persistedSessions.get(req.params.id);
+  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') {
+    return v1Error(req, res, 404, 'session not found', 'session_not_found');
+  }
+  res.json(withApiMeta({ session: sessionContractView(persisted) }, requestContext(req, res)));
+});
+
+app.get('/api/v1/providers', (req, res) => {
+  const appType = String(req.query.appType || '').trim();
+  const list = providers
+    .listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined)
+    .map(toProviderDto);
+  res.json(withApiMeta({ providers: list, count: list.length }, requestContext(req, res)));
 });
 
 app.get('/api/sessions', (req, res) => {
@@ -4920,24 +4991,57 @@ app.get('/api/sessions/:id/notes', (req, res) => {
 // reach for curl; without this door they "dispatch" into run-detached and the
 // ultra workers never hear about it. Result flows back automatically as a
 // 【target 回复】message via finalizeDispatch.
-app.post('/api/sessions/:id/dispatch', (req, res) => {
-  const from = persistedSessions.get(req.params.id);
-  if (!from) return res.status(404).json({ error: 'session not found' });
-  const target = String((req.body && req.body.target) || '').trim();
-  const message = String((req.body && req.body.message) || '').trim();
-  if (!target || !message) return res.status(400).json({ error: 'target 和 message 必填' });
-  if (target === from.id) return res.status(400).json({ error: '不能把任务分发给自己' });
-  const v = validateDispatchTarget(target, from.id);
-  if (!v.ok) return res.status(400).json({ error: v.error });
-  if (v.rec.dirId !== from.dirId) return res.status(400).json({ error: '只能分发给同目录会话' });
-  appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || target}`, from.id);
+async function executeDispatchContract(fromId, body) {
+  const from = persistedSessions.get(fromId);
+  if (!from) return { status: 404, error: 'session not found', code: 'session_not_found' };
+  const target = String((body && body.target) || '').trim();
+  const message = String((body && body.message) || '').trim();
+  if (!target || !message) return { status: 400, error: 'target 和 message 必填', code: 'invalid_dispatch' };
+  if (target === from.id) return { status: 400, error: '不能把任务分发给自己', code: 'self_dispatch' };
+  const validation = validateDispatchTarget(target, from.id);
+  if (!validation.ok) return { status: 400, error: validation.error, code: 'invalid_target' };
+  if (validation.rec.dirId !== from.dirId) return { status: 400, error: '只能分发给同目录会话', code: 'cross_directory' };
+  appendEvent(from.dirId, 'dispatch', `→ ${validation.rec.label || target}`, from.id);
   lastDispatchOutAt.set(from.id, Date.now());
-  dispatchToSession(target, message, { replyTo: from.id })
-    .then(r => r.ok
-      ? res.json({ ok: true, target, chatId: r.chatId, note: '任务已投递；完成后结果会以【回复】消息自动回流到本会话' })
-      : res.status(409).json({ ok: false, error: r.error }))
-    .catch(e => res.status(500).json({ ok: false, error: e.message }));
-});
+  try {
+    const result = await dispatchToSession(target, message, { replyTo: from.id });
+    if (!result.ok) return { status: 409, error: result.error, code: 'dispatch_rejected' };
+    return {
+      status: 200,
+      value: toDispatchResultDto({
+        ok: true,
+        target,
+        chatId: result.chatId,
+        note: '任务已投递；完成后结果会以【回复】消息自动回流到本会话',
+      }),
+    };
+  } catch (error) {
+    logger.error('dispatch_failed', { fromId, target, error: error && error.message });
+    return { status: 500, error: 'internal_error', code: 'internal_error' };
+  }
+}
+
+function sendDispatchContract(req, res, result) {
+  const context = requestContext(req, res);
+  if (result.status === 200) return res.json(withApiMeta(result.value, context));
+  return res.status(result.status).json(createErrorDto({
+    ...context,
+    message: result.error,
+    code: result.code,
+  }));
+}
+
+function dispatchContractHandler(req, res) {
+  executeDispatchContract(req.params.id, req.body)
+    .then(result => sendDispatchContract(req, res, result))
+    .catch(error => {
+      logger.error('dispatch_contract_failed', { sessionId: req.params.id, error: error && error.message });
+      sendDispatchContract(req, res, { status: 500, error: 'internal_error', code: 'internal_error' });
+    });
+}
+
+app.post('/api/sessions/:id/dispatch', dispatchContractHandler);
+app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler);
 
 // Directory event log.
 app.get('/api/directories/:id/events', (req, res) => {
@@ -5850,8 +5954,12 @@ function hasNotifyConsumer(sessionId) {
 // terminalBroadcast / chatBroadcast / workspaceBroadcast / the aux hub's
 // broadcast() — previously this "iterate clients + JSON send" body was copy-
 // pasted at ~9 sites.
+function sendWs(client, payload, context) {
+  client.send(JSON.stringify(createWsEnvelope(payload, context)));
+}
+
 function broadcastTo(clients, payload) {
-  const json = JSON.stringify(payload);
+  const json = JSON.stringify(createWsEnvelope(payload));
   for (const client of clients) {
     if (client.readyState === WebSocket.OPEN) {
       try { client.send(json); } catch (_) {}
@@ -8753,7 +8861,7 @@ function workspaceSnapshot(dirId) {
 function handleWorkspaceWs(ws, req, urlObj) {
   const dirId = urlObj.searchParams.get('dirId') || '';
   if (!directories.has(dirId)) {
-    ws.send(JSON.stringify({ type: 'error', error: 'unknown directory' }));
+    sendWs(ws, { type: 'error', error: 'unknown directory' });
     ws.close();
     return;
   }
@@ -8762,11 +8870,11 @@ function handleWorkspaceWs(ws, req, urlObj) {
   set.add(ws);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  ws.send(JSON.stringify({
+  sendWs(ws, {
     type: 'snapshot', dirId,
     sessions: workspaceSnapshot(dirId),
     events: recentEvents(dirId),
-  }));
+  });
   ws.on('close', () => {
     set.delete(ws);
     if (set.size === 0) workspaceClients.delete(dirId);
@@ -8787,7 +8895,7 @@ function handleMetaWs(ws, req) {
                  sessions: workspaceSnapshot(dirId),
                  events: recentEvents(dirId) });
   }
-  ws.send(JSON.stringify({ type: 'meta_snapshot', fleet }));
+  sendWs(ws, { type: 'meta_snapshot', fleet });
   ws.on('close', () => { metaClients.delete(ws); });
 }
 
@@ -10629,6 +10737,19 @@ app.get('/api/sessions/:id/waits', async (req, res) => {
   }
 });
 
+app.get('/api/v1/sessions/:id/waits', async (req, res) => {
+  const session = persistedSessions.get(req.params.id);
+  if (!session) return v1Error(req, res, 404, 'session not found', 'session_not_found');
+  try {
+    const durableWaits = await orchestrationRuntime.listForSession(session.id);
+    const legacyWaits = waitInjector.listForSession(session.id).map(wait => ({ ...wait, status: 'pending' }));
+    const waits = [...durableWaits, ...legacyWaits].map(toWaitDto);
+    res.json(withApiMeta({ waits, count: waits.length }, requestContext(req, res)));
+  } catch (error) {
+    v1Error(req, res, 500, 'failed to list waits', 'wait_list_failed', { cause: error });
+  }
+});
+
 app.delete('/api/wait/:wid', async (req, res) => {
   try {
     let result = await orchestrationRuntime.cancel(req.params.wid);
@@ -10874,20 +10995,20 @@ function handleChatWs(ws, req, urlObj) {
   const sessionName = urlObj.searchParams.get('session') || '_default';
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
-    ws.send(JSON.stringify({ type: 'error', error:
-      `Chat session "${sessionName}" does not exist. Create it via the dashboard first.` }));
+    sendWs(ws, { type: 'error', error:
+      `Chat session "${sessionName}" does not exist. Create it via the dashboard first.` });
     ws.close();
     return;
   }
   if (persisted.kind && persisted.kind !== 'chat') {
-    ws.send(JSON.stringify({ type: 'error', error:
-      `Session "${sessionName}" is not a chat session (kind=${persisted.kind}).` }));
+    sendWs(ws, { type: 'error', error:
+      `Session "${sessionName}" is not a chat session (kind=${persisted.kind}).` });
     ws.close();
     return;
   }
   if (invalidSessions.has(sessionName)) {
-    ws.send(JSON.stringify({ type: 'error', error:
-      `会话已失效（${invalidSessions.get(sessionName)}），请删除后重建。` }));
+    sendWs(ws, { type: 'error', error:
+      `会话已失效（${invalidSessions.get(sessionName)}），请删除后重建。` });
     ws.close();
     return;
   }
@@ -10961,7 +11082,7 @@ function handleChatWs(ws, req, urlObj) {
     }
   }
 
-  ws.send(JSON.stringify({
+  sendWs(ws, {
     type: 'system', subtype: 'init',
     cwd: cs.cwd, session: sessionName, session_id: sessionName,
     cli: cs.cli,
@@ -10977,7 +11098,7 @@ function handleChatWs(ws, req, urlObj) {
     cliStates: cliStateSummary(persisted),
     cliAvailability: cliAvailabilitySummary(),
     pendingCliHandoff: cliHandoffSummary(persisted),
-  }));
+  });
 
   // Replay saved history + in-progress assistant response (if any).
   // Send only the newest page over WS on connect; older messages are fetched
@@ -11008,13 +11129,13 @@ function handleChatWs(ws, req, urlObj) {
   const tokenUsage = getTokenUsage();
   const sessionTokenUsage = tokenUsage[sessionName] || null;
   if (replayMessages.length > 0 || sessionTokenUsage) {
-    ws.send(JSON.stringify({ type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore }));
+    sendWs(ws, { type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore });
     // Seed the aux classify bar with the current task snapshot on connect, so
     // the goal/phase shows immediately (not only after the next classify).
     try {
       const ts0 = getTaskState(persistedSessions.get(sessionName));
       if (ts0 && (ts0.goal || (ts0.phase && ts0.phase !== 'idle'))) {
-        ws.send(JSON.stringify({ type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null }));
+        sendWs(ws, { type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null });
       }
     } catch (_) {}
     // If chat_history already includes the in-progress assistant message
@@ -11031,7 +11152,7 @@ function handleChatWs(ws, req, urlObj) {
   // If a stream is in progress, replay buffered events so reconnected client catches up
   if (cs.isStreaming && cs.streamReplay.length > 0) {
     for (const evt of cs.streamReplay) {
-      try { ws.send(JSON.stringify(evt)); } catch (_) {}
+      try { sendWs(ws, evt); } catch (_) {}
     }
   }
 
@@ -11043,7 +11164,7 @@ function handleChatWs(ws, req, urlObj) {
       const msg = JSON.parse(raw.toString());
       // Heartbeat is always allowed.
       if (msg.type === 'ping') {
-        try { ws.send(JSON.stringify({ type: 'pong' })); } catch (_) {}
+        try { sendWs(ws, { type: 'pong' }); } catch (_) {}
         return;
       }
       // ── Share-scope gate ──
@@ -11257,9 +11378,9 @@ wss.on('connection', async (ws, req) => {
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
     // Send current status + recent history on connect
-    ws.send(JSON.stringify({ type: 'aux_init', status: auxQueue.getStatus(), health: { ...auxQueue.health } }));
+    sendWs(ws, { type: 'aux_init', status: auxQueue.getStatus(), health: { ...auxQueue.health } });
     const history = loadChatHistory(AUX_SESSION_ID);
-    ws.send(JSON.stringify({ type: 'aux_history', messages: history.slice(-100) }));
+    sendWs(ws, { type: 'aux_history', messages: history.slice(-100) });
     ws.on('close', () => { auxQueue.clients.delete(ws); });
     return;
   }
@@ -11273,15 +11394,15 @@ wss.on('connection', async (ws, req) => {
   } else {
     const persisted = persistedSessions.get(sessionId);
     if (!persisted) {
-      ws.send(JSON.stringify({ type: 'error', data:
+      sendWs(ws, { type: 'error', data:
         `Session ${sessionId} does not exist.\r\n` +
-        `Create one in the dashboard first (Manage → pick a directory → + Terminal).\r\n` }));
+        `Create one in the dashboard first (Manage → pick a directory → + Terminal).\r\n` });
       ws.close();
       return;
     }
     if (persisted.kind && persisted.kind !== 'terminal') {
-      ws.send(JSON.stringify({ type: 'error', data:
-        `Session ${sessionId} is a ${persisted.kind} session, not a terminal.\r\n` }));
+      sendWs(ws, { type: 'error', data:
+        `Session ${sessionId} is a ${persisted.kind} session, not a terminal.\r\n` });
       ws.close();
       return;
     }
@@ -11293,7 +11414,7 @@ wss.on('connection', async (ws, req) => {
       const msg = `Failed to launch ${cliLabel}: ${err.message}\r\n` +
         `Make sure "${cliLabel}" is installed and available in PATH.\r\n` +
         `You can also set the ${cliLabel.toUpperCase()}_CMD environment variable.\r\n`;
-      ws.send(JSON.stringify({ type: 'error', data: msg }));
+      sendWs(ws, { type: 'error', data: msg });
       ws.close();
       return;
     }
@@ -11306,7 +11427,7 @@ wss.on('connection', async (ws, req) => {
   ws.on('pong', () => { ws.isAlive = true; });
 
   // Tell client its session ID
-  ws.send(JSON.stringify({ type: 'session_id', id: sessionId, cli: session.cli || 'claude' }));
+  sendWs(ws, { type: 'session_id', id: sessionId, cli: session.cli || 'claude' });
 
   // Don't replay buffered output — the toggle-resize trick below forces a full TUI
   // redraw at the client's actual dimensions, which is the only way to get correct layout.
@@ -11376,7 +11497,7 @@ wss.on('connection', async (ws, req) => {
         const tmpPath = path.join(os.tmpdir(), safeName);
         fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'), { mode: 0o600 });
         console.log(`[multicc] Saved upload: ${tmpPath}`);
-        ws.send(JSON.stringify({ type: 'file_saved', tempId, path: tmpPath, name }));
+        sendWs(ws, { type: 'file_saved', tempId, path: tmpPath, name });
       }
     } catch (e) {
       console.error('[multicc] Bad message:', e.message, e.stack);
