@@ -46,7 +46,18 @@ fs.mkdirSync(projA, { recursive: true });
   base = `http://127.0.0.1:${port}`;
   srv = spawn('node', ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), MULTICC_DATA_DIR: dataRoot },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      MULTICC_DATA_DIR: dataRoot,
+      // Successful quick-commit must not depend on a developer machine's
+      // global Git identity. CI runners commonly have none configured.
+      GIT_CONFIG_GLOBAL: os.devNull,
+      GIT_CONFIG_SYSTEM: os.devNull,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'user.useConfigOnly',
+      GIT_CONFIG_VALUE_0: 'true',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverStderr = '';

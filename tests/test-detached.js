@@ -26,6 +26,19 @@ const waitInjector = require('../src/wait-injector');
 function sh(cmd) { return cp.execSync(cmd, { shell: '/bin/sh' }).toString(); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function shq(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+async function waitForPath(filePath, timeoutMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (fs.existsSync(filePath)) return;
+    await sleep(20);
+  }
+  throw new Error(`timed out waiting for ${path.basename(filePath)}`);
+}
+
 async function waitForDone(job, timeoutMs = 8000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -38,8 +51,26 @@ async function waitForDone(job, timeoutMs = 8000) {
 
 async function testExitCodeAndOutput() {
   // `exit 7` must be contained in a subshell so the wrapper still writes done.
-  const job = detached.launch({ command: 'echo OUT; echo ERR 1>&2; exit 7', label: 't1' });
-  assert.strictEqual(sh(job.pollCmd), '', 'pollCmd should be empty before done');
+  // Use a file handshake instead of assuming the detached process cannot
+  // finish before the first poll on a fast CI runner.
+  const readyPath = path.join(testRoot, 't1.ready');
+  const releasePath = path.join(testRoot, 't1.release');
+  const command = [
+    `printf 'ready\\n' > ${shq(readyPath)}`,
+    `while [ ! -f ${shq(releasePath)} ]; do sleep 0.02; done`,
+    'echo OUT',
+    'echo ERR 1>&2',
+    'exit 7',
+  ].join('\n');
+  const job = detached.launch({ command, label: 't1' });
+  try {
+    await waitForPath(readyPath);
+    assert.strictEqual(sh(job.pollCmd), '', 'pollCmd should be empty while the job is gated');
+  } finally {
+    // Always release the detached process so a failed assertion cannot leave
+    // a background wrapper waiting after the test exits.
+    fs.writeFileSync(releasePath, 'release\n', { mode: 0o600 });
+  }
   const out = await waitForDone(job);
   assert.ok(out.includes('exit=7'), 'exit code 7 captured');
   assert.ok(out.includes('OUT'), 'stdout captured');
