@@ -174,3 +174,42 @@
 - 每批完成后 `git commit` + 合并回 main（`curl -X POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/merge`），更新本表 + 公共记忆进度。
 - 下个会话开工前先 `sync`（`curl -X POST $MULTICC_BASE_URL/api/sessions/<id>/sync`）拉最新基分支。
 - 遇到 NUL / worktree 测试环境坑，参见 §3。
+
+---
+
+## 8. 2026-07-18 架构复审后的执行进度
+
+旧基线保留用于追踪历史；当前主线已经经历持久化、Git actor、durable orchestration、ProviderRouterPort、Session bounded context 和安全边界重构，不能再按第 1 节的旧行号机械搬运。
+
+### 当前热点基线
+
+| 文件 | 当前约行数 | 判断 |
+|---|---:|---|
+| `server.js` | 12,481 | 仍是最大风险中心；只允许 composition/薄接线，禁止新增业务状态机 |
+| `public/manage.js` | 约 7,356 | 继续用 classic/IIFE 共享层渐进迁移，暂不整体改 ESM |
+| `public/chat.js` | 5,558 | 等 Chat turn 纯模块接线稳定后再拆 WS controller |
+| `app/lib/screens/main_shell.dart` | 3,269 | 机械 widget 拆分已显著推进，剩余状态/导航耦合需单独批次 |
+| `app/lib/screens/chat_screen.dart` | 1,676 | 大 widget 已拆出；下一步收敛 share/config/state ownership |
+
+### 第一波（已完成并联合验收）
+
+- Session query/workspace/chat-history 正式切到 bounded-context canonical service；旧 payload 通过 presenter 保持兼容。功能提交 `a71ed46`。
+- 五个 IM bridge 的 gateway 生命周期、内部 Chat WS、echo、log/SSE、dispatch strip 和 chunking 统一到 `plugins/bridges/gateway-core.js`，adapter 删除约 1,000 行重复。功能提交 `a2aa984`。
+- `src/path-safety.js` 成为 `realPathOf/isHomeOrAbove` 唯一实现；移除没有生产调用的 `node-pty` 及其安装/检测/fallback。功能提交 `12cf1bf`。
+- 运行时写入治理清单随 Bridge 重构更新，避免重构后护栏锚点失效。提交 `eaf42c7`。
+- 最新主线完成 `npm ci`、完整 `npm test` 和 `test:integration:isolated`；旧 worktree 的 CPR 0.2 假失败已通过锁文件重装消除。
+
+### 第二波（纯模块基础已完成）
+
+- `src/chat/`：turn request、retry policy、post-turn routing、runtime store 和窄 ports；13 项 characterization tests。功能提交 `2f8a90c`。本批不接生产入口。
+- `src/http/`：品牌化 Domain/Infrastructure/HttpError、可信映射、白名单 presenter、async route、diagnostic result；普通错误伪造 `status/statusCode` 仍归 500。功能提交 `f91f696`。本批不接生产路由。
+- `public/api-client.js` + `public/provider-catalog.js`：共享同源请求/错误元数据和 Provider 白名单归一；Provider 管理区已迁移，旧 DOM/payload 保持兼容。功能提交 `cce9b44`。
+- 新增 Chat/HTTP/Web/Provider 测试已纳入默认 deterministic 门，防止“模块已合入但默认 CI 不执行”。
+
+### 下一批生产接线顺序
+
+1. 先在 `server.js` 接 Chat request admission 与 runtime claim，只迁 duplicate-before-interrupt、durable-before-spawn 两个守卫；保持 Claude/Codex runner 分离。
+2. 再接 retry policy 与 post-turn effects；dispatch/outbox ack 必须有磁盘 delivery proof，任何 provider-route 失败都必须释放 running claim。
+3. HTTP 路由按领域逐批迁到 `asyncRoute → DomainError → presenter`；先选 directory/memo/memory/upload，再迁 git/session/orchestration/provider/voice。每批保持 legacy 顶层 `error` 和现有兼容字段。
+4. Web 继续迁 memo/通知/voice 共享 controller；在 inline handler 清理前不改 ESM。
+5. 最后拆 `ChatWsController` 和剩余 Flutter God Screen。删除旧实现必须以 shadow/characterization/isolated HTTP 证据为前提，不做一次性大爆炸重写。
