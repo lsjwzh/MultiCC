@@ -61,11 +61,13 @@ class _WorkspaceEntry {
   final WorkspaceService service;
   final ValueNotifier<DirectoryWorkspaceSnapshot> snapshot;
   final VoidCallback listener;
+  final int generation;
 
   const _WorkspaceEntry({
     required this.service,
     required this.snapshot,
     required this.listener,
+    required this.generation,
   });
 }
 
@@ -78,10 +80,12 @@ class DashboardWorkspaceStore {
   final SettingsService settings;
   final WorkspaceServiceFactory _createService;
   final Map<String, _WorkspaceEntry> _entries = {};
+  final Map<String, int> _directoryGenerations = {};
+  int _nextGeneration = 0;
   bool _disposed = false;
 
-  DirectoryWorkspaceSnapshotListener? onDirectorySnapshot;
-  void Function(String sessionId, String state, String message)? onNotify;
+  DirectoryWorkspaceSnapshotListener? _onDirectorySnapshot;
+  void Function(String sessionId, String state, String message)? _onNotify;
 
   DashboardWorkspaceStore({
     required this.settings,
@@ -94,6 +98,26 @@ class DashboardWorkspaceStore {
   int get connectionCount => _entries.length;
 
   Set<String> get directoryIds => Set.unmodifiable(_entries.keys.toSet());
+
+  /// Installs the dashboard host callbacks as one lifecycle-owned binding.
+  ///
+  /// Widgets must not assign transport callbacks while building. The
+  /// dashboard workspace coordinator owns this binding and clears it
+  /// before detaching from its SessionManager source.
+  void configureCallbacks({
+    required DirectoryWorkspaceSnapshotListener onDirectorySnapshot,
+    required void Function(String sessionId, String state, String message)
+    onNotify,
+  }) {
+    if (_disposed) return;
+    _onDirectorySnapshot = onDirectorySnapshot;
+    _onNotify = onNotify;
+  }
+
+  void clearCallbacks() {
+    _onDirectorySnapshot = null;
+    _onNotify = null;
+  }
 
   /// Reconcile live connections with the current dashboard directory list.
   /// Repeated calls are idempotent and never reconnect an existing directory.
@@ -119,22 +143,28 @@ class DashboardWorkspaceStore {
     final snapshot = ValueNotifier<DirectoryWorkspaceSnapshot>(
       DirectoryWorkspaceSnapshot.fromService(service),
     );
+    final generation = ++_nextGeneration;
+    _directoryGenerations[dirId] = generation;
+    late final _WorkspaceEntry entry;
     void listener() {
-      if (_disposed) return;
+      if (_disposed || !identical(_entries[dirId], entry)) return;
       final next = DirectoryWorkspaceSnapshot.fromService(service);
       snapshot.value = next;
-      onDirectorySnapshot?.call(dirId, next);
+      _onDirectorySnapshot?.call(dirId, next);
     }
 
     service.onNotify = (sessionId, state, message) {
-      if (!_disposed) onNotify?.call(sessionId, state, message);
+      if (_disposed || !identical(_entries[dirId], entry)) return;
+      _onNotify?.call(sessionId, state, message);
     };
     service.addListener(listener);
-    _entries[dirId] = _WorkspaceEntry(
+    entry = _WorkspaceEntry(
       service: service,
       snapshot: snapshot,
       listener: listener,
+      generation: generation,
     );
+    _entries[dirId] = entry;
     service.connect();
   }
 
@@ -147,16 +177,20 @@ class DashboardWorkspaceStore {
   void _removeDirectory(String dirId, {required bool reportEmpty}) {
     final entry = _entries.remove(dirId);
     if (entry == null) return;
+    entry.service.onNotify = null;
     entry.service.removeListener(entry.listener);
     entry.service.dispose();
     entry.snapshot.dispose();
     if (reportEmpty) {
-      // Reconciliation is normally called while Flutter is building from a
-      // SessionManager update. Defer aggregate cleanup to avoid notifying that
-      // manager synchronously during its descendant's build.
+      // Reconciliation runs from a SessionManager listener. Defer aggregate
+      // cleanup so the manager finishes its current notification before the
+      // workspace projection publishes the removal.
       scheduleMicrotask(() {
-        if (!_disposed) {
-          onDirectorySnapshot?.call(dirId, DirectoryWorkspaceSnapshot.empty);
+        final isLatestRemoval =
+            _directoryGenerations[dirId] == entry.generation &&
+            !_entries.containsKey(dirId);
+        if (!_disposed && isLatestRemoval) {
+          _onDirectorySnapshot?.call(dirId, DirectoryWorkspaceSnapshot.empty);
         }
       });
     }
@@ -165,6 +199,7 @@ class DashboardWorkspaceStore {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    clearCallbacks();
     final ids = _entries.keys.toList(growable: false);
     for (final id in ids) {
       _removeDirectory(id, reportEmpty: false);

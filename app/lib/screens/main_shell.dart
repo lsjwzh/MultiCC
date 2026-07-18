@@ -10,6 +10,7 @@ import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
+import '../services/dashboard_workspace_coordinator.dart';
 import '../services/dashboard_workspace_store.dart';
 import '../services/workspace_service.dart';
 import '../i18n.dart';
@@ -37,15 +38,37 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   late final DashboardWorkspaceStore _workspaceStore;
+  late final DashboardWorkspaceCoordinator _workspaceCoordinator;
+  SessionManager? _workspaceManager;
 
   @override
   void initState() {
     super.initState();
     _workspaceStore = DashboardWorkspaceStore(settings: widget.settings);
+    _workspaceCoordinator = DashboardWorkspaceCoordinator(
+      store: _workspaceStore,
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final mgr = context.read<SessionManager>();
+    if (identical(_workspaceManager, mgr)) return;
+    _workspaceManager = mgr;
+    _workspaceCoordinator.attach(
+      source: mgr,
+      readDirectoryIds: () => mgr.directories.map((dir) => dir.id),
+      onNotify: mgr.handleWorkspaceNotify,
+      onDirectorySnapshot: (dirId, snapshot) {
+        mgr.applyWorkspaceSnapshot(dirId, snapshot.statuses);
+      },
+    );
   }
 
   @override
   void dispose() {
+    _workspaceCoordinator.dispose();
     _workspaceStore.dispose();
     super.dispose();
   }
@@ -54,17 +77,6 @@ class _MainShellState extends State<MainShell> {
   Widget build(BuildContext context) {
     final mgr = context.watch<SessionManager>();
     final active = mgr.activeProvider;
-
-    // MainShell owns one workspace connection per directory. Cards and the
-    // fleet detail panel observe immutable projections from this shared store;
-    // neither consumer can reconnect or dispose the underlying socket.
-    _workspaceStore.onNotify = mgr.handleWorkspaceNotify;
-    _workspaceStore.onDirectorySnapshot = (dirId, snapshot) {
-      mgr.reportWaiting(dirId, snapshot.waitingSessionIds);
-      mgr.reportRunning(dirId, snapshot.runningSessionIds);
-      mgr.reportStatuses(dirId, snapshot.statuses);
-    };
-    _workspaceStore.syncDirectories(mgr.directories.map((dir) => dir.id));
 
     // A notification tap resolved to a terminal session — push its screen once
     // this frame is done (can't navigate during build).
