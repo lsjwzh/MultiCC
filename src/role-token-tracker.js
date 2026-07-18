@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const stateStore = require('./state-store');
 
 function emptyBucket() {
   return { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0 };
@@ -30,6 +31,10 @@ function readLedger(filePath, fsImpl = fs) {
 }
 
 function writeLedger(filePath, data, fsImpl = fs) {
+  if (fsImpl === fs) {
+    stateStore.writeTextAtomic(filePath, JSON.stringify(data, null, 2), { mode: 0o600, dirMode: 0o700 });
+    return;
+  }
   fsImpl.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {

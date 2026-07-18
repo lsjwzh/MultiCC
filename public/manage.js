@@ -4,7 +4,7 @@ let autoRefreshTimer = null;
 let _cachedSessions = [];
 let _focusedSessionId = null;
 const _urlToken = new URLSearchParams(location.search).get('token');
-function tokenQS(prefix) { return _urlToken ? `${prefix}token=${_urlToken}` : ''; }
+function tokenQS(_prefix) { return ''; }
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 const NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY = 'multicc_notify_existing_sessions_opened_20260629';
 
@@ -148,12 +148,12 @@ function matchesWaiting(text) {
   return false;
 }
 
-function startMonitor(sessionId) {
+async function startMonitor(sessionId) {
   if (monitors.has(sessionId)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const urlToken = new URLSearchParams(location.search).get('token');
-  const tokenParam = urlToken ? `&token=${urlToken}` : '';
-  const wsUrl = `${proto}//${location.host}/?id=${sessionId}${tokenParam}`;
+  let wsUrl = `${proto}//${location.host}/?id=${encodeURIComponent(sessionId)}`;
+  try { wsUrl = await window.multiccWsUrl(wsUrl); } catch (_) { return; }
+  if (monitors.has(sessionId)) return;
 
   let ws;
   try { ws = new WebSocket(wsUrl); } catch (_) { return; }
@@ -2690,13 +2690,10 @@ function _getOrCreateSessionIframe(id, kind) {
   iframe.sandbox = 'allow-same-origin allow-scripts allow-forms allow-popups';
   iframe.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:none;background:#0d1117;';
 
-  const urlToken = new URLSearchParams(location.search).get('token');
-  const tokenParam = urlToken ? (kind === 'chat' ? `&token=${urlToken}` : `&token=${urlToken}`) : '';
-
   if (kind === 'chat') {
-    iframe.src = `/chat.html?session=${id}${tokenParam}`;
+    iframe.src = `/chat.html?session=${encodeURIComponent(id)}`;
   } else {
-    iframe.src = `/?id=${id}${tokenParam}`;
+    iframe.src = `/?id=${encodeURIComponent(id)}`;
   }
 
   _sessionIframeBody.appendChild(iframe);
@@ -2784,9 +2781,6 @@ const focusContainer = focusIframe.parentElement;
 
 function getOrCreateIframe(id) {
   if (_iframeCache.has(id)) return _iframeCache.get(id);
-  const urlToken = new URLSearchParams(location.search).get('token');
-  const tokenParam = urlToken ? `&token=${urlToken}` : '';
-
   // Determine session kind to set appropriate URL
   const s = _cachedSessions.find(sess => sess.id === id);
   const kind = s?.kind || 'terminal';
@@ -2801,9 +2795,9 @@ function getOrCreateIframe(id) {
 
   // Chat sessions use /chat.html, terminal sessions use /?id=
   if (kind === 'chat') {
-    iframe.src = `/chat.html?session=${id}${tokenParam.replace('&', '&')}`;
+    iframe.src = `/chat.html?session=${encodeURIComponent(id)}`;
   } else {
-    iframe.src = `/?id=${id}${tokenParam}`;
+    iframe.src = `/?id=${encodeURIComponent(id)}`;
   }
 
   focusContainer.appendChild(iframe);
@@ -2851,7 +2845,6 @@ focusNewtab.addEventListener('click', () => {
 
 function openAuxNewTab() {
   const params = new URLSearchParams();
-  if (_urlToken) params.set('token', _urlToken);
   params.set('focus', 'aux');
   window.open(`/manage.html?${params.toString()}`, '_blank');
   acknowledgeSession('__aux__');
@@ -2862,17 +2855,13 @@ function openSessionNewTab(id) {
     openAuxNewTab();
     return;
   }
-  const urlToken = new URLSearchParams(location.search).get('token');
-  const tokenParam = urlToken ? `?token=${urlToken}&id=${id}` : `?id=${id}`;
-  window.open(`/${tokenParam}`, '_blank');
+  window.open(`/?id=${encodeURIComponent(id)}`, '_blank');
   acknowledgeSession(id);
 }
 
 function openSessionChat(id, _cwd) {
   // cwd is ignored now — server derives it from the session's directory
-  const urlToken = new URLSearchParams(location.search).get('token');
   const params = new URLSearchParams();
-  if (urlToken) params.set('token', urlToken);
   params.set('session', id);
   window.open(`/chat.html?${params.toString()}`, '_blank');
 }
@@ -3082,11 +3071,12 @@ function wbStatusInfo(status) {
   }
 }
 
-function connectWorkspace(dirId) {
+async function connectWorkspace(dirId) {
   if (_workspaceWs.has(dirId)) return;  // idempotent
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let url = `${proto}//${location.host}/ws/workspace?dirId=${encodeURIComponent(dirId)}`;
-  if (_urlToken) url += `&token=${_urlToken}`;
+  try { url = await window.multiccWsUrl(url); } catch (_) { return; }
+  if (_workspaceWs.has(dirId)) return;
   let ws;
   try { ws = new WebSocket(url); } catch (_) { return; }
   _workspaceWs.set(dirId, ws);
@@ -3223,9 +3213,7 @@ function renderEventTimeline(dirId) {
 }
 
 function openEventsPage(dirId) {
-  const qs = _urlToken
-    ? `?dirId=${encodeURIComponent(dirId)}&token=${encodeURIComponent(_urlToken)}`
-    : `?dirId=${encodeURIComponent(dirId)}`;
+  const qs = `?dirId=${encodeURIComponent(dirId)}`;
   window.open(`events.html${qs}`, '_blank');
 }
 
@@ -4028,13 +4016,9 @@ async function showQR() {
   try {
     const res = await fetch('/api/server-info' + tokenQS('?'));
     const info = await res.json();
-    const tokenQuery = info.token ? `?token=${info.token}` : '';
-    url = info.url + '/manage' + tokenQuery;
+    url = info.url + '/manage';
   } catch (_) {
-    // Fallback to current browser URL with token from current page
-    const curToken = new URLSearchParams(location.search).get('token');
-    const tokenQuery = curToken ? `?token=${curToken}` : '';
-    url = window.location.origin + '/manage' + tokenQuery;
+    url = window.location.origin + '/manage';
   }
 
   urlText.textContent = url;
@@ -5632,11 +5616,14 @@ let _auxConnected = false;
 let _auxHealth = null;          // { unhealthy, consecutiveFails, lastFailMsg, sinceAt }
 let _auxToastTimer = null;      // recurring 5-min reminder while unhealthy
 
-function auxConnect() {
+async function auxConnect() {
   if (_auxWs && _auxWs.readyState <= 1) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const tokenParam = _urlToken ? `?token=${_urlToken}` : '';
-  _auxWs = new WebSocket(`${proto}//${location.host}/ws/aux${tokenParam}`);
+  let url;
+  try { url = await window.multiccWsUrl(`${proto}//${location.host}/ws/aux`); }
+  catch (_) { setTimeout(auxConnect, 5000); return; }
+  if (_auxWs && _auxWs.readyState <= 1) return;
+  _auxWs = new WebSocket(url);
 
   _auxWs.onopen = () => { _auxConnected = true; };
 

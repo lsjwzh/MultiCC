@@ -221,6 +221,7 @@
   </div>
 
   <!-- Load voice modules -->
+  <script src="/auth-client.js"></script>
   <script src="/voice-stream.js"></script>
   <script src="/voice-output.js"></script>
   <script src="/vad-monitor.js"></script>
@@ -350,8 +351,11 @@
       ttsBtn.disabled = true;
       ttsStopBtn.disabled = false;
 
+      let ttsWsUrl;
+      try { ttsWsUrl = await window.multiccWsUrl(`${wsBaseUrl}/ws/tts`); }
+      catch (e) { log(e.message, 'error'); return; }
       voiceOutput = new VoiceOutput({
-        wsUrl: `${wsBaseUrl}/ws/tts`,
+        wsUrl: ttsWsUrl,
         provider: ttsProvider,
         onReady: () => log('TTS ready', 'success'),
         onPlaying: () => log('TTS playing', 'info'),

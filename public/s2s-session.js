@@ -566,13 +566,15 @@ class S2SSession {
 
   // ── TTS ──────────────────────────────────────────────────────────────────
 
-  _speak(text) {
+  async _speak(text) {
     if (!text) return Promise.resolve();
     this._log('TTS:', text.slice(0, 80));
     this._stopTts();
 
     const ttsProvider = this.opts.ttsProvider || 'edge';
-    const ttsWsUrl = `${this.wsUrl}/ws/tts`;
+    let ttsWsUrl;
+    try { ttsWsUrl = await window.multiccWsUrl(`${this.wsUrl}/ws/tts`); }
+    catch (e) { this._log('TTS ticket failed:', e && e.message); return; }
 
     // Never reject: TTS is best-effort narration. A failed playback must not
     // break the confirm/execute flow, so any error resolves quietly (logged).

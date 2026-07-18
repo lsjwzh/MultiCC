@@ -74,14 +74,18 @@
     <div class="events" id="events"><div style="color:#6e7681">实时事件流…</div></div>
   </aside>
 </main>
+<script src="auth-client.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let ws = null, selected = null;
 const dirMap = new Map();      // dirId → {label, sessions: Map, events: []}
 const SESSION_SOURCE_ID = new URLSearchParams(location.search).get('from') || '';
 
-function connect() {
-  const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws/meta';
+async function connect() {
+  const rawUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws/meta';
+  let url;
+  try { url = await window.multiccWsUrl(rawUrl); }
+  catch (_) { setTimeout(connect, 2000); return; }
   ws = new WebSocket(url);
   ws.onopen = () => { $('ws-state').textContent = '已连接'; $('ws-state').className = 'ws-state ws-on'; };
   ws.onclose = () => { $('ws-state').textContent = '断开'; $('ws-state').className = 'ws-state ws-off';
