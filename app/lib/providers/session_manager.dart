@@ -57,19 +57,6 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   Set<String> get waitingSessionIds =>
       _waitingByDir.values.expand((s) => s).toSet();
 
-  /// The dashboard workspace store reports the set of session ids waiting on
-  /// user input in its directory. Notifies only when the aggregate changes.
-  void reportWaiting(String dirId, Set<String> ids) {
-    final prev = _waitingByDir[dirId] ?? const <String>{};
-    if (prev.length == ids.length && prev.containsAll(ids)) return;
-    if (ids.isEmpty) {
-      _waitingByDir.remove(dirId);
-    } else {
-      _waitingByDir[dirId] = ids;
-    }
-    notifyListeners();
-  }
-
   // ── Global "running / active" aggregation ─────────────────────────────────
   // Same pattern as _waitingByDir, but for sessions that are actively executing
   // (running / thinking / editing) — drives the 「活跃会话」KPI.
@@ -77,25 +64,40 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   Set<String> get runningSessionIds =>
       _runningByDir.values.expand((s) => s).toSet();
 
-  void reportRunning(String dirId, Set<String> ids) {
-    final prev = _runningByDir[dirId] ?? const <String>{};
-    if (prev.length == ids.length && prev.containsAll(ids)) return;
-    if (ids.isEmpty) {
-      _runningByDir.remove(dirId);
-    } else {
-      _runningByDir[dirId] = ids;
-    }
-    notifyListeners();
-  }
-
   // ── Central live workspace status ─────────────────────────────────────────
   // DashboardWorkspaceStore reports each directory's full session → status map
   // here so dashboard popups can show live status / summary / run-time.
   final Map<String, Map<String, SessionStatus>> _statusByDir = {};
 
-  /// The dashboard workspace store reports a directory's live status map.
-  /// Always notifies — values can change without the id set changing.
-  void reportStatuses(String dirId, Map<String, SessionStatus> statuses) {
+  /// Applies one immutable workspace projection as a single manager update.
+  ///
+  /// The dashboard store owns the transport and calls this once per directory
+  /// snapshot. Keeping all three aggregates in one commit avoids three
+  /// synchronous notifications during a manager attachment or socket event.
+  void applyWorkspaceSnapshot(
+    String dirId,
+    Map<String, SessionStatus> statuses,
+  ) {
+    final waiting = statuses.entries
+        .where((entry) => entry.value.status == 'waiting')
+        .map((entry) => entry.key)
+        .toSet();
+    const busy = {'running', 'thinking', 'editing'};
+    final running = statuses.entries
+        .where((entry) => busy.contains(entry.value.status))
+        .map((entry) => entry.key)
+        .toSet();
+
+    if (waiting.isEmpty) {
+      _waitingByDir.remove(dirId);
+    } else {
+      _waitingByDir[dirId] = waiting;
+    }
+    if (running.isEmpty) {
+      _runningByDir.remove(dirId);
+    } else {
+      _runningByDir[dirId] = running;
+    }
     if (statuses.isEmpty) {
       _statusByDir.remove(dirId);
     } else {

@@ -18,7 +18,8 @@ void main() {
     tester,
   ) async {
     final now = DateTime.now();
-    final yesterday = now.subtract(const Duration(days: 1));
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final yesterday = todayStart.subtract(const Duration(microseconds: 1));
     final directories = [
       Directory(
         id: 'dir-1',
@@ -41,8 +42,8 @@ void main() {
       label: 'Older task',
       kind: SessionKind.chat,
       dirId: 'dir-1',
-      createdAt: now,
-      lastActivity: now.subtract(const Duration(hours: 1)),
+      createdAt: todayStart,
+      lastActivity: todayStart,
     );
     final old = Session(
       id: 'old',
