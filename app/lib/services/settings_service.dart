@@ -46,6 +46,9 @@ class SettingsService {
   /// Live font scale — MaterialApp listens so changes apply immediately.
   final ValueNotifier<double> fontScale = ValueNotifier<double>(1.0);
 
+  /// Live application language. Values are the catalog ids `zh` and `en`.
+  final ValueNotifier<String> language = ValueNotifier<String>('zh');
+
   SettingsService._();
 
   static Future<SettingsService> getInstance() async {
@@ -58,6 +61,8 @@ class SettingsService {
       }
       _instance!.fontScale.value =
           _instance!._prefs.getDouble(_keyFontScale) ?? 1.0;
+      _instance!.language.value =
+          _instance!._prefs.getString(_keyLang) == 'en' ? 'en' : 'zh';
     }
     return _instance!;
   }
@@ -66,7 +71,14 @@ class SettingsService {
   String get token => _prefs.getString(_keyToken) ?? '';
   String get session => _prefs.getString(_keySession) ?? '';
   String get cwd => _prefs.getString(_keyCwd) ?? '';
-  String get lang => _prefs.getString(_keyLang) ?? 'zh';
+  String get lang => language.value;
+
+  Future<void> setLanguage(String value) async {
+    final normalized = value == 'en' ? 'en' : 'zh';
+    if (language.value == normalized) return;
+    await _prefs.setString(_keyLang, normalized);
+    language.value = normalized;
+  }
 
   /// Default Claude model for newly created chats ('' = follow Claude default).
   String get defaultModel => _prefs.getString(_keyDefaultModel) ?? '';

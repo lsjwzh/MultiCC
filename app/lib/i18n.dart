@@ -6,11 +6,10 @@ import 'package:flutter/services.dart' show rootBundle;
 /// is missing (the en file is a subset — only ui-shell strings are translated;
 /// deep app strings default to zh until contributed).
 ///
-/// Language is persisted in shared_preferences key `multicc_lang` and defaults
-/// to 'zh'.
+/// Language persistence and rebuild notifications are owned by
+/// [SettingsService]. This class only owns the loaded catalogs and lookup.
 
 class I18n {
-  static const String _prefKey = 'multicc_lang';
   static I18n? _instance;
   String _lang = 'zh';
   Map<String, String> _zh = {};
@@ -42,7 +41,8 @@ class I18n {
     }
   }
 
-  /// Persist language choice. Caller must flush to shared_preferences.
+  /// Apply the selected language. [SettingsService] persists the choice and
+  /// rebuilds MaterialApp before this is called.
   static String switchLang(String? savedLang) {
     instance._lang = savedLang == 'en' ? 'en' : 'zh';
     return instance._lang;
