@@ -4,8 +4,8 @@
  * Telegram Bridge for MultiCC — Gateway model.
  *
  * Mirrors the Feishu bridge (feishu-bridge.js) but speaks Telegram's Bot API
- * via node-telegram-bot-api:
- *   - Inbound: long-polling (new TelegramBot({polling:true})) receives `message`
+ * via a narrow node-telegram-bot-api adapter:
+ *   - Inbound: explicitly-started long-polling receives `message`
  *     events. No public webhook URL needed, works behind NAT.
  *   - Outbound: bot.sendMessage() sends text replies.
  *
@@ -21,19 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 const { bridgeConfigFile, bridgeHistoryFile, saveBridgeConfig } = require('./secure-config');
-
-// node-telegram-bot-api is loaded lazily so the rest of MultiCC keeps working
-// even when the dependency has not been installed yet.
-let TelegramBot = null;
-function loadTelegram() {
-  if (TelegramBot) return TelegramBot;
-  try {
-    TelegramBot = require('node-telegram-bot-api');
-  } catch (e) {
-    throw new Error('node-telegram-bot-api 未安装，请先 npm install node-telegram-bot-api');
-  }
-  return TelegramBot;
-}
+const { createTelegramClient } = require('./telegram-client-adapter');
 
 const router = express.Router();
 
@@ -354,25 +342,34 @@ async function startBridge() {
   if (!_config.botToken) throw new Error('未配置 Telegram Bot Token');
   if (!_getGateway()) throw new Error('Telegram gateway 未创建，请先在管理页面创建。');
 
-  const TB = loadTelegram();
-  _bot = new TB(_config.botToken, { polling: true });
-
-  _bot.on('message', async (msg) => { await _onTelegramMessage(msg); });
-
-  _bot.on('polling_error', (err) => {
+  const client = createTelegramClient({ token: _config.botToken, transport: 'polling' });
+  _bot = client;
+  client.onMessage(async (msg) => { await _onTelegramMessage(msg); });
+  client.onPollingError((err) => {
     _log('error', `Telegram polling error: ${err.message || err}`);
   });
-
-  _running = true;
-  _startTime = Date.now();
-  _connectChatWs();
-  _log('system', 'Telegram bridge started (long-polling)');
+  try {
+    await client.start();
+    _running = true;
+    _startTime = Date.now();
+    _connectChatWs();
+    _log('system', 'Telegram bridge started (long-polling)');
+  } catch (error) {
+    _bot = null;
+    try { await client.stop(); } catch (_) {}
+    throw error;
+  }
 }
 
-function stopBridge() {
+async function stopBridge() {
   _running = false;
-  if (_bot) { try { _bot.stopPolling(); } catch (_) {} _bot = null; }
+  const client = _bot;
+  _bot = null;
   _disconnectChatWs();
+  if (client) {
+    try { await client.stop(); }
+    catch (error) { _log('error', `Telegram stop failed: ${error.message || error}`); }
+  }
   _log('system', 'Telegram bridge stopped');
 }
 
@@ -430,7 +427,7 @@ router.post('/start', async (req, res) => {
   try { await startBridge(); res.json({ ok: true }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
-router.post('/stop', (req, res) => { stopBridge(); res.json({ ok: true }); });
+router.post('/stop', async (req, res) => { await stopBridge(); res.json({ ok: true }); });
 
 // Manual send (testing helper)
 router.post('/send', async (req, res) => {

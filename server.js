@@ -56,10 +56,10 @@ const os = require('os');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
 const { execSync, execFileSync, spawn } = require('child_process');
-const multer = require('multer');
+const { createUploadSuite, persistChatUpload, sendUploadError } = require('./src/upload-middleware');
 const chokidar = require('chokidar');
 const cron = require('node-cron');
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const upload = createUploadSuite();
 const wechatBridge = require('./plugins/bridges/wechat-ilink');
 const feishuBridge = require('./plugins/bridges/feishu-bridge');
 const telegramBridge = require('./plugins/bridges/telegram-bridge');
@@ -5124,14 +5124,16 @@ const {
 const asrLocal = require('./src/asr-local');
 
 // ── File upload for chat mode ──
-app.post('/api/upload', upload.single('file'), (req, res) => {
+app.post('/api/upload', upload.chat, (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
-  const ext = path.extname(req.file.originalname).replace(/[^a-z0-9.]/gi, '').slice(0, 12) || 'bin';
-  const safeName = `multicc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext.startsWith('.') ? ext : '.' + ext}`;
-  const tmpPath = path.join(os.tmpdir(), safeName);
-  fs.writeFileSync(tmpPath, req.file.buffer, { mode: 0o600 });
-  console.log(`[multicc] Uploaded: ${tmpPath} (${req.file.originalname})`);
-  res.json({ path: tmpPath, name: req.file.originalname });
+  try {
+    const saved = persistChatUpload(req.file);
+    req.file.buffer = null;
+    console.log(`[multicc] Uploaded: ${saved.path} (${saved.name})`);
+    res.json({ path: saved.path, name: saved.name });
+  } catch (error) {
+    sendUploadError(res, error);
+  }
 });
 
 // ── Temp upload stats & cleanup ──
@@ -5358,7 +5360,7 @@ app.delete('/api/voice/vocab/:term', (req, res) => {
 });
 
 // ── Whisper STT endpoint ──
-app.post('/api/voice/stt', upload.single('file'), async (req, res) => {
+app.post('/api/voice/stt', upload.voice, async (req, res) => {
   const reqId = `stt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   console.log(`[multicc/stt][${reqId}] POST /api/voice/stt received`);
 
