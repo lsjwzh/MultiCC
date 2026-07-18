@@ -296,3 +296,21 @@
 2. Chat finalize 已统一 effect execution，但外部 dispatch durable receipt 尚未接 proof-aware outbox adapter；在接入前继续报告 at-least-once/未证明交付。
 3. Web 下一批应拆 history/rendering state；Flutter 下一批应把 Workspace store 的同步触发移出 `build()`，并把 Flutter 端旧 WS token query 迁为短期 ticket。
 4. `src/http` 仍只在少数领域生产接线；后续按 route group 小批迁移，不做一次性全入口替换。
+
+## 大重构第八波实施结果（2026-07-19）
+
+- 新增 `src/routes/host-read.js`，一次迁移 10 个低依赖只读端点：Push/VAPID、通知摘要、Tunnel/Funnel/IPv6、访问令牌状态、Proxy、官方 OAuth 与电源设置。`server.js` 相对本波基线净减约 90 行，当前约 12,444 行。
+- HTTP 与 WebSocket 的本机免鉴权判断统一到 `src/request-locality.js`：只信任 socket peer，Host 必须为 loopback；任何 `Forwarded`、`X-Forwarded-*`、`X-Real-IP`、Via 或常见边缘代理头都会 fail-closed 为外部请求。隔离测试锁定本机直连可用、伪造/反代请求必须鉴权。
+- Host read DTO 改成显式白名单：Bark/Webhook 仅暴露安全 origin 与占位符；Push endpoint 仅返回短 SHA-256 指纹；Tunnel/Power/Push 失败只返回稳定分类码，原始路径、URL、token 和底层错误统一进入安全错误边界。通知占位符回写会保留旧 secret，空串仍可显式清除。
+- Web Chat 新增 `chat-history-store.js`，负责重连 reconcile、消息 ID 幂等更新、唯一 streaming tail、authoritative usage、分页 generation/requestId、cursor 失效与有界首屏补页。旧分页回包不能覆盖 clear/delete/reconnect 后的新状态。
+- Assistant Markdown 统一经过 `safe-markdown.js` 与 DOMPurify 严格策略；禁止 SVG/MathML/style/form/iframe/object/embed、事件属性和危险协议。DOMPurify/marked 缺失或抛错时降级为转义纯文本，避免存储型 XSS 直接进入 DOM。
+- `chat.js` 从本波基线约 4,874 行变为约 4,929 行（+55）。这是把历史状态移出后，为补齐重连一致性、分页竞态和安全渲染宿主接线产生的净增长；不能宣称 Chat God file 已缩小。下一批应把 DOM hydration/upsert 下沉到 `chat-history-view.js`，再删除宿主重复。
+- Flutter 新增 `DashboardWorkspaceCoordinator`，把 manager listener、目录 reconcile、post-frame snapshot replay 与 dispose 从 `MainShell.build()` 剥离。`SessionManager.applyWorkspaceSnapshot()` 一次更新 waiting/running/status 且只通知一次；generation/source/identity 守卫阻止 manager 替换、目录删除后重建和迟到 callback 覆盖新状态。
+- 联合验证：Host/Locality/History/Markdown 专项 34/34，Core 118/118 + Wait 35/35，Security 114/114，完整 deterministic/contracts/native 与全部 isolated integration 全绿；Flutter 37/37，改动文件 format clean。全 Flutter analyze 仅有 12 条既有 info，未出现在本波文件。
+
+### 第八波后的真实边界
+
+1. `server.js` 仍约 12.4k 行；下一批继续迁移 host settings 的写端点与低依赖 route group，并逐批接入 `src/http`，禁止一次搬迁所有路由。
+2. Web Markdown sanitizer 仍从固定版本 CDN 加载且没有本地 vendored/SRI；断网时安全降级为纯文本，但完整 Markdown 能力不可用。应在后续依赖治理批次 vendoring 或补 SRI/同源资产。
+3. 跨客户端清空历史仍缺服务端广播；当前本地 clear/delete 正确失效分页请求，但其他已连接客户端只能在下一次 authoritative history/reconnect 时收敛。
+4. dispatch 外部 delivery 仍未接可信 outbox receipt，继续报告 `deliveryProven:false`；Flutter 端旧 WebSocket token-query 也仍需独立迁移，不能和本波生命周期抽取混为已完成。

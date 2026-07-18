@@ -163,7 +163,9 @@ if (typeof marked !== 'undefined' && marked.setOptions) {
 
 function renderMarkdown(text) {
   if (!text) return '';
-  return (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : escHtml(text);
+  return window.MultiCCSafeMarkdown
+    ? window.MultiCCSafeMarkdown.render(text)
+    : escHtml(String(text));
 }
 
 // Assistant markdown may reference local-filesystem images, e.g. ![](/tmp/x.png).
@@ -494,14 +496,9 @@ function updateCwdDisplay(p) {
 updateCwdDisplay(_cwd);
 
 /* ── WebSocket with auto-reconnect ── */
-let _historyLoaded = false;  // prevent duplicate history render across reconnects
-// Lazy history pagination state. The initial WS chat_history push sends only
-// the newest page; older messages are fetched via GET /history?before=<id> as
-// the user scrolls to the top.
-let _historyHasMore = false;     // server says there's older history to fetch
-let _historyLoading = false;     // a pagination request is in flight
-let _historyExhausted = false;   // fetched everything; stop hitting the endpoint
-let _oldestLoadedMsgId = null;   // id of the oldest message currently rendered (pagination cursor)
+// Pure state/usage planning lives outside the DOM host. The initial WS page is
+// accepted once; older pages are fetched by the host from the returned cursor.
+const chatHistoryStore = window.MultiCCChatHistoryStore.createHistoryStore();
 let _loadingOlderSentinel = null; // DOM node inserted at top while loading, also scroll anchor
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
@@ -834,21 +831,18 @@ function handleEvent(msg) {
 
     case 'chat_msg_deleted': {
       // Broadcast from the server after a successful delete (from any client).
-      if (msg.id) {
-        const el = messagesEl.querySelector(`.msg[data-msg-id="${msg.id}"]`);
-        if (el) el.remove();
-      }
+      if (msg.id) removeHistoryMessageById(msg.id);
       break;
     }
 
-    case 'chat_history':
-      if (!_historyLoaded) {
-        _historyLoaded = true;
-        // Prefer server's authoritative token_usage.json accumulator over
-        // reconstructing from the rolling chat_history window.
-        replayHistory(msg.messages, msg.tokenUsage || null, !!msg.hasMore);
-      }
+    case 'chat_history': {
+      const visibleIds = [...messagesEl.querySelectorAll('.msg[data-msg-id]')]
+        .map(element => element.dataset.msgId)
+        .filter(Boolean);
+      const historyPlan = chatHistoryStore.acceptHistory(msg, visibleIds);
+      applyHistoryPlan(historyPlan);
       break;
+    }
 
     case 'task_state':
       // aux classify result: what the assistant thinks this session's goal/phase/state
@@ -1317,7 +1311,7 @@ function attachDeleteButton(msgEl) {
     try {
       const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/messages/${encodeURIComponent(msgEl.dataset.msgId)}`), { method: 'DELETE' });
       if (r.ok) {
-        msgEl.remove();  // server also broadcasts chat_msg_deleted; removal is idempotent
+        removeHistoryMessageById(msgEl.dataset.msgId); // broadcast removal is idempotent
       } else {
         const err = await r.json().catch(() => null);
         _chatAlert(tt('msgDeleteFailed', { error: ((err && err.error) || r.status) }), { danger: true });
@@ -1788,6 +1782,8 @@ function renderHistoryAssistantNode(m) {
     for (const tc of m.tools) {
       const card = document.createElement('div');
       card.className = 'tool-card';
+      const toolId = tc.id || tc.tool_use_id || '';
+      if (toolId) card.dataset.toolId = toolId;
       const icons = { Bash:'>',Read:'&#128196;',Edit:'&#9998;',Write:'&#128190;',Glob:'&#128269;',Grep:'&#128270;',Agent:'&#129302;' };
       const desc = tc.input?.description || tc.input?.command || tc.input?.pattern || tc.input?.file_path || '';
       const status = tc.is_error ? 'failed' : (tc.result !== undefined ? 'done' : '?');
@@ -1830,95 +1826,164 @@ function renderHistoryAssistantNode(m) {
   return div;
 }
 
-/* ── Replay saved history ── */
-function replayHistory(messages, serverTokenUsage, hasMore) {
-  if (!messages || !messages.length) {
-    // Even without messages, serverTokenUsage may carry accumulated totals
-    // from token_usage.json (e.g. all chat_history entries were trimmed).
-    if (serverTokenUsage) {
-      _sessionTokens = { input: serverTokenUsage.inputTokens || 0, output: serverTokenUsage.outputTokens || 0 };
-      updateContextBar();
-    }
-    return;
+function renderHistoryUserNode(message) {
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.textContent = message.content || '';
+  // Background-completion result injections carry origin metadata. Keep the
+  // label as text-only DOM so history never interprets injected HTML.
+  if (Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
+    const tag = document.createElement('div');
+    tag.textContent = `🔁 后台任务回流${message.bgToolUseIds.length > 1 ? ` ×${message.bgToolUseIds.length}` : ''}`;
+    tag.style.cssText = 'font-size:11px;color:#8b949e;margin-top:6px;border-top:1px dashed rgba(139,164,158,.35);padding-top:4px;';
+    div.appendChild(tag);
   }
-  for (let mi = 0; mi < messages.length; mi++) {
-    const m = messages[mi];
+  if (message.id) {
+    div.dataset.msgId = message.id;
+    attachDeleteButton(div);
+    attachForkButton(div);
+  }
+  return div;
+}
+
+function renderHistoryMessageNode(message) {
+  if (message.role === 'user') return renderHistoryUserNode(message);
+  if (message.role === 'assistant') return renderHistoryAssistantNode(message);
+  const node = document.createElement('div');
+  node.className = 'msg system-msg';
+  node.textContent = message.content || '';
+  if (message.id) node.dataset.msgId = message.id;
+  return node;
+}
+
+function findHistoryMessageById(id) {
+  if (!id) return null;
+  for (const element of messagesEl.querySelectorAll('.msg[data-msg-id]')) {
+    if (element.dataset.msgId === id) return element;
+  }
+  return null;
+}
+
+function nextVisibleHistoryId(excludedId) {
+  for (const element of messagesEl.querySelectorAll('.msg[data-msg-id]')) {
+    if (element.dataset.msgId && element.dataset.msgId !== excludedId) {
+      return element.dataset.msgId;
+    }
+  }
+  return null;
+}
+
+function removeHistoryMessageById(id) {
+  const element = findHistoryMessageById(id);
+  const nextOldest = chatHistoryStore.snapshot().oldestMessageId === id
+    ? nextVisibleHistoryId(id)
+    : null;
+  if (element) {
+    if (currentMsgEl === element) {
+      currentMsgEl = null;
+      currentTextContent = '';
+      currentToolCards = new Map();
+    }
+    element.remove();
+  }
+  chatHistoryStore.deleteMessage(id, nextOldest);
+}
+
+function resetHistoryPagination() {
+  chatHistoryStore.reset();
+  messagesEl.querySelector('.history-start-hint')?.remove();
+  if (_loadingOlderSentinel?.parentNode) _loadingOlderSentinel.remove();
+}
+
+function hydrateStreamingTools(message, bubble) {
+  currentToolCards = new Map();
+  if (!message || !Array.isArray(message.tools) || !bubble) return;
+  for (const tool of message.tools) {
+    const id = tool.id || tool.tool_use_id;
+    if (!id) continue;
+    const card = [...bubble.querySelectorAll('.tool-card[data-tool-id]')]
+      .find(element => element.dataset.toolId === id);
+    if (!card) continue;
+    currentToolCards.set(`history:${id}`, {
+      card,
+      inputJson: tool.input ? JSON.stringify(tool.input) : '',
+      name: tool.name || 'Tool',
+      id,
+    });
+  }
+}
+
+/* ── Apply initial/reconnect history without duplicating persisted DOM ── */
+function applyHistoryPlan(plan) {
+  if (plan.hasMore) messagesEl.querySelector('.history-start-hint')?.remove();
+  for (let index = 0; index < plan.operations.length; index += 1) {
+    const operation = plan.operations[index];
     try {
-    if (m.role === 'user') {
-      const div = addUserMsg(m.content);
-      // Background-completion result injections carry bgToolUseIds (origin
-      // metadata stamped on by runChatTurn) so they can be told apart from real
-      // user messages and linked back to the tool_use block that launched the
-      // task. Show a small tag instead of letting the result read as if the user
-      // typed it.
-      if (Array.isArray(m.bgToolUseIds) && m.bgToolUseIds.length) {
-        const tag = document.createElement('div');
-        tag.textContent = `🔁 后台任务回流${m.bgToolUseIds.length > 1 ? ` ×${m.bgToolUseIds.length}` : ''}`;
-        tag.style.cssText = 'font-size:11px;color:#8b949e;margin-top:6px;border-top:1px dashed rgba(139,164,158,.35);padding-top:4px;';
-        div.appendChild(tag);
+      let existing = operation.id ? findHistoryMessageById(operation.id) : null;
+      if (!existing && operation.kind === 'stream-tail') {
+        if (currentMsgEl?.classList.contains('assistant') && !currentMsgEl.dataset.msgId) {
+          existing = currentMsgEl;
+        } else {
+          existing = [...messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')].pop() || null;
+        }
       }
-      if (m.id) { div.dataset.msgId = m.id; attachDeleteButton(div); attachForkButton(div); }
-    } else if (m.role === 'assistant') {
-      const div = renderHistoryAssistantNode(m);
-      messagesEl.appendChild(div);
-    }
-    } catch (err) {
-      console.warn('[multicc] replayHistory: skipped message', mi, err.message);
+      const node = renderHistoryMessageNode(operation.message);
+      if (existing) {
+        const wasCurrent = currentMsgEl === existing;
+        const wasLastUser = _lastUserBubble === existing;
+        const pendingAutoCommit = wasLastUser
+          ? existing.querySelector('.msg-auto-commit')
+          : null;
+        if (pendingAutoCommit) node.appendChild(pendingAutoCommit);
+        existing.replaceWith(node);
+        if (wasCurrent) currentMsgEl = node;
+        if (wasLastUser) _lastUserBubble = node;
+      } else {
+        messagesEl.appendChild(node);
+      }
+    } catch (error) {
+      console.warn('[multicc] applyHistoryPlan: skipped message', index, error.message);
     }
   }
-  // Compute cumulative session token usage.
-  // Prefer the server's authoritative accumulator (token_usage.json) which
-  // never gets trimmed. Fall back to summing from chat_history messages.
-  if (serverTokenUsage) {
-    _sessionTokens = { input: serverTokenUsage.inputTokens || 0, output: serverTokenUsage.outputTokens || 0 };
+
+  // A reconnect refreshes authoritative totals even when they are zero. When
+  // no aggregate is provided, only the initial page may reconstruct totals;
+  // a partial reconnect page must not reduce an already accumulated session.
+  if (plan.hasAuthoritativeUsage || plan.mode === 'initial') {
+    _sessionTokens = { ...plan.sessionTokens };
+  }
+  _usedTokens = plan.usedTokens;
+  updateContextBar();
+
+  if (plan.streamingTail) {
+    const tail = plan.streamingTail.id
+      ? findHistoryMessageById(plan.streamingTail.id)
+      : [...messagesEl.querySelectorAll('.msg.assistant')].pop();
+    if (tail) {
+      isStreaming = true;
+      currentMsgEl = tail;
+      currentTextContent = plan.streamingTail.content;
+      const tailMessage = [...plan.messages].reverse().find(message =>
+        message.role === 'assistant'
+        && (!plan.streamingTail.id || message.id === plan.streamingTail.id));
+      hydrateStreamingTools(tailMessage, tail);
+      hideThinking();
+      startTitleAnimation();
+      updateUI();
+    }
   } else {
-    _sessionTokens = { input: 0, output: 0 };
-    for (const m of messages) {
-      if (m.usage && m.role === 'assistant') {
-        _sessionTokens.input += m.usage.input_tokens || 0;
-        _sessionTokens.output += m.usage.output_tokens || 0;
-      }
-    }
-  }
-  // "本轮" = the LAST turn's context window size, NOT the session total.
-  // Reconstruct it from the most recent assistant message's full usage
-  // (input + output + cache), mirroring how live stream_event usage is computed.
-  // Without this, _usedTokens stays 0 on reload and "本轮" disappears.
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'assistant' && m.usage) {
-      const u = m.usage;
-      _usedTokens = (u.input_tokens || 0) + (u.output_tokens || 0) +
-        (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-      break;
-    }
-  }
-  // Rebuild context bar with latest session totals + last-turn context.
-  if (_sessionTokens.input + _sessionTokens.output > 0) updateContextBar();
-
-  // If the last message is an assistant message still streaming (e.g. WS
-  // reconnected mid-turn), point currentMsgEl at its DOM element so the
-  // stream replay events that follow will reuse this bubble instead of
-  // creating a duplicate.
-  const last = messages[messages.length - 1];
-  if (last && last.role === 'assistant' && last.streaming) {
-    const bubbles = messagesEl.querySelectorAll('.msg.assistant');
-    if (bubbles.length > 0) {
-      currentMsgEl = bubbles[bubbles.length - 1];
-      currentTextContent = last.content || '';
-    }
+    isStreaming = false;
+    currentMsgEl = null;
+    currentTextContent = '';
+    currentToolCards = new Map();
+    hideThinking();
+    stopTitleAnimation();
+    updateUI();
   }
 
-  // Record the oldest rendered message id as the pagination cursor, and whether
-  // the server says there's older history to fetch on scroll-up.
-  const oldest = messages.find(m => m && m.id) || (messages[0] && messages[0].id ? messages[0] : null);
-  if (oldest && oldest.id) _oldestLoadedMsgId = oldest.id;
-  _historyHasMore = !!hasMore;
-  _historyExhausted = !_historyHasMore;
-
-  // First load / reconnect: jump to the newest message and reset pinned state.
   forceScrollToBottom();
   setTimeout(forceScrollToBottom, 300);
+  setTimeout(() => autofillHistory(4), 0);
 }
 
 /* ── Thinking bubble ── */
@@ -1969,6 +2034,7 @@ function send(opts = {}) {
     const cmd = text.split(/\s+/)[0].toLowerCase();
     if (cmd === '/clear') {
       // Clear chat UI and server history
+      resetHistoryPagination();
       messagesEl.innerHTML = '';
       addSystemMsg('Chat cleared；Claude / Codex / OpenCode / ZCode 的原生上下文均已重置');
       inputEl.value = '';
@@ -2244,7 +2310,6 @@ messagesEl.addEventListener('scroll', () => {
 }, { passive: true });
 
 /* ── Lazy history: fetch older messages when the user scrolls to the top ── */
-const HISTORY_PAGE_SIZE = 30;
 const HISTORY_LOAD_THRESHOLD = 80;  // px from top triggers a fetch
 
 function _renderHistoryPageBefore(messages) {
@@ -2257,53 +2322,34 @@ function _renderHistoryPageBefore(messages) {
   const prevScrollTop = messagesEl.scrollTop;
 
   // Build the new nodes by walking the page in chronological order and
-  // reusing the same per-role render path as replayHistory (DOM built in
-  // reverse then inserted before firstChild).
+  // reusing the same per-role render path as reconnect reconciliation.
   const frag = document.createDocumentFragment();
+  const pageIds = new Set();
+  let inserted = 0;
   for (const m of messages) {
-    let node = null;
-    if (m.role === 'user') {
-      // Minimal user bubble for history (no auto-commit checkbox needed for
-      // old messages). Defer to the same styling by reusing addUserMsg would
-      // append at the end; instead build inline to prepend in order.
-      node = document.createElement('div');
-      node.className = 'msg user';
-      node.textContent = m.content;
-      if (m.id) { node.dataset.msgId = m.id; attachDeleteButton(node); attachForkButton(node); }
-    } else if (m.role === 'assistant') {
-      // Delegate to a lightweight renderer to avoid duplicating the big
-      // replayHistory assistant block. We reuse renderHistoryAssistantNode if
-      // available; otherwise fall back to a plain text bubble.
-      node = (typeof renderHistoryAssistantNode === 'function')
-        ? renderHistoryAssistantNode(m)
-        : null;
-      if (!node) {
-        node = document.createElement('div');
-        node.className = 'msg assistant';
-        const c = document.createElement('div');
-        c.className = 'msg-content';
-        c.innerHTML = m.content ? renderMarkdown(m.content) : '';
-        node.appendChild(c);
+    if (m.id && (pageIds.has(m.id) || findHistoryMessageById(m.id))) continue;
+    try {
+      const node = renderHistoryMessageNode(m);
+      if (node) {
+        frag.appendChild(node);
+        inserted += 1;
+        if (m.id) pageIds.add(m.id);
       }
-      if (m.id) { node.dataset.msgId = m.id; }
-    } else {
-      node = document.createElement('div');
-      node.className = 'msg system-msg';
-      node.textContent = m.content || '';
+    } catch (error) {
+      console.warn('[multicc] history page: skipped message', error.message);
     }
-    if (node) frag.appendChild(node);
   }
 
   messagesEl.insertBefore(frag, firstChild);
   // Compensate scroll so the user stays on the same message.
   const added = messagesEl.scrollHeight - prevScrollHeight;
   messagesEl.scrollTop = prevScrollTop + added;
-  return messages.length;
+  return inserted;
 }
 
 async function loadOlderHistory() {
-  if (_historyLoading || _historyExhausted || !_oldestLoadedMsgId) return;
-  _historyLoading = true;
+  const request = chatHistoryStore.beginOlder();
+  if (!request) return 0;
   // Show a loading hint at the very top.
   if (!_loadingOlderSentinel) {
     _loadingOlderSentinel = document.createElement('div');
@@ -2314,33 +2360,41 @@ async function loadOlderHistory() {
     messagesEl.insertBefore(_loadingOlderSentinel, messagesEl.firstElementChild);
   }
   try {
-    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?before=${encodeURIComponent(_oldestLoadedMsgId)}&limit=${HISTORY_PAGE_SIZE}`);
+    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?before=${encodeURIComponent(request.before)}&limit=${request.limit}`);
     const r = await fetch(url);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
-    const older = d.messages || [];
-    const inserted = _renderHistoryPageBefore(older);
-    if (inserted && older[0] && older[0].id) _oldestLoadedMsgId = older[0].id;
-    if (!d.hasMore || !inserted) {
-      _historyExhausted = true;
-      _historyHasMore = false;
-    } else {
-      _historyHasMore = true;
-    }
+    // Validate generation/request identity before touching DOM. A response
+    // that raced a reconnect, clear or cursor deletion is discarded.
+    const pagePlan = chatHistoryStore.completeOlder(request, d);
+    if (pagePlan.stale) return 0;
+    return _renderHistoryPageBefore(pagePlan.messages);
   } catch (e) {
+    chatHistoryStore.rejectOlder(request);
     dbg('history', `loadOlderHistory failed: ${e.message}`);
     // Don't mark exhausted on a transient error - let the user retry by scrolling.
+    return 0;
   } finally {
-    _historyLoading = false;
     if (_loadingOlderSentinel && _loadingOlderSentinel.parentNode) {
       _loadingOlderSentinel.remove();
     }
-    if (_historyExhausted && !messagesEl.querySelector('.history-start-hint')) {
+    if (chatHistoryStore.snapshot().exhausted && !messagesEl.querySelector('.history-start-hint')) {
       const hint = document.createElement('div');
       hint.className = 'msg system-msg history-start-hint';
       hint.textContent = '— 已是最早消息 —';
       messagesEl.insertBefore(hint, messagesEl.firstElementChild);
     }
+  }
+}
+
+async function autofillHistory(maxPages = 4) {
+  const startingGeneration = chatHistoryStore.snapshot().generation;
+  for (let page = 0; page < maxPages; page += 1) {
+    const state = chatHistoryStore.snapshot();
+    if (state.generation !== startingGeneration || state.exhausted || !state.hasMore) return;
+    if (messagesEl.scrollHeight > messagesEl.clientHeight + HISTORY_LOAD_THRESHOLD) return;
+    const inserted = await loadOlderHistory();
+    if (!inserted) return;
   }
 }
 
@@ -3866,6 +3920,7 @@ document.addEventListener('click', (e) => { if (_clearMenuOpen && !clearCtxWrap.
 clearCtxMenu.addEventListener('click', (e) => e.stopPropagation());
 function doClear(keepN) {
   if (isStreaming) cancelStreaming();
+  resetHistoryPagination();
   if (keepN > 0) {
     const msgs = [...messagesEl.querySelectorAll('.msg:not(.system-msg)')];
     const remove = msgs.slice(0, Math.max(0, msgs.length - keepN));

@@ -20,12 +20,14 @@ const { installWsBackpressure } = require('../src/ws-backpressure');
 const { requestIdMiddleware } = require('../src/http-errors');
 const { createHealthHandlers } = require('../src/health');
 
-test('network defaults to loopback and remote binding fails closed', () => {
+test('network defaults to loopback and remote binding requires explicit opt-in', () => {
   assert.deepStrictEqual(resolveNetworkPolicy({}), {
     host: '127.0.0.1', port: 3000, development: false, allowRemote: false, accessToken: '',
   });
   assert.throws(() => resolveNetworkPolicy({ HOST: '0.0.0.0' }), /MULTICC_ALLOW_REMOTE/);
-  assert.throws(() => resolveNetworkPolicy({ HOST: '0.0.0.0', MULTICC_ALLOW_REMOTE: '1' }), /ACCESS_TOKEN/);
+  assert.deepStrictEqual(resolveNetworkPolicy({ HOST: '0.0.0.0', MULTICC_ALLOW_REMOTE: '1' }), {
+    host: '0.0.0.0', port: 3000, development: false, allowRemote: true, accessToken: '',
+  });
   assert.deepStrictEqual(resolveNetworkPolicy({
     HOST: '0.0.0.0', PORT: '4312', MULTICC_ALLOW_REMOTE: 'true', ACCESS_TOKEN: 'secret',
   }), {
