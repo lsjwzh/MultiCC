@@ -13,13 +13,11 @@ import '../services/workspace_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
+import '../widgets/directory_card.dart';
 import '../widgets/session_card.dart';
-import '../widgets/rainbow_border.dart';
 import '../widgets/session_badges.dart';
-import '../widgets/git_status_row.dart';
 import '../widgets/home_task_scroller.dart';
 import '../widgets/kpi_tile.dart';
-import '../widgets/project_stat_pill.dart';
 import '../widgets/create_session_dialog.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
@@ -555,14 +553,25 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
                               ],
                             ),
                           ),
-                        _DirectoryCard(
+                        _DirectoryCardHost(
+                          key: ValueKey('directory-card-host-${dir.id}'),
                           directory: dir,
                           settings: widget.settings,
                           mgr: mgr,
-                          index: i,
                           onDragHover: (dirId) {
                             if (_dragHoverDirId != dirId) {
                               setState(() => _dragHoverDirId = dirId);
+                            }
+                          },
+                          onDragLeave: (dirId) {
+                            if (_dragHoverDirId == dirId) {
+                              setState(() => _dragHoverDirId = null);
+                            }
+                          },
+                          onDrop: _handleDragEnd,
+                          onDragEnd: () {
+                            if (_dragHoverDirId != null) {
+                              setState(() => _dragHoverDirId = null);
                             }
                           },
                         ),
@@ -1697,26 +1706,31 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   }
 }
 
-class _DirectoryCard extends StatefulWidget {
+class _DirectoryCardHost extends StatefulWidget {
   final Directory directory;
   final SettingsService settings;
   final SessionManager mgr;
-  final int index;
   final void Function(String dirId)? onDragHover;
+  final void Function(String dirId)? onDragLeave;
+  final void Function(String sourceId, String targetId)? onDrop;
+  final VoidCallback? onDragEnd;
 
-  const _DirectoryCard({
+  const _DirectoryCardHost({
+    super.key,
     required this.directory,
     required this.settings,
     required this.mgr,
-    required this.index,
     this.onDragHover,
+    this.onDragLeave,
+    this.onDrop,
+    this.onDragEnd,
   });
 
   @override
-  State<_DirectoryCard> createState() => _DirectoryCardState();
+  State<_DirectoryCardHost> createState() => _DirectoryCardHostState();
 }
 
-class _DirectoryCardState extends State<_DirectoryCard> {
+class _DirectoryCardHostState extends State<_DirectoryCardHost> {
   late final WorkspaceService _workspace;
 
   @override
@@ -1744,26 +1758,6 @@ class _DirectoryCardState extends State<_DirectoryCard> {
     super.dispose();
   }
 
-  PopupMenuItem<String> _dirMenuItem(
-    String value,
-    IconData icon,
-    String label, {
-    bool danger = false,
-  }) {
-    final color = danger ? const Color(0xFFff6b63) : const Color(0xFFe7eaee);
-    return PopupMenuItem<String>(
-      value: value,
-      height: 40,
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: color),
-          const SizedBox(width: 10),
-          Text(label, style: TextStyle(color: color, fontSize: 14)),
-        ],
-      ),
-    );
-  }
-
   void _onStatusChange() {
     // Report this directory's waiting sessions up to the manager so the global
     // "等待输入" KPI reflects every directory, then repaint the card.
@@ -1788,465 +1782,32 @@ class _DirectoryCardState extends State<_DirectoryCard> {
 
   @override
   Widget build(BuildContext context) {
-    final groups = widget.mgr.sessionsByCliKind(widget.directory.id);
-    final claudeCount =
-        widget.directory.claudeTerminalCount + widget.directory.claudeChatCount;
-    final codexCount =
-        widget.directory.codexTerminalCount + widget.directory.codexChatCount;
-    final opencodeCount =
-        widget.directory.opencodeTerminalCount +
-        widget.directory.opencodeChatCount;
-    final zcodeCount =
-        widget.directory.zcodeTerminalCount + widget.directory.zcodeChatCount;
-    final activeCount = groups.values
-        .expand((s) => s)
-        .where((s) => s.active)
-        .length;
-    final latestTask = _latestTask(groups);
-    // Rainbow border when any session in this directory is running.
-    const busy = {'running', 'thinking', 'editing'};
-    final dirRunning = _workspace.statuses.values.any(
-      (st) => busy.contains(st.status),
+    final view = DirectoryCardViewModel.fromModels(
+      directory: widget.directory,
+      sessions: widget.mgr.sessions,
+      statuses: _workspace.statuses,
+      events: _workspace.events,
     );
-
-    return RainbowBorder(
-      running: dirRunning,
-      borderRadius: BorderRadius.circular(8),
-      child: LongPressDraggable<String>(
-        data: widget.directory.id,
-        onDragEnd: (_) {
-          // 拖拽结束（无论是否成功 drop）都清除悬停指示器
-          final parent = context
-              .findAncestorStateOfType<_DirectoryListBodyState>();
-          if (parent != null && parent._dragHoverDirId != null) {
-            parent.setState(() => parent._dragHoverDirId = null);
-          }
-        },
-        feedback: Material(
-          elevation: 6,
-          color: Colors.transparent,
-          child: Container(
-            width: MediaQuery.of(context).size.width - 24,
-            margin: const EdgeInsets.only(bottom: 14),
-            decoration: BoxDecoration(
-              color: AppColors.panel,
-              border: Border.all(color: AppColors.accent, width: 2),
-              borderRadius: BorderRadius.circular(8),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.4),
-                  blurRadius: 12,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
-              child: Row(
-                children: [
-                  Icon(Icons.drag_indicator, color: AppColors.accent, size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      widget.directory.name,
-                      style: const TextStyle(
-                        color: AppColors.textBright,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 16,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+    return DirectoryCard(
+      key: ValueKey('directory-card-${widget.directory.id}'),
+      view: view,
+      callbacks: DirectoryCardCallbacks(
+        onOpen: () => widget.mgr.openFleetDir(widget.directory.id),
+        onOpenMemo: () => Navigator.push(
+          context,
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                MemoScreen(directory: widget.directory, mgr: widget.mgr),
           ),
         ),
-        childWhenDragging: Container(
-          margin: const EdgeInsets.only(bottom: 14),
-          decoration: BoxDecoration(
-            color: AppColors.panel.withValues(alpha: 0.5),
-            border: Border.all(color: AppColors.line),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
-            child: Row(
-              children: [
-                Icon(Icons.drag_indicator, color: AppColors.faint, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    widget.directory.name,
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 16,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        child: DragTarget<String>(
-          onWillAcceptWithDetails: (details) {
-            if (details.data != widget.directory.id) {
-              // 通知父组件：拖拽悬停在此卡片上，显示插入指示器
-              widget.onDragHover?.call(widget.directory.id);
-              return true;
-            }
-            return false;
-          },
-          onLeave: (_) {
-            // 拖拽离开时清除悬停状态
-            final parent = context
-                .findAncestorStateOfType<_DirectoryListBodyState>();
-            if (parent != null &&
-                parent._dragHoverDirId == widget.directory.id) {
-              parent.setState(() => parent._dragHoverDirId = null);
-            }
-          },
-          onAcceptWithDetails: (details) {
-            // 通知父组件处理拖拽结束
-            final parent = context
-                .findAncestorStateOfType<_DirectoryListBodyState>();
-            if (parent != null) {
-              parent._handleDragEnd(details.data, widget.directory.id);
-            }
-          },
-          builder: (context, candidateData, rejectedData) {
-            final isHovering = candidateData.isNotEmpty;
-            return AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              margin: const EdgeInsets.only(bottom: 14),
-              decoration: BoxDecoration(
-                color: isHovering ? AppColors.panel2 : AppColors.panel,
-                border: Border.all(
-                  color: isHovering ? AppColors.accent : AppColors.line,
-                  width: isHovering ? 2 : 1,
-                ),
-                borderRadius: BorderRadius.circular(8),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.18),
-                    blurRadius: 22,
-                    offset: const Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: InkWell(
-                onTap: () => widget.mgr.openFleetDir(widget.directory.id),
-                borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 14, 10, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          // 拖拽指示器
-                          Icon(
-                            Icons.drag_indicator,
-                            size: 18,
-                            color: AppColors.faint,
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color: AppColors.bg,
-                              border: Border.all(color: AppColors.line),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Icon(
-                              Icons.folder_outlined,
-                              color: AppColors.muted,
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  widget.directory.name,
-                                  style: const TextStyle(
-                                    color: AppColors.textBright,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 16,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  widget.directory.path,
-                                  style: const TextStyle(
-                                    color: AppColors.blue,
-                                    fontSize: 11,
-                                    fontFamily: 'monospace',
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                if ((widget.directory.pushState?.dirty ?? 0) >
-                                    0)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 5),
-                                    child: InkWell(
-                                      onTap: () =>
-                                          _showUncommittedFiles(context),
-                                      borderRadius: BorderRadius.circular(999),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 2,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0x1AE3B341),
-                                          border: Border.all(
-                                            color: const Color(0x73E3B341),
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          '⚠ ${widget.directory.pushState!.dirty} 未提交',
-                                          style: const TextStyle(
-                                            color: Color(0xFFE3B341),
-                                            fontSize: 10,
-                                            fontFamily: 'monospace',
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                // ── Git 状态行（分支 + ahead/behind）──
-                                GitStatusRow(
-                                  pushState: widget.directory.pushState,
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(
-                              Icons.sticky_note_2_outlined,
-                              size: 19,
-                              color: AppColors.muted,
-                            ),
-                            tooltip: t('projectMemo'),
-                            onPressed: () => Navigator.push(
-                              context,
-                              MaterialPageRoute<void>(
-                                builder: (_) => MemoScreen(
-                                  directory: widget.directory,
-                                  mgr: widget.mgr,
-                                ),
-                              ),
-                            ),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                              minWidth: 44,
-                              minHeight: 44,
-                            ),
-                          ),
-                          PopupMenuButton<String>(
-                            icon: const Icon(
-                              Icons.more_horiz_rounded,
-                              size: 19,
-                              color: AppColors.muted,
-                            ),
-                            tooltip: t('moreActions'),
-                            color: const Color(0xFF161b22),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                              minWidth: 44,
-                              minHeight: 44,
-                            ),
-                            onSelected: (v) {
-                              switch (v) {
-                                case 'uncommitted':
-                                  _showUncommittedFiles(context);
-                                  break;
-                                case 'rename':
-                                  _confirmRenameDirectory(context);
-                                  break;
-                                case 'delete':
-                                  _confirmDeleteDirectory(context);
-                                  break;
-                              }
-                            },
-                            itemBuilder: (_) {
-                              final items = <PopupMenuEntry<String>>[];
-                              final dirty =
-                                  widget.directory.pushState?.dirty ?? 0;
-                              if (dirty > 0) {
-                                items.add(
-                                  _dirMenuItem(
-                                    'uncommitted',
-                                    Icons.warning_amber_rounded,
-                                    '⚠ $dirty 个未提交文件',
-                                  ),
-                                );
-                                items.add(const PopupMenuDivider());
-                              }
-                              items.add(
-                                _dirMenuItem(
-                                  'rename',
-                                  Icons.drive_file_rename_outline_rounded,
-                                  t('rename'),
-                                ),
-                              );
-                              items.add(const PopupMenuDivider());
-                              items.add(
-                                _dirMenuItem(
-                                  'delete',
-                                  Icons.delete_outline_rounded,
-                                  t('deleteDirectory'),
-                                  danger: true,
-                                ),
-                              );
-                              return items;
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          ProjectStatPill(
-                            label: t('sessions'),
-                            value: widget.directory.totalSessions.toString(),
-                          ),
-                          ProjectStatPill(
-                            label: t('active'),
-                            value: activeCount.toString(),
-                          ),
-                          ProjectStatPill(
-                            label: 'Claude',
-                            value: claudeCount.toString(),
-                            color: AppColors.claude,
-                          ),
-                          ProjectStatPill(
-                            label: 'Codex',
-                            value: codexCount.toString(),
-                            color: AppColors.codex,
-                          ),
-                          if (opencodeCount > 0)
-                            ProjectStatPill(
-                              label: 'OpenCode',
-                              value: opencodeCount.toString(),
-                              color: AppColors.opencode,
-                            ),
-                          if (zcodeCount > 0)
-                            ProjectStatPill(
-                              label: 'ZCode',
-                              value: zcodeCount.toString(),
-                              color: AppColors.zcode,
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      // 预览区域（最近活动 + 最新任务）— 恢复原始布局
-                      _DirectoryPreview(
-                        events: _workspace.events,
-                        latestTask: latestTask,
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.touch_app_outlined,
-                            size: 13,
-                            color: AppColors.faint,
-                          ),
-                          const SizedBox(width: 5),
-                          Text(
-                            t('tapForDetails'),
-                            style: const TextStyle(
-                              color: AppColors.faint,
-                              fontSize: 11,
-                            ),
-                          ),
-                          const Spacer(),
-                          const Icon(
-                            Icons.keyboard_arrow_up_rounded,
-                            size: 18,
-                            color: AppColors.faint,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
+        onShowUncommitted: () => _showUncommittedFiles(context),
+        onRename: () => _confirmRenameDirectory(context),
+        onDelete: () => _confirmDeleteDirectory(context),
+        onDragHover: widget.onDragHover,
+        onDragLeave: widget.onDragLeave,
+        onDrop: widget.onDrop,
+        onDragEnd: widget.onDragEnd,
       ),
-    );
-  }
-
-  _TaskPreview? _latestTask(Map<String, List<Session>> groups) {
-    // 获取该目录下所有会话，按 lastActivity 或 createdAt 排序
-    final allSessions = groups.values.expand((x) => x).toList();
-    if (allSessions.isEmpty) return null;
-
-    // 按 lastActivity 或 createdAt 降序排序
-    allSessions.sort((a, b) {
-      final ta = sessionLastInteractionAt(a, _workspace.statuses[a.id]);
-      final tb = sessionLastInteractionAt(b, _workspace.statuses[b.id]);
-      return tb.compareTo(ta);
-    });
-
-    // 找到最新的有 summary 的会话
-    for (final s in allSessions) {
-      final live = _workspace.statuses[s.id];
-      final summary = live?.summary;
-      if (summary == null || summary.isEmpty) continue;
-      final ts = live?.summaryTs != null && live!.summaryTs > 0
-          ? live.summaryTs
-          : sessionLastInteractionAt(s, live).millisecondsSinceEpoch;
-      return _TaskPreview(
-        who: s.label?.isNotEmpty == true ? s.label! : s.id,
-        summary: summary,
-        ts: ts,
-      );
-    }
-
-    // 如果没有活跃的 summary，返回最近活跃的会话信息
-    final latest = allSessions.first;
-    final live = _workspace.statuses[latest.id];
-    final ts = live?.summaryTs != null && live!.summaryTs > 0
-        ? live.summaryTs
-        : sessionLastInteractionAt(latest, live).millisecondsSinceEpoch;
-
-    // 生成一个基本的任务描述
-    String summary;
-    if (live?.currentFile != null && live!.currentFile!.isNotEmpty) {
-      summary = '正在编辑 ${live.currentFile!.split('/').last}';
-    } else if (latest.active) {
-      summary = '正在运行';
-    } else {
-      final ago = DateTime.now().millisecondsSinceEpoch ~/ 1000 - ts ~/ 1000;
-      if (ago < 3600) {
-        summary = '最近 ${ago ~/ 60} 分钟前活跃';
-      } else if (ago < 86400) {
-        summary = '最近 ${ago ~/ 3600} 小时前活跃';
-      } else {
-        summary = '最近 ${ago ~/ 86400} 天前活跃';
-      }
-    }
-
-    return _TaskPreview(
-      who: latest.label?.isNotEmpty == true ? latest.label! : latest.id,
-      summary: summary,
-      ts: ts,
     );
   }
 
@@ -2453,110 +2014,6 @@ class _DirectoryCardState extends State<_DirectoryCard> {
   }
 }
 
-class _TaskPreview {
-  final String who;
-  final String summary;
-  final int ts;
-
-  const _TaskPreview({
-    required this.who,
-    required this.summary,
-    required this.ts,
-  });
-}
-
-class _DirectoryPreview extends StatelessWidget {
-  final List<Map<String, dynamic>> events;
-  final _TaskPreview? latestTask;
-
-  const _DirectoryPreview({required this.events, required this.latestTask});
-
-  @override
-  Widget build(BuildContext context) {
-    final recent = events.reversed.take(2).toList();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 固定高度的最近活动区域
-        SizedBox(
-          height: 39,
-          child: recent.isEmpty
-              ? Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    t('noRecentActivity'),
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontSize: 11,
-                    ),
-                  ),
-                )
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    for (final e in recent)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 3),
-                        child: Text(
-                          _eventLabel(e),
-                          style: const TextStyle(
-                            color: AppColors.muted,
-                            fontSize: 11,
-                            height: 1.25,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                  ],
-                ),
-        ),
-        const SizedBox(height: 6),
-        // 固定高度的最新任务区域
-        SizedBox(
-          height: 34,
-          child: latestTask == null
-              ? Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    t('noRecentTask'),
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontSize: 11,
-                    ),
-                  ),
-                )
-              : Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.accent.withValues(alpha: 0.10),
-                    border: Border.all(
-                      color: AppColors.accent.withValues(alpha: 0.38),
-                    ),
-                    borderRadius: BorderRadius.circular(7),
-                  ),
-                  child: Text(
-                    '🗒 ${latestTask!.who}  ${latestTask!.summary}',
-                    style: const TextStyle(
-                      color: Color(0xFF7fe6da),
-                      fontSize: 11,
-                      height: 1.2,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-        ),
-      ],
-    );
-  }
-}
-
 class _DirectoryPushButton extends StatelessWidget {
   final Directory directory;
   final VoidCallback onPressed;
@@ -2698,7 +2155,7 @@ class _EventTimelineState extends State<EventTimeline> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 1),
               child: Text(
-                _eventLabel(e),
+                directoryEventLabel(e),
                 style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -2713,35 +2170,6 @@ class _EventTimelineState extends State<EventTimeline> {
       constraints: BoxConstraints(maxHeight: maxHeight),
       child: SingleChildScrollView(child: content),
     );
-  }
-}
-
-String _eventLabel(Map<String, dynamic> e) {
-  final who = (e['sessionLabel'] ?? e['sessionId'] ?? '') as String;
-  final detail = (e['detail'] ?? '') as String;
-  switch (e['type']) {
-    case 'session_created':
-      return '🆕 新建会话 $who（$detail）';
-    case 'session_renamed':
-      return '✏️ 会话改名为 ${detail.isNotEmpty ? detail : who}';
-    case 'session_deleted':
-      return '🗑 删除会话 ${detail.isNotEmpty ? detail : who}';
-    case 'merged':
-      return '🔀 $who 合并：$detail';
-    case 'memory_updated':
-      return '🧠 $who ${detail.isNotEmpty ? detail : '更新会话记忆'}';
-    case 'synced':
-      return '🔄 $who 同步：$detail';
-    case 'sync_conflict':
-      return '⚠️ $who ${detail.isNotEmpty ? detail : '同步冲突'}';
-    case 'dispatch':
-      return '📤 $who 分发 $detail';
-    case 'note':
-      return '📨 $who 留言 $detail';
-    case 'note_delivered':
-      return '📬 $who：$detail';
-    default:
-      return '· ${e['type']} $who';
   }
 }
 

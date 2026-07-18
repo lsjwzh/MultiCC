@@ -476,6 +476,10 @@ test('shutdown partial checkpoint is durable but never a final result proof', ()
 test('production lifecycle uses append return, runner ownership and one guarded post-turn boundary', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.equal(source.includes('cs._killReason'), false, 'kill reason must not be session-global');
+  assert.doesNotMatch(source, /function (?:persistFinalAssistantResult|recordDurableTurnUsage|runDurablePostTurn)\(/,
+    'host lifecycle composition must live outside the God file');
+  assert.match(source, /createChatHostRuntime\(\{/,
+    'server must consume the extracted host runtime through narrow ports');
   assert.match(source, /savedInClose = persistFinalAssistantResult\(/);
   assert.match(source, /const resultDurable = persistFinalAssistantResult\(/);
   assert.match(source, /if \(saved\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
@@ -493,12 +497,14 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   assert.match(source, /const sameDurablePartial = hasMatchingPartialCheckpoint\(runner,/);
   assert.match(source, /if \(!killReason && waitInjector\.resumeInterrupted\(sessionName\)\)/,
     'only unknown interruptions without an explicit lifecycle kill may auto-recover');
-  const usageStart = source.indexOf('function recordDurableTurnUsage(');
-  const usageEnd = source.indexOf('\n}', usageStart);
-  const usageBody = source.slice(usageStart, usageEnd);
-  assert.ok(usageBody.indexOf('accumulateTokenUsage(sessionName, normalized)')
-    < usageBody.indexOf('claimDurableUsage(runner'),
-  'main token usage must commit before the in-memory once claim');
+  assert.match(source, /createChatHostRuntime\(\{[\s\S]{0,500}persistUsage: accumulateTokenUsage/,
+    'production host must inject the authoritative usage writer into the coordinator');
+  const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-coordinator.js'), 'utf8');
+  const usageStart = hostSource.indexOf('function commitUsage(');
+  const usageEnd = hostSource.indexOf('\n  function finalize(', usageStart);
+  const usageBody = hostSource.slice(usageStart, usageEnd);
+  assert.ok(usageBody.indexOf('ports.usage.commit(') < usageBody.indexOf('claimDurableUsage(runner'),
+    'main token usage must commit before the in-memory once claim');
   const accumulateStart = source.indexOf('function accumulateTokenUsage(');
   const accumulateEnd = source.indexOf('function getTokenUsage()', accumulateStart);
   const accumulateBody = source.slice(accumulateStart, accumulateEnd);
