@@ -10,8 +10,10 @@ const nodeFs = require('fs');
 const nodePath = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { createPaths } = require('./paths');
 
 const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');
+const DEFAULT_BASE_DIR = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).detachedDir;
 const DONE_MARKER = '__MULTICC_DETACHED_DONE__';
 
 function shq(value) {
@@ -231,11 +233,12 @@ function createDetached({
   });
 }
 
-const legacy = createDetached({ baseDir: LEGACY_BASE_DIR });
+const legacy = createDetached({ baseDir: DEFAULT_BASE_DIR });
 
 module.exports = {
   ...legacy,
-  BASE_DIR: LEGACY_BASE_DIR,
+  BASE_DIR: DEFAULT_BASE_DIR,
+  LEGACY_BASE_DIR,
   DONE_MARKER,
   createDetached,
 };

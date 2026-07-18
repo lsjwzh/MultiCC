@@ -9,8 +9,9 @@ description: multicc 自带「临时产物」技能。把一段 HTML 网页或�
 
 运行环境由 multicc 注入：
 - `MULTICC_BASE_URL` — multicc 本机 API 地址（默认 `http://127.0.0.1:3000`）
+- `MULTICC_ARTIFACTS_DIR` — 服务端解析后的制品目录；由 MultiCC 自动注入
 
-原理：内容写到 `~/.multicc/artifacts/<随机id>/<文件名>`，multicc 服务端在 `/artifacts/<id>/<文件名>` 提供访问。随机 id 本身就是访问凭证（像分享链接），所以链接**免登录**、本机和隧道外网都能打开。产物会在 7 天后自动清理——只用于临时、可丢弃的东西。
+原理：内容写到 `MULTICC_DATA_DIR/artifacts/<随机id>/<文件名>`，multicc 服务端在 `/artifacts/<id>/<文件名>` 提供访问。迁移期间服务端仍只读兼容旧的 `~/.multicc/artifacts`。随机 id 本身就是访问凭证（像分享链接），所以链接**免登录**、本机和隧道外网都能打开。产物会在 7 天后自动清理——只用于临时、可丢弃的东西。
 
 ## 工具
 
