@@ -96,28 +96,47 @@ do_start() {
 }
 
 do_stop() {
-  if ! is_running; then
+  # Collect EVERY live node running THIS worktree's server.js (pidfile + pgrep,
+  # de-duped). Killing only get_pid's single pid misses survivors — a stale
+  # pidfile plus multiple node server.js processes is exactly how zombies
+  # accumulate and wedge /api/restart ("already in progress" forever after one
+  # failed detached restart leaves the live process with _restartScheduled=true).
+  local pids=""
+  if [ -f "$PID_FILE" ]; then
+    local pf
+    pf=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$pf" ] && kill -0 "$pf" 2>/dev/null; then pids="$pf"; fi
+  fi
+  local extra
+  extra=$(pgrep -f "node $SCRIPT_DIR/server.js" 2>/dev/null)
+  if [ -n "$extra" ]; then
+    pids=$(printf '%s\n%s\n' "$pids" "$extra" | grep -v '^$' | sort -u | tr '\n' ' ')
+  fi
+  pids=$(echo "$pids" | xargs)
+  if [ -z "$pids" ]; then
     echo "MultiCC is not running"
     rm -f "$PID_FILE"
     return 0
   fi
-  local pid=$(get_pid)
-  echo "Stopping MultiCC (PID $pid)..."
+  echo "Stopping MultiCC (PID(s): $pids)..."
   # SIGINT triggers server.js gracefulShutdown (drain in-flight turns + flush
   # partial chats). SIGTERM is deliberately ignored by the server, so we must
   # send -INT here; the -9 below stays as a hard fallback if the drain overruns.
-  kill -INT "$pid" 2>/dev/null
+  for p in $pids; do kill -INT "$p" 2>/dev/null; done
   # Wait up to ~65s for graceful shutdown (matches server SHUTDOWN_GRACE_MS=60s)
   for i in $(seq 1 130); do
-    if ! kill -0 "$pid" 2>/dev/null; then
-      break
-    fi
+    local alive=""
+    for p in $pids; do
+      kill -0 "$p" 2>/dev/null && alive="$alive $p"
+    done
+    [ -z "$(echo "$alive" | xargs)" ] && break
     sleep 0.5
+    pids="$alive"
   done
-  # Force kill if still alive
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -9 "$pid" 2>/dev/null
-  fi
+  # Force kill any survivors
+  for p in $pids; do
+    kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+  done
   rm -f "$PID_FILE"
   echo "MultiCC stopped"
 }
