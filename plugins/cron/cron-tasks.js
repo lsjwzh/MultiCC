@@ -113,7 +113,7 @@ function fireTask(task, reason) {
   } else {
     let r;
     try {
-      r = deps.createSessionRecord({ dir, cli: task.cli || 'claude', kind: 'chat', label: `⏰ ${task.name}` });
+      r = await deps.createSessionRecord({ dir, cli: task.cli || 'claude', kind: 'chat', label: `⏰ ${task.name}` });
     } catch (e) { r = { ok: false, error: e.message }; }
     if (!r || !r.ok) {
       task.lastRunAt = Date.now(); task.lastStatus = 'error';
