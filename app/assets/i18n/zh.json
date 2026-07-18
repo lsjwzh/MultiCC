@@ -172,7 +172,7 @@
   "roleLoadFailed": "加载失败：{error}",
 
   "sessionMemory": "会话记忆",
-  "sessionMemoryDesc": "辅助 AI 在清理历史时自动提炼的「关键问题 + 解决方式」，会随每轮对话注入给模型。可手动编辑或清空。",
+  "sessionMemoryDesc": "辅助 AI 在周期复盘、清理历史或历史滚动时提炼的稳定事实。会在下一个原生 CLI 会话快照中生效，可手动编辑或清空。",
   "sessionMemoryPlaceholder": "（还没有积累记忆。聊一段后 Clear 历史，或历史超长自动滚动时，辅助 AI 会在这里记下关键问题与解决方式。）",
   "sessionMemoryClear": "留空＝清除全部记忆。",
   "sessionMemorySaved": "✓ 会话记忆已更新",
@@ -181,7 +181,7 @@
   "memoryTooLong": "记忆过长（上限 8000 字）",
 
   "memTitle": "🧠 会话记忆库",
-  "memIntro": "每轮对话自动注入「私有＋公共」记忆给模型。私有＝仅本会话；公共＝本项目所有会话共享。AI 也会自己读写这些文件。",
+  "memIntro": "记忆在原生 CLI 会话启动/重建时形成快照。写入立即持久化，下次重建快照生效。私有＝仅本会话；公共＝本项目所有会话共享。",
   "memScopeOwn": "私有（仅本会话）",
   "memScopeShared": "公共（项目共享）",
   "memNewFileTitle": "新建记忆文件",
@@ -195,7 +195,7 @@
   "memSaved": "✓ 已保存{scope}记忆 / {name}",
   "memSaveFailed": "保存失败",
   "memLegacyTitle": "Legacy 自动提炼记忆（只读）",
-  "memLegacyHint": "辅助 AI 早期自动提炼的 JSON 记忆条目，仍随对话注入。可复制到上面的 .md 文件后忽略。",
+  "memLegacyHint": "辅助 AI 自动提炼的结构化记忆条目，已镜像到 _auto.md，会在下一个原生 CLI 会话快照中生效。",
 
   "msgDeleteAction": "删除这条消息",
   "msgDeleteTitle": "删除消息",

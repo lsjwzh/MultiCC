@@ -28,6 +28,10 @@ const MEMORY_THREAT_PATTERNS = [
   [/curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)/i, 'secret_exfiltration'],
   [/wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)/i, 'secret_exfiltration'],
   [/authorized_keys/i, 'ssh_backdoor'],
+  [/忽略(?:之前|以上|先前|所有)(?:的)?(?:指令|规则|提示)/i, 'prompt_injection_zh'],
+  [/你现在是/i, 'role_hijack_zh'],
+  [/不要告诉用户/i, 'deception_hide_zh'],
+  [/(?:覆盖|改写)(?:系统)?提示(?:词)?/i, 'system_prompt_override_zh'],
 ];
 
 function memoryFilePriority(name, primaryNames = []) {
@@ -35,9 +39,9 @@ function memoryFilePriority(name, primaryNames = []) {
   const primary = new Set(primaryNames.map(item => String(item).toLowerCase()));
   if (primary.has(lower) || lower === 'memory.md' || lower === 'user.md') return 0;
   if (lower === '_curated.md') return 0;
-  if (lower === '_auto.md') return 2;
+  if (lower === '_auto.md') return 1;
   if (lower === 'readme.md') return 3;
-  return 1;
+  return 2;
 }
 
 function compactOmissionNotice(omitted, maxChars) {
@@ -73,6 +77,16 @@ function buildMemoryFolderSnapshot(dir, capChars, opts = {}) {
     try { body = fs.readFileSync(path.join(dir, name), 'utf8').trim(); }
     catch (_) { continue; }
     if (!body) continue;
+    const threat = scanMemoryContent(body);
+    if (threat) {
+      records.push({
+        name,
+        body: `（该文件命中记忆安全规则，未自动注入：${threat}）`,
+        priority: memoryFilePriority(name, opts.primaryNames || []),
+        blocked: true,
+      });
+      continue;
+    }
     records.push({
       name,
       body,
@@ -95,23 +109,24 @@ function buildMemoryFolderSnapshot(dir, capChars, opts = {}) {
 
   for (const item of records) {
     const chunk = `#### ${item.name}\n${item.body}`;
-    if (total + chunk.length <= contentBudget) {
+    const separatorCost = chunks.length ? 2 : 0;
+    if (total + separatorCost + chunk.length <= contentBudget) {
       chunks.push(chunk);
-      included.push({ name: item.name, chars: chunk.length, partial: false });
-      total += chunk.length;
+      included.push({ name: item.name, chars: chunk.length, partial: false, blocked: !!item.blocked });
+      total += separatorCost + chunk.length;
       continue;
     }
 
     // Curated/primary files carry the highest-signal facts. Preserve a bounded
     // prefix when one of them alone is oversized, then keep scanning so an
     // unrelated large file never blocks smaller memories that still fit.
-    const remaining = contentBudget - total;
+    const remaining = contentBudget - total - separatorCost;
     if (item.priority === 0 && remaining >= 240) {
       const marker = '\n（本文件超出本轮注入预算，以上为节选）';
       const clipped = chunk.slice(0, Math.max(0, remaining - marker.length)) + marker;
       chunks.push(clipped);
       included.push({ name: item.name, chars: clipped.length, partial: true });
-      total += clipped.length;
+      total += separatorCost + clipped.length;
       omitted.push({ name: item.name, partial: true });
     } else {
       omitted.push({ name: item.name, partial: false });
@@ -189,7 +204,7 @@ function atomicWrite(filePath, content) {
 }
 
 function curatedResponse(filePath, entries, charLimit, message) {
-  const chars = entries.length ? ENTRY_DELIMITER.join(entries).length : 0;
+  const chars = entries.length ? entries.join(ENTRY_DELIMITER).length : 0;
   return {
     ok: true,
     message,
@@ -222,6 +237,9 @@ function applyCuratedMemoryAction({
   const needle = String(oldText == null ? '' : oldText).trim();
   if (action === 'add' || action === 'replace') {
     if (!value) return { ok: false, error: 'content is required' };
+    if (value.includes(ENTRY_DELIMITER)) {
+      return { ok: false, error: 'content contains the reserved memory-entry delimiter' };
+    }
     const threat = scanMemoryContent(value);
     if (threat) return { ok: false, error: `memory write blocked: ${threat}` };
   }
@@ -247,13 +265,13 @@ function applyCuratedMemoryAction({
     }
   }
 
-  const chars = next.length ? ENTRY_DELIMITER.join(next).length : 0;
+  const chars = next.length ? next.join(ENTRY_DELIMITER).length : 0;
   if (chars > charLimit) {
     return {
       ok: false,
       error: `memory would exceed limit (${chars}/${charLimit} chars); replace or remove entries first`,
       entries,
-      usage: { chars: entries.length ? ENTRY_DELIMITER.join(entries).length : 0, limit: charLimit },
+      usage: { chars: entries.length ? entries.join(ENTRY_DELIMITER).length : 0, limit: charLimit },
     };
   }
 
@@ -266,6 +284,7 @@ module.exports = {
   DEFAULT_CURATED_FILE,
   ENTRY_DELIMITER,
   applyCuratedMemoryAction,
+  atomicWrite,
   buildMemoryFolderSnapshot,
   memoryFilePriority,
   readCuratedEntries,

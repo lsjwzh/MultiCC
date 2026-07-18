@@ -149,7 +149,7 @@
   "roleLoadFailed": "Load failed: {error}",
 
   "sessionMemory": "Session Memory",
-  "sessionMemoryDesc": "Auto-distilled by the aux AI on history clear/trim — key problems and how they were solved. Injected into every turn. Editable.",
+  "sessionMemoryDesc": "Stable facts distilled by the aux AI during periodic review, history clear, or history trimming. Effective in the next native CLI session snapshot. Editable.",
   "sessionMemoryPlaceholder": "(No memories yet. Chat for a while, then Clear history — the aux AI will record key problems and solutions here.)",
   "sessionMemoryClear": "Leave empty = clear all memories.",
   "sessionMemorySaved": "✓ Session memory updated",
@@ -158,7 +158,7 @@
   "memoryTooLong": "Memory too long (max 8000 chars)",
 
   "memTitle": "🧠 Session Memory Library",
-  "memIntro": "Both private and shared memories are injected into every chat turn. Private = this session only; shared = every session in this project. The AI reads and writes these files too.",
+  "memIntro": "Memory is snapshotted when a native CLI session starts or is rebuilt. Writes persist immediately and enter the next snapshot. Private = this session only; shared = every session in this project.",
   "memScopeOwn": "Private (this session)",
   "memScopeShared": "Shared (project-wide)",
   "memNewFileTitle": "New memory file",
@@ -172,7 +172,7 @@
   "memSaved": "✓ Saved {scope} memory / {name}",
   "memSaveFailed": "Save failed",
   "memLegacyTitle": "Legacy auto-distilled memory (read-only)",
-  "memLegacyHint": "Earlier auto-distilled JSON memory entries, still injected per turn. Copy into a .md file above and ignore.",
+  "memLegacyHint": "Structured entries distilled by the aux AI are mirrored to _auto.md and enter the next native CLI session snapshot.",
 
   "msgDeleteAction": "Delete this message",
   "msgDeleteTitle": "Delete message",

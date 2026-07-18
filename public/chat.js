@@ -3921,7 +3921,7 @@ function updateMemoryBtn() {
   if (!memoryBtn) return;
   const set = !!(_sessionMemory && _sessionMemory.trim());
   memoryBtn.textContent = set ? tt('memorySet') : tt('memory');
-  memoryBtn.title = '会话记忆库：私有（仅本会话）＋公共（项目共享）记忆，每轮自动注入给模型；AI 也会自读写。点击查看/编辑';
+  memoryBtn.title = '会话记忆库：私有（仅本会话）＋公共（项目共享）。原生 CLI 会话启动时形成快照，写入会立即持久化。点击查看/编辑';
 }
 
 // Folder-memory editor: two scopes (own = private to this session, shared =
@@ -3957,7 +3957,7 @@ async function openMemoryEditor() {
   title.textContent = '🧠 会话记忆库';
   const msg = document.createElement('div');
   msg.style.cssText = 'color:#8b949e;font-size:12px;line-height:1.5;';
-  msg.textContent = '每轮对话自动注入「私有＋公共」记忆给模型。私有＝仅本会话；公共＝本项目所有会话共享。AI 也会自己读写这些文件。';
+  msg.textContent = '记忆在原生 CLI 会话启动/重建时形成快照；写入会立即持久化，下次重建快照生效。私有＝仅本会话；公共＝本项目所有会话共享。辅助 AI 会周期复盘稳定事实，Clear 时也会提炼即将移除的历史。';
 
   const tabs = document.createElement('div');
   tabs.style.cssText = 'display:flex;gap:6px;';
