@@ -83,6 +83,7 @@ function createPaths({ dataDir } = {}) {
     chatHistoryDir: path.join(root, 'chat_history'),
     eventsDir: path.join(root, 'events'),
     bridgesDir: path.join(root, 'bridges'),
+    artifactsDir: path.join(root, 'artifacts'),
     // Preserve the historical ~/.multicc/detached location for ordinary
     // installs, while isolated MULTICC_DATA_DIR instances get fully isolated
     // external-job evidence under their own root.

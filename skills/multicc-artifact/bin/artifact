@@ -3,7 +3,7 @@
 // multicc-artifact — publish a throwaway web page or file and print a link the
 // user can open from the multicc chat (works locally and over the tunnel).
 //
-// The file is written under ~/.multicc/artifacts/<id>/<name> and served by the
+// The file is written under MULTICC_DATA_DIR/artifacts/<id>/<name> and served by the
 // multicc server at /artifacts/<id>/<name>. The relative URL is what you paste
 // into the chat: it resolves against whatever origin the user is on.
 const fs = require('fs');
@@ -11,7 +11,11 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');
+const ARTIFACTS_DIR = process.env.MULTICC_ARTIFACTS_DIR || (
+  process.env.MULTICC_DATA_DIR
+    ? path.join(path.resolve(process.env.MULTICC_DATA_DIR), 'artifacts')
+    : path.join(os.homedir(), '.multicc', 'artifacts')
+);
 const BASE = (process.env.MULTICC_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
 const IMG_RE = /\.(png|jpe?g|gif|svg|webp|avif|bmp|ico)$/i;
 
@@ -151,7 +155,7 @@ function main() {
 
   const id = safeName(f.id, '') || newId();
   const dir = path.join(ARTIFACTS_DIR, id);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   let name, buf;
   if (cmd === 'page') {
@@ -167,7 +171,7 @@ function main() {
   }
 
   const dest = path.join(dir, name);
-  fs.writeFileSync(dest, buf);
+  fs.writeFileSync(dest, buf, { mode: 0o600 });
   emit(cmd, id, name, dir, dest, f.quiet);
 }
 

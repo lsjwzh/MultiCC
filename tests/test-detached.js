@@ -13,6 +13,13 @@
 
 const assert = require('assert');
 const cp = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { assertTestDir } = require('../src/paths');
+
+const testRoot = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-detached-')));
+process.env.MULTICC_DATA_DIR = testRoot;
 const detached = require('../src/detached');
 const waitInjector = require('../src/wait-injector');
 
@@ -95,6 +102,8 @@ async function testWaitInjectorIntegration() {
   await testExitCodeAndOutput();
   await testSurvivesLauncherDeath();
   await testWaitInjectorIntegration();
+  assertTestDir(testRoot);
+  fs.rmSync(testRoot, { recursive: true, force: true });
   console.log('ALL PASS ✅');
   process.exit(0);
 })().catch(e => { console.error('FAIL ❌', e); process.exit(1); });
