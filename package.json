@@ -12,7 +12,7 @@
     "test:i18n": "node scripts/generate-i18n.js && node tests/test-i18n.js",
     "test": "npm run test:deterministic && npm run test:contracts && npm run test:native",
     "test:core": "node tests/test-cli-switch.js && node tests/test-cli-adapters.js && node tests/test-message-composer-golden.js && node tests/test-chat-stream-resume.js && node tests/test-bg-completion-coalescer.js && node tests/test-codex-transform.js && node --test tests/test-orchestration-store.js tests/test-outbox.js tests/test-wait-service.js tests/test-orchestration-runtime.js && node tests/test-wait-injector.js",
-    "test:security": "node --test tests/test-security-observability.js tests/test-sqlite-runtime.js tests/test-push-localization.js tests/test-telegram-client-adapter.js tests/test-upload-middleware.js",
+    "test:security": "node --test tests/test-security-observability.js tests/test-sqlite-runtime.js tests/test-push-localization.js tests/test-provider-ccswitch-readonly.js tests/test-telegram-client-adapter.js tests/test-upload-middleware.js",
     "test:state": "node tests/test-state-store.js && node --test tests/test-provider-usage.js && node tests/test-shutdown-http-errors.js && node tests/test-directory-service.js",
     "test:git": "node --test tests/test-repo-actor.js tests/test-git-safety.js && node tests/test-git-push.js",
     "test:deterministic": "npm run test:core && npm run test:security && npm run test:state && npm run test:git",
