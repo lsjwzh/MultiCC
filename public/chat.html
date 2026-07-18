@@ -712,8 +712,11 @@
     #merge-hint {
       display: none;
       position: fixed;
-      left: 12px;
+      /* Right-anchored compact card instead of full-width: covers far less of
+       * the conversation, and what it does cover shows through translucently. */
+      left: auto;
       right: 12px;
+      max-width: min(440px, calc(100vw - 24px));
       bottom: calc(62px + env(safe-area-inset-bottom));
       z-index: 8500;
       align-items: center;
@@ -726,7 +729,13 @@
       color: #f2cc60;
       font-size: 12px;
       line-height: 1.35;
+      /* Translucent at rest so chat messages underneath stay readable;
+       * solid on hover/keyboard focus when the user actually engages it. */
+      opacity: .35;
+      transition: opacity 160ms ease;
     }
+    #merge-hint:hover,
+    #merge-hint:focus-within { opacity: 1; }
     #merge-hint.show { display: flex; }
     #merge-hint .merge-hint-text { flex: 1; min-width: 0; }
     /* Worktree branch / behind-base indicator */
