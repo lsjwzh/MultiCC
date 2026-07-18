@@ -16,6 +16,17 @@ const {
   createDeliveryProof,
   acknowledgeDeliveredEffect,
   createTurnRuntimeStore,
+  createTurnLifecycle,
+  createRunnerOwnership,
+  ownsCurrentRunner,
+  assignKillReason,
+  recordResultEvent,
+  recordCloseResult,
+  recordPartialCheckpoint,
+  hasMatchingPartialCheckpoint,
+  claimDurableUsage,
+  evaluatePostTurn,
+  claimPostTurn,
   CHAT_TURN_PORTS,
   assertChatTurnPorts,
 } = require('../src/chat');
@@ -38,6 +49,7 @@ test('turn request normalizes identity/origin/history without native ids or secr
   assert.deepEqual(turn.identity, { clientMsgId: 'delivery-1', deliveryId: 'delivery-1' });
   assert.deepEqual(turn.background.taskIds, ['a', 'b']);
   assert.deepEqual(turn.origin, { kind: 'user', operationId: null });
+  assert.deepEqual(turn.launch, { reason: 'request' });
   assert.deepEqual(turn.execution, {
     transport: 'claude-stream', historyIntent: 'first', isFirstTurn: true,
     resume: false, forceFirstTurn: null,
@@ -67,7 +79,13 @@ test('force-first/resume/retry/dispatch metadata is explicit and illegal combina
   ));
   assert.throws(() => request({ forceFirstTurn: true, resume: true }), /contradict/);
   assert.throws(() => request({ forceFirstTurn: false, resume: true, hasNativeSession: false }), /native session/);
-  assert.throws(() => request({ originDispatchId: 'd1', originContinue: true }), /mutually exclusive/);
+  const continuedDispatch = request({ originDispatchId: 'd1', originContinue: true });
+  assert.deepEqual(continuedDispatch.origin, { kind: 'dispatch', operationId: 'd1' });
+  assert.deepEqual(continuedDispatch.launch, { reason: 'continue' });
+  const continuedTrigger = request({ originTrigger: true, originContinue: true });
+  assert.deepEqual(continuedTrigger.origin, { kind: 'trigger', operationId: null });
+  assert.deepEqual(continuedTrigger.launch, { reason: 'continue' });
+  assert.throws(() => request({ originDispatchId: 'd1', originTrigger: true }), /mutually exclusive/);
   assert.throws(() => request({ retry: { strategy: 'resume' } }), /cannot be a first turn/);
 });
 
@@ -245,6 +263,8 @@ test('retry policy preserves current caps, delay and deterministic scheduling', 
   assert.equal(interrupted.attempt, 10);
   assert.equal(decideRetry({ event: 'interrupted', attempts: { interruptedResume: 10 } }).reason, 'resume-cap-reached');
   assert.equal(decideRetry({ event: 'interrupted', userStopped: true }).reason, 'user-stopped');
+  assert.equal(decideRetry({ event: 'interrupted', killReason: 'shutdown' }).reason, 'explicit-lifecycle-stop');
+  assert.equal(decideRetry({ event: 'interrupted', killReason: 'session_delete' }).action, 'fail');
   assert.equal(decideRetry({ event: 'interrupted', hasExplicitWait: true }).action, 'wait');
 
   const fresh = decideRetry({ event: 'empty-exit', cli: 'codex', attempts: {} }, { now: () => 5 });
@@ -302,6 +322,200 @@ test('dispatch/outbox acknowledgement requires matching durable delivery proof',
   });
 });
 
+test('assistant append failure never becomes durable and suppresses every post-turn effect', () => {
+  const normalized = request({ originDispatchId: 'dispatch-1', originContinue: true });
+  const turn = createTurnLifecycle(normalized, { turnId: 'turn-1' });
+  const runner = createRunnerOwnership(turn, { runnerId: 'proc-1' });
+  const cs = { _activeTurn: turn, _activeRunner: runner };
+  const append = () => false; // fault injection: disk append failed
+  const persisted = append({ role: 'assistant', content: 'done' });
+  const proof = recordResultEvent(turn, runner, {
+    current: ownsCurrentRunner(cs._activeTurn, cs._activeRunner, turn, runner),
+    persisted,
+  });
+  assert.equal(proof.ok, false);
+  assert.equal(proof.resultDurable, false);
+  assert.equal(turn.resultDurable, false);
+  assert.equal(evaluatePostTurn(turn, runner, {
+    currentTurn: cs._activeTurn, currentRunner: cs._activeRunner,
+  }).code, 'result_not_durable');
+  assert.deepEqual(turn.lineage, { kind: 'dispatch', operationId: 'dispatch-1' },
+    'failed persistence must retain dispatch lineage for recovery');
+});
+
+test('superseded and cancelled runners own their kill reason and cannot contaminate a new turn', () => {
+  const first = createTurnLifecycle(request(), { turnId: 'turn-old' });
+  const oldRunner = createRunnerOwnership(first, { runnerId: 'proc-old' });
+  assignKillReason(oldRunner, 'new_user_message');
+
+  const next = createTurnLifecycle(request(), { turnId: 'turn-new' });
+  const newRunner = createRunnerOwnership(next, { runnerId: 'proc-new' });
+  const cs = { _activeTurn: next, _activeRunner: newRunner };
+  assert.equal(recordResultEvent(first, oldRunner, {
+    current: ownsCurrentRunner(cs._activeTurn, cs._activeRunner, first, oldRunner),
+    persisted: true,
+  }).code, 'stale_runner');
+  assert.equal(claimPostTurn(first, oldRunner, {
+    currentTurn: cs._activeTurn, currentRunner: cs._activeRunner,
+  }).code, 'stale_runner');
+  assert.equal(newRunner.killReason, null);
+
+  assignKillReason(newRunner, 'user_cancel');
+  const afterCancel = createTurnLifecycle(request(), { turnId: 'turn-after-cancel' });
+  const afterCancelRunner = createRunnerOwnership(afterCancel, { runnerId: 'proc-after-cancel' });
+  cs._activeTurn = afterCancel;
+  cs._activeRunner = afterCancelRunner;
+  assert.equal(afterCancelRunner.killReason, null);
+  assert.equal(evaluatePostTurn(next, newRunner, {
+    currentTurn: cs._activeTurn, currentRunner: cs._activeRunner,
+  }).code, 'stale_runner');
+});
+
+test('API error and planned retry suppress post-turn while preserving dispatch/trigger lineage', () => {
+  for (const lineage of [
+    { originDispatchId: 'dispatch-9' },
+    { originTrigger: true },
+  ]) {
+    const normalized = request({ ...lineage, originContinue: true });
+    const turn = createTurnLifecycle(normalized, { turnId: `turn-${normalized.origin.kind}` });
+    const runner = createRunnerOwnership(turn, { runnerId: `runner-${normalized.origin.kind}` });
+    const current = { _activeTurn: turn, _activeRunner: runner };
+    recordResultEvent(turn, runner, { current: true, persisted: true });
+    assert.equal(evaluatePostTurn(turn, runner, {
+      currentTurn: current._activeTurn, currentRunner: current._activeRunner, apiError: true,
+    }).code, 'api_error_retry_pending');
+    runner.retryPlanned = true;
+    assert.equal(evaluatePostTurn(turn, runner, {
+      currentTurn: current._activeTurn, currentRunner: current._activeRunner,
+    }).code, 'retry_pending');
+    assert.equal(turn.lineage.kind, normalized.origin.kind);
+    assert.equal(turn.launchReason, 'continue');
+  }
+});
+
+test('only one current durable final result can claim dispatch return', () => {
+  const normalized = request({ originDispatchId: 'dispatch-once' });
+  const turn = createTurnLifecycle(normalized, { turnId: 'turn-once' });
+  const runner = createRunnerOwnership(turn, { runnerId: 'runner-once' });
+  const facts = { currentTurn: turn, currentRunner: runner };
+  assert.equal(recordCloseResult(turn, runner, { current: true, persisted: true, final: false }).code,
+    'not_final_result');
+  assert.equal(turn.resultDurable, false, 'partial close persistence is not a final-result proof');
+  assert.equal(recordCloseResult(turn, runner, { current: true, persisted: true, final: true }).ok, true);
+  let returns = 0;
+  if (claimPostTurn(turn, runner, facts).ok) returns++;
+  if (claimPostTurn(turn, runner, facts).ok) returns++;
+  assert.equal(returns, 1);
+  assert.equal(turn.postTurnClaimed, true);
+});
+
+test('usage is recorded once when close persistence recovers an initial result append failure', () => {
+  const turn = createTurnLifecycle(request(), { turnId: 'turn-usage' });
+  const runner = createRunnerOwnership(turn, { runnerId: 'runner-usage' });
+  recordResultEvent(turn, runner, { current: true, persisted: false });
+  assert.equal(claimDurableUsage(runner, { resultDurable: turn.resultDurable }).code,
+    'result_not_durable');
+  recordCloseResult(turn, runner, { current: true, persisted: true, final: true });
+  let usageWrites = 0;
+  if (claimDurableUsage(runner, { resultDurable: turn.resultDurable }).ok) usageWrites++;
+  if (claimDurableUsage(runner, { resultDurable: turn.resultDurable }).ok) usageWrites++;
+  assert.equal(usageWrites, 1);
+  assert.equal(runner.usageRecorded, true);
+});
+
+test('failed authoritative usage write leaves the once claim open for a synchronous retry', () => {
+  const turn = createTurnLifecycle(request(), { turnId: 'turn-usage-write' });
+  const runner = createRunnerOwnership(turn, { runnerId: 'runner-usage-write' });
+  recordCloseResult(turn, runner, { current: true, persisted: true, final: true });
+  const writeResults = [false, true];
+  let writes = 0;
+  const record = () => {
+    if (runner.usageRecorded) return false;
+    const written = writeResults[writes++];
+    if (!written) return false;
+    return claimDurableUsage(runner, { resultDurable: turn.resultDurable }).ok;
+  };
+  assert.equal(record(), false);
+  assert.equal(runner.usageRecorded, undefined, 'failed disk write must not burn the once claim');
+  assert.equal(record(), true);
+  assert.equal(runner.usageRecorded, true);
+  assert.equal(record(), false);
+  assert.equal(writes, 2, 'already-recorded usage must not write a third time');
+});
+
+test('result event is runner-owned and cannot promote a retry runner partial to final', () => {
+  const turn = createTurnLifecycle(request({ cli: 'codex' }), { turnId: 'turn-retry-owner' });
+  const first = createRunnerOwnership(turn, { runnerId: 'runner-first' });
+  recordResultEvent(turn, first, { current: true, persisted: false });
+  assert.equal(first.resultEvent, true);
+  assert.equal(turn.resultDurable, false);
+
+  const retry = createRunnerOwnership(turn, { runnerId: 'runner-retry' });
+  assert.equal(retry.resultEvent, false, 'runner-local result evidence must not cross retry attempts');
+  const partial = recordCloseResult(turn, retry, { current: true, persisted: true, final: retry.resultEvent });
+  assert.equal(partial.code, 'not_final_result');
+  assert.equal(turn.resultDurable, false);
+  assert.equal(turn.resultRunnerId, null);
+});
+
+test('shutdown partial checkpoint is durable but never a final result proof', () => {
+  const turn = createTurnLifecycle(request(), { turnId: 'turn-checkpoint' });
+  const runner = createRunnerOwnership(turn, { runnerId: 'runner-checkpoint' });
+  const checkpoint = recordPartialCheckpoint(turn, runner, {
+    current: true, persisted: true, checkpointKey: 'sha256-partial-v1',
+  });
+  assert.equal(checkpoint.ok, true);
+  assert.equal(hasMatchingPartialCheckpoint(runner, 'sha256-partial-v1'), true);
+  assert.equal(hasMatchingPartialCheckpoint(runner, 'sha256-new-output'), false);
+  assert.equal(turn.resultDurable, false);
+  assert.equal(evaluatePostTurn(turn, runner, {
+    currentTurn: turn, currentRunner: runner,
+  }).code, 'result_not_durable');
+});
+
+test('production lifecycle uses append return, runner ownership and one guarded post-turn boundary', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.equal(source.includes('cs._killReason'), false, 'kill reason must not be session-global');
+  assert.match(source, /savedInClose = persistFinalAssistantResult\(/);
+  assert.match(source, /const resultDurable = persistFinalAssistantResult\(/);
+  assert.match(source, /if \(saved\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
+  assert.match(source, /runDurablePostTurn\(sessionName, cs, persisted, turn, runner, finalText/);
+  assert.match(source, /isCurrentTurnRunner\(cs, turn, runner\)/);
+  assert.equal((source.match(/runnerHandedOff = true;/g) || []).length, 2,
+    'both streaming and process runners must be marked handed off before lease release');
+  const catchAt = source.indexOf('if (runnerHandedOff) {', source.indexOf('function runChatTurn('));
+  const falsePreparationErrorAt = source.indexOf('turn preparation failed before runner handoff', catchAt);
+  assert.ok(catchAt >= 0 && falsePreparationErrorAt > catchAt,
+    'a handed-off runner must bypass the pre-runner failure response');
+  assert.ok((source.match(/回复已生成但未能持久化，已停止回流和后续动作。/g) || []).length >= 2,
+    'stream and process finalizers must both surface durable-result failure');
+  assert.equal(source.includes('turn.resultEvent'), false, 'result events must be runner-owned');
+  assert.match(source, /const sameDurablePartial = hasMatchingPartialCheckpoint\(runner,/);
+  assert.match(source, /if \(!killReason && waitInjector\.resumeInterrupted\(sessionName\)\)/,
+    'only unknown interruptions without an explicit lifecycle kill may auto-recover');
+  const usageStart = source.indexOf('function recordDurableTurnUsage(');
+  const usageEnd = source.indexOf('\n}', usageStart);
+  const usageBody = source.slice(usageStart, usageEnd);
+  assert.ok(usageBody.indexOf('accumulateTokenUsage(sessionName, normalized)')
+    < usageBody.indexOf('claimDurableUsage(runner'),
+  'main token usage must commit before the in-memory once claim');
+  const accumulateStart = source.indexOf('function accumulateTokenUsage(');
+  const accumulateEnd = source.indexOf('function getTokenUsage()', accumulateStart);
+  const accumulateBody = source.slice(accumulateStart, accumulateEnd);
+  assert.ok(accumulateBody.indexOf('atomicWriteJson(TOKEN_USAGE_FILE, data)')
+    < accumulateBody.indexOf('accumulateTokenDaily(sessionName, usage)'),
+  'daily aggregation must derive only after the main usage file commits');
+  assert.match(accumulateBody, /Failed to save token usage:[\s\S]{0,100}return false;/);
+  const streamingFinalize = source.slice(
+    source.indexOf('function finalizeStreamingTurn('),
+    source.indexOf('// ── Chat mode:', source.indexOf('function finalizeStreamingTurn(')),
+  );
+  const completedBranch = streamingFinalize.indexOf('} else if (completedOk) {');
+  const classifyAt = streamingFinalize.indexOf('classifyTurnEnd(cs, sessionName);', completedBranch);
+  assert.ok(completedBranch >= 0 && classifyAt > completedBranch,
+    'clean streaming completion must restore immediate classification');
+});
+
 test('handoff, gateway, aux and normal post-turn routes remain explicit', () => {
   const handoff = routePostTurn({
     turnId: 't1', sessionId: 's1', sessionType: 'normal', finalText: 'ok',
@@ -328,7 +542,7 @@ test('chat turn ports are narrow and pure modules import no runtime I/O dependen
   assert.equal(assertChatTurnPorts(ports), ports);
   assert.throws(() => assertChatTurnPorts({}), /port missing/);
 
-  for (const file of ['turn-request.js', 'retry-policy.js', 'post-turn-router.js', 'runtime-store.js', 'ports.js']) {
+  for (const file of ['turn-request.js', 'retry-policy.js', 'post-turn-router.js', 'runtime-store.js', 'turn-lifecycle.js', 'ports.js']) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', file), 'utf8');
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
   }

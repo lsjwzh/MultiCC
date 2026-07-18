@@ -240,3 +240,26 @@
 3. `_killReason`、`originDispatchId`、`_originTrigger` 属于 session 共享状态；stale proc/stream finalize 可把上一轮终止原因污染下一轮，retry 也会丢 dispatch/trigger lineage。
 
 第五波必须先建立 turn-owned termination/lineage context 与 durable-result proof，修复上述排序，再 shadow 接入 retry decision，最后统一两处 post-turn effect 块。完成前禁止声称 retry/post-turn 已生产迁移。
+
+## 大重构第五波实施结果（2026-07-18）
+
+- Chat 生命周期安全已完成生产接线。新增 `src/chat/turn-lifecycle.js`，把 lineage、launch reason、runner identity、kill reason、result event、durable final proof、shutdown partial checkpoint、usage once claim 与 post-turn claim 从 session 共享字段中分离。
+- Claude persistent stream 与 Codex process 仍保留各自 runner/finalize；两者只在“current turn + current runner + final 已写入 history + 无 kill/API/retry/handoff failure”时执行 handoff、dispatch、gateway、marker 与 trigger。append 失败可在 close/finalize 重试；双失败明确告警，不回流。
+- 显式 `session_delete/relocate/cli_switch/shutdown/user_cancel/new_user_message` 不再进入 unknown-interruption auto-resume；只有无 kill reason 的真实未知断流可恢复。shutdown partial 以 runner-bound 内容 hash 防重，但永远不提升为 final durability。
+- token usage 以 `token_usage.json` 原子写成功作为 authoritative commit；成功后才 claim once/broadcast，daily 仅作为派生 best-effort，主写失败保留 close/finalize 重试资格。
+- Manage Memory 从 `manage.js` 整块迁出并继续拆成 `memory-model.js`（唯一 MultiCCApi/DTO 边界）、`memory-graph.js`（SVG/force layout）、`memory-controller.js`（tree/editor）。`manage.js` 7,246→6,511（-735），Memory 域直接 fetch/tokenQS 为 0。
+- Memory 复审修复了两个数据损坏风险：超过 200,000 字符的旧文件改为明确只读预览并禁用保存；同路径 reopen 会废弃旧 save/delete 回包。Graph/Tree 加载失败可重试，invalidate 会停止旧 RAF 并在回到 tab 时重载。
+- Flutter 首页任务滚动器迁入 `widgets/home_task_scroller.dart`，通过 `sessions/directories/liveStatusFor/onSessionTap` 四个显式输入与宿主交互，不依赖 `SessionManager`。`main_shell.dart` 3,268→2,975（-293）。
+- 默认 security 门已纳入 Memory VM/竞态测试。联合验证包括 Chat lifecycle 25 项、core/orchestration 66 项、wait 35 项、Memory 9 项、security 78 项、architecture 22 项、isolated HTTP、Flutter 17 项。
+
+### 第五波后的真实热点
+
+| 文件 | 当前约行数 | 下一步 |
+|---|---:|---|
+| `server.js` | 12,772 | 本波为修复历史生命周期竞态净增长；下一批必须把已验证的 lifecycle bridge/runner host 下沉到 `src/chat` coordinator，禁止继续 inline 增长 |
+| `public/manage.js` | 6,511 | 继续按 session/directory/bridge/settings 分域迁移到共享 client/controller |
+| `public/chat.js` | 5,294 | 先抽 WS transport/state store，再迁 message composer host glue |
+| `app/lib/screens/main_shell.dart` | 2,975 | 先抽拖拽协调器和 Workspace status port，再拆高耦合 `_DirectoryCard` |
+| `app/lib/screens/chat_screen.dart` | 1,675 | 继续拆 header/config/share/state ownership |
+
+保留风险：Memory DTO 为兼容 authenticated Dashboard 的“复制绝对路径”功能仍保留 `path`，远程已认证用户会看到本机目录结构；应在独立兼容批次改为 capability/config 或默认仅返回 `rel`。外部 dispatch delivery 仍不宣称 global exactly-once；本波只保证本进程 current/durable/once claim。
