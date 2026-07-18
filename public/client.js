@@ -1339,13 +1339,22 @@ vhSendBtn.addEventListener('click', () => { commitStreamingVoice(); });
 const _canLegacyRecord = _hasNativeBridge || (typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices);
 const _canStream = !!(navigator.mediaDevices && window.AudioWorkletNode && window.VoiceStream && !_hasNativeBridge);
 
+// Diagnostic: put the resolved decision on the mic button title AND log to console
+// so users hitting the wrong branch (e.g. cached-old-code, no worklet, http-only)
+// can tell at a glance instead of guessing.
+console.log('[voice] canStream=%s canLegacyRecord=%s hasNativeBridge=%s',
+  _canStream, _canLegacyRecord, _hasNativeBridge);
+
 if (!_canLegacyRecord && !_canStream) {
   micBtn.disabled = true;
   micBtn.title = '此浏览器不支持录音（需要 HTTPS 或 localhost）';
 } else {
   micBtn.onclick = () => {
     // Real-time streaming when a provider is configured; otherwise legacy upload.
-    if (_canStream && streamingAvailable()) {
+    const useStream = _canStream && streamingAvailable();
+    console.log('[voice] mic click: useStream=%s streamingActive=%s isRecording=%s',
+      useStream, _streamingActive, isRecording);
+    if (useStream) {
       if (_streamingActive) commitStreamingVoice();
       else startStreamingVoice();
       return;
