@@ -5954,6 +5954,10 @@ function hasNotifyConsumer(sessionId) {
 // terminalBroadcast / chatBroadcast / workspaceBroadcast / the aux hub's
 // broadcast() — previously this "iterate clients + JSON send" body was copy-
 // pasted at ~9 sites.
+function sendWs(client, payload, context) {
+  client.send(JSON.stringify(createWsEnvelope(payload, context)));
+}
+
 function broadcastTo(clients, payload) {
   const json = JSON.stringify(createWsEnvelope(payload));
   for (const client of clients) {
@@ -8857,7 +8861,7 @@ function workspaceSnapshot(dirId) {
 function handleWorkspaceWs(ws, req, urlObj) {
   const dirId = urlObj.searchParams.get('dirId') || '';
   if (!directories.has(dirId)) {
-    ws.send(JSON.stringify({ type: 'error', error: 'unknown directory' }));
+    sendWs(ws, { type: 'error', error: 'unknown directory' });
     ws.close();
     return;
   }
@@ -8866,11 +8870,11 @@ function handleWorkspaceWs(ws, req, urlObj) {
   set.add(ws);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  ws.send(JSON.stringify({
+  sendWs(ws, {
     type: 'snapshot', dirId,
     sessions: workspaceSnapshot(dirId),
     events: recentEvents(dirId),
-  }));
+  });
   ws.on('close', () => {
     set.delete(ws);
     if (set.size === 0) workspaceClients.delete(dirId);
@@ -8891,7 +8895,7 @@ function handleMetaWs(ws, req) {
                  sessions: workspaceSnapshot(dirId),
                  events: recentEvents(dirId) });
   }
-  ws.send(JSON.stringify({ type: 'meta_snapshot', fleet }));
+  sendWs(ws, { type: 'meta_snapshot', fleet });
   ws.on('close', () => { metaClients.delete(ws); });
 }
 
@@ -10991,20 +10995,20 @@ function handleChatWs(ws, req, urlObj) {
   const sessionName = urlObj.searchParams.get('session') || '_default';
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
-    ws.send(JSON.stringify({ type: 'error', error:
-      `Chat session "${sessionName}" does not exist. Create it via the dashboard first.` }));
+    sendWs(ws, { type: 'error', error:
+      `Chat session "${sessionName}" does not exist. Create it via the dashboard first.` });
     ws.close();
     return;
   }
   if (persisted.kind && persisted.kind !== 'chat') {
-    ws.send(JSON.stringify({ type: 'error', error:
-      `Session "${sessionName}" is not a chat session (kind=${persisted.kind}).` }));
+    sendWs(ws, { type: 'error', error:
+      `Session "${sessionName}" is not a chat session (kind=${persisted.kind}).` });
     ws.close();
     return;
   }
   if (invalidSessions.has(sessionName)) {
-    ws.send(JSON.stringify({ type: 'error', error:
-      `会话已失效（${invalidSessions.get(sessionName)}），请删除后重建。` }));
+    sendWs(ws, { type: 'error', error:
+      `会话已失效（${invalidSessions.get(sessionName)}），请删除后重建。` });
     ws.close();
     return;
   }
@@ -11078,7 +11082,7 @@ function handleChatWs(ws, req, urlObj) {
     }
   }
 
-  ws.send(JSON.stringify({
+  sendWs(ws, {
     type: 'system', subtype: 'init',
     cwd: cs.cwd, session: sessionName, session_id: sessionName,
     cli: cs.cli,
@@ -11094,7 +11098,7 @@ function handleChatWs(ws, req, urlObj) {
     cliStates: cliStateSummary(persisted),
     cliAvailability: cliAvailabilitySummary(),
     pendingCliHandoff: cliHandoffSummary(persisted),
-  }));
+  });
 
   // Replay saved history + in-progress assistant response (if any).
   // Send only the newest page over WS on connect; older messages are fetched
@@ -11125,13 +11129,13 @@ function handleChatWs(ws, req, urlObj) {
   const tokenUsage = getTokenUsage();
   const sessionTokenUsage = tokenUsage[sessionName] || null;
   if (replayMessages.length > 0 || sessionTokenUsage) {
-    ws.send(JSON.stringify({ type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore }));
+    sendWs(ws, { type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore });
     // Seed the aux classify bar with the current task snapshot on connect, so
     // the goal/phase shows immediately (not only after the next classify).
     try {
       const ts0 = getTaskState(persistedSessions.get(sessionName));
       if (ts0 && (ts0.goal || (ts0.phase && ts0.phase !== 'idle'))) {
-        ws.send(JSON.stringify({ type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null }));
+        sendWs(ws, { type: 'task_state', goal: ts0.goal || '', phase: ts0.phase || 'idle', classifyState: ts0.classifyState || null });
       }
     } catch (_) {}
     // If chat_history already includes the in-progress assistant message
@@ -11148,7 +11152,7 @@ function handleChatWs(ws, req, urlObj) {
   // If a stream is in progress, replay buffered events so reconnected client catches up
   if (cs.isStreaming && cs.streamReplay.length > 0) {
     for (const evt of cs.streamReplay) {
-      try { ws.send(JSON.stringify(evt)); } catch (_) {}
+      try { sendWs(ws, evt); } catch (_) {}
     }
   }
 
@@ -11160,7 +11164,7 @@ function handleChatWs(ws, req, urlObj) {
       const msg = JSON.parse(raw.toString());
       // Heartbeat is always allowed.
       if (msg.type === 'ping') {
-        try { ws.send(JSON.stringify({ type: 'pong' })); } catch (_) {}
+        try { sendWs(ws, { type: 'pong' }); } catch (_) {}
         return;
       }
       // ── Share-scope gate ──
@@ -11374,9 +11378,9 @@ wss.on('connection', async (ws, req) => {
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
     // Send current status + recent history on connect
-    ws.send(JSON.stringify({ type: 'aux_init', status: auxQueue.getStatus(), health: { ...auxQueue.health } }));
+    sendWs(ws, { type: 'aux_init', status: auxQueue.getStatus(), health: { ...auxQueue.health } });
     const history = loadChatHistory(AUX_SESSION_ID);
-    ws.send(JSON.stringify({ type: 'aux_history', messages: history.slice(-100) }));
+    sendWs(ws, { type: 'aux_history', messages: history.slice(-100) });
     ws.on('close', () => { auxQueue.clients.delete(ws); });
     return;
   }
@@ -11390,15 +11394,15 @@ wss.on('connection', async (ws, req) => {
   } else {
     const persisted = persistedSessions.get(sessionId);
     if (!persisted) {
-      ws.send(JSON.stringify({ type: 'error', data:
+      sendWs(ws, { type: 'error', data:
         `Session ${sessionId} does not exist.\r\n` +
-        `Create one in the dashboard first (Manage → pick a directory → + Terminal).\r\n` }));
+        `Create one in the dashboard first (Manage → pick a directory → + Terminal).\r\n` });
       ws.close();
       return;
     }
     if (persisted.kind && persisted.kind !== 'terminal') {
-      ws.send(JSON.stringify({ type: 'error', data:
-        `Session ${sessionId} is a ${persisted.kind} session, not a terminal.\r\n` }));
+      sendWs(ws, { type: 'error', data:
+        `Session ${sessionId} is a ${persisted.kind} session, not a terminal.\r\n` });
       ws.close();
       return;
     }
@@ -11410,7 +11414,7 @@ wss.on('connection', async (ws, req) => {
       const msg = `Failed to launch ${cliLabel}: ${err.message}\r\n` +
         `Make sure "${cliLabel}" is installed and available in PATH.\r\n` +
         `You can also set the ${cliLabel.toUpperCase()}_CMD environment variable.\r\n`;
-      ws.send(JSON.stringify({ type: 'error', data: msg }));
+      sendWs(ws, { type: 'error', data: msg });
       ws.close();
       return;
     }
@@ -11423,7 +11427,7 @@ wss.on('connection', async (ws, req) => {
   ws.on('pong', () => { ws.isAlive = true; });
 
   // Tell client its session ID
-  ws.send(JSON.stringify({ type: 'session_id', id: sessionId, cli: session.cli || 'claude' }));
+  sendWs(ws, { type: 'session_id', id: sessionId, cli: session.cli || 'claude' });
 
   // Don't replay buffered output — the toggle-resize trick below forces a full TUI
   // redraw at the client's actual dimensions, which is the only way to get correct layout.
@@ -11493,7 +11497,7 @@ wss.on('connection', async (ws, req) => {
         const tmpPath = path.join(os.tmpdir(), safeName);
         fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'), { mode: 0o600 });
         console.log(`[multicc] Saved upload: ${tmpPath}`);
-        ws.send(JSON.stringify({ type: 'file_saved', tempId, path: tmpPath, name }));
+        sendWs(ws, { type: 'file_saved', tempId, path: tmpPath, name });
       }
     } catch (e) {
       console.error('[multicc] Bad message:', e.message, e.stack);
