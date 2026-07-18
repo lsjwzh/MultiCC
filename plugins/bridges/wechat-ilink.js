@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const WebSocket = require('ws');
-const { bridgeConfigFile, saveBridgeConfig } = require('./secure-config');
+const { bridgeConfigFile, bridgeHistoryFile, saveBridgeConfig } = require('./secure-config');
 
 const router = express.Router();
 
@@ -365,7 +365,7 @@ function _destroyGateway() {
 function _resetGatewayHistory() {
   const rec = _getGateway();
   if (!rec) return;
-  const histFile = path.join(__dirname, 'chat_history', GATEWAY_SESSION_ID + '.json');
+  const histFile = bridgeHistoryFile(GATEWAY_SESSION_ID);
   try { fs.unlinkSync(histFile); } catch (_) {}
   rec.cliSessionId = (rec.cli === 'claude') ? crypto.randomUUID() : null;
   _savePersistedSessions();

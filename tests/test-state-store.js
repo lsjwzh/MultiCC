@@ -40,6 +40,9 @@ function tmpDir(label) {
     ok(threw, 'assertTestDir refuses non-tmpdir paths (defence in depth)');
     const d = tmpDir('guard');
     ok(paths.assertTestDir(d) === d, 'assertTestDir accepts a fresh mkdtemp path');
+    const missingChild = path.join(d, 'not-created-yet');
+    ok(paths.assertTestDir(missingChild) === path.resolve(missingChild),
+      'assertTestDir accepts a missing child under a real temp directory');
   }
 
   // ── createPaths ─────────────────────────────────────────────────────
@@ -49,6 +52,10 @@ function tmpDir(label) {
     ok(p.sessionsFile === path.join(d, 'sessions.json'), 'createPaths: sessionsFile under override');
     ok(p.directoriesFile === path.join(d, 'directories.json'), 'createPaths: directoriesFile under override');
     ok(p.journalDir === path.join(d, '.journal'), 'createPaths: journalDir under override');
+    ok(p.bridgesDir === path.join(d, 'bridges'), 'createPaths: bridgesDir under override');
+    ok(p.scheduledTasksFile === path.join(d, 'scheduled_tasks.json'), 'createPaths: cron store under override');
+    ok(p.voiceExamplesFile === path.join(d, 'voice_examples.json'), 'createPaths: voice examples under override');
+    ok(p.whisperVocabFile === path.join(d, 'whisper_vocab.json'), 'createPaths: whisper vocab under override');
   }
 
   // ── writeJsonAtomic + readJson ──────────────────────────────────────

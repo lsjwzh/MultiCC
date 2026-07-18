@@ -23,7 +23,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const cliProviderRouter = require('cli-provider-router');
 const { createSqliteRuntime } = require('./sqlite-runtime');
-const { resolveDataDir } = require('./paths');
+const { createPaths } = require('./paths');
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('./runtime-security');
 
 const sqliteRuntime = createSqliteRuntime();
@@ -43,7 +43,8 @@ function resolveCcDb() {
   return CC_DB_DEFAULT; // return default path even if absent (caller checks)
 }
 // multicc's own store, in the project root (one level up from src/).
-const STORE_FILE = path.join(resolveDataDir(process.env.MULTICC_DATA_DIR), 'providers.json');
+const RUNTIME_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const STORE_FILE = RUNTIME_PATHS.providersFile;
 // Per-provider CODEX_HOME dirs materialized on demand so codex sessions can
 // point at different auth/config without clobbering the global ~/.codex.
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
@@ -810,10 +811,18 @@ function resolveSpawnEnv(session) {
 // Reads token_usage.json (persistent per-session accumulator) for cumulative
 // totals, and token_daily.json for today/week/month time-window breakdowns.
 // Sessions without a provider are grouped into "_default_".
-const PROVIDER_DATA_DIR = resolveDataDir(process.env.MULTICC_DATA_DIR);
-const SESSIONS_FILE = path.join(PROVIDER_DATA_DIR, 'sessions.json');
-const TOKEN_USAGE_FILE = path.join(PROVIDER_DATA_DIR, 'token_usage.json');
-const TOKEN_DAILY_FILE = path.join(PROVIDER_DATA_DIR, 'token_daily.json');
+const SESSIONS_FILE = RUNTIME_PATHS.sessionsFile;
+const TOKEN_USAGE_FILE = RUNTIME_PATHS.tokenUsageFile;
+const TOKEN_DAILY_FILE = RUNTIME_PATHS.tokenDailyFile;
+
+// sessions.json was historically a bare array. StateStore persists the same
+// records in a versioned { __multiccSchema, data } envelope. Keep both
+// shapes readable while the rest of the runtime migrates incrementally.
+function sessionRecords(document) {
+  if (Array.isArray(document)) return document;
+  if (document && Array.isArray(document.data)) return document.data;
+  return [];
+}
 
 // Returns the date-key string YYYY-MM-DD for a given Date.
 function dateKey(d) {
@@ -875,8 +884,8 @@ function getProviderUsageStats() {
   let sessionProviderMap = new Map();
   try {
     if (fs.existsSync(SESSIONS_FILE)) {
-      const sessions = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
-      for (const s of (Array.isArray(sessions) ? sessions : [])) {
+      const sessions = sessionRecords(JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')));
+      for (const s of sessions) {
         const pid = s.provider || '';
         sessionProviderMap.set(s.id, pid || null);
       }

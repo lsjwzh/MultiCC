@@ -13,20 +13,26 @@
 
 const fs = require('fs');
 const path = require('path');
+const { createPaths } = require('../../src/paths');
+const { atomicWriteJson } = require('../../src/runtime-security');
 
-const STORE = path.join(__dirname, 'scheduled_tasks.json');
+const STORE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).scheduledTasksFile;
+const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');
 
 let tasks = [];
 let deps = null;       // { directories, createSessionRecord, runChatTurn, sessionExists }
 let timer = null;
 
 function load() {
-  try { tasks = JSON.parse(fs.readFileSync(STORE, 'utf8')); }
+  const source = !fs.existsSync(STORE) && fs.existsSync(LEGACY_STORE) ? LEGACY_STORE : STORE;
+  try { tasks = JSON.parse(fs.readFileSync(source, 'utf8')); }
   catch { tasks = []; }
   if (!Array.isArray(tasks)) tasks = [];
+  // Copy forward once but leave the legacy file untouched for rollback.
+  if (source === LEGACY_STORE) save();
 }
 function save() {
-  try { fs.writeFileSync(STORE, JSON.stringify(tasks, null, 2)); }
+  try { atomicWriteJson(STORE, tasks); }
   catch (e) { console.error('[multicc/cron] save failed:', e.message); }
 }
 function uid() {

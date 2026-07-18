@@ -3,6 +3,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { bridgeConfigFile, saveBridgeConfig } = require('./secure-config');
 
 const ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 function stripAnsi(str) {
@@ -81,7 +82,7 @@ class McpClient {
 
 // ── WeChat Bridge ──
 
-const CONFIG_FILE = path.join(__dirname, 'wechat-config.json');
+const CONFIG_FILE = bridgeConfigFile('wechat-config.json', path.join(__dirname, 'wechat-config.json'));
 
 function loadConfig() {
   try {
@@ -91,7 +92,7 @@ function loadConfig() {
 }
 
 function saveConfig(cfg) {
-  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); } catch (_) {}
+  try { saveBridgeConfig(CONFIG_FILE, cfg); } catch (_) {}
 }
 
 // Bridge state (module-level singleton)
