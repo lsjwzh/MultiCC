@@ -83,6 +83,12 @@ function createPaths({ dataDir } = {}) {
     chatHistoryDir: path.join(root, 'chat_history'),
     eventsDir: path.join(root, 'events'),
     bridgesDir: path.join(root, 'bridges'),
+    // Preserve the historical ~/.multicc/detached location for ordinary
+    // installs, while isolated MULTICC_DATA_DIR instances get fully isolated
+    // external-job evidence under their own root.
+    detachedDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'detached')
+      : path.join(root, 'detached'),
     // Meta files still owned by server.js modules — export the paths so future
     // consolidation can move them onto the store without another rename.
     notesFile: path.join(root, 'notes.json'),

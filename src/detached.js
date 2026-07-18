@@ -1,125 +1,241 @@
 'use strict';
 
-// ── Detached task launcher: run long jobs that outlive the chat turn ──
-//
-// Problem: when a chat-spawned agent runs a long command with a bare `&` /
-// nohup, that process is a child of the agent's transient shell. When the turn
-// ends, the shell (and its children) get reaped — the build dies mid-flight,
-// never writes a completion marker, and the session is never resumed. It looks
-// like "it just hung".
-//
-// Fix: launch the command from the SERVER process with `detached: true` (setsid
-// → new session leader). The job is then owned by neither the agent's shell nor
-// the server's lifetime — it survives the turn ending AND a server restart.
-// Output streams to a log file; a shell wrapper writes a `done` file with the
-// real exit code when the command finishes. That `done` file is the completion
-// signal the existing poll-wait machinery keys off of (see wait-injector.js),
-// so on completion the exit code + output tail are injected back into the
-// session and the agent continues automatically.
-//
-// This module only LAUNCHES and exposes the poll command; it deliberately does
-// NOT own a process pool or supervisor — the durable state lives on disk under
-// ~/.multicc/detached/<id>/, which is what makes restart-recovery free.
+// Detached shell jobs are externally durable: a POSIX session leader writes
+// output and completion markers under a private job directory.  The
+// orchestration runtime owns the logical operation; this module owns only the
+// OS process and its evidence files.
 
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+const childProcess = require('child_process');
+const nodeFs = require('fs');
+const nodePath = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
-const BASE_DIR = path.join(os.homedir(), '.multicc', 'detached');
+const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');
 const DONE_MARKER = '__MULTICC_DETACHED_DONE__';
 
-function ensureDir(p) { try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} }
-function genId() { return 'd_' + crypto.randomBytes(5).toString('hex'); }
-
-// POSIX single-quote a string for safe interpolation into a /bin/sh command.
-function shq(s) { return `'` + String(s).replace(/'/g, `'"'"'`) + `'`; }
-
-function jobDir(id) { return path.join(BASE_DIR, id); }
-function jobPaths(id) {
-  const dir = jobDir(id);
-  return { dir, logPath: path.join(dir, 'output.log'), donePath: path.join(dir, 'done'), metaPath: path.join(dir, 'meta.json') };
+function shq(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
-// The poll command the wait-injector runs on its interval. Emits nothing until
-// the done-file exists; once it does, prints the done marker (so the wait
-// matches) followed by a tail of the captured output.
-function buildPollCmd(logPath, donePath) {
-  return `if [ -f ${shq(donePath)} ]; then cat ${shq(donePath)}; echo '----- output tail -----'; tail -c 3000 ${shq(logPath)} 2>/dev/null; fi`;
+function defaultId() {
+  return `d_${crypto.randomBytes(10).toString('hex')}`;
 }
 
-// Launch `command` detached. Returns { id, dir, logPath, donePath, pollCmd,
-// doneMarker, pid }. `cwd` defaults to the user's home dir.
-function launch({ command, cwd, label } = {}) {
-  const cmd = (command == null ? '' : String(command)).trim();
-  if (!cmd) throw new Error('command required');
+function validId(value) {
+  const id = String(value || '');
+  if (!/^d_[A-Za-z0-9_-]{4,80}$/.test(id)) throw new Error('invalid detached task id');
+  return id;
+}
 
-  const id = genId();
-  const { dir, logPath, donePath, metaPath } = jobPaths(id);
-  ensureDir(dir);
-  const workdir = cwd || os.homedir();
+function createDetached({
+  baseDir = LEGACY_BASE_DIR,
+  fsImpl = nodeFs,
+  pathImpl = nodePath,
+  spawnImpl = childProcess.spawn,
+  now = Date.now,
+  killImpl = process.kill.bind(process),
+  isProcessAlive = pid => {
+    if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 0) return false;
+    try { process.kill(Number(pid), 0); return true; }
+    catch (_) { return false; }
+  },
+} = {}) {
+  const root = pathImpl.resolve(baseDir);
 
-  try {
-    fs.writeFileSync(metaPath, JSON.stringify(
-      { id, label: label || null, command: cmd, cwd: workdir, startedAt: Date.now() }, null, 2));
-  } catch (_) {}
-
-  // Run the command, capture its real exit code, then write the done-file. The
-  // command's stdout/stderr are routed to the log via stdio below; the printf
-  // is explicitly redirected to the done-file so it doesn't pollute the log.
-  // The command runs in a SUBSHELL `( … )` so a stray `exit N` inside it only
-  // exits the subshell — the wrapper still records the code and writes the
-  // done-file (without the subshell, `exit` would kill the whole script and the
-  // job would never report completion).
-  const wrapper =
-    `(\n${cmd}\n)\n` +
-    `__mc_code=$?\n` +
-    `printf '%s exit=%s\\n' ${shq(DONE_MARKER)} "$__mc_code" > ${shq(donePath)}\n`;
-
-  const fd = fs.openSync(logPath, 'a');
-  let child;
-  try {
-    child = spawn('/bin/sh', ['-c', wrapper], {
-      cwd: workdir,
-      detached: true,          // setsid: new session, survives parent death
-      stdio: ['ignore', fd, fd],
-      env: process.env,
-    });
-  } finally {
-    try { fs.closeSync(fd); } catch (_) {}
+  function ensurePrivateDir(dir) {
+    fsImpl.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fsImpl.chmodSync(dir, 0o700);
   }
-  child.unref();               // don't keep the server event loop alive for it
 
-  return { id, dir, logPath, donePath, metaPath, pollCmd: buildPollCmd(logPath, donePath), doneMarker: DONE_MARKER, pid: child.pid };
+  function jobPaths(rawId) {
+    const id = validId(rawId);
+    const dir = pathImpl.join(root, id);
+    return {
+      id,
+      dir,
+      logPath: pathImpl.join(dir, 'output.log'),
+      donePath: pathImpl.join(dir, 'done'),
+      metaPath: pathImpl.join(dir, 'meta.json'),
+      startedPath: pathImpl.join(dir, 'started'),
+      pidPath: pathImpl.join(dir, 'pid'),
+    };
+  }
+
+  function buildPollCmd(logPath, donePath) {
+    return `if [ -f ${shq(donePath)} ]; then cat ${shq(donePath)}; echo '----- output tail -----'; tail -c 3000 ${shq(logPath)} 2>/dev/null; fi`;
+  }
+
+  function readMeta(metaPath) {
+    try { return JSON.parse(fsImpl.readFileSync(metaPath, 'utf8')); }
+    catch (_) { return null; }
+  }
+
+  function readPid(pidPath) {
+    try {
+      const pid = Number(fsImpl.readFileSync(pidPath, 'utf8').trim());
+      return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+    } catch (_) { return null; }
+  }
+
+  function status(rawId) {
+    const paths = jobPaths(rawId);
+    const meta = readMeta(paths.metaPath);
+    if (!meta) return null;
+    const started = fsImpl.existsSync(paths.startedPath);
+    const pid = readPid(paths.pidPath) || (Number.isSafeInteger(meta.pid) ? meta.pid : null);
+    let done = false;
+    let exitCode = null;
+    try {
+      const content = fsImpl.readFileSync(paths.donePath, 'utf8');
+      done = content.includes(DONE_MARKER);
+      const match = content.match(/exit=(-?\d+)/);
+      if (match) exitCode = Number(match[1]);
+    } catch (_) {}
+    let logTail = '';
+    try { logTail = fsImpl.readFileSync(paths.logPath, 'utf8').slice(-3000); }
+    catch (_) {}
+    const running = !!(!done && started && pid && isProcessAlive(pid));
+    return {
+      id: paths.id,
+      label: meta.label || null,
+      command: meta.command,
+      cwd: meta.cwd,
+      startedAt: meta.startedAt,
+      started,
+      pid,
+      running,
+      done,
+      exitCode,
+      logPath: paths.logPath,
+      logTail,
+    };
+  }
+
+  function writeMeta(paths, requested) {
+    ensurePrivateDir(root);
+    ensurePrivateDir(paths.dir);
+    const existing = readMeta(paths.metaPath);
+    if (existing) {
+      if (existing.command !== requested.command || existing.cwd !== requested.cwd) {
+        const error = new Error(`detached task ${paths.id} already exists with different content`);
+        error.code = 'DETACHED_ID_CONFLICT';
+        error.statusCode = 409;
+        throw error;
+      }
+      fsImpl.chmodSync(paths.metaPath, 0o600);
+      return existing;
+    }
+    const fd = fsImpl.openSync(paths.metaPath, 'wx', 0o600);
+    try { fsImpl.writeFileSync(fd, `${JSON.stringify(requested, null, 2)}\n`, 'utf8'); }
+    finally { fsImpl.closeSync(fd); }
+    fsImpl.chmodSync(paths.metaPath, 0o600);
+    return requested;
+  }
+
+  function launch({ id = defaultId(), command, cwd, label } = {}) {
+    id = validId(id);
+    const cmd = String(command == null ? '' : command).trim();
+    if (!cmd) throw new Error('command required');
+    const workdir = cwd || os.homedir();
+    const paths = jobPaths(id);
+    const meta = writeMeta(paths, {
+      id,
+      label: label || null,
+      command: cmd,
+      cwd: workdir,
+      startedAt: Number(now()),
+    });
+    const existing = status(id);
+    if (existing && (existing.started || existing.done)) {
+      return { ...paths, ...existing, pollCmd: buildPollCmd(paths.logPath, paths.donePath), doneMarker: DONE_MARKER, reused: true };
+    }
+
+    // The wrapper, not the parent, claims `started`.  A replacement server may
+    // safely launch the same fixed id after a crash before spawn; if an earlier
+    // wrapper did start, O_EXCL-style noclobber permits only one command body.
+    const wrapper = [
+      'umask 077',
+      `if ( set -C; : > ${shq(paths.startedPath)} ) 2>/dev/null; then`,
+      `  printf '%s\\n' "$$" > ${shq(paths.pidPath)}`,
+      `  (\n${cmd}\n)`,
+      '  __mc_code=$?',
+      `  __mc_tmp=${shq(paths.donePath)}.tmp.$$`,
+      `  printf '%s exit=%s\\n' ${shq(DONE_MARKER)} "$__mc_code" > "$__mc_tmp"`,
+      `  mv -f "$__mc_tmp" ${shq(paths.donePath)}`,
+      'fi',
+      '',
+    ].join('\n');
+
+    const fd = fsImpl.openSync(paths.logPath, 'a', 0o600);
+    let child;
+    try {
+      child = spawnImpl('/bin/sh', ['-c', wrapper], {
+        cwd: workdir,
+        detached: true,
+        stdio: ['ignore', fd, fd],
+        env: process.env,
+      });
+    } finally {
+      try { fsImpl.closeSync(fd); } catch (_) {}
+    }
+    if (child && typeof child.unref === 'function') child.unref();
+    return {
+      ...paths,
+      label: meta.label,
+      command: meta.command,
+      cwd: meta.cwd,
+      startedAt: meta.startedAt,
+      pid: child && child.pid,
+      started: true,
+      running: true,
+      done: false,
+      pollCmd: buildPollCmd(paths.logPath, paths.donePath),
+      doneMarker: DONE_MARKER,
+      reused: false,
+    };
+  }
+
+  function cancel(rawId) {
+    const current = status(rawId);
+    if (!current) return { ok: false, code: 'not_found' };
+    if (!current.running || !current.pid) return { ok: true, idempotent: true };
+    try { killImpl(-current.pid, 'SIGTERM'); }
+    catch (_) {
+      try { killImpl(current.pid, 'SIGTERM'); } catch (_) {}
+    }
+    return { ok: true, idempotent: false, pid: current.pid };
+  }
+
+  function list(limit = 50) {
+    let ids = [];
+    try { ids = fsImpl.readdirSync(root).filter(name => name.startsWith('d_')); }
+    catch (_) { return []; }
+    return ids.map(id => {
+      try { return status(id); } catch (_) { return null; }
+    }).filter(Boolean)
+      .sort((left, right) => (right.startedAt || 0) - (left.startedAt || 0))
+      .slice(0, limit)
+      .map(({ logTail, ...entry }) => entry);
+  }
+
+  return Object.freeze({
+    BASE_DIR: root,
+    DONE_MARKER,
+    launch,
+    status,
+    list,
+    cancel,
+    buildPollCmd,
+    jobPaths,
+  });
 }
 
-// Read a job's current state from disk (survives restart).
-function status(id) {
-  const { logPath, donePath, metaPath } = jobPaths(id);
-  let meta = null;
-  try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (_) {}
-  if (!meta) return null;
-  let done = null, exitCode = null;
-  try {
-    const d = fs.readFileSync(donePath, 'utf8');
-    done = d.includes(DONE_MARKER);
-    const m = d.match(/exit=(-?\d+)/);
-    if (m) exitCode = Number(m[1]);
-  } catch (_) { done = false; }
-  let logTail = '';
-  try { const s = fs.readFileSync(logPath, 'utf8'); logTail = s.slice(-3000); } catch (_) {}
-  return { id, label: meta.label, command: meta.command, cwd: meta.cwd, startedAt: meta.startedAt, running: !done, done: !!done, exitCode, logPath, logTail };
-}
+const legacy = createDetached({ baseDir: LEGACY_BASE_DIR });
 
-// List jobs newest-first.
-function list(limit = 50) {
-  let ids = [];
-  try { ids = fs.readdirSync(BASE_DIR).filter(n => n.startsWith('d_')); } catch (_) { return []; }
-  return ids.map(status).filter(Boolean)
-    .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
-    .slice(0, limit)
-    .map(({ logTail, ...rest }) => rest); // omit tail in list view
-}
-
-module.exports = { launch, status, list, buildPollCmd, BASE_DIR, DONE_MARKER };
+module.exports = {
+  ...legacy,
+  BASE_DIR: LEGACY_BASE_DIR,
+  DONE_MARKER,
+  createDetached,
+};
