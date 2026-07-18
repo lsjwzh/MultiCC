@@ -480,10 +480,14 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     'host lifecycle composition must live outside the God file');
   assert.match(source, /createChatHostRuntime\(\{/,
     'server must consume the extracted host runtime through narrow ports');
-  assert.match(source, /savedInClose = persistFinalAssistantResult\(/);
+  const finalizeHostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-host.js'), 'utf8');
+  assert.match(finalizeHostSource, /context\.appendPersisted = ports\.persistAssistant\(context, plan\.append\) === true/,
+    'the shared finalize executor must use the real append return value');
+  assert.match(source, /persistAssistant\(context, append\) \{[\s\S]{0,120}persistFinalAssistantResult\(/,
+    'server composition must inject the authoritative assistant writer');
   assert.match(source, /const resultDurable = persistFinalAssistantResult\(/);
   assert.match(source, /if \(saved\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
-  assert.match(source, /runDurablePostTurn\(sessionName, cs, persisted, turn, runner, finalText/);
+  assert.match(source, /runPostTurn\(context, entry\) \{[\s\S]{0,160}runDurablePostTurn\(/);
   assert.match(source, /isCurrentTurnRunner\(cs, turn, runner\)/);
   assert.equal((source.match(/runnerHandedOff = true;/g) || []).length, 2,
     'both streaming and process runners must be marked handed off before lease release');
@@ -491,12 +495,15 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   const falsePreparationErrorAt = source.indexOf('turn preparation failed before runner handoff', catchAt);
   assert.ok(catchAt >= 0 && falsePreparationErrorAt > catchAt,
     'a handed-off runner must bypass the pre-runner failure response');
-  assert.ok((source.match(/回复已生成但未能持久化，已停止回流和后续动作。/g) || []).length >= 2,
-    'stream and process finalizers must both surface durable-result failure');
+  assert.equal((finalizeHostSource.match(/回复已生成但未能持久化，已停止回流和后续动作。/g) || []).length, 1,
+    'stream and process finalizers must share one durable-result failure effect');
   assert.equal(source.includes('turn.resultEvent'), false, 'result events must be runner-owned');
-  assert.match(source, /const sameDurablePartial = hasMatchingPartialCheckpoint\(runner,/);
-  assert.match(source, /if \(!killReason && waitInjector\.resumeInterrupted\(sessionName\)\)/,
-    'only unknown interruptions without an explicit lifecycle kill may auto-recover');
+  assert.equal((source.match(/sameDurablePartial: hasMatchingPartialCheckpoint\(runner,/g) || []).length, 2,
+    'both runner paths must pass checkpoint evidence into the shared planner');
+  assert.equal((source.match(/planTurnFinalization\(\{/g) || []).length, 2,
+    'process and stream paths must both use the pure finalization plan');
+  assert.equal((source.match(/turnFinalizationExecutor\.execute\((?:finalizePlan|plan),/g) || []).length, 2,
+    'process and stream paths must both use the shared host effect executor');
   assert.match(source, /createChatHostRuntime\(\{[\s\S]{0,500}persistUsage: accumulateTokenUsage/,
     'production host must inject the authoritative usage writer into the coordinator');
   const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-coordinator.js'), 'utf8');
@@ -512,14 +519,11 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     < accumulateBody.indexOf('accumulateTokenDaily(sessionName, usage)'),
   'daily aggregation must derive only after the main usage file commits');
   assert.match(accumulateBody, /Failed to save token usage:[\s\S]{0,100}return false;/);
-  const streamingFinalize = source.slice(
-    source.indexOf('function finalizeStreamingTurn('),
-    source.indexOf('// ── Chat mode:', source.indexOf('function finalizeStreamingTurn(')),
-  );
-  const completedBranch = streamingFinalize.indexOf('} else if (completedOk) {');
-  const classifyAt = streamingFinalize.indexOf('classifyTurnEnd(cs, sessionName);', completedBranch);
-  assert.ok(completedBranch >= 0 && classifyAt > completedBranch,
-    'clean streaming completion must restore immediate classification');
+  const finalizeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-plan.js'), 'utf8');
+  assert.match(finalizeSource, /if \(!facts\.killReason\) \{[\s\S]{0,120}try-resume-interrupted/,
+    'only unknown interruptions without an explicit lifecycle kill may auto-recover');
+  assert.match(finalizeSource, /if \(durableAfterAppend\) \{[\s\S]{0,220}classify-turn-end/,
+    'clean streaming completion must still classify immediately');
 });
 
 test('handoff, gateway, aux and normal post-turn routes remain explicit', () => {
@@ -548,7 +552,11 @@ test('chat turn ports are narrow and pure modules import no runtime I/O dependen
   assert.equal(assertChatTurnPorts(ports), ports);
   assert.throws(() => assertChatTurnPorts({}), /port missing/);
 
-  for (const file of ['turn-request.js', 'retry-policy.js', 'post-turn-router.js', 'runtime-store.js', 'turn-lifecycle.js', 'ports.js']) {
+  for (const file of [
+    'turn-request.js', 'retry-policy.js', 'post-turn-router.js',
+    'runtime-store.js', 'turn-lifecycle.js', 'finalize-plan.js',
+    'finalize-host.js', 'ports.js',
+  ]) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', file), 'utf8');
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
   }

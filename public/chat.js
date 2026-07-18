@@ -494,8 +494,6 @@ function updateCwdDisplay(p) {
 updateCwdDisplay(_cwd);
 
 /* ── WebSocket with auto-reconnect ── */
-let _reconnectAttempt = 0;
-let _reconnectTimer = null;
 let _historyLoaded = false;  // prevent duplicate history render across reconnects
 // Lazy history pagination state. The initial WS chat_history push sends only
 // the newest page; older messages are fetched via GET /history?before=<id> as
@@ -513,46 +511,34 @@ let _restartAt = 0;              // Date.now() when restart was hit — grace ga
 let _disconnectEpisodeId = 0;
 let _lastReconnectNoticeEpisode = 0;
 let _lastInitInfoLine = '';
-let _hiddenAt = 0;
-let _wsConnectGeneration = 0;
-
-async function connect() {
-  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
-  const generation = ++_wsConnectGeneration;
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  let url = `${proto}//${location.host}/ws/chat`;
-  const params = [];
-  if (_cwd) params.push(`cwd=${encodeURIComponent(_cwd)}`);
-  if (_sessionName) params.push(`session=${encodeURIComponent(_sessionName)}`);
-  if (sessionId) params.push(`resume=${encodeURIComponent(sessionId)}`);
-  if (params.length) url += '?' + params.join('&');
-
-  try { url = await window.multiccWsUrl(url); }
-  catch (_) {
-    if (generation === _wsConnectGeneration) _reconnectTimer = setTimeout(connect, 1000);
-    return;
-  }
-  if (generation !== _wsConnectGeneration) return;
-
-  ws = new WebSocket(url);
-  statusEl.textContent = 'Connecting...';
-  statusEl.className = '';
-
-  dbg('ws', `connect() → ${url.replace(/ticket=[^&]*/, 'ticket=***')}`);
-
-  ws.onopen = () => {
+const chatTransport = window.MultiCCChatTransport.createTransport({
+  window,
+  document,
+  buildUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = new URL(`${proto}//${location.host}/ws/chat`);
+    if (_cwd) url.searchParams.set('cwd', _cwd);
+    if (_sessionName) url.searchParams.set('session', _sessionName);
+    if (sessionId) url.searchParams.set('resume', sessionId);
+    return url.toString();
+  },
+  onSocket(socket) { ws = socket; },
+  onConnecting({ debugUrl }) {
+    statusEl.textContent = 'Connecting...';
+    statusEl.className = '';
+    dbg('ws', `connect() → ${debugUrl}`);
+  },
+  onOpen() {
     // During a restart the OLD server stays reachable until the detached
     // child's kill -INT lands (~2s + drain). If we reconnect within the grace
     // window we've hit the old instance — drop it and keep retrying so we don't
     // flash a false "restarted" then immediately disconnect again.
     if (_isRestarting && Date.now() - _restartAt < 6000) {
-      try { ws.close(); } catch (_) {}
-      return;
+      return false;
     }
     statusEl.textContent = 'Connected';
     statusEl.className = 'connected';
-    _reconnectAttempt = 0;
+    statusEl.onclick = () => forceReconnect('status click');
     dbg('ws', 'onopen — 连接已建立');
     // If we'd shown the disconnect banner, replace it with a reconnected marker.
     if (_disconnectBannerEl) {
@@ -569,17 +555,16 @@ async function connect() {
     // Show thinking while we wait for server's init message (which tells us real streaming state)
     if (isStreaming) showThinking();
     updateUI();
-  };
-
-  ws.onmessage = ({ data }) => {
+    return true;
+  },
+  onMessage({ data }) {
     try {
       handleEvent(JSON.parse(data));
     } catch (e) {
       console.warn('Bad message:', data, e);
     }
-  };
-
-  ws.onclose = (e) => {
+  },
+  onClose({ event: e, seconds: secs }) {
     dbg('ws', `onclose — code=${e.code} (isStreaming=${isStreaming})`);
     if (_wasConnected && !_isDisconnected) {
       _isDisconnected = true;
@@ -591,20 +576,25 @@ async function connect() {
     // Don't reset isStreaming here — server may still be running.
     // UI stays in streaming state so user sees "reconnecting" rather than a broken state.
     updateUI();
-    // Auto-reconnect with exponential backoff (1s, 2s, 4s, 8s, max 15s)
-    const delay = Math.min(1000 * Math.pow(2, _reconnectAttempt), 15000);
-    _reconnectAttempt++;
-    const secs = Math.round(delay / 1000);
     statusEl.textContent = _isRestarting ? '重启中…' : `Reconnecting in ${secs}s...`;
     statusEl.className = 'error';
-    statusEl.onclick = () => { _reconnectAttempt = 0; connect(); };
+    statusEl.onclick = () => chatTransport.retryNow();
     // Sticky in-chat banner so the reconnect state is visible without scrolling up.
     if (_wasConnected) showDisconnectBanner(secs);
-    _reconnectTimer = setTimeout(connect, delay);
-  };
+    return true;
+  },
+  onForceReconnect(reason) { dbg('ws', `force reconnect — ${reason}`); },
+  onTicketError() {
+    statusEl.textContent = '连接授权失败，正在重试…';
+    statusEl.className = 'error';
+    dbg('ws', 'ticket exchange failed — retry scheduled');
+  },
+  onEnsureAlive() { updateUI(); },
+});
 
-  ws.onerror = () => {};
-}
+// Compatibility wrappers remain global for the native WebView and diagnostic
+// snippets; socket ownership and retry state live exclusively in the transport.
+function connect() { return chatTransport.connect(); }
 
 function isRecoverableCodexReconnectErrorText(text) {
   const s = String(text || '');
@@ -676,7 +666,7 @@ function handleEvent(msg) {
         if (msg.is_streaming && _pendingCancel) {
           // User cancelled while disconnected — now that we're back, send it
           _pendingCancel = false;
-          ws.send(JSON.stringify({ type: 'cancel' }));
+          chatTransport.send({ type: 'cancel' });
           // Don't enter streaming state — we just cancelled
         } else if (msg.is_streaming && !isStreaming) {
           isStreaming = true;
@@ -1771,7 +1761,7 @@ function showDisconnectBanner(secs) {
   if (!_disconnectBannerEl) {
     _disconnectBannerEl = document.createElement('div');
     _disconnectBannerEl.className = 'msg system-msg disconnect-banner';
-    _disconnectBannerEl.onclick = () => { _reconnectAttempt = 0; connect(); };
+    _disconnectBannerEl.onclick = () => chatTransport.retryNow();
     messagesEl.appendChild(_disconnectBannerEl);
   }
   _disconnectBannerEl.textContent = `⚠️ 连接断开，${secs}s 后自动重连（点此立即重试）`;
@@ -1984,7 +1974,7 @@ function send(opts = {}) {
       inputEl.value = '';
       inputEl.style.height = 'auto';
       if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'clear_history' }));
+        chatTransport.send({ type: 'clear_history' });
       }
       return;
     }
@@ -2015,8 +2005,7 @@ function send(opts = {}) {
 
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     addSystemMsg('连接已断开，正在重连。请稍后再发送。');
-    _reconnectAttempt = 0;
-    connect();
+    chatTransport.retryNow();
     updateUI();
     return;
   }
@@ -2037,7 +2026,7 @@ function send(opts = {}) {
     try {
       const payload = { type: 'user_message', text, clientMsgId: newClientMsgId() };
       if (goalOpts) { payload.goal = true; payload.goalLimits = goalOpts.goalLimits || {}; }
-      ws.send(JSON.stringify(payload));
+      if (!chatTransport.send(payload)) throw new Error('WebSocket is not open');
       _pendingCancel = false;
       _turnStartMs = Date.now();  // client-side fallback for live reply timing
       // A new turn must not render the previous turn's 主/辅 split while the
@@ -2053,8 +2042,7 @@ function send(opts = {}) {
     } catch (e) {
       addSystemMsg('发送失败，正在重连：' + e.message);
       inputEl.value = text;
-      _reconnectAttempt = 0;
-      connect();
+      chatTransport.retryNow();
       updateUI();
     }
   }
@@ -2068,7 +2056,7 @@ function cancelStreaming() {
   // right before the user's click is processed — we still want the
   // cancel signal to reach the server.
   if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'cancel' }));
+    chatTransport.send({ type: 'cancel' });
     _pendingCancel = false;
   } else {
     // WS disconnected — remember the cancel intent so we can send it on reconnect
@@ -2380,7 +2368,7 @@ inputEl.addEventListener('input', () => {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
   // Notify server that user is typing (throttled: max once per 3s)
   if (ws && ws.readyState === WebSocket.OPEN && Date.now() - _lastTypingSent > 3000) {
-    ws.send(JSON.stringify({ type: 'typing' }));
+    chatTransport.send({ type: 'typing' });
     _lastTypingSent = Date.now();
   }
 });
@@ -3889,7 +3877,7 @@ function doClear(keepN) {
     addSystemMsg(tt('contextCleared'));
   }
   if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'clear_history', keep: keepN }));
+    chatTransport.send({ type: 'clear_history', keep: keepN });
   }
   closeClearMenu();
 }
@@ -4300,7 +4288,10 @@ if (_vhRawText) {
 async function startStreamingVoice() {
   if (!_vhHud) { startRecording(); return; }           // HUD not present in this page — legacy
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = withToken(`${proto}//${location.host}/ws/voice`);
+  const rawWsUrl = `${proto}//${location.host}/ws/voice`;
+  let wsUrl;
+  try { wsUrl = await window.multiccWsUrl(rawWsUrl); }
+  catch (_) { _vhSetStatus('语音连接失败'); return; }
 
   _vhReset();
   _vhHud.classList.add('open');
@@ -4510,9 +4501,8 @@ cwdConfirm.onclick = () => {
   updateCwdDisplay(newCwd);
   cwdModal.classList.remove('open');
   // Reconnect with new cwd
-  if (ws) ws.close();
   sessionId = null; // fresh session for new dir
-  connect();
+  forceReconnect('cwd changed');
 };
 
 /* ── Goal mode: AI precheck before sending ──
@@ -4663,59 +4653,15 @@ if (_isMobile && window.visualViewport) {
 }
 
 function ensureWsAlive() {
-  const dead = !ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING;
-  if (!dead) { updateUI(); return; }
-  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
-  _reconnectAttempt = 0;
-  connect();
+  return chatTransport.ensureAlive();
 }
 
 function forceReconnect(reason) {
-  dbg('ws', `force reconnect — ${reason}`);
-  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
-  _reconnectAttempt = 0;
-  const old = ws;
-  if (old && old.readyState !== WebSocket.CLOSED) {
-    old.onclose = null;
-    old.onerror = null;
-    old.onmessage = null;
-    try { old.close(1000, 'client reconnect'); } catch (_) {}
-  }
-  ws = null;
-  connect();
+  chatTransport.forceReconnect(reason);
 }
 
 /* ── Reconnect when tab becomes visible again ── */
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') {
-    _hiddenAt = Date.now();
-    return;
-  }
-  if (document.visibilityState === 'visible') {
-    const hiddenMs = _hiddenAt ? Date.now() - _hiddenAt : 0;
-    _hiddenAt = 0;
-    if (hiddenMs > 10000) forceReconnect(`visible after ${Math.round(hiddenMs / 1000)}s hidden`);
-    else ensureWsAlive();
-  }
-});
-window.addEventListener('pageshow', (e) => {
-  if (e.persisted) forceReconnect('pageshow from bfcache');
-  else ensureWsAlive();
-});
-window.addEventListener('focus', ensureWsAlive);
-// Network restored (mobile data/wifi flap) — reconnect immediately.
-window.addEventListener('online', () => forceReconnect('network online'));
-
-// Fallback heartbeat: some Android WebViews never fire visibilitychange/focus when
-// the whole app backgrounds, so the resume hooks above don't run and a dead socket
-// is never noticed. A plain interval resumes ticking when the app comes back and
-// catches a closed socket within a few seconds — no reliance on visibility events.
-setInterval(() => {
-  if (document.visibilityState !== 'visible') return;
-  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-    ensureWsAlive();
-  }
-}, 5000);
+chatTransport.startLifecycle();
 
 /* ── Manual reconnect control (header ↻) ── */
 (function initReconnectBtn() {
