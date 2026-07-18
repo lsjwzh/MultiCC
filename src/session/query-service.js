@@ -10,37 +10,55 @@ function safeRuntime(runtime, record) {
   return value && typeof value === 'object' ? value : {};
 }
 
-function createSessionQueryService({ records, runtime } = {}) {
+function sessionDtoPresenter({ record, runtime }) {
+  return toSessionDto({
+    id: record.id,
+    dirId: record.dirId,
+    cli: record.cli,
+    kind: record.kind,
+    label: record.label,
+    model: record.model,
+    effectiveModel: runtime.effectiveModel,
+    effort: record.effort,
+    effectiveEffort: runtime.effectiveEffort,
+    agent: record.agent,
+    provider: record.provider,
+    subagent: runtime.subagent === undefined ? record.subagent : runtime.subagent,
+    autoCommit: record.autoCommit,
+    autoDispatch: record.autoDispatch,
+    createdAt: record.createdAt,
+    lastActivity: runtime.lastActivity,
+    clients: runtime.clients,
+    active: runtime.active,
+    mergeState: runtime.mergeState,
+  });
+}
+
+function createSessionQueryService({ records, runtime, presenter = sessionDtoPresenter } = {}) {
   assertSessionRecordsPort(records);
   assertSessionRuntimePort(runtime);
+  if (typeof presenter !== 'function') throw new TypeError('[session] presenter must be a function');
 
-  function project(record) {
-    if (!record || typeof record !== 'object' || HIDDEN_SESSION_TYPES.has(record.type)) return null;
-    const live = safeRuntime(runtime, record);
-    return toSessionDto({
-      id: record.id,
-      dirId: record.dirId,
-      cli: record.cli,
-      kind: record.kind,
-      label: record.label,
-      model: record.model,
-      effectiveModel: live.effectiveModel,
-      effort: record.effort,
-      effectiveEffort: live.effectiveEffort,
-      agent: record.agent,
-      provider: record.provider,
-      subagent: live.subagent === undefined ? record.subagent : live.subagent,
-      autoCommit: record.autoCommit,
-      autoDispatch: record.autoDispatch,
-      createdAt: record.createdAt,
-      lastActivity: live.lastActivity,
-      clients: live.clients,
-      active: live.active,
-      mergeState: live.mergeState,
-    });
+  function context(record, { includeHidden = false } = {}) {
+    if (!record || typeof record !== 'object') return null;
+    if (!includeHidden && HIDDEN_SESSION_TYPES.has(record.type)) return null;
+    return Object.freeze({ record, runtime: safeRuntime(runtime, record) });
   }
 
-  function list({ dirId } = {}) {
+  function presentContext(value, selectedPresenter = presenter) {
+    if (!value) return null;
+    if (typeof selectedPresenter !== 'function') {
+      throw new TypeError('[session] selected presenter must be a function');
+    }
+    return selectedPresenter(value);
+  }
+
+  function project(record, options = {}) {
+    const value = context(record, options);
+    return presentContext(value, options.presenter || presenter);
+  }
+
+  function listContexts({ dirId, includeHidden = false, filter } = {}) {
     const source = records.list();
     if (!source || typeof source[Symbol.iterator] !== 'function') {
       throw new TypeError('[session] records.list() must return an iterable');
@@ -48,19 +66,41 @@ function createSessionQueryService({ records, runtime } = {}) {
     const result = [];
     for (const record of source) {
       if (dirId !== undefined && record && record.dirId !== dirId) continue;
-      const dto = project(record);
-      if (dto) result.push(dto);
+      if (typeof filter === 'function' && !filter(record)) continue;
+      const value = context(record, { includeHidden });
+      if (value) result.push(value);
     }
     return result;
   }
 
-  function get(id) {
-    const key = String(id || '');
-    if (!key) return null;
-    return project(records.get(key));
+  function list(options = {}) {
+    const selectedPresenter = options.presenter || presenter;
+    return listContexts(options).map(value => presentContext(value, selectedPresenter));
   }
 
-  return Object.freeze({ get, list, project });
+  function getContext(id, { includeHidden = false } = {}) {
+    const key = String(id || '');
+    if (!key) return null;
+    return context(records.get(key), { includeHidden });
+  }
+
+  function get(id, options = {}) {
+    return presentContext(getContext(id, options), options.presenter || presenter);
+  }
+
+  return Object.freeze({
+    context,
+    get,
+    getContext,
+    list,
+    listContexts,
+    presentContext,
+    project,
+  });
 }
 
-module.exports = { HIDDEN_SESSION_TYPES, createSessionQueryService };
+module.exports = {
+  HIDDEN_SESSION_TYPES,
+  createSessionQueryService,
+  sessionDtoPresenter,
+};
