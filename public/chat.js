@@ -4945,8 +4945,7 @@ async function startStreamingVoice() {
 }
 
 // Commit: wait briefly for the last VAD segment, flush pending refine, then
-// place refined (or raw) text into the input box. Never auto-sends — user
-// reviews and presses Enter.
+// send refined (or raw) text directly as a new chat message — one click.
 async function commitStreamingVoice() {
   if (_voiceStream) { try { _voiceStream.stop(); } catch (_) {} }
   _hudActive = false;
@@ -4976,8 +4975,12 @@ async function commitStreamingVoice() {
   if (_vhHud) _vhHud.classList.remove('open');
   if (!text) return;
 
-  // Fill into the existing input box; user presses Enter to send.
-  useVoiceText(text);
+  // Direct send: reuse the chat's normal send() path by seeding the input
+  // first — keeps slash commands (/clear /goal …) and UI updates consistent.
+  inputEl.value = text;
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+  send();
 
   // Feedback (server ignores if userFinal === refined).
   fetch(withToken('/api/voice/feedback'), {
