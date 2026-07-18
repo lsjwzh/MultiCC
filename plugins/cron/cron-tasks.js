@@ -94,7 +94,7 @@ function cronNext(expr, from) {
 }
 
 // ── Firing ──
-function fireTask(task, reason) {
+async function fireTask(task, reason) {
   const dir = deps.directories.get(task.dirId);
   if (!dir) {
     task.lastRunAt = Date.now(); task.lastStatus = 'error';
@@ -134,7 +134,7 @@ function fireTask(task, reason) {
   return { ok: started, sessionId };
 }
 
-function tick() {
+async function tick() {
   const now = new Date();
   const key = `${now.getFullYear()}${now.getMonth()}${now.getDate()}${now.getHours()}${now.getMinutes()}`;
   for (const task of tasks) {
@@ -144,7 +144,7 @@ function tick() {
     if (task._tickKey === key) continue;       // already fired this minute
     if (cronMatch(sets, now)) {
       task._tickKey = key;
-      fireTask(task, 'schedule');
+      await fireTask(task, 'schedule');
     }
   }
 }
@@ -233,10 +233,10 @@ function mount(app) {
     res.json({ ok: true });
   });
 
-  app.post('/api/cron/:id/run', (req, res) => {
+  app.post('/api/cron/:id/run', async (req, res) => {
     const task = tasks.find(x => x.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'task not found' });
-    const r = fireTask(task, 'manual');
+    const r = await fireTask(task, 'manual');
     res.json({ ok: r.ok, sessionId: r.sessionId, error: r.error });
   });
 }
