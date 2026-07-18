@@ -168,8 +168,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } catch (e) {
       if (mounted) setState(() => _proxyEnabled = prev);
-      if (mounted)
+      if (mounted) {
         setState(() => _proxyStatus = t('saveFailed', {'error': '$e'}));
+      }
     }
   }
 
@@ -223,8 +224,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } catch (e) {
       if (mounted) setState(() => _officialOauthEnabled = prev);
-      if (mounted)
+      if (mounted) {
         setState(() => _officialOauthStatus = t('saveFailed', {'error': '$e'}));
+      }
     }
   }
 
@@ -291,8 +293,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() => _accessTokenStatus = t('saveFailed', {'error': '$e'}));
+      }
     }
   }
 
@@ -343,8 +346,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             : t('saveFailedHttp', {'status': '${res.statusCode}'}),
       );
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() => _goalStatus = t('saveFailed', {'error': '$e'}));
+      }
     } finally {
       if (mounted) setState(() => _goalSaving = false);
     }
@@ -797,12 +801,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 8),
               _NavTile(
                 icon: Icons.hub_outlined,
-                title: '消息桥接',
-                subtitle: 'Feishu / Telegram / Discord / Slack / 微信 Gateway',
+                title: t('messageBridges'),
+                subtitle: t('messageBridgesHint'),
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute<void>(
-                    builder: (_) => BridgeSettingsScreen(settings: widget.settings),
+                    builder: (_) =>
+                        BridgeSettingsScreen(settings: widget.settings),
                   ),
                 ),
               ),

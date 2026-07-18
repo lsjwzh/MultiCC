@@ -951,13 +951,11 @@ async function ensureDirGitReady(dir) {
   if (gitReadyDirs.has(dir.id)) return { ok: true };
   if (isHomeOrAbove(dir.path)) return { ok: false, reason: 'home-or-above' };
   if (!fs.existsSync(dir.path)) return { ok: false, reason: 'path-missing' };
-  // Reject pathological dirs BEFORE any git command. `git add -A` / `git worktree
-  // add` on a huge working tree (e.g. ~/Downloads, 57GB) freeze the event loop.
-  // Runs unconditionally — even a stray .git left by a prior failed attempt must
-  // not bypass this. Measures working-tree content, excluding .git/worktrees.
-  const fit = dirSuitability(dir.path);
-  if (!fit.ok) return { ok: false, reason: 'unsuitable: ' + fit.reason };
   try {
+    // Reject pathological dirs BEFORE any mutating git command. This check also
+    // uses the asynchronous repository actor for existing repositories.
+    const fit = await dirSuitability(dir.path);
+    if (!fit.ok) return { ok: false, reason: 'unsuitable: ' + fit.reason };
     if (!await gitIsRepo(dir.path)) {
       console.log(`[multicc] git init: ${dir.path}`);
       await gitRun(dir.path, ['init']);
@@ -5980,23 +5978,29 @@ function triggerPush(sessionId, type, message) {
   const cwd = session ? session.cwd : '';
   const shortCwd = cwd.length > 30 ? '...' + cwd.slice(-27) : cwd;
 
-  const payload = {
-    title: type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
-      : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
-      : `MultiCC #${sessionId}: 完成`,
+  const payloadForLocale = (locale) => ({
+    title: locale === 'en'
+      ? type === 'waiting' ? `MultiCC #${sessionId}: Action Required`
+        : type === 'error' ? `MultiCC #${sessionId}: Error`
+        : `MultiCC #${sessionId}: Completed`
+      : type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
+        : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
+        : `MultiCC #${sessionId}: 完成`,
     body: `${message}\n${shortCwd}`,
     sessionId,
     type,
+    locale: locale === 'en' ? 'en' : 'zh',
     tag: `multicc-${sessionId}`,
     url: `/manage`,
-  };
+  });
+  const payload = payloadForLocale('zh');
 
   push.globalStats.lastPushTime = now;
   push.globalStats.lastPushType = type;
   push.globalStats.lastPushSessionId = sessionId;
 
   // Send to all channels in parallel
-  push.sendPushToAll(payload);
+  push.sendPushToAll((subscription) => payloadForLocale(subscription.locale));
   push.sendBarkNotification(payload.title, `${message} ${shortCwd}`, payload.url);
   push.sendWebhookNotification(payload);
 

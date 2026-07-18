@@ -9,14 +9,16 @@ const STATUS = { not_found: 404, invalid: 400, internal: 500 };
 
 function send(res, r) {
   if (r.ok) return res.json(r.data);
-  const body = { error: r.message, ...(r.extra || {}) };
+  const body = { code: r.code || 'internal', error: r.message, ...(r.extra || {}) };
   return res.status(STATUS[r.code] || 500).json(body);
 }
 
 // Wrap async handlers so a rejected promise becomes a JSON 500 instead of a
 // hanging request (express 4 does not catch async throws).
 const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res))
-  .catch(e => { if (!res.headersSent) res.status(500).json({ error: e.message }); });
+  .catch(() => {
+    if (!res.headersSent) res.status(500).json({ code: 'internal', error: 'internal_error' });
+  });
 
 function createDirectoryRouter(service) {
   const router = express.Router();

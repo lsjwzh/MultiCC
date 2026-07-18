@@ -1,5 +1,7 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import '../i18n.dart';
+
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
@@ -114,10 +116,10 @@ class NotificationService {
     if (last != null && now.difference(last) < _dedupWindow) return;
     _recent[id] = now;
 
-    const android = AndroidNotificationDetails(
+    final android = AndroidNotificationDetails(
       'multicc_tasks',
-      'Task Notifications',
-      channelDescription: 'MultiCC task completion and status notifications',
+      t('taskNotifications'),
+      channelDescription: t('taskNotificationsDescription'),
       importance: Importance.high,
       priority: Priority.high,
       playSound: true,
@@ -131,7 +133,7 @@ class NotificationService {
       id: id,
       title: title,
       body: body,
-      notificationDetails: const NotificationDetails(android: android, iOS: ios),
+      notificationDetails: NotificationDetails(android: android, iOS: ios),
       payload: payload,
     );
   }

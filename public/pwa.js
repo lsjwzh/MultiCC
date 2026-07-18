@@ -180,7 +180,10 @@ async function syncSubscriptionToServer(sub) {
     await fetch('/api/push/subscribe', {
       method: 'POST',
       headers,
-      body: JSON.stringify(sub.toJSON()),
+      body: JSON.stringify({
+        ...sub.toJSON(),
+        locale: typeof getLang === 'function' ? getLang() : 'zh',
+      }),
     });
     localStorage.setItem('multicc_push_endpoint', sub.endpoint);
     emitPushStateChanged();
@@ -305,13 +308,15 @@ function updatePushUI(subscribed) {
   if (!btn) return;
 
   if (subscribed) {
-    btn.textContent = 'Push ON';
+    btn.textContent = typeof t === 'function' ? t('pushOnLabel') : 'Push ON';
     btn.classList.add('active');
-    btn.title = 'Push notifications enabled — click to disable';
+    btn.title = typeof t === 'function'
+      ? t('pushEnabledHint')
+      : 'Push notifications enabled; click to disable';
   } else {
     btn.textContent = 'Push';
     btn.classList.remove('active');
-    btn.title = 'Enable push notifications';
+    btn.title = typeof t === 'function' ? t('pushEnableHint') : 'Enable push notifications';
   }
   emitPushStateChanged();
 }
@@ -321,9 +326,9 @@ async function showLocalTaskNotification(payload) {
 
   const sessionId = payload.sessionId || 'general';
   const type = payload.type || 'completed';
-  const title = payload.title || (type === 'waiting'
-    ? `MultiCC #${sessionId}: 等待操作`
-    : `MultiCC #${sessionId}: 完成`);
+  const title = payload.title || (typeof t === 'function'
+    ? t(type === 'waiting' ? 'notificationWaitingTitle' : 'notificationCompletedTitle', { session: sessionId })
+    : `MultiCC #${sessionId}: ${type === 'waiting' ? 'Action Required' : 'Completed'}`);
   const options = {
     body: payload.body || payload.message || '',
     icon: '/icon.svg',

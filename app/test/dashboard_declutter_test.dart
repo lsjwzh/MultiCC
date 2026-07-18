@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/settings_service.dart';
@@ -19,6 +20,7 @@ Future<Widget> _wrap(Widget child) async => MaterialApp(home: Scaffold(body: chi
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  setUpAll(() => I18n.init('zh'));
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   group('EventTimeline', () {

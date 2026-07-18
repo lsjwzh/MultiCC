@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "MultiCC 需要使用麦克风来进行语音输入与实时语音通话。";
+"NSSpeechRecognitionUsageDescription" = "MultiCC 使用语音识别将你的语音指令转换为文字。";
