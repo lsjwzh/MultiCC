@@ -85,7 +85,10 @@ function rotateBackups(target, keep) {
     const src = i === 1 ? target : `${target}.bak${i - 1}`;
     const dst = `${target}.bak${i}`;
     try {
-      if (fs.existsSync(src)) fs.renameSync(src, dst);
+      if (fs.existsSync(src)) {
+        fs.renameSync(src, dst);
+        fs.chmodSync(dst, 0o600);
+      }
     } catch (e) {
       // Best-effort rotation. If a bak file can't be moved we still want the
       // primary write to proceed; the new bak1 will fill in on the next write.
@@ -98,11 +101,15 @@ function rotateBackups(target, keep) {
 // Write payload durably: tmp file → fsync → rename → parent fsync.
 // Throws on any hard failure; caller decides what to do (usually: propagate to
 // the HTTP layer so the client doesn't get a false success).
-function writeTextAtomic(target, text, { mode = 0o600, dirMode = 0o700, beforeRename } = {}) {
+function writeTextAtomic(target, text, { mode = 0o600, dirMode = 0o700, enforceDirMode = false, beforeRename } = {}) {
   const dir = path.dirname(target);
+  const dirExisted = fs.existsSync(dir);
   try {
     fs.mkdirSync(dir, { recursive: true, mode: dirMode });
-    fs.chmodSync(dir, dirMode);
+    // A default installation stores state beside the source tree. Do not chmod
+    // an already-existing package/worktree root on every save; dedicated data
+    // directories are explicitly locked down by secureRuntimeData().
+    if (!dirExisted || enforceDirMode) fs.chmodSync(dir, dirMode);
   }
   catch (e) {
     if (e.code !== 'EEXIST') {

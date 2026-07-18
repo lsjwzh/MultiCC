@@ -13,8 +13,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
+const { resolveDataDir } = require('./paths');
+const { atomicWriteJson } = require('./runtime-security');
 
-const CONFIG_FILE = path.join(__dirname, '..', 'tunnel-config.json');
+const CONFIG_FILE = path.join(resolveDataDir(process.env.MULTICC_DATA_DIR), 'tunnel-config.json');
 const TAILSCALE_BIN = '/usr/local/bin/tailscale';
 const PHDDNS_APP = '/Applications/PhDDNS.app';
 
@@ -63,7 +65,7 @@ function loadConfig() {
 
 function saveConfig() {
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    atomicWriteJson(CONFIG_FILE, config);
   } catch (e) {
     console.error('[multicc/tunnel] Failed to save config:', e.message);
   }

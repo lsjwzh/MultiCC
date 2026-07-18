@@ -66,8 +66,9 @@ function createAuthSecurity({
   }
 
   function createCookie() {
-    const iat = Math.floor(now() / 1000);
-    const exp = Math.floor((now() + cookieTtlMs) / 1000);
+    const issuedAt = now();
+    const iat = Math.floor(issuedAt / 1000);
+    const exp = Math.floor((issuedAt + cookieTtlMs) / 1000);
     const body = Buffer.from(JSON.stringify({ v: COOKIE_VERSION, iat, exp, n: randomBytes(8).toString('base64url') })).toString('base64url');
     return `${body}.${sign(body)}`;
   }
@@ -107,8 +108,9 @@ function createAuthSecurity({
     pruneTickets();
     const ticket = randomBytes(24).toString('base64url');
     const hash = crypto.createHash('sha256').update(ticket).digest('base64url');
-    tickets.set(hash, { path: scope, expiresAt: now() + ticketTtlMs, metadata: { ...metadata } });
-    return { ticket, expiresAt: now() + ticketTtlMs, path: scope };
+    const expiresAt = now() + ticketTtlMs;
+    tickets.set(hash, { path: scope, expiresAt, metadata: { ...metadata } });
+    return { ticket, expiresAt, path: scope };
   }
 
   function consumeWsTicket(ticket, pathname) {
