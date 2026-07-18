@@ -10,7 +10,11 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const ALLOWED_MIGRATION_DOCS = new Set(['README.md', 'app/README.md']);
+const AUDIT_EXCLUSIONS = new Set([
+  'README.md',
+  'app/README.md',
+  'tests/test-branding.js', // contains the detection patterns themselves
+]);
 const TEXT_EXTENSIONS = new Set([
   '.js', '.cjs', '.mjs', '.ts', '.tsx', '.jsx', '.html', '.css', '.md',
   '.json', '.yml', '.yaml', '.toml', '.sh', '.zsh', '.xml', '.plist',
@@ -28,7 +32,7 @@ const files = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'ut
 const hits = [];
 
 for (const file of files) {
-  if (ALLOWED_MIGRATION_DOCS.has(file)) continue;
+  if (AUDIT_EXCLUSIONS.has(file)) continue;
   const absolute = path.join(ROOT, file);
   let bytes;
   try { bytes = fs.readFileSync(absolute); } catch (_) { continue; }
