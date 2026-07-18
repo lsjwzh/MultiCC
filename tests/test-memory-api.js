@@ -7,15 +7,18 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { assertTestDir } = require('../src/paths');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 39000 + (process.pid % 900);
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'memory-api-test';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-memory-api-'));
+const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const project = path.join(tmpRoot, 'project');
 const memoryRoot = path.join(tmpRoot, 'memories');
 fs.mkdirSync(project, { recursive: true });
+fs.mkdirSync(dataRoot, { recursive: true });
 
 let server;
 let stderr = '';
@@ -59,12 +62,7 @@ async function stopServer() {
 
 async function cleanup() {
   await stopServer();
-  for (const file of [
-    'sessions.json', 'sessions.json.pre-directory.bak', 'directories.json',
-    'events', 'chat_history', 'token_usage.json', 'token_daily.json',
-  ]) {
-    fs.rmSync(path.join(ROOT, file), { recursive: true, force: true });
-  }
+  assertTestDir(tmpRoot);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 }
 
@@ -75,6 +73,7 @@ async function cleanup() {
       ...process.env,
       PORT: String(PORT),
       ACCESS_TOKEN: TOKEN,
+      MULTICC_DATA_DIR: dataRoot,
       MULTICC_MEMORY_ROOT: memoryRoot,
       MULTICC_MEMORY_REVIEW_INTERVAL: '0',
     },

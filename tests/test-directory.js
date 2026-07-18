@@ -7,6 +7,7 @@
 const { spawn, execSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const net = require('net');
+const { assertTestDir } = require('../src/paths');
 
 let port;
 let base;
@@ -34,7 +35,7 @@ const freePort = () => new Promise((resolve, reject) => {
 
 let srv;
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-dir-'));
-const dataRoot = path.join(tmpRoot, 'data');
+const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const projA = path.join(tmpRoot, 'proj-a');          // pre-created plain dir
 const projB = path.join(tmpRoot, 'proj-b');          // created via create:true
 fs.mkdirSync(dataRoot, { recursive: true });
@@ -160,6 +161,7 @@ fs.mkdirSync(projA, { recursive: true });
 
 function shutdown(code) {
   try { srv && srv.kill('SIGTERM'); } catch {}
+  assertTestDir(tmpRoot);
   try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
   setTimeout(() => process.exit(code), 300);
 }
