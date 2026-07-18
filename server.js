@@ -855,15 +855,23 @@ async function recoverTmuxSessions() {
 // existing call sites are unchanged. The stateful bits stay here in server.js.
 const {
   WORKTREE_SUBDIR, gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
-  gitWorktreeAdd, gitWorktreeRemove, gitWorktreeCommitAll, gitWorktreeMergeState, gitMergeBack,
-  gitSyncFromBase, gitRebaseResolve,
+  gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeCommitAll, gitWorktreeMergeState, gitMergeBack,
+  gitSyncFromBase, gitRebaseResolve, defaultRepoActor,
 } = require('./src/git');
 
-// gitWorktreeMergeState fires ~4 synchronous git subprocesses per session. It is
-// read once per session on every /api/sessions poll, so on a busy server (dozens
-// of sessions × many open clients) it forks git nonstop and blocks the event
-// loop. Wrap it in a short TTL memo (with per-entry jitter so a batch populated
-// in one poll doesn't all expire on the same later tick). Mutating endpoints
+// RepoActor operations are retained in a bounded in-memory history. Destructive
+// endpoint responses include operationId; callers can inspect progress and the
+// observed queue depth here without polling child processes themselves.
+app.get('/api/repo-operations/:operationId', (req, res) => {
+  const operation = defaultRepoActor.status(req.params.operationId);
+  if (!operation) return res.status(404).json({ error: 'operation not found' });
+  res.json(operation);
+});
+
+// gitWorktreeMergeState fires several asynchronous git subprocesses per session.
+// It is read once per session on every /api/sessions poll, so on a busy server
+// we keep REST serialization synchronous by returning the latest cached state
+// while RepoActor refreshes it in the background. Mutating endpoints
 // (merge/sync/commit) call mergeStateFresh() to recompute and refresh the cache
 // so the UI never shows a stale indicator after an actual git change. WS
 // broadcasts already push fresh state to active viewers, so the bounded staleness
@@ -1149,15 +1157,32 @@ async function destroySessionCascade(s, d, opts = {}) {
   const chat = chatSessions.get(s.id);
   const isActive = !!active || !!(chat && (chat.claudeProc || chat.isStreaming || chat.clients?.size));
   if (isActive && !opts.force) return { ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be removed' };
+  let removal = null;
   // Remove the worktree before tearing down runtime/persistence. A default
   // dirty/unmerged refusal therefore leaves the session completely intact.
   if (s.worktreePath && s.branch) {
-    const removed = await gitWorktreeRemove(d.path, s.worktreePath, s.branch, {
-      sessionId: s.id, baseBranch: d.baseBranch, force: !!opts.force,
-    });
-    if (!removed.ok) return removed;
+    try {
+      removal = await gitWorktreeRemove(d.path, s.worktreePath, s.branch, {
+        sessionId: s.id, baseBranch: d.baseBranch, force: !!opts.force,
+        activeCheck: opts.force ? null : () => sessionWorktreeActive(s.id),
+      });
+    } catch (error) {
+      const reason = error.code === 'SESSION_ACTIVE' ? 'active'
+        : (error.code === 'SESSION_LEASED' ? 'leased' : null);
+      if (!reason) throw error;
+      return { ok: false, blocked: true, reasons: [reason], operationId: error.operationId,
+        queueDepth: error.queueDepth, error: error.message };
+    }
+    if (!removal.ok) return removal;
   }
-  if (active) { await tmuxKillSession(s.id); sessions.delete(s.id); }
+  if (active) {
+    if (active.exitCheckTimer) clearInterval(active.exitCheckTimer);
+    if (active.captureTimer) clearInterval(active.captureTimer);
+    cleanupPushMonitor(s.id);
+    await stopOutputCapture(active);
+    await tmuxKillSession(s.id);
+    sessions.delete(s.id);
+  }
   if (chat) {
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
@@ -1173,7 +1198,12 @@ async function destroySessionCascade(s, d, opts = {}) {
   persistedSessions.delete(s.id);
   invalidSessions.delete(s.id);
   workspaceStatus.delete(s.id);
-  return { ok: true };
+  return {
+    ok: true,
+    operationId: removal?.operationId || null,
+    queueDepth: removal?.queueDepth || 0,
+    backup: removal?.backup || null,
+  };
 }
 
 const directoryModule = createDirectoryModule({
@@ -4466,6 +4496,8 @@ app.delete('/api/sessions/:id', async (req, res) => {
     const result = await destroySessionCascade(persisted, dir, { force });
     if (!result.ok) return res.status(409).json(result);
     appendEvent(persisted.dirId, 'session_deleted', persisted.label || persisted.id, null);
+    savePersistedSessions();
+    return res.json({ ...result, forced: force });
   } else if (!force) {
     return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be removed without force=1' });
   } else {
@@ -4505,55 +4537,28 @@ app.post('/api/sessions/:id/relocate', async (req, res) => {
     return res.status(400).json({ error: `目标目录 git 未就绪: ${readyTarget.reason}` });
   }
 
-  if (oldDir && persisted.worktreePath && persisted.branch && !force) {
-    const state = await gitWorktreeMergeState(oldDir, persisted);
-    const reasons = [];
-    if (state.dirty) reasons.push('dirty');
-    if (state.ahead > 0) reasons.push('unmerged');
-    if (reasons.length) {
-      return res.status(409).json({ ok: false, blocked: true, reasons, mergeState: state,
-        error: `relocate refused: ${reasons.join(', ')}` });
-    }
-  }
-
-  // Create-before-delete: a target worktree must exist before the old one is
-  // touched. If old cleanup then refuses/fails, remove the new empty worktree
-  // and keep the persisted session pointing at its original repository.
-  let created;
-  try {
-    created = await gitWorktreeAdd(targetDir.path, id, targetDir.baseBranch);
-  } catch (e) {
-    return res.status(500).json({ error: 'worktree 创建失败: ' + e.message });
-  }
-
   const oldSession = sessions.get(id);
-  if (oldSession) {
-    broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
-    await stopOutputCapture(oldSession);
-    await tmuxKillSession(oldSession.id);
-    sessions.delete(id);
-  }
-  if (activeChat && force) {
-    if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
-    chatStream.close(id);
-    chatSessions.delete(id);
-  }
+  const relocated = await gitRelocateWorktree(oldDir, targetDir, persisted, {
+    force, active,
+    activeCheck: force ? null : () => sessionWorktreeActive(id),
+    beforeRemove: async () => {
+      if (oldSession) {
+        broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
+        await stopOutputCapture(oldSession);
+        await tmuxKillSession(oldSession.id);
+        sessions.delete(id);
+      }
+      if (activeChat && force) {
+        if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
+        chatStream.close(id);
+        chatSessions.delete(id);
+      }
+    },
+  });
+  if (!relocated.ok) return res.status(relocated.blocked ? 409 : 500).json(relocated);
 
-  let removed = { ok: true };
-  if (oldDir && persisted.worktreePath && persisted.branch) {
-    removed = await gitWorktreeRemove(oldDir.path, persisted.worktreePath, persisted.branch, {
-      sessionId: id, baseBranch: oldDir.baseBranch, force,
-    });
-  }
-  if (!removed.ok) {
-    await gitWorktreeRemove(targetDir.path, created.worktreePath, created.branch, {
-      sessionId: `${id}-relocate-rollback`, baseBranch: targetDir.baseBranch, force: true,
-    }).catch(() => {});
-    return res.status(409).json(removed);
-  }
-
-  persisted.worktreePath = created.worktreePath;
-  persisted.branch = created.branch;
+  persisted.worktreePath = relocated.worktreePath;
+  persisted.branch = relocated.branch;
 
   persisted.dirId = targetDirId;
   // Clear cliSessionId so the new instance starts fresh in the new directory
@@ -4569,9 +4574,9 @@ app.post('/api/sessions/:id/relocate', async (req, res) => {
     }
   }
   res.json({ ok: true, cwd: targetDir.path, forced: force,
-    operationId: removed.operationId || created.operationId,
-    queueDepth: Math.max(removed.queueDepth || 0, created.queueDepth || 0),
-    backup: removed.backup || null });
+    operationId: relocated.operationId,
+    queueDepth: relocated.queueDepth,
+    backup: relocated.backup || null });
 });
 
 // ── Restart session (kill tmux + respawn CLI in same directory, fresh conversation) ──
@@ -4727,6 +4732,12 @@ async function autoSyncSiblingWorktrees(dir, exceptId) {
       if (state.dirty) {
         out.push({ id: s.id, skipped: true, reason: 'dirty' });
         appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：worktree 有未提交改动', s.id);
+        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: state });
+        continue;
+      }
+      if (state.ahead > 0) {
+        out.push({ id: s.id, skipped: true, reason: 'unmerged' });
+        appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：worktree 有尚未合回主分支的提交', s.id);
         workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: state });
         continue;
       }
@@ -11761,6 +11772,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 app.use(safeErrorHandler(console));
 
 (async () => {
+  // Do not accept API/WS traffic until legacy worktrees are migrated and tmux
+  // recovery has completed. The work itself is asynchronous, so this gates
+  // readiness without blocking timers or other event-loop work.
+  await startupRepoReady;
   try {
     PORT = await findAvailablePort(PORT);
   } catch (err) {

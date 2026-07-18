@@ -99,6 +99,7 @@ async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
   const branch = `multicc/${sessionId}`;
   return defaultRepoActor.run(dirPath, 'worktree-add', async ({ execGit, progress }) => {
     progress('prepare');
+    await ensureExcludedWith(execGit, dirPath);
     await fsp.mkdir(path.join(dirPath, WORKTREE_SUBDIR), { recursive: true });
     try { await execGit(dirPath, ['worktree', 'prune']); } catch (_) {}
     try {
@@ -151,13 +152,14 @@ async function worktreeSafetyWith(execGit, dirPath, worktreePath, branch, baseBr
   return { dirty, ahead, unmerged, baseBranch };
 }
 
-function backupName(sessionId) {
+function backupName(sessionId, operationId) {
   const safe = String(sessionId || 'session').replace(/[^A-Za-z0-9._-]/g, '-');
-  return `refs/multicc/backups/${safe}/${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  const op = String(operationId || 'operation').replace(/[^A-Za-z0-9._-]/g, '-');
+  return `refs/multicc/backups/${safe}/${new Date().toISOString().replace(/[:.]/g, '-')}-${op}`;
 }
 
 async function backupBeforeForce(execGit, dirPath, worktreePath, branch, sessionId, operationId) {
-  const ref = backupName(sessionId);
+  const ref = backupName(sessionId, operationId);
   const source = branch || (worktreePath ? 'HEAD' : null);
   if (source) await execGit(dirPath, ['update-ref', ref, source]);
   const commonDirRaw = await execGit(dirPath, ['rev-parse', '--git-common-dir']);
@@ -177,7 +179,22 @@ async function backupBeforeForce(execGit, dirPath, worktreePath, branch, session
       await fsp.writeFile(patch, diff, 'utf8');
     }
     const untracked = await execGit(worktreePath, ['ls-files', '--others', '--exclude-standard']).catch(() => '');
-    if (untracked) await fsp.writeFile(path.join(backupDir, 'untracked-files.txt'), `${untracked}\n`, 'utf8');
+    if (untracked) {
+      const untrackedFiles = lines(untracked);
+      await fsp.writeFile(path.join(backupDir, 'untracked-files.txt'), `${untrackedFiles.join('\n')}\n`, 'utf8');
+      const untrackedDir = path.join(backupDir, 'untracked');
+      for (const relative of untrackedFiles) {
+        // Git paths are repository-relative. Still reject traversal/absolute
+        // input before copying so a malformed index cannot escape backupDir.
+        if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) continue;
+        const sourcePath = path.join(worktreePath, relative);
+        const backupPath = path.join(untrackedDir, relative);
+        try {
+          await fsp.mkdir(path.dirname(backupPath), { recursive: true });
+          await fsp.cp(sourcePath, backupPath, { recursive: true, force: false });
+        } catch (_) {}
+      }
+    }
   }
   return { ref, bundle, patch, backupDir };
 }
@@ -211,6 +228,67 @@ async function gitWorktreeRemove(dirPath, worktreePath, branch, opts = {}) {
     try { await execGit(dirPath, ['worktree', 'prune']); } catch (_) {}
     return { ok: true, removed: true, backup, safety };
   }, { ...opts, sessionId });
+}
+
+// Cross-repository relocate with create-before-delete semantics. The target is
+// created first; any refusal/failure while removing the source rolls the target
+// back and leaves the caller's persisted session fields untouched.
+async function gitRelocateWorktree(oldDir, targetDir, session, opts = {}) {
+  if (!oldDir || !targetDir || !session) return { ok: false, error: 'oldDir, targetDir and session are required' };
+  const state = await gitWorktreeMergeState(oldDir, session);
+  const reasons = [];
+  if (opts.active) reasons.push('active');
+  if (state.dirty) reasons.push('dirty');
+  if (state.ahead > 0) reasons.push('unmerged');
+  if (reasons.length && !opts.force) {
+    return { ok: false, blocked: true, reasons, mergeState: state, error: `relocate refused: ${reasons.join(', ')}` };
+  }
+
+  let created;
+  try {
+    created = await gitWorktreeAdd(targetDir.path, session.id, targetDir.baseBranch, opts);
+    if (typeof opts.beforeRemove === 'function') await opts.beforeRemove(created);
+    const removed = await gitWorktreeRemove(oldDir.path, session.worktreePath, session.branch, {
+      ...opts, sessionId: session.id, baseBranch: oldDir.baseBranch,
+    });
+    if (!removed.ok) throw Object.assign(new Error(removed.error || 'source removal refused'), { result: removed });
+    return {
+      ok: true,
+      worktreePath: created.worktreePath,
+      branch: created.branch,
+      createdOperationId: created.operationId,
+      operationId: removed.operationId,
+      queueDepth: Math.max(created.queueDepth || 0, removed.queueDepth || 0),
+      backup: removed.backup || null,
+    };
+  } catch (error) {
+    let rollback = null;
+    if (created) {
+      rollback = await gitWorktreeRemove(targetDir.path, created.worktreePath, created.branch, {
+        sessionId: `${session.id}-relocate-rollback`, baseBranch: targetDir.baseBranch,
+        activeCheck: null,
+      }).catch(rollbackError => ({ ok: false, error: errorText(rollbackError) }));
+      if (!rollback.ok) {
+        rollback = await gitWorktreeRemove(targetDir.path, created.worktreePath, created.branch, {
+          sessionId: `${session.id}-relocate-rollback`, baseBranch: targetDir.baseBranch,
+          force: true, activeCheck: null,
+        }).catch(rollbackError => ({ ok: false, error: errorText(rollbackError) }));
+      }
+    }
+    const leaseReason = error.code === 'SESSION_ACTIVE' ? 'active'
+      : (error.code === 'SESSION_LEASED' ? 'leased' : null);
+    return {
+      ...(error.result || {}),
+      ok: false,
+      blocked: error.result?.blocked || !!leaseReason,
+      reasons: error.result?.reasons || (leaseReason ? [leaseReason] : undefined),
+      rolledBack: !!created && !!rollback?.ok,
+      rollbackError: created && !rollback?.ok ? rollback?.error || 'target rollback failed' : undefined,
+      operationId: error.result?.operationId || error.operationId,
+      queueDepth: error.result?.queueDepth || error.queueDepth,
+      error: error.result?.error || errorText(error),
+    };
+  }
 }
 
 async function mergeStateWith(execGit, dir, session) {
@@ -350,14 +428,20 @@ async function gitSyncFromBase(dir, session, opts = {}) {
     const parked = await rebaseConflictsWith(execGit, worktreePath);
     if (parked) return { ok: false, conflicts: parked, rebaseInProgress: true, error: 'worktree 仍处于 rebase 冲突中' };
     const safety = await worktreeSafetyWith(execGit, dir.path, worktreePath, session.branch, baseBranch);
-    if (safety.dirty && !opts.force) {
-      return { ok: false, skipped: true, blocked: true, reasons: ['dirty'], safety, error: 'dirty worktree: sync/rebase refused' };
+    const reasons = [];
+    if (safety.dirty) reasons.push('dirty');
+    if (safety.unmerged > 0) reasons.push('unmerged');
+    if (reasons.length && !opts.force) {
+      return { ok: false, skipped: true, blocked: true, reasons, safety,
+        error: `sync/rebase refused: ${reasons.join(', ')}` };
     }
     let backup = null;
     let committed = false;
-    if (safety.dirty && opts.force) {
+    if (reasons.length && opts.force) {
       backup = await backupBeforeForce(execGit, dir.path, worktreePath, session.branch, session.id, id);
-      committed = await commitAllWith(execGit, worktreePath, `multicc: forced sync backup @ ${new Date().toISOString()}`);
+      if (safety.dirty) {
+        committed = await commitAllWith(execGit, worktreePath, `multicc: forced sync backup @ ${new Date().toISOString()}`);
+      }
     }
     const behind = parseInt(await execGit(dir.path, ['rev-list', '--count', `${session.branch}..${baseBranch}`]) || '0', 10);
     if (!behind) return { ok: true, merged: false, committed, backup, message: '已是最新，无需同步' };
@@ -411,6 +495,7 @@ module.exports = {
   gitEnsureExcluded,
   gitWorktreeAdd,
   gitWorktreeRemove,
+  gitRelocateWorktree,
   gitWorktreeCommitAll,
   gitWorktreeMergeState,
   gitMergeBack,

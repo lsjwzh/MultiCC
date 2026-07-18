@@ -91,7 +91,7 @@ class RepoActor {
   }
 
   queueDepth(input) {
-    if (input) return this._queue(repoKeyFor(input)).depth;
+    if (input) return this.queues.get(repoKeyFor(input))?.depth || 0;
     let total = 0;
     for (const queue of this.queues.values()) total += queue.depth;
     return total;
@@ -123,20 +123,6 @@ class RepoActor {
     queue.depth += 1;
 
     const execute = async () => {
-      if (op.sessionId) {
-        const held = this.leases.get(op.sessionId);
-        if (held) {
-          const error = new Error(`session/worktree is leased by ${held.operationId}`);
-          error.code = 'SESSION_LEASED';
-          throw error;
-        }
-        if (options.activeCheck && await options.activeCheck()) {
-          const error = new Error('session/worktree is active');
-          error.code = 'SESSION_ACTIVE';
-          throw error;
-        }
-        this.leases.set(op.sessionId, { operationId: id, kind: op.kind, acquiredAt: Date.now() });
-      }
       op.status = 'running';
       op.startedAt = Date.now();
       op.queueDepth = queue.depth;
@@ -164,8 +150,24 @@ class RepoActor {
           throw error;
         }
       };
-      progress('started');
+      let leaseAcquired = false;
       try {
+        if (op.sessionId) {
+          const held = this.leases.get(op.sessionId);
+          if (held) {
+            const error = new Error(`session/worktree is leased by ${held.operationId}`);
+            error.code = 'SESSION_LEASED';
+            throw error;
+          }
+          if (options.activeCheck && await options.activeCheck()) {
+            const error = new Error('session/worktree is active');
+            error.code = 'SESSION_ACTIVE';
+            throw error;
+          }
+          this.leases.set(op.sessionId, { operationId: id, kind: op.kind, acquiredAt: Date.now() });
+          leaseAcquired = true;
+        }
+        progress('started');
         const value = await task({ operationId: id, repoKey, progress, execGit, queueDepth: () => queue.depth });
         op.status = 'completed';
         progress('completed');
@@ -181,8 +183,10 @@ class RepoActor {
         throw error;
       } finally {
         op.finishedAt = Date.now();
-        queue.running = null;
-        if (op.sessionId) this.leases.delete(op.sessionId);
+        if (queue.running === id) queue.running = null;
+        if (leaseAcquired && this.leases.get(op.sessionId)?.operationId === id) {
+          this.leases.delete(op.sessionId);
+        }
       }
     };
 
