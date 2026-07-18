@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "reviewedAt": "2026-07-18",
+  "entries": [
+    {
+      "id": "server-env",
+      "classification": "migration-required",
+      "owner": "server bootstrap/settings",
+      "rationale": "The package-root .env is writable configuration and may contain credentials; moving it changes installer and settings compatibility.",
+      "migrationStrategy": "Introduce an explicit config root, copy forward atomically, keep a read-only legacy fallback for one release, then remove package-root writes.",
+      "sources": [
+        { "file": "server.js", "anchor": "const ENV_PATH = path.join(__dirname, '.env');" }
+      ]
+    },
+    {
+      "id": "server-memory-root",
+      "classification": "migration-required",
+      "owner": "memory domain",
+      "rationale": "The legacy memory tree defaults to the package root and contains session/shared state with its own layout and API semantics.",
+      "migrationStrategy": "Wire the existing MULTICC_MEMORY_ROOT override through createPaths, then perform a directory-level copy-forward with rollback metadata.",
+      "sources": [
+        { "file": "server.js", "anchor": "const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');" }
+      ]
+    },
+    {
+      "id": "gateway-default-workspace",
+      "classification": "migration-required",
+      "owner": "gateway sessions",
+      "rationale": "The fallback gateway cwd can contain a live git workspace and native session context, so it is not a small state-file move.",
+      "migrationStrategy": "Create a gateway workspace port and relocate only after active-session detection plus worktree/CLI resume tests exist.",
+      "sources": [
+        { "file": "server.js", "anchor": "const p = session.cwd || path.join(os.homedir(), '.multicc', 'gateway');" }
+      ]
+    },
+    {
+      "id": "bridge-gateway-workspaces",
+      "classification": "migration-required",
+      "owner": "bridge gateways",
+      "rationale": "Bridge cwd directories may be git repositories with resumable native agent state.",
+      "migrationStrategy": "Add a bridge-workspace port, detect active sessions, then copy or relocate one bridge at a time with rollback markers.",
+      "sources": [
+        { "file": "plugins/bridges/discord-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'discord-gateway');" },
+        { "file": "plugins/bridges/feishu-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'feishu-gateway');" },
+        { "file": "plugins/bridges/slack-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'slack-gateway');" },
+        { "file": "plugins/bridges/telegram-bridge.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'telegram-gateway');" },
+        { "file": "plugins/bridges/wechat-ilink.js", "anchor": "const GATEWAY_CWD = path.join(require('os').homedir(), '.multicc', 'gateway');" }
+      ]
+    },
+    {
+      "id": "provider-codex-homes",
+      "classification": "migration-required",
+      "owner": "provider routing",
+      "rationale": "Per-provider CODEX_HOME directories contain upstream CLI auth/config and must remain stable across process restarts.",
+      "migrationStrategy": "Version the materialized-home layout and add a per-provider copy-forward/rollback operation before changing its root.",
+      "sources": [
+        { "file": "src/providers.js", "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');" }
+      ]
+    },
+    {
+      "id": "local-asr-models",
+      "classification": "external-owner",
+      "owner": "local ASR model installer",
+      "rationale": "Model weights are large shared assets selected by ASR_LOCAL_MODEL_DIR, not transactional MultiCC runtime state.",
+      "migrationStrategy": "Keep the explicit ASR_LOCAL_MODEL_DIR override; document backup/download behavior and never copy hundreds of MB during normal startup.",
+      "sources": [
+        { "file": "src/asr-local.js", "anchor": "ASR_LOCAL_MODEL_DIR: process.env.ASR_LOCAL_MODEL_DIR || path.join(os.homedir(), '.multicc', 'asr-models')," },
+        { "file": "scripts/setup-local-asr.sh", "anchor": "MODEL_DIR=\"${ASR_LOCAL_MODEL_DIR:-$HOME/.multicc/asr-models}\"" }
+      ]
+    },
+    {
+      "id": "claude-native-transcripts",
+      "classification": "external-owner",
+      "owner": "Claude CLI adapter",
+      "rationale": "Resume cleanup edits Claude-owned JSONL transcripts and cannot be redirected to MultiCC's data root.",
+      "migrationStrategy": "Keep the adapter bounded to a supplied native-session location and add upstream-format characterization tests before changing behavior.",
+      "sources": [
+        { "file": "src/cli-adapters/claude.js", "anchor": "if (cleaned > 0) fs.writeFileSync(jsonlPath, output.join('\\n'));" }
+      ]
+    },
+    {
+      "id": "agent-skill-installations",
+      "classification": "external-owner",
+      "owner": "skill converter",
+      "rationale": "Converted skills are intentionally installed into the user-owned .agents/.claude/.codex/.hermes skill stores.",
+      "migrationStrategy": "Continue treating provider skill roots as explicit external ports; cache-only state may move separately after installed-copy compatibility is tested.",
+      "sources": [
+        { "file": "src/skill-converter.js", "anchor": "const AGENTS_ROOT = path.join(os.homedir(), '.agents', 'skills');" }
+      ]
+    },
+    {
+      "id": "repository-safety-backups",
+      "classification": "workspace-scoped",
+      "owner": "git safety",
+      "rationale": "Recovery bundles and patches belong to the repository common dir so they remain available if a session worktree disappears.",
+      "migrationStrategy": "Retain repository-local ownership; add retention and explicit user cleanup without moving backups into process-global state.",
+      "sources": [
+        { "file": "src/git.js", "anchor": "const backupDir = path.join(commonDir, 'multicc-backups', operationId);" }
+      ]
+    },
+    {
+      "id": "temporary-uploads-and-import-bundles",
+      "classification": "ephemeral",
+      "owner": "upload/import adapters",
+      "rationale": "Uploads and git import bundles are bounded temporary files rather than restart-persistent runtime state.",
+      "migrationStrategy": "Keep OS-temp ownership, enforce private modes and lifecycle cleanup, and never treat these paths as durable API fields.",
+      "sources": [
+        { "file": "server.js", "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);" },
+        { "file": "server.js", "anchor": "fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'), { mode: 0o600 });" }
+      ]
+    },
+    {
+      "id": "legacy-artifact-writer",
+      "classification": "migration-required",
+      "owner": "multicc-artifact installed copies",
+      "rationale": "New bundled copies receive MULTICC_ARTIFACTS_DIR, while older standalone copies may still fall back to the historical directory.",
+      "migrationStrategy": "Serve the legacy directory read-only during the compatibility window, refresh installed skills, then remove the writer fallback in a later major release.",
+      "sources": [
+        { "file": "skills/multicc-artifact/bin/artifact", "anchor": ": path.join(os.homedir(), '.multicc', 'artifacts')" }
+      ]
+    },
+    {
+      "id": "legacy-artifact-reader",
+      "classification": "compatibility-read",
+      "owner": "artifact HTTP adapter",
+      "rationale": "The server reads old artifacts so links created before migration do not break; cleanup never mutates this root.",
+      "migrationStrategy": "Remove the read fallback after the installed-skill compatibility window and documented expiry period.",
+      "sources": [
+        { "file": "src/artifacts.js", "anchor": "const LEGACY_ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');" }
+      ]
+    },
+    {
+      "id": "legacy-detached-location",
+      "classification": "migration-required",
+      "owner": "detached task adapter",
+      "rationale": "Explicit MULTICC_DATA_DIR instances are isolated, while installs without that setting retain the historical ~/.multicc/detached root so in-flight job evidence remains discoverable.",
+      "migrationStrategy": "Make the configured MultiCC data root mandatory, add a read-only fallback for historical jobs, and remove writes to the legacy root after the detached-job retention window.",
+      "sources": [
+        { "file": "src/detached.js", "anchor": "const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');" },
+        { "file": "src/paths.js", "anchor": "? path.join(os.homedir(), '.multicc', 'detached')" }
+      ]
+    },
+    {
+      "id": "legacy-cron-reader",
+      "classification": "compatibility-read",
+      "owner": "cron adapter",
+      "rationale": "A package-local scheduled task file is read once and copied forward; all saves already use MULTICC_DATA_DIR.",
+      "migrationStrategy": "Remove the read fallback after one supported migration window; do not delete the legacy file automatically.",
+      "sources": [
+        { "file": "plugins/cron/cron-tasks.js", "anchor": "const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');" }
+      ]
+    }
+  ]
+}

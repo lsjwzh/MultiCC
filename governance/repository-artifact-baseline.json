@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "reviewedAt": "2026-07-18",
+  "policy": {
+    "largeBinaryBytes": 1048576,
+    "note": "Existing findings are migration debt, not examples. New findings are rejected."
+  },
+  "accepted": {
+    "tracked-apk": [
+      "public/multicc.apk"
+    ],
+    "backup": [
+      "server.js.bak.task1",
+      "server.js.bak.task10",
+      "server.js.bak.task2",
+      "server.js.bak.task4",
+      "server.js.bak.task5",
+      "server.js.bak.task7",
+      "server.js.bak.task9"
+    ],
+    "runtime-state": [
+      "whisper_vocab.json"
+    ],
+    "raw-audit-dump": [
+      ".arch-review-findings.json",
+      "classify-test-cases.json"
+    ],
+    "large-binary": [
+      "public/multicc.apk"
+    ],
+    "credential-content": [
+      "public/agent-presets.json"
+    ]
+  }
+}
