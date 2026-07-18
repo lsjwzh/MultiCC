@@ -4785,11 +4785,234 @@ window.__multiccRecError = (msg) => {
   setTimeout(hideMicToast, 3000);
 };
 
-if (!_hasNativeBridge && (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices)) {
+/* ── Streaming voice (real-time ASR + pause-triggered refine) ──────────────
+ * When the local ASR is ready and the browser supports AudioWorklet, mic
+ * click opens a floating HUD (#voice-hud) above the input bar and streams
+ * PCM16 over /ws/voice. Each VAD-closed segment (every pause) fires an
+ * auto-refine that supersedes the previous one, so the ✨ line shows the
+ * cleanest-so-far correction while the user keeps talking.
+ *
+ * Clicking 填入输入框 (or the mic button again) commits: the latest refined
+ * text (or raw fallback) is placed into the input field for user to review
+ * and send — nothing is auto-dispatched.
+ */
+const _canLegacyRecord = _hasNativeBridge || (typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices);
+const _canStream = !!(navigator.mediaDevices && window.AudioWorkletNode && window.VoiceStream && !_hasNativeBridge);
+
+let _hudActive = false;
+let _voiceStream = null;
+let _hudRawFinal = '';
+let _hudRawPartial = '';
+let _hudRefined = '';
+let _hudRefineAbort = null;
+let _hudRefineTimer = null;
+let _hudRefineSeq = 0;
+
+// Voice HUD DOM (lazy: some test pages don't ship it)
+const _vhHud       = document.getElementById('voice-hud');
+const _vhRawText   = document.getElementById('vh-raw-text');
+const _vhRefText   = document.getElementById('vh-refined-text');
+const _vhStatusEl  = document.getElementById('vh-status-text');
+const _vhCancelBtn = document.getElementById('vh-cancel');
+const _vhSendBtn   = document.getElementById('vh-send');
+
+// Track whether local streaming ASR is available. Pulled once at boot; the
+// 5s settle window in server means it's stable within the first user action.
+let _asrStreamingAvailable = false;
+fetch(withToken('/api/settings/voice'))
+  .then(r => r.json())
+  .then(d => {
+    const s = d && d.asr && d.asr.status;
+    _asrStreamingAvailable = !!(s && (s.local?.ready || s.openai?.ready || s.volcano?.ready || s.funasr?.ready));
+    console.log('[voice] streaming available:', _asrStreamingAvailable, '| canStream:', _canStream, '| canLegacyRecord:', _canLegacyRecord);
+  })
+  .catch(() => { _asrStreamingAvailable = false; });
+
+function _vhRenderRaw() {
+  if (!_vhRawText) return;
+  const committed = _hudRawFinal || '';
+  const partial   = _hudRawPartial || '';
+  _vhRawText.innerHTML = '';
+  if (committed) _vhRawText.appendChild(document.createTextNode(committed));
+  if (partial) {
+    const s = document.createElement('span');
+    s.className = 'vh-partial';
+    s.textContent = (committed ? ' ' : '') + partial;
+    _vhRawText.appendChild(s);
+  }
+  if (!committed && !partial) {
+    _vhRawText.innerHTML = '<span class="vh-partial">聆听中…</span>';
+  }
+}
+
+function _vhSetStatus(text, cls) {
+  if (!_vhHud || !_vhStatusEl) return;
+  _vhStatusEl.textContent = text;
+  _vhHud.classList.remove('refining', 'done');
+  if (cls) _vhHud.classList.add(cls);
+}
+
+function _vhReset() {
+  _hudRawFinal = '';
+  _hudRawPartial = '';
+  _hudRefined = '';
+  _hudRefineSeq++;
+  if (_hudRefineAbort) { try { _hudRefineAbort.abort(); } catch (_) {} _hudRefineAbort = null; }
+  if (_hudRefineTimer) { clearTimeout(_hudRefineTimer); _hudRefineTimer = null; }
+  if (_vhHud) _vhHud.classList.remove('has-refined', 'refining', 'done');
+  if (_vhRefText) _vhRefText.textContent = '';
+  _vhRenderRaw();
+}
+
+function _vhScheduleRefine() {
+  if (_hudRefineTimer) { clearTimeout(_hudRefineTimer); _hudRefineTimer = null; }
+  const raw = (_hudRawFinal || '').trim();
+  if (!raw) return;
+  _hudRefineTimer = setTimeout(() => { _hudRefineTimer = null; _vhRunRefine(raw); }, 250);
+}
+
+async function _vhRunRefine(raw) {
+  if (_hudRefineAbort) { try { _hudRefineAbort.abort(); } catch (_) {} }
+  const seq = ++_hudRefineSeq;
+  const ctrl = new AbortController();
+  _hudRefineAbort = ctrl;
+  if (_vhHud) _vhHud.classList.add('refining');
+  try {
+    const res = await fetch(withToken('/api/voice/refine'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw }),
+      signal: ctrl.signal,
+    });
+    const data = await res.json();
+    if (seq !== _hudRefineSeq) return;
+    if (data.ok && typeof data.text === 'string' && data.text.trim()) {
+      _hudRefined = data.text.trim();
+      if (_vhRefText) _vhRefText.textContent = _hudRefined;
+      if (_vhHud) _vhHud.classList.add('has-refined');
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') console.warn('[voice-hud] refine failed:', e.message);
+  } finally {
+    if (_hudRefineAbort === ctrl) _hudRefineAbort = null;
+    if (seq === _hudRefineSeq && _vhHud) _vhHud.classList.remove('refining');
+  }
+}
+
+async function startStreamingVoice() {
+  if (!_vhHud) { startRecording(); return; }           // HUD not present in this page — legacy
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = withToken(`${proto}//${location.host}/ws/voice`);
+
+  _vhReset();
+  _vhHud.classList.add('open');
+  _vhSetStatus('聆听中');
+  micBtn.classList.add('recording');
+  _hudActive = true;
+
+  _voiceStream = new VoiceStream({
+    wsUrl,
+    provider: 'auto',
+    lang: 'zh',
+    onText: (full, isFinal) => {
+      if (isFinal) {
+        _hudRawFinal = full;
+        _hudRawPartial = '';
+        _vhRenderRaw();
+        _vhScheduleRefine();
+      } else {
+        _hudRawPartial = full.startsWith(_hudRawFinal) ? full.slice(_hudRawFinal.length) : full;
+        _vhRenderRaw();
+      }
+    },
+    onDone: (finalText) => {
+      const text = (finalText || _hudRawFinal || '').trim();
+      _hudActive = false;
+      micBtn.classList.remove('recording');
+      _vhSetStatus(text ? '识别完成' : '未识别到语音', 'done');
+    },
+    onError: (msg) => {
+      _vhSetStatus('⚠ ' + msg, 'done');
+      _hudActive = false;
+      micBtn.classList.remove('recording');
+    },
+  });
+  _voiceStream.start().catch(err => {
+    _vhSetStatus('⚠ ' + (err.message || '启动失败'), 'done');
+    _hudActive = false;
+    micBtn.classList.remove('recording');
+  });
+}
+
+// Commit: wait briefly for the last VAD segment, flush pending refine, then
+// place refined (or raw) text into the input box. Never auto-sends — user
+// reviews and presses Enter.
+async function commitStreamingVoice() {
+  if (_voiceStream) { try { _voiceStream.stop(); } catch (_) {} }
+  _hudActive = false;
+  micBtn.classList.remove('recording');
+  _vhSetStatus('识别中…');
+
+  const rawBefore = _hudRawFinal;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 800) {
+    await new Promise(r => setTimeout(r, 80));
+    if (_hudRawFinal !== rawBefore) break;
+  }
+
+  if (_hudRefineTimer) {
+    clearTimeout(_hudRefineTimer); _hudRefineTimer = null;
+    const raw = (_hudRawFinal || '').trim();
+    if (raw) await _vhRunRefine(raw);
+  } else if (_hudRefineAbort) {
+    const waitStart = Date.now();
+    while (_hudRefineAbort && Date.now() - waitStart < 3000) {
+      await new Promise(r => setTimeout(r, 80));
+    }
+  }
+
+  const text = (_hudRefined || _hudRawFinal || '').trim();
+  const raw = (_hudRawFinal || '').trim();
+  if (_vhHud) _vhHud.classList.remove('open');
+  if (!text) return;
+
+  // Fill into the existing input box; user presses Enter to send.
+  useVoiceText(text);
+
+  // Feedback (server ignores if userFinal === refined).
+  fetch(withToken('/api/voice/feedback'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw, refined: _hudRefined, userFinal: text }),
+  }).catch(() => {});
+}
+
+function cancelStreamingVoice() {
+  if (_voiceStream) { try { _voiceStream.abort ? _voiceStream.abort() : _voiceStream.stop(); } catch (_) {} }
+  _hudActive = false;
+  micBtn.classList.remove('recording');
+  _vhReset();
+  if (_vhHud) _vhHud.classList.remove('open');
+}
+
+if (_vhCancelBtn) _vhCancelBtn.addEventListener('click', cancelStreamingVoice);
+if (_vhSendBtn)   _vhSendBtn.addEventListener('click', commitStreamingVoice);
+
+if (!_canLegacyRecord && !_canStream) {
   micBtn.disabled = true;
-  micBtn.title = 'Recording not supported (needs HTTPS)';
+  micBtn.title = 'Recording not supported (needs HTTPS / AudioWorklet)';
 } else {
-  micBtn.onclick = () => { isRecording ? stopRecording() : startRecording(); };
+  micBtn.onclick = () => {
+    const useStream = _canStream && _asrStreamingAvailable;
+    console.log('[voice] mic click: useStream=%s hudActive=%s isRecording=%s', useStream, _hudActive, isRecording);
+    if (useStream) {
+      if (_hudActive) commitStreamingVoice();
+      else startStreamingVoice();
+      return;
+    }
+    if (isRecording) stopRecording();
+    else startRecording();
+  };
 }
 
 /* ── Voice Panel ── */

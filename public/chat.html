@@ -863,6 +863,108 @@
     }
     #mic-toast.show { display: block; }
 
+    /* ── Voice HUD (real-time streaming ASR: 边说边出字 + 停顿自动 refine) ──
+     * Floats above the input bar. Committed transcript on top (🎤 line),
+     * AI-refined text below (✨ line, fades in when refine returns).
+     */
+    #voice-hud {
+      display: none;
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 112px;                   /* clear of #pre-input-bar + #input-bar */
+      z-index: 9500;
+      width: min(720px, 94vw);
+      background: #161b22ee;
+      backdrop-filter: blur(8px);
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      box-shadow: 0 8px 32px #00000099;
+      padding: 12px 14px 10px;
+      color: #c9d1d9;
+      font-family: system-ui, 'Segoe UI', sans-serif;
+    }
+    #voice-hud.open { display: block; }
+    #voice-hud .vh-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      min-height: 22px;
+      line-height: 1.55;
+    }
+    #voice-hud .vh-icon {
+      flex: 0 0 22px;
+      font-size: 14px;
+      opacity: .8;
+      padding-top: 1px;
+    }
+    #voice-hud .vh-text {
+      flex: 1;
+      font-size: 15px;
+      word-break: break-word;
+      min-height: 22px;
+    }
+    #voice-hud .vh-raw .vh-text { color: #c9d1d9; }
+    #voice-hud .vh-raw .vh-partial { color: #8b949e; font-style: italic; }
+    #voice-hud .vh-refined .vh-text {
+      color: #79c0ff;
+      font-weight: 500;
+      opacity: 0;
+      transition: opacity 140ms ease;
+      min-height: 22px;
+    }
+    #voice-hud.has-refined .vh-refined .vh-text { opacity: 1; }
+    #voice-hud.refining .vh-refined .vh-text::after {
+      content: ' ✨';
+      animation: vh-pulse 1s ease-in-out infinite;
+    }
+    @keyframes vh-pulse { 0%,100%{opacity:.3}50%{opacity:1} }
+    #voice-hud .vh-bar {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #21262d;
+      font-size: 11px;
+      color: #6e7681;
+    }
+    #voice-hud .vh-status { display: flex; align-items: center; gap: 5px; }
+    #voice-hud .vh-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #f85149;
+      box-shadow: 0 0 6px #f85149;
+      animation: vh-blink 1.2s ease-in-out infinite;
+    }
+    #voice-hud.done .vh-dot {
+      background: #3fb950;
+      box-shadow: 0 0 6px #3fb950;
+      animation: none;
+    }
+    @keyframes vh-blink { 0%,100%{opacity:1}50%{opacity:.35} }
+    #voice-hud .vh-btns { display: flex; gap: 6px; }
+    #voice-hud .vh-btns button {
+      padding: 4px 12px;
+      font-size: 12px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #c9d1d9;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #voice-hud .vh-btns button:hover { background: #30363d; }
+    #voice-hud .vh-btns .vh-primary {
+      background: #1f6feb;
+      border-color: #388bfd;
+      color: #fff;
+      font-weight: 600;
+    }
+    #voice-hud .vh-btns .vh-primary:hover { background: #388bfd; }
+
     /* ── Notification Toast ── */
     #notify-toast {
       display: none;
@@ -1546,6 +1648,28 @@
 
   <!-- Mic toast -->
   <div id="mic-toast"></div>
+
+  <!-- Floating voice HUD (real-time transcript + auto-refine on pause) -->
+  <div id="voice-hud">
+    <div class="vh-row vh-raw">
+      <div class="vh-icon">🎤</div>
+      <div class="vh-text" id="vh-raw-text"><span class="vh-partial">聆听中…</span></div>
+    </div>
+    <div class="vh-row vh-refined">
+      <div class="vh-icon">✨</div>
+      <div class="vh-text" id="vh-refined-text"></div>
+    </div>
+    <div class="vh-bar">
+      <div class="vh-status">
+        <span class="vh-dot"></span>
+        <span id="vh-status-text">聆听中</span>
+      </div>
+      <div class="vh-btns">
+        <button id="vh-cancel" title="放弃并关闭">取消</button>
+        <button id="vh-send" class="vh-primary" title="停止听并填入输入框">填入输入框</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Notify toast -->
   <div id="notify-toast"><span class="toast-close">&#10005;</span></div>
