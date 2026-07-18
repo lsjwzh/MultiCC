@@ -1217,7 +1217,10 @@ async function seedCommanderSession(dir) {
   }
   for (const cli of ['claude', 'codex']) {
     const label = cli === 'codex' ? '🫡 Agent Commander (Codex)' : '🫡 Agent Commander';
-    const r = await createSessionRecord({ dir, cli, kind: 'chat', label });
+    const r = await createSessionRecord({
+      dir, cli, kind: 'chat', label,
+      persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
+    });
     if (r.ok) {
       r.session.rolePrompt = commander.prompt;
       savePersistedSessionsBestEffort('directory.seed-commander-role');
@@ -1508,6 +1511,7 @@ async function ensureUltracodeWorkers(parentId) {
       provider: parent.provider || '',
       effort: 'xhigh',
       rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
+      persistence: 'bestEffort', persistenceSource: 'runtime.ultracode-worker-create',
     });
     if (!r.ok) console.warn(`[multicc/ultracode] failed to create worker ${id}: ${r.error}`);
   }
@@ -1697,6 +1701,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
             provider: dispatcher.provider || '',
             effort: 'xhigh',
             rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
+            persistence: 'bestEffort', persistenceSource: 'runtime.dispatch-worker-create',
           });
           if (created.ok) v = validateDispatchTarget(targetId, opts.replyTo || null);
         }
@@ -1718,6 +1723,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
       label: `${rec.label || targetId} (gw)`,
       id: `${targetId}-gw-chat`,
       ephemeral: true,
+      persistence: 'bestEffort', persistenceSource: 'runtime.gateway-chat-create',
     });
     if (!created.ok) return { ok: false, error: `创建临时 chat 失败：${created.error}` };
     chatId = created.id;

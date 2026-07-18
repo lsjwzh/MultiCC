@@ -119,8 +119,15 @@ async function fireTask(task, reason) {
   } else {
     let r;
     try {
-      r = await deps.createSessionRecord({ dir, cli: task.cli || 'claude', kind: 'chat', label: `⏰ ${task.name}` });
-    } catch (e) { r = { ok: false, error: e.message }; }
+      r = await deps.createSessionRecord({
+        dir, cli: task.cli || 'claude', kind: 'chat', label: `⏰ ${task.name}`,
+        persistence: reason === 'manual' ? 'required' : 'bestEffort',
+        persistenceSource: reason === 'manual' ? 'http.cron-run-session-create' : 'timer.cron-session-create',
+      });
+    } catch (e) {
+      if (reason === 'manual' && e && e.code === 'SESSION_PERSISTENCE_FAILED') throw e;
+      r = { ok: false, error: e.message };
+    }
     if (!r || !r.ok) {
       task.lastRunAt = Date.now(); task.lastStatus = 'error';
       task.lastError = (r && r.error) || '创建会话失败'; save();
@@ -239,12 +246,12 @@ function mount(app) {
     res.json({ ok: true });
   });
 
-  app.post('/api/cron/:id/run', async (req, res) => {
+  app.post('/api/cron/:id/run', (req, res, next) => Promise.resolve().then(async () => {
     const task = tasks.find(x => x.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'task not found' });
     const r = await fireTask(task, 'manual');
     res.json({ ok: r.ok, sessionId: r.sessionId, error: r.error });
-  });
+  }).catch(next));
 }
 
 function init(injected) {
