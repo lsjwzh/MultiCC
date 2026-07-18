@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -43,20 +44,35 @@ class MultiCCApp extends StatelessWidget {
       home = SetupScreen(settings: settings);
     }
 
-    return MaterialApp(
-      title: 'MultiCC',
-      debugShowCheckedModeBanner: false,
-      theme: buildAppTheme(),
-      builder: (context, child) => ValueListenableBuilder<double>(
-        valueListenable: settings.fontScale,
-        builder: (context, scale, _) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: TextScaler.linear(scale)),
-          child: child ?? const SizedBox.shrink(),
-        ),
-      ),
-      home: _StartupWrapper(settings: settings, child: home),
+    return ValueListenableBuilder<String>(
+      valueListenable: settings.language,
+      builder: (context, language, _) {
+        I18n.switchLang(language);
+        return MaterialApp(
+          title: 'MultiCC',
+          debugShowCheckedModeBanner: false,
+          theme: buildAppTheme(),
+          locale: language == 'en'
+              ? const Locale('en', 'US')
+              : const Locale('zh', 'CN'),
+          supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          builder: (context, child) => ValueListenableBuilder<double>(
+            valueListenable: settings.fontScale,
+            builder: (context, scale, _) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(scale)),
+              child: child ?? const SizedBox.shrink(),
+            ),
+          ),
+          home: _StartupWrapper(settings: settings, child: home),
+        );
+      },
     );
   }
 }
