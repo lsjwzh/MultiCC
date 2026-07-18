@@ -2973,81 +2973,102 @@ const modelBtn = document.getElementById('model-btn');
 let _sessionModel = '';        // raw per-session override (null/'' = follow default)
 let _sessionEffectiveModel = ''; // model actually used at spawn time (for display)
 const effortBtn = document.getElementById('effort-btn');
-const EFFORT_OPTIONS = [
-  { value: 'low', label: 'low' },
-  { value: 'medium', label: 'medium' },
-  { value: 'high', label: 'high' },
-  { value: 'xhigh', label: 'xhigh' },
-  { value: 'max', label: 'max' },
-  { value: 'ultracode', label: 'ultracode' },
-];
-const CODEX_REASONING_OPTIONS = [
-  { value: 'low', label: 'Low', desc: 'Fast responses with lighter reasoning' },
-  { value: 'medium', label: 'Medium', desc: 'Balances speed and reasoning depth for everyday tasks' },
-  { value: 'high', label: 'High', desc: 'Greater reasoning depth for complex problems' },
-  { value: 'xhigh', label: 'Extra high', desc: 'Extra high reasoning depth for complex problems' },
-  { value: 'max', label: 'Max', desc: 'Maximum single-agent reasoning depth' },
-  { value: 'ultra', label: 'Ultra', desc: 'Maximum reasoning with automatic task delegation when available' },
-];
-const OPENCODE_VARIANT_OPTIONS = [
-  { value: '', label: 'Default', desc: 'Use the selected model/provider default' },
-  { value: 'minimal', label: 'Minimal', desc: 'Minimal reasoning where supported by the model' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'max', label: 'Max' },
-];
 let _sessionEffort = '';
 let _sessionEffectiveEffort = '';
 
+function chatAiConfigState() {
+  return {
+    cli: _sessionCli,
+    providers: _providerList,
+    defaults: _providerDefaults,
+    providerDisplayName: _sessionProviderDisplayName,
+    claudeModelOptions: CLAUDE_MODEL_OPTIONS,
+    translate: tt,
+    modelShortName,
+    aliasTiersFromMap,
+    formatAliasTierLabel,
+    document,
+  };
+}
+
+// Global compatibility delegates: callers keep the historic chat.js function
+// names while policy and picker DOM live in chat-ai-config.js.
 function defaultEffortForCurrentCli() {
-  if (_sessionCli === 'codex') return 'xhigh';
-  if (_sessionCli === 'claude') return 'medium';
-  return '';
+  return window.MultiCCChatAiConfig.defaultEffort(_sessionCli);
 }
 
 function effortOptionsForCurrentCli() {
-  if (_sessionCli === 'codex') return CODEX_REASONING_OPTIONS;
-  if (_sessionCli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
-  if (_sessionCli === 'claude') return EFFORT_OPTIONS;
-  return [];
+  return window.MultiCCChatAiConfig.effortOptions(_sessionCli);
 }
 
 function effortLabelForCurrentCli() {
-  if (_sessionCli === 'codex') return 'Reasoning Level';
-  if (_sessionCli === 'opencode') return 'Variant';
-  return 'Effort';
+  return window.MultiCCChatAiConfig.effortLabel(_sessionCli);
+}
+
+function effortShortName(effort) {
+  return window.MultiCCChatAiConfig.effortShortName(_sessionCli, effort);
+}
+
+function providerModelOptions(providerId) {
+  return window.MultiCCChatAiConfig.providerModelOptions(providerId, chatAiConfigState());
+}
+
+function providerAliasMap(providerId) {
+  return window.MultiCCChatAiConfig.providerAliasMap(providerId, chatAiConfigState());
+}
+
+function providerAliasTiers(providerId) {
+  return window.MultiCCChatAiConfig.providerAliasTiers(providerId, chatAiConfigState());
+}
+
+function normalizeModelForProvider(providerId, model) {
+  return window.MultiCCChatAiConfig.normalizeModel(providerId, model, chatAiConfigState());
+}
+
+function buildModelChoices(providerId) {
+  return window.MultiCCChatAiConfig.buildModelChoices(providerId, chatAiConfigState());
+}
+
+function stripModelSuffixUi(model) {
+  return window.MultiCCChatAiConfig.stripModelSuffix(model);
+}
+
+function defaultModelChoiceForProvider(providerId) {
+  return window.MultiCCChatAiConfig.defaultModelChoice(providerId, chatAiConfigState());
+}
+
+function modelChoiceLabel(value, providerId) {
+  return window.MultiCCChatAiConfig.modelChoiceLabel(value, providerId, chatAiConfigState());
+}
+
+function modelDisplayName(model, providerId) {
+  return window.MultiCCChatAiConfig.modelDisplayName(model, providerId, chatAiConfigState());
+}
+
+function showEffortPicker(current) {
+  return window.MultiCCChatAiConfig.showEffortPicker(current, {
+    cli: _sessionCli,
+    document,
+  });
+}
+
+function showAIConfigPicker(config) {
+  return window.MultiCCChatAiConfig.showAIConfigPicker(config, chatAiConfigState());
 }
 
 function updateModelBtn() {
   if (!modelBtn) return;
   const shown = _sessionEffectiveModel || _sessionModel;
-  // 有 provider id 时优先按 id 实时解析名字，避免切换后 _sessionProviderDisplayName
-  // （只在 WS 消息到达时更新）残留旧值导致顶部 provider 段不联动；
-  // provider 为空（默认登录）时才回退到 WS 推来的显示名。
   const provider = (_sessionProvider ? providerShortName(_sessionProvider) : '')
     || _sessionProviderDisplayName
     || tt('default');
   const model = shown ? modelDisplayName(shown, _sessionProvider) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
-  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent ? `Agent ${_sessionAgent}` : '';
+  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent
+    ? `Agent ${_sessionAgent}`
+    : '';
   modelBtn.textContent = `🧠 ${[provider, model, effort, agent].filter(Boolean).join(' | ')}`;
   modelBtn.style.display = '';
-}
-
-function effortShortName(effort) {
-  const v = effort || defaultEffortForCurrentCli();
-  if (_sessionCli === 'zcode') return '';
-  if (_sessionCli === 'opencode') return v ? `Variant ${v}` : '';
-  if (_sessionCli === 'codex') {
-    if (v === 'xhigh') return 'Extra high';
-    if (v === 'low') return 'Low';
-    if (v === 'medium') return 'Medium';
-    if (v === 'high') return 'High';
-    if (v === 'max') return 'Max';
-    if (v === 'ultra') return 'Ultra';
-  }
-  return v;
 }
 
 function updateEffortBtn() {
@@ -3056,314 +3077,10 @@ function updateEffortBtn() {
   updateModelBtn();
 }
 
-function showEffortPicker(current) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:380px;max-width:94vw;color:#c9d1d9;';
-    box.innerHTML = `
-      <div style="font-size:15px;font-weight:600;margin-bottom:8px;">选择努力程度（下一轮生效）</div>
-      <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">Claude 支持 low / medium / high / xhigh / max。ultracode 会向 Claude 传 xhigh，并启用 MultiCC 跨会话 workflow 编排。</div>
-      <select id="effort-select" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
-        ${EFFORT_OPTIONS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')}
-      </select>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button id="effort-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">取消</button>
-        <button id="effort-ok" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">保存</button>
-      </div>`;
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    const select = box.querySelector('#effort-select');
-    select.value = EFFORT_OPTIONS.some(o => o.value === current) ? current : defaultEffortForCurrentCli();
-    const close = (r) => { overlay.remove(); resolve(r); };
-    box.querySelector('#effort-ok').onclick = () => close(select.value);
-    box.querySelector('#effort-cancel').onclick = () => close(null);
-    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
-  });
-}
-
-function providerModelOptions(providerId) {
-  const effectiveProviderId = effectiveProviderIdForChoices(providerId);
-  if (!effectiveProviderId) return [];
-  const p = _providerList.find(o => o.id === effectiveProviderId);
-  return (p && Array.isArray(p.modelOptions)) ? p.modelOptions.filter(Boolean) : [];
-}
-
-// Alias↔model mapping for the selected provider (alias-only relays declare one
-// model per tier, e.g. iFlytek opus/sonnet/haiku/fable → astron-code-latest).
-// Returned shape matches the server summary: { opus:{model,name}, sonnet:{...}, ... }.
-function providerAliasMap(providerId) {
-  const effectiveProviderId = effectiveProviderIdForChoices(providerId);
-  if (!effectiveProviderId) return null;
-  const p = _providerList.find(o => o.id === effectiveProviderId);
-  if (!p || !p.aliasMap) return null;
-  const entries = Object.entries(p.aliasMap).filter(([, v]) => v && v.model);
-  return entries.length ? Object.fromEntries(entries) : null;
-}
-
-// Ordered alias tiers [tier, {model,name}] for an alias-mapped relay, or [].
-// Each tier is a real, selectable wire model on these relays (the server honors
-// session.model === opus/sonnet/haiku/fable directly).
-function providerAliasTiers(providerId) {
-  return aliasTiersFromMap(providerAliasMap(providerId));
-}
-
-// Map a stored wire model id (e.g. claude-opus-4-8) back to its alias tier so the
-// tier dropdown pre-selects instead of dropping into the custom-id field.
-function normalizeModelForProvider(providerId, model) {
-  if (!model) return model;
-  for (const [t, m] of providerAliasTiers(providerId)) {
-    if (t === model) return model;
-    if (m.model === model) return t;
-  }
-  return model;
-}
-
-function buildModelChoices(providerId) {
-  // Alias-mapped relays: offer the tiers directly so each option can read
-  // "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id).
-  // Provider-backed lists deliberately have NO "默认" option: a blank model
-  // used to silently keep whatever the previous provider left behind — the
-  // picker now always commits a concrete choice for the selected provider.
-  const tiers = providerAliasTiers(providerId);
-  if (tiers.length) return [...tiers.map(([t]) => t), '__custom__'];
-  const opts = providerModelOptions(providerId);
-  if (opts.length) return [...opts, '__custom__'];
-  if (_sessionCli === 'claude') return CLAUDE_MODEL_OPTIONS.map(o => o.value);
-  return ['', '__custom__'];
-}
-
-// "[1M]"-style context suffix is cosmetic for comparison purposes.
-function stripModelSuffixUi(m) { return String(m || '').replace(/\[[^\]]*\]$/, '').trim(); }
-
-// The choice to auto-select when the user switches provider (联动): the tier
-// that maps to the provider's primary model (else the first tier), or the
-// provider's primary model / first declared model for plain lists.
-function defaultModelChoiceForProvider(providerId) {
-  const effId = effectiveProviderIdForChoices(providerId);
-  const p = effId ? _providerList.find(o => o.id === effId) : null;
-  const tiers = providerAliasTiers(providerId);
-  if (tiers.length) {
-    const primary = p ? stripModelSuffixUi(p.model) : '';
-    const hit = primary && tiers.find(([, m]) => stripModelSuffixUi(m.model) === primary);
-    return (hit || tiers[0])[0];
-  }
-  const opts = providerModelOptions(providerId);
-  return (p && p.model) || opts[0] || '';
-}
-
-function modelChoiceLabel(v, providerId) {
-  // Alias tier option: "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id).
-  const map = providerAliasMap(providerId);
-  if (map && map[v] && map[v].model) {
-    const m = map[v];
-    return formatAliasTierLabel(v, m);
-  }
-  if (v === '') return _sessionCli === 'codex' ? '默认（跟随 Provider）' : tt('default');
-  const named = CLAUDE_MODEL_OPTIONS.find(o => o.value === v);
-  if (named) return named.labelKey ? tt(named.labelKey) : named.label;
-  if (v === '__custom__') return tt('custom');
-  return v;
-}
-
-// Display name for the model chip: prefer an alias-mapped relay's real model
-// name (e.g. GLM5.2), given either a tier key or a wire id it maps to.
-function modelDisplayName(model, providerId) {
-  if (!model) return model;
-  const map = providerAliasMap(providerId);
-  if (map) {
-    if (map[model]) {
-      const e = map[model];
-      if (e.name) return e.name;     // 显示名优先（如 GLM5.2）
-      if (e.model) return e.model;   // 否则用映射的真模型 id（如 glm-5.2），不回退到 tier 别名 opus
-    }
-    for (const v of Object.values(map)) {
-      if (v && v.model === model) return v.name || model;
-    }
-  }
-  return modelShortName(model);
-}
-
-function showAIConfigPicker({ provider, model, effort, subagent, agent }) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:94vw;color:#c9d1d9;';
-    box.innerHTML = `
-      <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-      <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">Provider、Model${effortOptionsForCurrentCli().length ? `、${effortLabelForCurrentCli()}` : ''} 会一起保存。切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。</div>
-      <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
-      <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
-      <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Model</label>
-      <select id="ai-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
-      <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
-      <div id="ai-effort-section">
-      <label id="ai-effort-label" style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">${effortLabelForCurrentCli()}</label>
-      <select id="ai-effort" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;"></select>
-      </div>
-      <div id="ai-agent-section">
-      <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
-      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${_sessionCli === 'claude' ? 'Claude Code' : 'OpenCode'} Agent</div>
-      <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
-      <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${_sessionCli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
-      <datalist id="ai-agent-list">${_sessionCli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
-      </div>
-      <div id="ai-sub-section">
-      <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
-      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">子任务 (subagent)</div>
-      <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:10px;">子 agent 走的 provider+model（经本地协议代理路由，与主进程隔离）。留空=随主。</div>
-      <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Provider</label>
-      <select id="ai-sub-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:10px;"></select>
-      <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">子任务 Model</label>
-      <select id="ai-sub-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;"></select>
-      <input id="ai-sub-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;display:none;">
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button id="ai-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">取消</button>
-        <button id="ai-ok" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">保存</button>
-      </div>`;
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    const providerSel = box.querySelector('#ai-provider');
-    const modelSel = box.querySelector('#ai-model');
-    const custom = box.querySelector('#ai-model-custom');
-    const effortSel = box.querySelector('#ai-effort');
-    const effortLabel = box.querySelector('#ai-effort-label');
-    const effortSection = box.querySelector('#ai-effort-section');
-    const agentSection = box.querySelector('#ai-agent-section');
-    const agentInput = box.querySelector('#ai-agent');
-    const subSection = box.querySelector('#ai-sub-section');
-
-    const providerDefault = document.createElement('option');
-    providerDefault.value = '';
-    providerDefault.textContent = tt('providerDefault');
-    providerSel.appendChild(providerDefault);
-    for (const p of _providerList) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name + (p.isOfficial ? ' · 订阅' : (p.baseUrl ? ' · ' + p.baseUrl.replace(/^https?:\/\//, '') : '')) + (p.model ? ' · ' + p.model : '');
-      providerSel.appendChild(opt);
-    }
-    providerSel.value = provider || '';
-
-    const effortOptions = effortOptionsForCurrentCli();
-    effortSection.style.display = effortOptions.length ? '' : 'none';
-    agentSection.style.display = (_sessionCli === 'claude' || _sessionCli === 'opencode') ? '' : 'none';
-    subSection.style.display = (_sessionCli === 'claude' || _sessionCli === 'codex') ? '' : 'none';
-    agentInput.value = (_sessionCli === 'claude' || _sessionCli === 'opencode') ? (agent || '') : '';
-    for (const o of effortOptions) {
-      const opt = document.createElement('option');
-      opt.value = o.value;
-      opt.textContent = o.desc ? `${o.label} — ${o.desc}` : o.label;
-      effortSel.appendChild(opt);
-    }
-    effortSel.value = effortOptions.some(o => o.value === effort) ? effort : defaultEffortForCurrentCli();
-
-    // ── 子任务 (subagent) provider+model cascade — reuses the main helpers ──
-    const subProviderSel = box.querySelector('#ai-sub-provider');
-    const subModelSel = box.querySelector('#ai-sub-model');
-    const subCustom = box.querySelector('#ai-sub-model-custom');
-    const subDef = document.createElement('option');
-    subDef.value = ''; subDef.textContent = '默认（随主）';
-    subProviderSel.appendChild(subDef);
-    for (const p of _providerList) {
-      // Codex subscription/OAuth providers have no standalone HTTP endpoint for
-      // the local role proxy. They remain valid as the main provider, but cannot
-      // be selected as a routed child target.
-      if (_sessionCli === 'codex' && p.isOfficial) continue;
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name + (p.isOfficial ? ' · 订阅' : (p.baseUrl ? ' · ' + p.baseUrl.replace(/^https?:\/\//, '') : ''));
-      subProviderSel.appendChild(opt);
-    }
-    const initSub = subagent && subagent.providerId ? subagent : null;
-    subProviderSel.value = initSub ? initSub.providerId : '';
-    function syncSubCustom() { subCustom.style.display = subModelSel.value === '__custom__' ? '' : 'none'; }
-    function rebuildSubModels(pid, pref) {
-      pref = normalizeModelForProvider(pid, pref || '');
-      const choices = buildModelChoices(pid);
-      subModelSel.innerHTML = '';
-      for (const v of choices) { const o = document.createElement('option'); o.value = v; o.textContent = modelChoiceLabel(v, pid); subModelSel.appendChild(o); }
-      if (!pref) pref = defaultModelChoiceForProvider(pid); // 联动：换 provider 自动选它自己的主模型
-      const isKnown = choices.includes(pref);
-      subModelSel.value = isKnown ? pref : (pref ? '__custom__' : choices[0]);
-      subCustom.value = isKnown ? '' : pref;
-      syncSubCustom();
-    }
-    function refreshSubUI() {
-      const pid = subProviderSel.value;
-      subModelSel.disabled = !pid; subCustom.disabled = !pid;
-      // Only carry the saved sub-model when still on the provider it was
-      // saved for — switching provider must re-link to the new one's models.
-      if (pid) rebuildSubModels(pid, (initSub && pid === initSub.providerId) ? initSub.model : '');
-      else { subModelSel.innerHTML = '<option value="">（随主）</option>'; subModelSel.value = ''; syncSubCustom(); }
-    }
-    refreshSubUI();
-    subProviderSel.onchange = refreshSubUI;
-    subModelSel.onchange = () => { syncSubCustom(); if (subModelSel.value === '__custom__') subCustom.focus(); };
-
-    function rebuildModels(nextProvider, preferredModel) {
-      // For alias-mapped relays a stored wire id (claude-opus-4-8) maps back to
-      // its tier so the tier option pre-selects.
-      preferredModel = normalizeModelForProvider(nextProvider, preferredModel || '');
-      const choices = buildModelChoices(nextProvider);
-      modelSel.innerHTML = '';
-      for (const v of choices) {
-        const opt = document.createElement('option');
-        opt.value = v;
-        opt.textContent = modelChoiceLabel(v, nextProvider);
-        modelSel.appendChild(opt);
-      }
-      // No preferred model (fresh provider switch) → auto-select the new
-      // provider's own primary model so a concrete, compatible choice is
-      // always committed — never a blank/stale one.
-      if (!preferredModel) preferredModel = defaultModelChoiceForProvider(nextProvider);
-      const isKnown = choices.includes(preferredModel);
-      modelSel.value = isKnown ? preferredModel : (preferredModel ? '__custom__' : choices[0]);
-      custom.value = isKnown ? '' : preferredModel;
-      syncCustom();
-    }
-    function syncCustom() {
-      custom.style.display = modelSel.value === '__custom__' ? '' : 'none';
-    }
-
-    rebuildModels(providerSel.value, model || '');
-    providerSel.onchange = () => {
-      rebuildModels(providerSel.value, '');
-      if (_sessionCli === 'codex' && !providerSel.value) subProviderSel.value = '';
-      refreshSubUI();
-    };
-    modelSel.onchange = () => { syncCustom(); if (modelSel.value === '__custom__') custom.focus(); };
-
-    const close = (r) => { overlay.remove(); resolve(r); };
-    box.querySelector('#ai-ok').onclick = () => {
-      const pickedModel = modelSel.value === '__custom__' ? custom.value.trim() : modelSel.value;
-      const subPid = subProviderSel.value;
-      const subModel = subPid ? (subModelSel.value === '__custom__' ? subCustom.value.trim() : subModelSel.value) : '';
-      close({
-        provider: providerSel.value,
-        model: pickedModel,
-        effort: effortSel.value,
-        agent: (_sessionCli === 'claude' || _sessionCli === 'opencode') ? agentInput.value.trim() : null,
-        subagent: (_sessionCli === 'claude' || _sessionCli === 'codex') && subPid && subModel
-          ? { providerId: subPid, model: subModel }
-          : null,
-      });
-    };
-    box.querySelector('#ai-cancel').onclick = () => close(null);
-    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
-  });
-}
-
 async function loadSessionModel() {
   if (!_sessionName) return;
   try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`));
-    if (!res.ok) return;
-    const info = await res.json();
+    const info = await window.MultiCCChatAiConfig.loadSession(_sessionName);
     // Role prompt applies to every cli; load it first, then the claude-only model.
     _sessionRole = info.rolePrompt || '';
     updateRoleBtn();
@@ -3407,19 +3124,13 @@ modelBtn?.addEventListener('click', async () => {
   });
   if (picked === null) return;
   try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: picked.provider,
-        model: picked.model,
-        effort: picked.effort,
-        ...((_sessionCli === 'claude' || _sessionCli === 'opencode') ? { agent: picked.agent } : {}),
-        ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
-      }),
+    const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, {
+      provider: picked.provider,
+      model: picked.model,
+      effort: picked.effort,
+      ...((_sessionCli === 'claude' || _sessionCli === 'opencode') ? { agent: picked.agent } : {}),
+      ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
     });
-    const data = await res.json();
-    if (!res.ok) { addSystemMsg('AI 配置保存失败：' + (data.error || `HTTP ${res.status}`)); return; }
     _sessionProvider = data.provider || '';
     _sessionSubagent = data.subagent || null;
     _sessionAgent = data.agent || '';
@@ -3442,13 +3153,7 @@ effortBtn?.addEventListener('click', async () => {
   const picked = await showEffortPicker(_sessionEffectiveEffort || _sessionEffort || defaultEffortForCurrentCli());
   if (picked === null) return;
   try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ effort: picked }),
-    });
-    const data = await res.json();
-    if (!res.ok) { addSystemMsg('努力程度切换失败：' + (data.error || `HTTP ${res.status}`)); return; }
+    const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, { effort: picked });
     _sessionEffort = data.effort || '';
     _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
     updateEffortBtn();
@@ -3494,13 +3199,11 @@ function applyCliSwitchState(info) {
 }
 
 function effectiveProviderIdForChoices(providerId) {
-  return providerId || _providerDefaults[_sessionCli] || '';
+  return window.MultiCCChatAiConfig.effectiveProviderId(providerId, chatAiConfigState());
 }
 
 function providerShortName(id) {
-  if (!id) return tt('default');
-  const p = _providerList.find(o => o.id === id);
-  return p ? p.name : (_sessionProviderDisplayName || id.slice(0, 8));
+  return window.MultiCCChatAiConfig.providerShortName(id, chatAiConfigState());
 }
 
 function updateProviderBtn() {
@@ -3509,91 +3212,28 @@ function updateProviderBtn() {
   updateModelBtn();
 }
 
-// 轻量 loading 遮罩：异步操作期间提示「加载中」，返回关闭函数。
 function showLoadingOverlay(text) {
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10001;display:flex;align-items:center;justify-content:center;';
-  const box = document.createElement('div');
-  box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px 22px;color:#c9d1d9;font-size:13px;display:flex;align-items:center;gap:10px;';
-  const spin = document.createElement('span');
-  spin.style.cssText = 'width:14px;height:14px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;display:inline-block;animation:multiccSpin .8s linear infinite;';
-  box.appendChild(spin);
-  box.appendChild(document.createTextNode(text || '加载中…'));
-  overlay.appendChild(box);
-  // 旋转动画样式仅注入一次
-  if (!document.getElementById('multicc-spin-style')) {
-    const st = document.createElement('style');
-    st.id = 'multicc-spin-style';
-    st.textContent = '@keyframes multiccSpin{to{transform:rotate(360deg)}}';
-    document.head.appendChild(st);
-  }
-  document.body.appendChild(overlay);
-  return () => overlay.remove();
+  return window.MultiCCChatAiConfig.showLoadingOverlay(text, { document });
 }
 
 async function ensureProviderList(appType, opts) {
-  // 不缓存：每次都重新拉取，保证 provider 列表始终最新。用户主动打开的选择窗
-  // 传入 { loading: true }，fetch 期间显示 loading 遮罩，避免点了没反应的卡顿感。
   const closeLoading = opts && opts.loading ? showLoadingOverlay('加载 Provider 列表…') : null;
   try {
-    const res = await fetch(withToken(`/api/providers?appType=${encodeURIComponent(appType)}`));
-    if (!res.ok) return [];
-    const d = await res.json();
-    _providerList = d.providers || [];
-    _providerDefaults = d.defaults || _providerDefaults;
+    const loaded = await window.MultiCCChatAiConfig.loadProviderList(appType);
+    _providerList = Array.from(loaded.providers || []);
+    _providerDefaults = loaded.defaults || _providerDefaults;
     return _providerList;
-  } catch (_) { return []; }
-  finally { if (closeLoading) closeLoading(); }
+  } catch (_) {
+    return [];
+  } finally {
+    if (closeLoading) closeLoading();
+  }
 }
 
 function showProviderPicker(current, list) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:400px;max-width:94vw;';
-    const msg = document.createElement('div');
-    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;margin-bottom:12px;';
-    msg.textContent = tt('providerTitle');
-    box.appendChild(msg);
-
-    const select = document.createElement('select');
-    select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;';
-    const optDef = document.createElement('option');
-    optDef.value = ''; optDef.textContent = tt('providerDefault');
-    select.appendChild(optDef);
-    for (const p of list) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name + (p.isOfficial ? ' · 订阅' : (p.baseUrl ? ' · ' + p.baseUrl.replace(/^https?:\/\//, '') : '')) + (p.model ? ' · ' + p.model : '');
-      select.appendChild(opt);
-    }
-    select.value = current || '';
-    box.appendChild(select);
-    if (!list.length) {
-      const empty = document.createElement('div');
-      empty.style.cssText = 'font-size:12px;color:#8b949e;margin-bottom:12px;';
-      empty.textContent = tt('providerEmpty');
-      box.appendChild(empty);
-    }
-
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
-    const cancel = document.createElement('button');
-    cancel.textContent = tt('cancel');
-    cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;';
-    const ok = document.createElement('button');
-    ok.textContent = tt('save');
-    ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;';
-    row.appendChild(cancel); row.appendChild(ok);
-    box.appendChild(row);
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    const close = (result) => { overlay.remove(); resolve(result); };
-    ok.onclick = () => close({ value: select.value });
-    cancel.onclick = () => close(null);
-    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+  return window.MultiCCChatAiConfig.showProviderPicker(current, list, {
+    document,
+    translate: tt,
   });
 }
 
@@ -3602,13 +3242,7 @@ providerBtn?.addEventListener('click', async () => {
   const picked = await showProviderPicker(_sessionProvider, list);
   if (picked === null) return;
   try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: picked.value }),
-    });
-    const data = await res.json();
-    if (!res.ok) { addSystemMsg('Provider 切换失败：' + (data.error || `HTTP ${res.status}`)); return; }
+    const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, { provider: picked.value });
     _sessionProvider = data.provider || '';
     _sessionModel = data.model || '';
     _sessionEffectiveModel = data.effectiveModel || data.model || '';
