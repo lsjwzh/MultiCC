@@ -291,8 +291,32 @@ function createStreamingSession(opts, cb) {
   let closed = false;
   let emittedAny = false;
   let pending = new Float32Array(0);        // < windowSize remainder
-  let sessionBuf = [];                       // full-session fallback copy
+  let sessionChunks = [];                    // full-session copy (padding + fallback)
   let sessionLen = 0;
+
+  // Copy [begin, end) out of the session chunk list. Used to re-extract VAD
+  // segments with pre/post padding: silero clips the first phoneme at speech
+  // onset ("开放时间" → "派饭时间"), so decoding the raw segment loses accuracy.
+  const sliceSession = (begin, end) => {
+    begin = Math.max(0, begin); end = Math.min(end, sessionLen);
+    if (end <= begin) return null;
+    const out = new Float32Array(end - begin);
+    let base = 0, w = 0;
+    for (const c of sessionChunks) {
+      if (base >= end) break;
+      if (base + c.length > begin) {
+        const from = Math.max(begin - base, 0);
+        const to = Math.min(end - base, c.length);
+        out.set(c.subarray(from, to), w); w += to - from;
+      }
+      base += c.length;
+    }
+    return out;
+  };
+
+  // 0.24s each side: covers onset clipping while staying inside the ≥0.25s
+  // silence gap VAD guarantees between segments (no cross-segment bleed).
+  const PAD = Math.floor(16000 * 0.24);
 
   const feedWindows = (f32) => {
     // silero requires exact windowSize chunks
@@ -315,8 +339,13 @@ function createStreamingSession(opts, cb) {
       const seg = vad.front();
       vad.pop();
       if (!seg || !seg.samples || !seg.samples.length) continue;
+      let samples = seg.samples;
+      if (typeof seg.start === 'number' && seg.start + samples.length <= sessionLen) {
+        const padded = sliceSession(seg.start - PAD, seg.start + samples.length + PAD);
+        if (padded) samples = padded;
+      }
       try {
-        const { text } = transcribeFloat32(seg.samples, 16000);
+        const { text } = transcribeFloat32(samples, 16000);
         if (text) { emittedAny = true; cb.onFinal(text); }
       } catch (e) { cb.onError(`本地转写失败: ${e.message}`); }
     }
@@ -328,7 +357,7 @@ function createStreamingSession(opts, cb) {
     pushAudio(int16) {
       if (closed) return;
       const f32 = int16ToFloat32(int16);
-      if (sessionLen < MAX_SESSION_SAMPLES) { sessionBuf.push(f32); sessionLen += f32.length; }
+      if (sessionLen < MAX_SESSION_SAMPLES) { sessionChunks.push(f32); sessionLen += f32.length; }
       try { feedWindows(f32); drainSegments(); } catch (e) { cb.onError(e.message); }
     },
     finish() {
@@ -340,19 +369,17 @@ function createStreamingSession(opts, cb) {
         if (!emittedAny && sessionLen > 16000 * 0.3) {
           // VAD never closed a segment (very short utterance / low energy) —
           // decode the whole session buffer as a last resort.
-          const all = new Float32Array(sessionLen);
-          let off = 0;
-          for (const c of sessionBuf) { all.set(c, off); off += c.length; }
+          const all = sliceSession(0, sessionLen);
           const { text } = transcribeFloat32(all, 16000);
           if (text) cb.onFinal(text);
         }
       } catch (e) { cb.onError(e.message); }
-      sessionBuf = []; sessionLen = 0;
+      sessionChunks = []; sessionLen = 0;
       cb.onDone();
     },
     close() {
       closed = true;
-      sessionBuf = []; sessionLen = 0;
+      sessionChunks = []; sessionLen = 0;
     },
   };
 }
