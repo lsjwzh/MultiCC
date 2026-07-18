@@ -6,6 +6,8 @@ let _focusedSessionId = null;
 const _urlToken = new URLSearchParams(location.search).get('token');
 function tokenQS(_prefix) { return ''; }
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
+const providerApi = window.MultiCCApi;
+const providerCatalog = window.MultiCCProviderCatalog;
 const NOTIFY_EXISTING_SESSIONS_MIGRATION_KEY = 'multicc_notify_existing_sessions_opened_20260629';
 
 // Directory/card grid template — phone screens get a single minmax(0,1fr) column
@@ -2009,7 +2011,7 @@ async function deleteDirectory(id) {
 // or null. Alias-mapped relays declare one wire model per Claude tier.
 function providerAliasMap(providerId) {
   if (!providerId) return null;
-  const p = (_providerData.providers || []).find(o => o.id === providerId);
+  const p = providerCatalog.findProvider(_providerData, '', providerId);
   return p && p.aliasMap && Object.keys(p.aliasMap).length ? p.aliasMap : null;
 }
 
@@ -2132,12 +2134,11 @@ async function newSessionInDir(dirId, cli, kind) {
   let defaultProviderId = '';
   try {
     const appType = cli === 'codex' ? 'codex' : 'claude';
-    const pres = await fetch(`/api/providers?appType=${appType}${tokenQS('&')}`);
-    if (pres.ok) {
-      const data = await pres.json();
-      providers = data.providers || [];
-      defaultProviderId = (data.defaults && data.defaults[appType]) || '';
-    }
+    const data = providerCatalog.normalizeCatalog(
+      await providerApi.json(`/api/providers?appType=${encodeURIComponent(appType)}`),
+    );
+    providers = providerCatalog.groupByAppType(data)[appType];
+    defaultProviderId = data.defaults[appType] || '';
   } catch (_) {}
 
   const result = await showCreateSessionDialog({
@@ -2258,7 +2259,7 @@ function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProvid
   const prev = modelSelect.value;
   modelSelect.innerHTML = '';
   const effectiveProviderId = selectedProviderId || defaultProviderId || '';
-  const prov = providers.find(p => p.id === effectiveProviderId);
+  const prov = providerCatalog.findProvider(providers, '', effectiveProviderId);
   // Alias-mapped relays: offer the tiers directly, each option reading
   // "opus · GLM5.2 · glm-5.2". The tier key is the value — the server honors
   // session.model === opus/sonnet/haiku/fable as a wire model. Tier order +
@@ -2267,8 +2268,8 @@ function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProvid
   let opts;
   if (tiers.length) {
     opts = tiers.map(([t, m]) => ({ value: t, label: formatAliasTierLabel(t, m) }));
-  } else if (prov && prov.modelOptions && prov.modelOptions.length) {
-    opts = prov.modelOptions.map(m => ({ value: m, label: m }));
+  } else if (prov && providerCatalog.modelsFor(prov).length) {
+    opts = providerCatalog.modelsFor(prov).map(m => ({ value: m, label: m }));
   } else {
     opts = isClaude ? CLAUDE_MODEL_OPTIONS : [];
   }
@@ -5924,10 +5925,7 @@ const PROVIDER_PRESETS = [
 ];
 
 function providerModelList(primary, raw) {
-  const seen = new Set();
-  return [primary, ...(raw || '').split(/[\n,]/)]
-    .map(s => String(s || '').trim())
-    .filter(s => s && !seen.has(s) && seen.add(s));
+  return providerCatalog.normalizeModelOptions(raw, primary);
 }
 
 function syncNewProviderProxyVisibility() {
@@ -6008,11 +6006,14 @@ syncNewProviderProxyVisibility();
 
 async function loadProviders() {
   try {
-    const res = await fetch('/api/providers' + tokenQS('?'));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _providerData = await res.json();
+    _providerData = providerCatalog.normalizeCatalog(await providerApi.json('/api/providers'));
   } catch (_) {
-    _providerData = { available: true, ccSwitchAvailable: false, providers: [], defaults: { claude: null, codex: null } };
+    _providerData = providerCatalog.normalizeCatalog({
+      available: true,
+      ccSwitchAvailable: false,
+      providers: [],
+      defaults: { claude: null, codex: null },
+    });
   }
   // cc-switch only gates the import button, not the store itself. A database
   // file alone is insufficient: better-sqlite3 loads its native addon lazily,
@@ -6204,9 +6205,7 @@ function renderByRoleCard() {
 async function importProviders() {
   const status = document.getElementById('prov-import-status');
   try {
-    const res = await fetch('/api/providers/import' + tokenQS('?'), { method: 'POST' });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    const d = await providerApi.json('/api/providers/import', { method: 'POST' });
     if (status) { status.textContent = `已导入 ${d.imported} 个、刷新 ${d.updated} 个`; status.className = 'status-text ok'; }
     showToast(`从 cc-switch 同步：新增 ${d.imported}、刷新 ${d.updated}（共 ${d.total}）`);
     loadProviders();
@@ -6224,10 +6223,11 @@ function providerLabel(p) {
 }
 
 function renderProviderDefaults() {
+  const groups = providerCatalog.groupByAppType(_providerData);
   for (const cli of ['claude', 'codex']) {
     const sel = document.getElementById('prov-default-' + cli);
     if (!sel) continue;
-    const list = _providerData.providers.filter(p => p.appType === cli);
+    const list = groups[cli];
     const cur = _providerData.defaults[cli] || '';
     sel.innerHTML = '<option value="">默认登录 / 订阅（不覆盖）</option>' +
       list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(providerLabel(p))}</option>`).join('');
@@ -6303,9 +6303,8 @@ function renderProviderList() {
       <div style="display:flex;flex-direction:column;gap:8px;">${providers.map(cardHtml).join('')}</div>
     </div>`;
   };
-  const claudeProvs = _providerData.providers.filter(p => p.appType !== 'codex');
-  const codexProvs = _providerData.providers.filter(p => p.appType === 'codex');
-  box.innerHTML = groupHtml('Claude', '🤖', claudeProvs) + groupHtml('Codex', '⚡', codexProvs);
+  const groups = providerCatalog.groupByAppType(_providerData);
+  box.innerHTML = groupHtml('Claude', '🤖', groups.claude) + groupHtml('Codex', '⚡', groups.codex);
 }
 
 // ── Provider speed-test ──────────────────────────────────────────────
@@ -6314,11 +6313,12 @@ let _providerLatency = {};
 async function speedTestProvider(appType, id, btn) {
   if (btn) { btn.textContent = '测速中…'; btn.disabled = true; }
   try {
-    const res = await fetch('/api/providers/' + encodeURIComponent(appType) + '/' + encodeURIComponent(id) + '/speedtest' + tokenQS('?'), { method: 'POST' });
-    const d = await res.json();
-    _providerLatency[id] = d;
+    _providerLatency[id] = await providerApi.json(
+      '/api/providers/' + encodeURIComponent(appType) + '/' + encodeURIComponent(id) + '/speedtest',
+      { method: 'POST' },
+    );
   } catch (e) {
-    _providerLatency[id] = { ok: false, ms: 0, error: e.message };
+    _providerLatency[id] = { ok: false, ms: 0, status: e.status || 0, error: e.message };
   }
   if (btn) { btn.textContent = '测速'; btn.disabled = false; }
   renderProviderList();
@@ -6333,11 +6333,12 @@ async function speedTestGroup(btn, idList) {
     const [appType, id] = s.split('|');
     return (async () => {
       try {
-        const res = await fetch('/api/providers/' + encodeURIComponent(appType) + '/' + encodeURIComponent(id) + '/speedtest' + tokenQS('?'), { method: 'POST' });
-        const d = await res.json();
-        _providerLatency[id] = d;
+        _providerLatency[id] = await providerApi.json(
+          '/api/providers/' + encodeURIComponent(appType) + '/' + encodeURIComponent(id) + '/speedtest',
+          { method: 'POST' },
+        );
       } catch (e) {
-        _providerLatency[id] = { ok: false, ms: 0, error: e.message };
+        _providerLatency[id] = { ok: false, ms: 0, status: e.status || 0, error: e.message };
       }
     })();
   }));
@@ -6352,12 +6353,8 @@ async function saveProviderDefaults() {
     codex: document.getElementById('prov-default-codex').value || '',
   };
   try {
-    const res = await fetch('/api/provider-defaults' + tokenQS('?'), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
-    _providerData.defaults = d.defaults;
+    const d = await providerApi.json('/api/provider-defaults', { method: 'PUT', json: body });
+    _providerData = { ..._providerData, defaults: providerCatalog.normalizeDefaults(d.defaults) };
     if (status) { status.textContent = 'Saved'; status.className = 'status-text ok'; }
     showToast('全局默认 provider 已保存');
   } catch (err) {
@@ -6379,11 +6376,7 @@ async function createProvider() {
   if (body.appType === 'claude') body.aliasMap = readAliasMapFields('prov-new-alias');
   if (!body.name) { if (status) { status.textContent = '名称必填'; status.className = 'status-text err'; } return; }
   try {
-    const res = await fetch('/api/providers' + tokenQS('?'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    await providerApi.json('/api/providers', { method: 'POST', json: body });
     if (status) { status.textContent = 'Created'; status.className = 'status-text ok'; }
     showToast('Provider 已创建：' + body.name);
     document.getElementById('prov-new-name').value = '';
@@ -6402,7 +6395,7 @@ async function createProvider() {
 }
 
 function editProvider(appType, id) {
-  const p = _providerData.providers.find(x => x.appType === appType && x.id === id);
+  const p = providerCatalog.findProvider(_providerData, appType, id);
   if (!p) return;
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -6481,11 +6474,9 @@ function editProvider(appType, id) {
     if (tok) body.authToken = tok;  // blank = keep existing
     const st = overlay.querySelector('#ep-status');
     try {
-      const res = await fetch(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}` + tokenQS('?'), {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}`, {
+        method: 'PATCH', json: body,
       });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
       showToast('Provider 已更新');
       close();
       loadProviders();
@@ -6496,13 +6487,16 @@ function editProvider(appType, id) {
 async function deleteProvider(appType, id, name) {
   if (!confirm(tt('providerDeleteLocalConfirm', { name }))) return;
   try {
-    const res = await fetch(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
-    const d = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
     showToast('已删除：' + name);
     loadProviders();
   } catch (err) {
-    showToast('删除失败：' + err.message);
+    const refs = providerCatalog.deleteReferenceDisplayData(err);
+    const refText = refs.items.map((item) => {
+      const kind = { main: '主会话', subagent: '子 Agent', default: '默认 Provider', aux: 'Aux' }[item.kind] || item.kind;
+      return `${kind} ${item.title}`;
+    }).join('、');
+    showToast('删除失败：' + err.message + (refText ? `（仍被引用：${refText}）` : ''));
   }
 }
 
