@@ -1,14 +1,14 @@
 'use strict';
 
-// Durable, single-file state for orchestration waits and their delivery
-// outbox.  Keeping both collections in one snapshot is deliberate: resolving
-// a wait and admitting the matching outbox item can commit with one atomic
-// rename, so a process crash cannot leave only one side visible.
+// Durable, single-file state for waits, operations, observed CLI tasks and
+// their delivery outbox. Keeping every collection in one snapshot is
+// deliberate: a state transition and its matching delivery can commit with one
+// atomic rename, so a process crash cannot leave only one side visible.
 
 const nodeFs = require('fs');
 const nodePath = require('path');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 let tempCounter = 0;
 
 class OrchestrationStoreCorruptError extends Error {
@@ -28,6 +28,8 @@ function initialState() {
     nextOutboxSequence: 1,
     waits: {},
     outbox: {},
+    operations: {},
+    tasks: {},
   };
 }
 
@@ -35,7 +37,21 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function validateState(value, file) {
+function migrateState(value) {
+  if (!isRecord(value)) return value;
+  if (value.schemaVersion === 1) {
+    return {
+      ...value,
+      schemaVersion: SCHEMA_VERSION,
+      operations: {},
+      tasks: {},
+    };
+  }
+  return value;
+}
+
+function validateState(input, file) {
+  const value = migrateState(input);
   if (!isRecord(value) || value.schemaVersion !== SCHEMA_VERSION) {
     throw new OrchestrationStoreCorruptError(
       `unsupported orchestration state in ${file}`,
@@ -51,7 +67,9 @@ function validateState(value, file) {
   if (!Number.isSafeInteger(value.nextOutboxSequence)
       || value.nextOutboxSequence < 1
       || !isRecord(value.waits)
-      || !isRecord(value.outbox)) {
+      || !isRecord(value.outbox)
+      || !isRecord(value.operations)
+      || !isRecord(value.tasks)) {
     throw new OrchestrationStoreCorruptError(
       `invalid orchestration collections in ${file}`,
       { file },
