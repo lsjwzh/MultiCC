@@ -157,6 +157,7 @@ stateStore.setFailureReporter((error, meta) => {
 const networkPolicy = resolveNetworkPolicy(process.env);
 const app = express();
 app.locals.observability = observability;
+let _shuttingDown = false;
 
 // ── Access token authentication (cookie-based login) ──
 // `let` (not const): editable at runtime via /api/settings/access-token from
@@ -222,6 +223,19 @@ function isAuthenticated(req) {
 // requestId middleware runs first so every subsequent handler + error response
 // can be correlated with a log line. It's cheap (8 hex chars) and always safe.
 app.use(requestIdMiddleware);
+// Once shutdown starts, fail every API mutation/request before authentication
+// or route code can enqueue new work. Health/readiness live outside /api and
+// remain available so process managers can observe the transition.
+app.use('/api', (req, res, next) => {
+  if (!_shuttingDown) return next();
+  res.set('Retry-After', '1');
+  return res.status(503).json(createErrorDto({
+    code: 'SERVER_SHUTTING_DOWN',
+    message: 'server is shutting down',
+    requestId: req.id,
+    correlationId: req.correlationId,
+  }));
+});
 {
   // Login page & handler
   app.get('/login', (req, res) => {
@@ -6361,6 +6375,11 @@ const auxQueue = {
   },
 
   enqueue(task) {
+    if (_shuttingDown) {
+      const error = new Error('server is shutting down');
+      error.code = 'SERVER_SHUTTING_DOWN';
+      return Promise.reject(error);
+    }
     return new Promise((resolve, reject) => {
       task.id = task.id || crypto.randomUUID();
       task.ts = Date.now();
@@ -10241,6 +10260,10 @@ function runChatTurn(sessionName, text, opts = {}) {
   if (!clientMsgId) clientMsgId = deliveryId;
   text = String(text || '').trim();
   if (!text) return false;
+  if (_shuttingDown) {
+    logger.warn('chat_turn_rejected_shutdown', { sessionId: sessionName });
+    return false;
+  }
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
@@ -11567,6 +11590,10 @@ function handleChatWs(ws, req, urlObj) {
 
 // ── WebSocket connections ──
 wss.on('connection', async (ws, req) => {
+  if (_shuttingDown) {
+    ws.close(1012, 'server shutting down');
+    return;
+  }
   const urlObj = new URL(req.url, 'http://localhost');
   installWsBackpressure(ws, {
     onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
@@ -11953,6 +11980,7 @@ function buildFileWatchers(sessionId, persisted) {
     return;
   }
   const debouncers = new Map();
+  watcher._multiccDebouncers = debouncers;
   const onChange = (full) => {
     const rel = path.relative(root, full).split(path.sep).join('/');
     for (const t of triggers) {
@@ -11986,7 +12014,14 @@ function buildCronTasks(sessionId, persisted) {
 
 function teardownTriggers(sessionId) {
   const w = triggerWatchers.get(sessionId);
-  if (w) { try { w.close(); } catch (_) {} triggerWatchers.delete(sessionId); }
+  if (w) {
+    if (w._multiccDebouncers) {
+      for (const timer of w._multiccDebouncers.values()) clearTimeout(timer);
+      w._multiccDebouncers.clear();
+    }
+    try { w.close(); } catch (_) {}
+    triggerWatchers.delete(sessionId);
+  }
   const tasks = triggerCronTasks.get(sessionId);
   if (tasks) { for (const t of tasks) { try { t.stop(); } catch (_) {} } triggerCronTasks.delete(sessionId); }
 }
@@ -12257,8 +12292,11 @@ tunnel.init();
 //      as the various subsystems come up).
 // PM2's kill_timeout in ecosystem.config.js is set greater than the grace so
 // PM2 doesn't cut off partial-checkpoint mid-flight.
-let _shuttingDown = false;
 function flushInFlightChats() {
+  // Prevent a delayed interim write from landing after the shutdown partial
+  // checkpoint and recreating a trailing duplicate message.
+  for (const timer of _incrSaveTimers.values()) clearTimeout(timer);
+  _incrSaveTimers.clear();
   let n = 0;
   for (const [name, cs] of chatSessions) {
     if (!cs || cs._resultSaved) continue;
@@ -12282,6 +12320,97 @@ function flushInFlightChats() {
 }
 const SHUTDOWN_GRACE_MS = 60000;   // max time to let in-flight turns finish
 const shutdownCoordinator = createShutdownCoordinator({ logger: console });
+const serviceTimers = new Set();
+
+function trackServiceTimer(timer) {
+  if (!timer) return timer;
+  serviceTimers.add(timer);
+  if (typeof timer.unref === 'function') timer.unref();
+  return timer;
+}
+
+function clearServiceTimers() {
+  for (const timer of serviceTimers) {
+    clearTimeout(timer);
+    clearInterval(timer);
+  }
+  serviceTimers.clear();
+}
+
+async function quiesceRuntimeSources() {
+  serviceReady = false;
+  try { waitInjector.stop(); } catch (_) {}
+  try { cronTasks.stop(); } catch (_) {}
+  try { tunnel.stop(); } catch (_) {}
+  try { stopNetworkProbe(); } catch (_) {}
+  try { if (typeof skillConv.stop === 'function') skillConv.stop(); } catch (_) {}
+  clearServiceTimers();
+
+  for (const timer of _deferredFire.values()) clearTimeout(timer);
+  _deferredFire.clear();
+  for (const sessionId of [...new Set([...triggerWatchers.keys(), ...triggerCronTasks.keys()])]) {
+    try { teardownTriggers(sessionId); } catch (_) {}
+  }
+  if (_skillsSyncWatcher) {
+    const watcher = _skillsSyncWatcher;
+    _skillsSyncWatcher = null;
+    try { await watcher.close(); } catch (_) {}
+  }
+}
+
+async function stopBridgeRuntime() {
+  const bridges = [wechatBridge, feishuBridge, telegramBridge, discordBridge, slackBridge];
+  await Promise.allSettled(bridges.map(bridge => {
+    if (!bridge || typeof bridge.stopBridge !== 'function') return undefined;
+    return bridge.stopBridge();
+  }));
+}
+
+function closeWebSocketRuntime() {
+  return new Promise(resolve => {
+    try {
+      for (const client of wss.clients) {
+        try { client.close(1012, 'server restarting'); } catch (_) {}
+        try { client.terminate(); } catch (_) {}
+      }
+      wss.close(() => resolve());
+      const fallback = setTimeout(resolve, 1000);
+      if (fallback.unref) fallback.unref();
+    } catch (_) { resolve(); }
+  });
+}
+
+async function closeSessionRuntime() {
+  for (const [name, cs] of chatSessions) {
+    try { cancelClassify(cs); } catch (_) {}
+    try { chatStream.close(name); } catch (_) {}
+    if (cs && cs.claudeProc) {
+      try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
+      cs.claudeProc = null;
+    }
+    if (cs && cs.clients) cs.clients.clear();
+  }
+
+  const captures = [];
+  for (const [id, session] of sessions) {
+    sessions.delete(id); // prevents onStreamEnd from re-opening the FIFO
+    if (session.captureTimer) clearInterval(session.captureTimer);
+    if (session.exitCheckTimer) clearInterval(session.exitCheckTimer);
+    if (session._statusIdleTimer) clearTimeout(session._statusIdleTimer);
+    try { cleanupPushMonitor(id); } catch (_) {}
+    captures.push(Promise.resolve(stopOutputCapture(session)).catch(() => {}));
+  }
+  await Promise.allSettled(captures);
+}
+
+function stopAuxQueue() {
+  const error = Object.assign(new Error('server is shutting down'), { code: 'SERVER_SHUTTING_DOWN' });
+  for (const task of auxQueue.queue.splice(0)) {
+    task.cancelled = true;
+    try { task.reject(error); } catch (_) {}
+  }
+  if (auxQueue.currentTask) auxQueue.currentTask.cancelled = true;
+}
 
 // Bridge legacy _shuttingDown flag callers still consult (e.g. the restart
 // endpoint) to the coordinator's readiness bit. They stay wire-compatible.
@@ -12298,6 +12427,9 @@ shutdownCoordinator.onCheckpoint(() => {
   // uncaught shutdown failure.
   savePersistedSessionsBestEffort('teardown.checkpoint');
 });
+// Stop every source of NEW work before drain. Existing turns are left alive and
+// may still complete naturally during the grace window.
+shutdownCoordinator.onCheckpoint(() => quiesceRuntimeSources());
 
 // Drain: give live turns time to reach their natural `result` event so their
 // FULL assistant message is persisted (not a half-written partial). Two kinds
@@ -12312,8 +12444,9 @@ shutdownCoordinator.onDrain(async ({ graceMs }) => {
   for (const [name, cs] of chatSessions) {
     if (cs && (cs.claudeProc || isStreamingBusy(name, cs))) draining.add(name);
   }
-  if (draining.size === 0) return;
-  console.log(`[multicc] shutdown → draining ${draining.size} in-flight turn(s) (grace ${graceMs}ms)`);
+  const auxBusy = () => !!(auxQueue.processing || auxQueue.queue.length);
+  if (draining.size === 0 && !auxBusy()) return;
+  console.log(`[multicc] shutdown → draining ${draining.size} chat turn(s)${auxBusy() ? ' + aux queue' : ''} (grace ${graceMs}ms)`);
   const t0 = Date.now();
   await new Promise(resolve => {
     const timer = setInterval(() => {
@@ -12321,7 +12454,7 @@ shutdownCoordinator.onDrain(async ({ graceMs }) => {
         const cs = chatSessions.get(name);
         if (!cs || (!cs.claudeProc && !isStreamingBusy(name, cs))) draining.delete(name);
       }
-      if (draining.size === 0) { clearInterval(timer); resolve(); }
+      if (draining.size === 0 && !auxBusy()) { clearInterval(timer); resolve(); }
       else if (Date.now() - t0 > graceMs) { clearInterval(timer); resolve(); }
     }, 300);
   });
@@ -12349,6 +12482,13 @@ shutdownCoordinator.onClose(() => new Promise(resolve => {
   } catch (_) { resolve(); }
 }));
 
+shutdownCoordinator.onClose(() => stopBridgeRuntime());
+shutdownCoordinator.onClose(() => closeWebSocketRuntime());
+shutdownCoordinator.onClose(async () => {
+  stopAuxQueue();
+  await closeSessionRuntime();
+});
+
 // Stop orchestration after HTTP has stopped accepting callbacks.  Awaiting the
 // serialized worker/store tail guarantees no lease mutation is left half-run.
 shutdownCoordinator.onClose(() => orchestrationRuntime ? orchestrationRuntime.stop() : undefined);
@@ -12356,13 +12496,6 @@ shutdownCoordinator.onClose(() => sessionPersistence.stop());
 
 function gracefulShutdown(sig) {
   if (_shuttingDown) return;
-  // Ignore SIGTERM by default to prevent accidental shutdowns from arbitrary
-  // `kill` invocations. `./multicc stop` sends SIGINT explicitly, and the
-  // coordinator handles both signals uniformly when SIGTERM is not swallowed.
-  if (sig === 'SIGTERM') {
-    console.log('[multicc] SIGTERM ignored. Use ./multicc stop to stop.');
-    return;
-  }
   _shuttingDown = true;
   shutdownCoordinator.shutdown({ reason: sig, graceMs: SHUTDOWN_GRACE_MS, exitCode: 0 })
     .catch(e => { console.error(`[multicc] shutdown driver error: ${e && e.message}`); process.exit(1); });
@@ -12410,21 +12543,21 @@ app.use(safeErrorHandler(logger));
     syncSharedSkills();                             // forward sync: agents → all providers (records providers)
     _recordSkillSyncResult({ bundledInstallCount: _bundled, reverseImportCount: (_rev || []).length });
     watchSharedSkills();                            // real-time chokidar watch on ~/.agents/skills
-    setInterval(() => {
+    trackServiceTimer(setInterval(() => {
       const rev = skillConv.importAllProviderSkills(); // periodic reverse import
       syncSharedSkills();                           // periodic forward sync (records providers)
       _recordSkillSyncResult({ reverseImportCount: (rev || []).length });
-    }, 5 * 60 * 1000).unref();
+    }, 5 * 60 * 1000));
     reconcileAllTriggers();
     // Periodic scan: re-judge non-terminal/junk sessions every minute. First
     // tick delayed 6s so aux warms up and WS clients reconnect. Replaces the
     // old one-shot startup reconcile - restart just means the first tick runs.
-    setTimeout(() => scanAndReclassify(), 6000);
-    setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS).unref();
+    trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
+    trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
     artifacts.cleanup();
-    setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000).unref();
+    trackServiceTimer(setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000));
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
-    setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS).unref();
+    trackServiceTimer(setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS));
     serviceReady = true;
   });
 })();

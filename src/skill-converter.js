@@ -230,6 +230,17 @@ function requestAiConvert(skillName, targetProvider) {
   }
 }
 
+// Process lifecycle hook. Conversion requests are rediscovered by the normal
+// startup skill scan, so cancelling an un-fired debounce batch on shutdown is
+// safer than letting it spawn new detached work while the server is draining.
+function stop() {
+  if (_aiConvertTimer) {
+    clearTimeout(_aiConvertTimer);
+    _aiConvertTimer = null;
+  }
+  _aiConvertQueue = [];
+}
+
 function buildAiConvertPrompt(skillName, targetProvider) {
   const sourceDir = path.join(AGENTS_ROOT, skillName);
   const sourceFile = path.join(sourceDir, 'SKILL.md');
@@ -600,6 +611,7 @@ module.exports = {
   getLinkTarget,
   onAiConvertNeeded,
   requestAiConvert,
+  stop,
   conversionStatus,
   getAiQueueStatus,
   // Reverse conversion
