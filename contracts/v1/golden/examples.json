@@ -38,6 +38,37 @@
       }
     },
     {
+      "name": "workspace response",
+      "schema": "workspace-response.schema.json",
+      "value": {
+        "apiVersion": "v1",
+        "requestId": "request-workspace",
+        "correlationId": "correlation-workspace",
+        "workspace": {
+          "directory": { "id": "directory-1", "label": "Workspace" },
+          "sessions": [{
+            "session": {
+              "id": "session-1", "dirId": "directory-1", "type": "session",
+              "cli": "codex", "kind": "chat", "label": "Contract work",
+              "model": "gpt-5.1-codex", "effectiveModel": "gpt-5.1-codex",
+              "effort": "high", "effectiveEffort": "high", "agent": null,
+              "provider": "provider-1", "subagent": null, "autoCommit": false,
+              "autoDispatch": true, "createdAt": "2026-07-18T00:00:00.000Z",
+              "lastActivity": "2026-07-18T00:01:00.000Z", "clients": 1,
+              "active": true,
+              "mergeState": { "ahead": 1, "behind": 0, "dirty": false, "mergeReady": true, "rebaseInProgress": false }
+            },
+            "status": "running", "statusUpdatedAt": "2026-07-18T00:01:00.000Z",
+            "runStartedAt": "2026-07-18T00:00:30.000Z", "runEndedAt": null,
+            "pendingNotes": 0, "summary": "Running contract tests",
+            "summaryAt": "2026-07-18T00:00:50.000Z", "classifyState": "P",
+            "goal": "Keep contracts stable", "phase": "testing"
+          }],
+          "count": 1
+        }
+      }
+    },
+    {
       "name": "provider",
       "schema": "provider.schema.json",
       "value": {

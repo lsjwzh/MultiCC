@@ -112,6 +112,24 @@ function cleanup() {
   ok(response.data.pendingCliHandoff?.status === 'pending', 'handoff remains pending before target reply');
   ok(!JSON.stringify(response.data).includes('transcript'), 'GET does not expose checkpoint transcript');
 
+  response = await api('GET', `/api/v1/sessions/${sessionId}`);
+  const boundedWire = JSON.stringify(response.data);
+  ok(response.status === 200 && response.data.session?.id === sessionId && response.data.session?.cli === 'codex',
+    'v1 session query is composed through the bounded domain service');
+  ok(!boundedWire.includes('worktreePath') && !boundedWire.includes('cliSessionId')
+    && !boundedWire.includes('rolePrompt') && !boundedWire.includes('cwd'),
+  'v1 session query excludes host and native-session internals');
+  response = await api('GET', '/api/v1/sessions');
+  ok(response.status === 200 && response.data.sessions?.some(item => item.id === sessionId),
+    'v1 session list uses the same bounded projection');
+  response = await api('GET', `/api/v1/directories/${dirId}/workspace`);
+  const workspaceWire = JSON.stringify(response.data);
+  ok(response.status === 200 && response.data.workspace?.sessions?.some(item => item.session?.id === sessionId),
+    'v1 workspace is composed through the bounded workspace service');
+  ok(!workspaceWire.includes('currentFile') && !workspaceWire.includes('worktreePath')
+    && !workspaceWire.includes(project),
+  'v1 workspace excludes filesystem and current-file paths');
+
   response = await api('PATCH', `/api/sessions/${sessionId}`, { agent: 'build' });
   ok(response.status === 400 && /only supported/.test(response.data.error || ''),
     'Codex rejects Claude/OpenCode-only native agent setting');

@@ -29,7 +29,12 @@ function assertDirectoryRecordsPort(port) {
 }
 
 function assertChatHistoryPort(port) {
-  return requirePort(port, 'history', ['read', 'write']);
+  return requirePort(port, 'history', [
+    'read',
+    'write',
+    'deleteSession',
+    'hasPersistedDelivery',
+  ]);
 }
 
 module.exports = {
