@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <title>📝 Memo · MultiCC</title>
+  <script src="auth-client.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
@@ -80,8 +81,6 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const params = new URLSearchParams(location.search);
-    const urlToken = params.get('token') || '';
-    const tokenQS = (prefix) => urlToken ? `${prefix}token=${encodeURIComponent(urlToken)}` : '';
     let _dirId = params.get('dirId') || '';
     const _sessionId = params.get('sessionId') || '';
 
@@ -93,13 +92,13 @@
     async function bootstrap() {
       try {
         if (!_dirId && _sessionId) {
-          const r = await fetch(`/api/sessions/${encodeURIComponent(_sessionId)}${tokenQS('?')}`);
+          const r = await fetch(`/api/sessions/${encodeURIComponent(_sessionId)}`);
           if (!r.ok) throw new Error(`session not found (${r.status})`);
           const s = await r.json();
           _dirId = s.dirId || (s.persisted && s.persisted.dirId) || '';
           if (!_dirId) {
             // Some session endpoints don't return dirId; fall back to scanning /api/sessions
-            const all = await (await fetch(`/api/sessions${tokenQS('?')}`)).json();
+            const all = await (await fetch('/api/sessions')).json();
             const found = (Array.isArray(all) ? all : []).find(x => x.id === _sessionId);
             if (found) _dirId = found.dirId || '';
           }
@@ -111,13 +110,13 @@
 
     async function loadMemo() {
       try {
-        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo${tokenQS('?')}`);
+        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo`);
         if (!r.ok) { setStatus('加载失败：HTTP ' + r.status); return; }
         const data = await r.json();
         $('memo-text').value = data.text || '';
         $('title-path').textContent = `${data.path || ''}${data.exists ? '' : ' · 文件尚未创建（保存即创建）'}`;
         try {
-          const dirs = await (await fetch(`/api/directories${tokenQS('?')}`)).json();
+          const dirs = await (await fetch('/api/directories')).json();
           const d = (dirs || []).find(x => x.id === _dirId);
           if (d) {
             $('title-name').textContent = `📝 ${d.name} · 备忘`;
@@ -133,7 +132,7 @@
       const text = $('memo-text').value;
       setStatus('保存中…');
       try {
-        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo${tokenQS('?')}`, {
+        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
         });
@@ -163,7 +162,7 @@
       const text = currentLineText();
       if (!text) { setStatus('当前行为空，无法发送'); return; }
       try {
-        const all = await (await fetch(`/api/sessions${tokenQS('?')}`)).json();
+        const all = await (await fetch('/api/sessions')).json();
         const sessions = (Array.isArray(all) ? all : [])
           .filter(s => s.dirId === _dirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
         if (!sessions.length) { setStatus('该Fleet还没有 chat 会话，请先新建一个'); return; }
@@ -189,7 +188,7 @@
       if (!text) return;
       setStatus(`发送到 ${sessionId}…`);
       try {
-        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo/send${tokenQS('?')}`, {
+        const r = await fetch(`/api/directories/${encodeURIComponent(_dirId)}/memo/send`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text, sessionId }),
         });
@@ -208,7 +207,7 @@
       }
     });
 
-    bootstrap();
+    Promise.resolve(window.multiccAuthReady).then(bootstrap);
   </script>
 </body>
 </html>
