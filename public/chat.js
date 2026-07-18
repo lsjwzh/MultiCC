@@ -3863,7 +3863,7 @@ function showRolePromptEditor(current) {
 
     const close = (result) => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(result); };
     const accept = () => {
-      if (ta.value.length > 8000) { addSystemMsg(tt('memoryTooLong')); return; }
+      if (ta.value.length > 8000) { addSystemMsg(tt('roleTooLong', { n: 8000 })); return; }
       close(ta.value);
     };
     const reject = () => close(null);
@@ -4196,12 +4196,12 @@ async function shareApi(method, p, body) {
 
 function shareRow(s) {
   const lvl = s.type === 'messages'
-    ? `📎 消息快照·${s.messageCount || 0}条${s.hasPassword ? '·密码' : ''}`
-    : (s.access === 'operate' ? '可对话' : (s.hasPassword ? '密码查看' : '公开查看'));
+    ? `📎 ${tt('shareMessages')} · ${s.messageCount || 0}`
+    : (s.access === 'operate' ? tt('shareOperate') : tt('shareViewOnly'));
   const exp = s.expiresAt ? `，到期 ${new Date(s.expiresAt).toLocaleString()}` : '';
   return `<div class="share-row" data-token="${s.token}" style="border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;">
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;"><b style="color:#79c0ff;">${lvl}</b><span style="color:#8b949e;">${exp}</span></div>
-    <div style="display:flex;gap:6px;align-items:center;"><input readonly value="${s.url}" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;padding:5px 7px;font-family:var(--mono,monospace);"><button data-copy="${s.url}" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;">复制</button><button data-del="${s.token}" style="background:#2d1418;border:1px solid #5c2228;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;">撤销</button></div>
+    <div style="display:flex;gap:6px;align-items:center;"><input readonly value="${s.url}" style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;padding:5px 7px;font-family:var(--mono,monospace);"><button data-copy="${s.url}" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 10px;cursor:pointer;">${tt('copy')}</button><button data-del="${s.token}" style="background:#2d1418;border:1px solid #5c2228;border-radius:6px;color:#f85149;font-size:12px;padding:5px 10px;cursor:pointer;">${tt('revoke')}</button></div>
   </div>`;
 }
 
@@ -4211,24 +4211,24 @@ async function openShareDialog() {
   const box = document.createElement('div');
   box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:94vw;max-height:90vh;overflow:auto;color:#c9d1d9;';
   box.innerHTML = `
-    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">分享此会话（外部网页链接）</div>
-    <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:10px;">接收方在浏览器打开链接即可。<b style="color:#f0883e;">「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码、谨慎分享。</b></div>
-    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:#1b2330;border:1px solid #2d3a4f;border-radius:6px;color:#79c0ff;font-size:12px;padding:6px 10px;cursor:pointer;">✂️ 改为分享指定消息（只读快照）…</button></div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSession')}</div>
+    <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:10px;">${tt('shareDesc')} <b style="color:#f0883e;">${tt('shareOperateWarn')}</b></div>
+    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:#1b2330;border:1px solid #2d3a4f;border-radius:6px;color:#79c0ff;font-size:12px;padding:6px 10px;cursor:pointer;">✂️ ${tt('shareSelectedMessages')}</button></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
       <select id="sh-access" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-        <option value="view">只读查看</option>
-        <option value="operate">可对话（需密码）</option>
+        <option value="view">${tt('shareViewOnly')}</option>
+        <option value="operate">${tt('shareOperate')}</option>
       </select>
-      <input id="sh-pw" placeholder="密码（可读可留空；可对话必填）" style="flex:1;min-width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <input id="sh-pw" placeholder="${tt('sharePassword')}" style="flex:1;min-width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
       <select id="sh-exp" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-        <option value="0">永不过期</option><option value="1">1 小时</option><option value="24">1 天</option><option value="168">7 天</option>
+        <option value="0">${tt('neverExpires')}</option><option value="1">${tt('oneHour')}</option><option value="24">${tt('oneDay')}</option><option value="168">${tt('sevenDays')}</option>
       </select>
-      <button id="sh-create" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 14px;cursor:pointer;">生成链接</button>
+      <button id="sh-create" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 14px;cursor:pointer;">${tt('shareGenerate')}</button>
     </div>
     <div id="sh-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">已有分享：</div>
-    <div id="sh-list"><div style="color:#8b949e;font-size:12px;">加载中…</div></div>
-    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="sh-close" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">关闭</button></div>`;
+    <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">${tt('existingShares')}</div>
+    <div id="sh-list"><div style="color:#8b949e;font-size:12px;">${tt('loading')}</div></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="sh-close" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button></div>`;
   overlay.appendChild(box); document.body.appendChild(overlay);
   const close = () => overlay.remove();
   box.querySelector('#sh-close').onclick = close;
@@ -4238,7 +4238,7 @@ async function openShareDialog() {
   const listEl = box.querySelector('#sh-list');
 
   async function refresh() {
-    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : '<div style="color:#8b949e;font-size:12px;">暂无</div>'; }
+    try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : `<div style="color:#8b949e;font-size:12px;">${tt('none')}</div>`; }
     catch (e) { listEl.innerHTML = `<div style="color:#f85149;font-size:12px;">${e.message}</div>`; }
   }
   // Use event delegation on listEl so bind() is never needed — handlers survive
@@ -4248,31 +4248,31 @@ async function openShareDialog() {
     if (!btn) return;
     if (btn.hasAttribute('data-copy')) {
       navigator.clipboard?.writeText(btn.dataset.copy);
-      btn.textContent = '已复制';
-      setTimeout(() => { if (btn.isConnected) btn.textContent = '复制'; }, 1200);
+      btn.textContent = tt('shareCopied');
+      setTimeout(() => { if (btn.isConnected) btn.textContent = tt('copy'); }, 1200);
     } else if (btn.hasAttribute('data-del')) {
-      if (!confirm('撤销这个分享链接？')) return;
+      if (!confirm(tt('revokeShareConfirm'))) return;
       const token = btn.dataset.del;
       if (!token) return;
       btn.disabled = true;
-      btn.textContent = '撤销中…';
+      btn.textContent = tt('revoking');
       shareApi('DELETE', '/share/' + encodeURIComponent(token))
         .then(() => refresh())
         .catch(e => alert(e.message))
-        .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = '撤销'; } });
+        .finally(() => { if (btn.isConnected) { btn.disabled = false; btn.textContent = tt('revoke'); } });
     }
   });
   box.querySelector('#sh-create').onclick = async () => {
     const access = box.querySelector('#sh-access').value;
     const password = box.querySelector('#sh-pw').value.trim();
     const hrs = parseInt(box.querySelector('#sh-exp').value, 10);
-    if (access === 'operate' && !password) { msg.textContent = '「可对话」必须设置密码'; msg.style.color = '#f85149'; return; }
+    if (access === 'operate' && !password) { msg.textContent = tt('sharePasswordRequired'); msg.style.color = '#f85149'; return; }
     const body = { access };
     if (password) body.password = password;
     if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
     try {
       const d = await shareApi('POST', '/share', body);
-      msg.style.color = '#3fb950'; msg.textContent = '已生成：' + d.url;
+      msg.style.color = '#3fb950'; msg.textContent = tt('generatedLink', { url: d.url });
       navigator.clipboard?.writeText(d.url);
       box.querySelector('#sh-pw').value = '';
       refresh();
@@ -4290,34 +4290,34 @@ async function openMessagePicker() {
   const box = document.createElement('div');
   box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:620px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;color:#c9d1d9;';
   box.innerHTML = `
-    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">分享指定消息（只读快照）</div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">勾选要分享的消息；生成的是固定快照，原会话变动或删除都不影响。</div>
-    <div id="mp-list" style="flex:1;overflow:auto;border:1px solid #30363d;border-radius:8px;padding:6px;margin-bottom:10px;min-height:120px;">加载中…</div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSelectedMessages')}</div>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">${tt('shareSelectedMessagesHint')}</div>
+    <div id="mp-list" style="flex:1;overflow:auto;border:1px solid #30363d;border-radius:8px;padding:6px;margin-bottom:10px;min-height:120px;">${tt('loading')}</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-      <label style="font-size:12px;color:#8b949e;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="mp-all"> 全选</label>
-      <span id="mp-count" style="font-size:12px;color:#8b949e;">已选 0 条</span>
-      <input id="mp-pw" placeholder="密码（可留空=公开）" style="flex:1;min-width:140px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
+      <label style="font-size:12px;color:#8b949e;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="mp-all"> ${tt('selectAll')}</label>
+      <span id="mp-count" style="font-size:12px;color:#8b949e;">${tt('selectedCount', { n: 0 })}</span>
+      <input id="mp-pw" placeholder="${tt('publicIfEmpty')}" style="flex:1;min-width:140px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
       <select id="mp-exp" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;">
-        <option value="0">永不过期</option><option value="24">1 天</option><option value="168">7 天</option></select>
+        <option value="0">${tt('neverExpires')}</option><option value="24">${tt('oneDay')}</option><option value="168">${tt('sevenDays')}</option></select>
     </div>
     <div id="mp-msg" style="font-size:12px;min-height:16px;margin-bottom:8px;"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;">
-      <button id="mp-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">关闭</button>
-      <button id="mp-go" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">生成链接</button>
+      <button id="mp-cancel" style="background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('close')}</button>
+      <button id="mp-go" style="background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:6px 14px;cursor:pointer;">${tt('shareGenerate')}</button>
     </div>`;
   overlay.appendChild(box); document.body.appendChild(overlay);
   const close = () => overlay.remove();
   box.querySelector('#mp-cancel').onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   const listEl = box.querySelector('#mp-list'), countEl = box.querySelector('#mp-count'), msgEl = box.querySelector('#mp-msg');
-  const updateCount = () => { countEl.textContent = `已选 ${listEl.querySelectorAll('input[type=checkbox]:checked').length} 条`; };
+  const updateCount = () => { countEl.textContent = tt('selectedCount', { n: listEl.querySelectorAll('input[type=checkbox]:checked').length }); };
 
   let msgs = [];
   try {
     const r = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history`));
     const d = await r.json(); msgs = d.messages || [];
   } catch (e) { listEl.textContent = '加载失败：' + e.message; return; }
-  if (!msgs.length) { listEl.textContent = '暂无消息'; return; }
+  if (!msgs.length) { listEl.textContent = tt('noMessages'); return; }
   const escH = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   listEl.innerHTML = msgs.map((m, i) => {
     const who = m.role === 'user' ? '我' : 'AI';
@@ -4331,7 +4331,7 @@ async function openMessagePicker() {
 
   box.querySelector('#mp-go').onclick = async () => {
     const indices = [...listEl.querySelectorAll('input[type=checkbox]:checked')].map(c => parseInt(c.dataset.i, 10));
-    if (!indices.length) { msgEl.style.color = '#f85149'; msgEl.textContent = '请至少选择一条消息'; return; }
+    if (!indices.length) { msgEl.style.color = '#f85149'; msgEl.textContent = tt('selectAtLeastOneMessage'); return; }
     const password = box.querySelector('#mp-pw').value.trim();
     const hrs = parseInt(box.querySelector('#mp-exp').value, 10);
     const body = { indices }; if (password) body.password = password; if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
@@ -4339,7 +4339,7 @@ async function openMessagePicker() {
       const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/share-messages`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await res.json(); if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
       navigator.clipboard?.writeText(d.url);
-      msgEl.style.color = '#3fb950'; msgEl.textContent = '已生成并复制：' + d.url;
+      msgEl.style.color = '#3fb950'; msgEl.textContent = tt('generatedAndCopied', { url: d.url });
     } catch (e) { msgEl.style.color = '#f85149'; msgEl.textContent = e.message; }
   };
 }
@@ -4362,11 +4362,11 @@ function doClear(keepN) {
     const msgs = [...messagesEl.querySelectorAll('.msg:not(.system-msg)')];
     const remove = msgs.slice(0, Math.max(0, msgs.length - keepN));
     remove.forEach(el => el.remove());
-    if (remove.length) addSystemMsg('Cleared ' + remove.length + ' earlier messages；保留的最近 ' + keepN + ' 条会作为新上下文检查点发送，全部 CLI 原生上下文已重置');
-    else addSystemMsg('保留当前消息并重置全部 CLI 原生上下文；最近消息会作为新上下文检查点发送');
+    if (remove.length) addSystemMsg(tt('contextKept', { removed: remove.length, kept: keepN }));
+    else addSystemMsg(tt('contextResetKept'));
   } else {
     messagesEl.innerHTML = '';
-    addSystemMsg('Chat cleared；全部 CLI 原生上下文已重置');
+    addSystemMsg(tt('contextCleared'));
   }
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'clear_history', keep: keepN }));
