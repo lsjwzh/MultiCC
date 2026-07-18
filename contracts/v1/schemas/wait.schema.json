@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/wait.schema.json",
+  "title": "Wait DTO v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "sessionId", "mode", "checks", "maxChecks", "intervalSec", "createdAt"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "mode": { "enum": ["poll", "callback"] },
+    "checks": { "type": "integer", "minimum": 0 },
+    "maxChecks": { "type": ["integer", "null"], "minimum": 1 },
+    "intervalSec": { "type": ["number", "null"], "minimum": 1 },
+    "createdAt": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

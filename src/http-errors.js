@@ -22,6 +22,7 @@
 // (that stays in domain services). It's a floor, not a ceiling.
 
 const crypto = require('crypto');
+const { API_VERSION, createErrorDto } = require('./api-contract');
 
 // 8 hex chars is enough entropy for correlation over a single log tail (16
 // bits of collision resistance per pair-of-requests; noise-free at request
@@ -45,6 +46,7 @@ function requestIdMiddleware(req, res, next) {
   res.locals.correlationId = correlationId;
   res.setHeader('X-Multicc-Request-Id', id);
   res.setHeader('X-Correlation-Id', correlationId);
+  res.setHeader('X-Multicc-API-Version', API_VERSION);
   if (typeof res.once === 'function') res.once('finish', () => {
     const obs = req.app && req.app.locals && req.app.locals.observability;
     if (!obs || !obs.logger) return;
@@ -86,9 +88,14 @@ function safeErrorHandler(logger = console) {
     // Client body: never include err.message or err.stack unless the caller
     // marked the error as `safe: true` (used by domain services returning
     // known-safe validation strings, e.g. "path does not exist: /p/missing").
-    const body = { error: status >= 500 ? 'internal_error' : 'request_error', requestId: rid };
-    if (err && err.safe && typeof err.message === 'string') body.error = err.message;
-    if (err && err.code && typeof err.code === 'string' && err.code.length < 40) body.code = err.code;
+    const correlationId = (res.locals && res.locals.correlationId) || (req && req.correlationId) || rid;
+    const safeMessage = err && err.safe && typeof err.message === 'string' ? err.message : null;
+    const body = createErrorDto({
+      message: status >= 500 ? 'internal_error' : (safeMessage || 'request_error'),
+      code: err && err.code || (status >= 500 ? 'internal_error' : 'request_error'),
+      requestId: rid,
+      correlationId,
+    });
     res.status(status).json(body);
   };
 }

@@ -116,6 +116,16 @@ const stateTx = require('./src/state-tx');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler } = require('./src/http-errors');
+const { toSessionDto } = require('./src/session-dto');
+const {
+  createErrorDto,
+  createWsEnvelope,
+  requestContext,
+  toDispatchResultDto,
+  toProviderDto,
+  toWaitDto,
+  withApiMeta,
+} = require('./src/api-contract');
 const {
   createAuthSecurity,
   normalizeRedirect,
@@ -2136,6 +2146,67 @@ providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
   getPort: () => PORT,
   onUsageObserved: recordUsageObserved,
+});
+
+// Bounded v1 session view. Native ids, filesystem paths, prompts/memory and
+// process internals never cross this boundary. Legacy routes remain additive
+// compatibility surfaces while clients migrate to /api/v1.
+function sessionContractView(p) {
+  const terminal = sessions.get(p.id);
+  const chat = chatSessions.get(p.id);
+  const kind = p.kind || 'terminal';
+  const isChat = kind === 'chat';
+  const active = isChat
+    ? !!chat && (chat.clients.size > 0 || chat.isStreaming)
+    : !!terminal;
+  return toSessionDto({
+    id: p.id,
+    dirId: p.dirId || null,
+    cli: p.cli || 'claude',
+    kind,
+    label: p.label || null,
+    model: p.model || null,
+    effectiveModel: effectiveSessionModel(p),
+    effort: p.effort || null,
+    effectiveEffort: effectiveSessionEffort(p),
+    agent: p.agent || null,
+    provider: p.provider || null,
+    subagent: serializeSubagent(p.subagent),
+    autoCommit: !!p.autoCommit,
+    autoDispatch: !!p.autoDispatch,
+    createdAt: p.createdAt,
+    lastActivity: isChat ? chatLastActivity(p.id, chat) : (terminal ? terminal.lastActivity : null),
+    clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
+    active,
+    mergeState: p.dirId ? mergeStateCached(directories.get(p.dirId), p) : null,
+  });
+}
+
+function v1Error(req, res, status, message, code) {
+  return res.status(status).json(createErrorDto({ ...requestContext(req, res), message, code }));
+}
+
+app.get('/api/v1/sessions', (req, res) => {
+  const list = [...persistedSessions.values()]
+    .filter(p => p.type !== 'aux' && p.type !== 'gateway')
+    .map(sessionContractView);
+  res.json(withApiMeta({ sessions: list, count: list.length }, requestContext(req, res)));
+});
+
+app.get('/api/v1/sessions/:id', (req, res) => {
+  const persisted = persistedSessions.get(req.params.id);
+  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') {
+    return v1Error(req, res, 404, 'session not found', 'session_not_found');
+  }
+  res.json(withApiMeta({ session: sessionContractView(persisted) }, requestContext(req, res)));
+});
+
+app.get('/api/v1/providers', (req, res) => {
+  const appType = String(req.query.appType || '').trim();
+  const list = providers
+    .listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined)
+    .map(toProviderDto);
+  res.json(withApiMeta({ providers: list, count: list.length }, requestContext(req, res)));
 });
 
 app.get('/api/sessions', (req, res) => {
@@ -4920,24 +4991,57 @@ app.get('/api/sessions/:id/notes', (req, res) => {
 // reach for curl; without this door they "dispatch" into run-detached and the
 // ultra workers never hear about it. Result flows back automatically as a
 // 【target 回复】message via finalizeDispatch.
-app.post('/api/sessions/:id/dispatch', (req, res) => {
-  const from = persistedSessions.get(req.params.id);
-  if (!from) return res.status(404).json({ error: 'session not found' });
-  const target = String((req.body && req.body.target) || '').trim();
-  const message = String((req.body && req.body.message) || '').trim();
-  if (!target || !message) return res.status(400).json({ error: 'target 和 message 必填' });
-  if (target === from.id) return res.status(400).json({ error: '不能把任务分发给自己' });
-  const v = validateDispatchTarget(target, from.id);
-  if (!v.ok) return res.status(400).json({ error: v.error });
-  if (v.rec.dirId !== from.dirId) return res.status(400).json({ error: '只能分发给同目录会话' });
-  appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || target}`, from.id);
+async function executeDispatchContract(fromId, body) {
+  const from = persistedSessions.get(fromId);
+  if (!from) return { status: 404, error: 'session not found', code: 'session_not_found' };
+  const target = String((body && body.target) || '').trim();
+  const message = String((body && body.message) || '').trim();
+  if (!target || !message) return { status: 400, error: 'target 和 message 必填', code: 'invalid_dispatch' };
+  if (target === from.id) return { status: 400, error: '不能把任务分发给自己', code: 'self_dispatch' };
+  const validation = validateDispatchTarget(target, from.id);
+  if (!validation.ok) return { status: 400, error: validation.error, code: 'invalid_target' };
+  if (validation.rec.dirId !== from.dirId) return { status: 400, error: '只能分发给同目录会话', code: 'cross_directory' };
+  appendEvent(from.dirId, 'dispatch', `→ ${validation.rec.label || target}`, from.id);
   lastDispatchOutAt.set(from.id, Date.now());
-  dispatchToSession(target, message, { replyTo: from.id })
-    .then(r => r.ok
-      ? res.json({ ok: true, target, chatId: r.chatId, note: '任务已投递；完成后结果会以【回复】消息自动回流到本会话' })
-      : res.status(409).json({ ok: false, error: r.error }))
-    .catch(e => res.status(500).json({ ok: false, error: e.message }));
-});
+  try {
+    const result = await dispatchToSession(target, message, { replyTo: from.id });
+    if (!result.ok) return { status: 409, error: result.error, code: 'dispatch_rejected' };
+    return {
+      status: 200,
+      value: toDispatchResultDto({
+        ok: true,
+        target,
+        chatId: result.chatId,
+        note: '任务已投递；完成后结果会以【回复】消息自动回流到本会话',
+      }),
+    };
+  } catch (error) {
+    logger.error('dispatch_failed', { fromId, target, error: error && error.message });
+    return { status: 500, error: 'internal_error', code: 'internal_error' };
+  }
+}
+
+function sendDispatchContract(req, res, result) {
+  const context = requestContext(req, res);
+  if (result.status === 200) return res.json(withApiMeta(result.value, context));
+  return res.status(result.status).json(createErrorDto({
+    ...context,
+    message: result.error,
+    code: result.code,
+  }));
+}
+
+function dispatchContractHandler(req, res) {
+  executeDispatchContract(req.params.id, req.body)
+    .then(result => sendDispatchContract(req, res, result))
+    .catch(error => {
+      logger.error('dispatch_contract_failed', { sessionId: req.params.id, error: error && error.message });
+      sendDispatchContract(req, res, { status: 500, error: 'internal_error', code: 'internal_error' });
+    });
+}
+
+app.post('/api/sessions/:id/dispatch', dispatchContractHandler);
+app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler);
 
 // Directory event log.
 app.get('/api/directories/:id/events', (req, res) => {
@@ -5851,7 +5955,7 @@ function hasNotifyConsumer(sessionId) {
 // broadcast() — previously this "iterate clients + JSON send" body was copy-
 // pasted at ~9 sites.
 function broadcastTo(clients, payload) {
-  const json = JSON.stringify(payload);
+  const json = JSON.stringify(createWsEnvelope(payload));
   for (const client of clients) {
     if (client.readyState === WebSocket.OPEN) {
       try { client.send(json); } catch (_) {}
@@ -10626,6 +10730,19 @@ app.get('/api/sessions/:id/waits', async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/v1/sessions/:id/waits', async (req, res) => {
+  const session = persistedSessions.get(req.params.id);
+  if (!session) return v1Error(req, res, 404, 'session not found', 'session_not_found');
+  try {
+    const durableWaits = await orchestrationRuntime.listForSession(session.id);
+    const legacyWaits = waitInjector.listForSession(session.id).map(wait => ({ ...wait, status: 'pending' }));
+    const waits = [...durableWaits, ...legacyWaits].map(toWaitDto);
+    res.json(withApiMeta({ waits, count: waits.length }, requestContext(req, res)));
+  } catch (error) {
+    v1Error(req, res, 500, 'failed to list waits', 'wait_list_failed', { cause: error });
   }
 });
 
