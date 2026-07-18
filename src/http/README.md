@@ -1,7 +1,8 @@
 # HTTP Error Boundary
 
-This directory is a pure, unwired boundary for gradually replacing ad hoc HTTP
-error shapes in `server.js`.
+This directory is the shared boundary for gradually replacing ad hoc HTTP
+error shapes in `server.js`. The pure mapping/presentation modules remain free
+of Express; leaf hosts opt in through `asyncRoute()` as they are migrated.
 
 Flow:
 
@@ -21,6 +22,11 @@ Flow:
 Suggested wiring order: add characterization tests, migrate leaf diagnostic
 routes, migrate isolated controllers, then migrate larger `server.js` route
 groups. Keep the terminal `safeErrorHandler` until every route is migrated.
+
+Production adopters:
+
+- `src/memo/router.js`: GET/PUT/send preserve the legacy success payloads while
+  all validation and infrastructure failures pass through this boundary.
 
 This boundary does not implement authentication, authorization, provider
 routing, orchestration, bridge behavior, logging policy, or business rules.
