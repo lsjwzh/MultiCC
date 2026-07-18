@@ -4927,10 +4927,34 @@ app.post('/api/sessions/:id/merge', async (req, res) => {
 // Pull the (just-advanced) base branch into every sibling worktree in `dir`
 // except `exceptId`. Returns a summary array; broadcasts per-session merge state
 // and a directory event. Conflicts are reported, not merged.
+// "Active" = something is (or may imminently be) writing to the worktree: a
+// terminal PTY, a running CLI process, or an in-flight streaming turn. A chat
+// page merely being OPEN (clients.size) no longer counts — a viewer doesn't
+// write files, and counting it created a self-lock where a session could
+// never be synced from its own chat page.
 function sessionWorktreeActive(id) {
   if (sessions.has(id)) return true;
   const chat = chatSessions.get(id);
-  return !!(chat && (chat.claudeProc || chat.isStreaming || chat.clients?.size));
+  return !!(chat && (chat.claudeProc || chat.isStreaming));
+}
+
+// Gate for user-facing sync/rebase: on top of the hard process check, consult
+// the aux classify verdict for this session. Only quiescent states allow a
+// rebase to rewrite the worktree:
+//   D=完成  W=等用户  E=API异常  → allow (nothing will write the worktree)
+//   C=继续  P=处理中  B=等后台   → block (turn ongoing / bg task may write)
+// Returns null when allowed, else { state, message } for a friendly 4xx.
+function sessionSyncGate(id) {
+  if (sessionWorktreeActive(id)) {
+    return { state: 'running', message: '会话正在执行任务（进程运行中），请等待本轮结束后再同步' };
+  }
+  const persisted = persistedSessions.get(id);
+  const cls = persisted?.taskState?.classifyState || null;
+  if (cls === 'C' || cls === 'P' || cls === 'B') {
+    const label = cls === 'B' ? '等待后台任务' : (cls === 'C' ? '任务待继续' : '处理中');
+    return { state: cls, message: `会话任务未结束（${label}，状态 ${cls}），请等待任务完成/暂停后再同步` };
+  }
+  return null;
 }
 
 async function autoSyncSiblingWorktrees(dir, exceptId) {
@@ -4995,6 +5019,16 @@ app.post('/api/sessions/:id/sync', async (req, res) => {
   if (!dir) return res.status(404).json({ error: 'directory not found' });
 
   const force = req.query.force === '1' || req.body?.force === true;
+  // Classify-based gate: sync only when the session's task is quiescent
+  // (完成/等用户/异常). While a turn is running or a bg task may write the
+  // worktree, tell the user to wait instead of failing with a cryptic error.
+  if (!force) {
+    const gate = sessionSyncGate(id);
+    if (gate) {
+      return res.status(409).json({ ok: false, blocked: true, reasons: ['busy'],
+        classifyState: gate.state, error: gate.message });
+    }
+  }
   const result = await gitSyncFromBase(dir, persisted, {
     force,
     activeCheck: force ? null : () => sessionWorktreeActive(id),
