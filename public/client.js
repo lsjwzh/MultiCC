@@ -1084,11 +1084,43 @@ async function uploadAudioForSTT(blob) {
   }
 }
 
-/* ── Streaming voice (real-time ASR: 边说边出字) ── */
+/* ── Streaming voice (real-time ASR: 边说边出字 + 停顿自动 refine) ──
+ *
+ * UX: no modal. A floating HUD (#voice-hud) sits above the input area and
+ * updates live during streaming. Every VAD-closed segment (each pause) fires
+ * an auto-refine that overwrites the previous one — so the user sees the
+ * cleanest-so-far corrected text drift into place while they keep talking.
+ *
+ * State machine per session:
+ *   raw     = last full transcript from onText(text, true|false)
+ *   partial = interim delta (rendered greyed out; not sent to refine)
+ *   final   = raw at last VAD segment close; refine input
+ *   refined = last successful refine result; sent when user hits 发送
+ *
+ * Auto-refine is debounced 250ms after each `isFinal` so machine-gun VAD
+ * segments (silence blips inside one thought) don't spam the backend, and
+ * any in-flight refine is aborted when a new segment closes.
+ */
 let _asrCfg = null;          // d.asr from /api/settings/voice
 let _voiceLang = 'zh';
 let _voiceStream = null;
 let _streamingActive = false;
+
+// HUD elements
+const vhHud       = document.getElementById('voice-hud');
+const vhRawText   = document.getElementById('vh-raw-text');
+const vhRefText   = document.getElementById('vh-refined-text');
+const vhStatusEl  = document.getElementById('vh-status-text');
+const vhCancelBtn = document.getElementById('vh-cancel');
+const vhSendBtn   = document.getElementById('vh-send');
+
+// Streaming session state (reset on each open)
+let _hudRawFinal = '';       // committed transcript (from isFinal=true events)
+let _hudRawPartial = '';     // interim hypothesis (rendered greyed-out)
+let _hudRefined = '';        // last successful refine result
+let _hudRefineAbort = null;  // AbortController for in-flight refine
+let _hudRefineTimer = null;  // debounce timer between VAD close and refine start
+let _hudRefineSeq = 0;       // guard for out-of-order refine responses
 
 fetch(withToken('/api/settings/voice'))
   .then(r => r.json())
@@ -1100,40 +1132,209 @@ function streamingAvailable() {
   return !!(s && (s.local?.ready || s.openai?.ready || s.volcano?.ready || s.funasr?.ready));
 }
 
+function _hudRenderRaw() {
+  // Committed text in white, partial in grey-italic (via .vh-partial span).
+  const committed = _hudRawFinal || '';
+  const partial = _hudRawPartial || '';
+  if (committed || partial) {
+    vhRawText.innerHTML = '';
+    if (committed) {
+      vhRawText.appendChild(document.createTextNode(committed));
+    }
+    if (partial) {
+      const s = document.createElement('span');
+      s.className = 'vh-partial';
+      s.textContent = (committed ? ' ' : '') + partial;
+      vhRawText.appendChild(s);
+    }
+  } else {
+    vhRawText.innerHTML = '<span class="vh-partial">聆听中…</span>';
+  }
+}
+
+function _hudSetStatus(text, cls) {
+  vhStatusEl.textContent = text;
+  vhHud.classList.remove('refining', 'done');
+  if (cls) vhHud.classList.add(cls);
+}
+
+function _hudReset() {
+  _hudRawFinal = '';
+  _hudRawPartial = '';
+  _hudRefined = '';
+  _hudRefineSeq++;                                    // invalidate any pending response
+  if (_hudRefineAbort) { try { _hudRefineAbort.abort(); } catch (_) {} _hudRefineAbort = null; }
+  if (_hudRefineTimer) { clearTimeout(_hudRefineTimer); _hudRefineTimer = null; }
+  vhHud.classList.remove('has-refined', 'refining', 'done');
+  vhRefText.textContent = '';
+  _hudRenderRaw();
+}
+
+// Fire an AI refine on the committed transcript so far. Debounced 250ms after
+// a VAD close so blip-segments coalesce; a fresh call aborts any in-flight
+// refine so the user only ever sees the latest correction.
+function _hudScheduleRefine() {
+  if (_hudRefineTimer) { clearTimeout(_hudRefineTimer); _hudRefineTimer = null; }
+  const raw = (_hudRawFinal || '').trim();
+  if (!raw) return;
+  _hudRefineTimer = setTimeout(() => {
+    _hudRefineTimer = null;
+    _hudRunRefine(raw);
+  }, 250);
+}
+
+async function _hudRunRefine(raw) {
+  if (_hudRefineAbort) { try { _hudRefineAbort.abort(); } catch (_) {} }
+  const seq = ++_hudRefineSeq;
+  const ctrl = new AbortController();
+  _hudRefineAbort = ctrl;
+  vhHud.classList.add('refining');
+  try {
+    const res = await fetch(withToken('/api/voice/refine'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw }),
+      signal: ctrl.signal,
+    });
+    const data = await res.json();
+    if (seq !== _hudRefineSeq) return;                // stale response, another refine already superseded
+    if (data.ok && typeof data.text === 'string' && data.text.trim()) {
+      _hudRefined = data.text.trim();
+      vhRefText.textContent = _hudRefined;
+      vhHud.classList.add('has-refined');
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') console.warn('[voice-hud] refine failed:', e.message);
+  } finally {
+    if (_hudRefineAbort === ctrl) _hudRefineAbort = null;
+    if (seq === _hudRefineSeq) vhHud.classList.remove('refining');
+  }
+}
+
 async function startStreamingVoice() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let wsUrl;
   try { wsUrl = await window.multiccWsUrl(`${proto}//${location.host}/ws/voice`); }
   catch (_) { return; }
-  showVoicePanel('');
-  vpRaw.placeholder = '聆听中…';
-  vpStatus.textContent = '● 聆听中';
+
+  _hudReset();
+  vhHud.classList.add('open');
+  _hudSetStatus('聆听中');
   micBtn.classList.add('active');
   _streamingActive = true;
   isRecording = true;
-  const reset = () => { _streamingActive = false; isRecording = false; micBtn.classList.remove('active'); };
+
   _voiceStream = new VoiceStream({
     wsUrl,
     provider: 'auto',
     lang: _voiceLang,
-    onText: (full) => { vpRaw.value = full; },
-    onDone: (finalText) => {
-      vpStatus.textContent = (finalText || vpRaw.value).trim() ? '✓ 识别完成' : '未识别到语音';
-      reset();
+    onText: (full, isFinal) => {
+      // With the local SenseVoice+VAD backend, every emit is a segment final
+      // (isFinal=true). Cloud providers still stream partials; treat them as
+      // interim text until they promote to final.
+      if (isFinal) {
+        _hudRawFinal = full;
+        _hudRawPartial = '';
+        _hudRenderRaw();
+        _hudScheduleRefine();
+      } else {
+        _hudRawPartial = full.startsWith(_hudRawFinal) ? full.slice(_hudRawFinal.length) : full;
+        _hudRenderRaw();
+      }
     },
-    onError: (msg) => { vpStatus.textContent = '⚠ ' + msg; reset(); },
+    onDone: (finalText) => {
+      // Server closed the ASR upstream. If any text landed, mark 完成; else 空.
+      const text = (finalText || _hudRawFinal || '').trim();
+      _streamingActive = false;
+      isRecording = false;
+      micBtn.classList.remove('active');
+      if (text) _hudSetStatus('识别完成，AI 处理中…', 'done');
+      else      _hudSetStatus('未识别到语音', 'done');
+    },
+    onError: (msg) => {
+      _hudSetStatus('⚠ ' + msg, 'done');
+      _streamingActive = false;
+      isRecording = false;
+      micBtn.classList.remove('active');
+    },
   });
   _voiceStream.start().catch(err => {
-    vpStatus.textContent = '⚠ ' + (err.message || '启动失败');
-    reset();
+    _hudSetStatus('⚠ ' + (err.message || '启动失败'), 'done');
+    _streamingActive = false;
+    isRecording = false;
+    micBtn.classList.remove('active');
   });
 }
 
+// Stop listening but keep the HUD visible so a late refine can still complete
+// before the user hits 发送.
 function stopStreamingVoice() {
-  vpStatus.textContent = '识别中…';
+  _hudSetStatus('识别中…');
   micBtn.classList.remove('active');
-  if (_voiceStream) _voiceStream.stop();
+  if (_voiceStream) { try { _voiceStream.stop(); } catch (_) {} }
+  _streamingActive = false;
+  isRecording = false;
 }
+
+// Commit whatever we have: prefer refined text, fall back to raw. Always give
+// the pending refine one last flush chance for the last utterance.
+async function commitStreamingVoice() {
+  // stop the mic if still open, and wait a tick for any late final
+  if (_voiceStream) { try { _voiceStream.stop(); } catch (_) {} }
+  _streamingActive = false;
+  isRecording = false;
+  micBtn.classList.remove('active');
+  _hudSetStatus('识别中…');
+
+  // Wait up to 800ms for the last VAD-closed segment to land after stop() —
+  // SenseVoice needs ~100-200ms to decode the trailing chunk when the user
+  // hits 发送 without finishing the pause.
+  const rawBefore = _hudRawFinal;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 800) {
+    await new Promise(r => setTimeout(r, 80));
+    if (_hudRawFinal !== rawBefore) break;             // last final landed
+  }
+
+  // Flush any debounced refine timer now, or wait for the in-flight refine.
+  if (_hudRefineTimer) {
+    clearTimeout(_hudRefineTimer); _hudRefineTimer = null;
+    const raw = (_hudRawFinal || '').trim();
+    if (raw) await _hudRunRefine(raw);
+  } else if (_hudRefineAbort) {
+    const waitStart = Date.now();
+    while (_hudRefineAbort && Date.now() - waitStart < 3000) {
+      await new Promise(r => setTimeout(r, 80));
+    }
+  }
+
+  const text = (_hudRefined || _hudRawFinal || '').trim();
+  const raw = (_hudRawFinal || '').trim();
+  vhHud.classList.remove('open');
+  if (!text) return;
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'input', data: text }));
+  }
+  // Feedback (server ignores if userFinal === refined).
+  fetch(withToken('/api/voice/feedback'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw, refined: _hudRefined, userFinal: text }),
+  }).catch(() => {});
+}
+
+function cancelStreamingVoice() {
+  if (_voiceStream) { try { _voiceStream.abort ? _voiceStream.abort() : _voiceStream.stop(); } catch (_) {} }
+  _streamingActive = false;
+  isRecording = false;
+  micBtn.classList.remove('active');
+  _hudReset();
+  vhHud.classList.remove('open');
+}
+
+vhCancelBtn.addEventListener('click', cancelStreamingVoice);
+vhSendBtn.addEventListener('click', () => { commitStreamingVoice(); });
 
 const _canLegacyRecord = _hasNativeBridge || (typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices);
 const _canStream = !!(navigator.mediaDevices && window.AudioWorkletNode && window.VoiceStream && !_hasNativeBridge);
@@ -1145,7 +1346,7 @@ if (!_canLegacyRecord && !_canStream) {
   micBtn.onclick = () => {
     // Real-time streaming when a provider is configured; otherwise legacy upload.
     if (_canStream && streamingAvailable()) {
-      if (_streamingActive) stopStreamingVoice();
+      if (_streamingActive) commitStreamingVoice();
       else startStreamingVoice();
       return;
     }

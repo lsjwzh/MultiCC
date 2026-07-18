@@ -494,6 +494,122 @@
     }
     #voice-panel.open { display: flex; }
 
+    /* ── Voice HUD (floating real-time refine bubble) ── */
+    /* Anchored just above the input area; shows live raw + auto-refined text
+     * during streaming ASR. Auto-fires refine on every VAD-closed segment
+     * (i.e. each pause) — see startStreamingVoice() in client.js.
+     */
+    #voice-hud {
+      display: none;
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 68px;                    /* clear of #mobile-bar / composer */
+      z-index: 19000;
+      width: min(680px, 92vw);
+      background: #161b22ee;
+      backdrop-filter: blur(6px);
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      box-shadow: 0 8px 32px #00000088;
+      padding: 10px 12px 8px;
+      color: #c9d1d9;
+      font-family: system-ui, 'Segoe UI', sans-serif;
+    }
+    #voice-hud.open { display: block; }
+    #voice-hud .vh-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      min-height: 20px;
+      line-height: 1.5;
+    }
+    #voice-hud .vh-icon {
+      flex: 0 0 20px;
+      font-size: 13px;
+      opacity: .8;
+      padding-top: 1px;
+    }
+    #voice-hud .vh-text {
+      flex: 1;
+      font-size: 14px;
+      word-break: break-word;
+      min-height: 20px;
+    }
+    #voice-hud .vh-raw .vh-text { color: #c9d1d9; }
+    #voice-hud .vh-raw .vh-partial { color: #8b949e; font-style: italic; }
+    #voice-hud .vh-refined .vh-text {
+      color: #79c0ff;
+      font-weight: 500;
+      opacity: 0;
+      transition: opacity 120ms ease;
+    }
+    #voice-hud.has-refined .vh-refined .vh-text { opacity: 1; }
+    #voice-hud.refining .vh-refined .vh-text::after {
+      content: ' ✨';
+      animation: vh-pulse 1s ease-in-out infinite;
+    }
+    @keyframes vh-pulse {
+      0%, 100% { opacity: .3; }
+      50%      { opacity: 1; }
+    }
+    #voice-hud .vh-bar {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid #21262d;
+      font-size: 11px;
+      color: #6e7681;
+    }
+    #voice-hud .vh-status {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    #voice-hud .vh-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #f85149;
+      box-shadow: 0 0 6px #f85149;
+      animation: vh-blink 1.2s ease-in-out infinite;
+    }
+    #voice-hud.done .vh-dot {
+      background: #3fb950;
+      box-shadow: 0 0 6px #3fb950;
+      animation: none;
+    }
+    @keyframes vh-blink {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .35; }
+    }
+    #voice-hud .vh-btns { display: flex; gap: 6px; }
+    #voice-hud .vh-btns button {
+      padding: 3px 10px;
+      font-size: 11px;
+      border-radius: 5px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #c9d1d9;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #voice-hud .vh-btns button:hover { background: #30363d; }
+    #voice-hud .vh-btns .vh-primary {
+      background: #1f6feb;
+      border-color: #388bfd;
+      color: #fff;
+      font-weight: 600;
+    }
+    #voice-hud .vh-btns .vh-primary:hover { background: #388bfd; }
+    #voice-hud .vh-btns .vh-primary:disabled {
+      opacity: .4;
+      cursor: not-allowed;
+    }
+
     #voice-panel-inner {
       background: #161b22;
       border: 1px solid #30363d;
@@ -738,6 +854,28 @@
         <button id="vp-cancel">取消</button>
         <button id="vp-use-raw" class="primary">使用原文</button>
         <button id="vp-use-refined">AI 重排</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating voice HUD (real-time transcript + auto-refine on pause) -->
+  <div id="voice-hud">
+    <div class="vh-row vh-raw">
+      <div class="vh-icon">🎤</div>
+      <div class="vh-text" id="vh-raw-text"><span class="vh-partial">聆听中…</span></div>
+    </div>
+    <div class="vh-row vh-refined">
+      <div class="vh-icon">✨</div>
+      <div class="vh-text" id="vh-refined-text"></div>
+    </div>
+    <div class="vh-bar">
+      <div class="vh-status">
+        <span class="vh-dot"></span>
+        <span id="vh-status-text">聆听中</span>
+      </div>
+      <div class="vh-btns">
+        <button id="vh-cancel" title="放弃并关闭">取消</button>
+        <button id="vh-send" class="vh-primary" title="停止听并发送">发送</button>
       </div>
     </div>
   </div>
