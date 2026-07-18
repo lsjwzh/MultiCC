@@ -404,7 +404,7 @@ else
   echo "  Common causes:"
   echo "    - Network or npm registry connectivity issues"
   echo "    - Disk space or permission problems"
-  echo "    - node-pty prebuild not available for your platform (rare; falls back to compilation)"
+  echo "    - better-sqlite3 prebuild not available for your platform (rare; falls back to compilation)"
   echo ""
   if [ "$IS_MACOS" = true ]; then
     echo "  If it's a native compilation error, install build tools:"

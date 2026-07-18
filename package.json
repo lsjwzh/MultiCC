@@ -13,7 +13,7 @@
     "test": "npm run test:deterministic && npm run test:contracts && npm run test:native",
     "test:core": "node tests/test-cli-switch.js && node tests/test-cli-adapters.js && node tests/test-cli-command-resolution.js && node tests/test-macos-power.js && node tests/test-message-composer-golden.js && node tests/test-chat-stream-resume.js && node tests/test-bg-completion-coalescer.js && node tests/test-codex-transform.js && node --test tests/test-orchestration-store.js tests/test-outbox.js tests/test-wait-service.js tests/test-operation-service.js tests/test-orchestration-runtime.js tests/test-durable-operations-runtime.js tests/test-detached-durable.js && node tests/test-wait-injector.js",
     "test:security": "node --test tests/test-security-observability.js tests/test-sqlite-runtime.js tests/test-push-localization.js tests/test-provider-ccswitch-readonly.js tests/test-auth-client-url-hygiene.js tests/test-telegram-client-adapter.js tests/test-upload-middleware.js",
-    "test:state": "node tests/test-state-store.js && node --test tests/test-provider-usage.js tests/test-session-persistence.js tests/test-runtime-lifecycle-stops.js && node tests/test-shutdown-http-errors.js && node tests/test-directory-service.js && node tests/test-server-graceful-shutdown.js",
+    "test:state": "node tests/test-path-safety.js && node tests/test-state-store.js && node --test tests/test-provider-usage.js tests/test-session-persistence.js tests/test-runtime-lifecycle-stops.js && node tests/test-shutdown-http-errors.js && node tests/test-directory-service.js && node tests/test-server-graceful-shutdown.js",
     "test:git": "node --test tests/test-repo-actor.js tests/test-git-safety.js tests/test-git-bundle.js && node tests/test-git-push.js",
     "test:architecture": "node --test tests/test-session-domain.js tests/test-architecture-boundaries.js tests/test-runtime-governance.js && node tests/test-detached.js",
     "governance:artifacts": "node scripts/check-repository-artifacts.js",
@@ -34,8 +34,7 @@
     "test:codex-subagent-live": "node tests/test-codex-subagent-live.js",
     "test:git-push": "node tests/test-git-push.js",
     "test:repo-actor": "node --test tests/test-repo-actor.js tests/test-git-safety.js",
-    "test:power": "node tests/test-macos-power.js",
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
+    "test:power": "node tests/test-macos-power.js"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",
@@ -47,7 +46,6 @@
     "express": "^4.22.2",
     "multer": "^2.2.0",
     "node-cron": "^4.2.1",
-    "node-pty": "^1.0.0",
     "node-telegram-bot-api": "^1.2.0",
     "sherpa-onnx-node": "^1.13.4",
     "web-push": "^3.6.7",
