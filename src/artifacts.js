@@ -1,6 +1,6 @@
 // Temp artifacts domain — serves the throwaway files/web pages produced by the
 // bundled `multicc-artifact` skill. The skill (running inside a claude session)
-// writes each artifact into ~/.multicc/artifacts/<id>/<file> and hands the user
+// writes each artifact into MULTICC_DATA_DIR/artifacts/<id>/<file> and hands the user
 // a relative link like /artifacts/<id>/<file>.
 //
 // Relative URL on purpose: it resolves against whatever origin the user is on
@@ -12,28 +12,38 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const express = require('express');
+const { createPaths } = require('./paths');
 
-// Fixed, homedir-relative location so the skill and the server agree on the
-// directory without any coordination (TMPDIR can differ between processes).
-const ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');
+const ARTIFACTS_DIR = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).artifactsDir;
+// Older globally-installed copies of the artifact skill may still write here.
+// Serve it read-only during the migration window; all new writes and cleanup go
+// through ARTIFACTS_DIR. Exporting the resolved path lets child agents and the
+// bundled skill agree even when MULTICC_DATA_DIR uses its default.
+const LEGACY_ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');
+if (!process.env.MULTICC_ARTIFACTS_DIR) process.env.MULTICC_ARTIFACTS_DIR = ARTIFACTS_DIR;
 
 // Matches the auth-whitelist regex in server.js. Keep them in sync.
 const ARTIFACT_PATH_RE = /^\/artifacts\/[A-Za-z0-9_-]+(?:\/|$)/;
 
 function ensureDir() {
-  try { fs.mkdirSync(ARTIFACTS_DIR, { recursive: true }); } catch (_) {}
+  try { fs.mkdirSync(ARTIFACTS_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
+}
+
+function servedRoots() {
+  return [...new Set([ARTIFACTS_DIR, LEGACY_ARTIFACTS_DIR])];
 }
 
 function mount(app) {
   ensureDir();
   // ?download=1 (or ?dl=1) turns an inline view into a forced download.
-  app.use('/artifacts', (req, res, next) => {
+  const headers = (req, res, next) => {
     if (req.query.download === '1' || req.query.dl === '1') {
       const base = (path.basename(req.path) || 'download').replace(/["\r\n]/g, '');
       res.setHeader('Content-Disposition', `attachment; filename="${base}"`);
     }
     next();
-  }, express.static(ARTIFACTS_DIR, {
+  };
+  const options = {
     index: 'index.html',
     dotfiles: 'ignore',
     // fallthrough defaults to true: a missing artifact drops through to Express's
@@ -43,7 +53,8 @@ function mount(app) {
       res.setHeader('Cache-Control', 'no-store, must-revalidate');
       res.setHeader('X-Content-Type-Options', 'nosniff');
     },
-  }));
+  };
+  app.use('/artifacts', headers, ...servedRoots().map(root => express.static(root, options)));
 }
 
 // Delete artifact dirs older than maxAgeMs (by mtime). Cheap; safe to call often.
@@ -65,4 +76,12 @@ function cleanup(maxAgeMs = 7 * 24 * 3600 * 1000) {
   return removed;
 }
 
-module.exports = { ARTIFACTS_DIR, ARTIFACT_PATH_RE, ensureDir, mount, cleanup };
+module.exports = {
+  ARTIFACTS_DIR,
+  ARTIFACT_PATH_RE,
+  LEGACY_ARTIFACTS_DIR,
+  cleanup,
+  ensureDir,
+  mount,
+  servedRoots,
+};
