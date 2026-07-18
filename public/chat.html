@@ -903,6 +903,26 @@
       font-size: 15px;
       word-break: break-word;
       min-height: 22px;
+      outline: none;
+      padding: 2px 6px;
+      border-radius: 5px;
+      border: 1px dashed transparent;
+      cursor: text;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    #voice-hud .vh-text[contenteditable="true"]:hover,
+    #voice-hud .vh-text[contenteditable="true"]:focus {
+      border-color: #30363d;
+      background: #0d111744;
+    }
+    #voice-hud .vh-text[contenteditable="true"]:focus {
+      border-color: #388bfd;
+      background: #0d1117;
+    }
+    #voice-hud .vh-text[data-placeholder]:empty::before {
+      content: attr(data-placeholder);
+      color: #6e7681;
+      pointer-events: none;
     }
     #voice-hud .vh-raw .vh-text { color: #c9d1d9; }
     #voice-hud .vh-raw .vh-partial { color: #8b949e; font-style: italic; }
@@ -1653,11 +1673,11 @@
   <div id="voice-hud">
     <div class="vh-row vh-raw">
       <div class="vh-icon">🎤</div>
-      <div class="vh-text" id="vh-raw-text"><span class="vh-partial">聆听中…</span></div>
+      <div class="vh-text" id="vh-raw-text" contenteditable="true" data-placeholder="聆听中…"></div>
     </div>
     <div class="vh-row vh-refined">
       <div class="vh-icon">✨</div>
-      <div class="vh-text" id="vh-refined-text"></div>
+      <div class="vh-text" id="vh-refined-text" contenteditable="true" data-placeholder="（AI 处理中…）"></div>
     </div>
     <div class="vh-bar">
       <div class="vh-status">
