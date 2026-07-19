@@ -75,7 +75,6 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   const result = evaluateLineBudgets(trackedSourceEntries());
   assert.deepEqual(result.violations, []);
   assert.deepEqual(result.debts.map(item => item.file).sort(), [
-    'public/chat.js',
     'public/manage.js',
     'server.js',
   ]);

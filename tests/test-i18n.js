@@ -48,7 +48,7 @@ vm.runInContext(fs.readFileSync(path.join(root, 'public', 'i18n-catalog.js'), 'u
 vm.runInContext(fs.readFileSync(path.join(root, 'public', 'i18n.js'), 'utf8'), context);
 
 const webRefs = new Set();
-for (const name of ['chat.html', 'chat.js', 'manage.html', 'manage.js']) {
+for (const name of ['chat.html', 'chat.js', 'manage.html', 'manage.js', 'manage-session-lifecycle.js']) {
   const source = fs.readFileSync(path.join(root, 'public', name), 'utf8');
   for (const match of source.matchAll(/(?:\btt|\bt)\(\s*(['"])([^'"\n]+)\1/g)) webRefs.add(match[2]);
   for (const match of source.matchAll(/data-i18n(?:-title|-placeholder|-aria-label|-value)?=["']([^"']+)["']/g)) webRefs.add(match[1]);
