@@ -74,8 +74,5 @@ test('migration debt can only shrink and stale policy entries fail closed', () =
 test('the current tracked tree satisfies the ratcheted budget', () => {
   const result = evaluateLineBudgets(trackedSourceEntries());
   assert.deepEqual(result.violations, []);
-  assert.deepEqual(result.debts.map(item => item.file).sort(), [
-    'public/manage.js',
-    'server.js',
-  ]);
+  assert.deepEqual(result.debts.map(item => item.file).sort(), ['server.js']);
 });
