@@ -223,16 +223,13 @@
     #messages::-webkit-scrollbar { width: 6px; }
     #messages::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 
-    /* "↓ N new messages" pill: floats at the bottom of the chat viewport while
-       the user has scrolled up to read history. Sticky inside #messages so it
-       tracks the viewport bottom without covering the input bar. */
+    /* Fixed overlay positioned by chat-scroll-controller against #messages. */
     .new-msg-pill {
-      position: sticky;
-      bottom: 12px;
-      align-self: center;
+      position: fixed;
+      left: 50%;
+      top: auto;
       z-index: 20;
       display: none;
-      margin: 0 auto;
       padding: 7px 16px;
       background: #1f6feb;
       color: #fff;
@@ -243,10 +240,13 @@
       box-shadow: 0 4px 14px rgba(0,0,0,.45);
       transition: opacity .15s ease, transform .15s ease;
       opacity: 0;
-      transform: translateY(6px);
+      transform: translate(-50%, 6px);
       max-width: 90%;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
     }
-    .new-msg-pill.show { display: block; opacity: 1; transform: translateY(0); }
+    .new-msg-pill.show { display: flex; opacity: 1; transform: translate(-50%, 0); }
     .new-msg-pill:hover { background: #388bfd; }
 
     /* Lazy history load hint / "earliest" marker */
@@ -1843,6 +1843,7 @@
   <script src="chat-transport.js"></script>
   <script src="chat-history-store.js"></script>
   <script src="chat-history-view.js"></script>
+  <script src="chat-scroll-controller.js"></script>
   <script src="memo-controller.js"></script>
   <script src="chat-notifications.js"></script>
   <script src="chat-composer.js"></script>
