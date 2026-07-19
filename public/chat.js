@@ -214,6 +214,7 @@ function fixupLocalImages(root) {
   if (!root) return;
   root.querySelectorAll('img').forEach(img => {
     const raw = img.getAttribute('src') || '';
+    img.addEventListener('load', () => chatScrollController?.handleLayoutChange(), { once: true });
     if (!_LOCAL_IMG_RE.test(raw)) return;
     const p = raw.replace(/^file:\/\//, '');
     const url = withToken('/api/download?path=' + encodeURIComponent(p) + '&inline=1');
@@ -237,6 +238,7 @@ function fixupLocalImages(root) {
 
 /* ── DOM refs ── */
 const messagesEl  = document.getElementById('messages');
+let chatScrollController = null;
 const inputEl     = document.getElementById('input');
 const sendBtn     = document.getElementById('send-btn');
 const statusEl    = document.getElementById('status');
@@ -838,7 +840,6 @@ function applyHistoryPlan(plan) {
   }
 
   forceScrollToBottom();
-  setTimeout(forceScrollToBottom, 300);
   setTimeout(() => autofillHistory(4), 0);
 }
 
@@ -946,100 +947,20 @@ function updateContextBar(usage, modelUsage) {
   if (parts.length) costBar.innerHTML = parts.join('');
 }
 
-/* ── Scroll state machine ──
- * The chat auto-follows the latest message ONLY when the user is already at
- * the bottom. The moment the user scrolls up to read history, auto-follow
- * stops (userPinnedAway=true) so the view stays put while new tokens stream
- * in. A floating "↓ N new" pill then appears; clicking it (or scrolling back
- * to the bottom) resumes auto-follow. This stops the view from being yanked
- * to the bottom on every streaming token while the user is reading history. */
-const SCROLL_BOTTOM_THRESHOLD = 48;  // px from bottom counts as "at bottom"
-let _userPinnedAway = false;         // user scrolled up, don't auto-follow
-let _unreadCount = 0;                // new messages accumulated while pinned away
-let _newMsgPillEl = null;
+/* ── Mobile-safe scroll controller ── */
+chatScrollController = window.MultiCCChatScrollController.createScrollController({
+  window,
+  document,
+  messagesEl,
+  translate: tt,
+});
 
-function isAtBottom() {
-  return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < SCROLL_BOTTOM_THRESHOLD;
-}
-
-function scrollToBottom() {
-  requestAnimationFrame(() => { messagesEl.scrollTop = messagesEl.scrollHeight; });
-}
-
-// Always scroll to bottom AND reset the pinned-away state (used after the
-// user's own actions: sending a message, first load / reconnect). Sets a brief
-// settling window so the scroll events fired DURING this programmatic scroll
-// don't get misread as the user scrolling away (which would falsely arm the
-// unread pill on initial load / reconnect stream replay).
-let _scrollSettlingUntil = 0;
-function forceScrollToBottom() {
-  _userPinnedAway = false;
-  _unreadCount = 0;
-  hideNewMsgPill();
-  _scrollSettlingUntil = Date.now() + 250;
-  scrollToBottom();
-}
-
-// Auto-follow only if already at the bottom. Otherwise stay put and bump the
-// unread counter so the pill reflects new messages waiting. Used by every
-// passive content event (streaming tokens, tool results, system msgs, ...).
-function maybeScrollToBottom() {
-  if (!_userPinnedAway && isAtBottom()) {
-    scrollToBottom();
-  } else {
-    // Don't bump unread on every streaming frame - only count it once per
-    // "pinned-away episode" via _streamUnreadArmed, re-armed when the turn
-    // ends or the pill is dismissed. See bumpUnread().
-    bumpUnread();
-  }
-}
-
-let _streamUnreadArmed = true;  // armed at turn start; one bump per turn while away
-function bumpUnread() {
-  if (Date.now() < _scrollSettlingUntil) return;  // ignore noise during programmatic scroll-to-bottom
-  if (!_userPinnedAway) return;
-  if (!_streamUnreadArmed) return;
-  _streamUnreadArmed = false;
-  _unreadCount++;
-  showNewMsgPill();
-}
-// Re-arm so the next assistant turn (or next discrete new message) can bump again.
-function rearmUnread() { _streamUnreadArmed = true; }
-
-function showNewMsgPill() {
-  if (!_newMsgPillEl) {
-    _newMsgPillEl = document.createElement('button');
-    _newMsgPillEl.id = 'new-msg-pill';
-    _newMsgPillEl.className = 'new-msg-pill';
-    _newMsgPillEl.innerHTML = '<span class="new-msg-pill-text">↓ 新消息</span>';
-    _newMsgPillEl.onclick = () => { forceScrollToBottom(); };
-    // Insert into the #messages container (pill is position:absolute within it)
-    messagesEl.appendChild(_newMsgPillEl);
-  }
-  _newMsgPillEl.querySelector('.new-msg-pill-text').textContent =
-    _unreadCount > 0 ? `↓ ${_unreadCount} 条新消息` : '↓ 新消息';
-  _newMsgPillEl.classList.add('show');
-}
-
-function hideNewMsgPill() {
-  if (_newMsgPillEl) _newMsgPillEl.classList.remove('show');
-}
-
-// Track the user's scroll position to drive userPinnedAway.
-messagesEl.addEventListener('scroll', () => {
-  // Ignore scroll events fired while we're programmatically scrolling to the
-  // bottom (initial load / reconnect / after user sends) - they'd otherwise
-  // mark the user as "pinned away" mid-scroll and arm the unread pill.
-  if (Date.now() < _scrollSettlingUntil) return;
-  if (isAtBottom()) {
-    // User scrolled back to the bottom -> resume auto-follow, clear unread.
-    _userPinnedAway = false;
-    _unreadCount = 0;
-    hideNewMsgPill();
-  } else {
-    _userPinnedAway = true;
-  }
-}, { passive: true });
+function isAtBottom() { return chatScrollController.isAtBottom(); }
+function scrollToBottom() { return chatScrollController.scrollToBottom(); }
+function forceScrollToBottom() { return chatScrollController.forceToBottom(); }
+function maybeScrollToBottom() { return chatScrollController.maybeFollow(); }
+function bumpUnread() { return chatScrollController.bumpUnread(); }
+function rearmUnread() { return chatScrollController.rearmUnread(); }
 
 /* ── Lazy history: fetch older messages when the user scrolls to the top ── */
 const HISTORY_LOAD_THRESHOLD = 80;  // px from top triggers a fetch
