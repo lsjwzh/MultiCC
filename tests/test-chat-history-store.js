@@ -163,14 +163,18 @@ test('classic script exports the narrow state API without DOM, network or creden
 test('chat host uses reconcile/upsert, generation-aware paging and bounded initial fill', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
   const chat = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+  const view = fs.readFileSync(path.join(ROOT, 'public', 'chat-history-view.js'), 'utf8');
   const storeTag = '<script src="chat-history-store.js"></script>';
+  const viewTag = '<script src="chat-history-view.js"></script>';
   assert.ok(html.indexOf(storeTag) < html.indexOf('<script src="chat.js"></script>'));
-  assert.match(chat, /chatHistoryStore\.acceptHistory\(msg, visibleIds\)/);
-  assert.match(chat, /findHistoryMessageById\(operation\.id\)/);
-  assert.match(chat, /existing\.replaceWith\(node\)/);
-  assert.match(chat, /operation\.kind === 'stream-tail'/);
-  assert.match(chat, /hydrateStreamingTools\(tailMessage, tail\)/);
-  assert.match(chat, /isStreaming = true;\s+currentMsgEl = tail/);
+  assert.ok(html.indexOf(storeTag) < html.indexOf(viewTag));
+  assert.ok(html.indexOf(viewTag) < html.indexOf('<script src="chat.js"></script>'));
+  assert.match(chat, /chatHistoryStore\.acceptHistory\(msg, chatHistoryView\.visibleIds\(\)\)/);
+  assert.match(view, /operation\.id \? findById\(operation\.id\)/);
+  assert.match(view, /existing\.replaceWith\(node\)/);
+  assert.match(view, /operation\.kind === 'stream-tail'/);
+  assert.match(view, /toolCards: hydrateStreamingTools\(message, element\)/);
+  assert.match(chat, /isStreaming = true;\s+currentMsgEl = tail\.element/);
   assert.match(chat, /chatHistoryStore\.completeOlder\(request, d\)/);
   assert.match(chat, /if \(pagePlan\.stale\) return 0/);
   assert.match(chat, /autofillHistory\(4\)/);
@@ -188,4 +192,26 @@ test('page size remains stable and immutable snapshots expose request generation
   assert.equal(Object.isFrozen(request), true);
   assert.equal(Object.isFrozen(store.snapshot()), true);
   assert.equal(store.snapshot().activeRequestId, request.requestId);
+});
+
+test('durable history reset broadcasts an authoritative page and invalidates every client cursor', () => {
+  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const chat = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+
+  assert.match(server,
+    /afterCommit:\s*\(\)\s*=>\s*\{[\s\S]*chatHistoryService\.paginate\(sessionName,[\s\S]*type:\s*'chat_history_reset'/,
+    'reset must be broadcast only from the post-persist commit boundary');
+  assert.match(server, /removedCount:\s*removed\.length/);
+  assert.match(server, /retainedCount:\s*retained\.length/);
+
+  const resetCase = chat.match(/case 'chat_history_reset':\s*\{([\s\S]*?)\n\s*break;\s*\n\s*\}/);
+  assert.ok(resetCase, 'chat host must handle authoritative reset broadcasts');
+  assert.match(resetCase[1], /resetHistoryPagination\(\)/);
+  assert.match(resetCase[1], /chatHistoryView\.clearMessages\(\)/);
+  assert.match(resetCase[1], /chatHistoryStore\.acceptHistory\(/);
+  assert.match(resetCase[1], /applyHistoryPlan\(historyPlan\)/);
+  assert.ok(
+    resetCase[1].indexOf('resetHistoryPagination()') < resetCase[1].indexOf('acceptHistory('),
+    'stale pagination must be invalidated before the committed page is accepted',
+  );
 });

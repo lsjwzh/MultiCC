@@ -31,6 +31,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../providers/chat_provider.dart';
 import '../services/chat_service.dart';
 import '../services/settings_service.dart';
+import 'ws_ticket_service.dart';
 
 enum VoiceCallState { idle, listening, confirming, executing, reporting }
 
@@ -39,14 +40,26 @@ class VoiceCallBubble {
   final bool fromUser;
   final String text;
   final DateTime ts;
-  VoiceCallBubble({required this.fromUser, required this.text, required this.ts});
+  VoiceCallBubble({
+    required this.fromUser,
+    required this.text,
+    required this.ts,
+  });
 }
 
 class VoiceCallService extends ChangeNotifier {
   final ChatProvider chatProvider;
   final SettingsService settings;
+  final WsTicketConnectionGate _ttsAuth;
+  final WebSocketChannel Function(Uri) _connectChannel;
 
-  VoiceCallService({required this.chatProvider, required this.settings});
+  VoiceCallService({
+    required this.chatProvider,
+    required this.settings,
+    WsTicketClient? wsTicketClient,
+    WebSocketChannel Function(Uri)? channelFactory,
+  }) : _ttsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
+       _connectChannel = channelFactory ?? WebSocketChannel.connect;
 
   // ── Observable state ──────────────────────────────────────────────────────
 
@@ -138,20 +151,22 @@ class VoiceCallService extends ChangeNotifier {
     // 1) 全双工音频会话：PlayAndRecord + VoiceChat → 系统级 AEC/AGC/NS。
     try {
       final session = await AudioSession.instance;
-      await session.configure(AudioSessionConfiguration(
-        avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
-        avAudioSessionCategoryOptions:
-            AVAudioSessionCategoryOptions.allowBluetooth |
-                AVAudioSessionCategoryOptions.defaultToSpeaker,
-        avAudioSessionMode: AVAudioSessionMode.voiceChat,
-        androidAudioAttributes: const AndroidAudioAttributes(
-          contentType: AndroidAudioContentType.speech,
-          usage: AndroidAudioUsage.voiceCommunication,
+      await session.configure(
+        AudioSessionConfiguration(
+          avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+          avAudioSessionCategoryOptions:
+              AVAudioSessionCategoryOptions.allowBluetooth |
+              AVAudioSessionCategoryOptions.defaultToSpeaker,
+          avAudioSessionMode: AVAudioSessionMode.voiceChat,
+          androidAudioAttributes: const AndroidAudioAttributes(
+            contentType: AndroidAudioContentType.speech,
+            usage: AndroidAudioUsage.voiceCommunication,
+          ),
+          androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransient,
         ),
-        androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransient,
-      ));
+      );
       await session.setActive(true);
-    } catch (e) {
+    } catch (_) {
       _warn('audio session config failed: $e');
     }
 
@@ -212,17 +227,22 @@ class VoiceCallService extends ChangeNotifier {
       if (!await _recorder.hasPermission()) {
         return false;
       }
-      final stream = await _recorder.startStream(const RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        numChannels: 1,
-        sampleRate: 16000,
-        autoGain: true,
-        echoCancel: true,
-        noiseSuppress: true,
-      ));
+      final stream = await _recorder.startStream(
+        const RecordConfig(
+          encoder: AudioEncoder.pcm16bits,
+          numChannels: 1,
+          sampleRate: 16000,
+          autoGain: true,
+          echoCancel: true,
+          noiseSuppress: true,
+        ),
+      );
       _capturing = true;
       _resetVad();
-      _micSub = stream.listen(_onAudioChunk, onError: (e) => _warn('mic stream: $e'));
+      _micSub = stream.listen(
+        _onAudioChunk,
+        onError: (e) => _warn('mic stream: $e'),
+      );
       return true;
     } catch (e) {
       _warn('startCapture failed: $e');
@@ -263,7 +283,8 @@ class VoiceCallService extends ChangeNotifier {
     if (!_inUtterance && rms < _silenceThreshold) {
       _noiseFloor = _noiseFloor * 0.95 + rms * 0.05;
     }
-    final effectiveSpeech = max(_speechThreshold, _noiseFloor * 2.2) * (_ttsPlaying ? 1.5 : 1.0);
+    final effectiveSpeech =
+        max(_speechThreshold, _noiseFloor * 2.2) * (_ttsPlaying ? 1.5 : 1.0);
     final effectiveSilence = max(_silenceThreshold, _noiseFloor * 1.4);
 
     final now = DateTime.now();
@@ -281,7 +302,9 @@ class VoiceCallService extends ChangeNotifier {
       }
       _silenceSince = null;
       // 持续满足 sustain 窗口 → 判定真正开始说话。
-      if (_primeStart != null && now.difference(_primeStart!) >= _speechSustain && !_inUtterance) {
+      if (_primeStart != null &&
+          now.difference(_primeStart!) >= _speechSustain &&
+          !_inUtterance) {
         _onSpeechStart();
       }
     } else if (rms < effectiveSilence) {
@@ -296,7 +319,8 @@ class VoiceCallService extends ChangeNotifier {
     if (_inUtterance) {
       _utterancePcm.addAll(chunk);
       // 静音超过 timeout → 判定说完。
-      if (_silenceSince != null && now.difference(_silenceSince!) >= _silenceTimeout) {
+      if (_silenceSince != null &&
+          now.difference(_silenceSince!) >= _silenceTimeout) {
         _onSilence();
       }
     }
@@ -322,7 +346,9 @@ class VoiceCallService extends ChangeNotifier {
     final now = DateTime.now();
     final speakingChanged = _userSpeaking != _inUtterance;
     if (speakingChanged) _userSpeaking = _inUtterance;
-    if (speakingChanged || _lastLevelNotify == null || now.difference(_lastLevelNotify!) >= const Duration(milliseconds: 80)) {
+    if (speakingChanged ||
+        _lastLevelNotify == null ||
+        now.difference(_lastLevelNotify!) >= const Duration(milliseconds: 80)) {
       _lastLevelNotify = now;
       notifyListeners();
     }
@@ -339,7 +365,8 @@ class VoiceCallService extends ChangeNotifier {
       _warn('barge-in: stopping TTS');
       _ttsCancelled = true;
       _stopTts();
-      if (_state == VoiceCallState.confirming || _state == VoiceCallState.reporting) {
+      if (_state == VoiceCallState.confirming ||
+          _state == VoiceCallState.reporting) {
         _setState(VoiceCallState.listening);
       }
     }
@@ -374,13 +401,17 @@ class VoiceCallService extends ChangeNotifier {
       final wav = _buildWav(pcm16, 16000);
       final uri = Uri.parse(settings.buildHttpUrl('/api/voice/stt'));
       final req = http.MultipartRequest('POST', uri);
-      if (settings.token.isNotEmpty) req.headers['X-Access-Token'] = settings.token;
-      req.files.add(http.MultipartFile.fromBytes(
-        'file',
-        wav,
-        filename: 'utterance.wav',
-        contentType: MediaType('audio', 'wav'),
-      ));
+      if (settings.token.isNotEmpty) {
+        req.headers['X-Access-Token'] = settings.token;
+      }
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          wav,
+          filename: 'utterance.wav',
+          contentType: MediaType('audio', 'wav'),
+        ),
+      );
       final res = await req.send().timeout(const Duration(seconds: 30));
       final body = await res.stream.bytesToString();
       if (res.statusCode != 200) {
@@ -396,7 +427,9 @@ class VoiceCallService extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      _bubbles.add(VoiceCallBubble(fromUser: true, text: text, ts: DateTime.now()));
+      _bubbles.add(
+        VoiceCallBubble(fromUser: true, text: text, ts: DateTime.now()),
+      );
       _setStatus('正在聆听…');
       notifyListeners();
       await _processRecognizedText(text);
@@ -425,8 +458,19 @@ class VoiceCallService extends ChangeNotifier {
       return;
     }
     // 状态查询：汇报任意任务进展（执行中 → 实时；已结束 → 上次结果快照）。
-    if (_matchIntent(text, const ['汇报', '进展', '进度', '怎么样', '状态', '到哪', '完成没', '做完没', '结果'])) {
-      if (_state == VoiceCallState.executing || _state == VoiceCallState.reporting) {
+    if (_matchIntent(text, const [
+      '汇报',
+      '进展',
+      '进度',
+      '怎么样',
+      '状态',
+      '到哪',
+      '完成没',
+      '做完没',
+      '结果',
+    ])) {
+      if (_state == VoiceCallState.executing ||
+          _state == VoiceCallState.reporting) {
         await _reportProgress(force: true);
       } else if (_lastTaskSummary.isNotEmpty) {
         await _speak(_lastTaskSummary);
@@ -437,7 +481,9 @@ class VoiceCallService extends ChangeNotifier {
     }
 
     // 正常流程：首次 → 进入确认；有未确认 breakdown → 作为确认反馈。
-    final p = (_currentBreakdown != null && _currentBreakdown!['allConfirmed'] != true)
+    final p =
+        (_currentBreakdown != null &&
+            _currentBreakdown!['allConfirmed'] != true)
         ? _handleConfirmationResponse(text)
         : _enterConfirming(text);
     try {
@@ -485,7 +531,11 @@ class VoiceCallService extends ChangeNotifier {
     // The user's spoken refinement may differ from the raw STT transcript — feed
     // the delta back so Whisper's vocabulary learns from the correction.
     _sendFeedback(_accumulatedText, userText);
-    final breakdown = await _callConfirm(_accumulatedText, _currentBreakdown, userText);
+    final breakdown = await _callConfirm(
+      _accumulatedText,
+      _currentBreakdown,
+      userText,
+    );
     _applyBreakdown(breakdown);
     if (breakdown['allConfirmed'] == true) {
       await _speak('好的，开始执行。');
@@ -502,7 +552,9 @@ class VoiceCallService extends ChangeNotifier {
     _currentBreakdown = b;
     _breakdownSummary = (b['summary'] as String?) ?? '';
     final items = b['items'];
-    _breakdownItems = (items is List) ? items.map((e) => e.toString()).toList() : const [];
+    _breakdownItems = (items is List)
+        ? items.map((e) => e.toString()).toList()
+        : const [];
     notifyListeners();
   }
 
@@ -530,18 +582,27 @@ class VoiceCallService extends ChangeNotifier {
     if (s.isNotEmpty) parts.add(s);
     final items = b['items'];
     if (items is List && items.isNotEmpty) {
-      parts.add('具体要求：\n' + items.asMap().entries.map((e) => '${e.key + 1}. ${e.value}').join('\n'));
+      parts.add(
+        '具体要求：\n${items.asMap().entries.map((e) => '${e.key + 1}. ${e.value}').join('\n')}',
+      );
     }
     return parts.join('\n\n');
   }
 
-  Future<Map<String, dynamic>> _callConfirm(String text, Map<String, dynamic>? prev, String? feedback) async {
+  Future<Map<String, dynamic>> _callConfirm(
+    String text,
+    Map<String, dynamic>? prev,
+    String? feedback,
+  ) async {
     final body = <String, dynamic>{'text': text};
     if (prev != null) body['previousBreakdown'] = prev;
     if (feedback != null) body['userFeedback'] = feedback;
     final res = await http
-        .post(Uri.parse(settings.buildHttpUrl('/api/voice/confirm')),
-            headers: _jsonHeaders(), body: jsonEncode(body))
+        .post(
+          Uri.parse(settings.buildHttpUrl('/api/voice/confirm')),
+          headers: _jsonHeaders(),
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 45));
     final json = jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode != 200 || json['error'] != null) {
@@ -561,7 +622,7 @@ class VoiceCallService extends ChangeNotifier {
     if (raw.trim() == userFinal.trim()) return;
     final body = jsonEncode({
       'raw': raw,
-      'refined': raw,        // server compares raw vs userFinal
+      'refined': raw, // server compares raw vs userFinal
       'userFinal': userFinal,
     });
     // Fire-and-forget; never blocks or fails the voice turn.
@@ -571,8 +632,11 @@ class VoiceCallService extends ChangeNotifier {
   Future<void> _postFeedback(String body) async {
     try {
       await http
-          .post(Uri.parse(settings.buildHttpUrl('/api/voice/feedback')),
-              headers: _jsonHeaders(), body: body)
+          .post(
+            Uri.parse(settings.buildHttpUrl('/api/voice/feedback')),
+            headers: _jsonHeaders(),
+            body: body,
+          )
           .timeout(const Duration(seconds: 10));
     } catch (_) {
       // swallow — feedback failure is invisible to the user
@@ -604,7 +668,8 @@ class VoiceCallService extends ChangeNotifier {
     // 周期汇报：每 20s 若有新事件则播报一次。
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (_state == VoiceCallState.executing || _state == VoiceCallState.reporting) {
+      if (_state == VoiceCallState.executing ||
+          _state == VoiceCallState.reporting) {
         _reportProgress();
       }
     });
@@ -618,7 +683,10 @@ class VoiceCallService extends ChangeNotifier {
   }
 
   void _onChatEvent(ChatEvent evt) {
-    if (_state != VoiceCallState.executing && _state != VoiceCallState.reporting) return;
+    if (_state != VoiceCallState.executing &&
+        _state != VoiceCallState.reporting) {
+      return;
+    }
     final now = DateTime.now();
     switch (evt.type) {
       case 'content_block_delta':
@@ -694,7 +762,9 @@ class VoiceCallService extends ChangeNotifier {
   Future<void> _reportProgress({bool force = false}) async {
     if (_progressEvents.isEmpty && !force) return;
     final now = DateTime.now();
-    if (!force && _lastSummaryTime != null && now.difference(_lastSummaryTime!) < const Duration(seconds: 15)) {
+    if (!force &&
+        _lastSummaryTime != null &&
+        now.difference(_lastSummaryTime!) < const Duration(seconds: 15)) {
       return;
     }
     _lastSummaryTime = now;
@@ -717,11 +787,16 @@ class VoiceCallService extends ChangeNotifier {
     }
   }
 
-  Future<String> _fetchProgressSummary(List<Map<String, String>> events, String taskDesc) async {
+  Future<String> _fetchProgressSummary(
+    List<Map<String, String>> events,
+    String taskDesc,
+  ) async {
     final res = await http
-        .post(Uri.parse(settings.buildHttpUrl('/api/voice/progress-summary')),
-            headers: _jsonHeaders(),
-            body: jsonEncode({'events': events, 'taskDescription': taskDesc}))
+        .post(
+          Uri.parse(settings.buildHttpUrl('/api/voice/progress-summary')),
+          headers: _jsonHeaders(),
+          body: jsonEncode({'events': events, 'taskDescription': taskDesc}),
+        )
         .timeout(const Duration(seconds: 30));
     final json = jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode != 200 || json['error'] != null) {
@@ -742,7 +817,9 @@ class VoiceCallService extends ChangeNotifier {
   Future<void> _speak(String text) async {
     if (text.trim().isEmpty) return;
     _stopTts();
-    _bubbles.add(VoiceCallBubble(fromUser: false, text: text, ts: DateTime.now()));
+    _bubbles.add(
+      VoiceCallBubble(fromUser: false, text: text, ts: DateTime.now()),
+    );
     notifyListeners();
 
     final ttsProvider = 'edge'; // Edge TTS → MP3
@@ -750,52 +827,76 @@ class VoiceCallService extends ChangeNotifier {
     bool gotAny = false;
     final completer = Completer<void>();
 
-    final wsUrl = _buildWsUrl('/ws/tts');
+    final attempt = _ttsAuth.begin(
+      socketUri: _buildWsUri(MulticcWsPath.tts),
+      ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
+      accessToken: settings.token,
+    );
+    late WebSocketChannel channel;
     try {
-      _ttsWs = WebSocketChannel.connect(Uri.parse(wsUrl));
-    } catch (e) {
-      _warn('tts ws connect failed: $e');
+      final wsUri = await attempt.authorizedUri;
+      if (!attempt.isCurrent || !_active) return;
+      channel = _connectChannel(wsUri);
+      if (!attempt.isCurrent || !_active) {
+        await channel.sink.close();
+        return;
+      }
+      _ttsWs = channel;
+    } catch (_) {
+      if (attempt.isCurrent) _warn('tts ws connect failed');
       return;
     }
     _ttsCancelled = false;
     _ttsPlaying = false;
 
     late StreamSubscription sub;
-    sub = _ttsWs!.stream.listen((data) {
-      if (_ttsCancelled) return;
-      if (data is List<int>) {
-        builder.add(Uint8List.fromList(data));
-        gotAny = true;
-      } else if (data is String) {
-        Map<String, dynamic> msg;
-        try {
-          msg = jsonDecode(data) as Map<String, dynamic>;
-        } catch (_) {
-          return;
+    sub = channel.stream.listen(
+      (data) {
+        if (_ttsCancelled || !attempt.isCurrent || _ttsWs != channel) return;
+        if (data is List<int>) {
+          builder.add(Uint8List.fromList(data));
+          gotAny = true;
+        } else if (data is String) {
+          Map<String, dynamic> msg;
+          try {
+            msg = jsonDecode(data) as Map<String, dynamic>;
+          } catch (_) {
+            return;
+          }
+          if (msg['type'] == 'done') {
+            _finishTts(builder, completer);
+          } else if (msg['type'] == 'error') {
+            _warn('tts error: ${msg['message']}');
+            if (!completer.isCompleted) completer.complete();
+          }
         }
-        if (msg['type'] == 'done') {
+      },
+      onError: (_) {
+        if (attempt.isCurrent && _ttsWs == channel) {
+          _warn('tts ws transport error');
+        }
+        if (!completer.isCompleted) completer.complete();
+      },
+      onDone: () {
+        if (!completer.isCompleted && attempt.isCurrent && _ttsWs == channel) {
           _finishTts(builder, completer);
-        } else if (msg['type'] == 'error') {
-          _warn('tts error: ${msg['message']}');
-          if (!completer.isCompleted) completer.complete();
+        } else if (!completer.isCompleted) {
+          completer.complete();
         }
-      }
-    }, onError: (e) {
-      _warn('tts ws error: $e');
-      if (!completer.isCompleted) completer.complete();
-    }, onDone: () {
-      if (!completer.isCompleted) _finishTts(builder, completer);
-    });
+      },
+    );
 
-    _ttsWs!.sink.add(jsonEncode({'type': 'start', 'text': text, 'provider': ttsProvider}));
+    channel.sink.add(
+      jsonEncode({'type': 'start', 'text': text, 'provider': ttsProvider}),
+    );
     try {
       await completer.future;
     } finally {
       await sub.cancel();
       try {
-        await _ttsWs!.sink.close();
+        await channel.sink.close();
       } catch (_) {}
-      _ttsWs = null;
+      if (_ttsWs == channel) _ttsWs = null;
     }
     // ignore: unused_local_variable
     gotAny = gotAny;
@@ -822,7 +923,8 @@ class VoiceCallService extends ChangeNotifier {
     String? tmpPath;
     try {
       final dir = await getTemporaryDirectory();
-      tmpPath = '${dir.path}/multicc_tts_${DateTime.now().microsecondsSinceEpoch}.mp3';
+      tmpPath =
+          '${dir.path}/multicc_tts_${DateTime.now().microsecondsSinceEpoch}.mp3';
       await File(tmpPath).writeAsBytes(bytes);
 
       _ttsPlaying = true;
@@ -855,6 +957,7 @@ class VoiceCallService extends ChangeNotifier {
   }
 
   void _stopTts() {
+    _ttsAuth.invalidate();
     _ttsCancelled = true;
     _ttsPlaying = false;
     try {
@@ -887,14 +990,8 @@ class VoiceCallService extends ChangeNotifier {
     return h;
   }
 
-  String _buildWsUrl(String path) {
-    var h = settings.host.replaceAll(RegExp(r'/$'), '');
-    final isHttps = h.startsWith('https://');
-    final scheme = isHttps ? 'wss' : 'ws';
-    final bare = h.replaceFirst(RegExp(r'^https?://'), '');
-    final q = settings.token.isNotEmpty ? '?token=${Uri.encodeQueryComponent(settings.token)}' : '';
-    return '$scheme://$bare$path$q';
-  }
+  Uri _buildWsUri(String path) =>
+      buildMulticcWebSocketUri(host: settings.host, path: path);
 
   /// PCM16 mono → WAV（44 字节头）。
   Uint8List _buildWav(Uint8List pcm16, int sampleRate) {
@@ -918,6 +1015,11 @@ class VoiceCallService extends ChangeNotifier {
     return out.takeBytes();
   }
 
-  List<int> _u32(int v) => [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff];
+  List<int> _u32(int v) => [
+    v & 0xff,
+    (v >> 8) & 0xff,
+    (v >> 16) & 0xff,
+    (v >> 24) & 0xff,
+  ];
   List<int> _u16(int v) => [v & 0xff, (v >> 8) & 0xff];
 }
