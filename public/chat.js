@@ -1826,135 +1826,28 @@ function hideThinking() {
   }
 }
 
-/* ── Send ── */
-function newClientMsgId() {
-  return 'c' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-}
-
-function send(opts = {}) {
-  // opts may be a DOM Event (when bound directly as a handler) — only a plain
-  // object with goal:true marks this as a Goal-mode send.
-  const goalOpts = (opts && opts.goal === true) ? opts : null;
-  let text = inputEl.value.trim();
-  if (!text) return;
-
-  // A new user message is a hard boundary. Codex can briefly leave a live
-  // assistant bubble while the client-side streaming flag is already false,
-  // so finalize any open bubble before appending the user's message.
-  if (isStreaming || currentMsgEl) {
-    hideThinking();
-    isStreaming = false;
-    finishStreaming();
-    updateUI();
-  }
-
-  // Handle client-side slash commands
-  if (text.startsWith('/')) {
-    const cmd = text.split(/\s+/)[0].toLowerCase();
-    if (cmd === '/clear') {
-      // Clear chat UI and server history
-      resetHistoryPagination();
-      chatHistoryView.clearMessages();
-      addSystemMsg('Chat cleared；Claude / Codex / OpenCode / ZCode 的原生上下文均已重置');
-      inputEl.value = '';
-      inputEl.style.height = 'auto';
-      if (ws?.readyState === WebSocket.OPEN) {
-        chatTransport.send({ type: 'clear_history' });
-      }
-      return;
-    }
-    if (cmd === '/help') {
-      addSystemMsg('Commands: /clear — clear chat history | /compact — ask Claude to compact context | /cost — show cost summary | /goal &lt;任务&gt; — 以 Goal 模式执行（受设置里的轮次/预算限制约束）');
-      inputEl.value = '';
-      inputEl.style.height = 'auto';
-      return;
-    }
-    if (cmd === '/goal') {
-      // Client-initiated Goal mode: wrap the task and re-send with the goal flag
-      // so the server applies the configured round/budget limits.
-      const sp = text.indexOf(' ');
-      const task = sp === -1 ? '' : text.slice(sp + 1).trim();
-      if (!task) {
-        addSystemMsg('用法：/goal &lt;任务描述&gt; — 以 Goal 模式（目标驱动、自主执行到完成）发送，受设置里的轮次/预算限制约束。也可点输入框右侧 🎯 先做目标预检。');
-        inputEl.value = '';
-        inputEl.style.height = 'auto';
-        return;
-      }
-      inputEl.value = goalWrap(task);
-      inputEl.style.height = 'auto';
-      send({ goal: true });   // limits omitted → server falls back to global config
-      return;
-    }
-    // Other slash commands (like /compact, /cost) — pass through to Claude
-  }
-
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    addSystemMsg('连接已断开，正在重连。请稍后再发送。');
-    chatTransport.retryNow();
-    updateUI();
-    return;
-  }
-
-  // Collect attachment paths
-  const chips = attachArea.querySelectorAll('.attach-chip[data-path]');
-  const paths = [];
-  chips.forEach(c => { if (c.dataset.path) paths.push(c.dataset.path); c.remove(); });
-  updateAttachArea();
-  if (paths.length) text = text + ' ' + paths.join(' ');
-
-  addUserMsg(text);
-  inputEl.value = '';
-  inputEl.style.height = 'auto';
-
-  if (ws?.readyState === WebSocket.OPEN) {
-    dbg('state', `send() — WS ▶ user_message (${text.length} chars)${goalOpts ? ' [goal]' : ''}`);
-    try {
-      const payload = { type: 'user_message', text, clientMsgId: newClientMsgId() };
-      if (goalOpts) { payload.goal = true; payload.goalLimits = goalOpts.goalLimits || {}; }
-      if (!chatTransport.send(payload)) throw new Error('WebSocket is not open');
-      _pendingCancel = false;
-      _turnStartMs = Date.now();  // client-side fallback for live reply timing
-      // A new turn must not render the previous turn's 主/辅 split while the
-      // first proxy request is still in flight. The server resets its tracker at
-      // the same boundary and will repopulate this via role_token_stats.
-      _roleTokens = { main: null, sub: null, subByProvider: [] };
-      _liveStreamUsage = null;
-      isStreaming = true;
-      showThinking();
-      startTitleAnimation();
-      dismissNotifyToast();
-      updateUI();
-    } catch (e) {
-      addSystemMsg('发送失败，正在重连：' + e.message);
-      inputEl.value = text;
-      chatTransport.retryNow();
-      updateUI();
-    }
-  }
-}
-
-/* ── Cancel ── */
-function cancelStreaming() {
-  dbg('state', `cancelStreaming() — isStreaming=${isStreaming}`);
-  // Always try to send cancel to server (idempotent on server side).
-  // This avoids the race where a 'result' event sets isStreaming=false
-  // right before the user's click is processed — we still want the
-  // cancel signal to reach the server.
-  if (ws?.readyState === WebSocket.OPEN) {
-    chatTransport.send({ type: 'cancel' });
-    _pendingCancel = false;
-  } else {
-    // WS disconnected — remember the cancel intent so we can send it on reconnect
-    _pendingCancel = true;
-  }
-  if (!isStreaming) return;
-  hideThinking();
-  isStreaming = false;
-  finishStreaming();
-  stopTitleAnimation();
-  addSystemMsg('Cancelled');
-  updateUI();
-}
+/* ── Composer compatibility surface ──
+ * Message sending, attachments, keyboard/touch bindings and voice input are
+ * owned by chat-composer.js. These wrappers preserve the classic globals used
+ * by Goal mode, the native WebView bridge and older diagnostic snippets. */
+let chatComposer = null;
+function newClientMsgId() { return window.MultiCCChatComposer.defaultClientMessageId(); }
+function send(opts = {}) { return chatComposer?.send(opts); }
+function cancelStreaming() { return chatComposer?.cancelStreaming(); }
+function updateAttachArea() { return chatComposer?.updateAttachArea(); }
+function uploadFile(file) { return chatComposer?.uploadFile(file); }
+function openLightbox(src, name) { return chatComposer?.openLightbox(src, name); }
+function closeLightbox() { return chatComposer?.closeLightbox(); }
+function startRecording() { return chatComposer?.startRecording(); }
+function stopRecording() { return chatComposer?.stopRecording(); }
+function uploadAudioForSTT(blob) { return chatComposer?.uploadAudioForSTT(blob); }
+function startStreamingVoice() { return chatComposer?.startStreamingVoice(); }
+function commitStreamingVoice() { return chatComposer?.commitStreamingVoice(); }
+function cancelStreamingVoice() { return chatComposer?.cancelStreamingVoice(); }
+function showVoicePanel(raw) { return chatComposer?.showVoicePanel(raw); }
+function closeVoicePanel() { return chatComposer?.closeVoicePanel(); }
+function useVoiceText(text) { return chatComposer?.useVoiceText(text); }
+function fetchRefined(raw) { return chatComposer?.fetchRefined(raw); }
 
 /* ── UI helpers ── */
 function updateUI() {
@@ -2202,53 +2095,6 @@ function escHtml(s) {
 function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + '...' : s;
 }
-
-/* ── Auto-resize textarea ── */
-let _lastTypingSent = 0;
-inputEl.addEventListener('input', () => {
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
-  // Notify server that user is typing (throttled: max once per 3s)
-  if (ws && ws.readyState === WebSocket.OPEN && Date.now() - _lastTypingSent > 3000) {
-    chatTransport.send({ type: 'typing' });
-    _lastTypingSent = Date.now();
-  }
-});
-
-// Desktop: Enter sends, Shift+Enter newline
-// Mobile: use send button (Enter inserts newline for IME compatibility)
-const _isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth <= 768;
-
-inputEl.addEventListener('keydown', (e) => {
-  if (!_isMobile && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    send();
-  }
-});
-
-// Send button — works on both mobile and desktop
-let _lastSendTapAt = 0;
-function sendFromButton(e) {
-  if (e && typeof e.preventDefault === 'function') e.preventDefault();
-  const now = Date.now();
-  if (now - _lastSendTapAt < 600) return;
-  _lastSendTapAt = now;
-  send();
-}
-sendBtn.addEventListener('click', sendFromButton);
-sendBtn.addEventListener('touchend', sendFromButton, { passive: false });
-
-// Cancel button
-let _lastCancelTapAt = 0;
-function cancelFromButton(e) {
-  if (e && typeof e.preventDefault === 'function') e.preventDefault();
-  const now = Date.now();
-  if (now - _lastCancelTapAt < 600) return;
-  _lastCancelTapAt = now;
-  cancelStreaming();
-}
-cancelBtn.addEventListener('click', cancelFromButton);
-cancelBtn.addEventListener('touchend', cancelFromButton, { passive: false });
 
 function mergeStatusText(st) {
   if (!st || (!st.mergeReady && !(st.dirty || st.ahead > 0))) return tt('worktreeClean');
@@ -3730,105 +3576,6 @@ clearCtxMenu.querySelector('[data-action="clear-keep"]').addEventListener('click
   doClear(Math.max(1, n || 5));
 });
 
-/* ── File Attachment ── */
-attachBtn.addEventListener('click', () => fileInput.click());
-
-fileInput.onchange = () => {
-  if (!fileInput.files.length) return;
-  for (const file of fileInput.files) {
-    uploadFile(file);
-  }
-  fileInput.value = '';
-};
-
-inputEl.addEventListener('paste', (e) => {
-  const files = Array.from(e.clipboardData?.files || []);
-  if (!files.length) return;
-  for (const file of files) {
-    uploadFile(file);
-  }
-});
-
-function updateAttachArea() {
-  attachArea.classList.toggle('has-items', attachArea.children.length > 0);
-}
-
-async function uploadFile(file) {
-  const fileName = file.name || guessPastedFileName(file);
-  const isImage = file.type.startsWith('image/');
-  const chip = document.createElement('div');
-  chip.className = 'attach-chip' + (isImage ? ' is-image' : '');
-  chip.style.opacity = '0.5';
-
-  // Build chip contents: thumbnail (if image) + name + remove button
-  let thumbUrl = null;
-  if (isImage) {
-    thumbUrl = URL.createObjectURL(file);
-    const img = document.createElement('img');
-    img.className = 'chip-thumb';
-    img.src = thumbUrl;
-    chip.appendChild(img);
-  }
-  const nameSpan = document.createElement('span');
-  nameSpan.className = 'chip-name';
-  nameSpan.textContent = fileName;
-  chip.appendChild(nameSpan);
-
-  const rm = document.createElement('span');
-  rm.className = 'chip-remove';
-  rm.innerHTML = '&times;';
-  rm.onclick = (e) => { e.stopPropagation(); chip.remove(); updateAttachArea(); if (thumbUrl) URL.revokeObjectURL(thumbUrl); };
-  chip.appendChild(rm);
-
-  // Click chip to preview image
-  if (isImage) {
-    chip.onclick = (e) => {
-      if (e.target === rm) return;
-      openLightbox(thumbUrl || chip.querySelector('.chip-thumb')?.src, fileName);
-    };
-    chip.title = 'Click to preview';
-  }
-
-  attachArea.appendChild(chip);
-  updateAttachArea();
-
-  try {
-    const formData = new FormData();
-    formData.append('file', file, fileName);
-    const res = await fetch(withToken('/api/upload'), { method: 'POST', body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
-    chip.dataset.path = data.path;
-    chip.style.opacity = '1';
-  } catch (err) {
-    nameSpan.textContent = `Failed: ${fileName}`;
-    chip.style.borderColor = '#f85149';
-    chip.style.opacity = '1';
-    setTimeout(() => { chip.remove(); updateAttachArea(); }, 3000);
-  }
-}
-
-/* ── Image lightbox ── */
-const _lightbox = document.getElementById('img-lightbox');
-function openLightbox(src, name) {
-  _lightbox.querySelector('img').src = src;
-  _lightbox.querySelector('.lb-name').textContent = name || '';
-  _lightbox.classList.add('show');
-}
-function closeLightbox() {
-  _lightbox.classList.remove('show');
-  _lightbox.querySelector('img').src = '';
-}
-_lightbox.querySelector('.lb-close').onclick = closeLightbox;
-_lightbox.onclick = (e) => { if (e.target === _lightbox) closeLightbox(); };
-
-function guessPastedFileName(file) {
-  const ext = file.type === 'image/jpeg'
-    ? 'jpg'
-    : (file.type || '').split('/')[1] || 'bin';
-  return `pasted-file.${ext}`;
-}
-
 /* ── Voice Notifications (task complete / waiting for action) ── */
 const notifyBtn   = document.getElementById('notify-btn');
 const notifyToast = document.getElementById('notify-toast');
@@ -3877,444 +3624,66 @@ function stopTitleAnimation() {
   document.title = _baseTitle;
 }
 
-/* ── Voice Input ── */
-let mediaRecorder = null;
-let audioChunks = [];
-let isRecording = false;
-let recordingStream = null;
-
-function showMicToast(text) {
-  micToast.textContent = text;
-  micToast.classList.add('show');
-}
-function hideMicToast() {
-  micToast.classList.remove('show');
-}
-
-function startRecording() {
-  if (_hasNativeBridge) {
-    window.MultiCCBridge.startRecording();
-    isRecording = true;
-    micBtn.classList.add('recording');
-    showMicToast('Recording...');
-    return;
-  }
-
-  audioChunks = [];
-  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus'
-    : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
-
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-    recordingStream = stream;
-    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onstop = () => {
-      if (recordingStream) { recordingStream.getTracks().forEach(t => t.stop()); recordingStream = null; }
-      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-      audioChunks = [];
-      if (blob.size > 0) uploadAudioForSTT(blob);
-    };
-    mediaRecorder.start();
-    isRecording = true;
-    micBtn.classList.add('recording');
-    showMicToast('Recording... tap mic to stop');
-  }).catch(err => {
-    showMicToast('Mic error: ' + err.message);
-    setTimeout(hideMicToast, 3000);
-  });
-}
-
-function stopRecording() {
-  if (_hasNativeBridge && isRecording) {
-    showMicToast('Processing...');
-    try { window.MultiCCBridge.stopRecording(); } catch (_) {}
-    isRecording = false;
-    micBtn.classList.remove('recording');
-    return;
-  }
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-  isRecording = false;
-  micBtn.classList.remove('recording');
-  hideMicToast();
-}
-
-async function uploadAudioForSTT(blob) {
-  micBtn.classList.add('processing');
-  showMicToast('Transcribing...');
-  try {
-    const fd = new FormData();
-    fd.append('file', blob, 'recording.webm');
-    const res = await fetch(withToken('/api/voice/stt'), { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    hideMicToast();
-    if (data.text?.trim()) {
-      showVoicePanel(data.text.trim());
-    } else {
-      showMicToast('No speech detected');
-      setTimeout(hideMicToast, 2000);
-    }
-  } catch (err) {
-    showMicToast('STT failed: ' + err.message);
-    setTimeout(hideMicToast, 3000);
-  } finally {
-    micBtn.classList.remove('processing');
-  }
-}
-
-// Native bridge callbacks
-window.__multiccRecStarted = () => {};
-window.__multiccRecReady = async () => {
-  isRecording = false;
-  micBtn.classList.remove('recording');
-  micBtn.classList.add('processing');
-  showMicToast('Transcribing...');
-  try {
-    const audioRes = await fetch('/__recording');
-    const audioBlob = await audioRes.blob();
-    await uploadAudioForSTT(audioBlob);
-  } catch (e) {
-    showMicToast('Error: ' + e.message);
-    setTimeout(hideMicToast, 3000);
-    micBtn.classList.remove('processing');
-  }
-};
-window.__multiccRecError = (msg) => {
-  isRecording = false;
-  micBtn.classList.remove('recording', 'processing');
-  showMicToast('Record error: ' + msg);
-  setTimeout(hideMicToast, 3000);
-};
-
-/* ── Streaming voice (real-time ASR + pause-triggered refine) ──────────────
- * When the local ASR is ready and the browser supports AudioWorklet, mic
- * click opens a floating HUD (#voice-hud) above the input bar and streams
- * PCM16 over /ws/voice. Each VAD-closed segment (every pause) fires an
- * auto-refine that supersedes the previous one, so the ✨ line shows the
- * cleanest-so-far correction while the user keeps talking.
- *
- * Clicking 填入输入框 (or the mic button again) commits: the latest refined
- * text (or raw fallback) is placed into the input field for user to review
- * and send — nothing is auto-dispatched.
- */
-const _canLegacyRecord = _hasNativeBridge || (typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices);
-const _canStream = !!(navigator.mediaDevices && window.AudioWorkletNode && window.VoiceStream && !_hasNativeBridge);
-
-let _hudActive = false;
-let _voiceStream = null;
-let _hudRawFinal = '';
-let _hudRawPartial = '';
-let _hudRefined = '';
-let _hudRefineAbort = null;
-let _hudRefineTimer = null;
-let _hudRefineSeq = 0;
-
-// Voice HUD DOM (lazy: some test pages don't ship it)
-const _vhHud       = document.getElementById('voice-hud');
-const _vhRawText   = document.getElementById('vh-raw-text');
-const _vhRefText   = document.getElementById('vh-refined-text');
-const _vhStatusEl  = document.getElementById('vh-status-text');
-const _vhCancelBtn = document.getElementById('vh-cancel');
-const _vhSendBtn   = document.getElementById('vh-send');
-
-// Track whether local streaming ASR is available. Pulled once at boot; the
-// 5s settle window in server means it's stable within the first user action.
-let _asrStreamingAvailable = false;
-fetch(withToken('/api/settings/voice'))
-  .then(r => r.json())
-  .then(d => {
-    const s = d && d.asr && d.asr.status;
-    _asrStreamingAvailable = !!(s && (s.local?.ready || s.openai?.ready || s.volcano?.ready || s.funasr?.ready));
-    console.log('[voice] streaming available:', _asrStreamingAvailable, '| canStream:', _canStream, '| canLegacyRecord:', _canLegacyRecord);
-  })
-  .catch(() => { _asrStreamingAvailable = false; });
-
-function _vhRenderRaw() {
-  if (!_vhRawText) return;
-  // Don't stomp on the user's in-progress edit.
-  if (document.activeElement === _vhRawText) return;
-  const committed = _hudRawFinal || '';
-  const partial   = _hudRawPartial || '';
-  _vhRawText.innerHTML = '';
-  if (committed) _vhRawText.appendChild(document.createTextNode(committed));
-  if (partial) {
-    const s = document.createElement('span');
-    s.className = 'vh-partial';
-    s.textContent = (committed ? ' ' : '') + partial;
-    _vhRawText.appendChild(s);
-  }
-}
-
-function _vhSetStatus(text, cls) {
-  if (!_vhHud || !_vhStatusEl) return;
-  _vhStatusEl.textContent = text;
-  _vhHud.classList.remove('refining', 'done');
-  if (cls) _vhHud.classList.add(cls);
-}
-
-function _vhReset() {
-  _hudRawFinal = '';
-  _hudRawPartial = '';
-  _hudRefined = '';
-  _hudRefineSeq++;
-  if (_hudRefineAbort) { try { _hudRefineAbort.abort(); } catch (_) {} _hudRefineAbort = null; }
-  if (_hudRefineTimer) { clearTimeout(_hudRefineTimer); _hudRefineTimer = null; }
-  if (_vhHud) _vhHud.classList.remove('has-refined', 'refining', 'done');
-  if (_vhRefText) _vhRefText.textContent = '';
-  _vhRenderRaw();
-}
-
-function _vhScheduleRefine() {
-  if (_hudRefineTimer) { clearTimeout(_hudRefineTimer); _hudRefineTimer = null; }
-  const raw = (_hudRawFinal || '').trim();
-  if (!raw) return;
-  _hudRefineTimer = setTimeout(() => { _hudRefineTimer = null; _vhRunRefine(raw); }, 250);
-}
-
-async function _vhRunRefine(raw) {
-  if (_hudRefineAbort) { try { _hudRefineAbort.abort(); } catch (_) {} }
-  const seq = ++_hudRefineSeq;
-  const ctrl = new AbortController();
-  _hudRefineAbort = ctrl;
-  if (_vhHud) _vhHud.classList.add('refining');
-  try {
-    const res = await fetch(withToken('/api/voice/refine'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw }),
-      signal: ctrl.signal,
-    });
-    const data = await res.json();
-    if (seq !== _hudRefineSeq) return;
-    if (data.ok && typeof data.text === 'string' && data.text.trim()) {
-      _hudRefined = data.text.trim();
-      // Only push to the DOM if the user hasn't started editing the refined line.
-      if (_vhRefText && document.activeElement !== _vhRefText) {
-        _vhRefText.textContent = _hudRefined;
-      }
-      if (_vhHud) _vhHud.classList.add('has-refined');
-    }
-  } catch (e) {
-    if (e.name !== 'AbortError') console.warn('[voice-hud] refine failed:', e.message);
-  } finally {
-    if (_hudRefineAbort === ctrl) _hudRefineAbort = null;
-    if (seq === _hudRefineSeq && _vhHud) _vhHud.classList.remove('refining');
-  }
-}
-
-// Keep the backing state in sync with user edits so commit reads what they see.
-if (_vhRefText) {
-  _vhRefText.addEventListener('input', () => {
-    _hudRefined = (_vhRefText.textContent || '').trim();
-  });
-  // Enter in either line commits immediately (Shift+Enter inserts a newline).
-  _vhRefText.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      commitStreamingVoice();
-    }
-  });
-}
-if (_vhRawText) {
-  _vhRawText.addEventListener('input', () => {
-    _hudRawFinal = (_vhRawText.textContent || '').trim();
-  });
-  _vhRawText.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      commitStreamingVoice();
-    }
-  });
-}
-
-async function startStreamingVoice() {
-  if (!_vhHud) { startRecording(); return; }           // HUD not present in this page — legacy
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const rawWsUrl = `${proto}//${location.host}/ws/voice`;
-  let wsUrl;
-  try { wsUrl = await window.multiccWsUrl(rawWsUrl); }
-  catch (_) { _vhSetStatus('语音连接失败'); return; }
-
-  _vhReset();
-  _vhHud.classList.add('open');
-  _vhSetStatus('聆听中');
-  micBtn.classList.add('recording');
-  _hudActive = true;
-
-  _voiceStream = new VoiceStream({
-    wsUrl,
-    provider: 'auto',
-    lang: 'zh',
-    onText: (full, isFinal) => {
-      if (isFinal) {
-        _hudRawFinal = full;
-        _hudRawPartial = '';
-        _vhRenderRaw();
-        _vhScheduleRefine();
-      } else {
-        _hudRawPartial = full.startsWith(_hudRawFinal) ? full.slice(_hudRawFinal.length) : full;
-        _vhRenderRaw();
-      }
-    },
-    onDone: (finalText) => {
-      const text = (finalText || _hudRawFinal || '').trim();
-      _hudActive = false;
-      micBtn.classList.remove('recording');
-      _vhSetStatus(text ? '识别完成' : '未识别到语音', 'done');
-    },
-    onError: (msg) => {
-      _vhSetStatus('⚠ ' + msg, 'done');
-      _hudActive = false;
-      micBtn.classList.remove('recording');
-    },
-  });
-  _voiceStream.start().catch(err => {
-    _vhSetStatus('⚠ ' + (err.message || '启动失败'), 'done');
-    _hudActive = false;
-    micBtn.classList.remove('recording');
-  });
-}
-
-// Commit: wait briefly for the last VAD segment, flush pending refine, then
-// send refined (or raw) text directly as a new chat message — one click.
-async function commitStreamingVoice() {
-  if (_voiceStream) { try { _voiceStream.stop(); } catch (_) {} }
-  _hudActive = false;
-  micBtn.classList.remove('recording');
-  _vhSetStatus('识别中…');
-
-  const rawBefore = _hudRawFinal;
-  const t0 = Date.now();
-  while (Date.now() - t0 < 800) {
-    await new Promise(r => setTimeout(r, 80));
-    if (_hudRawFinal !== rawBefore) break;
-  }
-
-  if (_hudRefineTimer) {
-    clearTimeout(_hudRefineTimer); _hudRefineTimer = null;
-    const raw = (_hudRawFinal || '').trim();
-    if (raw) await _vhRunRefine(raw);
-  } else if (_hudRefineAbort) {
-    const waitStart = Date.now();
-    while (_hudRefineAbort && Date.now() - waitStart < 3000) {
-      await new Promise(r => setTimeout(r, 80));
-    }
-  }
-
-  // Read final text from the DOM so any user edits win over the internal state.
-  const refinedDom = (_vhRefText ? (_vhRefText.textContent || '').trim() : '') || _hudRefined;
-  const rawDom = (_vhRawText ? (_vhRawText.textContent || '').trim() : '') || _hudRawFinal;
-  const text = (refinedDom || rawDom).trim();
-  const raw = rawDom.trim();
-  if (_vhHud) _vhHud.classList.remove('open');
-  if (!text) return;
-
-  // Direct send: reuse the chat's normal send() path by seeding the input
-  // first — keeps slash commands (/clear /goal …) and UI updates consistent.
-  inputEl.value = text;
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
-  send();
-
-  // Feedback (server ignores if userFinal === refined). Send the AI-refined
-  // value vs the user's actual final text so the vocabulary-learning loop
-  // captures real corrections even when the user edited mid-flight.
-  fetch(withToken('/api/voice/feedback'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ raw, refined: _hudRefined, userFinal: text }),
-  }).catch(() => {});
-}
-
-function cancelStreamingVoice() {
-  if (_voiceStream) { try { _voiceStream.abort ? _voiceStream.abort() : _voiceStream.stop(); } catch (_) {} }
-  _hudActive = false;
-  micBtn.classList.remove('recording');
-  _vhReset();
-  if (_vhHud) _vhHud.classList.remove('open');
-}
-
-if (_vhCancelBtn) _vhCancelBtn.addEventListener('click', cancelStreamingVoice);
-if (_vhSendBtn)   _vhSendBtn.addEventListener('click', commitStreamingVoice);
-
-if (!_canLegacyRecord && !_canStream) {
-  micBtn.disabled = true;
-  micBtn.title = 'Recording not supported (needs HTTPS / AudioWorklet)';
-} else {
-  micBtn.onclick = () => {
-    const useStream = _canStream && _asrStreamingAvailable;
-    console.log('[voice] mic click: useStream=%s hudActive=%s isRecording=%s', useStream, _hudActive, isRecording);
-    if (useStream) {
-      if (_hudActive) commitStreamingVoice();
-      else startStreamingVoice();
-      return;
-    }
-    if (isRecording) stopRecording();
-    else startRecording();
-  };
-}
-
-/* ── Voice Panel ── */
-const voicePanel   = document.getElementById('voice-panel');
-const vpRaw        = document.getElementById('vp-raw');
-const vpRefined    = document.getElementById('vp-refined');
-const vpStatus     = document.getElementById('vp-status');
-const vpCancel     = document.getElementById('vp-cancel');
-const vpUseRaw     = document.getElementById('vp-use-raw');
-const vpUseRefined = document.getElementById('vp-use-refined');
-let _vpRefinedFinal = '';
-
-function showVoicePanel(rawText) {
-  vpRaw.value = rawText;
-  vpRefined.value = '';
-  vpRefined.placeholder = 'Processing...';
-  vpStatus.textContent = '';
-  _vpRefinedFinal = '';
-  voicePanel.classList.add('open');
-  fetchRefined(rawText);
-}
-
-function closeVoicePanel() { voicePanel.classList.remove('open'); }
-
-function useVoiceText(text) {
-  inputEl.value = text;
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
-  inputEl.focus();
-  closeVoicePanel();
-}
-
-vpCancel.onclick = closeVoicePanel;
-vpUseRaw.onclick = () => useVoiceText(vpRaw.value);
-vpUseRefined.onclick = () => useVoiceText(_vpRefinedFinal || vpRefined.value || vpRaw.value);
-
-async function fetchRefined(raw) {
-  vpStatus.textContent = 'processing (AuxQueue)...';
-  const t0 = Date.now();
-  try {
-    const res = await fetch(withToken('/api/voice/refine'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw }),
-    });
-    const data = await res.json();
-    const clientMs = Date.now() - t0;
-    if (data.ok && data.text) {
-      vpRefined.value = data.text;
-      _vpRefinedFinal = data.text;
-      vpStatus.textContent = `done (${(data.ms / 1000).toFixed(1)}s server, ${(clientMs / 1000).toFixed(1)}s total)`;
-    } else {
-      vpRefined.value = data.text || '';
-      _vpRefinedFinal = vpRefined.value;
-      vpStatus.textContent = data.ok ? 'done' : `error: ${data.text || 'unknown'}`;
-    }
-  } catch (e) {
-    vpStatus.textContent = 'error';
-    console.error('[voice] refine error:', e);
-  }
-}
-
+/* ── Message composer / attachment / voice host adapter ── */
+chatComposer = window.MultiCCChatComposer.createComposer({
+  window,
+  document,
+  navigator,
+  location,
+  fetch: window.fetch.bind(window),
+  withToken,
+  hasNativeBridge: _hasNativeBridge,
+  webSocketOpen: WebSocket.OPEN,
+  elements: {
+    input: inputEl,
+    sendButton: sendBtn,
+    cancelButton: cancelBtn,
+    attachArea,
+    attachButton: attachBtn,
+    fileInput,
+    micButton: micBtn,
+    micToast,
+  },
+  isSocketOpen: () => !!ws && ws.readyState === WebSocket.OPEN,
+  transportSend: payload => chatTransport.send(payload),
+  retryTransport: () => chatTransport.retryNow(),
+  addSystemMessage: addSystemMsg,
+  addUserMessage: addUserMsg,
+  resetHistory: () => {
+    resetHistoryPagination();
+    chatHistoryView.clearMessages();
+  },
+  goalWrap,
+  debug: dbg,
+  updateUi: updateUI,
+  getIsStreaming: () => isStreaming,
+  hasOpenTurn: () => isStreaming || !!currentMsgEl,
+  finishOpenTurn: () => {
+    hideThinking();
+    isStreaming = false;
+    finishStreaming();
+    updateUI();
+  },
+  setPendingCancel: value => { _pendingCancel = value; },
+  onTurnStarted: () => {
+    _turnStartMs = Date.now();
+    _roleTokens = { main: null, sub: null, subByProvider: [] };
+    _liveStreamUsage = null;
+    isStreaming = true;
+    showThinking();
+    startTitleAnimation();
+    dismissNotifyToast();
+    updateUI();
+  },
+  finishCancelledTurn: () => {
+    hideThinking();
+    isStreaming = false;
+    finishStreaming();
+    stopTitleAnimation();
+    addSystemMsg('Cancelled');
+    updateUI();
+  },
+});
 /* ── CWD Change Modal ── */
 const cwdModal    = document.getElementById('cwd-modal');
 const cwdInput    = document.getElementById('cwd-input');
