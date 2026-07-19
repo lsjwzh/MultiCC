@@ -256,9 +256,9 @@ function createChatHistoryService({
     return result;
   }
 
-  function paginate(sessionId, { before, limit = 30 } = {}) {
+  function paginate(sessionId, { before, limit = 5 } = {}) {
     const messages = current(sessionId);
-    const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || 30));
+    const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || 5));
     let end = messages.length;
     if (before) {
       const index = messages.findIndex(message => message.id === before);

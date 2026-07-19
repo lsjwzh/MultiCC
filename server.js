@@ -7129,7 +7129,7 @@ const CHAT_HISTORY_SOFT_CAP = 10000;
 // How many messages the initial WS `chat_history` push sends (the newest page).
 // Older messages are fetched on demand via GET /history?before=<id>&limit=N as
 // the user scrolls up.
-const CHAT_HISTORY_PAGE = 30;
+const CHAT_HISTORY_PAGE = 5;
 
 // ── Per-session token usage accumulator ──
 // chat_history has bounded retention, so sufficiently old usage data can be
