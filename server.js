@@ -134,13 +134,12 @@ const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { createChatHistoryRuntime } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
+const { createSessionAdminRuntime } = require('./src/routes/session-admin');
 const { createSessionTriggers } = require('./src/triggers');
 const { createPushRuntime } = require('./src/push-runtime');
 const {
   createChatHistoryFileRepository,
-  createSessionQueryService,
   createSessionStateService,
-  createWorkspaceService,
 } = require('./src/session');
 const {
   TurnRequestError,
@@ -2323,207 +2322,46 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onUsageObserved: recordUsageObserved,
 });
 
-// Compose the host-independent session query boundary. Native ids, filesystem
-// paths, prompts/memory and process internals never enter these narrow ports or
-// cross the v1 DTO boundary. Legacy routes remain additive compatibility
-// surfaces while clients migrate to /api/v1.
-const sessionQuery = createSessionQueryService({
-  records: {
-    list: () => persistedSessions.values(),
-    get: id => persistedSessions.get(id),
-  },
-  runtime: {
-    read: (id, record) => {
-      const terminal = sessions.get(id);
-      const chat = chatSessions.get(id);
-      const kind = record.kind || 'terminal';
-      const isChat = kind === 'chat';
-      const chatActive = !!chat && (chat.clients.size > 0 || chat.isStreaming);
-      const chatActivity = isChat ? chatLastActivity(id, chat) : null;
-      return {
-        cwd: isChat ? cwdForSession(record) : (terminal ? terminal.cwd : record.cwd),
-        sessionCwd: cwdForSession(record),
-        createdAt: terminal ? terminal.createdAt : record.createdAt,
-        terminalActive: !!terminal,
-        terminalLastActivity: terminal ? terminal.lastActivity : null,
-        terminalClients: terminal ? terminal.clients.size : 0,
-        chatActive,
-        chatLastActivity: chatActivity,
-        chatClients: chat ? chat.clients.size : 0,
-        effectiveModel: effectiveSessionModel(record),
-        effectiveEffort: effectiveSessionEffort(record),
-        subagent: serializeSubagent(record.subagent),
-        lastActivity: isChat ? chatActivity : (terminal ? terminal.lastActivity : null),
-        clients: isChat ? (chat ? chat.clients.size : 0) : (terminal ? terminal.clients.size : 0),
-        active: isChat ? chatActive : !!terminal,
-        mergeState: record.dirId ? mergeStateCached(directories.get(record.dirId), record) : null,
-      };
-    },
-  },
+// Session query, dashboard, workspace and classify-admin routes share one
+// bounded composition. Dependencies that initialize later (Aux, workspace facts,
+// classifier helpers) are resolved lazily by closures and never snapshotted here.
+const sessionAdmin = createSessionAdminRuntime({
+  records: persistedSessions,
+  terminalSessions: sessions,
+  chatSessions,
+  directories,
+  cwdForSession,
+  chatLastActivity,
+  effectiveSessionModel,
+  effectiveSessionEffort,
+  serializeSubagent,
+  mergeStateCached,
+  cliStateSummary,
+  cliHandoffSummary,
+  cliAvailabilitySummary,
+  getInvalidSession: id => invalidSessions.get(id),
+  getWorkspaceStatus: id => workspaceStatus.get(id),
+  getSessionSummary: id => sessionSummaries.get(id),
+  getTaskState,
+  pendingNotesFor,
+  getAuxRuntime: () => ({ id: AUX_SESSION_ID, queue: auxQueue }),
+  loadChatHistory,
+  isInjectedOrJunkGoal,
+  buildClassifySystemPrompt,
+  buildClassifyConversation,
+  parseClassifyResult,
+  dispatchStateAction,
+  runClassifyNow,
+  createErrorDto,
+  requestContext,
+  withApiMeta,
 });
-const sessionWorkspace = createWorkspaceService({
-  sessionQuery,
-  directories: {
-    list: () => directories.values(),
-    get: id => directories.get(id),
-  },
-  workspaceFacts: {
-    read: id => {
-      const status = workspaceStatus.get(id) || {
-        status: 'idle', lastActivity: 0, runStartedAt: null, runEndedAt: null,
-      };
-      const summary = sessionSummaries.get(id) || null;
-      const task = getTaskState(persistedSessions.get(id));
-      return {
-        ...status,
-        currentFile: status.currentFile || null,
-        pendingNotes: pendingNotesFor(id).length,
-        summary: summary?.summary || null,
-        summaryAt: summary?.ts || null,
-        classifyState: task.classifyState || null,
-        goal: task.goal || '',
-        phase: task.phase || 'idle',
-      };
-    },
-  },
-});
-
-function legacySessionListPresenter({ record: p, runtime: live }) {
-  const useChatRuntime = p.kind === 'chat' || !live.terminalActive;
-  return {
-    id: p.id,
-    dirId: p.dirId || null,
-    cli: p.cli || 'claude',
-    kind: p.kind || 'terminal',
-    cliSessionId: p.cliSessionId || null,
-    label: p.label || null,
-    model: p.model || null,
-    effectiveModel: live.effectiveModel,
-    effort: p.effort || null,
-    effectiveEffort: live.effectiveEffort,
-    agent: p.agent || null,
-    rolePrompt: p.rolePrompt || null,
-    provider: p.provider || null,
-    subagent: live.subagent,
-    autoCommit: !!p.autoCommit,
-    autoDispatch: !!p.autoDispatch,
-    cliStates: cliStateSummary(p),
-    pendingCliHandoff: cliHandoffSummary(p),
-    cwd: live.sessionCwd,
-    createdAt: p.createdAt,
-    mergeState: live.mergeState,
-    lastActivity: p.kind === 'chat' ? live.chatLastActivity : live.terminalLastActivity,
-    clients: useChatRuntime ? live.chatClients : live.terminalClients,
-    active: useChatRuntime ? live.chatActive : true,
-  };
-}
-
-function legacyDirectorySessionPresenter({ record: p, runtime: live }) {
-  const useTerminalRuntime = p.kind === 'terminal';
-  return {
-    id: p.id, dirId: p.dirId, cli: p.cli, kind: p.kind,
-    cliSessionId: p.cliSessionId || null, label: p.label || null,
-    model: p.model || null, effort: p.effort || null,
-    effectiveEffort: live.effectiveEffort, agent: p.agent || null,
-    rolePrompt: p.rolePrompt || null, provider: p.provider || null,
-    subagent: live.subagent, cliStates: cliStateSummary(p),
-    pendingCliHandoff: cliHandoffSummary(p), createdAt: p.createdAt,
-    branch: p.branch || null, worktreePath: p.worktreePath || null,
-    invalid: invalidSessions.get(p.id) || null, mergeState: live.mergeState,
-    lastActivity: p.kind === 'chat' ? live.chatLastActivity : live.terminalLastActivity,
-    active: useTerminalRuntime ? live.terminalActive : live.chatActive,
-    clients: useTerminalRuntime ? live.terminalClients : live.chatClients,
-  };
-}
-
-function dashboardSessionPresenter({ record: p, runtime: live }) {
-  const task = getTaskState(p);
-  return {
-    id: p.id, label: p.label || null, cli: p.cli || 'claude',
-    kind: p.kind || 'terminal', active: !!live.active,
-    createdAt: p.createdAt || null, lastActivity: live.lastActivity,
-    classifyState: task.classifyState || null,
-    goal: task.goal || '', phase: task.phase || 'idle',
-  };
-}
-
-function legacyWorkspacePresenter({ session, facts }) {
-  const p = session.record;
-  const live = session.runtime;
-  return {
-    id: p.id, label: p.label || null, cli: p.cli || 'claude', kind: p.kind || 'terminal',
-    branch: p.branch || null, invalid: invalidSessions.get(p.id) || null,
-    status: facts.status, currentFile: facts.currentFile || null, lastActivity: facts.lastActivity,
-    runStartedAt: facts.runStartedAt || null, runEndedAt: facts.runEndedAt || null,
-    clients: live.clients || 0, pendingNotes: facts.pendingNotes,
-    mergeState: live.mergeState, summary: facts.summary || null,
-    summaryTs: facts.summaryAt || null, classifyState: facts.classifyState || null,
-    goal: facts.goal || '', phase: facts.phase || 'idle',
-  };
-}
-
-function legacySessionDetailPresenter({ record: p, runtime: live }) {
-  const cli = p.cli || 'claude';
-  const isClaudeChat = cli !== 'codex' && cli !== 'opencode' && cli !== 'zcode'
-    && p.kind !== 'terminal';
-  return {
-    id: p.id, cwd: live.cwd, createdAt: live.createdAt,
-    lastActivity: live.lastActivity, clients: live.clients || 0, active: !!live.active,
-    mergeState: live.mergeState, cli, model: p.model || null,
-    effectiveModel: live.effectiveModel, effort: p.effort || null,
-    effectiveEffort: live.effectiveEffort, agent: p.agent || null,
-    rolePrompt: p.rolePrompt || null, memory: p.memory || null,
-    provider: p.provider || null, subagent: live.subagent,
-    cliStates: cliStateSummary(p), cliAvailability: cliAvailabilitySummary(),
-    pendingCliHandoff: cliHandoffSummary(p), streaming: isClaudeChat,
-    autoContinue: p.autoContinue !== false, autoCommit: !!p.autoCommit,
-    autoDispatch: !!p.autoDispatch,
-  };
-}
-
-function sessionContractView(record) {
-  return sessionQuery.project(record);
-}
+sessionAdmin.mountRoutes(app);
+const workspaceSnapshot = sessionAdmin.workspaceSnapshot;
 
 function v1Error(req, res, status, message, code) {
   return res.status(status).json(createErrorDto({ ...requestContext(req, res), message, code }));
 }
-
-app.get('/api/v1/sessions', (req, res) => {
-  const list = sessionQuery.list();
-  res.json(withApiMeta({ sessions: list, count: list.length }, requestContext(req, res)));
-});
-
-app.get('/api/v1/sessions/:id', (req, res) => {
-  const session = sessionQuery.get(req.params.id);
-  if (!session) {
-    return v1Error(req, res, 404, 'session not found', 'session_not_found');
-  }
-  res.json(withApiMeta({ session }, requestContext(req, res)));
-});
-
-function workspaceContractView(snapshot) {
-  return {
-    directory: snapshot.directory,
-    sessions: snapshot.sessions.map((entry) => {
-      const {
-        status, statusUpdatedAt, runStartedAt, runEndedAt, pendingNotes,
-        summary, summaryAt, classifyState, goal, phase, ...session
-      } = entry;
-      return {
-        session, status, statusUpdatedAt, runStartedAt, runEndedAt,
-        pendingNotes, summary, summaryAt, classifyState, goal, phase,
-      };
-    }),
-    count: snapshot.count,
-  };
-}
-
-app.get('/api/v1/directories/:id/workspace', (req, res) => {
-  const snapshot = sessionWorkspace.snapshot(req.params.id);
-  if (!snapshot) return v1Error(req, res, 404, 'directory not found', 'directory_not_found');
-  res.json(withApiMeta({ workspace: workspaceContractView(snapshot) }, requestContext(req, res)));
-});
 
 app.get('/api/v1/providers', (req, res) => {
   const appType = String(req.query.appType || '').trim();
@@ -2531,150 +2369,6 @@ app.get('/api/v1/providers', (req, res) => {
     .listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined)
     .map(toProviderDto);
   res.json(withApiMeta({ providers: list, count: list.length }, requestContext(req, res)));
-});
-
-app.get('/api/sessions', (req, res) => {
-  const list = sessionQuery.list({ presenter: legacySessionListPresenter });
-  const auxP = persistedSessions.get(AUX_SESSION_ID);
-  if (auxP) {
-    list.unshift({
-      id: AUX_SESSION_ID, cwd: auxP.cwd, createdAt: auxP.createdAt,
-      lastActivity: auxQueue.lastTaskTime ? new Date(auxQueue.lastTaskTime) : null,
-      clients: auxQueue.clients.size, active: auxQueue.processing,
-      type: 'aux', label: auxP.label || 'AI Assistant',
-      auxStatus: auxQueue.getStatus(),
-    });
-  }
-  res.json(list);
-});
-
-// ── Dashboard API ──────────────────────────────────────────────────────
-// GET /api/dashboard/sessions — summary of all persistedSessions with filtering
-app.get('/api/dashboard/sessions', (req, res) => {
-  const { kind, active: activeParam } = req.query;
-  const filterActive = activeParam === undefined ? null : activeParam === 'true';
-
-  const list = sessionQuery.list({
-    filter: p => !kind || (p.kind || 'terminal') === kind,
-    presenter: dashboardSessionPresenter,
-  })
-    .filter(s => filterActive === null || s.active === filterActive);
-
-  res.json({ sessions: list, count: list.length });
-});
-
-// GET /api/dashboard/stats — aggregate statistics
-app.get('/api/dashboard/stats', (req, res) => {
-  const all = sessionQuery.listContexts();
-
-  let activeCount = 0;
-  const byCli = {};
-  const byKind = {};
-
-  for (const { record: p, runtime: live } of all) {
-    const cli = p.cli || 'claude';
-    const k = p.kind || 'terminal';
-    byCli[cli] = (byCli[cli] || 0) + 1;
-    byKind[k] = (byKind[k] || 0) + 1;
-
-    if (live.active) activeCount++;
-  }
-
-  res.json({
-    total: all.length,
-    active: activeCount,
-    byCli,
-    byKind,
-  });
-});
-
-// POST /api/sessions/:id/reclassify — manually re-judge one session's task state
-// via classify. Enqueues an intent_classify task; state updates arrive over WS.
-app.post('/api/sessions/:id/reclassify', (req, res) => {
-  const p = persistedSessions.get(req.params.id);
-  if (!p) return res.status(404).json({ error: 'session not found' });
-  if (p.type === 'aux' || p.type === 'gateway') return res.status(400).json({ error: 'not a chat session' });
-  if (auxQueue.isUnhealthy()) return res.status(503).json({ error: 'aux 服务不可用，无法重判' });
-  // Pull last assistant reply and enqueue directly — same as scanAndReclassify
-  const sid = req.params.id;
-  const ts = getTaskState(p);
-  // D/W guard — mirror scanAndReclassify (L7407). D(done, terminal) and W(waiting
-  // on user) only change on new user input; re-judging the same history re-derives
-  // the same verdict at best, or misjudges D→C and wakes a finished task at worst.
-  // ?force=true lets an operator override to correct a genuine misclassification.
-  if ((ts.classifyState === 'D' || ts.classifyState === 'W') && String(req.query.force).toLowerCase() !== 'true') {
-    return res.json({ ok: true, skipped: true, classifyState: ts.classifyState,
-      note: `会话状态为 ${ts.classifyState}，跳过重判（需用户发新消息触发，或 ?force=true 强制）` });
-  }
-  let reply = '';
-  try {
-    const history = loadChatHistory(sid);
-    for (let i = history.length - 1; i >= 0; i--) {
-      const m = history[i];
-      if (m.role === 'assistant' && typeof m.content === 'string' && m.content.length >= 20) {
-        reply = m.content; break;
-      }
-    }
-  } catch (_) {}
-  if (reply.length < 20) return res.status(400).json({ error: 'no assistant reply to classify against' });
-  const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
-  auxQueue.enqueue({
-    type: 'intent_classify',
-    systemPrompt: buildClassifySystemPrompt(cleanPrior),
-    prompt: buildClassifyConversation(sid, reply),
-    meta: { sid, manual: true }
-  }).then(result => {
-    if (result.cancelled) return;
-    const res = parseClassifyResult(result.text);
-    const cs = chatSessions.get(sid);
-    const sessionId = persistedSessions.get(sid)?.id || sid;
-    dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
-  }).catch(e => { if (e && e.cancelled) return; });
-  res.json({ ok: true, note: 'reclassify enqueued; 状态更新会通过 WS 异步到达' });
-});
-
-// POST /api/reclassify-all — re-judge sessions in bulk. Body { onlyJunk?: bool }.
-// Default onlyJunk=true → only sessions whose goal is injected/junk text. Set
-// onlyJunk=false to re-judge every non-aux session.
-app.post('/api/reclassify-all', (req, res) => {
-  if (auxQueue.isUnhealthy()) return res.status(503).json({ error: 'aux 服务不可用，无法重判' });
-  const onlyJunk = req.body?.onlyJunk !== false;
-  const ids = [];
-  for (const [sid, p] of persistedSessions) {
-    if (!p || p.type === 'aux' || p.type === 'gateway') continue;
-    const ts = getTaskState(p);
-    // D/W guard — mirror scanAndReclassify (L7407); skip terminal/waiting BEFORE
-    // the junk filter so D/W are never re-judged regardless of goal text.
-    if (ts.classifyState === 'D' || ts.classifyState === 'W') continue;
-    if (onlyJunk && !isInjectedOrJunkGoal(ts.goal)) continue;
-    // Enqueue directly — same as scanAndReclassify
-    let reply = '';
-    try {
-      const history = loadChatHistory(sid);
-      for (let i = history.length - 1; i >= 0; i--) {
-        const m = history[i];
-        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.length >= 20) {
-          reply = m.content; break;
-        }
-      }
-    } catch (_) {}
-    if (reply.length < 20) continue;
-    const cleanPrior = isInjectedOrJunkGoal(ts.goal) ? '' : (ts.goal || '');
-    auxQueue.enqueue({
-      type: 'intent_classify',
-      systemPrompt: buildClassifySystemPrompt(cleanPrior),
-      prompt: buildClassifyConversation(sid, reply),
-      meta: { sid, manual: true }
-    }).then(result => {
-      if (result.cancelled) return;
-      const res = parseClassifyResult(result.text);
-      const cs = chatSessions.get(sid);
-      const sessionId = persistedSessions.get(sid)?.id || sid;
-      dispatchStateAction(res, { sessionName: sid, sessionId, cs, isTerminal: false });
-    }).catch(e => { if (e && e.cancelled) return; });
-    ids.push(sid);
-  }
-  res.json({ ok: true, count: ids.length, ids, onlyJunk });
 });
 
 // ── Agent resources (extracted to src/skills.js) ──
@@ -2834,22 +2528,6 @@ app.use(createMemoModule({
     runTurn: (id, text, options) => runChatTurn(id, text, options),
   },
 }).router);
-
-app.get('/api/directories/:id/sessions', (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  const owned = sessionQuery.list({
-    dirId: d.id, includeHidden: true, presenter: legacyDirectorySessionPresenter,
-  });
-  res.json({ directory: d, sessions: owned });
-});
-
-// Live status board snapshot for a directory (same shape as the /ws/workspace snapshot).
-app.get('/api/directories/:id/workspace', (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  res.json({ directory: d, sessions: workspaceSnapshot(d.id) });
-});
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
@@ -3525,88 +3203,6 @@ mountMemoryBrowserRoutes(app, {
 // Delete a single message from this session's persisted chat history.
 // Display-history only: the CLI's own transcript/context is not rewritten,
 // so the model may still "remember" the content in an ongoing conversation.
-// Debug: test classify on the last assistant message
-app.post('/api/debug/classify/:id', (req, res) => {
-  const sessionName = req.params.id;
-  if (!persistedSessions.get(sessionName)) return res.status(404).json({ error: 'session not found' });
-  const history = loadChatHistory(sessionName);
-  if (!history.length) return res.status(400).json({ error: 'no history' });
-  let lastText = '';
-  for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i];
-    if (m.role !== 'assistant') continue;
-    if (typeof m.content === 'string') { lastText = m.content; break; }
-    if (Array.isArray(m.content)) { lastText = m.content.filter(b => b.type === 'text').map(b => b.text).join(' '); break; }
-  }
-  if (!lastText || lastText.length < 20) return res.status(400).json({ error: 'no valid assistant text', len: lastText.length });
-  const tail = lastText.slice(-1500);
-  const cs = chatSessions.get(sessionName);
-  if (!cs) return res.status(400).json({ error: 'session not active' });
-  // D/W guard — mirror scanAndReclassify (L7407). Debug endpoint keeps a ?force=true
-  // escape hatch so an operator can still observe classify output on a D/W session.
-  const _dbgTs = getTaskState(persistedSessions.get(sessionName));
-  if ((_dbgTs.classifyState === 'D' || _dbgTs.classifyState === 'W') && String(req.query.force).toLowerCase() !== 'true') {
-    return res.status(409).json({ error: `session is ${_dbgTs.classifyState}; use ?force=true to override`, classifyState: _dbgTs.classifyState });
-  }
-  cs.currentAssistantText = lastText;
-  // runClassifyNow is fire-and-forget: it enqueues an aux task and resolves the
-  // result asynchronously (logging the RESULT), so there's no callback to await.
-  // The ⑦ gate makes it a silent no-op when aux is unhealthy — surface that here
-  // so a debug caller isn't left wondering why no RESULT shows up in the logs.
-  const auxUnhealthy = auxQueue.isUnhealthy();
-  runClassifyNow(cs, sessionName);
-  res.json({
-    ok: true,
-    sessionName,
-    triggered: !auxUnhealthy,
-    tailPreview: tail.slice(-300).replace(/\n/g, ' '),
-    note: auxUnhealthy
-      ? 'aux unhealthy — classify suppressed (⑦ gate), no RESULT will be logged'
-      : 'classify enqueued — check server logs for classify RESULT',
-  });
-});
-
-// ── Collect classify test cases ──
-// Iterates all chat sessions with chat_history, extracts the last assistant
-// message + current taskState, and returns structured test cases for review.
-app.get('/api/debug/classify-test-cases', (req, res) => {
-  const cases = [];
-  for (const [sid, p] of persistedSessions) {
-    if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
-    const history = loadChatHistory(sid);
-    if (!history || !history.length) continue;
-    let lastText = '';
-    let lastTs = null;
-    for (let i = history.length - 1; i >= 0; i--) {
-      const m = history[i];
-      if (m.role !== 'assistant') continue;
-      if (typeof m.content === 'string') { lastText = m.content; lastTs = m.ts; break; }
-      if (Array.isArray(m.content)) {
-        lastText = m.content.filter(b => b.type === 'text').map(b => b.text).join(' ');
-        lastTs = m.ts;
-        break;
-      }
-    }
-    if (!lastText || lastText.length < 40) continue;
-    const tail = lastText.slice(-1500);
-    const ts = p.taskState || {};
-    cases.push({
-      sessionId: sid,
-      label: p.label || '',
-      classifyState: ts.classifyState || null,
-      goal: ts.goal || '',
-      summary: p.summary || '',
-      lastAssistantTail300: tail.slice(-300),
-      lastAssistantFullTail: tail,
-      lastActivity: p.lastActivity || null,
-      lastTs: lastTs ? new Date(lastTs).toISOString() : null,
-    });
-  }
-  // Sort by most recent first
-  cases.sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || ''));
-  res.json({ count: cases.length, cases });
-});
-
 // ── Session fork (Happier-parity: branch a session at any message) ──
 // Creates a NEW live session that inherits the source's provider/model/effort/
 // rolePrompt and replays the transcript up to (and including) the chosen message
@@ -3967,13 +3563,6 @@ app.post('/api/sessions/import', asyncHandler(async (req, res) => {
     res.status(500).json({ error: 'import failed (session record created): ' + e.message, sessionId: newSid });
   }
 }));
-
-app.get('/api/sessions/:id', (req, res) => {
-  const id = req.params.id;
-  const detail = sessionQuery.get(id, { includeHidden: true, presenter: legacySessionDetailPresenter });
-  if (!detail) return res.status(404).json({ error: 'Session not found' });
-  res.json(detail);
-});
 
 app.get('/api/sessions/:id/merge-status', (req, res) => {
   const persisted = persistedSessions.get(req.params.id);
@@ -6347,11 +5936,6 @@ function setSessionStatus(sessionId, patch) {
     runStartedAt: next.runStartedAt, runEndedAt: next.runEndedAt,
     mergeState: mergeStateCached(directories.get(persisted.dirId), persisted),
   });
-}
-
-function workspaceSnapshot(dirId) {
-  const snapshot = sessionWorkspace.snapshot(dirId, { presenter: legacyWorkspacePresenter });
-  return snapshot ? snapshot.sessions : [];
 }
 
 function handleWorkspaceWs(ws, req, urlObj) {

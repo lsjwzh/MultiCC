@@ -204,16 +204,19 @@ test('v1 compatibility baseline catches required-field, property, enum, const, a
 
 test('server composition uses canonical adapters without replacing legacy endpoints', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const sessionAdmin = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'session-admin.js'), 'utf8');
   assert.ok(source.includes("} = require('./src/session')"));
-  assert.ok(source.includes('createSessionQueryService'));
   assert.ok(source.includes('createSessionStateService'));
-  assert.ok(source.includes('const sessionQuery = createSessionQueryService({'));
   assert.ok(source.includes('const sessionState = createSessionStateService({'));
-  assert.ok(source.includes('const sessionWorkspace = createWorkspaceService({'));
-  assert.ok(source.includes("app.get('/api/v1/sessions'"));
-  assert.ok(source.includes("app.get('/api/sessions'"));
+  assert.ok(source.includes("createSessionAdminRuntime } = require('./src/routes/session-admin')"));
+  assert.ok(source.includes('const sessionAdmin = createSessionAdminRuntime({'));
+  assert.ok(source.includes('sessionAdmin.mountRoutes(app)'));
+  assert.ok(sessionAdmin.includes('const sessionQuery = createSessionQueryService({'));
+  assert.ok(sessionAdmin.includes('const sessionWorkspace = createWorkspaceService({'));
+  assert.ok(sessionAdmin.includes("app.get('/api/v1/sessions'"));
+  assert.ok(sessionAdmin.includes("app.get('/api/sessions'"));
   assert.ok(source.includes("app.get('/api/v1/providers'"));
-  assert.ok(source.includes("app.get('/api/v1/directories/:id/workspace'"));
+  assert.ok(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"));
   assert.ok(source.includes("app.get('/api/v1/sessions/:id/waits'"));
   assert.ok(source.includes("app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler)"));
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
