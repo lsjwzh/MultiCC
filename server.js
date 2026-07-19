@@ -9,36 +9,13 @@ try {
   });
 } catch (_) { /* .env not found, skip */ }
 
-// Force all spawned `claude` children to use the local OAuth subscription login
-// in ~/.claude rather than a third-party API relay. If any ANTHROPIC_* routing
-// var is present in the inherited env (e.g. leaked in from the shell that ran
-// `pm2 start` after a cc-switch to a DeepSeek/relay provider), the claude CLI
-// bills against — or worse, routes the `haiku`/`opus`/`sonnet` aliases to — that
-// provider's model instead of the subscription. We don't use them anywhere in
-// this server (per-session providers re-apply their own via buildChildEnv), so
-// strip the ANTHROPIC_* routing-key set here so every child inherits a clean
-// env. The list is owned by src/providers.js (ANTHROPIC_ROUTING_KEYS) — import
-// it rather than re-inline, so the two can't drift (CLAUDE_CODE_SIMPLE and the
-// other CLAUDE_CODE_* markers are stripped separately below).
+// Start every child from clean routing env; per-session providers re-apply theirs.
 const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers');
 for (const k of ANTHROPIC_ROUTING_KEYS) {
   if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
 }
 
-// Backstop: strip Claude Code "SDK / simple mode" markers that leak into this
-// server's own env (they get baked into the pm2 daemon whenever `pm2 start` /
-// `pm2 restart` is run from inside an interactive Claude Code session). The
-// critical one is CLAUDE_CODE_SIMPLE=1: a spawned `claude` child that inherits
-// it enters SDK/simple mode and its tool set collapses from ~28 tools down to
-// just Read/Edit/Bash — no Agent, no Task*, no Workflow, no mcp__*, no Skill
-// (empirically verified). buildChildEnv() already strips it for the chat spawn
-// path, but other spawn paths (run-detached, gateway, detached sessions)
-// inherit process.env directly and would leak it. Deleting here at startup
-// means EVERY spawn path inherits a clean value. The sibling CLAUDE_CODE_* /
-// CLAUDECODE markers are pure leakage here too — this server is not itself a
-// claude-code child/sdk session — so they're stripped as well; CLAUDE_CODE_SIMPLE
-// is the only one that affects the tool set, but the rest are cleaned up for
-// hygiene so a spawned child never mistakes itself for a nested session.
+// Also strip parent Claude SDK markers: SIMPLE mode removes Agent/Task tools.
 for (const k of [
   'CLAUDE_CODE_SIMPLE',
   'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT',
@@ -109,14 +86,7 @@ const {
   buildHandoffCheckpoint,
   renderHandoffPrompt,
 } = require('./src/cli-switch');
-// Data-directory + persistence infrastructure. MULTICC_DATA_DIR (defaults to
-// __dirname) is the ONE knob to swap where state lives; every file path used to
-// resolve state (sessions.json, directories.json, journal, chat history, …)
-// now flows through `MULTICC_PATHS` so tests can point at a mkdtemp dir and
-// the production install keeps behaving exactly as before. state-store gives
-// atomic writes + rolling backups + fail-closed loads; state-tx replays the
-// on-disk journal for cross-file mutations (directory delete → both
-// directories.json and sessions.json) so a mid-write crash is recoverable.
+// MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state-store');
 const stateTx = require('./src/state-tx');
@@ -161,6 +131,7 @@ const { createSessionTriggers } = require('./src/triggers');
 const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
+const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -211,6 +182,19 @@ const chatTurnPreparationRuntime = createTurnRuntimeStore();
 let orchestrationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
+const turnProgressHeartbeat = new TurnProgressHeartbeat({
+  onHeartbeat(event) {
+    const active = chatSessions.get(event.sessionId);
+    if (!active || !active.isStreaming || active._activeTurn?.turnId !== event.turnId) {
+      turnProgressHeartbeat.stop(event.sessionId, event.turnId);
+      return;
+    }
+    metrics.inc('multicc_chat_progress_heartbeats_total');
+    metrics.set('multicc_chat_silent_turn_seconds', Math.round(event.silentMs / 1000));
+    logger.info('chat_progress_heartbeat', event);
+    chatBroadcast(event.sessionId, { type: 'progress_heartbeat', ...event });
+  },
+});
 function recordProviderRouterShadowComparison(report) {
   metrics.inc('multicc_provider_router_shadow_comparisons_total');
   if (!report || report.error) metrics.inc('multicc_provider_router_shadow_errors_total');
@@ -1907,22 +1891,7 @@ async function createSession(id) {
 }
 
 // ── REST API ──
-// Claude Code per-session/per-role routing proxy from cli-provider-router. Mounted
-// BEFORE express.json() on purpose: it streams the raw request body (no 100kb
-// limit, no double-parse) and inspects the `model` field to route each
-// /v1/messages request — main loop vs Task-tool subagent — to different providers.
-//
-// The proxy is the ONLY component that knows, per /v1/messages request, both
-// (a) whether it's the main loop or a Task-tool subagent (role) and (b) the
-// real upstream provider it was routed to. The CLI's own `result` event rolls
-// main + all subagents into one aggregate usage block, so per-role / per-provider
-// accounting is impossible from the transcript. We hook onUsage here to bill
-// each request to its actual (role, provider, model) — independent of the
-// session's main provider — and stash a per-turn runtime breakdown so the chat
-// frontend can show "本轮 主 A / 辅 B" instead of a single merged number.
-// In-memory current-turn snapshots and the persistent per-day × role × provider
-// ledger share one tested implementation. The proxy callback is the only source
-// that knows both the real upstream and whether a request came from a subagent.
+// The raw-body provider proxy is the source of per-role/upstream usage truth.
 const roleTokenTracker = createRoleTokenTracker({ filePath: MULTICC_PATHS.tokenByRoleFile });
 const tokenUsageRuntime = createTokenUsageRoutes({
   fs,
@@ -3995,19 +3964,7 @@ const pushOnInput = pushRuntime.onInput;
 const triggerPush = pushRuntime.notify;
 const cleanupPushMonitor = pushRuntime.cleanup;
 
-// ── Unified classify result parser ─────────────────────────────────────────
-// Both terminal (classifyTerminalIdle) and chat (runClassifyNow/reconcile) use
-// the same 3-line format: goal / phase / state. This parser normalises both and
-// returns a canonical { state, goal, phase, background, error } shape.
-//
-// State letters (line 3):
-//   D = done          → state 'completed'  (task closed; notify user)
-//   C = continue      → state 'continue'   (conversation reads as keep-going; dispatcher no longer auto-injects)
-//   W = wait on user  → state 'waiting'
-//   B = wait on bg    → state 'waiting' + background  (terminal only; chat prompt retired B)
-//   E = API error     → state 'waiting' + error (truncated reply → retry)
-//   P = processing    → state 'running'    (mid-turn only; refresh label)
-//   unknown           → state 'waiting'    (safe default; never falsely 'completed')
+// Normalize the shared goal/phase/state classifier response.
 function parseClassifyResult(text) {
   // DeepSeek thinking-block guard: strip everything before the marker.
   let clean = String(text || '');
@@ -4123,22 +4080,7 @@ const PHASE_LABELS = {
 function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
 function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 
-// ── Unified state-action dispatcher ────────────────────────────────────────
-// Every classify result flows through here. The dispatcher maps state letters
-// to plugin handlers — classify only judges, this layer executes.
-//
-//   D → complete   (set completed, notify user, classifyState='D' → scan skips)
-//   C → continue   (no auto-continue; persist as C; if turn ended → fall through to W)
-//   W → waitUser   (set waiting, broadcast; classifyState='W')
-//   B → retired    (chat: no idle timer, no inject, falls through to waiting broadcast)
-//   E → apiError   (retry inject; classifyState='E')
-//   P → running    (mid-turn refresh label; or interrupted turn → resumeInterrupted)
-//
-// D and W are excluded from scan — D=terminal (done), W=waiting on user (only
-// new user input flips it back to P). Other states (C/B/E/P/null) are re-judged.
-//
-// Context object carries everything the handlers need (varies by caller):
-//   { sessionName, sessionId, cs?, mon?, isTerminal?, cwd?, opts? }
+// Map classifier states to their runtime actions; D/W are scan-terminal states.
 
 // Retry fires immediately - classify itself already runs ~60s apart, so a
 // delay here would just stack on top of that. Retries are uncapped: as long
@@ -5200,10 +5142,12 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
 // returns the session to idle, and fires post-turn hooks.
 function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
   if (!isCurrentTurnRunner(cs, turn, runner)) return;
+  turnProgressHeartbeat.touchActivity(sessionName, turn.turnId);
   if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
   if (evt.type === 'assistant' && evt.message?.content) {
     for (const block of evt.message.content) {
       if (block.type === 'text') {
+        turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
         cs.currentAssistantText += block.text;
         setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
         // Incremental save: flush the in-progress assistant message to disk
@@ -5211,6 +5155,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
         scheduleIncrementalSave(sessionName, cs);
       }
       if (block.type === 'tool_use') {
+        turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'tool', block.name);
         cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
         recordMainToolUseId(sessionName, block.id);
         if (block.name === 'TaskOutput') markTaskOutputAwaiting(block.input);
@@ -5228,6 +5173,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
   if (evt.type === 'user' && evt.message?.content) {
     for (const r of (Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content])) {
       if (r.type === 'tool_result') {
+        turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
         const tc = cs.currentToolCalls.find(t => t.id === r.tool_use_id);
         if (tc) {
           tc.result = typeof r.content === 'string' ? r.content :
@@ -5240,6 +5186,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
     }
   }
   if (evt.type === 'result') {
+    turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
     cs.currentCost = evt.total_cost_usd || null;
     // Flag transport/API failures — classify prompt recognizes these and
     // judges state E (API error) → retry inject picks up naturally.
@@ -5297,6 +5244,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
 // Claude-shaped event contract consumed by existing clients.
 function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, forward, turn, runner) {
   if (!isCurrentTurnRunner(cs, turn, runner)) return;
+  turnProgressHeartbeat.touchActivity(sessionName, turn.turnId);
   const decoded = provider.decodeEvent(rawEvent) || [];
   for (const evt of (Array.isArray(decoded) ? decoded : [decoded])) {
     if (!evt) continue;
@@ -5341,10 +5289,19 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'status') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, evt.phase || evt.status);
       setSessionStatus(sessionName, { status: evt.status || 'thinking', currentFile: evt.currentFile || null });
       continue;
     }
+    if (evt.type === 'activity') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, {
+        phase: evt.phase || 'tool', safeToolKind: evt.toolKind,
+      });
+      setSessionStatus(sessionName, { status: 'running', currentFile: null });
+      continue;
+    }
     if (evt.type === 'assistant_text') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
       if (!evt.text) continue;
       cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + evt.text;
       forward({
@@ -5357,6 +5314,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'tool_start') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'tool', evt.name);
       const tool = { name: evt.name, input: evt.input || {}, id: evt.id };
       cs.currentToolCalls.push(tool);
       recordMainToolUseId(sessionName, evt.id);
@@ -5368,6 +5326,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'tool_result') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
       const text = evt.content || '';
       forward({
         type: 'user',
@@ -5381,6 +5340,8 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'tool_update') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId,
+        evt.completed ? 'thinking' : 'tool', evt.name);
       const id = evt.id || `call_${cs.currentToolCalls.length}`;
       let tool = cs.currentToolCalls.find(item => item.id === id);
       if (!tool) {
@@ -5405,6 +5366,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'thinking') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
       const tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, result: evt.text || '' };
       cs.currentToolCalls.push(tool);
       recordMainToolUseId(sessionName, evt.id);
@@ -5415,10 +5377,13 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'complete') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
       codexUsageHost.complete({ evt, cs, persisted, sessionName, turn, runner, forward });
       continue;
     }
     if (evt.type === 'error') {
+      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId,
+        evt.kind === 'transport_disconnect' ? 'recovering' : 'finalizing');
       if (evt.kind === 'response_completed_disconnect') {
         cs._codexPendingStreamError = evt.message;
         cs._codexPendingStreamErrorCount = (cs._codexPendingStreamErrorCount || 0) + 1;
@@ -5472,14 +5437,19 @@ function startMonitorShadow(sessionName, cs, taskId, outputFile, desc) {
   // -F (capital) retries while the file doesn't exist yet and follows
   // rotation; task_started fires before CC creates the file, so -F is required.
   const tail = spawn('tail', ['-n', '+1', '-F', outputFile], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const shadow = { tail, outputFile, lastProgressAt: 0 };
+  cs._monitorShadows.set(taskId, shadow);
   tail.stdout.on('data', (chunk) => {
-    for (const ln of chunk.toString().split('\n')) {
-      if (!ln) continue;
-      chatBroadcast(sessionName, { type: 'monitor_progress', task_id: taskId, line: ln, description: desc });
-    }
+    if (!String(chunk || '').trim()) return;
+    const now = Date.now();
+    if (now - shadow.lastProgressAt < 5000) return;
+    shadow.lastProgressAt = now;
+    chatBroadcast(sessionName, {
+      type: 'monitor_progress', task_id: taskId,
+      description: desc || '后台任务仍在执行', background: true,
+    });
   });
   tail.on('error', () => {});
-  cs._monitorShadows.set(taskId, { tail, outputFile });
 }
 
 function stopMonitorShadow(cs, taskId) {
@@ -5655,7 +5625,7 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
     }).catch(error => console.warn(`[multicc/task-ledger] start ${taskId} failed: ${error.message}`));
     chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd, background: !isSyncBash });
     startMonitorShadow(sessionName, cs, taskId, outputFile, evt.description || '');
-  } else if (sub === 'task_updated') {
+  } else if (sub === 'task_progress' || sub === 'task_updated') {
     const taskId = evt.task_id;
     if (!taskId) return;
     const rawStatus = String(evt.status || 'running').toLowerCase();
@@ -5674,6 +5644,11 @@ function handleBackgroundTaskEvent(sessionName, cs, evt) {
         error: evt.error || null,
       },
     }).catch(error => console.warn(`[multicc/task-ledger] update ${taskId} failed: ${error.message}`));
+    chatBroadcast(sessionName, {
+      type: 'monitor_progress', task_id: taskId,
+      description: evt.description || evt.summary || '后台任务仍在执行',
+      status, background: !isSyncBashTask(taskId),
+    });
   } else if (sub === 'task_notification') {
     const taskId = evt.task_id;
     console.log(`[multicc/bg-diag] ${sessionName} task_notification taskId=${taskId} toolUseId=${evt.tool_use_id || '-'} desc="${(evt.description || '').slice(0, 40)}"`);
@@ -5879,21 +5854,8 @@ function runChatTurn(sessionName, text, opts = {}) {
   let messageDurable = false;
 
   try {
-  // ── Degrade防线 fail-loop 拦截（方案C）──────────────────────────────
-  // 上游 API 不健康时，所有「系统自动注入」起的新 turn 只会立刻失败，反过来喂大
-  // fail-loop（classify 判 E/P → 注入 → 失败 → recordApiError → 再 classify → 再注入…）。
-  // originContinue 由 waitInjector._inject wrapper 统一设置（见 waitInjector.init 调用处），
-  // 是「系统注入 vs 用户主动」的唯一可靠判别——SYS_PREFIX(🔇)文本前缀不可靠，因为
-  // safeInject 不加前缀（resumeHeldSessions / resumeInterrupted 都走 safeInject）。拦在这一个
-  // chokepoint = 覆盖全部注入源：classify 的 E-retry/P-resume
-  // + wait-injector 内 callback/poll/resumeInterrupted/bgCheck + bg-completion
-  // 结果回流 + dispatch 结果路由。用户主动消息（WS user_message / HTTP memo/send）不设
-  // originContinue → 放行；dispatch 启动 worker 有自己的 gate（见 dispatchToSession 的
-  // isNetworkUnhealthy 检查）。triggers / 全局 cron 直调 runChatTurn 不带 originContinue，
-  // 不在本 chokepoint 覆盖内（属另一改动）。
-  // 抑制时不注入、改为 holdSession，等 recordApiSuccess → resumeHeldSessions 恢复接续。
-  // 【顺序不变量】recordApiSuccess 必须先把 networkHealth.unhealthy 置 false 再调
-  // resumeHeldSessions——否则恢复注入会被本 gate 误拦、held 会话永远无法接续。
+  // A real user/trigger turn resets auto-continue guards. Degraded automatic
+  // continuations were already held at admission until recordApiSuccess resumes them.
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
   if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
@@ -6012,6 +5974,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs._activeTurn = turn;
   cs._activeRunner = null;
   cs._continuationLineage = { turnId: turn.turnId, lineage: turn.lineage };
+  turnProgressHeartbeat.start(sessionName, turn.turnId, { phase: 'starting' });
   // Reset the per-turn role breakdown (main vs sub) collected by the claude-proxy
   // onUsage hook. A new user turn starts a fresh "本轮" window, so stale subagent
   // totals from the previous turn must not bleed into the new one.
@@ -6204,6 +6167,7 @@ function runChatTurn(sessionName, text, opts = {}) {
 
     const forward = (evt) => {
       cs.lastStreamAt = Date.now();  // watchdog: last live stream activity (stuck-isStreaming detection)
+      turnProgressHeartbeat.touchVisible(sessionName, turn.turnId);
       cs.streamReplay.push(evt);
       if (cs.streamReplay.length > 500) cs.streamReplay.shift();
       chatBroadcast(sessionName, evt);
@@ -6344,6 +6308,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.claudeProc = spawnChat(fallbackArgs, true);
         return;
       }
+      turnProgressHeartbeat.stop(sessionName, turn.turnId);
       turnFinalizationExecutor.execute(finalizePlan, {
         runnerKind: 'process', sessionName, cs, persisted, turn, runner,
         code,
@@ -6393,6 +6358,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     return false;
   } finally {
     if (preparationOpen) {
+      turnProgressHeartbeat.stop(sessionName, turnId);
       chatTurnPreparationRuntime.settle(sessionName, turnId, {
         status: 'failed', reason: preparationFailure,
       });
@@ -6587,6 +6553,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
 
   const forward = (evt) => {
     cs.lastStreamAt = Date.now();  // watchdog: last live stream activity (stuck-isStreaming detection)
+    turnProgressHeartbeat.touchVisible(sessionName, turn.turnId);
     cs.streamReplay.push(evt);
     if (cs.streamReplay.length > 500) cs.streamReplay.shift();
     chatBroadcast(sessionName, evt);
@@ -6679,6 +6646,7 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq, turn, runner) {
     sameDurablePartial: hasMatchingPartialCheckpoint(runner, finalizeCheckpointKey),
     handoff: persisted.pendingCliHandoff,
   });
+  turnProgressHeartbeat.stop(sessionName, turn.turnId);
   turnFinalizationExecutor.execute(plan, {
     runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
   });
@@ -7195,24 +7163,7 @@ cronTasks.init({ directories, createSessionRecord, runChatTurn, sessionExists: (
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
 
-// ── Graceful shutdown: persist in-flight chat turns before exiting ──
-// Chat assistant messages are only written to disk when a turn COMPLETES (the
-// `result` event, or the child process closing). A plain SIGTERM — e.g. a
-// service restart — would otherwise drop whatever the agent had already
-// streamed in an unfinished turn, so that text vanishes from history after the
-// restart.
-//
-// The ShutdownCoordinator (src/shutdown.js) drives the whole sequence:
-//   1. flip readiness → false (health probe / restart endpoints can steer away),
-//   2. checkpoint — flushInFlightChats(): persist every session's partial
-//      assistant text synchronously so even a hard kill in the next few ms
-//      loses nothing,
-//   3. drain — let in-flight turns run to their natural `result` event, up to
-//      SHUTDOWN_GRACE_MS,
-//   4. close — HTTP → WS → watchers → timers → child procs (registered below
-//      as the various subsystems come up).
-// PM2's kill_timeout in ecosystem.config.js is set greater than the grace so
-// PM2 doesn't cut off partial-checkpoint mid-flight.
+// Graceful shutdown checkpoints partial turns, drains, then closes dependencies.
 function flushInFlightChats() {
   // Prevent a delayed interim write from landing after the shutdown partial
   // checkpoint and recreating a trailing duplicate message.
@@ -7302,6 +7253,7 @@ function closeWebSocketRuntime() {
 }
 
 async function closeSessionRuntime() {
+  turnProgressHeartbeat.stopAll();
   for (const [name, cs] of chatSessions) {
     try { cancelClassify(cs); } catch (_) {}
     if (cs) assignKillReason(cs._activeRunner, 'shutdown');
