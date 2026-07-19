@@ -67,6 +67,7 @@ const {
 const { createProviderRouterRuntime } = require('./src/provider-router-runtime');
 const { findProviderReferences } = require('./src/provider-references');
 const { createCliAdapters } = require('./src/cli-adapters');
+const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
@@ -567,49 +568,11 @@ function providerFor(session) {
 
 // ── Codex session-id capture: scans ~/.codex/sessions for a JSONL with matching cwd whose
 // session_meta.timestamp is newer than `sinceMs`. Returns the session id or null. ──
-function findCodexSessionId(cwd, sinceMs, sessionsDir) {
-  try {
-    const rootDir = sessionsDir || CODEX_SESSIONS_DIR;
-    if (!fs.existsSync(rootDir)) return null;
-    const candidates = [];
-    const walk = (dir) => {
-      let entries;
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-      for (const e of entries) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) walk(p);
-        else if (e.isFile() && e.name.endsWith('.jsonl')) {
-          try {
-            const stat = fs.statSync(p);
-            if (stat.mtimeMs >= sinceMs) candidates.push({ path: p, mtimeMs: stat.mtimeMs });
-          } catch (_) {}
-        }
-      }
-    };
-    walk(rootDir);
-    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    for (const c of candidates) {
-      try {
-        // Read first line only (session_meta is the first record)
-        const fd = fs.openSync(c.path, 'r');
-        const buf = Buffer.alloc(8192);
-        const n = fs.readSync(fd, buf, 0, buf.length, 0);
-        fs.closeSync(fd);
-        const firstLine = buf.slice(0, n).toString().split('\n')[0];
-        if (!firstLine) continue;
-        const meta = JSON.parse(firstLine);
-        if (meta.type !== 'session_meta') continue;
-        const metaCwd = meta.payload?.cwd;
-        const metaId = meta.payload?.id;
-        // cwd may differ on macOS due to /private prefix; compare resolved real paths
-        if (!metaId) continue;
-        const norm = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
-        if (norm(metaCwd) === norm(cwd)) return metaId;
-      } catch (_) {}
-    }
-  } catch (_) {}
-  return null;
-}
+// codex session-file lookup (extracted to src/cli-adapters/codex-session-file.js).
+// Pure fs read; CODEX_SESSIONS_DIR is the default root when a call omits one.
+const { findCodexSessionId } = createCodexSessionFinder({
+  fs, path, defaultSessionsDir: CODEX_SESSIONS_DIR,
+});
 
 // ── tmux helpers (extracted to src/tmux.js) ──
 // Pure primitives, destructured so existing call sites are unchanged. The
