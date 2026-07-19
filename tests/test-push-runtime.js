@@ -42,7 +42,6 @@ function createHarness(options = {}) {
     auxCalls: [],
     dispatches: [],
     taskWrites: [],
-    bumps: [],
     pushCalls: [],
     barkCalls: [],
     webhookCalls: [],
@@ -109,7 +108,6 @@ function createHarness(options = {}) {
       return { goal: lines[0], phase: lines[1], state: lines[2] === 'D' ? 'completed' : 'waiting' };
     },
     dispatchStateAction(parsed, context) { state.dispatches.push({ parsed, context }); },
-    bumpBgActivity(id) { state.bumps.push(id); },
     timers,
     now: () => state.time,
     idleMs: 25,
@@ -213,7 +211,6 @@ test('output without a notification consumer does not allocate a timer or Aux re
   assert.equal(harness.runtime.onOutput('term', 'x'.repeat(100)), false);
   assert.equal(harness.state.timers.length, 0);
   assert.equal(harness.state.auxGets, 0);
-  assert.equal(harness.state.bumps.length, 0);
 });
 
 test('idle classification respects the threshold and durable D/W guard', async () => {
