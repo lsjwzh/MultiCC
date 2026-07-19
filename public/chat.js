@@ -2690,6 +2690,10 @@ if (goalPrecheckBtn) goalPrecheckBtn.onclick = async () => {
 };
 
 /* ── visualViewport fix ── */
+/* _isMobile lives in client.js (a separate script scope, const-locked); define it
+   locally here too so this top-level block doesn't throw a ReferenceError that
+   would abort the rest of chat.js — including the auto connect() call. */
+const _isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth <= 768;
 if (_isMobile && window.visualViewport) {
   const fixH = () => { document.body.style.height = window.visualViewport.height + 'px'; };
   window.visualViewport.addEventListener('resize', fixH);
