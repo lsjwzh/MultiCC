@@ -91,6 +91,7 @@ const { createProviderRouterRuntime } = require('./src/provider-router-runtime')
 const { findProviderReferences } = require('./src/provider-references');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
+const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
 const {
   applyCuratedMemoryAction,
@@ -2337,222 +2338,41 @@ app.post('/api/directories/:id/sessions', asyncHandler(async (req, res) => {
   res.json(r.session);
 }));
 
-function cliSwitchDefaults(cli) {
-  // Match normal session creation exactly. OpenCode/ZCode share a provider
-  // pool with Claude, but must not silently inherit Claude's global default:
-  // the provider/model may be unsupported by their native CLI.
-  const provider = providerDefaults[cli] || null;
-  return {
-    provider,
-    // A provider/model that is valid for Claude may not be accepted by
-    // OpenCode/ZCode even though they share the Anthropic-compatible pool.
-    // Let a newly activated CLI choose its own default model.
-    model: null,
-    effort: cli === 'codex' ? codexDefaultReasoningLevel() : null,
-    subagent: null,
-    agent: null,
-  };
-}
-
-function cliHandoffSummary(session) {
-  const handoff = session && session.pendingCliHandoff;
-  return handoff ? {
-    id: handoff.id,
-    fromCli: handoff.fromCli,
-    toCli: handoff.toCli,
-    status: handoff.status,
-    reason: handoff.reason || null,
-    createdAt: handoff.createdAt,
-    reusedTarget: !!handoff.reusedTarget,
-  } : null;
-}
-
-async function cliSwitchGitSnapshot(session) {
-  const fallback = { branch: session.branch || null, head: null, changes: [] };
-  try {
-    const snapshot = await gitWorktreeSnapshot(cwdForSession(session), session.branch || null);
-    return { branch: snapshot.branch, head: snapshot.head, changes: snapshot.changes };
-  } catch (_) {
-    return fallback;
-  }
-}
-
-function cliSwitchBusyState(sessionId) {
-  const cs = chatSessions.get(sessionId);
-  const stream = chatStream.status(sessionId);
-  const busy = !!(
-    (cs && (cs.isStreaming || cs.claudeProc))
-    || (stream && (stream.busy || stream.queued > 0))
-  );
-  return { busy, cs, stream };
-}
-
-function resetChatRuntimeForCli(cs, session) {
-  if (!cs) return;
-  assignKillReason(cs._activeRunner, 'cli_switch');
-  if (cs.claudeProc) {
-    try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
-    cs.claudeProc = null;
-  }
-  cancelClassify(cs);
-  cs.cli = session.cli;
-  cs.chatTurnCount = (session.cliSessionId || session._streamSessionId) ? 1 : 0;
-  cs.lineBuf = '';
-  cs.currentAssistantText = '';
-  cs.currentToolCalls = [];
-  cs.currentCost = null;
-  cs.isStreaming = false;
-  cs.streamReplay = [];
-  cs._adapterError = null;
-  cs._activeRunner = null;
-  cs._activeTurn = null;
-  cs._continuationLineage = null;
-  cs._resultSaved = false;
-  cs._sawApiError = false;
-}
-
-function performCliSwitch(session, targetCli, options = {}) {
-  const fromCli = session.cli || 'claude';
-  const now = Date.now();
-  const history = loadChatHistory(session.id);
-  const checkpoint = buildHandoffCheckpoint({
-    session,
-    fromCli,
-    toCli: targetCli,
-    history,
-    git: options.gitSnapshot || { branch: session.branch || null, head: null, changes: [] },
-    now,
-  });
-
-  // Snapshot the source state before terminating its process. activateCliState
-  // then restores the target's independent native id and settings, if present.
-  const result = activateCliState(session, targetCli, {
-    fresh: options.fresh === true,
-    defaults: cliSwitchDefaults(targetCli),
-    now,
-  });
-  const handoff = {
-    id: `handoff_${crypto.randomBytes(8).toString('hex')}`,
-    fromCli,
-    toCli: targetCli,
-    createdAt: checkpoint.createdAt,
-    status: 'pending',
-    reusedTarget: result.reused,
-    checkpoint,
-  };
-  session.pendingCliHandoff = handoff;
-
-  // chatStream owns Claude's warm process; killing cs.claudeProc alone does not
-  // touch it. Always close the adapter state before reusing this logical id.
-  chatStream.close(session.id);
-  const cs = chatSessions.get(session.id);
-  resetChatRuntimeForCli(cs, session);
-  rememberActiveCliState(session, now);
-
-  appendChatMessage(session.id, {
-    role: 'system',
-    content: `CLI switched from ${fromCli} to ${targetCli}. A structured handoff checkpoint will be delivered with the next message.`,
-    ts: now,
-    cliSwitch: { handoffId: handoff.id, fromCli, toCli: targetCli, reusedTarget: result.reused },
-  });
-  appendEvent(session.dirId, 'session_cli_changed', `${session.label || session.id}: ${fromCli} → ${targetCli}`, session.id);
-  chatBroadcast(session.id, {
-    type: 'cli_switched',
-    cli: targetCli,
-    fromCli,
-    handoffId: handoff.id,
-    reusedTarget: result.reused,
-    fresh: options.fresh === true,
-    provider: session.provider || null,
-    providerName: sessionProviderName(session),
-    model: session.model || null,
-    effectiveModel: effectiveSessionModel(session),
-    effort: session.effort || null,
-    effectiveEffort: effectiveSessionEffort(session),
-    subagent: serializeSubagent(session.subagent),
-  });
-  if (session.dirId) workspaceBroadcast(session.dirId, { type: 'session_cli_changed', sessionId: session.id, cli: targetCli });
-  return { result, handoff };
-}
-
-function consumePendingCliHandoff(sessionName) {
-  const session = persistedSessions.get(sessionName);
-  const handoff = session && session.pendingCliHandoff;
-  if (!handoff || handoff.status !== 'pending') return false;
-  session.lastCliHandoff = {
-    id: handoff.id,
-    fromCli: handoff.fromCli,
-    toCli: handoff.toCli,
-    createdAt: handoff.createdAt,
-    consumedAt: new Date().toISOString(),
-  };
-  delete session.pendingCliHandoff;
-  rememberActiveCliState(session);
-  savePersistedSessionsBestEffort('runtime.consume-cli-handoff');
-  chatBroadcast(sessionName, {
-    type: 'system', subtype: 'cli_handoff_applied',
-    message: handoff.reason === 'history_clear_keep'
-      ? `✓ 保留的最近消息已由 ${handoff.toCli} 作为新上下文接收`
-      : `✓ ${handoff.fromCli} → ${handoff.toCli} 的上下文交接已由目标 CLI 接收`,
-  });
-  return true;
-}
-
-app.post('/api/sessions/:id/switch-cli', asyncHandler(async (req, res) => {
-  const session = persistedSessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'session not found' });
-  if (session.type === 'aux' || session.type === 'gateway') {
-    return res.status(400).json({ error: 'system session must be switched by its bridge controller' });
-  }
-  if (session.kind !== 'chat') return res.status(400).json({ error: 'only chat sessions can switch CLI' });
-  const targetCli = String(req.body && req.body.cli || '').trim().toLowerCase();
-  if (!SUPPORTED_CHAT_CLIS.includes(targetCli)) {
-    return res.status(400).json({ error: `cli must be one of: ${SUPPORTED_CHAT_CLIS.join(', ')}` });
-  }
-  const fresh = !!(req.body && req.body.fresh);
-  if ((session.cli || 'claude') === targetCli && !fresh) {
-    sessionPersistence.mutate('http.switch-cli-noop', () => ensureCliStates(session));
-    return res.json({
-      ok: true, changed: false, cli: targetCli,
-      cliStates: cliStateSummary(session),
-      cliAvailability: cliAvailabilitySummary(),
-      pendingCliHandoff: cliHandoffSummary(session),
-    });
-  }
-  const availability = cliAvailabilitySummary();
-  if (!availability[targetCli]?.available) {
-    return res.status(400).json({ error: `${targetCli} CLI is not installed or not executable` });
-  }
-  const activity = cliSwitchBusyState(session.id);
-  if (activity.busy) {
-    return res.status(409).json({
-      error: 'session is running; wait for the current turn to finish or cancel it before switching CLI',
-      stream: activity.stream || null,
-    });
-  }
-  const gitSnapshot = await cliSwitchGitSnapshot(session);
-  const switched = sessionPersistence.mutate('http.switch-cli', () =>
-    performCliSwitch(session, targetCli, { fresh, gitSnapshot }));
-  res.json({
-    ok: true,
-    changed: true,
-    cli: session.cli,
-    fromCli: switched.result.fromCli,
-    handoffId: switched.handoff.id,
-    reusedTarget: switched.result.reused,
-    fresh,
-    cliStates: cliStateSummary(session),
-    cliAvailability: availability,
-    effectiveModel: effectiveSessionModel(session),
-    effectiveEffort: effectiveSessionEffort(session),
-    provider: session.provider || null,
-    providerName: sessionProviderName(session),
-    model: session.model || null,
-    effort: session.effort || null,
-    agent: session.agent || null,
-    subagent: serializeSubagent(session.subagent),
-  });
-}));
+// Cross-CLI switching keeps one native state per CLI and emits a visible,
+// bounded handoff checkpoint. Provider defaults and the warm chat stream are
+// resolved lazily because their host runtimes are composed later in this file.
+const cliSwitchRuntime = createCliSwitchRuntime({
+  records: persistedSessions,
+  sessionPersistence,
+  supportedClis: SUPPORTED_CHAT_CLIS,
+  chatSessions,
+  getProviderDefaults: () => providerDefaults,
+  codexDefaultReasoningLevel,
+  getHistory: loadChatHistory,
+  buildHandoffCheckpoint,
+  activateCliState,
+  rememberActiveCliState,
+  ensureCliStates,
+  cliStateSummary,
+  gitWorktreeSnapshot,
+  cwdForSession,
+  getChatStream: () => chatStream,
+  cancelClassify,
+  assignKillReason,
+  appendMessage: appendChatMessage,
+  appendEvent,
+  chatBroadcast,
+  workspaceBroadcast,
+  saveBestEffort: savePersistedSessionsBestEffort,
+  cliAvailabilitySummary,
+  sessionProviderName,
+  effectiveSessionModel,
+  effectiveSessionEffort,
+  serializeSubagent,
+});
+const cliSwitchGitSnapshot = cliSwitchRuntime.cliSwitchGitSnapshot;
+const consumePendingCliHandoff = cliSwitchRuntime.consumePendingCliHandoff;
+cliSwitchRuntime.mountRoutes(app, asyncHandler);
 
 // PATCH a session — supports display-name edits via label.
 app.patch('/api/sessions/:id', (req, res) => {
