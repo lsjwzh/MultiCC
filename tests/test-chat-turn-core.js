@@ -512,13 +512,16 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   const usageBody = hostSource.slice(usageStart, usageEnd);
   assert.ok(usageBody.indexOf('ports.usage.commit(') < usageBody.indexOf('claimDurableUsage(runner'),
     'main token usage must commit before the in-memory once claim');
-  const accumulateStart = source.indexOf('function accumulateTokenUsage(');
-  const accumulateEnd = source.indexOf('function getTokenUsage()', accumulateStart);
-  const accumulateBody = source.slice(accumulateStart, accumulateEnd);
-  assert.ok(accumulateBody.indexOf('atomicWriteJson(TOKEN_USAGE_FILE, data)')
-    < accumulateBody.indexOf('accumulateTokenDaily(sessionName, usage)'),
+  const tokenSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'token-usage.js'), 'utf8');
+  const accumulateStart = tokenSource.indexOf('function accumulateTokenUsage(');
+  const accumulateEnd = tokenSource.indexOf('\n  function seedTokenUsageFromHistory(', accumulateStart);
+  const accumulateBody = tokenSource.slice(accumulateStart, accumulateEnd);
+  assert.ok(accumulateBody.indexOf('deps.atomicWriteJson(deps.tokenUsageFile, data)')
+    < accumulateBody.indexOf('accumulateTokenDaily(sessionId, usage)'),
   'daily aggregation must derive only after the main usage file commits');
-  assert.match(accumulateBody, /Failed to save token usage:[\s\S]{0,100}return false;/);
+  assert.match(accumulateBody,
+    /catch \(error\) \{[\s\S]{0,120}logFailure\('token_usage_write_failed', error\);[\s\S]{0,80}return false;/,
+    'a failed cumulative write must release the durable usage claim for retry');
   const finalizeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-plan.js'), 'utf8');
   assert.match(finalizeSource, /if \(!facts\.killReason\) \{[\s\S]{0,120}try-resume-interrupted/,
     'only unknown interruptions without an explicit lifecycle kill may auto-recover');
