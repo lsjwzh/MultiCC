@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'settings_service.dart';
+import 'ws_ticket_service.dart';
 
 /// Live status of one agent/session in the workspace status board.
 class SessionStatus {
@@ -98,6 +99,8 @@ class SessionStatus {
 class WorkspaceService extends ChangeNotifier {
   final SettingsService settings;
   final String dirId;
+  final WsTicketConnectionGate _wsAuth;
+  final WebSocketChannel Function(Uri) _connectChannel;
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
@@ -115,47 +118,73 @@ class WorkspaceService extends ChangeNotifier {
   /// actually notify is decided by [SessionManager].
   void Function(String sessionId, String state, String message)? onNotify;
 
-  WorkspaceService({required this.settings, required this.dirId});
+  WorkspaceService({
+    required this.settings,
+    required this.dirId,
+    WsTicketClient? wsTicketClient,
+    WebSocketChannel Function(Uri)? channelFactory,
+  }) : _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
+       _connectChannel = channelFactory ?? WebSocketChannel.connect;
 
   void connect() {
     if (_disposed) return;
     _reconnectTimer?.cancel();
-    final url = _buildUrl();
+    late WsTicketAttempt attempt;
     try {
-      final channel = WebSocketChannel.connect(Uri.parse(url));
+      attempt = _wsAuth.begin(
+        socketUri: _buildUri(),
+        ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
+        accessToken: settings.token,
+      );
+    } catch (_) {
+      _scheduleReconnect();
+      return;
+    }
+    unawaited(_connectAuthorized(attempt));
+  }
+
+  Future<void> _connectAuthorized(WsTicketAttempt attempt) async {
+    try {
+      final url = await attempt.authorizedUri;
+      if (_disposed || !attempt.isCurrent) return;
+      final channel = _connectChannel(url);
+      if (_disposed || !attempt.isCurrent) {
+        await channel.sink.close();
+        return;
+      }
       _channel = channel;
       _sub?.cancel();
       _sub = channel.stream.listen(
         _onMessage,
-        onError: (_) => _scheduleReconnect(),
-        onDone: _scheduleReconnect,
+        onError: (_) {
+          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+        },
+        onDone: () {
+          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+        },
       );
       channel.ready
           .then((_) {
+            if (_disposed || !attempt.isCurrent || _channel != channel) return;
             _reconnectAttempt = 0;
           })
           .catchError((_) {
-            _scheduleReconnect();
+            if (!_disposed && attempt.isCurrent && _channel == channel) {
+              _scheduleReconnect();
+            }
           });
     } catch (_) {
-      _scheduleReconnect();
+      if (!_disposed && attempt.isCurrent) _scheduleReconnect();
     }
   }
 
-  String _buildUrl() {
-    var h = settings.host.replaceAll(RegExp(r'/$'), '');
-    final isHttps = h.startsWith('https://');
-    final wsScheme = isHttps ? 'wss' : 'ws';
-    final bare = h.replaceFirst(RegExp(r'^https?://'), '');
+  Uri _buildUri() {
     final params = <String, String>{'dirId': dirId};
-    if (settings.token.isNotEmpty) params['token'] = settings.token;
-    final query = params.entries
-        .map(
-          (e) =>
-              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
-        )
-        .join('&');
-    return '$wsScheme://$bare/ws/workspace?$query';
+    return buildMulticcWebSocketUri(
+      host: settings.host,
+      path: MulticcWsPath.workspace,
+      query: params,
+    );
   }
 
   SessionStatus _parse(Map m, {SessionStatus? prev}) {
@@ -185,7 +214,8 @@ class WorkspaceService extends ChangeNotifier {
           ? m['goal'] as String
           : prev?.goal,
       phase: (m['phase'] as String?) ?? prev?.phase,
-      runStartedAt: (m['runStartedAt'] as num?)?.toInt() ?? prev?.runStartedAt ?? 0,
+      runStartedAt:
+          (m['runStartedAt'] as num?)?.toInt() ?? prev?.runStartedAt ?? 0,
       runEndedAt: (m['runEndedAt'] as num?)?.toInt() ?? prev?.runEndedAt ?? 0,
     );
   }
@@ -309,6 +339,7 @@ class WorkspaceService extends ChangeNotifier {
 
   void _scheduleReconnect() {
     if (_disposed) return;
+    _wsAuth.invalidate();
     final ms = _reconnectAttempt < 5
         ? (1000 * (1 << _reconnectAttempt))
         : 15000;
@@ -321,6 +352,7 @@ class WorkspaceService extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _wsAuth.invalidate();
     _reconnectTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();

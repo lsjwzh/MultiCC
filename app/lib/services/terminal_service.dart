@@ -4,6 +4,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xterm/xterm.dart';
 
 import 'settings_service.dart';
+import 'ws_ticket_service.dart';
 
 enum TerminalConnectionState { disconnected, connecting, connected }
 
@@ -11,6 +12,8 @@ class TerminalService {
   final SettingsService settings;
   final String sessionId;
   final Terminal terminal;
+  final WsTicketConnectionGate _wsAuth;
+  final WebSocketChannel Function(Uri) _connectChannel;
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
@@ -32,7 +35,11 @@ class TerminalService {
   TerminalService({
     required this.settings,
     required this.sessionId,
-  }) : terminal = Terminal(maxLines: 5000) {
+    WsTicketClient? wsTicketClient,
+    WebSocketChannel Function(Uri)? channelFactory,
+  }) : terminal = Terminal(maxLines: 5000),
+       _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
+       _connectChannel = channelFactory ?? WebSocketChannel.connect {
     terminal.onOutput = _onTerminalOutput;
     terminal.onResize = (w, h, pw, ph) => _onTerminalResize(w, h);
   }
@@ -43,46 +50,67 @@ class TerminalService {
     _state = TerminalConnectionState.connecting;
     _stateCtrl.add(_state);
 
-    final url = _buildUrl();
+    late WsTicketAttempt attempt;
     try {
-      final channel = WebSocketChannel.connect(Uri.parse(url));
+      attempt = _wsAuth.begin(
+        socketUri: _buildUri(),
+        ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
+        accessToken: settings.token,
+      );
+    } catch (_) {
+      _scheduleReconnect();
+      return;
+    }
+    unawaited(_connectAuthorized(attempt));
+  }
+
+  Future<void> _connectAuthorized(WsTicketAttempt attempt) async {
+    try {
+      final url = await attempt.authorizedUri;
+      if (_disposed || !attempt.isCurrent) return;
+      final channel = _connectChannel(url);
+      if (_disposed || !attempt.isCurrent) {
+        await channel.sink.close();
+        return;
+      }
       _channel = channel;
       _sub?.cancel();
       _sub = channel.stream.listen(
         _onMessage,
-        onError: (_) => _scheduleReconnect(),
-        onDone: _scheduleReconnect,
+        onError: (_) {
+          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+        },
+        onDone: () {
+          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+        },
       );
-      channel.ready.then((_) {
-        if (_disposed) return;
-        _lastCols = 0;
-        _lastRows = 0;
-        _state = TerminalConnectionState.connected;
-        _reconnectAttempt = 0;
-        _stateCtrl.add(_state);
-        _sendResize(terminal.viewWidth, terminal.viewHeight);
-      }).catchError((_) {
-        _scheduleReconnect();
-      });
+      channel.ready
+          .then((_) {
+            if (_disposed || !attempt.isCurrent || _channel != channel) return;
+            _lastCols = 0;
+            _lastRows = 0;
+            _state = TerminalConnectionState.connected;
+            _reconnectAttempt = 0;
+            _stateCtrl.add(_state);
+            _sendResize(terminal.viewWidth, terminal.viewHeight);
+          })
+          .catchError((_) {
+            if (!_disposed && attempt.isCurrent && _channel == channel) {
+              _scheduleReconnect();
+            }
+          });
     } catch (_) {
-      _scheduleReconnect();
+      if (!_disposed && attempt.isCurrent) _scheduleReconnect();
     }
   }
 
-  String _buildUrl() {
-    var h = settings.host.replaceAll(RegExp(r'/$'), '');
-    final isHttps = h.startsWith('https://');
-    final wsScheme = isHttps ? 'wss' : 'ws';
-    final bare = h.replaceFirst(RegExp(r'^https?://'), '');
-
+  Uri _buildUri() {
     final params = <String, String>{'id': sessionId};
-    if (settings.token.isNotEmpty) params['token'] = settings.token;
-
-    final query = params.entries
-        .map((e) => '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
-        .join('&');
-
-    return '$wsScheme://$bare/?$query';
+    return buildMulticcWebSocketUri(
+      host: settings.host,
+      path: MulticcWsPath.terminal,
+      query: params,
+    );
   }
 
   void _onMessage(dynamic raw) {
@@ -148,18 +176,23 @@ class TerminalService {
     _lastCols = cols;
     _lastRows = rows;
     try {
-      _channel?.sink.add(jsonEncode({'type': 'resize', 'cols': cols, 'rows': rows}));
+      _channel?.sink.add(
+        jsonEncode({'type': 'resize', 'cols': cols, 'rows': rows}),
+      );
     } catch (_) {}
   }
 
   void _scheduleReconnect() {
     if (_disposed) return;
+    _wsAuth.invalidate();
     _state = TerminalConnectionState.disconnected;
     _stateCtrl.add(_state);
 
-    final delay = Duration(milliseconds: (_reconnectAttempt < 5)
-        ? (1000 * (1 << _reconnectAttempt)).clamp(0, 15000)
-        : 15000);
+    final delay = Duration(
+      milliseconds: (_reconnectAttempt < 5)
+          ? (1000 * (1 << _reconnectAttempt)).clamp(0, 15000)
+          : 15000,
+    );
     _reconnectAttempt++;
 
     _reconnectTimer = Timer(delay, () {
@@ -169,6 +202,7 @@ class TerminalService {
 
   void manualReconnect() {
     _reconnectAttempt = 0;
+    _wsAuth.invalidate();
     _sub?.cancel();
     _channel?.sink.close();
     connect();
@@ -176,6 +210,7 @@ class TerminalService {
 
   void dispose() {
     _disposed = true;
+    _wsAuth.invalidate();
     _reconnectTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();

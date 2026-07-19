@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'ws_ticket_service.dart';
+
 /// One remembered server connection (URL + its token).
 class ServerHistoryEntry {
   final String host;
@@ -164,29 +166,21 @@ class SettingsService {
     }
   }
 
-  /// Build ws[s]:// URL for /ws/chat
+  /// Build a credential-free ws[s]:// URL for /ws/chat.
+  ///
+  /// Callers must exchange it through [WsTicketClient] immediately before
+  /// connecting. Kept for compatibility with older embedding code; production
+  /// transports own their ticket lifecycle directly.
   String buildWsUrl({String? resumeId}) {
-    var h = host;
-    // Normalise: strip trailing slash and scheme
-    h = h.replaceAll(RegExp(r'/$'), '');
-    final isHttps = h.startsWith('https://');
-    final wsScheme = isHttps ? 'wss' : 'ws';
-    final bare = h.replaceFirst(RegExp(r'^https?://'), '');
-
     final params = <String, String>{};
-    if (token.isNotEmpty) params['token'] = token;
     if (cwd.isNotEmpty) params['cwd'] = cwd;
     if (session.isNotEmpty) params['session'] = session;
     if (resumeId != null && resumeId.isNotEmpty) params['resume'] = resumeId;
-
-    final query = params.entries
-        .map(
-          (e) =>
-              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
-        )
-        .join('&');
-
-    return '$wsScheme://$bare/ws/chat${query.isNotEmpty ? '?$query' : ''}';
+    return buildMulticcWebSocketUri(
+      host: host,
+      path: MulticcWsPath.chat,
+      query: params,
+    ).toString();
   }
 
   /// Build http[s]:// URL for REST endpoints

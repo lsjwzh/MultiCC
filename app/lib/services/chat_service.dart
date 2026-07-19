@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
 import 'settings_service.dart';
+import 'ws_ticket_service.dart';
 
 enum ChatConnectionState { disconnected, connecting, connected }
 
@@ -18,6 +19,8 @@ class ChatService {
   final SettingsService settings;
   final String sessionName;
   final String sessionCwd;
+  final WsTicketConnectionGate _wsAuth;
+  final WebSocketChannel Function(Uri) _connectChannel;
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
@@ -62,25 +65,21 @@ class ChatService {
     required this.sessionName,
     required this.sessionCwd,
     this.initialSessionId,
-  });
+    WsTicketClient? wsTicketClient,
+    WebSocketChannel Function(Uri)? channelFactory,
+  }) : _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
+       _connectChannel = channelFactory ?? WebSocketChannel.connect;
 
-  String _buildChatUrl({String? resumeId}) {
-    var h = settings.host.replaceAll(RegExp(r'/$'), '');
-    final isHttps = h.startsWith('https://');
-    final wsScheme = isHttps ? 'wss' : 'ws';
-    final bare = h.replaceFirst(RegExp(r'^https?://'), '');
-
+  Uri _buildChatUri({String? resumeId}) {
     final params = <String, String>{};
-    if (settings.token.isNotEmpty) params['token'] = settings.token;
     if (sessionCwd.isNotEmpty) params['cwd'] = sessionCwd;
     if (sessionName.isNotEmpty) params['session'] = sessionName;
     if (resumeId != null && resumeId.isNotEmpty) params['resume'] = resumeId;
-
-    final query = params.entries
-        .map((e) => '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
-        .join('&');
-
-    return '$wsScheme://$bare/ws/chat${query.isNotEmpty ? '?$query' : ''}';
+    return buildMulticcWebSocketUri(
+      host: settings.host,
+      path: MulticcWsPath.chat,
+      query: params,
+    );
   }
 
   void connect() {
@@ -93,41 +92,68 @@ class ChatService {
     _state = ChatConnectionState.connecting;
     _emit('state_change', _state);
 
-    final url = _buildChatUrl(resumeId: _sessionId ?? initialSessionId);
+    late WsTicketAttempt attempt;
     try {
-      final channel = WebSocketChannel.connect(Uri.parse(url));
+      attempt = _wsAuth.begin(
+        socketUri: _buildChatUri(resumeId: _sessionId ?? initialSessionId),
+        ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
+        accessToken: settings.token,
+      );
+    } catch (_) {
+      _scheduleReconnect();
+      return;
+    }
+    unawaited(_connectAuthorized(attempt));
+  }
+
+  Future<void> _connectAuthorized(WsTicketAttempt attempt) async {
+    Uri url;
+    try {
+      url = await attempt.authorizedUri;
+      if (_disposed || !attempt.isCurrent) return;
+      final channel = _connectChannel(url);
+      if (_disposed || !attempt.isCurrent) {
+        await channel.sink.close();
+        return;
+      }
       _channel = channel;
       _sub?.cancel();
       _sub = channel.stream.listen(
         _onMessage,
-        onError: (_) => _scheduleReconnect(),
-        onDone: _scheduleReconnect,
+        onError: (_) {
+          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+        },
+        onDone: () {
+          if (attempt.isCurrent && _channel == channel) _scheduleReconnect();
+        },
       );
       // Don't claim "connected" until the WebSocket handshake actually
       // completes — connect() returns immediately and a failed handshake only
       // surfaces asynchronously. Marking connected early would leave a dead
       // socket showing a green dot with no way to manually reconnect.
-      channel.ready.then((_) {
-        if (_disposed || _channel != channel) return;
-        _state = ChatConnectionState.connected;
-        _reconnectAttempt = 0;
-        _lastActivity = DateTime.now();
-        _startHeartbeat();
-        // Flush a cancel that was requested while disconnected — the server
-        // never saw it, so the CLI process is still running.
-        if (_pendingCancel) {
-          _pendingCancel = false;
-          try {
-            channel.sink.add(jsonEncode({'type': 'cancel'}));
-          } catch (_) {}
-        }
-        _emit('state_change', _state);
-      }).catchError((_) {
-        if (_disposed || _channel != channel) return;
-        _scheduleReconnect();
-      });
+      channel.ready
+          .then((_) {
+            if (_disposed || !attempt.isCurrent || _channel != channel) return;
+            _state = ChatConnectionState.connected;
+            _reconnectAttempt = 0;
+            _lastActivity = DateTime.now();
+            _startHeartbeat();
+            // Flush a cancel that was requested while disconnected — the server
+            // never saw it, so the CLI process is still running.
+            if (_pendingCancel) {
+              _pendingCancel = false;
+              try {
+                channel.sink.add(jsonEncode({'type': 'cancel'}));
+              } catch (_) {}
+            }
+            _emit('state_change', _state);
+          })
+          .catchError((_) {
+            if (_disposed || !attempt.isCurrent || _channel != channel) return;
+            _scheduleReconnect();
+          });
     } catch (_) {
-      _scheduleReconnect();
+      if (!_disposed && attempt.isCurrent) _scheduleReconnect();
     }
   }
 
@@ -204,7 +230,8 @@ class ChatService {
           // it fires the "completed while disconnected" warning every turn.
           if (!msg.containsKey('is_streaming')) break;
 
-          _sessionId = (msg['session_id'] ?? msg['session'] ?? _sessionId)?.toString();
+          _sessionId = (msg['session_id'] ?? msg['session'] ?? _sessionId)
+              ?.toString();
           final serverStreaming = msg['is_streaming'] == true;
           if (serverStreaming != isStreaming) {
             isStreaming = serverStreaming;
@@ -335,7 +362,11 @@ class ChatService {
   /// server applies the per-send execution limits in [goalLimits] (maxRounds →
   /// claude --max-turns; maxBudget → advisory token budget). There is no global
   /// limit config — blank/0 means unlimited for that dimension.
-  bool send(String text, {bool goal = false, Map<String, dynamic>? goalLimits}) {
+  bool send(
+    String text, {
+    bool goal = false,
+    Map<String, dynamic>? goalLimits,
+  }) {
     if (_channel == null || _state != ChatConnectionState.connected) {
       connect();
       return false;
@@ -385,6 +416,7 @@ class ChatService {
 
   void _scheduleReconnect() {
     if (_disposed) return;
+    _wsAuth.invalidate();
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     // Dedup: onError + onDone (or ready failure) can fire for the same dead
@@ -393,9 +425,11 @@ class ChatService {
     _state = ChatConnectionState.disconnected;
     _emit('state_change', _state);
 
-    final delay = Duration(milliseconds: (_reconnectAttempt < 5)
-        ? (1000 * (1 << _reconnectAttempt)).clamp(0, 15000)
-        : 15000);
+    final delay = Duration(
+      milliseconds: (_reconnectAttempt < 5)
+          ? (1000 * (1 << _reconnectAttempt)).clamp(0, 15000)
+          : 15000,
+    );
     _reconnectAttempt++;
     _emit('reconnecting', _reconnectAttempt);
 
@@ -432,11 +466,20 @@ class ChatService {
     final qs = <String, String>{'limit': limit.toString()};
     if (beforeId != null && beforeId.isNotEmpty) qs['before'] = beforeId;
     final query = qs.entries
-        .map((e) => '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+        .map(
+          (e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
+        )
         .join('&');
     final res = await http
-        .get(Uri.parse(_url('/api/sessions/${Uri.encodeComponent(sessionName)}/history?$query')),
-            headers: _headers)
+        .get(
+          Uri.parse(
+            _url(
+              '/api/sessions/${Uri.encodeComponent(sessionName)}/history?$query',
+            ),
+          ),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode != 200) {
       throw Exception('history fetch failed: ${res.statusCode}');
@@ -445,21 +488,22 @@ class ChatService {
     final list = data['messages'];
     final parsed = (list is List)
         ? list
-            .map((m) {
-              try {
-                return ChatMessage.fromHistory(m as Map<String, dynamic>);
-              } catch (_) {
-                return null;
-              }
-            })
-            .whereType<ChatMessage>()
-            .toList()
+              .map((m) {
+                try {
+                  return ChatMessage.fromHistory(m as Map<String, dynamic>);
+                } catch (_) {
+                  return null;
+                }
+              })
+              .whereType<ChatMessage>()
+              .toList()
         : <ChatMessage>[];
     return (messages: parsed, hasMore: data['hasMore'] == true);
   }
 
   void dispose() {
     _disposed = true;
+    _wsAuth.invalidate();
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
     _sub?.cancel();
