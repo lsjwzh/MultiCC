@@ -216,6 +216,35 @@ test('HTTP pagination and delete preserve legacy DTOs, status codes and commit o
   assert.deepEqual(res.body, { error: 'session not found' });
 });
 
+test('HTTP pagination projects the full history before slicing a page', () => {
+  const seen = [];
+  const fx = fixture({
+    initial: { s1: [
+      { id: 'm1', role: 'assistant', usage: { value: 10 } },
+      { id: 'm2', role: 'assistant', usage: { value: 15 } },
+      { id: 'm3', role: 'assistant', usage: { value: 19 } },
+    ] },
+    deps: {
+      projectMessages(sessionId, messages) {
+        seen.push({ sessionId, count: messages.length });
+        let previous = 0;
+        return messages.map(message => {
+          const next = clone(message);
+          next.usage.value -= previous;
+          previous = message.usage.value;
+          return next;
+        });
+      },
+    },
+  });
+  const page = fx.runtime.paginate('s1', { limit: 2 });
+  assert.deepEqual(seen, [{ sessionId: 's1', count: 3 }]);
+  assert.deepEqual(page.messages.map(message => message.usage.value), [5, 4]);
+  assert.equal(page.hasMore, true);
+  assert.equal(fx.history.records.get('s1')[1].usage.value, 15,
+    'read-time projection never mutates the durable record');
+});
+
 test('HTTP delete persistence failure reaches the terminal safe boundary without a false broadcast', () => {
   const fx = fixture({ initial: { s1: [{ id: 'm1', role: 'user', content: 'one' }] } });
   const app = createFakeApp();
