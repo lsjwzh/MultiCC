@@ -93,7 +93,15 @@ test('missing or malformed request metadata fails closed', () => {
 
 test('HTTP and WebSocket production gates share the same locality boundary', () => {
   const server = fs.readFileSync('server.js', 'utf8');
-  const calls = server.match(/isLocalRequest\(req\)/g) || [];
+  // The HTTP auth gate moved into src/routes/auth.js, which receives the one
+  // shared isLocalRequest helper as a dependency; the settings gate and the
+  // WebSocket gate remain in server.js. Counting across both files keeps the
+  // invariant honest — all production gates route through the same helper, and
+  // none has drifted to bespoke inline locality logic.
+  const authRoutes = fs.readFileSync('src/routes/auth.js', 'utf8');
+  const calls = (server.match(/isLocalRequest\(req\)/g) || [])
+    .concat(authRoutes.match(/isLocalRequest\(req\)/g) || []);
   assert.ok(calls.length >= 3, 'HTTP auth, settings and WebSocket gates must share one helper');
   assert.doesNotMatch(server, /\bisExternalProxy\s*\(/, 'removed inline helper must have no stale callers');
+  assert.doesNotMatch(authRoutes, /\bisExternalProxy\s*\(/, 'auth module must not reintroduce an inline helper');
 });
