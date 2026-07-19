@@ -331,3 +331,23 @@
 3. Flutter WebSocket 长 token 已清理，但 REST 仍按现有 `X-Access-Token` 契约工作；ticket 只是短期 WebSocket admission，不应被误用为通用 API token。
 4. dispatch 外部 delivery 仍没有全局 exactly-once 证明，继续保持 `deliveryProven:false`；本波没有扩大该语义。
 5. 历史备份/APK/fixtures 等治理项仍需独立 cleanup 变更和 owner 审核。本轮没有删除任何历史代码或制品。
+
+## 大重构第十波实施结果（2026-07-19）
+
+- 新增默认架构闸门 `scripts/check-source-line-budget.js`：第一方源码默认不超过 3,000 行且不超过 240,000 bytes；长期 reviewed exception 最高 5,000 行。现有 `server.js/manage.js/chat.js` 只是显式迁移债务，ceiling 精确等于当前大小；任何回涨，或缩小后不在同一提交下调 ceiling，都会失败。该检查已进入 `test:architecture`，不能靠压缩多条语句到一行绕过。
+- Voice REST/settings 从 `server.js` 迁到 515 行的 `src/routes/voice.js`，覆盖 refine/feedback/confirm/progress/vocab/STT/settings/SSE 共 10 个端点。Host 只注入 upload、Aux、ASR/TTS/Voice 和环境持久化端口；`server.js` 在合入最新 sync 提示后现约 12,016 行，相对本波新基线净移出约 370 行。
+- Voice settings 使用可补偿事务：`persist → ASR → TTS → process.env → voice`，任何阶段失败按已尝试阶段逆序恢复。补偿失败只上报固定 stage/category，并暴露 bounded consistency；成功 DTO、upload middleware 顺序、Local-ASR→Cloud fallback 与 SSE cleanup 保持兼容。
+- Manage 抽出 `manage-bridges.js`（867 行）和 `manage-host-settings.js`（537 行），`manage.js` 约 6,512→5,221（-1,291）。五个 Bridge/Gateway、Push/通知/密码/Proxy/OAuth/Tunnel/重启/APK 的 classic-script 全局入口保持；三类 SSE 使用 generation + owned timer，stop 后旧 timer 不能复活连接。
+- Manage Git 提交树移除旧 HTML 字符串/`innerHTML` sink，repo path、error、hash、date、author、subject、refs 全部通过 DOM + `textContent`；外部 Git 元数据不能注入 HTML。新 Manage 模块没有凭据 query、跨域 fetch 或 `innerHTML`。
+- Chat 抽出 `chat-composer.js`（759 行），接管 send/cancel、Slash、键盘/触控、附件/图片、录音/STT、流式语音与原生桥；`chat.js` 约 4,718→4,087（-631）。流式语音 ticket/start 使用 generation：双击共用 pending 请求，cancel/stop 会使迟到 ticket 失效，stale 候选不能开启或覆盖麦克风实例。
+- 对抗审查发现并推动修复了 4 个 Major：Bridge stop 后复活、Voice ticket 竞态、Voice 热应用半提交、Git author/error XSS。修复后 Voice 17 项、Composer 10 项、Manage 6 项及联合 Core/Security/Architecture 均通过；最终完整矩阵以本节提交记录为准。
+
+### 第十波后的行数债务与下一步
+
+| 文件 | 当前约行数 | 强制目标 | 下一切片 |
+|---|---:|---:|---|
+| `server.js` | 12,016 | 3,000 | files/upload/push/aux/goal/provider routes；随后拆 WS/runner composition，协议 runner 保持分离 |
+| `public/manage.js` | 5,221 | 3,000 | session/directory lifecycle 与 dashboard card/controller；下一波先降到 5,000 以下 |
+| `public/chat.js` | 4,087 | 3,000 | WS event glue、工具交互和剩余 modal/controller；保留 transport/history/composer 所有权 |
+
+Flutter `main_shell.dart` 约 2.4k、`chat_screen.dart` 约 1.7k，已进入常规 2k–3k 预算；第三方 minified/generated 资产按精确 reviewed exception 管理，不与第一方 God file 混淆。当前目标尚未完成，以上三笔 debt 不能被描述为永久 5k 例外。
