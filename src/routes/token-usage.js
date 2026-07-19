@@ -431,16 +431,18 @@ function createTokenUsageRoutes(rawDeps) {
     };
     const snapshot = deps.roleTokenTracker.snapshot(sessionId) || {};
     const main = snapshot.main || {};
-    const sub = snapshot.sub || {};
+    // Codex turn.completed is the root thread's cumulative usage. Forked
+    // agents have independent rollout counters and enter through UsageObserved;
+    // subtracting sub here would erase real main usage rather than dedupe it.
     const missing = {
       inputTokens: Math.max(0, aggregate.inputTokens
-        - tokenCount(main.inputTokens) - tokenCount(sub.inputTokens)),
+        - tokenCount(main.inputTokens)),
       outputTokens: Math.max(0, aggregate.outputTokens
-        - tokenCount(main.outputTokens) - tokenCount(sub.outputTokens)),
+        - tokenCount(main.outputTokens)),
       cacheWrite: Math.max(0, aggregate.cacheWrite
-        - tokenCount(main.cacheWrite) - tokenCount(sub.cacheWrite)),
+        - tokenCount(main.cacheWrite)),
       cacheRead: Math.max(0, aggregate.cacheRead
-        - tokenCount(main.cacheRead) - tokenCount(sub.cacheRead)),
+        - tokenCount(main.cacheRead)),
     };
     if (missing.inputTokens + missing.outputTokens + missing.cacheWrite + missing.cacheRead === 0) {
       return false;
