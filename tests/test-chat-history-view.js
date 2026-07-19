@@ -10,6 +10,7 @@ const { createHistoryView } = require('../public/chat-history-view');
 const ROOT = path.join(__dirname, '..');
 const VIEW_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-history-view.js'), 'utf8');
 const CHAT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
+const EVENT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-event-controller.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
 
 class FakeClassList {
@@ -249,7 +250,7 @@ test('classic host delegates persisted and streaming DOM ownership to the view',
   assert.match(CHAT_SOURCE, /chatHistoryView\.applyPlan\(plan/);
   assert.match(CHAT_SOURCE, /chatHistoryView\.renderCurrentText/);
   assert.match(CHAT_SOURCE, /chatHistoryView\.prependMessages/);
-  assert.match(CHAT_SOURCE, /chatHistoryView\.createToolCard/);
+  assert.match(EVENT_SOURCE, /historyView\.createToolCard/);
   for (const removed of ['renderHistoryAssistantNode', 'renderHistoryUserNode', 'renderHistoryMessageNode', 'hydrateStreamingTools']) {
     assert.doesNotMatch(CHAT_SOURCE, new RegExp(`function ${removed}\\b`));
   }

@@ -123,6 +123,7 @@ const { mountSystemRoutes } = require('./src/routes/system');
 const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { mountVoiceRoutes } = require('./src/routes/voice');
+const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -5779,530 +5780,36 @@ function triggerPush(sessionId, type, message) {
   console.log(`[multicc/push] Sent ${type} notification for session ${sessionId}`);
 }
 
-// ── AuxQueue: stateless direct-HTTP AI service (intent classification, etc.) ──
-const AUX_SESSION_ID = '__aux__';
-const AUX_TIMEOUT_MS = Math.max(10000, parseInt(process.env.AUX_TIMEOUT_MS || '90000', 10) || 90000);
-const AUX_HISTORY_MAX = 200;
-
-// Aux model config (persisted in aux-config.json). The aux helper runs short,
-// stateless single-turn tasks (intent classify, summary, voice refine). It
-// selects a wire protocol first, then one callable provider and model. Aux never
-// spawns a CLI; providers without HTTP credentials are excluded from the picker.
-const AUX_CONFIG_FILE = MULTICC_PATHS.auxConfigFile;
-let auxConfig = { protocol: 'anthropic', providerId: null, model: null };
-function normalizeAuxProtocol(v) {
-  return String(v || '').toLowerCase() === 'openai' ? 'openai' : 'anthropic';
-}
-function loadAuxConfig() {
-  try {
-    const c = JSON.parse(fs.readFileSync(AUX_CONFIG_FILE, 'utf8'));
-    auxConfig = {
-      // One-time compatibility read for pre-refactor config; save writes only
-      // protocol/provider/model and permanently removes the old cli field.
-      protocol: normalizeAuxProtocol(c.protocol || (c.cli === 'codex' ? 'openai' : 'anthropic')),
-      providerId: c.providerId || null,
-      model: (c.model && String(c.model).trim()) || null,
-    };
-    saveAuxConfig();
-  } catch (_) { /* no config yet → defaults */ }
-}
-function saveAuxConfig() {
-  try { atomicWriteJson(AUX_CONFIG_FILE, auxConfig); } catch (_) {}
-}
-
-const auxQueue = {
-  queue: [],          // [{ id, type, prompt, meta, cancelled, resolve, reject, ts }]
-  currentTask: null,
-  processing: false,
-  totalProcessed: 0,
-  lastTaskTime: null,
-  // ── Health monitoring (③) ──────────────────────────────────────────────
-  // consecutiveFails counts failed (non-cancelled) tasks in a row. >=3 →
-  // unhealthy; the summary/reconcile machinery degrades to rules (④)
-  // and the dashboard shows a non-dismissible red banner. Any success clears it.
-  health: { consecutiveFails: 0, unhealthy: false, lastFailAt: null, lastFailMsg: '', sinceAt: null },
-  clients: new Set(), // WebSocket clients watching aux events
-
-  // Record a failed task. Cancelled tasks don't count (user-initiated).
-  // Returns the updated health object.
-  recordFail(msg) {
-    const h = this.health;
-    h.consecutiveFails = (h.consecutiveFails || 0) + 1;
-    h.lastFailAt = Date.now();
-    h.lastFailMsg = String(msg || '').slice(0, 200);
-    if (h.consecutiveFails >= 3 && !h.unhealthy) {
-      h.unhealthy = true;
-      h.sinceAt = Date.now();
-      console.error(`[multicc/aux] UNHEALTHY after ${h.consecutiveFails} consecutive failures: ${h.lastFailMsg}`);
-      this.broadcastHealth();
-    }
-    recordApiError(msg);  // ⑥A: also feed network-level unhealthy
-    return h;
-  },
-  // Record a successful task. Any success clears the unhealthy flag.
-  recordSuccess() {
-    const h = this.health;
-    if (h.consecutiveFails || h.unhealthy) {
-      h.consecutiveFails = 0;
-      if (h.unhealthy) {
-        h.unhealthy = false;
-        h.sinceAt = null;
-        console.log('[multicc/aux] recovered: healthy again');
-        this.broadcastHealth();
-      }
-    }
-    recordApiSuccess();  // ⑥A: aux success means the upstream API is reachable again
-    // Recovery hook removed — scanAndReclassify covers all cases.
-    return h;
-  },
-  isUnhealthy() { return !!(this.health && this.health.unhealthy); },
-  broadcastHealth() {
-    this.broadcast({ type: 'aux_health', health: { ...this.health } });
-  },
-
-  init() {
-    loadAuxConfig();
-    // Register __aux__ as a special persisted session
-    if (!persistedSessions.has(AUX_SESSION_ID)) {
-      persistedSessions.set(AUX_SESSION_ID, {
-        id: AUX_SESSION_ID, cwd: __dirname, createdAt: new Date(), type: 'aux', label: 'AI Assistant',
-      });
-      savePersistedSessionsBestEffort('startup.aux-session-create');
-    } else {
-      const existing = persistedSessions.get(AUX_SESSION_ID);
-      if (existing.type !== 'aux') {
-        existing.type = 'aux';
-        existing.label = 'AI Assistant';
-        savePersistedSessionsBestEffort('startup.aux-session-repair');
-      }
-    }
-    console.log('[multicc/aux] AuxQueue initialized (direct HTTP)');
-  },
-
-  enqueue(task) {
-    if (_shuttingDown) {
-      const error = new Error('server is shutting down');
-      error.code = 'SERVER_SHUTTING_DOWN';
-      return Promise.reject(error);
-    }
-    return new Promise((resolve, reject) => {
-      task.id = task.id || crypto.randomUUID();
-      task.ts = Date.now();
-      task.cancelled = false;
-      task.resolve = resolve;
-      task.reject = reject;
-      this.queue.push(task);
-      this.broadcast({ type: 'aux_event', status: 'queued', task: { id: task.id, type: task.type, meta: task.meta }, queueDepth: this.queue.length });
-      console.log(`[multicc/aux] Enqueued ${task.type} (queue: ${this.queue.length})`);
-      this.drain();
-    });
-  },
-
-  cancel(taskId) {
-    // In queue but not yet processing → remove
-    const idx = this.queue.findIndex(t => t.id === taskId);
-    if (idx !== -1) {
-      const task = this.queue.splice(idx, 1)[0];
-      task.reject({ cancelled: true });
-      this.broadcast({ type: 'aux_event', status: 'cancelled', task: { id: taskId } });
-      console.log(`[multicc/aux] Cancelled queued task ${taskId}`);
-      return;
-    }
-    // Currently executing → mark cancelled (let it finish, discard result)
-    if (this.currentTask?.id === taskId) {
-      this.currentTask.cancelled = true;
-      this.broadcast({ type: 'aux_event', status: 'cancelled', task: { id: taskId } });
-      console.log(`[multicc/aux] Marked in-flight task ${taskId} as cancelled`);
-    }
-  },
-
-  // Whether a task for this session is already queued or in-flight (dedup).
-  hasPendingFor(sessionName) {
-    if (!sessionName) return false;
-    const match = (t) => {
-      const m = (t && t.meta) || {};
-      return m.sessionName === sessionName || m.sid === sessionName;
-    };
-    if (this.currentTask && match(this.currentTask)) return true;
-    return this.queue.some(match);
-  },
-
-  // Cancel every still-QUEUED intent_classify for one session, so a fresh
-  // classify supersedes stale queued ones instead of piling up. A session only
-  // ever needs its single latest judgement.
-  // NOTE: we do NOT cancel an in-flight classify — it already fired its upstream
-  // HTTP request and will return within ~90s; cancelling it just marks the
-  // result for discard while the worker stays busy (double waste: the request
-  // ran + the new one re-runs). Let the in-flight one land instead.
-  cancelClassifyFor(sessionKey) {
-    if (!sessionKey) return;
-    const isClassify = (t) => t && t.type === 'intent_classify' &&
-      t.meta && (t.meta.sessionName === sessionKey || t.meta.sid === sessionKey);
-    for (const t of [...this.queue]) if (isClassify(t)) this.cancel(t.id);
-  },
-
-  async drain() {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-
-    const task = this.queue.shift();
-    this.currentTask = task;
-    this.broadcast({ type: 'aux_event', status: 'processing', task: { id: task.id, type: task.type, meta: task.meta } });
-
-    const startTime = Date.now();
-    try {
-      const resultText = await this.execute(task);
-      const durationMs = Date.now() - startTime;
-      this.totalProcessed++;
-      this.lastTaskTime = Date.now();
-
-      // Save to history
-      appendChatMessage(AUX_SESSION_ID, {
-        role: 'user', content: task.prompt, ts: task.ts,
-        taskType: task.type, taskId: task.id, meta: task.meta,
-        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
-      });
-      appendChatMessage(AUX_SESSION_ID, {
-        role: 'assistant', content: resultText, ts: Date.now(),
-        taskId: task.id, durationMs, cancelled: task.cancelled,
-        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
-        enqueuedAt: task.ts, startedAt: startTime, queueMs: startTime - task.ts,
-      });
-
-      if (task.cancelled) {
-        task.reject({ cancelled: true });
-        this.broadcast({ type: 'aux_event', status: 'done', task: { id: task.id, type: task.type }, result: resultText, durationMs, cancelled: true });
-      } else {
-        this.recordSuccess();
-        task.resolve({ text: resultText, cancelled: false });
-        this.broadcast({ type: 'aux_event', status: 'done', task: { id: task.id, type: task.type }, result: resultText, durationMs, cancelled: false });
-      }
-    } catch (err) {
-      const durationMs = Date.now() - startTime;
-      const errMsg = err?.message || String(err);
-      this.recordFail(errMsg);
-      appendChatMessage(AUX_SESSION_ID, {
-        role: 'user', content: task.prompt, ts: task.ts,
-        taskType: task.type, taskId: task.id, meta: task.meta,
-        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
-      });
-      appendChatMessage(AUX_SESSION_ID, {
-        role: 'assistant', content: `[ERROR] ${errMsg}`, ts: Date.now(),
-        taskId: task.id, durationMs, error: true,
-        protocol: auxConfig.protocol, wireApi: task._wireApi || null, transport: 'directHttp',
-        enqueuedAt: task.ts, startedAt: startTime, queueMs: startTime - task.ts,
-      });
-      task.reject(err);
-      this.broadcast({ type: 'aux_event', status: 'error', task: { id: task.id, type: task.type }, error: errMsg, durationMs });
-      console.error(`[multicc/aux] Task ${task.id} failed:`, errMsg);
-    }
-
-    this.currentTask = null;
-    this.processing = false;
-    this.drain(); // process next
-  },
-
-  // Resolve the configured protocol/provider to one direct HTTP target.
-  resolveHttpTarget() {
-    const target = providers.resolveAuxHttpTarget(auxConfig.protocol, auxConfig.providerId, {
-      port: PORT,
-      claudeOfficialViaProxy: CLAUDE_OFFICIAL_VIA_PROXY,
-    });
-    if (!target.available) {
-      throw new Error(`Aux Provider 不可用：${target.reason || '缺少可调用的 HTTP 端点'}`);
-    }
-    return target;
-  },
-
-  execute(task) {
-    let target;
-    try {
-      target = this.resolveHttpTarget();
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    task._transport = 'directHttp';
-    task._wireApi = target.wireApi;
-    return this.executeHttp(task, target);
-  },
-
-  executeHttp(task, target) {
-    const model = auxConfig.model || target.model || (target.modelOptions && target.modelOptions[0]) || '';
-    return executeAuxHttp({
-      target,
-      model,
-      prompt: task.prompt,
-      systemPrompt: task.systemPrompt,
-      timeoutMs: (task.meta && task.meta.timeout) || AUX_TIMEOUT_MS,
-    });
-  },
-
-  broadcast(payload) {
-    broadcastTo(this.clients, payload);
-  },
-
-  getStatus() {
-    return {
-      processing: this.processing,
-      queueDepth: this.queue.length,
-      currentTask: this.currentTask ? { id: this.currentTask.id, type: this.currentTask.type } : null,
-      totalProcessed: this.totalProcessed,
-      lastTaskTime: this.lastTaskTime,
-      health: { ...this.health },
-    };
-  },
-};
-
-// REST API for aux
-app.get('/api/aux/status', (req, res) => {
-  res.json(auxQueue.getStatus());
+// ── AuxQueue + Goal precheck ────────────────────────────────────────────────
+// Queue, provider/model configuration and goal-quality routes share one
+// lifecycle. The host supplies ports; this subsystem owns its mutable config.
+const {
+  AUX_SESSION_ID,
+  AUX_HISTORY_MAX,
+  auxQueue,
+  getAuxConfig,
+  resolveGoalLimits,
+  buildGoalLimitNote,
+} = mountAuxGoalRoutes(app, {
+  fs,
+  crypto,
+  rootDir: __dirname,
+  auxConfigFile: MULTICC_PATHS.auxConfigFile,
+  goalConfigFile: MULTICC_PATHS.goalConfigFile,
+  atomicWriteJson,
+  persistedSessions,
+  savePersistedSessionsBestEffort,
+  isShuttingDown: () => _shuttingDown,
+  recordApiError,
+  recordApiSuccess,
+  appendChatMessage,
+  loadChatHistory,
+  providers,
+  getPort: () => PORT,
+  getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
+  executeAuxHttp,
+  broadcast: broadcastTo,
 });
-app.get('/api/aux/health', (req, res) => {
-  res.json({ health: { ...auxQueue.health } });
-});
-
-app.get('/api/aux/history', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 50, AUX_HISTORY_MAX);
-  const history = loadChatHistory(AUX_SESSION_ID);
-  res.json(history.slice(-limit));
-});
-
-app.post('/api/aux/enqueue', (req, res) => {
-  const { type, prompt, meta } = req.body || {};
-  if (!prompt) return res.status(400).json({ error: 'prompt required' });
-  auxQueue.enqueue({ type: type || 'manual', prompt, meta: meta || {} })
-    .then(result => res.json({ ok: true, result: result.text }))
-    .catch(err => res.json({ ok: false, error: err?.message || 'cancelled' }));
-});
-
-function listAuxProviders(protocol) {
-  const normalized = normalizeAuxProtocol(protocol);
-  const appType = normalized === 'openai' ? 'codex' : 'claude';
-  return providers.listProviders(appType).map((provider) => {
-    const target = providers.resolveAuxHttpTarget(normalized, provider.id, {
-      port: PORT,
-      claudeOfficialViaProxy: CLAUDE_OFFICIAL_VIA_PROXY,
-    });
-    return {
-      id: provider.id,
-      name: provider.name,
-      modelOptions: target.modelOptions || provider.modelOptions || [],
-      wireApi: target.wireApi || provider.wireApi || null,
-      available: !!target.available,
-      unavailableReason: target.available ? null : target.reason,
-    };
-  }).filter(provider => provider.available);
-}
-
-// Aux model config: protocol -> callable provider -> model.
-app.get('/api/aux/config', (req, res) => {
-  const providersByProtocol = {
-    anthropic: listAuxProviders('anthropic'),
-    openai: listAuxProviders('openai'),
-  };
-  res.json({
-    protocol: auxConfig.protocol,
-    providerId: auxConfig.providerId,
-    model: auxConfig.model,
-    protocols: [
-      { id: 'anthropic', name: 'Anthropic Messages' },
-      { id: 'openai', name: 'OpenAI Responses / Chat Completions' },
-    ],
-    providersByProtocol,
-  });
-});
-app.post('/api/aux/config', (req, res) => {
-  const { providerId, model } = req.body || {};
-  const rawProtocol = String((req.body || {}).protocol || '').toLowerCase();
-  if (rawProtocol !== 'anthropic' && rawProtocol !== 'openai') {
-    return res.status(400).json({ ok: false, error: 'protocol 必须是 anthropic 或 openai' });
-  }
-  const protocol = normalizeAuxProtocol(rawProtocol);
-  if (!providerId) return res.status(400).json({ ok: false, error: '请选择 Provider' });
-  const target = providers.resolveAuxHttpTarget(protocol, String(providerId), {
-    port: PORT,
-    claudeOfficialViaProxy: CLAUDE_OFFICIAL_VIA_PROXY,
-  });
-  if (!target.available) {
-    return res.status(400).json({ ok: false, error: `Provider 不支持 ${protocol} HTTP 调用：${target.reason || '不可用'}` });
-  }
-  const resolvedModel = (model && String(model).trim())
-    || target.model
-    || (target.modelOptions && target.modelOptions[0])
-    || null;
-  if (!resolvedModel) return res.status(400).json({ ok: false, error: '请选择模型' });
-  auxConfig.protocol = protocol;
-  auxConfig.providerId = String(providerId);
-  auxConfig.model = resolvedModel;
-  saveAuxConfig();
-  console.log(`[multicc/aux] config updated: protocol=${protocol} wire=${target.wireApi} provider=${auxConfig.providerId} model=${auxConfig.model}`);
-  res.json({ ok: true, protocol, providerId: auxConfig.providerId, model: auxConfig.model, wireApi: target.wireApi });
-});
-
-// ── Goal-mode precheck ──
-// Before a task is sent in "Goal 模式" (target-driven, run autonomously to
-// completion, self-verify), the aux-AI judges whether it's well-formed enough.
-// Which criteria ("限制") are checked is configurable per-dimension, plus a
-// minimum pass score — globally in goal-config.json (settings panels) and
-// per-send (the chat 🎯 dialog can override the dimensions for one check).
-// Returns a verdict + a rewritten "goal-ready" version the user can accept/edit.
-const GOAL_DIMENSIONS = {
-  objective:  '目标明确：清楚要达成什么结果，而非含糊方向。',
-  criteria:   '完成标准明确：有可判断「做完了」的验收标准或可观察的产出。',
-  scope:      '范围清晰：边界明确，不至于无限发散。',
-  executable: '可独立执行：代理无需再追问关键信息即可开工，或缺失信息能用合理默认补足。',
-};
-// Goal precheck config is global (a quality-gate preference). The execution
-// limits (maxRounds / maxBudget), by contrast, are decided per-send in the goal
-// dialog and are NOT persisted globally — see resolveGoalLimits.
-const GOAL_CONFIG_DEFAULT = {
-  dimensions: { objective: true, criteria: true, scope: true, executable: true },
-  minScore: 60,
-};
-// Per-send execution limits. These are the hard client/server defaults used when
-// a goal send omits a value; they are intentionally not stored in goal-config.json.
-// maxRounds → caps the agent's autonomous turns (claude `--max-turns N`, hard
-//   CLI-level limit). 0 = 不限制.
-// maxBudget → advisory output-token budget injected into the goal prompt so the
-//   agent self-stops near the cap (no hard CLI flag). 0 = 不限制.
-const GOAL_ROUNDS_DEFAULT = 0;     // fallback round cap when a send omits it (0 = unlimited)
-const GOAL_BUDGET_DEFAULT = 0;     // fallback budget (0 = unlimited)
-const GOAL_ROUNDS_MAX = 200;       // sanity ceiling for --max-turns
-const GOAL_BUDGET_MAX = 5000000;   // sanity ceiling for the advisory token budget
-const GOAL_CONFIG_FILE = MULTICC_PATHS.goalConfigFile;
-
-function clampInt(v, lo, hi, dflt) {
-  let n = parseInt(v, 10);
-  if (!Number.isFinite(n)) n = dflt;
-  return Math.max(lo, Math.min(hi, n));
-}
-
-function normalizeGoalConfig(c) {
-  c = c || {};
-  const dims = {};
-  for (const k of Object.keys(GOAL_DIMENSIONS)) {
-    dims[k] = (c.dimensions && typeof c.dimensions[k] === 'boolean') ? c.dimensions[k] : GOAL_CONFIG_DEFAULT.dimensions[k];
-  }
-  const minScore = clampInt(c.minScore, 0, 100, GOAL_CONFIG_DEFAULT.minScore);
-  return { dimensions: dims, minScore };
-}
-
-// Effective limits for one goal send: taken purely from the per-send override
-// the client supplies in the goal dialog. There is no global limit config — a
-// missing/blank value falls back to the hard default (rounds=40, budget=0).
-function resolveGoalLimits(override) {
-  const o = override && typeof override === 'object' ? override : {};
-  const maxRounds = (o.maxRounds != null && o.maxRounds !== '')
-    ? clampInt(o.maxRounds, 0, GOAL_ROUNDS_MAX, GOAL_ROUNDS_DEFAULT) : GOAL_ROUNDS_DEFAULT;
-  const maxBudget = (o.maxBudget != null && o.maxBudget !== '')
-    ? clampInt(o.maxBudget, 0, GOAL_BUDGET_MAX, GOAL_BUDGET_DEFAULT) : GOAL_BUDGET_DEFAULT;
-  return { maxRounds, maxBudget };
-}
-
-// Server-side goal framing: appends the configured limits as explicit
-// constraints so execution is bounded regardless of what the client embedded.
-function buildGoalLimitNote(limits) {
-  const parts = [];
-  if (limits.maxRounds > 0) parts.push(`本次为 Goal 模式自主任务，自主执行的轮次（agent turns）上限为 ${limits.maxRounds} 轮，请在该轮次内完成；接近上限时先收敛、给出当前结论与未尽事项，不要无限发散。`);
-  if (limits.maxBudget > 0) parts.push(`本次输出 token 预算上限约为 ${limits.maxBudget}，请在预算内完成；接近上限时停止并总结已完成的部分与剩余工作。`);
-  return parts.length ? `[Goal 模式限制]\n${parts.join('\n')}\n[限制结束]\n\n` : '';
-}
-
-let goalConfig;
-try { goalConfig = normalizeGoalConfig(JSON.parse(fs.readFileSync(GOAL_CONFIG_FILE, 'utf8'))); }
-catch (_) { goalConfig = normalizeGoalConfig(null); }
-function saveGoalConfig() {
-  try { atomicWriteJson(GOAL_CONFIG_FILE, goalConfig); }
-  catch (e) { console.warn('[multicc/goal] save config failed:', e.message); }
-}
-
-function buildGoalPrecheckPrompt(task, dims) {
-  const keys = Object.keys(GOAL_DIMENSIONS).filter(k => dims[k]);
-  // Never send an empty rubric — fall back to all dimensions if none enabled.
-  const list = (keys.length ? keys : Object.keys(GOAL_DIMENSIONS))
-    .map((k, i) => `${i + 1}. ${GOAL_DIMENSIONS[k]}`).join('\n');
-  return `你是「任务质量审查助手」。下面是用户想交给一个自主 AI 编程代理、以「Goal 模式」（目标驱动、自主规划并执行到完成、最后自检验证）执行的任务。
-
-请只依据以下启用的标准判断它是否满足要求：
-${list}
-
-只输出一个 JSON 对象，不要任何额外文字、不要 markdown 代码块，字段如下：
-{
-  "verdict": "ok" | "needs_work",
-  "score": 0,
-  "issues": ["不满足之处，没有则空数组"],
-  "questions": ["仍需向用户澄清的问题，没有则空数组"],
-  "criteria": ["建议的完成/验收标准"],
-  "revised": "改写后可直接执行的 Goal-ready 任务描述，含目标与完成标准；若原任务已经很好可与原文基本一致"
-}
-
-score 为 0-100 的整数符合度评分，只针对上面启用的标准评分。所有文本字段用与用户任务相同的语言填写。
-
-用户任务：
-<<<
-${task}
->>>`;
-}
-
-function parseGoalVerdict(text) {
-  const raw = String(text || '');
-  let obj = null;
-  try { obj = JSON.parse(raw.trim()); } catch (_) {}
-  if (!obj) {
-    const s = raw.indexOf('{'), e = raw.lastIndexOf('}');
-    if (s !== -1 && e > s) { try { obj = JSON.parse(raw.slice(s, e + 1)); } catch (_) {} }
-  }
-  if (!obj || typeof obj !== 'object') {
-    return { verdict: 'needs_work', score: 0, issues: ['辅助 AI 未能给出可解析的结果，请人工确认或直接发送'], questions: [], criteria: [], revised: '', raw };
-  }
-  const arr = (v) => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()) : [];
-  const verdict = obj.verdict === 'ok' ? 'ok' : 'needs_work';
-  let score = parseInt(obj.score, 10); if (!Number.isFinite(score)) score = verdict === 'ok' ? 80 : 40;
-  score = Math.max(0, Math.min(100, score));
-  return {
-    verdict, score,
-    issues: arr(obj.issues),
-    questions: arr(obj.questions),
-    criteria: arr(obj.criteria),
-    revised: typeof obj.revised === 'string' ? obj.revised.trim() : '',
-  };
-}
-
-// Goal precheck config (global defaults; the chat dialog may override dimensions
-// per-send). dimensionLabels lets both UIs render the criteria without hardcoding.
-app.get('/api/settings/goal', (req, res) => {
-  res.json({ ...goalConfig, dimensionLabels: GOAL_DIMENSIONS });
-});
-app.post('/api/settings/goal', (req, res) => {
-  goalConfig = normalizeGoalConfig(req.body || {});
-  saveGoalConfig();
-  res.json({ ok: true, ...goalConfig });
-});
-
-app.post('/api/goal/precheck', (req, res) => {
-  const body = req.body || {};
-  const task = (body.task || '').trim();
-  if (!task) return res.status(400).json({ error: 'task required' });
-  // Per-send dimensions override the global default when provided; minScore too.
-  const dims = (body.dimensions && typeof body.dimensions === 'object')
-    ? normalizeGoalConfig({ dimensions: body.dimensions }).dimensions
-    : goalConfig.dimensions;
-  let minScore = parseInt(body.minScore, 10);
-  if (!Number.isFinite(minScore)) minScore = goalConfig.minScore;
-  minScore = Math.max(0, Math.min(100, minScore));
-  auxQueue.enqueue({ type: 'goal_check', prompt: buildGoalPrecheckPrompt(task, dims), meta: { taskLen: task.length } })
-    .then(result => {
-      const v = parseGoalVerdict(result.text);
-      // Below-threshold scores are downgraded even if the AI said "ok".
-      if (minScore > 0 && v.verdict === 'ok' && v.score < minScore) {
-        v.verdict = 'needs_work';
-        v.issues = [`符合度 ${v.score} 低于设定阈值 ${minScore}`, ...v.issues];
-      }
-      res.json({ ok: true, ...v, dimensions: dims, minScore });
-    })
-    .catch(err => res.json({ ok: false, error: err?.message || 'aux failed' }));
-});
-
 // ── Per-session providers (backed by cc-switch) ──────────────────────────────
 // Global default provider per CLI; new sessions inherit it. Stored separately
 // from cc-switch's own "current" selection so multicc stays independent.
@@ -6434,7 +5941,7 @@ app.delete('/api/providers/:appType/:id', (req, res) => {
       providerId: req.params.id,
       sessions: persistedSessions,
       defaults: providerDefaults,
-      aux: auxConfig,
+      aux: getAuxConfig(),
     });
     if (references.length) {
       return res.status(409).json({
@@ -11083,14 +10590,13 @@ wss.on('connection', async (ws, req) => {
 
   // Route to aux queue monitor (read-only WebSocket for __aux__ session)
   if (urlObj.pathname === '/ws/aux') {
-    auxQueue.clients.add(ws);
+    auxQueue.attachClient(ws);
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
     // Send current status + recent history on connect
     sendWs(ws, { type: 'aux_init', status: auxQueue.getStatus(), health: { ...auxQueue.health } });
     const history = loadChatHistory(AUX_SESSION_ID);
     sendWs(ws, { type: 'aux_history', messages: history.slice(-100) });
-    ws.on('close', () => { auxQueue.clients.delete(ws); });
     return;
   }
 
