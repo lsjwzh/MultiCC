@@ -9,6 +9,50 @@ let _ttsTextBuffer = '';
 let _ttsEnabled = localStorage.getItem('voiceOutputEnabled') === 'true';
 
 // Initialize voice output from settings
+// ── 首次强制设密码门槛(绑 0.0.0.0 + 无 ACCESS_TOKEN 时,本机首次进必须设密码)──
+async function enforceFirstRunPassword() {
+  try {
+    const r = await fetch('/api/settings/access-token');
+    const d = await r.json();
+    if (d.hasToken || !d.canEdit) return; // 已设密码 / 非本机(非本机进不来,无需门槛)
+    showFirstRunPasswordGate();
+  } catch (_) {}
+}
+function showFirstRunPasswordGate() {
+  if (document.getElementById('firstrun-pw-gate')) return;
+  const ov = document.createElement('div');
+  ov.id = 'firstrun-pw-gate';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:999999;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif';
+  ov.innerHTML = `<div style="background:#1c1c1e;border-radius:14px;padding:28px;max-width:380px;width:90%;color:#eee;box-shadow:0 8px 40px rgba(0,0,0,.6)">
+    <h3 style="margin:0 0 8px;font-size:17px">首次使用 — 请设置访问密码</h3>
+    <p style="font-size:13px;color:#999;margin:0 0 16px;line-height:1.5">本服务已对 Tailscale / 局域网开放,必须先设置访问密码。设置后,手机等外部设备凭此密码登录。</p>
+    <input id="fr-pw1" type="password" placeholder="设置密码(至少 6 位)" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:8px;border-radius:8px;border:1px solid #333;background:#2a2a2e;color:#eee;font-size:14px" />
+    <input id="fr-pw2" type="password" placeholder="再次输入确认" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:8px;border-radius:8px;border:1px solid #333;background:#2a2a2e;color:#eee;font-size:14px" />
+    <div id="fr-msg" style="font-size:12px;color:#ff8a80;margin:4px 0 10px;min-height:16px"></div>
+    <button id="fr-save" style="width:100%;padding:11px;border:none;border-radius:8px;background:#0a84ff;color:#fff;font-size:14px;font-weight:600;cursor:pointer">设置并开始使用</button>
+    </div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener('click', e => e.stopPropagation()); // 点遮罩不关闭 = 强制
+  const save = async () => {
+    const p1 = document.getElementById('fr-pw1').value;
+    const p2 = document.getElementById('fr-pw2').value;
+    const msg = document.getElementById('fr-msg');
+    if (p1.length < 6) { msg.textContent = '密码至少 6 位'; return; }
+    if (p1 !== p2) { msg.textContent = '两次输入不一致'; return; }
+    msg.textContent = '正在设置…';
+    try {
+      const r = await fetch('/api/settings/access-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: p1 }) });
+      const d = await r.json();
+      if (!r.ok || d.error) { msg.textContent = '错误: ' + (d.error || ('HTTP ' + r.status)); return; }
+      ov.remove(); // 设密码成功,解除门槛
+    } catch (e) { msg.textContent = '错误: ' + e.message; }
+  };
+  document.getElementById('fr-save').addEventListener('click', save);
+  document.getElementById('fr-pw2').addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  document.getElementById('fr-pw1').focus();
+}
+document.addEventListener('DOMContentLoaded', enforceFirstRunPassword);
+
 async function initVoiceOutput() {
   try {
     const res = await fetch(withToken('/api/settings/voice'));
