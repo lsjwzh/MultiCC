@@ -137,7 +137,18 @@ const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
+const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
+const {
+  listInstalledSkills,
+  listClaudeHistory,
+  removeClaudeHistorySession,
+} = require('./src/skills');
 const { createFolderMemoryService } = require('./src/memory/folder-service');
+const {
+  createMemoryRuntime,
+  getMemoryEntries,
+  normalizeManualMemory,
+} = require('./src/memory/runtime');
 const { createChatHistoryRuntime } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
@@ -234,6 +245,20 @@ const providerRouterRuntime = createProviderRouterRuntime({
   onShadowDiff: recordProviderRouterShadowComparison,
   logger,
 });
+const agentResources = createAgentResourcesRoutes({
+  fs,
+  presetsFile: path.join(__dirname, 'public', 'agent-presets.json'),
+  providers,
+  providerRouter: providerRouterRuntime,
+  listInstalledSkills,
+  listClaudeHistory,
+  removeClaudeHistorySession,
+  reportError: (error, fields) => logger.error('agent_resources_failure', {
+    ...fields,
+    error: error && error.message,
+  }),
+});
+const agentCommanderPrompt = agentResources.agentCommanderPrompt;
 logger.info('provider_router_runtime', {
   mode: providerRouterRuntime.mode,
   portApiVersion: providerRouterRuntime.apiVersion,
@@ -1313,7 +1338,7 @@ async function seedCommanderSession(dir) {
       persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
     });
     if (r.ok) {
-      r.session.rolePrompt = commander.prompt;
+      r.session.rolePrompt = commander;
       savePersistedSessionsBestEffort('directory.seed-commander-role');
       appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
     } else {
@@ -2378,145 +2403,8 @@ app.get('/api/v1/providers', (req, res) => {
   res.json(withApiMeta({ providers: list, count: list.length }, requestContext(req, res)));
 });
 
-// ── Agent resources (extracted to src/skills.js) ──
-// Reads core state (directories, persistedSessions) from the shared state registry.
-const {
-  listInstalledSkills, listClaudeHistory, removeClaudeHistorySession,
-} = require('./src/skills');
-
-app.get('/api/agent-resources/skills', (req, res) => {
-  const skills = listInstalledSkills();
-  res.json({
-    skills,
-    counts: {
-      claude: skills.filter(s => s.provider === 'claude').length,
-      codex: skills.filter(s => s.provider === 'codex').length,
-    },
-  });
-});
-
-// ── Agent presets (role prompt library, generated from agency-agents) ──
-// Lazily read public/agent-presets.json once and cache in memory.
-let _agentPresetsCache = null;
-let _agentPresetsErr = null;
-function loadAgentPresets() {
-  if (_agentPresetsCache || _agentPresetsErr) return _agentPresetsCache;
-  try {
-    const raw = fs.readFileSync(path.join(__dirname, 'public', 'agent-presets.json'), 'utf8');
-    _agentPresetsCache = JSON.parse(raw);
-  } catch (e) {
-    _agentPresetsErr = e;
-    _agentPresetsCache = null;
-  }
-  return _agentPresetsCache;
-}
-
-// Prompt of the bundled "Agent Commander" preset — used to seed a default
-// commander session in every newly-created directory. Returns null if missing.
-const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
-function resolveAgentPresetProviderId(preset) {
-  const cli = preset && preset.defaultCli === 'claude' ? 'claude' : 'codex';
-  const key = String((preset && preset.defaultProviderKey) || '').toLowerCase();
-  const model = String((preset && preset.defaultModel) || '').trim();
-  const list = providers.listProviders(cli);
-  if (key === 'openai-codex') {
-    const byName = list.find(p => /openai|codex\s*官方|官方/i.test(p.name || ''));
-    if (byName) return byName.id;
-    const byModel = list.find(p => (p.modelOptions || []).includes('gpt-5.5') || (p.modelOptions || []).some(m => /^gpt-/i.test(m)));
-    return byModel ? byModel.id : null;
-  }
-  if (key === 'xf-maas-coding') {
-    const byModel = list.find(p => model && (p.modelOptions || []).includes(model));
-    if (byModel) return byModel.id;
-    const byName = list.find(p => /讯飞|xf|maas/i.test(p.name || ''));
-    return byName ? byName.id : null;
-  }
-  return null;
-}
-
-function enrichAgentPresetDefaults(preset) {
-  if (!preset || typeof preset !== 'object') return preset;
-  const defaultProviderId = resolveAgentPresetProviderId(preset);
-  const cli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
-  const defaultProviderName = defaultProviderId
-    ? (providerRouterRuntime.getProviderSummary(cli, defaultProviderId)?.name || defaultProviderId)
-    : null;
-  return { ...preset, defaultProviderId, defaultProviderName };
-}
-
-function agentCommanderPreset() {
-  const data = loadAgentPresets();
-  const p = data && (data.presets || []).find(x => x.id === AGENT_COMMANDER_PRESET_ID);
-  return p || null;
-}
-function agentCommanderPrompt() {
-  const p = agentCommanderPreset();
-  return (p && p.prompt) ? p.prompt : null;
-}
-
-app.get('/api/agent-presets', (req, res) => {
-  const data = loadAgentPresets();
-  if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-  // Strip the prompt field from the list to keep the payload small.
-  const presets = (data.presets || []).map(p => {
-    const { prompt, ...meta } = enrichAgentPresetDefaults(p);
-    return meta;
-  });
-  res.json({
-    source: data.source,
-    version: data.version,
-    generatedAt: data.generatedAt,
-    categories: data.categories || [],
-    featured: data.featured || [],
-    presets,
-  });
-});
-
-app.get('/api/agent-presets/:id', (req, res) => {
-  const data = loadAgentPresets();
-  if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-  const preset = (data.presets || []).find(p => p.id === req.params.id);
-  if (!preset) return res.status(404).json({ error: 'not found' });
-  res.json(enrichAgentPresetDefaults(preset));
-});
-
-app.get('/api/agent-resources/claude-sessions', (req, res) => {
-  const sessions = listClaudeHistory();
-  res.json({
-    sessions,
-    count: sessions.length,
-    totalSize: sessions.reduce((sum, s) => sum + s.size, 0),
-    protectedCount: sessions.filter(s => s.linked).length,
-  });
-});
-
-app.delete('/api/agent-resources/claude-sessions/:project/:id', (req, res) => {
-  try {
-    const result = removeClaudeHistorySession(req.params.project, req.params.id);
-    if (!result.ok) return res.status(result.error.includes('protected') ? 409 : 404).json({ error: result.error });
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.delete('/api/agent-resources/claude-sessions', (req, res) => {
-  const olderThanDays = Number(req.query.olderThanDays);
-  if (!Number.isFinite(olderThanDays) || olderThanDays < 1) {
-    return res.status(400).json({ error: 'olderThanDays must be at least 1' });
-  }
-  const cutoff = Date.now() - olderThanDays * 86400 * 1000;
-  let deleted = 0;
-  let freed = 0;
-  for (const session of listClaudeHistory()) {
-    if (session.linked || new Date(session.updatedAt).getTime() >= cutoff) continue;
-    try {
-      const result = removeClaudeHistorySession(session.project, session.id);
-      if (result.ok) { deleted++; freed += result.freed; }
-    } catch (_) {}
-  }
-  res.json({ ok: true, deleted, freed });
-});
+// Agent presets, installed skills and Claude history share one read/cleanup boundary.
+agentResources.mountRoutes(app);
 
 // ── Directory REST API (src/directory: controller / service / repository) ──
 // Routes: GET /api/fs/list · GET|POST /api/directories · PATCH|DELETE
@@ -2936,22 +2824,9 @@ app.patch('/api/sessions/:id', (req, res) => {
   if (req.body.memory !== undefined) {
     // Session memory: structured entries (array of {type,text,ts}).
     // Accept both new array format and legacy string (auto-converted).
-    let memVal = req.body.memory;
-    let entries;
-    if (memVal == null) {
-      entries = null;  // clear
-    } else if (Array.isArray(memVal)) {
-      entries = memVal.filter(e => e && typeof e.text === 'string' && e.text.trim())
-        .map(e => ({ type: MEMORY_TYPES.includes(e.type) ? e.type : 'fact', text: e.text.trim(), ts: e.ts || Date.now() }));
-      const total = entries.reduce((s, e) => s + e.text.length, 0);
-      if (total > SESSION_MEMORY_MAX) return rejectMutation(400, { error: `memory too long (max ${SESSION_MEMORY_MAX} chars)` });
-    } else if (typeof memVal === 'string' && memVal.trim()) {
-      // Legacy string format — auto-convert to a single fact entry.
-      if (memVal.length > SESSION_MEMORY_MAX) return rejectMutation(400, { error: `memory too long (max ${SESSION_MEMORY_MAX})` });
-      entries = [{ type: 'fact', text: memVal.trim(), ts: 0 }];
-    } else {
-      entries = null;  // empty/null → clear
-    }
+    const normalized = normalizeManualMemory(req.body.memory);
+    if (normalized.error) return rejectMutation(400, { error: normalized.error });
+    const { entries } = normalized;
     s.memory = entries;
     appendEvent(s.dirId, 'memory_updated', s.memory ? '手动编辑会话记忆' : '清空会话记忆', s.id);
     workspaceBroadcast(s.dirId, { type: 'memory', sessionId: s.id, memory: s.memory || [] });
@@ -4366,6 +4241,28 @@ const {
   broadcast: broadcastTo,
 });
 
+// Memory runtime owns normalization, Aux distillation, periodic review and the
+// pending-distill gate. History is resolved lazily because its runtime is
+// composed later in this file.
+const memoryRuntime = createMemoryRuntime({
+  records: persistedSessions,
+  auxQueue,
+  loadHistory: sessionId => chatHistoryRuntime.load(sessionId),
+  writeAutoFile: folderMemory.writeAutoFile,
+  saveBestEffort: savePersistedSessionsBestEffort,
+  scanContent: scanMemoryContent,
+  appendEvent,
+  workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload), // late-bound Meta wrapper
+  reviewInterval: process.env.MULTICC_MEMORY_REVIEW_INTERVAL,
+  logger: console,
+});
+const {
+  distillHistoryIntoMemory,
+  getPendingDistill: getPendingMemoryDistill,
+  maybeSchedulePeriodicMemoryReview,
+  trackPendingDistill: _trackPendingMemoryDistill,
+} = memoryRuntime;
+
 // Skill-sync owns converter/link state, its watcher and its periodic timer.
 // The host supplies only the process/session ports needed by detached AI conversion.
 const skillSyncRuntime = createSkillSyncRuntime({
@@ -5570,273 +5467,6 @@ function setSessionSummary(sessionId, summary) {
     savePersistedSessionsBestEffort('runtime.session-summary');
   }
   workspaceBroadcast(persisted.dirId, { type: 'summary', sessionId, summary, ts });
-}
-
-const SESSION_MEMORY_MAX = 8000;  // hard cap: total text length across all memory entries
-const MEMORY_REVIEW_INTERVAL = Math.max(0, parseInt(process.env.MULTICC_MEMORY_REVIEW_INTERVAL || '10', 10) || 0);
-const MEMORY_REVIEW_MAX_MESSAGES = 30;
-const _memoryReviewInFlight = new Map();   // sessionId → Promise
-const _memoryDistillPending = new Map();   // sessionId → Promise (Clear gate)
-
-// Memory entry types
-// decision=确认的技术决策, gotcha=踩过的坑/正确做法, preference=用户偏好/约束, todo=待跟进事项, fact=关键事实
-const MEMORY_TYPES = ['decision', 'gotcha', 'preference', 'todo', 'fact'];
-
-// Priority for eviction when total text exceeds SESSION_MEMORY_MAX.
-// Lower index = evicted first (most ephemeral). todo goes first, preference survives longest.
-const MEMORY_EVICTION_ORDER = ['todo', 'fact', 'gotcha', 'decision', 'preference'];
-
-// Normalize persisted.memory into an entries array, regardless of whether it
-// is stored in the new array format or the legacy string format. Returns []
-// when there is no memory.
-function getMemoryEntries(persisted) {
-  const m = persisted?.memory;
-  if (!m) return [];
-  if (Array.isArray(m)) return m.filter(e => e && typeof e.text === 'string' && e.text.trim());
-  if (typeof m === 'string' && m.trim()) return [{ type: 'fact', text: m.trim(), ts: 0 }];
-  return [];
-}
-
-function _memoryEvictionRank(type) {
-  const i = MEMORY_EVICTION_ORDER.indexOf(type);
-  return i === -1 ? MEMORY_EVICTION_ORDER.length : i;  // unknown types evicted first
-}
-
-function _trimMemoryEntries(entries) {
-  let totalLen = entries.reduce((s, e) => s + (e.text || '').length, 0);
-  if (totalLen <= SESSION_MEMORY_MAX) return entries;
-  // Sort for eviction: eviction-rank asc (todo first), then ts asc (oldest first within same rank).
-  const sorted = [...entries].sort((a, b) => {
-    const r = _memoryEvictionRank(a.type) - _memoryEvictionRank(b.type);
-    if (r !== 0) return r;
-    return (a.ts || 0) - (b.ts || 0);
-  });
-  let cut = 0;
-  while (cut < sorted.length && totalLen > SESSION_MEMORY_MAX) {
-    totalLen -= (sorted[cut].text || '').length;
-    cut++;
-  }
-  return sorted.slice(cut);  // survivors (order not preserved — caller doesn't rely on it)
-}
-
-// Simple similarity for dedup: Jaccard on word sets, fallback to substring check for short strings.
-function _memorySimilarity(a, b) {
-  const ta = (a || '').trim().toLowerCase();
-  const tb = (b || '').trim().toLowerCase();
-  if (!ta || !tb) return 0;
-  if (ta === tb) return 1;
-  if (ta.length < 40 || tb.length < 40) {
-    if (ta.includes(tb) || tb.includes(ta)) return 0.7;
-    return 0;
-  }
-  const wa = new Set(ta.split(/[\s,，。；;:：、（）()\[\]]+/).filter(Boolean));
-  const wb = new Set(tb.split(/[\s,，。；;:：、（）()\[\]]+/).filter(Boolean));
-  if (!wa.size || !wb.size) return 0;
-  let inter = 0;
-  for (const w of wa) if (wb.has(w)) inter++;
-  return inter / (wa.size + wb.size - inter);  // Jaccard
-}
-
-function _mergeMemoryEntries(prior, fresh) {
-  // For each fresh entry, find a similar prior entry (similarity > 0.6);
-  // replace the prior with the fresh (assumed more up-to-date); otherwise append.
-  const out = [...prior];
-  for (const f of fresh) {
-    let replaced = false;
-    for (let i = 0; i < out.length; i++) {
-      if (_memorySimilarity(f.text, out[i].text) > 0.6) {
-        out[i] = f;
-        replaced = true;
-        break;
-      }
-    }
-    if (!replaced) out.push(f);
-  }
-  return out;
-}
-
-function _parseMemoryEntries(raw) {
-  let clean = String(raw || '').trim();
-  if (!clean || clean === '-' || clean === '—') return [];
-  clean = clean.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
-  if (!clean || clean === '-' || clean === '—') return [];
-  const fresh = [];
-  for (const line of clean.split('\n')) {
-    const text = line.trim();
-    if (!text || text === '-' || text === '—') continue;
-    const match = text.match(/^\[(\w+)\]\s*(.*)$/);
-    let type = match ? match[1].toLowerCase() : 'fact';
-    const entryText = (match ? match[2] : text).trim();
-    if (!MEMORY_TYPES.includes(type)) type = 'fact';
-    if (entryText && !scanMemoryContent(entryText)) {
-      fresh.push({ type, text: entryText, ts: Date.now() });
-    }
-  }
-  return fresh;
-}
-
-function _persistMergedMemory(sessionId, fresh, eventDetail) {
-  if (!fresh.length) return { updated: false, entries: getMemoryEntries(persistedSessions.get(sessionId)) };
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted) return { updated: false, entries: [] };
-  let merged = _mergeMemoryEntries(getMemoryEntries(persisted), fresh);
-  merged = _trimMemoryEntries(merged);
-  persisted.memory = merged;
-  folderMemory.writeAutoFile(persisted, merged);
-  savePersistedSessionsBestEffort('runtime.memory-distill');
-  const totalLen = merged.reduce((sum, entry) => sum + (entry.text || '').length, 0);
-  appendEvent(persisted.dirId, 'memory_updated', `${eventDetail}（${merged.length} 条，${totalLen} 字）`, sessionId);
-  workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId });
-  return { updated: true, entries: merged, totalLen };
-}
-
-function _trackPendingMemoryDistill(sessionId, promise) {
-  const tracked = Promise.resolve(promise)
-    .catch(error => {
-      console.warn(`[multicc/memory] pending distill ${sessionId} failed: ${error.message}`);
-      return { updated: false, error: error.message };
-    })
-    .finally(() => {
-      if (_memoryDistillPending.get(sessionId) === tracked) _memoryDistillPending.delete(sessionId);
-    });
-  _memoryDistillPending.set(sessionId, tracked);
-  return tracked;
-}
-
-// Distill a chunk of about-to-be-discarded chat history into the session's
-// long-lived memory. We deliberately keep ONLY key problems and how they were
-// solved (decisions, fixes, gotchas, user preferences, unfinished threads) — not
-// ordinary task narration. Runs on the aux AI, merges incrementally with the
-// existing memory (de-dupes + compresses when near the cap), and is best-effort:
-// any failure leaves history-clearing unaffected. Clear awaits this through a
-// first-turn gate; rolling-window trimming intentionally runs it in background.
-function distillHistoryIntoMemory(sessionId, messages) {
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') return Promise.resolve({ updated: false });
-  const text = (messages || [])
-    .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
-    .map(m => `${m.role === 'user' ? '用户' : '助手'}: ${m.content.trim().slice(0, 2000)}`)
-    .join('\n');
-  if (text.length < 40) return Promise.resolve({ updated: false });  // nothing worth distilling
-  const prior = getMemoryEntries(persisted);
-  const prompt =
-`你是会话记忆提炼器。下面是一段即将被清理/丢弃的对话。请只提炼出「值得长期记住的关键信息」，每条一行，格式为 \`[类型] 内容\`。
-
-类型必须是以下 5 种之一：
-- [decision] 确认过的技术决策或方案选择
-- [gotcha] 踩过的坑、错误做法与对应的正确做法
-- [preference] 用户明确表达的偏好或约束
-- [todo] 尚未完成、需后续跟进的事项
-- [fact] 关键的技术事实或项目状态
-
-忽略普通的任务过程、寒暄、可重新获得的中间步骤。每条内容精炼（不超过 100 字），动词或名词开头。若这段对话没有任何值得长期记住的，只输出一个减号 "-"。
-
-${prior.length ? `【已有的会话记忆条目（请与新内容合并去重：语义重复的条目只保留信息更完整的一条）】\n${prior.map(e => `[${e.type}] ${e.text}`).join('\n')}\n\n` : ''}【待提炼的对话】
-${text.slice(0, 12000)}
-
-请直接输出合并后的所有记忆条目（每行一条），不要解释、不要加标题。`;
-  if (auxQueue.isUnhealthy()) return Promise.resolve({ updated: false, skipped: 'aux unhealthy' });
-  return auxQueue.enqueue({ type: 'memory_distill', prompt, meta: { sessionId } })
-    .then(result => {
-      const committed = _persistMergedMemory(sessionId, _parseMemoryEntries(result && result.text), '已提炼会话记忆');
-      if (committed.updated) {
-        console.log(`[multicc/memory] distilled ${sessionId}: memory now ${committed.entries.length} entries / ${committed.totalLen} chars`);
-      }
-      return committed;
-    })
-    .catch(error => {
-      console.warn(`[multicc/memory] distill ${sessionId} failed: ${error.message}`);
-      return { updated: false, error: error.message };
-    });
-}
-
-function _memoryReviewMessages(sessionId, persisted) {
-  const history = loadChatHistory(sessionId);
-  let start = 0;
-  if (persisted.memoryReviewCursorId) {
-    const cursor = history.findIndex(message => message && message.id === persisted.memoryReviewCursorId);
-    if (cursor >= 0) start = cursor + 1;
-  }
-  return history.slice(start)
-    .filter(message => message && (message.role === 'user' || message.role === 'assistant')
-      && typeof message.content === 'string' && message.content.trim())
-    .slice(-MEMORY_REVIEW_MAX_MESSAGES);
-}
-
-function reviewConversationIntoMemory(sessionId) {
-  if (_memoryReviewInFlight.has(sessionId)) return _memoryReviewInFlight.get(sessionId);
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') return Promise.resolve({ updated: false });
-  if (auxQueue.isUnhealthy()) return Promise.resolve({ updated: false, skipped: 'aux unhealthy' });
-  const messages = _memoryReviewMessages(sessionId, persisted);
-  if (!messages.length) return Promise.resolve({ updated: false });
-  const lastMessageId = messages[messages.length - 1].id || null;
-  const transcript = messages.map(message =>
-    `${message.role === 'user' ? '用户' : '助手'}: ${message.content.trim().slice(0, 1800)}`
-  ).join('\n');
-  const prompt =
-`你是 MultiCC 的周期记忆复盘器。审查下面最近一段对话，只输出真正值得跨后续对话保留的稳定事实，每条一行，格式为 [类型] 内容。
-
-允许类型：
-- [preference] 用户明确且可复用的偏好、沟通方式、工作约束
-- [gotcha] 反复可能踩到的环境或工具陷阱，以及正确做法
-- [decision] 会长期影响后续工作的已确认方案或约定
-- [fact] 稳定的项目/环境事实
-
-不要保存任务进度、已完成工作日志、临时路径、一次性 TODO、普通过程或可轻易重新发现的知识。内容应是陈述性事实，不要写成命令。没有值得保存的内容时只输出 "-"。
-
-【最近对话】
-${transcript.slice(0, 12000)}
-
-直接输出条目，不要标题或解释。`;
-
-  const task = auxQueue.enqueue({ type: 'memory_review', prompt, meta: { sessionId } })
-    .then(result => {
-      const committed = _persistMergedMemory(sessionId, _parseMemoryEntries(result && result.text), '周期记忆复盘');
-      const current = persistedSessions.get(sessionId);
-      if (current && lastMessageId) {
-        current.memoryReviewCursorId = lastMessageId;
-        current.memoryReviewAt = Date.now();
-        savePersistedSessionsBestEffort('runtime.memory-review-cursor');
-      }
-      return committed;
-    })
-    .catch(error => {
-      const current = persistedSessions.get(sessionId);
-      if (current) {
-        // Retry promptly on the next completed turn instead of waiting another
-        // full interval after a transient auxiliary-provider failure.
-        current.memoryReviewTurnCount = Math.max(0, MEMORY_REVIEW_INTERVAL - 1);
-        savePersistedSessionsBestEffort('runtime.memory-review-retry');
-      }
-      console.warn(`[multicc/memory] periodic review ${sessionId} failed: ${error.message}`);
-      return { updated: false, error: error.message };
-    })
-    .finally(() => _memoryReviewInFlight.delete(sessionId));
-  _memoryReviewInFlight.set(sessionId, task);
-  return task;
-}
-
-function maybeSchedulePeriodicMemoryReview(sessionId) {
-  if (!MEMORY_REVIEW_INTERVAL) return;
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway'
-      || (persisted.kind && persisted.kind !== 'chat')) return;
-  persisted.memoryReviewTurnCount = Math.max(0, Number(persisted.memoryReviewTurnCount) || 0) + 1;
-  if (persisted.memoryReviewTurnCount < MEMORY_REVIEW_INTERVAL) {
-    savePersistedSessionsBestEffort('runtime.memory-review-counter');
-    return;
-  }
-  if (auxQueue.isUnhealthy()) {
-    // Preserve a near-due counter so a transient provider outage retries after
-    // the next completed turn rather than silently postponing ten more turns.
-    persisted.memoryReviewTurnCount = Math.max(0, MEMORY_REVIEW_INTERVAL - 1);
-    savePersistedSessionsBestEffort('runtime.memory-review-deferred');
-    return;
-  }
-  persisted.memoryReviewTurnCount = 0;
-  savePersistedSessionsBestEffort('runtime.memory-review-start');
-  reviewConversationIntoMemory(sessionId);
 }
 
 function workspaceBroadcast(dirId, payload) {
@@ -8194,7 +7824,7 @@ function handleChatWs(ws, req, urlObj) {
         if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) {
           turnOpts.clientMsgId = msg.clientMsgId;
         }
-        const pendingMemory = _memoryDistillPending.get(sessionName);
+        const pendingMemory = getPendingMemoryDistill(sessionName);
         if (pendingMemory) {
           const queuedText = msg.text;
           pendingMemory.finally(() => runChatTurn(sessionName, queuedText, turnOpts));
