@@ -76,8 +76,16 @@ const post = (p, b)    => _req('POST', p, b);
 
 // ── Helper: read server code ──────────────────────────────────────────
 function readServerCode() {
+  // The classify parser and system prompt were extracted to src/classify/vocab.js
+  // (parseClassifyResult, buildClassifySystemPrompt). Concatenate both so the
+  // prompt-keyword and code-path text checks below still see the source of truth.
   try {
-    return fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    let vocab = '';
+    try {
+      vocab = fs.readFileSync(path.join(__dirname, '..', 'src', 'classify', 'vocab.js'), 'utf8');
+    } catch (_) { /* optional */ }
+    return `${server}\n${vocab}`;
   } catch (_) { return ''; }
 }
 
