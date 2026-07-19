@@ -10,6 +10,7 @@ const safeMarkdown = require('../public/safe-markdown');
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'safe-markdown.js'), 'utf8');
 const CHAT = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+const VIEW = fs.readFileSync(path.join(ROOT, 'public', 'chat-history-view.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
 const ATTACK = '<img src=x onerror=alert(1)> [x](javascript:alert(2)) <svg><script>alert(3)</script></svg>';
 
@@ -70,7 +71,7 @@ test('classic VM export never returns raw malicious marked output when purifier 
 });
 
 test('chat loads purifier and the shared boundary before host rendering', () => {
-  const purify = 'dompurify@3.2.6/dist/purify.min.js';
+  const purify = 'vendor/dompurify/purify.min.js';
   const marked = 'marked@12.0.1/marked.min.js';
   const boundary = '<script src="safe-markdown.js"></script>';
   const host = '<script src="chat.js"></script>';
@@ -78,9 +79,10 @@ test('chat loads purifier and the shared boundary before host rendering', () => 
   assert.ok(HTML.indexOf(purify) < HTML.indexOf(marked));
   assert.ok(HTML.indexOf(marked) < HTML.indexOf(boundary));
   assert.ok(HTML.indexOf(boundary) < HTML.indexOf(host));
-  assert.match(CHAT, /window\.MultiCCSafeMarkdown\.render\(text\)/);
+  assert.match(CHAT, /safeMarkdown: window\.MultiCCSafeMarkdown/);
   assert.doesNotMatch(CHAT, /marked\.parse\(/,
     'real-time, initial replay and pagination must share the safe renderer');
-  assert.match(CHAT, /contentEl\.innerHTML = renderMarkdown\(m\.content\)/);
-  assert.match(CHAT, /html = renderMarkdown\(currentTextContent\)/);
+  assert.match(VIEW, /const safeHtml = safeMarkdown\.render\(text\)/);
+  assert.equal((VIEW.match(/\.innerHTML\s*=/g) || []).length, 1);
+  assert.doesNotMatch(HTML, /cdn\.jsdelivr\.net\/npm\/dompurify/i);
 });

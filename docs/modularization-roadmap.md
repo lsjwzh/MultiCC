@@ -314,3 +314,20 @@
 2. Web Markdown sanitizer 仍从固定版本 CDN 加载且没有本地 vendored/SRI；断网时安全降级为纯文本，但完整 Markdown 能力不可用。应在后续依赖治理批次 vendoring 或补 SRI/同源资产。
 3. 跨客户端清空历史仍缺服务端广播；当前本地 clear/delete 正确失效分页请求，但其他已连接客户端只能在下一次 authoritative history/reconnect 时收敛。
 4. dispatch 外部 delivery 仍未接可信 outbox receipt，继续报告 `deliveryProven:false`；Flutter 端旧 WebSocket token-query 也仍需独立迁移，不能和本波生命周期抽取混为已完成。
+
+## 大重构第九波实施结果（2026-07-19）
+
+- 新增 `src/routes/host-write.js`，把通知、Tunnel 配置/重启/Funnel、访问令牌、Proxy、官方 OAuth 和 macOS 电源共 8 个写端点从 `server.js` 迁出。Host 只注入环境文件、运行态 setter、Tunnel/Push/Power 与安全日志/指标端口；`server.js` 当前约 12,385 行，相对第八波约 12,444 行净减 59 行。
+- 写路径采用 persist-before-live；运行态发布失败会补偿磁盘和内存。补偿失败只记录固定阶段分类，并通过 bounded `consistency { degraded, dirty, reason, lastFailureAt }` 暴露，不返回路径、stderr 或 secret。Tunnel 数值、Funnel 端口、通知 URL、ACCESS_TOKEN 的 CR/LF/NUL 都有 fail-closed 校验；普通 Tunnel 配置不再伪造 Funnel 执行态。
+- Web Chat 新增 `chat-history-view.js`，统一持有 history hydration/upsert、分页 DOM、tool cards 与 streaming tail。`chat.js` 在合并“首次强制设置密码”门槛后约 4,973→4,717（-256）；跨客户端 `chat_history_reset` 会广播最新权威页、失效旧 cursor，并保留每页 5 条的最新主线策略。
+- DOMPurify 3.2.6 已以同源 vendored 资产、许可证和可校验 provenance 纳入 `public/vendor/dompurify/`，Chat 不再依赖 DOMPurify CDN。Markdown 唯一 HTML sink 必须经过 `safe-markdown`；parser/sanitizer 缺失或异常时降级为纯文本。Marked 与 highlight.js 仍是 CDN 依赖，但不会绕过 sanitizer。
+- Flutter 新增 `WsTicketClient/WsTicketConnectionGate`。Chat、Workspace、Terminal 与 Voice TTS 每次连接/重连都通过同源 REST header 换取 path-bound、一次性 ticket；长期 token 不再出现在 WebSocket URL。generation gate 阻止迟到 ticket 覆盖新连接，错误对象不保留 token、ticket 或响应正文。Aux 没有独立 Flutter WebSocket，仍复用 Workspace 事件；Voice STT 保持 REST multipart。
+- 联合验收：Host read/write/locality 37/37，Core 139/139 + Wait 35/35，Security 124/124，完整 `npm test`、contracts/native 与全套 isolated integration 通过；Flutter 48/48、7 个目标文件 analyze 0 issue、format clean。最终工作区已再次 rebase 到 `main=4d66ec9` 后复验相关 58 项。
+
+### 第九波后的真实边界
+
+1. `server.js` 仍约 12.4k 行，下一批继续以低依赖 route group 小步迁移；优先 settings/voice/files 的窄 controller，不做一次性 route 搬迁。
+2. Web 历史 DOM 所有权已收口，但 `chat.js` 仍包含消息发送、工具交互和部分 WS event glue；后续应先抽 event controller，再考虑 ESM，不能破坏 classic-script 加载顺序。
+3. Flutter WebSocket 长 token 已清理，但 REST 仍按现有 `X-Access-Token` 契约工作；ticket 只是短期 WebSocket admission，不应被误用为通用 API token。
+4. dispatch 外部 delivery 仍没有全局 exactly-once 证明，继续保持 `deliveryProven:false`；本波没有扩大该语义。
+5. 历史备份/APK/fixtures 等治理项仍需独立 cleanup 变更和 owner 审核。本轮没有删除任何历史代码或制品。

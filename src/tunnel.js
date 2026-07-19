@@ -32,6 +32,18 @@ const DEFAULT_CONFIG = {
 
 let config = { ...DEFAULT_CONFIG };
 let timer = null;
+let failureReporter = () => {};
+const SAFE_FAILURE_STAGES = new Set([
+  'funnel_compensation',
+  'config_persistence_rollback',
+  'config_runtime_rollback',
+]);
+const consistency = {
+  degraded: false,
+  dirty: false,
+  reason: '',
+  lastFailureAt: 0,
+};
 // Per-provider runtime state (not persisted).
 const runtime = {
   phddns:    newProviderState(),
@@ -44,6 +56,19 @@ function newProviderState() {
     consecutiveFails: 0, restartTimes: [], lastRestartAt: 0,
     lastAction: '', checking: false,
   };
+}
+
+function setFailureReporter(reporter) {
+  failureReporter = typeof reporter === 'function' ? reporter : () => {};
+}
+
+function recordConsistencyFailure(stage) {
+  const safeStage = SAFE_FAILURE_STAGES.has(stage) ? stage : 'config_runtime_rollback';
+  consistency.degraded = true;
+  consistency.dirty = true;
+  consistency.reason = safeStage;
+  consistency.lastFailureAt = Date.now();
+  try { failureReporter(safeStage, 'compensation_failed'); } catch (_) { /* reporting is best-effort */ }
 }
 
 function loadConfig() {
@@ -62,12 +87,12 @@ function loadConfig() {
   return config;
 }
 
-function saveConfig() {
-  try {
-    atomicWriteJson(CONFIG_FILE, config);
-  } catch (e) {
-    console.error('[multicc/tunnel] Failed to save config:', e.message);
-  }
+function saveConfig(nextConfig = config) {
+  // Configuration mutations are HTTP commit boundaries. Let the atomic writer
+  // failure propagate so the route cannot report success for runtime-only
+  // state. Callers prepare `nextConfig` first and publish it in memory only
+  // after this durable write succeeds.
+  atomicWriteJson(CONFIG_FILE, nextConfig);
 }
 
 // Provider availability on this machine (informs the UI; not a config value).
@@ -102,39 +127,80 @@ function execShell(cmd, args) {
   });
 }
 
-async function restartPhddns() {
-  await execShell('/usr/bin/killall', ['PhtunnelService', 'PhDDNS']);
-  await new Promise(r => setTimeout(r, 3000));
-  await execShell('/usr/bin/open', [PHDDNS_APP]);
+async function restartPhddns({ run = execShell, wait = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+  await run('/usr/bin/killall', ['PhtunnelService', 'PhDDNS']);
+  await wait(3000);
+  const opened = await run('/usr/bin/open', [PHDDNS_APP]);
+  if (!opened.ok) {
+    const error = new Error('phddns start failed');
+    error.cause = opened.stderr || 'unknown error';
+    throw error;
+  }
   return '已重启花生壳 (PhDDNS)';
 }
 
 async function restartTailscale() {
   // Gentle: re-establish the connection without bouncing tailscaled.
   const r = await execShell(TAILSCALE_BIN, ['up']);
-  return r.ok ? '已执行 tailscale up' : `tailscale up 失败: ${r.stderr.slice(0, 120)}`;
+  if (!r.ok) {
+    const error = new Error('tailscale restart failed');
+    error.cause = r.stderr || 'unknown error';
+    throw error;
+  }
+  return '已执行 tailscale up';
 }
 
 // Turn public-internet Funnel on/off (Tailscale CLI v1.84+ syntax):
 //   on  → `tailscale funnel --bg <port>`
 //   off → `tailscale funnel reset`
 // Returns { ok, message }.
-async function setFunnel(on, port) {
-  const p = Number.isFinite(port) && port > 0 ? Math.floor(port) : 3000;
+async function setFunnel(on, port, { run = execShell, persist = saveConfig } = {}) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return { ok: false, message: 'Funnel operation failed' };
+  }
+  const p = port;
+  const previous = { ...config.tailscale };
   const args = on ? ['funnel', '--bg', String(p)] : ['funnel', 'reset'];
-  const r = await execShell(TAILSCALE_BIN, args);
+  const r = await run(TAILSCALE_BIN, args);
   if (!r.ok) return { ok: false, message: `Funnel 操作失败: ${(r.stderr || '').slice(0, 200)}` };
   // Keep config in sync with the actual tailscale state so the UI doesn't
   // revert to stale values on the next loadTunnelSettings() reload.
-  config.tailscale = { ...config.tailscale, funnel: !!on, funnelPort: p };
-  saveConfig();
+  const nextConfig = {
+    ...config,
+    tailscale: { ...config.tailscale, funnel: !!on, funnelPort: p },
+  };
+  try {
+    persist(nextConfig);
+  } catch (error) {
+    // The external command already committed. Best-effort compensate it so a
+    // failed durable save does not silently leave tailscale and our config on
+    // opposite sides of the transaction. The route still fails closed even if
+    // this compensation also fails.
+    const rollbackArgs = previous.funnel
+      ? ['funnel', '--bg', String(previous.funnelPort || 3000)]
+      : ['funnel', 'reset'];
+    const rollback = await run(TAILSCALE_BIN, rollbackArgs);
+    if (!rollback.ok) {
+      const rollbackError = new Error('tailscale funnel compensation failed');
+      rollbackError.cause = rollback.stderr || 'unknown error';
+      error.rollbackError = rollbackError;
+      recordConsistencyFailure('funnel_compensation');
+    }
+    throw error;
+  }
+  config = nextConfig;
   return { ok: true, message: on ? `已开启 Funnel 公网访问 (端口 ${p})` : '已关闭所有 Funnel' };
 }
 
 // Read-only Funnel status text from tailscale.
 async function funnelStatus() {
   const r = await execShell(TAILSCALE_BIN, ['funnel', 'status']);
-  return (r.stdout || r.stderr || '').trim();
+  if (!r.ok) {
+    const error = new Error('tailscale funnel status failed');
+    error.cause = r.stderr || 'unknown error';
+    throw error;
+  }
+  return (r.stdout || '').trim();
 }
 
 // This machine's globally-routable IPv6 address(es), read from the OS
@@ -220,7 +286,10 @@ async function checkProvider(name) {
     st.restartTimes.push(now);
     st.lastRestartAt = now;
     try { st.lastAction = await RESTARTERS[name](); }
-    catch (e) { st.lastAction = `重启出错: ${e.message}`; }
+    catch (e) {
+      st.lastAction = '重启失败';
+      console.error(`[multicc/tunnel] ${name} restart failed:`, e && (e.stack || e.message) || e);
+    }
     console.log(`[multicc/tunnel] ${name}: ${st.lastAction}`);
   } finally {
     st.checking = false;
@@ -263,18 +332,37 @@ function stop() {
 
 // Merge a partial config update, persist, and reload the loop. Resets a
 // provider's fail/restart counters when it gets toggled on.
-function applyConfig(update) {
+function applyConfig(update, { persist = saveConfig, publish = startLoop } = {}) {
+  const previousConfig = config;
   const wasPhddns = config.phddns.enabled;
   const wasTailscale = config.tailscale.enabled;
-  config = {
+  const nextConfig = {
     ...config, ...update,
     phddns:    { ...config.phddns,    ...(update.phddns || {}) },
     tailscale: { ...config.tailscale, ...(update.tailscale || {}) },
   };
+  persist(nextConfig);
+  try {
+    config = nextConfig;
+    publish();
+  } catch (error) {
+    // The durable write happened before the live scheduler publish. Restore
+    // both sides if publishing fails so HTTP never returns a split-brain state.
+    let rollbackError = null;
+    try { persist(previousConfig); } catch (failure) {
+      rollbackError = failure;
+      recordConsistencyFailure('config_persistence_rollback');
+    }
+    config = previousConfig;
+    try { publish(); } catch (failure) {
+      rollbackError ||= failure;
+      recordConsistencyFailure('config_runtime_rollback');
+    }
+    if (rollbackError) error.rollbackError = rollbackError;
+    throw error;
+  }
   if (config.phddns.enabled && !wasPhddns) runtime.phddns = newProviderState();
   if (config.tailscale.enabled && !wasTailscale) runtime.tailscale = newProviderState();
-  saveConfig();
-  startLoop();
   return config;
 }
 
@@ -288,6 +376,7 @@ function getStatus() {
       phddns:    { ...runtime.phddns },
       tailscale: { ...runtime.tailscale },
     },
+    consistency: { ...consistency },
   };
 }
 
@@ -302,9 +391,23 @@ async function restartNow(name) {
     st.lastAction = await RESTARTERS[name]();
     return { ok: true, message: st.lastAction };
   } catch (e) {
-    st.lastAction = `重启出错: ${e.message}`;
-    return { ok: false, error: e.message };
+    st.lastAction = '重启失败';
+    console.error(`[multicc/tunnel] manual ${name} restart failed:`, e && (e.stack || e.message) || e);
+    return { ok: false, error: 'restart_failed' };
   }
 }
 
-module.exports = { init, stop, applyConfig, getStatus, restartNow, loadConfig, availability, setFunnel, funnelStatus, ipv6Status };
+module.exports = {
+  init,
+  stop,
+  applyConfig,
+  getStatus,
+  restartNow,
+  restartPhddns,
+  loadConfig,
+  availability,
+  setFunnel,
+  funnelStatus,
+  ipv6Status,
+  setFailureReporter,
+};
