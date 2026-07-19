@@ -113,6 +113,7 @@ const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
+const { createAuthRuntime } = require('./src/routes/auth');
 const {
   listInstalledSkills,
   listClaudeHistory,
@@ -273,11 +274,6 @@ const ALLOW_LEGACY_TOKEN_QUERY = envEnabled(process.env.MULTICC_ALLOW_LEGACY_TOK
 const ALLOW_LEGACY_WS_TOKEN = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_TOKEN);
 const ALLOW_LEGACY_WS_COOKIE = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_COOKIE);
 
-function authCookieHeader(req, value = authSecurity.createCookie()) {
-  const secure = req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
-  return `multicc_auth=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`;
-}
-
 function parseCookies(header) {
   const cookies = {};
   if (!header) return cookies;
@@ -288,156 +284,30 @@ function parseCookies(header) {
   return cookies;
 }
 
-function isAuthenticated(req) {
-  // 无 token 时只放行真实 loopback transport peer；isLocalRequest 以
-  // req.socket.remoteAddress 为权威，并在任何 forwarded/proxy 元数据存在时
-  // fail-closed。Host 仍须是 localhost/loopback，不能单独授予本机权限。
-  // 外部(含 Tailscale/局域网)一律拒绝,直到本机首次访问设好 ACCESS_TOKEN。
-  if (!ACCESS_TOKEN) return isLocalRequest(req);
-  // Localhost allowed — unless it's a reverse proxy forwarding external traffic
-  if (isLocalRequest(req)) return true;
-  // Cookie auth (HMAC-signed, survives server restart)
-  const cookies = parseCookies(req.headers.cookie);
-  if (cookies.multicc_auth && authSecurity.verifyCookie(cookies.multicc_auth)) return true;
-  if (authSecurity.verifyAccessToken(req.headers['x-access-token'])) return true;
-  if (ALLOW_LEGACY_TOKEN_QUERY && authSecurity.verifyAccessToken(req.query.token)) {
-    metrics.inc('multicc_auth_legacy_query_total');
-    logger.warn('legacy_token_query', { requestId: req.id, path: req.path });
-    return true;
-  }
-  return false;
-}
-
-// Always register login routes + auth middleware (no-op while ACCESS_TOKEN is
-// empty, see isAuthenticated). This lets a token set later via the localhost UI
-// take effect immediately, without restarting the server.
 // requestId middleware runs first so every subsequent handler + error response
 // can be correlated with a log line. It's cheap (8 hex chars) and always safe.
 app.use(requestIdMiddleware);
-// Once shutdown starts, fail every API mutation/request before authentication
-// or route code can enqueue new work. Health/readiness live outside /api and
-// remain available so process managers can observe the transition.
-app.use('/api', (req, res, next) => {
-  if (!_shuttingDown) return next();
-  res.set('Retry-After', '1');
-  return res.status(503).json(createErrorDto({
-    code: 'SERVER_SHUTTING_DOWN',
-    message: 'server is shutting down',
-    requestId: req.id,
-    correlationId: req.correlationId,
-  }));
+// Auth surface (src/routes/auth.js): the /api shutdown gate, login routes and
+// gate middleware, plus cookie/ws-ticket exchange. Always registered (no-op
+// while ACCESS_TOKEN is empty, see isAuthenticated) so a token set later via the
+// localhost UI takes effect immediately without a restart. ACCESS_TOKEN and the
+// shutdown flag are read through getters so runtime changes apply on the next
+// request. Mounted here to preserve ordering: gate runs before every API route.
+const authRuntime = createAuthRuntime({
+  express,
+  authSecurity,
+  isLocalRequest,
+  parseCookies,
+  normalizeRedirect,
+  escapeHtmlAttribute,
+  metrics,
+  logger,
+  createErrorDto,
+  getAccessToken: () => ACCESS_TOKEN,
+  getShuttingDown: () => _shuttingDown,
+  allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
-{
-  // Login page & handler
-  app.get('/login', (req, res) => {
-    const error = req.query.error ? '<p style="color:#f85149;margin-bottom:16px;">密码错误</p>' : '';
-    const redirect = normalizeRedirect(req.query.redirect);
-    res.type('html').send(`<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>MultiCC — Login</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;
-    display:flex;align-items:center;justify-content:center;min-height:100vh;min-height:100dvh;
-    padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
-  .box{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;
-    width:min(340px,100%);text-align:center}
-  .box h1{font-size:20px;margin-bottom:8px;color:#f0f6fc}
-  .box .logo{font-size:24px;font-weight:700;color:#f78166;margin-bottom:24px}
-  .box .logo span{color:#79c0ff}
-  input[type=password]{width:100%;padding:10px 14px;border-radius:6px;border:1px solid #30363d;
-    background:#0d1117;color:#c9d1d9;font-size:16px;min-height:48px;margin-bottom:16px;outline:none}
-  input[type=password]:focus{border-color:#58a6ff}
-  button{width:100%;padding:10px;border-radius:6px;border:none;background:#238636;
-    color:#fff;font-size:16px;font-weight:600;min-height:48px;cursor:pointer}
-  button:hover{background:#2ea043}
-  @media(max-width:380px){.box{padding:24px 20px}.box .logo{font-size:22px;margin-bottom:20px}}
-</style></head><body>
-<div class="box">
-  <div class="logo">Multi<span>CC</span></div>
-  ${error}
-  <form method="POST" action="/login">
-    <input type="hidden" name="redirect" value="${escapeHtmlAttribute(redirect)}">
-    <input type="password" name="password" placeholder="输入访问密码" autofocus>
-    <button type="submit">登录</button>
-  </form>
-</div></body></html>`);
-  });
-
-  app.post('/login', express.urlencoded({ extended: false }), (req, res) => {
-    const redirect = normalizeRedirect(req.body.redirect);
-    if (authSecurity.verifyAccessToken(req.body.password)) {
-      res.setHeader('Set-Cookie', authCookieHeader(req));
-      res.redirect(redirect);
-    } else {
-      res.redirect(`/login?error=1&redirect=${encodeURIComponent(redirect)}`);
-    }
-  });
-
-  app.get('/logout', (req, res) => {
-    res.setHeader('Set-Cookie', 'multicc_auth=; Path=/; HttpOnly; Max-Age=0');
-    res.redirect('/login');
-  });
-
-  // Auth middleware
-  app.use((req, res, next) => {
-    // Allow login page, static assets
-    if (req.path === '/login' || req.path === '/logout') return next();
-    if (req.path === '/healthz' || req.path === '/readyz') return next();
-    if (!req.path.startsWith('/api/') && /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|json|apk)$/i.test(req.path)) return next();
-    // Wait-callback endpoint is secured by its own per-wait token so external
-    // (off-box) systems can deliver results without the ACCESS_TOKEN cookie.
-    if (req.method === 'POST' && /^\/api\/wait\/[^/]+\/resolve$/.test(req.path)) return next();
-    // Share recipient routes: the share page and its scoped API self-gate on the
-    // share token (and per-share password), so they bypass ACCESS_TOKEN. NOTE:
-    // admin share management lives under /api/sessions/* and stays gated.
-    if (/^\/share\/[^/]+$/.test(req.path)) return next();
-    if (/^\/api\/share\/[^/]+\/(auth|session)$/.test(req.path)) return next();
-    // Temp artifacts (multicc-artifact skill): the random <id> in the path is an
-    // unguessable capability token, so artifact links open without ACCESS_TOKEN —
-    // same model as /share/:token above (keep regex in sync with src/artifacts.js).
-    if (/^\/artifacts\/[A-Za-z0-9_-]+(?:\/|$)/.test(req.path)) return next();
-    // Migration bridge for old bookmarked `?token=` document URLs. Only the
-    // top-level HTML navigation is accepted; API and WebSocket query auth stay
-    // disabled unless the explicit legacy flag above is set. auth-client.js
-    // exchanges this for a cookie and immediately removes it from the address.
-    if (req.method === 'GET' && !req.path.startsWith('/api/') && authSecurity.verifyAccessToken(req.query.token)) {
-      metrics.inc('multicc_auth_bootstrap_query_total');
-      logger.warn('bootstrap_token_query', { requestId: req.id, path: req.path });
-      res.setHeader('Set-Cookie', authCookieHeader(req));
-      return next();
-    }
-    if (isAuthenticated(req)) return next();
-    // Redirect HTML requests to login, reject API calls with 403
-    if (req.headers.accept?.includes('text/html') || (!req.path.startsWith('/api/') && req.method === 'GET')) {
-      res.redirect(`/login?redirect=${encodeURIComponent(req.originalUrl)}`);
-    } else {
-      res.status(403).json({ error: 'Forbidden: not authenticated' });
-    }
-  });
-}
-
-app.post('/api/auth/exchange', (req, res) => {
-  if (!ACCESS_TOKEN || !authSecurity.verifyAccessToken(req.headers['x-access-token'])) {
-    return res.status(403).json({ error: 'Forbidden: invalid access token' });
-  }
-  res.setHeader('Set-Cookie', authCookieHeader(req));
-  res.status(204).end();
-});
-
-app.post('/api/auth/ws-ticket', express.json({ limit: '4kb' }), (req, res) => {
-  try {
-    const issued = authSecurity.issueWsTicket(req.body && req.body.path || '/', {
-      correlationId: req.correlationId || req.id,
-      requestId: req.id,
-    });
-    res.set('Cache-Control', 'no-store');
-    res.json(issued);
-  } catch (_) {
-    res.status(400).json({ error: 'invalid WebSocket path' });
-  }
-});
+authRuntime.mountRoutes(app);
 
 let serviceReady = false;
 const healthHandlers = createHealthHandlers({ isReady: () => serviceReady && !_shuttingDown });
