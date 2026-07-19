@@ -131,6 +131,8 @@ const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
+const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
+const { createFolderMemoryService } = require('./src/memory/folder-service');
 const { createChatHistoryRuntime } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
@@ -3102,89 +3104,27 @@ app.patch('/api/sessions/:id', (req, res) => {
   }
 });
 
-// ── Folder-based session memory: the human window into the same memory the ──
-// agent receives when a native CLI session starts. Two scopes: own (private)
-// and shared (all sessions in the directory). Each scope is a folder of .md.
-app.get('/api/sessions/:id/memory', (req, res) => {
-  const persisted = persistedSessions.get(req.params.id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  ensureMemoryDirs(persisted);
-  const own = sessionMemoryDir(persisted);
-  const shared = sharedMemoryDir(persisted.dirId);
-  res.json({
-    own:    { dir: own,    primary: primaryMemFileName(persisted.cli), files: listMemoryFiles(own) },
-    shared: { dir: shared, files: listMemoryFiles(shared) },
-    // Legacy auto-distilled JSON entries, surfaced so the UI can offer a
-    // one-click "promote into a .md" until the distiller writes files directly.
-    legacy: getMemoryEntries(persisted),
-  });
+// Folder memory owns filesystem layout, seed files and the frozen prompt snapshot.
+// Session routes consume that service plus the existing curated-memory primitives.
+const folderMemory = createFolderMemoryService({
+  fs,
+  path,
+  memoryStoreRoot: MEMORY_STORE_ROOT,
+  directories,
+  readMemoryFolder: readFolderMemory,
+  getMemoryEntries,
 });
-
-// Create or overwrite one memory file: { scope:'own'|'shared', name, content }.
-app.put('/api/sessions/:id/memory', (req, res) => {
-  const persisted = persistedSessions.get(req.params.id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  const { scope, name, content } = req.body || {};
-  const sc = scope === 'shared' ? 'shared' : 'own';
-  const fn = safeMemFileName(name);
-  if (!fn) return res.status(400).json({ error: 'invalid file name (must be a plain *.md name)' });
-  const body = String(content == null ? '' : content);
-  if (body.length > 40000) return res.status(400).json({ error: 'content too long (max 40000)' });
-  const threat = scanMemoryContent(body);
-  if (threat) return res.status(400).json({ error: `memory write blocked: ${threat}` });
-  ensureMemoryDirs(persisted);
-  const dir = memScopeDir(persisted, sc);
-  try {
-    atomicWriteMemoryFile(path.join(dir, fn), body);
-  } catch (e) { return res.status(500).json({ error: 'write failed: ' + e.message }); }
-  if (persisted.dirId) workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId: persisted.id, scope: sc });
-  res.json({ ok: true, files: listMemoryFiles(dir) });
-});
-
-// Delete one memory file: { scope:'own'|'shared', name }.
-app.delete('/api/sessions/:id/memory', (req, res) => {
-  const persisted = persistedSessions.get(req.params.id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  const { scope, name } = req.body || {};
-  const sc = scope === 'shared' ? 'shared' : 'own';
-  const fn = safeMemFileName(name);
-  if (!fn) return res.status(400).json({ error: 'invalid file name' });
-  const dir = memScopeDir(persisted, sc);
-  try { fs.unlinkSync(path.join(dir, fn)); }
-  catch (e) { if (e.code !== 'ENOENT') return res.status(500).json({ error: 'delete failed: ' + e.message }); }
-  if (persisted.dirId) workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId: persisted.id, scope: sc });
-  res.json({ ok: true, files: listMemoryFiles(dir) });
-});
-
-// Curated-memory mutation path used by agents and humans who want Hermes-like
-// add/replace/remove semantics without rewriting a whole file. Writes a bounded
-// MEMORY.md in the selected scope with duplicate prevention, injection scanning
-// and atomic replace. The live CLI session keeps its frozen prompt snapshot;
-// the response contains the new live entries so the writer can use them now.
-app.post('/api/sessions/:id/memory/action', (req, res) => {
-  const persisted = persistedSessions.get(req.params.id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  if (persisted.type === 'aux' || persisted.type === 'gateway') {
-    return res.status(400).json({ error: 'system sessions do not have curated memory' });
-  }
-  ensureMemoryDirs(persisted);
-  const scope = req.body?.scope === 'shared' ? 'shared' : 'own';
-  const result = applyCuratedMemoryAction({
-    dir: memScopeDir(persisted, scope),
-    action: String(req.body?.action || '').trim().toLowerCase(),
-    content: req.body?.content,
-    oldText: req.body?.oldText,
-    charLimit: scope === 'shared' ? SHARED_CURATED_MEM_CAP : SESSION_CURATED_MEM_CAP,
-  });
-  if (!result.ok) return res.status(400).json(result);
-  appendEvent(
-    persisted.dirId,
-    'memory_updated',
-    `${scope === 'shared' ? '公共' : '私有'}记忆：${result.message}`,
-    persisted.id,
-  );
-  workspaceBroadcast(persisted.dirId, { type: 'memory', sessionId: persisted.id, scope });
-  res.json(result);
+mountSessionMemoryRoutes(app, {
+  fs,
+  path,
+  records: persistedSessions,
+  folderMemory,
+  getMemoryEntries,
+  scanMemoryContent,
+  atomicWriteMemoryFile,
+  applyCuratedMemoryAction,
+  appendEvent,
+  workspaceBroadcast,
 });
 
 // Memory graph/tree and generic file editing share one filesystem boundary.
@@ -3292,8 +3232,8 @@ app.post('/api/sessions/:id/fork', asyncHandler(async (req, res) => {
   // notes) so pre-window distilled context survives into the fork. Best-effort.
   if (includeMemory) {
     try {
-      const srcMemDir = sessionMemoryDir(src);
-      const dstMemDir = sessionMemoryDir(r.session);
+      const srcMemDir = folderMemory.sessionDir(src);
+      const dstMemDir = folderMemory.sessionDir(r.session);
       if (fs.existsSync(srcMemDir)) {
         fs.mkdirSync(dstMemDir, { recursive: true });
         fs.cpSync(srcMemDir, dstMemDir, { recursive: true });
@@ -3364,7 +3304,7 @@ app.get('/api/sessions/:id/bundle', asyncHandler(async (req, res) => {
     const messages = loadChatHistory(s.id);
     const memoryFiles = {};
     try {
-      const memDir = sessionMemoryDir(s);
+      const memDir = folderMemory.sessionDir(s);
       if (fs.existsSync(memDir)) {
         for (const entry of fs.readdirSync(memDir, { withFileTypes: true })) {
           if (entry.isFile()) {
@@ -3512,7 +3452,7 @@ app.post('/api/sessions/import', asyncHandler(async (req, res) => {
 
     // 2) Restore memory files.
     if (payload.memoryFiles && typeof payload.memoryFiles === 'object') {
-      const memDir = sessionMemoryDir(newSession);
+      const memDir = folderMemory.sessionDir(newSession);
       fs.mkdirSync(memDir, { recursive: true });
       for (const [rel, content] of Object.entries(payload.memoryFiles)) {
         const safe = String(rel).replace(/[^A-Za-z0-9._-]/g, '_');
@@ -5726,7 +5666,7 @@ function _persistMergedMemory(sessionId, fresh, eventDetail) {
   let merged = _mergeMemoryEntries(getMemoryEntries(persisted), fresh);
   merged = _trimMemoryEntries(merged);
   persisted.memory = merged;
-  writeAutoMemoryFile(persisted, merged);
+  folderMemory.writeAutoFile(persisted, merged);
   savePersistedSessionsBestEffort('runtime.memory-distill');
   const totalLen = merged.reduce((sum, entry) => sum + (entry.text || '').length, 0);
   appendEvent(persisted.dirId, 'memory_updated', `${eventDetail}（${merged.length} 条，${totalLen} 字）`, sessionId);
@@ -6341,249 +6281,6 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
       workspaceBroadcast(persisted.dirId, { type: 'notify', sessionId, state: notifyState, message });
     }
   }
-}
-
-// ── Folder-based session memory ────────────────────────────────────────────
-// Each session gets its own on-disk memory folder, plus a shared folder scoped
-// to the owning directory (the "mother folder"). Stored OUTSIDE user repos
-// (under the multicc install dir) so nothing leaks into git worktrees/merges:
-//   memories/<dirId>/_shared/            ← shared across all sessions in the dir
-//   memories/<dirId>/sessions/<id>/      ← private to one session
-// The session's own primary file is named per CLI to match native conventions
-// (CLAUDE.md for claude, AGENTS.md for codex). Short facts use the controlled
-// memory endpoint; longer notes may use normal file tools. own+shared are read
-// when the native CLI context is created and remain a frozen prompt snapshot.
-const SESSION_MEM_CAP = 5000;   // chars of own-folder memory injected per native session
-const SHARED_MEM_CAP  = 4000;   // chars of shared-folder memory injected per native session
-const SESSION_CURATED_MEM_CAP = 2200;
-const SHARED_CURATED_MEM_CAP = 2200;
-
-function sessionMemoryDir(persisted) {
-  return path.join(MEMORY_STORE_ROOT, String(persisted.dirId), 'sessions', String(persisted.id));
-}
-function sharedMemoryDir(dirId) {
-  return path.join(MEMORY_STORE_ROOT, String(dirId), '_shared');
-}
-function primaryMemFileName(cli) {
-  return cli === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
-}
-
-// Create the folders on first use and seed a starter primary file (per CLI) and
-// a shared readme so the convention is discoverable. Best-effort; never throws.
-function ensureMemoryDirs(persisted) {
-  const own = sessionMemoryDir(persisted);
-  const shared = sharedMemoryDir(persisted.dirId);
-  try {
-    fs.mkdirSync(own, { recursive: true });
-    fs.mkdirSync(shared, { recursive: true });
-    const primary = path.join(own, primaryMemFileName(persisted.cli));
-    if (!fs.existsSync(primary)) {
-      fs.writeFileSync(primary,
-`# 本会话私有记忆
-
-> 「${persisted.label || persisted.id}」会话专属的长期记忆，只有本会话读得到。
-> 把值得长期记住的东西写进本文件夹的 .md（决定 / 踩过的坑 / 进行中的任务 / 用户偏好）。
-> 想让本项目所有会话都看到的，写到公共记忆文件夹（见注入提示里的路径）。
-
-（暂无内容）
-`);
-    }
-    const readme = path.join(shared, 'README.md');
-    if (!fs.existsSync(readme)) {
-      fs.writeFileSync(readme,
-`# 公共记忆（本项目所有会话共享）
-
-> 这里的内容会在本目录下原生 CLI 会话启动/重建时进入上下文快照。放跨会话复用的项目知识、约定、稳定事实。
-> 一事一文件、精炼；临时/私有的东西请写进各自会话的私有记忆文件夹，不要放这里。
-`);
-    }
-    // One-time migration: mirror any legacy distilled JSON entries into _auto.md
-    // so existing sessions' memory surfaces in the folder (and stays injected).
-    const auto = path.join(own, '_auto.md');
-    if (!fs.existsSync(auto)) {
-      const legacy = getMemoryEntries(persisted);
-      if (legacy && legacy.length) writeAutoMemoryFile(persisted, legacy);
-    }
-  } catch (_) { /* best-effort */ }
-  return { own, shared };
-}
-
-// Mirror the auto-distilled entries into the session's own folder as _auto.md —
-// the single injected surface for auto memory. Empty entries remove the file.
-function writeAutoMemoryFile(persisted, entries) {
-  if (!persisted || !persisted.dirId || !persisted.id) return;
-  try {
-    const dir = sessionMemoryDir(persisted);
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, '_auto.md');
-    if (!entries || !entries.length) { try { fs.unlinkSync(file); } catch (_) {} return; }
-    const body = entries.map(e => `- [${e.type}] ${e.text}`).join('\n');
-    fs.writeFileSync(file,
-`# 自动提炼记忆（辅助 AI 从周期复盘或被清理的历史中提炼；本文件会被自动覆盖，想长期保留请另写 .md）
-
-${body}
-`);
-  } catch (_) { /* best-effort */ }
-}
-
-// Build the folder-memory injection block (own + shared) for a session. Returns
-// null for aux/gateway/system sessions or when identifiers are missing.
-function buildFolderMemoryBlock(persisted) {
-  if (!persisted || !persisted.dirId || !persisted.id) return null;
-  if (persisted.type === 'aux' || persisted.type === 'gateway') return null;
-  const { own, shared } = ensureMemoryDirs(persisted);
-  const ownText = readFolderMemory(own, SESSION_MEM_CAP, {
-    primaryNames: [primaryMemFileName(persisted.cli), 'AGENTS.md', 'CLAUDE.md', 'MEMORY.md'],
-  });
-  const sharedText = readFolderMemory(shared, SHARED_MEM_CAP, {
-    primaryNames: ['MEMORY.md'],
-  });
-  return (
-`[记忆库｜原生会话快照] 你有一个持久记忆文件夹（存在 multicc 数据区，不在本仓库、不进 git）。以下正文会在原生 CLI 会话启动/重建时形成快照；会话中写入会立即落盘并由工具结果确认，但不会改写已经运行中的系统提示词。
-· 私有记忆（仅本会话可见）文件夹：${own}
-· 公共记忆（本项目所有会话共享）文件夹：${shared}
-· 保存短小、稳定的事实时，优先调用受控记忆接口（原子写入、去重、容量与安全检查）：
-  curl -s "$MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/memory/action" -H 'Content-Type: application/json' -d '{"action":"add","scope":"own","content":"要记住的事实"}'
-  action 可为 add / replace / remove；replace/remove 另传 oldText。跨会话项目事实用 scope=shared。较长的专题笔记仍可直接 Write/Edit 为独立 .md 文件。
-
-【私有记忆】
-${ownText || '（空）'}
-
-【公共记忆】
-${sharedText || '（空）'}
-[记忆库结束]`
-  );
-}
-
-// ── Folder-memory file ops (used by the memory editor UI) ──────────────────
-// List every .md file in a memory folder as {name, content}. Missing dir → [].
-function listMemoryFiles(dir) {
-  let files;
-  try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.md')).sort(); }
-  catch (_) { return []; }
-  return files.map(name => {
-    let content = '';
-    try { content = fs.readFileSync(path.join(dir, name), 'utf8'); } catch (_) {}
-    return { name, content };
-  });
-}
-// Validate a user-supplied memory filename: plain name, .md, no path traversal.
-// Allows word chars, dash, dot, space and CJK. Returns the safe name or null.
-function safeMemFileName(name) {
-  const n = String(name || '').trim();
-  if (!n || n.includes('/') || n.includes('\\') || n.includes('..')) return null;
-  if (!/^[\w.\- 一-龥]+\.md$/i.test(n)) return null;
-  return n;
-}
-// Resolve which folder a scope ('own' | 'shared') maps to for a session.
-function memScopeDir(persisted, scope) {
-  return scope === 'shared' ? sharedMemoryDir(persisted.dirId) : sessionMemoryDir(persisted);
-}
-
-// Resolve the effective custom role prompt for a session: an explicit
-// session-level role wins; otherwise inherit the owning directory's default.
-// The distilled JSON memory (keyword-matched) and the folder-based memory
-// (own + shared) are appended to the native-session startup prompt. Returns null when
-// nothing at all applies.
-function resolveRolePrompt(persisted) {
-  if (!persisted) return null;
-  // Base persona: explicit session role wins, else the directory default.
-  let base = persisted.rolePrompt;
-  if (!base) {
-    const dir = persisted.dirId ? directories.get(persisted.dirId) : null;
-    base = (dir && dir.rolePrompt) || null;
-  }
-
-  const parts = [];
-  if (base) parts.push(base);
-
-  // Folder-based memory (own + shared) is the single injected surface. The
-  // auto-distiller mirrors its output into the own folder as _auto.md, so the
-  // old keyword-matched JSON block is gone — everything flows through the folder.
-  const folderBlock = buildFolderMemoryBlock(persisted);
-  if (folderBlock) parts.push(folderBlock);
-
-  return parts.length ? parts.join('\n\n') : null;
-}
-
-// Return the most recent user message from a session's chat history (string
-// content only). Used by resolveRolePrompt to keyword-match memory entries
-// against what the user is asking about right now.
-function getLatestUserMessage(sessionName) {
-  const history = loadChatHistory(sessionName);
-  if (history.length === 0) return '';
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].role === 'user' && typeof history[i].content === 'string') {
-      return history[i].content;
-    }
-  }
-  return '';
-}
-
-// Extract keywords from a user message for memory matching. English words are
-// matched as tokens (>=3 chars); Chinese is sliced into 2-grams plus short
-// whole-segment tokens. Common English stop-words are filtered out.
-function extractKeywords(text) {
-  if (!text) return [];
-  const cleaned = text.replace(/[^一-龥a-zA-Z0-9_\s/-]/g, ' ').trim();
-  const keywords = new Set();
-
-  // English words (>=3 chars)
-  const enWords = cleaned.match(/[a-zA-Z][a-zA-Z0-9_-]{2,}/g) || [];
-  enWords.forEach(w => keywords.add(w));
-
-  // Chinese 2-grams + short whole segments
-  const cjk = cleaned.match(/[一-龥]+/g) || [];
-  for (const seg of cjk) {
-    for (let i = 0; i < seg.length - 1; i++) {
-      keywords.add(seg.substring(i, i + 2));
-    }
-    if (seg.length <= 6) keywords.add(seg);
-  }
-
-  const stopWords = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'this', 'that', 'with', 'have', 'from', 'they', 'them', 'what', 'were', 'been', 'will', 'would', 'could', 'should']);
-  return [...keywords].filter(k => !stopWords.has(k.toLowerCase()) && k.length >= 2);
-}
-
-// Score memory entries against the current user message's keywords and return
-// the most relevant ones, up to maxChars of formatted text. Entries with score
-// 0 are skipped once at least one matched; if nothing matches at all, the most
-// recent 3 entries are returned as a floor so the model always has some context.
-function getRelevantMemoryEntries(query, entries, maxChars = 2000) {
-  if (!entries || entries.length === 0) return [];
-
-  const keywords = extractKeywords(query);
-
-  const scored = entries.map(e => {
-    const text = e.text.toLowerCase();
-    let score = 0;
-    for (const kw of keywords) {
-      if (text.includes(kw.toLowerCase())) {
-        score += kw.length;  // longer keywords weigh more
-      }
-    }
-    // Type weight: todo and gotcha are more likely to affect current decisions
-    const typeWeight = { todo: 1.5, gotcha: 1.3, decision: 1.0, fact: 0.8, preference: 1.2 };
-    score *= (typeWeight[e.type] || 1.0);
-    return { entry: e, score };
-  });
-
-  scored.sort((a, b) => b.score - a.score);
-  const result = [];
-  let totalChars = 0;
-  for (const { entry, score } of scored) {
-    if (score === 0 && result.length > 0) break;  // skip unmatched once we have matches
-    const lineLen = entry.text.length + 20;  // account for "[type] " formatting overhead
-    if (totalChars + lineLen > maxChars) break;
-    result.push(entry);
-    totalChars += lineLen;
-  }
-
-  // Floor: if nothing matched, return the most recent 3 entries
-  if (result.length === 0 && entries.length > 0) {
-    return entries.slice(-3);
-  }
-  return result;
 }
 
 // Turn-boundary hook for guard F (REMOVED — classify prompt + dispatchStateAction
@@ -7470,7 +7167,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       text, persisted, sessionName,
       opts: { isFirstTurn, goalLimits, mode: cs.cli === 'claude' ? 'streaming' : 'per-turn' },
       deps: {
-        resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
+        resolveRolePrompt: folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
         buildCliHandoffPrompt: (session) => renderHandoffPrompt(session && session.pendingCliHandoff),
         buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
         pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
