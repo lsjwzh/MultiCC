@@ -623,19 +623,19 @@ test('Codex reconciliation attributes only the positive unobserved remainder', (
       providerName: 'Name p1',
       model: 'gpt-test',
       usage: {
-        inputTokens: 25,
-        outputTokens: 5,
+        inputTokens: 30,
+        outputTokens: 7,
         cacheWrite: 0,
-        cacheRead: 30,
+        cacheRead: 40,
       },
     });
     assert.equal(harness.broadcasts.length, 1);
 
     assert.equal(harness.runtime.reconcileCodexRoleUsage('codex-session', {
-      input_tokens: 15,
-      cache_read_input_tokens: 30,
-      output_tokens: 5,
-    }), false, 'fully observed aggregate must not be charged twice');
+      input_tokens: 10,
+      cache_read_input_tokens: 20,
+      output_tokens: 3,
+    }), false, 'fully observed main usage must not be charged twice');
     assert.equal(tracker.calls.accumulated.length, 1);
     assert.equal(harness.runtime.reconcileCodexRoleUsage('missing', {}), false);
   } finally {
