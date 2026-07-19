@@ -18,8 +18,8 @@ const SOURCE_EXTENSIONS = new Set([
 // smaller. These entries are not permanent exceptions to the 3k target.
 const MIGRATION_DEBT = Object.freeze({
   'server.js': Object.freeze({
-    ceiling: 9075,
-    byteCeiling: 437023,
+    ceiling: 8772,
+    byteCeiling: 422118,
     target: DEFAULT_MAX_LINES,
     reason: 'legacy host composition and inline route/controller migration',
   }),
