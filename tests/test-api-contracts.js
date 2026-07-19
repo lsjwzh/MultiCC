@@ -206,9 +206,11 @@ test('server composition uses canonical adapters without replacing legacy endpoi
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   const sessionAdmin = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'session-admin.js'), 'utf8');
   const orchestrationRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'orchestration.js'), 'utf8');
+  const workspaceRuntime = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'runtime.js'), 'utf8');
   assert.ok(source.includes("} = require('./src/session')"));
-  assert.ok(source.includes('createSessionStateService'));
-  assert.ok(source.includes('const sessionState = createSessionStateService({'));
+  assert.ok(source.includes("createWorkspaceRuntime } = require('./src/workspace/runtime')"));
+  assert.ok(source.includes('const workspaceRuntime = createWorkspaceRuntime({'));
+  assert.ok(workspaceRuntime.includes('const sessionState = createSessionStateService({'));
   assert.ok(source.includes("createSessionAdminRuntime } = require('./src/routes/session-admin')"));
   assert.ok(source.includes('const sessionAdmin = createSessionAdminRuntime({'));
   assert.ok(source.includes('sessionAdmin.mountRoutes(app)'));

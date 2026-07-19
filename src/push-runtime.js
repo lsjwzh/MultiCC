@@ -44,7 +44,7 @@ function assertDependencies(options) {
   if (!options || typeof options !== 'object') throw new TypeError('push runtime options required');
   const requiredFunctions = [
     'getAuxQueue', 'getTaskState', 'setTaskState', 'parseClassifyResult',
-    'dispatchStateAction', 'bumpBgActivity',
+    'dispatchStateAction',
   ];
   for (const name of requiredFunctions) {
     if (typeof options[name] !== 'function') throw new TypeError(`push runtime missing: ${name}`);
@@ -66,7 +66,7 @@ function createPushRuntime(options) {
   const {
     push, sessions, persistedSessions, workspaceClients, getAuxQueue,
     getTaskState, setTaskState, parseClassifyResult, dispatchStateAction,
-    chatSessions, bumpBgActivity,
+    chatSessions,
   } = options;
   const logger = options.logger || console;
   const now = options.now || Date.now;
@@ -172,7 +172,6 @@ function createPushRuntime(options) {
     if (monitor.recentText.length > 3000) monitor.recentText = monitor.recentText.slice(-2000);
 
     if (printable.length > 0) {
-      bumpBgActivity(sessionId);
       monitor.chars += printable.length;
       if (monitor.state === 'idle') monitor.state = 'active';
     }

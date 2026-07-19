@@ -156,10 +156,8 @@ const { mountShareRoutes } = require('./src/routes/share');
 const { createSessionAdminRuntime } = require('./src/routes/session-admin');
 const { createSessionTriggers } = require('./src/triggers');
 const { createPushRuntime } = require('./src/push-runtime');
-const {
-  createChatHistoryFileRepository,
-  createSessionStateService,
-} = require('./src/session');
+const { createWorkspaceRuntime } = require('./src/workspace/runtime');
+const { createChatHistoryFileRepository } = require('./src/session');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -686,15 +684,11 @@ const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 // other cli (claude, opencode, zcode, …) shares the Anthropic-compatible 'claude'
 // pool. opencode/zcode read ANTHROPIC_* env too when using an anthropic provider,
 // so a chosen claude-pool provider routes correctly for them.
-function appTypeForCli(cli) {
-  return cli === 'codex' ? 'codex' : 'claude';
-}
-
 function sessionProviderName(session) {
   const providerId = session && session.provider;
   if (!providerId) return null;
   try {
-    return providerRouterRuntime.getProviderSummary(appTypeForCli(session.cli), providerId)?.name || providerId;
+    return providerRouterRuntime.getProviderSummary(providers.appTypeForCli(session.cli), providerId)?.name || providerId;
   } catch (_) {
     return providerId;
   }
@@ -740,10 +734,6 @@ function isCodexTransportDisconnect(message) {
   const s = String(message || '');
   return /stream disconnected before completion/i.test(s) &&
     (/error sending request/i.test(s) || /\/backend-api\/codex\/responses/i.test(s));
-}
-function isCodexRecoverableReconnectError(message) {
-  const s = String(message || '');
-  return /^Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(s) && isCodexResponseCompletedDisconnect(s);
 }
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
 function codexStreamDisconnectContinuePrompt() {
@@ -903,8 +893,6 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
   isCodexTransportDisconnect,
 });
 const CLAUDE_CMD = cliCommands.claude;
-const CODEX_CMD = cliCommands.codex;
-const cliProviders = cliAdapterRegistry.providers;
 
 function cliCommandAvailable(command) {
   const candidate = String(command || '').trim();
@@ -2392,6 +2380,29 @@ const sessionAdmin = createSessionAdminRuntime({
 sessionAdmin.mountRoutes(app);
 const workspaceSnapshot = sessionAdmin.workspaceSnapshot;
 
+// Workspace and fleet-wide Meta state share one runtime so every event is
+// fanned out exactly once. The function dependencies are host declarations and
+// resolve lazily; hydration itself only reads the already-loaded records.
+const workspaceRuntime = createWorkspaceRuntime({
+  records: persistedSessions,
+  directories,
+  chatSessions,
+  workspaceSnapshot,
+  recentEvents: dirId => recentEvents(dirId),
+  mergeState: (directory, session) => mergeStateCached(directory, session),
+  send: (client, payload) => sendWs(client, payload),
+  broadcastClients: (clients, payload) => broadcastTo(clients, payload),
+  setTaskState,
+  saveBestEffort: savePersistedSessionsBestEffort,
+  clock: Date.now,
+});
+const workspaceStatus = workspaceRuntime.status;
+const workspaceClients = workspaceRuntime.clients;
+const sessionSummaries = workspaceRuntime.summaries;
+const workspaceBroadcast = workspaceRuntime.broadcast;
+const setSessionSummary = workspaceRuntime.setSummary;
+const setSessionStatus = workspaceRuntime.setStatus;
+
 function v1Error(req, res, status, message, code) {
   return res.status(status).json(createErrorDto({ ...requestContext(req, res), message, code }));
 }
@@ -2490,7 +2501,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     streaming: cli === 'claude' && kind === 'chat',
     // autoContinue is no longer a user-facing toggle (the picker keeps only the
     // streaming option). The field stays true for back-compat only; the old
-    // auto-drive mechanisms (tryAutoContinue / B idle-timer) are retired.
+    // auto-drive mechanisms are retired.
     autoContinue: true,
     createdAt: new Date().toISOString(),
     worktreePath,
@@ -2838,7 +2849,7 @@ app.patch('/api/sessions/:id', (req, res) => {
   if (req.body.autoContinue !== undefined) {
     // autoContinue is no longer user-configurable (the streaming picker dropped
     // this toggle). Accept the field for back-compat with older clients but pin
-    // it true. The old auto-drive paths (tryAutoContinue / B idle-timer) are
+    // it true. The old auto-drive paths are
     // retired; classify's D/W guards are the safety rails now.
     s.autoContinue = true;
   }
@@ -4426,7 +4437,6 @@ chatHistoryRuntime.mountRoutes(app);
 // Compatibility wrappers keep earlier host composition (Aux, dispatch and
 // session queries) independent of the runtime's later construction point.
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
-function latestAssistantMessageAt(sessionId) { return chatHistoryRuntime.latestAssistantAt(sessionId); }
 function chatLastActivity(sessionId, activeChat) {
   return chatHistoryRuntime.lastActivity(sessionId, activeChat);
 }
@@ -4521,14 +4531,6 @@ for (const [mount, bridge] of [
   app.use(mount, bridge.router);
 }
 
-// ── Workspace status board ──
-// Per-session live status (runtime only, never persisted). Broadcast to /ws/workspace
-// subscribers grouped by directory so every agent in a directory can see the others.
-// status ∈ idle | thinking | editing | running | waiting
-const workspaceStatus = new Map();   // sessionId → { status, currentFile, lastActivity }
-const workspaceClients = new Map();  // dirId → Set<ws>
-const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI "最近任务" one-liner
-
 // Push subscription routes and terminal notification state share one lifecycle.
 // Aux is resolved lazily because its queue is initialized during startup below.
 const pushRuntime = createPushRuntime({
@@ -4542,7 +4544,6 @@ const pushRuntime = createPushRuntime({
   parseClassifyResult,
   dispatchStateAction,
   chatSessions,
-  bumpBgActivity,
   timers: { setTimeout, clearTimeout },
   now: Date.now,
   logger: console,
@@ -4552,29 +4553,6 @@ const pushOnOutput = pushRuntime.onOutput;
 const pushOnInput = pushRuntime.onInput;
 const triggerPush = pushRuntime.notify;
 const cleanupPushMonitor = pushRuntime.cleanup;
-
-// Hydrate the dashboard from persisted state so a restart doesn't blank every
-// card. Two runtime-only Maps are lost on restart and must be rebuilt from the
-// durable taskState:
-//   • sessionSummaries — the "最近任务" one-liner
-//   • workspaceStatus  — the card's display status. Rebuilt from the persisted
-//     classifyState (D/C/W/B/E/P) so the board shows the real state immediately,
-//     NOT 'idle'. Without this, D/W sessions would stay idle forever (scan skips
-//     both), and C/E/B/P would show idle until the first 60s scan re-judges (C
-//     falls through to W at dispatch, so it effectively idles as waiting too).
-  for (const [sid, p] of persistedSessions) {
-    if (!p) continue;
-    if (p.summary) sessionSummaries.set(sid, { summary: p.summary, ts: p.summaryTs || Date.now() });
-    if (p.type === 'aux' || p.type === 'gateway') continue;
-    const cls = p.taskState && p.taskState.classifyState;
-    if (cls) {
-      // D → completed (terminal). C/W/B/E/P are all "not done" → waiting; the
-      // scan re-judges C/B/E/P within 60s, while D/W stay as the accurate value
-      // (a fell-through C persists as W, so it too rests rather than re-judging).
-      const status = cls === 'D' ? 'completed' : 'waiting';
-      workspaceStatus.set(sid, { status, currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null });
-    }
-  }
 
 // ── Unified classify result parser ─────────────────────────────────────────
 // Both terminal (classifyTerminalIdle) and chat (runClassifyNow/reconcile) use
@@ -4726,24 +4704,6 @@ function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 // as the aux service is up (so classify can judge E), we keep nudging. When
 // aux goes down, classify stops running and the retry loop stops naturally.
 const API_RETRY_DELAY_MS = 0;
-// RETIRED: the B idle-timer is gone (chat B is retired; terminal B never used a
-// timer). _bgIdleTimers is never populated, so BG_IDLE_TIMEOUT_MS is unread and
-// clearBgIdleTimer / bumpBgActivity are permanent no-ops. Kept only so their call
-// sites stay valid; safe to delete wholesale in a later cleanup.
-const BG_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // RETIRED (unread) — was the 3-min B idle window
-
-// Per-session state for B handler — RETIRED, never populated (0 .set call sites).
-const _bgIdleTimers = new Map();    // sessionName -> { timer, lastActivity }
-
-function clearBgIdleTimer(sessionName) {   // RETIRED no-op (_bgIdleTimers always empty)
-  const s = _bgIdleTimers.get(sessionName);
-  if (s) { clearTimeout(s.timer); _bgIdleTimers.delete(sessionName); }
-}
-
-function bumpBgActivity(sessionName) {     // RETIRED no-op (_bgIdleTimers always empty)
-  const s = _bgIdleTimers.get(sessionName);
-  if (s) s.lastActivity = Date.now();
-}
 
 // Detect an assistant message that is pure API/transport error noise (empty,
 // or short and made up of error keywords). Used to prune retry churn so the
@@ -4781,16 +4741,6 @@ function pruneErrorTurnPairs(sessionName) {
     console.log(`[multicc/classify] ${sessionName} pruned ${removed} error+nudge pair(s)`);
   }
   return removed;
-}
-
-// RETIRED — 0 call sites. C/B auto-continue was removed; E-retry and
-// resumeInterrupted are the only auto-recovery paths now. Body kept intact (not
-// deleted) so a later cleanup can remove it together with its waitInjector deps.
-function tryAutoContinue(sessionName, cs, cwd, nudge) { // RETIRED
-  const p = persistedSessions.get(sessionName);
-  if (!p) return false;
-  if (waitInjector.hasWait(sessionName)) return false;
-  return waitInjector.autoContinue(sessionName, { cwd: cwd || (cs && cs.cwd), nudge });
 }
 
 function dispatchStateAction(result, ctx) {
@@ -4858,7 +4808,6 @@ function dispatchStateAction(result, ctx) {
 
   if (state === 'completed') {
     // D — task genuinely finished. This is the ONLY terminal state.
-    clearBgIdleTimer(sessionName);
     const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
     if (isTerminal) {
       triggerPush(sessionId, 'completed', msg);
@@ -4912,7 +4861,6 @@ function dispatchStateAction(result, ctx) {
   // as aux (classify) is healthy. Before injecting, prune trailing
   // [nudge, error-reply] pairs so the history doesn't fill with retry churn.
   if (error) {
-    clearBgIdleTimer(sessionName);
     pruneErrorTurnPairs(sessionName);
     const nudge = '刚才因 API 异常中断，回答可能不完整，请从中断处继续。';
     console.log(`[multicc/classify] ${sessionName} API error -> retry (uncapped)`);
@@ -5452,120 +5400,6 @@ function scanAndReclassify() {
 //   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
 mountScanRoutes(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
 
-// Store an aux-AI task summary for a session and push it to the workspace board.
-function setSessionSummary(sessionId, summary) {
-  if (!summary) return;
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') return;
-  const ts = Date.now();
-  sessionSummaries.set(sessionId, { summary, ts });
-  // Persist the one-liner (legacy field, still used by the dashboard tooltip)
-  // and the full taskState snapshot for restart reconcile.
-  const tsChanged = persisted.summary !== summary;
-  if (tsChanged) persisted.summary = summary;
-  if (tsChanged || persisted.taskState?.lastSummary !== summary) {
-    setTaskState(sessionId, { lastSummary: summary, lastSummaryAt: ts }, { save: false });
-    savePersistedSessionsBestEffort('runtime.session-summary');
-  }
-  workspaceBroadcast(persisted.dirId, { type: 'summary', sessionId, summary, ts });
-}
-
-function workspaceBroadcast(dirId, payload) {
-  const set = workspaceClients.get(dirId);
-  if (!set) return;
-  broadcastTo(set, payload);
-}
-
-// ── Global meta event bus (Happier-parity: a voice/meta assistant that monitors
-//    ALL sessions needs a single subscription point spanning every directory).
-//    Every workspace event is also fanned out here with the dirId stamped on, so
-//    a /ws/meta subscriber sees the whole fleet's status/message traffic in one
-//    stream. The voice assistant and any future cross-session UI subscribes here.
-const metaClients = new Set();   // Set<ws>
-function metaBroadcast(payload) {
-  if (metaClients.size === 0) return;
-  broadcastTo(metaClients, payload);
-}
-// Wrap workspaceBroadcast so meta subscribers see every workspace event too,
-// without touching each individual call site. The dirId is preserved so a meta
-// client can still scope by directory when it wants to.
-const _origWorkspaceBroadcast = workspaceBroadcast;
-workspaceBroadcast = function (dirId, payload) {
-  _origWorkspaceBroadcast(dirId, payload);
-  metaBroadcast({ ...payload, dirId });
-};
-
-const sessionState = createSessionStateService({
-  clock: Date.now,
-  hasPendingWork: sessionId => {
-    const pending = chatSessions.get(sessionId)?.currentTask?.pendingDispatches;
-    return !!(pending && pending.length > 0);
-  },
-});
-
-// Update a session's live status and push the delta to workspace subscribers.
-function setSessionStatus(sessionId, patch) {
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted || persisted.type === 'aux') return;
-  const prev = workspaceStatus.get(sessionId) || { status: 'idle', currentFile: null, lastActivity: 0, runStartedAt: null, runEndedAt: null };
-  const transition = sessionState.transition(sessionId, prev, patch);
-  const next = {
-    ...transition.state,
-    currentFile: patch.currentFile !== undefined ? patch.currentFile : prev.currentFile,
-  };
-  workspaceStatus.set(sessionId, next);
-  // Only broadcast when the status or current file actually changed — callers may
-  // fire this on every output chunk / text delta.
-  if (next.status === prev.status && next.currentFile === prev.currentFile) return;
-  workspaceBroadcast(persisted.dirId, {
-    type: 'status', sessionId,
-    status: next.status, currentFile: next.currentFile, lastActivity: next.lastActivity,
-    runStartedAt: next.runStartedAt, runEndedAt: next.runEndedAt,
-    mergeState: mergeStateCached(directories.get(persisted.dirId), persisted),
-  });
-}
-
-function handleWorkspaceWs(ws, req, urlObj) {
-  const dirId = urlObj.searchParams.get('dirId') || '';
-  if (!directories.has(dirId)) {
-    sendWs(ws, { type: 'error', error: 'unknown directory' });
-    ws.close();
-    return;
-  }
-  let set = workspaceClients.get(dirId);
-  if (!set) { set = new Set(); workspaceClients.set(dirId, set); }
-  set.add(ws);
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
-  sendWs(ws, {
-    type: 'snapshot', dirId,
-    sessions: workspaceSnapshot(dirId),
-    events: recentEvents(dirId),
-  });
-  ws.on('close', () => {
-    set.delete(ws);
-    if (set.size === 0) workspaceClients.delete(dirId);
-  });
-}
-
-// Global meta bus handler: subscribes the ws to every workspace event across
-// every directory, and sends an initial fleet-wide snapshot on connect.
-function handleMetaWs(ws, req) {
-  metaClients.add(ws);
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
-  // Fleet snapshot: every directory's sessions + recent events, so a freshly
-  // connected meta/voice assistant sees the whole board immediately.
-  const fleet = [];
-  for (const [dirId, dir] of directories.entries()) {
-    fleet.push({ dirId, dirLabel: dir.label || null,
-                 sessions: workspaceSnapshot(dirId),
-                 events: recentEvents(dirId) });
-  }
-  sendWs(ws, { type: 'meta_snapshot', fleet });
-  ws.on('close', () => { metaClients.delete(ws); });
-}
-
 // ── Event log + passive inter-agent notes ──
 // Each directory has an append-only event log (events/<dirId>.jsonl) and a shared
 // pool of notes. A note left for another agent is delivered passively — prepended
@@ -5847,22 +5681,6 @@ function ensureCurrentTask(cs, sessionName, userText) {
     classifyState: 'P',
   });
   return cs.currentTask;
-}
-
-// Get recent user messages from chat history for task summary context.
-// Returns up to `maxCount` most recent user messages (oldest first).
-function getRecentUserMessages(sessionName, maxCount = 3) {
-  try {
-    const history = loadChatHistory(sessionName);
-    const userMsgs = [];
-    for (let i = history.length - 1; i >= 0 && userMsgs.length < maxCount; i--) {
-      const msg = history[i];
-      if (msg && msg.role === 'user' && msg.content) {
-        userMsgs.unshift(msg.content);
-      }
-    }
-    return userMsgs;
-  } catch (_) { return []; }
 }
 
 function emitRunningNotify(sessionName, message) {
@@ -6637,7 +6455,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // resumeHeldSessions——否则恢复注入会被本 gate 误拦、held 会话永远无法接续。
   // A real (non-auto-continue) message means the user/trigger is driving again →
   // reset the D auto-continue guard so a future background-wait gets fresh budget.
-  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); clearBgIdleTimer(sessionName); }
+  if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
   // Ensure session-level state exists even when no WS client is connected.
   if (!cs) {
     const csCli = persisted.cli || 'claude';
@@ -7725,7 +7543,7 @@ wss.on('connection', async (ws, req) => {
 
   // Route to the per-directory workspace status board
   if (urlObj.pathname === '/ws/workspace') {
-    return handleWorkspaceWs(ws, req, urlObj);
+    return workspaceRuntime.attachWorkspace(ws, urlObj);
   }
 
   // Route to the global meta event bus (all directories, all sessions).
@@ -7733,7 +7551,7 @@ wss.on('connection', async (ws, req) => {
   // snapshot of every session across every directory. The voice/meta assistant
   // subscribes here to hold the whole board.
   if (urlObj.pathname === '/ws/meta') {
-    return handleMetaWs(ws, req);
+    return workspaceRuntime.attachMeta(ws);
   }
 
   // Route to aux queue monitor (read-only WebSocket for __aux__ session)
