@@ -117,6 +117,7 @@ const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
+const { scheduleDetachedRestart } = require('./src/server-restart');
 const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
 const { mountSystemRoutes } = require('./src/routes/system');
@@ -124,6 +125,7 @@ const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { mountVoiceRoutes } = require('./src/routes/voice');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
+const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -4863,9 +4865,10 @@ app.post('/api/sessions/:id/restart', asyncHandler(async (req, res) => {
 // ── Restart the whole multicc server (graceful) ──
 // A detached child re-launches us after we exit. Auth-gated (deliberately NOT
 // in the bypass allowlist at the top of this file), so shared view/operate
-// viewers cannot reach it. The child runs `./multicc restart`, whose do_stop
+// viewers cannot reach it. The child runs `/bin/bash ./multicc restart`, whose do_stop
 // sends SIGINT → gracefulShutdown (drains in-flight turns + flushes partial
-// chats) before do_start brings up a fresh instance.
+// chats) before do_start brings up a fresh instance. Calling bash explicitly
+// keeps source/archive installs working when the manager script lacks +x.
 // Debounce flag distinct from _shuttingDown: gracefulShutdown short-circuits on
 // _shuttingDown, so reusing it here would abort the very shutdown we want. Once
 // a restart is scheduled we never reset it — the process is about to be replaced.
@@ -4873,7 +4876,7 @@ let _restartScheduled = false;
 let _restartScheduledAt = 0;
 const RESTART_FLAG_TTL_MS = 30000;
 app.post('/api/restart', (req, res) => {
-  // Safety net: detached `./multicc restart` should replace us within ~2s. If
+  // Safety net: detached `/bin/bash ./multicc restart` should replace us within ~2s. If
   // we're still alive after RESTART_FLAG_TTL_MS the replacement failed (stale
   // pidfile / multiple node server.js survivors — do_stop missed the live PID),
   // so reset the flag instead of 409-ing "already in progress" forever.
@@ -4892,23 +4895,44 @@ app.post('/api/restart', (req, res) => {
   for (const cs of chatSessions.values()) {
     if (cs && cs.isStreaming && (Date.now() - (cs.lastStreamAt || 0)) < 600000) activeStreaming++;
   }
-  // Respond BEFORE the process dies so the HTTP response actually flushes.
-  res.json({ ok: true, activeStreaming });
-  // detached + unref so the child survives our exit; stdio ignored so it
-  // doesn't keep our event loop alive. The 2s sleep only lets THIS response
-  // flush — the actual graceful stop (kill -INT → drain + flush) and port
-  // release happen inside the child's `./multicc restart` do_stop.
-  setImmediate(() => {
-    try {
-      const child = spawn('/bin/sh', ['-c', 'sleep 2 && ./multicc restart'], {
-        cwd: __dirname, detached: true, stdio: 'ignore', env: process.env,
-      });
-      child.unref();
-      console.log('[multicc] /api/restart: detached graceful restart scheduled');
-    } catch (e) {
-      console.error('[multicc] /api/restart: spawn failed', e && e.message);
+  // Start the detached sleeper before acknowledging the request. The manager
+  // and bash preflight plus synchronous spawn must succeed; its two-second
+  // delay still gives this response time to flush before it signals us.
+  const scheduledAt = _restartScheduledAt;
+  try {
+    scheduleDetachedRestart({
+      spawn,
+      rootDir: __dirname,
+      env: process.env,
+      log: console,
+      onFailure: (error) => {
+        // An old detached attempt must never clear a newer attempt's debounce.
+        // If shutdown already began there is no live API process to retry.
+        if (!_shuttingDown && _restartScheduledAt === scheduledAt) {
+          _restartScheduled = false;
+          _restartScheduledAt = 0;
+          console.error('[multicc] /api/restart: scheduling state reset after child failure',
+            error && error.code);
+        }
+      },
+    });
+  } catch (error) {
+    if (_restartScheduledAt === scheduledAt) {
+      _restartScheduled = false;
+      _restartScheduledAt = 0;
     }
-  });
+    console.error('[multicc] /api/restart: could not schedule restart', error && error.message);
+    const code = error && /^RESTART_[A-Z_]+$/.test(error.code || '')
+      ? error.code
+      : 'RESTART_SCHEDULE_FAILED';
+    return res.status(503).json({
+      error: 'restart could not be scheduled',
+      code,
+      requestId: req.id,
+    });
+  }
+
+  return res.status(202).json({ ok: true, status: 'scheduled', activeStreaming });
 });
 
 // ── Merge a session's worktree branch back into the directory's base branch ──
@@ -5221,121 +5245,17 @@ app.get('/api/directories/:id/events', (req, res) => {
   res.json({ events: recentEvents(d.id) });
 });
 
-// ── File Browser API ──
-app.get('/api/files', (req, res) => {
-  let dirPath = (req.query.path || '').trim();
-  const sessionId = (req.query.session || '').trim();
-
-  if (!dirPath && sessionId) {
-    const active = sessions.get(sessionId);
-    const persisted = persistedSessions.get(sessionId);
-    dirPath = active?.cwd || persisted?.cwd || os.homedir();
-  } else if (!dirPath) {
-    dirPath = os.homedir();
-  }
-
-  if (dirPath === '~') dirPath = os.homedir();
-  else if (dirPath.startsWith('~/') || dirPath.startsWith('~\\')) {
-    dirPath = path.join(os.homedir(), dirPath.slice(2));
-  }
-  dirPath = path.resolve(dirPath);
-
-  try {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    const files = entries
-      .map(e => {
-        const fullPath = path.join(dirPath, e.name);
-        const isDir = e.isDirectory();
-        let size = null;
-        if (!isDir) {
-          try { size = fs.statSync(fullPath).size; } catch (_) {}
-        }
-        return { name: e.name, isDir, path: fullPath, size };
-      })
-      .sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-    const parent = dirPath !== path.parse(dirPath).root ? path.dirname(dirPath) : null;
-    res.json({ path: dirPath, parent, files });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-app.get('/api/download', (req, res) => {
-  const filePath = (req.query.path || '').trim();
-  const inline = req.query.inline === '1';
-  if (!filePath) return res.status(400).json({ error: 'path required' });
-  const resolved = path.resolve(filePath);
-  try {
-    const stat = fs.statSync(resolved);
-    if (stat.isDirectory()) return res.status(400).json({ error: '不能下载目录' });
-    if (inline) {
-      res.sendFile(resolved);
-    } else {
-      res.download(resolved);
-    }
-  } catch (e) {
-    res.status(404).json({ error: '文件不存在' });
-  }
-});
-
-
-// ── File upload for chat mode ──
-app.post('/api/upload', upload.chat, (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  try {
-    const saved = persistChatUpload(req.file);
-    req.file.buffer = null;
-    console.log(`[multicc] Uploaded: ${saved.path} (${saved.name})`);
-    res.json({ path: saved.path, name: saved.name });
-  } catch (error) {
-    sendUploadError(res, error);
-  }
-});
-
-// ── Temp upload stats & cleanup ──
-app.get('/api/uploads/stats', (req, res) => {
-  try {
-    const tmpDir = os.tmpdir();
-    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('multicc_'));
-    let totalSize = 0;
-    const items = [];
-    for (const f of files) {
-      try {
-        const st = fs.statSync(path.join(tmpDir, f));
-        if (!st.isFile()) continue;
-        totalSize += st.size;
-        items.push({ name: f, size: st.size, mtime: st.mtime });
-      } catch (_) { /* skip */ }
-    }
-    res.json({ count: items.length, totalSize, dir: tmpDir, files: items });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/uploads/cleanup', (req, res) => {
-  try {
-    const tmpDir = os.tmpdir();
-    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('multicc_'));
-    let deleted = 0, freed = 0;
-    for (const f of files) {
-      try {
-        const fp = path.join(tmpDir, f);
-        const st = fs.statSync(fp);
-        if (!st.isFile()) continue;
-        fs.unlinkSync(fp);
-        deleted++;
-        freed += st.size;
-      } catch (_) { /* skip */ }
-    }
-    console.log(`[multicc] Cleanup: deleted ${deleted} temp files, freed ${(freed / 1024 / 1024).toFixed(2)} MB`);
-    res.json({ deleted, freed });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ── File browser, download and upload lifecycle ──
+mountFileTransferRoutes(app, {
+  fs,
+  path,
+  os,
+  upload,
+  persistChatUpload,
+  sendUploadError,
+  getActiveSession: id => sessions.get(id),
+  getPersistedSession: id => persistedSessions.get(id),
+  log: message => console.log(message),
 });
 
 // ── Voice settings API ──
