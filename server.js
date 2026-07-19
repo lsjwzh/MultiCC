@@ -71,7 +71,7 @@ const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./plugins/utils/macos-power');
 const gitPush = require('./plugins/utils/git-push');
-const { runGit: gitRunQueued, queueDepth: gitQueueDepth, makeTtlCache } = require('./src/git-queue');
+const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git-queue');
 
 const crypto = require('crypto');
 const bus = require('./src/bus');
@@ -120,6 +120,7 @@ const {
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state-store');
 const stateTx = require('./src/state-tx');
+const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createShutdownCoordinator } = require('./src/shutdown');
@@ -745,8 +746,8 @@ function findCodexSessionId(cwd, sinceMs, sessionsDir) {
 // stateful recoverTmuxSessions() (below) stays — it rebuilds core session state.
 const {
   TMUX_PREFIX, tmuxSessionName, tmuxListSessions, tmuxHasSession, tmuxCreateSession, tmuxResize,
-  applyMaxClientSize, tmuxKillSession, tmuxCapturePane, tmuxPaneTty, tmuxPaneCwd,
-  tmuxWriteInput, fifoPathForSession, startOutputCapture, stopOutputCapture,
+  applyMaxClientSize, tmuxKillSession, tmuxCapturePane, tmuxPaneTty,
+  tmuxWriteInput, startOutputCapture, stopOutputCapture,
 } = require('./src/tmux');
 
 // Recover existing tmux sessions on startup (survives server restart)
@@ -784,8 +785,8 @@ async function recoverTmuxSessions() {
 // Git + worktree ops extracted to src/git.js. Pure functions, destructured so
 // existing call sites are unchanged. The stateful bits stay here in server.js.
 const {
-  WORKTREE_SUBDIR, gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
-  gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeCommitAll, gitWorktreeMergeState, gitMergeBack,
+  gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
+  gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeMergeState, gitMergeBack,
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
 } = require('./src/git');
@@ -838,8 +839,7 @@ const invalidSessions = new Map();       // sessionId → reason; recovery is sk
 // Destructured so existing call sites are unchanged. ensureDirGitReady() and
 // the loadDirectories/saveDirectories persistence stay below in server.js.
 const {
-  isHomeOrAbove, realPathOf, findDirByPath, dirUnsuitableReason,
-  dirSuitabilityViaGit, dirSuitability, friendlyDirReason,
+  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason,
 } = require('./src/directories');
 
 // Make sure a directory is a usable git repo; refuses $HOME and missing paths.
@@ -883,145 +883,21 @@ async function ensureDirGitReady(dir) {
 const SESSIONS_FILE = MULTICC_PATHS.sessionsFile;
 const DIRECTORIES_FILE = MULTICC_PATHS.directoriesFile;
 
-// Both files are persisted through state-store: atomic tmp+fsync+rename + dir
-// fsync + rolling .bakN backups. A save FAILURE now throws so the HTTP layer
-// can 5xx the client instead of returning success on a torn on-disk state.
-const sessionsStore = stateStore.createStore({
-  file: SESSIONS_FILE, kind: 'sessions', schemaVersion: 1, legacyIsArray: true,
+// State bootstrap owns store construction, crash-journal replay, fail-closed
+// recovery and the one-time legacy paired-session migration. The returned Maps
+// remain the shared host references consumed by the bounded contexts below.
+const stateBootstrap = bootstrapState({
+  fs,
+  stateStore,
+  stateTx,
+  paths: MULTICC_PATHS,
+  chatHistoryRepository,
+  randomUUID: crypto.randomUUID,
+  logger: console,
 });
-const directoriesStore = stateStore.createStore({
-  file: DIRECTORIES_FILE, kind: 'directories', schemaVersion: 1, legacyIsArray: true,
-});
-
-// Boot-time journal replay: if the previous process crashed between writing
-// the state-tx journal and finishing the two file writes, finish the job here
-// BEFORE anyone reads state. Journal entries carry the exact intended
-// snapshots, so replay is idempotent.
-{
-  const { replayed, skipped } = stateTx.replayJournals(MULTICC_PATHS.journalDir, {
-    log: (m) => console.log(m),
-  });
-  if (replayed || skipped) {
-    console.log(`[multicc] state-tx journal: ${replayed} replayed, ${skipped} skipped`);
-  }
-}
-
-function loadDirectories() {
-  let r;
-  try { r = directoriesStore.loadOrRecover(); }
-  catch (e) {
-    // Fail-closed: refuse to boot into a fresh empty state that would clobber
-    // an unreadable directories.json on the next save(). Operators can move
-    // the file aside manually after inspecting it.
-    console.error(`[multicc] directories.json unreadable and no backup usable: ${e.message}`);
-    throw e;
-  }
-  if (!r.present) return new Map();
-  if (r.recovered) console.warn(`[multicc] directories.json recovered from backup ${r.recoveredFrom}`);
-  const map = new Map();
-  for (const d of r.data) map.set(d.id, d);
-  return map;
-}
-
-// saveDirectories() moved into src/directory/repository.js; a delegate with the
-// same name is defined next to the directory-domain composition root below.
-
-function isNewSchema(arr) {
-  return arr.some(s => s.dirId !== undefined || s.kind !== undefined);
-}
-
-function hasMigratableOldSessions(arr) {
-  return arr.some(s => !(s.id === '__aux__' || s.type === 'aux') && s.dirId === undefined && s.kind === undefined);
-}
-
-// One-shot migration: old paired sessions → directories + split sessions.
-function migrateOldSchema(oldList) {
-  const newDirs = new Map();
-  const newSessions = new Map();
-  const chatHistoryRenames = [];
-
-  for (const s of oldList) {
-    if (s.id === '__aux__' || s.type === 'aux') {
-      newSessions.set(s.id, s); // keep as-is
-      continue;
-    }
-    const dirId = crypto.randomUUID();
-    newDirs.set(dirId, {
-      id: dirId,
-      name: s.id,                 // use old human-readable id as directory label
-      path: s.cwd,
-      createdAt: s.createdAt,
-    });
-    // Terminal session reuses the old id so existing tmux sessions (multicc-<id>) get recovered.
-    newSessions.set(s.id, {
-      id: s.id,
-      dirId,
-      cli: 'claude',
-      kind: 'terminal',
-      cliSessionId: s.claudeSessionId || null,
-      createdAt: s.createdAt,
-    });
-    // Chat session (if old record had chatClaudeSessionId) gets id + '-chat'.
-    if (s.chatClaudeSessionId) {
-      const chatId = s.id + '-chat';
-      newSessions.set(chatId, {
-        id: chatId,
-        dirId,
-        cli: 'claude',
-        kind: 'chat',
-        cliSessionId: s.chatClaudeSessionId,
-        createdAt: s.createdAt,
-      });
-      // Chat history was keyed by the old paired id; rename the file so the new chat
-      // session (id + '-chat') picks up its history.
-      chatHistoryRenames.push({ from: s.id, to: chatId });
-    }
-  }
-
-  return { newDirs, newSessions, chatHistoryRenames };
-}
-
-function loadPersistedState() {
-  let rawSessions = [];
-  let r;
-  try { r = sessionsStore.loadOrRecover(); }
-  catch (e) {
-    // Fail-closed on both primary AND all backups corrupt. Refuse to boot
-    // rather than overwrite the file with an empty array on the next save().
-    console.error(`[multicc] sessions.json unreadable and no backup usable: ${e.message}`);
-    throw e;
-  }
-  if (r.present) {
-    if (r.recovered) console.warn(`[multicc] sessions.json recovered from backup ${r.recoveredFrom}`);
-    rawSessions = r.data;
-  }
-
-  const dirMap = loadDirectories();
-
-  if (rawSessions.length > 0 && !isNewSchema(rawSessions) && hasMigratableOldSessions(rawSessions)) {
-    console.log('[multicc] Migrating sessions.json to directory-based schema...');
-    const { newDirs, newSessions, chatHistoryRenames } = migrateOldSchema(rawSessions);
-    // Rename chat_history files (old paired id → new chat session id)
-    for (const { from, to } of chatHistoryRenames) {
-      try {
-        chatHistoryRepository.renameSession(from, to);
-      } catch (e) {
-        console.warn(`[multicc] chat_history rename failed ${from} → ${to}: ${e.message}`);
-      }
-    }
-    // Back up old sessions.json just in case
-    try { fs.copyFileSync(SESSIONS_FILE, SESSIONS_FILE + '.pre-directory.bak'); } catch (_) {}
-    return { directories: newDirs, persistedSessions: newSessions, needsSave: true };
-  }
-
-  // Already new-schema (or empty)
-  const sessionMap = new Map();
-  for (const s of rawSessions) sessionMap.set(s.id, s);
-  console.log(`[multicc] Loaded ${dirMap.size} directories, ${sessionMap.size} session(s)`);
-  return { directories: dirMap, persistedSessions: sessionMap, needsSave: false };
-}
-
-const _state = loadPersistedState();
+const sessionsStore = stateBootstrap.sessionsStore;
+const directoriesStore = stateBootstrap.directoriesStore;
+const _state = stateBootstrap.state;
 const persistedSessions = _state.persistedSessions;
 
 // Host-injected store port. Production delegates directly to StateStore's
@@ -1374,43 +1250,6 @@ function buildDispatchContextPrompt(sessionId) {
     ultra ? '[MultiCC Ultracode workflow end]' : '[MultiCC cross-session dispatch end]',
     '',
   ].join('\n');
-}
-
-function ultracodeWorkerId(parentId, n) {
-  const stem = String(parentId || 'session')
-    .normalize('NFKD')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 44)
-    .replace(/-+$/g, '') || 'session';
-  return `${stem}-ultra-${String(n).padStart(2, '0')}`;
-}
-
-async function ensureUltracodeWorkers(parentId) {
-  const parent = persistedSessions.get(parentId);
-  if (!parent || !parent.dirId || parent.kind !== 'chat') return;
-  if (normalizeEffort(parent.effort) !== 'ultracode') return;
-  const dir = directories.get(parent.dirId);
-  if (!dir) return;
-  for (let i = 1; i <= 3; i++) {
-    const id = ultracodeWorkerId(parentId, i);
-    if (persistedSessions.has(id)) continue;
-    const r = await createSessionRecord({
-      dir,
-      cli: parent.cli || 'claude',
-      kind: 'chat',
-      label: `⚡ Ultra Worker ${i}`,
-      id,
-      ephemeral: true,
-      model: parent.model || null,
-      provider: parent.provider || '',
-      effort: 'xhigh',
-      rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
-      persistence: 'bestEffort', persistenceSource: 'runtime.ultracode-worker-create',
-    });
-    if (!r.ok) console.warn(`[multicc/ultracode] failed to create worker ${id}: ${r.error}`);
-  }
 }
 
 function buildGatewayPrompt(userText) {
