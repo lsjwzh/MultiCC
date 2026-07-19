@@ -377,8 +377,10 @@ test('power settings preserve success branches and delegate all errors', async (
 
 test('server delegates every migrated GET without retaining inline duplicates', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const writeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-write.js'), 'utf8');
   assert.match(source, /mountHostReadRoutes\(app, \{/);
-  assert.match(source, /resolveNotifySettingsUpdates\(req\.body \|\| \{\}, push\.cfg\)/);
+  assert.match(source, /mountHostWriteRoutes\(app, \{/);
+  assert.match(writeSource, /resolveNotifySettingsUpdates\(req\.body \|\| \{\}, current\)/);
   for (const routePath of EXPECTED_PATHS) {
     assert.equal(source.includes(`app.get('${routePath}'`), false, routePath);
   }

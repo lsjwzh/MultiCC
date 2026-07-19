@@ -120,7 +120,8 @@ const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/h
 const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
 const { mountSystemRoutes } = require('./src/routes/system');
-const { mountHostReadRoutes, resolveNotifySettingsUpdates } = require('./src/routes/host-read');
+const { mountHostReadRoutes } = require('./src/routes/host-read');
+const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -5789,6 +5790,18 @@ webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.
 // push.js sends through the instance configured by setVapidDetails() above.
 const push = require('./src/push');
 const tunnel = require('./src/tunnel');
+function reportHostControlFailure(component, stage, category) {
+  metrics.inc('multicc_host_control_failures_total');
+  if (category === 'compensation_failed') metrics.inc('multicc_host_control_compensation_failures_total');
+  logger.error('host_control_failure', {
+    component,
+    stage: String(stage || 'unknown').slice(0, 80),
+    category: String(category || 'operation_failed').slice(0, 80),
+  });
+}
+tunnel.setFailureReporter((stage, category) => {
+  reportHostControlFailure('tunnel', stage, category);
+});
 const chatStream = require('./src/chat-stream');
 const waitInjector = require('./src/wait-injector');
 const bgCoalesce = require('./src/bg-completion-coalescer');
@@ -5820,6 +5833,36 @@ mountHostReadRoutes(app, {
   getProxyEnabled: () => CLAUDE_PROXY_ENABLED,
   getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
   macosPower,
+});
+
+// Mutable host settings use the matching narrow boundary. Durable .env/config
+// writes commit before hot runtime state is changed, so write failures reach
+// the terminal safe error handler instead of returning a runtime-only success.
+mountHostWriteRoutes(app, {
+  readEnvFile,
+  writeEnvFile,
+  push,
+  tunnel,
+  getAccessToken: () => ACCESS_TOKEN,
+  setAccessToken: (token) => {
+    process.env.ACCESS_TOKEN = token;
+    ACCESS_TOKEN = token;
+  },
+  getAllowRemote: () => networkPolicy.allowRemote,
+  isLocalRequest,
+  getProxyEnabled: () => CLAUDE_PROXY_ENABLED,
+  setProxyEnabled: (enabled) => {
+    CLAUDE_PROXY_ENABLED = enabled;
+    process.env.CLAUDE_PROXY_ENABLED = enabled ? '1' : '0';
+  },
+  getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
+  setOfficialOAuthEnabled: (enabled) => {
+    CLAUDE_OFFICIAL_VIA_PROXY = enabled;
+    process.env.CLAUDE_OFFICIAL_VIA_PROXY = enabled ? '1' : '0';
+  },
+  macosPower,
+  log: message => console.log(message),
+  reportFailure: (stage, category) => reportHostControlFailure('host_write', stage, category),
 });
 
 // Push API endpoints
@@ -5875,123 +5918,6 @@ app.post('/api/push/test-webhook', (req, res) => {
   if (!push.cfg.WEBHOOK_URL) return res.status(400).json({ error: 'Webhook URL not configured' });
   push.sendWebhookNotification({ title: 'MultiCC Test', body: `Webhook test at ${new Date().toLocaleTimeString()}`, type: 'test' });
   res.json({ ok: true });
-});
-
-app.post('/api/settings/notify', (req, res) => {
-  // GET returns opaque placeholders rather than channel secrets. Treat an
-  // unchanged placeholder as "keep current"; a real empty string remains an
-  // explicit clear operation, and a new URL replaces the current value.
-  const updates = resolveNotifySettingsUpdates(req.body || {}, push.cfg);
-  if (Object.keys(updates).length > 0) { writeEnvFile(updates); push.applyEnvUpdates(updates); }
-  res.json({ ok: true });
-});
-
-app.post('/api/settings/tunnel', (req, res) => {
-  const b = req.body || {};
-  const enabling = !!(b.phddns && b.phddns.enabled) || !!(b.tailscale && (b.tailscale.enabled || b.tailscale.funnel));
-  if (enabling && !ACCESS_TOKEN) return res.status(400).json({ error: '开启外网访问前必须先设置 ACCESS_TOKEN' });
-  const update = {};
-  if (b.phddns && typeof b.phddns === 'object') {
-    update.phddns = {};
-    if (typeof b.phddns.enabled === 'boolean') update.phddns.enabled = b.phddns.enabled;
-    if (typeof b.phddns.url === 'string') update.phddns.url = b.phddns.url.trim();
-  }
-  if (b.tailscale && typeof b.tailscale === 'object') {
-    update.tailscale = {};
-    if (typeof b.tailscale.enabled === 'boolean') update.tailscale.enabled = b.tailscale.enabled;
-    if (typeof b.tailscale.url === 'string') update.tailscale.url = b.tailscale.url.trim();
-    if (typeof b.tailscale.funnel === 'boolean') update.tailscale.funnel = b.tailscale.funnel;
-    if (Number.isFinite(b.tailscale.funnelPort) && b.tailscale.funnelPort > 0) update.tailscale.funnelPort = Math.floor(b.tailscale.funnelPort);
-  }
-  for (const k of ['intervalSec', 'failThreshold', 'restartCooldownSec', 'maxRestartsPerHour']) {
-    if (Number.isFinite(b[k]) && b[k] > 0) update[k] = Math.floor(b[k]);
-  }
-  const cfg = tunnel.applyConfig(update);
-  res.json({ ok: true, config: cfg });
-});
-
-app.post('/api/tunnel/restart/:provider', async (req, res) => {
-  try {
-    const result = await tunnel.restartNow(req.params.provider);
-    res.status(result.ok ? 200 : 400).json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Toggle Tailscale Funnel (public-internet exposure) for a port.
-// Body: { on: bool, port?: number }
-app.post('/api/tunnel/funnel', async (req, res) => {
-  try {
-    const on = !!(req.body && req.body.on);
-    if (on && !ACCESS_TOKEN) return res.status(400).json({ error: '开启公网 Funnel 前必须先设置 ACCESS_TOKEN' });
-    const port = req.body && Number(req.body.port);
-    const result = await tunnel.setFunnel(on, port);
-    const status = await tunnel.funnelStatus();
-    res.status(result.ok ? 200 : 400).json({ ...result, status });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── Access token (external-access login password) ──
-// Readable anywhere (masked); editable ONLY from localhost. Persisted to .env
-// and hot-reloaded so changes apply without a server restart.
-app.post('/api/settings/access-token', (req, res) => {
-  if (!isLocalRequest(req)) {
-    return res.status(403).json({ error: '访问密码仅可在本机 (localhost) 打开本页时修改' });
-  }
-  const raw = req.body && req.body.token;
-  if (typeof raw !== 'string' || raw.includes('****')) {
-    return res.status(400).json({ error: '无有效改动' });
-  }
-  const token = raw.trim();
-  const tunnelConfig = tunnel.getStatus().config || {};
-  const publicTunnelEnabled = !!(tunnelConfig.phddns && tunnelConfig.phddns.enabled)
-    || !!(tunnelConfig.tailscale && (tunnelConfig.tailscale.enabled || tunnelConfig.tailscale.funnel));
-  if (!token && (networkPolicy.allowRemote || publicTunnelEnabled)) {
-    return res.status(400).json({ error: '当前已允许远程/公网访问，请先关闭外网入口再清空 ACCESS_TOKEN' });
-  }
-  writeEnvFile({ ACCESS_TOKEN: token });
-  process.env.ACCESS_TOKEN = token;
-  ACCESS_TOKEN = token; // hot-reload: authSecurity/isAuthenticated read this live
-  console.log(`[multicc/auth] ACCESS_TOKEN ${token ? 'updated' : 'cleared'} via localhost UI`);
-  res.json({ ok: true, hasToken: !!token });
-});
-
-app.post('/api/settings/proxy', (req, res) => {
-  if (!isLocalRequest(req)) return res.status(403).json({ error: '仅可在本机修改' });
-  if (typeof (req.body && req.body.enabled) !== 'boolean') return res.status(400).json({ error: 'enabled 必须是布尔' });
-  CLAUDE_PROXY_ENABLED = req.body.enabled;                                  // hot-reload: spawns read this live
-  process.env.CLAUDE_PROXY_ENABLED = req.body.enabled ? '1' : '0';
-  writeEnvFile({ CLAUDE_PROXY_ENABLED: req.body.enabled ? '1' : '0' });     // persists across restarts
-  console.log(`[multicc/proxy] claude proxy ${req.body.enabled ? 'enabled' : 'disabled'} via UI`);
-  res.json({ ok: true, enabled: CLAUDE_PROXY_ENABLED });
-});
-
-app.post('/api/settings/official-oauth', (req, res) => {
-  if (!isLocalRequest(req)) return res.status(403).json({ error: '仅可在本机修改' });
-  if (typeof (req.body && req.body.enabled) !== 'boolean') return res.status(400).json({ error: 'enabled 必须是布尔' });
-  CLAUDE_OFFICIAL_VIA_PROXY = req.body.enabled;                                       // hot-reload: spawns + proxy read this live
-  process.env.CLAUDE_OFFICIAL_VIA_PROXY = req.body.enabled ? '1' : '0';               // proxy handler reads process.env
-  writeEnvFile({ CLAUDE_OFFICIAL_VIA_PROXY: req.body.enabled ? '1' : '0' });          // persists across restarts
-  console.log(`[multicc/proxy] official-via-proxy (OAuth replay) ${req.body.enabled ? 'enabled' : 'disabled'} via UI`);
-  res.json({ ok: true, enabled: CLAUDE_OFFICIAL_VIA_PROXY });
-});
-
-app.post('/api/settings/power', async (req, res) => {
-  if (!macosPower.isAvailable()) {
-    return res.status(400).json({ error: 'This setting is only available on macOS' });
-  }
-  if (typeof req.body?.enabled !== 'boolean') {
-    return res.status(400).json({ error: 'enabled must be a boolean' });
-  }
-  try {
-    const status = await macosPower.setLidSleepPrevention(req.body.enabled);
-    res.json({ ok: true, ...status });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
 });
 
 // ── Server-side notification detection (for push notifications) ──
@@ -11365,6 +11291,21 @@ function handleChatWs(ws, req, urlObj) {
           reason: 'clear-history',
           afterCommit: () => {
             if (removed.length) memoryDistill = distillHistoryIntoMemory(sessionName, removed);
+            // History replacement is durable at this point. Reconcile every
+            // connected client (including shares and the initiating client)
+            // from one authoritative newest page so stale pagination or a
+            // streaming tail cannot survive a clear performed elsewhere.
+            const resetPage = chatHistoryService.paginate(sessionName, {
+              limit: CHAT_HISTORY_PAGE,
+            });
+            chatBroadcast(sessionName, {
+              type: 'chat_history_reset',
+              messages: resetPage.messages,
+              hasMore: resetPage.hasMore,
+              keep,
+              removedCount: removed.length,
+              retainedCount: retained.length,
+            });
           },
         });
         // Reset every vendor-native session. Clearing only the active CLI lets

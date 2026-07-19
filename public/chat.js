@@ -205,13 +205,6 @@ if (typeof marked !== 'undefined' && marked.setOptions) {
   });
 }
 
-function renderMarkdown(text) {
-  if (!text) return '';
-  return window.MultiCCSafeMarkdown
-    ? window.MultiCCSafeMarkdown.render(text)
-    : escHtml(String(text));
-}
-
 // Assistant markdown may reference local-filesystem images, e.g. ![](/tmp/x.png).
 // The browser can't load those directly, so rewrite such <img> to stream through
 // the existing /api/download?inline=1 route — this is how the agent shows images
@@ -543,6 +536,18 @@ updateCwdDisplay(_cwd);
 // Pure state/usage planning lives outside the DOM host. The initial WS page is
 // accepted once; older pages are fetched by the host from the returned cursor.
 const chatHistoryStore = window.MultiCCChatHistoryStore.createHistoryStore();
+const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
+  document,
+  messagesEl,
+  safeMarkdown: window.MultiCCSafeMarkdown,
+  fixupLocalImages,
+  highlightCodeBlocks,
+  buildUsageLine,
+  buildTimingLine,
+  attachDeleteButton,
+  attachForkButton,
+  warn: (...args) => console.warn(...args),
+});
 let _loadingOlderSentinel = null; // DOM node inserted at top while loading, also scroll anchor
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
@@ -862,13 +867,7 @@ function handleEvent(msg) {
       // bubble of that role (if it isn't tagged yet) so its delete button
       // goes live without waiting for a reload.
       if (msg.id && msg.role) {
-        const bubbles = messagesEl.querySelectorAll(msg.role === 'user' ? '.msg.user' : '.msg.assistant');
-        const last = bubbles[bubbles.length - 1];
-        if (last && !last.dataset.msgId) {
-          last.dataset.msgId = msg.id;
-          attachDeleteButton(last);
-          attachForkButton(last);
-        }
+        chatHistoryView.tagLatestMessage(msg.role, msg.id);
       }
       break;
     }
@@ -880,11 +879,35 @@ function handleEvent(msg) {
     }
 
     case 'chat_history': {
-      const visibleIds = [...messagesEl.querySelectorAll('.msg[data-msg-id]')]
-        .map(element => element.dataset.msgId)
-        .filter(Boolean);
-      const historyPlan = chatHistoryStore.acceptHistory(msg, visibleIds);
+      const historyPlan = chatHistoryStore.acceptHistory(msg, chatHistoryView.visibleIds());
       applyHistoryPlan(historyPlan);
+      break;
+    }
+
+    case 'chat_history_reset': {
+      // A clear/keep operation may originate from another browser or app.
+      // Invalidate every older-page request first, then rebuild from the
+      // durable newest page broadcast by the server. The initiating client
+      // follows the same path so its optimistic DOM cannot drift.
+      resetHistoryPagination();
+      chatHistoryView.clearMessages();
+      const historyPlan = chatHistoryStore.acceptHistory({
+        messages: Array.isArray(msg.messages) ? msg.messages : [],
+        hasMore: msg.hasMore === true,
+      }, []);
+      applyHistoryPlan(historyPlan);
+      if ((Number(msg.keep) || 0) > 0) {
+        if ((Number(msg.removedCount) || 0) > 0) {
+          addSystemMsg(tt('contextKept', {
+            removed: Number(msg.removedCount) || 0,
+            kept: Number(msg.retainedCount) || 0,
+          }));
+        } else {
+          addSystemMsg(tt('contextResetKept'));
+        }
+      } else {
+        addSystemMsg(tt('contextCleared'));
+      }
       break;
     }
 
@@ -988,11 +1011,11 @@ function handleStreamEvent(evt) {
         activeContentType = 'text';
       } else if (evt.content_block?.type === 'tool_use') {
         activeContentType = 'tool_use';
-        const card = createToolCard(evt.content_block.name, evt.content_block.id);
+        const card = chatHistoryView.createToolCard(evt.content_block.name, evt.content_block.id);
         currentToolCards.set(evt.index, {
           card, inputJson: '', name: evt.content_block.name, id: evt.content_block.id
         });
-        appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
+        chatHistoryView.appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
       }
       break;
 
@@ -1005,7 +1028,7 @@ function handleStreamEvent(evt) {
         const tc = currentToolCards.get(evt.index);
         if (tc) {
           tc.inputJson += evt.delta.partial_json;
-          updateToolInput(tc);
+          chatHistoryView.updateToolInput(tc);
         }
       }
       break;
@@ -1043,7 +1066,7 @@ function handleToolResult(msg) {
       if (tc.id === r.tool_use_id) {
         const text = typeof r.content === 'string' ? r.content :
           Array.isArray(r.content) ? r.content.map(c => c.text || '').join('') : JSON.stringify(r.content);
-        addToolResult(tc, text, r.is_error);
+        chatHistoryView.addToolResult(tc, text, r.is_error);
         break;
       }
     }
@@ -1088,7 +1111,7 @@ function finalizeAssistantMsg(message) {
       if (!currentMsgEl) currentMsgEl = createAssistantBubble();
       let tc = findCurrentToolCardById(block.id);
       if (!tc) {
-        const card = createToolCard(block.name || 'Tool', block.id);
+        const card = chatHistoryView.createToolCard(block.name || 'Tool', block.id);
         tc = {
           card,
           inputJson: block.input ? JSON.stringify(block.input) : '',
@@ -1096,11 +1119,11 @@ function finalizeAssistantMsg(message) {
           id: block.id,
         };
         currentToolCards.set(`id:${block.id}`, tc);
-        appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
+        chatHistoryView.appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
       } else if (block.input) {
         tc.inputJson = JSON.stringify(block.input);
       }
-      updateToolInput(tc);
+      chatHistoryView.updateToolInput(tc);
       maybeScrollToBottom();
     }
   }
@@ -1137,10 +1160,7 @@ function finishStreaming() {
 
 /* ── Rendering ── */
 function createAssistantBubble() {
-  const div = document.createElement('div');
-  div.className = 'msg assistant';
-  div.innerHTML = '<div class="msg-content streaming-dot"></div>';
-  messagesEl.appendChild(div);
+  const div = chatHistoryView.createAssistantBubble(true);
   maybeScrollToBottom();
   return div;
 }
@@ -1476,34 +1496,10 @@ function attachUsageLine(bubbleEl, usage, roleBreakdown) {
 }
 
 function renderCurrentText(final = false) {
-  if (!currentMsgEl) return;
-  const contentEl = currentMsgEl.querySelector('.msg-content');
-  if (!contentEl) return;
-
-  // Detach the tool stack so it survives the innerHTML rebuild below, then
-  // re-append it after the text so cards keep their place (and scroll state).
-  const toolStack = contentEl.querySelector('.tool-stack');
-  let html = '';
-  if (currentTextContent.trim()) {
-    html = renderMarkdown(currentTextContent);
-  }
-
-  const tmp = document.createElement('div');
-  tmp.innerHTML = html;
-  contentEl.innerHTML = '';
-  while (tmp.firstChild) contentEl.appendChild(tmp.firstChild);
-  fixupLocalImages(contentEl);
-  if (toolStack) contentEl.appendChild(toolStack);
-
-  if (!final && isStreaming) {
-    contentEl.classList.add('streaming-dot');
-  } else {
-    contentEl.classList.remove('streaming-dot');
-  }
-
-  if (final) {
-    highlightCodeBlocks(contentEl);
-  }
+  return chatHistoryView.renderCurrentText(currentMsgEl, currentTextContent, {
+    final,
+    streaming: isStreaming,
+  });
 }
 
 function highlightCodeBlocks(root) {
@@ -1512,69 +1508,6 @@ function highlightCodeBlocks(root) {
   root.querySelectorAll('pre code').forEach(block => {
     try { highlighter.highlightElement(block); } catch (_) {}
   });
-}
-
-// Tool cards never go straight into .msg-content; they live in a single
-// bounded, scrollable .tool-stack so a long tool run stays contained.
-function getToolStack(contentEl) {
-  let stack = contentEl.querySelector('.tool-stack');
-  if (!stack) {
-    stack = document.createElement('div');
-    stack.className = 'tool-stack';
-    contentEl.appendChild(stack);
-  }
-  return stack;
-}
-
-// Append a tool card into the turn's stack and keep the stack pinned to its
-// latest entry (without scrolling the whole chat).
-function appendToolCard(contentEl, card) {
-  const stack = getToolStack(contentEl);
-  stack.appendChild(card);
-  stack.scrollTop = stack.scrollHeight;
-}
-
-function createToolCard(name, id) {
-  const card = document.createElement('div');
-  card.className = 'tool-card';
-  card.dataset.toolId = id;
-  const icons = { Bash:'>',Read:'&#128196;',Edit:'&#9998;',Write:'&#128190;',Glob:'&#128269;',Grep:'&#128270;',Agent:'&#129302;' };
-  card.innerHTML =
-    `<div class="tool-header">` +
-      `<span class="tool-icon">${icons[name]||'&#9881;'}</span>` +
-      `<span class="tool-name">${escHtml(name)}</span>` +
-      `<span class="tool-desc">running...</span>` +
-      `<span class="tool-arrow">&#9654;</span>` +
-    `</div>` +
-    `<div class="tool-body"><pre class="tool-input"></pre></div>`;
-  card.querySelector('.tool-header').onclick = () => card.classList.toggle('open');
-  return card;
-}
-
-function updateToolInput(tc) {
-  const pre = tc.card.querySelector('.tool-input');
-  if (!pre) return;
-  try {
-    const parsed = JSON.parse(tc.inputJson);
-    const desc = parsed.description || parsed.command || parsed.pattern || parsed.file_path || '';
-    if (desc) tc.card.querySelector('.tool-desc').textContent = truncate(desc, 60);
-    pre.textContent = JSON.stringify(parsed, null, 2);
-  } catch (_) {
-    pre.textContent = tc.inputJson;
-  }
-}
-
-function addToolResult(tc, text, isError) {
-  const body = tc.card.querySelector('.tool-body');
-  if (!body) return;
-  const label = document.createElement('div');
-  label.className = 'tool-result-label' + (isError ? ' error' : '');
-  label.textContent = isError ? 'Error:' : 'Result:';
-  body.appendChild(label);
-  const pre = document.createElement('pre');
-  pre.textContent = truncate(text, 2000);
-  body.appendChild(pre);
-  tc.card.querySelector('.tool-desc').textContent = isError ? 'failed' : 'done';
 }
 
 let _lastUserBubble = null;  // the most recent user message bubble (holds the per-turn auto-commit checkbox)
@@ -1806,121 +1739,10 @@ function showDisconnectBanner(secs) {
   maybeScrollToBottom();
 }
 
-/* ── Build a single assistant message DOM node from a history entry ── */
-/* Shared by replayHistory (initial page) and lazy scroll-back (older pages)
- * so both render tool cards / usage / timing identically. */
-function renderHistoryAssistantNode(m) {
-  const div = document.createElement('div');
-  div.className = 'msg assistant';
-  const contentEl = document.createElement('div');
-  contentEl.className = 'msg-content';
-
-  if (m.content?.trim()) {
-    contentEl.innerHTML = renderMarkdown(m.content);
-    fixupLocalImages(contentEl);
-    highlightCodeBlocks(contentEl);
-  }
-
-  if (m.tools?.length) {
-    const stack = getToolStack(contentEl);
-    for (const tc of m.tools) {
-      const card = document.createElement('div');
-      card.className = 'tool-card';
-      const toolId = tc.id || tc.tool_use_id || '';
-      if (toolId) card.dataset.toolId = toolId;
-      const icons = { Bash:'>',Read:'&#128196;',Edit:'&#9998;',Write:'&#128190;',Glob:'&#128269;',Grep:'&#128270;',Agent:'&#129302;' };
-      const desc = tc.input?.description || tc.input?.command || tc.input?.pattern || tc.input?.file_path || '';
-      const status = tc.is_error ? 'failed' : (tc.result !== undefined ? 'done' : '?');
-      card.innerHTML =
-        `<div class="tool-header">` +
-          `<span class="tool-icon">${icons[tc.name]||'&#9881;'}</span>` +
-          `<span class="tool-name">${escHtml(tc.name)}</span>` +
-          `<span class="tool-desc">${escHtml(truncate(desc, 60) || status)}</span>` +
-          `<span class="tool-arrow">&#9654;</span>` +
-        `</div>` +
-        `<div class="tool-body">` +
-          `<pre class="tool-input">${escHtml(JSON.stringify(tc.input, null, 2))}</pre>` +
-          (tc.result !== undefined ?
-            `<div class="tool-result-label${tc.is_error ? ' error' : ''}">${tc.is_error ? 'Error:' : 'Result:'}</div>` +
-            `<pre>${escHtml(tc.result)}</pre>` : '') +
-        `</div>`;
-      card.querySelector('.tool-header').onclick = () => card.classList.toggle('open');
-      stack.appendChild(card);
-    }
-  }
-
-  if (m.cancelled) {
-    const tag = document.createElement('div');
-    tag.className = 'msg system-msg';
-    tag.style.cssText = 'font-size:11px;color:#f85149;padding:2px 0;';
-    tag.textContent = '(cancelled)';
-    contentEl.appendChild(tag);
-  }
-
-  if (m.usage) {
-    const usageLine = buildUsageLine(m.usage);
-    if (usageLine) contentEl.appendChild(usageLine);
-  }
-
-  const timing = buildTimingLine(m);
-  if (timing) contentEl.appendChild(timing);
-
-  div.appendChild(contentEl);
-  if (m.id) { div.dataset.msgId = m.id; attachDeleteButton(div); attachForkButton(div); }
-  return div;
-}
-
-function renderHistoryUserNode(message) {
-  const div = document.createElement('div');
-  div.className = 'msg user';
-  div.textContent = message.content || '';
-  // Background-completion result injections carry origin metadata. Keep the
-  // label as text-only DOM so history never interprets injected HTML.
-  if (Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
-    const tag = document.createElement('div');
-    tag.textContent = `🔁 后台任务回流${message.bgToolUseIds.length > 1 ? ` ×${message.bgToolUseIds.length}` : ''}`;
-    tag.style.cssText = 'font-size:11px;color:#8b949e;margin-top:6px;border-top:1px dashed rgba(139,164,158,.35);padding-top:4px;';
-    div.appendChild(tag);
-  }
-  if (message.id) {
-    div.dataset.msgId = message.id;
-    attachDeleteButton(div);
-    attachForkButton(div);
-  }
-  return div;
-}
-
-function renderHistoryMessageNode(message) {
-  if (message.role === 'user') return renderHistoryUserNode(message);
-  if (message.role === 'assistant') return renderHistoryAssistantNode(message);
-  const node = document.createElement('div');
-  node.className = 'msg system-msg';
-  node.textContent = message.content || '';
-  if (message.id) node.dataset.msgId = message.id;
-  return node;
-}
-
-function findHistoryMessageById(id) {
-  if (!id) return null;
-  for (const element of messagesEl.querySelectorAll('.msg[data-msg-id]')) {
-    if (element.dataset.msgId === id) return element;
-  }
-  return null;
-}
-
-function nextVisibleHistoryId(excludedId) {
-  for (const element of messagesEl.querySelectorAll('.msg[data-msg-id]')) {
-    if (element.dataset.msgId && element.dataset.msgId !== excludedId) {
-      return element.dataset.msgId;
-    }
-  }
-  return null;
-}
-
 function removeHistoryMessageById(id) {
-  const element = findHistoryMessageById(id);
+  const element = chatHistoryView.findById(id);
   const nextOldest = chatHistoryStore.snapshot().oldestMessageId === id
-    ? nextVisibleHistoryId(id)
+    ? chatHistoryView.nextVisibleId(id)
     : null;
   if (element) {
     if (currentMsgEl === element) {
@@ -1928,7 +1750,7 @@ function removeHistoryMessageById(id) {
       currentTextContent = '';
       currentToolCards = new Map();
     }
-    element.remove();
+    chatHistoryView.removeById(id);
   }
   chatHistoryStore.deleteMessage(id, nextOldest);
 }
@@ -1939,56 +1761,14 @@ function resetHistoryPagination() {
   if (_loadingOlderSentinel?.parentNode) _loadingOlderSentinel.remove();
 }
 
-function hydrateStreamingTools(message, bubble) {
-  currentToolCards = new Map();
-  if (!message || !Array.isArray(message.tools) || !bubble) return;
-  for (const tool of message.tools) {
-    const id = tool.id || tool.tool_use_id;
-    if (!id) continue;
-    const card = [...bubble.querySelectorAll('.tool-card[data-tool-id]')]
-      .find(element => element.dataset.toolId === id);
-    if (!card) continue;
-    currentToolCards.set(`history:${id}`, {
-      card,
-      inputJson: tool.input ? JSON.stringify(tool.input) : '',
-      name: tool.name || 'Tool',
-      id,
-    });
-  }
-}
-
 /* ── Apply initial/reconnect history without duplicating persisted DOM ── */
 function applyHistoryPlan(plan) {
-  if (plan.hasMore) messagesEl.querySelector('.history-start-hint')?.remove();
-  for (let index = 0; index < plan.operations.length; index += 1) {
-    const operation = plan.operations[index];
-    try {
-      let existing = operation.id ? findHistoryMessageById(operation.id) : null;
-      if (!existing && operation.kind === 'stream-tail') {
-        if (currentMsgEl?.classList.contains('assistant') && !currentMsgEl.dataset.msgId) {
-          existing = currentMsgEl;
-        } else {
-          existing = [...messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')].pop() || null;
-        }
-      }
-      const node = renderHistoryMessageNode(operation.message);
-      if (existing) {
-        const wasCurrent = currentMsgEl === existing;
-        const wasLastUser = _lastUserBubble === existing;
-        const pendingAutoCommit = wasLastUser
-          ? existing.querySelector('.msg-auto-commit')
-          : null;
-        if (pendingAutoCommit) node.appendChild(pendingAutoCommit);
-        existing.replaceWith(node);
-        if (wasCurrent) currentMsgEl = node;
-        if (wasLastUser) _lastUserBubble = node;
-      } else {
-        messagesEl.appendChild(node);
-      }
-    } catch (error) {
-      console.warn('[multicc] applyHistoryPlan: skipped message', index, error.message);
-    }
-  }
+  const viewPlan = chatHistoryView.applyPlan(plan, {
+    currentElement: currentMsgEl,
+    lastUserElement: _lastUserBubble,
+  });
+  currentMsgEl = viewPlan.currentElement;
+  _lastUserBubble = viewPlan.lastUserElement;
 
   // A reconnect refreshes authoritative totals even when they are zero. When
   // no aggregate is provided, only the initial page may reconstruct totals;
@@ -1999,18 +1779,13 @@ function applyHistoryPlan(plan) {
   _usedTokens = plan.usedTokens;
   updateContextBar();
 
-  if (plan.streamingTail) {
-    const tail = plan.streamingTail.id
-      ? findHistoryMessageById(plan.streamingTail.id)
-      : [...messagesEl.querySelectorAll('.msg.assistant')].pop();
-    if (tail) {
+  if (viewPlan.streamingTail) {
+    const tail = viewPlan.streamingTail;
+    if (tail.element) {
       isStreaming = true;
-      currentMsgEl = tail;
-      currentTextContent = plan.streamingTail.content;
-      const tailMessage = [...plan.messages].reverse().find(message =>
-        message.role === 'assistant'
-        && (!plan.streamingTail.id || message.id === plan.streamingTail.id));
-      hydrateStreamingTools(tailMessage, tail);
+      currentMsgEl = tail.element;
+      currentTextContent = tail.content;
+      currentToolCards = tail.toolCards;
       hideThinking();
       startTitleAnimation();
       updateUI();
@@ -2079,7 +1854,7 @@ function send(opts = {}) {
     if (cmd === '/clear') {
       // Clear chat UI and server history
       resetHistoryPagination();
-      messagesEl.innerHTML = '';
+      chatHistoryView.clearMessages();
       addSystemMsg('Chat cleared；Claude / Codex / OpenCode / ZCode 的原生上下文均已重置');
       inputEl.value = '';
       inputEl.style.height = 'auto';
@@ -2357,38 +2132,7 @@ messagesEl.addEventListener('scroll', () => {
 const HISTORY_LOAD_THRESHOLD = 80;  // px from top triggers a fetch
 
 function _renderHistoryPageBefore(messages) {
-  // Render `messages` (older than what's shown) and prepend them to the top of
-  // #messages, preserving the user's current scroll position so the view
-  // doesn't jump. Returns the count actually inserted.
-  if (!messages || !messages.length) return 0;
-  const firstChild = messagesEl.firstElementChild;
-  const prevScrollHeight = messagesEl.scrollHeight;
-  const prevScrollTop = messagesEl.scrollTop;
-
-  // Build the new nodes by walking the page in chronological order and
-  // reusing the same per-role render path as reconnect reconciliation.
-  const frag = document.createDocumentFragment();
-  const pageIds = new Set();
-  let inserted = 0;
-  for (const m of messages) {
-    if (m.id && (pageIds.has(m.id) || findHistoryMessageById(m.id))) continue;
-    try {
-      const node = renderHistoryMessageNode(m);
-      if (node) {
-        frag.appendChild(node);
-        inserted += 1;
-        if (m.id) pageIds.add(m.id);
-      }
-    } catch (error) {
-      console.warn('[multicc] history page: skipped message', error.message);
-    }
-  }
-
-  messagesEl.insertBefore(frag, firstChild);
-  // Compensate scroll so the user stays on the same message.
-  const added = messagesEl.scrollHeight - prevScrollHeight;
-  messagesEl.scrollTop = prevScrollTop + added;
-  return inserted;
+  return chatHistoryView.prependMessages(messages);
 }
 
 async function loadOlderHistory() {
@@ -3972,7 +3716,7 @@ function doClear(keepN) {
     if (remove.length) addSystemMsg(tt('contextKept', { removed: remove.length, kept: keepN }));
     else addSystemMsg(tt('contextResetKept'));
   } else {
-    messagesEl.innerHTML = '';
+    chatHistoryView.clearMessages();
     addSystemMsg(tt('contextCleared'));
   }
   if (ws?.readyState === WebSocket.OPEN) {
