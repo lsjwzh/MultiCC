@@ -372,14 +372,20 @@ async function main() {
       });
     });
 
-    await test('unknown routed provider fails closed', async () => {
+    await test('unknown SUBAGENT provider fails open to the main provider', async () => {
+      // A dangling per-session subagent providerId (e.g. one whose provider was
+      // deleted from the store) must NOT 502 the subagent turn. CPR ≥1.1 fails
+      // open: a `ccfw:<unknown>:<model>` request on the sub role falls back to the
+      // session's main provider so the Task/Workflow subagent still runs. See the
+      // cpr fix `fail open to main provider on dangling subagent provider reference`.
       const response = await request({
         port: proxy.port,
         path: '/claude-proxy/main/session-3/v1/messages',
         body: { model: 'ccfw:missing:sonnet', stream: true, messages: [] },
       });
-      assert.strictEqual(response.status, 502);
-      assert.match(response.body, /provider 'missing' has no baseUrl/);
+      // Routed to the MAIN upstream (not 502), so it returns the main SSE body.
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.body, mainSse);
     });
   } finally {
     await close(proxy.server);
