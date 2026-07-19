@@ -90,6 +90,7 @@ const {
 const { createProviderRouterRuntime } = require('./src/provider-router-runtime');
 const { findProviderReferences } = require('./src/provider-references');
 const { createCliAdapters } = require('./src/cli-adapters');
+const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
 const { composeMessage, renderPrompt } = require('./src/message-composer');
 const {
   applyCuratedMemoryAction,
@@ -522,274 +523,39 @@ let CLAUDE_PROXY_ENABLED = String(process.env.CLAUDE_PROXY_ENABLED ?? '1') !== '
 // considerations; hot-reloadable via POST /api/settings/official-oauth, persisted).
 let CLAUDE_OFFICIAL_VIA_PROXY = String(process.env.CLAUDE_OFFICIAL_VIA_PROXY ?? '0') === '1';
 
-// Read the user's default model from ~/.claude/settings.json on every spawn so
-// chat-mode sessions (which `--resume` and would otherwise keep their original
-// model forever) follow the current /model choice without a server restart.
-function claudeDefaultModel() {
-  try {
-    const settings = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8'));
-    return typeof settings.model === 'string' && settings.model ? settings.model : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-// Resolve the model that will actually be used when spawning this session.
-//   session.model (explicit per-session override) wins;
-//   otherwise a named provider's primary model (ANTHROPIC_MODEL / codex model);
-//   otherwise, for Claude on the default login, the user's /model setting.
-// Returns null when unknown (e.g. codex default login, or a Claude provider
-// whose env decides the model without declaring ANTHROPIC_MODEL).
-function effectiveSessionModel(session) {
-  if (!session) return null;
-  const appType = (session.cli === 'codex') ? 'codex' : 'claude';
-  if (session.model) {
-    // Alias-mapped relay: a Claude tier key (opus/sonnet/haiku/fable) stands for
-    // a real wire model on this provider (e.g. opus → glm-5.2). Resolve it here so
-    // every display (REST, init, cards) shows the real model id instead of the
-    // tier alias, without needing the client to have the provider list loaded.
-    const providerId = session.provider;
-    if (providerId) {
-      try {
-        const am = providerRouterRuntime.getProviderSummary(appType, providerId)?.aliasMap;
-        const entry = am && am[session.model];
-        if (entry && entry.model) return entry.model;
-      } catch (_) { /* fall through */ }
-    }
-    return session.model;
-  }
-  const providerId = session.provider;
-  if (providerId) {
-    try {
-      const p = providerRouterRuntime.getProviderSummary(appType, providerId);
-      if (p && p.model) return p.model;
-      // Claude provider with custom base URL but no explicit ANTHROPIC_MODEL:
-      // the provider's own env decides at spawn time; we have no concrete value
-      // until the CLI reports one at runtime (reportedModel).
-      if (appType === 'claude' && p && p.baseUrl) return session.reportedModel || null;
-    } catch (_) { /* fall through */ }
-  }
-  // Default login (no provider override).
-  if (appType === 'claude') return claudeDefaultModel() || session.reportedModel || null;
-  return session.reportedModel || null;
-}
-
-// Resolve a subagent {providerId, model} to the REAL wire model id the proxy
-// forwards upstream: a Claude tier (opus/sonnet/haiku/fable) maps to the
-// sub-provider's aliasMap target (e.g. opus → glm-5.2), mirroring
-// effectiveSessionModel + the claude-proxy tier resolution. Falls back to the
-// raw model (Claude-official ids are already real). null when unset.
-function effectiveSubagentModel(sa) {
-  if (!sa || !sa.providerId || !sa.model) return null;
-  try {
-    const am = providerRouterRuntime.getProviderSummary('claude', sa.providerId)?.aliasMap;
-    const entry = am && am[sa.model];
-    if (entry && entry.model) return entry.model;
-  } catch (_) { /* fall through */ }
-  return sa.model;
-}
-
-// Serialize a session's subagent override for the frontend: the raw
-// {providerId, model} the picker stored PLUS `effectiveModel`, the real wire id
-// that actually hits the server (for the pill/chip). null = 随主 (follow main).
-function serializeSubagent(sa) {
-  if (!sa || !sa.providerId || !sa.model) return null;
-  return { providerId: sa.providerId, model: sa.model, effectiveModel: effectiveSubagentModel(sa) };
-}
-
-// Remember the model the CLI actually reported at runtime (stream-json system
-// init `model` / assistant `message.model`). This is the only source of truth
-// for relay providers (custom base URL, no explicit ANTHROPIC_MODEL) where the
-// model is decided server-side by the relay.
-function noteReportedModel(sessionName, model) {
-  if (!model || typeof model !== 'string' || model.includes('<synthetic>')) return;
-  const p = persistedSessions.get(sessionName);
-  if (!p || p.reportedModel === model) return;
-  p.reportedModel = model;
-  rememberActiveCliState(p);
-  savePersistedSessionsBestEffort('runtime.reported-model');
-}
-
-// One-time startup backfill: sessions created before reportedModel existed can
-// recover it from the CLI's own transcript (~/.claude/projects/*/<cliSessionId>.jsonl)
-// so cards show a model right away instead of waiting for the next turn.
-function backfillReportedModels() {
-  const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
-  let dirs;
-  try {
-    dirs = fs.readdirSync(claudeProjects, { withFileTypes: true }).filter(d => d.isDirectory());
-  } catch (_) { return; }
-  let updated = 0;
-  for (const p of persistedSessions.values()) {
-    if (p.reportedModel || (p.cli && p.cli !== 'claude') || !p.cliSessionId) continue;
-    if (effectiveSessionModel(p)) continue; // already resolvable statically
-    for (const d of dirs) {
-      const jl = path.join(claudeProjects, d.name, `${p.cliSessionId}.jsonl`);
-      let tail;
-      try {
-        const fd = fs.openSync(jl, 'r');
-        try {
-          const size = fs.fstatSync(fd).size;
-          const len = Math.min(256 * 1024, size);
-          const buf = Buffer.alloc(len);
-          fs.readSync(fd, buf, 0, len, size - len);
-          tail = buf.toString('utf8');
-        } finally { fs.closeSync(fd); }
-      } catch (_) { continue; }
-      // Last assistant message's model in the transcript wins.
-      const lines = tail.split('\n');
-      for (let i = lines.length - 1; i >= 0; i--) {
-        try {
-          const j = JSON.parse(lines[i]);
-          const m = j.type === 'assistant' && j.message && j.message.model;
-          if (m && typeof m === 'string' && !m.includes('<synthetic>')) {
-            p.reportedModel = m;
-            updated++;
-            break;
-          }
-        } catch (_) { /* truncated first line etc. */ }
-      }
-      break; // found the transcript file; don't scan other project dirs
-    }
-  }
-  if (updated) {
-    savePersistedSessionsBestEffort('startup.reported-model-backfill');
-    console.log(`[multicc] Backfilled reportedModel for ${updated} session(s) from CLI transcripts`);
-  }
-}
-
-// The concrete model to snapshot onto a session when switching provider, so
-// the card always shows a real model name instead of "默认". Mirrors
-// effectiveSessionModel but is meant to be *written back* to session.model.
-function providerDefaultModel(appType, providerId) {
-  if (!providerId) {
-    // Switching back to the default login → snapshot the current /model setting.
-    return appType === 'claude' ? claudeDefaultModel() : null;
-  }
-  try {
-    const p = providerRouterRuntime.getProviderSummary(appType, providerId);
-    if (!p) return null;
-    // Alias-only relays (e.g. iFlytek) declare only alias targets and reject them
-    // as literal --model values — never stamp one onto a session. Use the safe
-    // wire default instead so the next spawn doesn't 1211.
-    if (p.aliasOnly) return providers.WIRE_DEFAULT_MODEL;
-    return p.model || (p.modelOptions && p.modelOptions[0]) || null;
-  } catch (_) { return null; }
-}
-
+// Model/provider display and effort policy is independent from process runners.
+// It reads user defaults on demand so /model and CLI config changes are visible
+// without restarting the host.
+const sessionPolicy = createSessionPolicy({
+  fs,
+  env: process.env,
+  homeDir: os.homedir,
+  providers,
+  providerRouter: providerRouterRuntime,
+});
+const {
+  claudeDefaultModel,
+  effectiveSessionModel,
+  serializeSubagent,
+  providerDefaultModel,
+  sessionProviderName,
+  normalizeEffort,
+  validEffortForCli,
+  cliEffortLevel,
+  codexReasoningConfigArg,
+  codexModelConfigArg,
+  codexDefaultReasoningLevel,
+  effectiveSessionEffort,
+  effortLabel,
+  normalizeCliAgent,
+  isCodexResponseCompletedDisconnect,
+  isCodexTransportDisconnect,
+  codexStreamDisconnectContinuePrompt,
+  isGlm52Session,
+  CODEX_STREAM_DISCONNECT_CONTINUE_MAX,
+} = sessionPolicy;
 const CODEX_ARGS = process.env.CODEX_ARGS ? process.env.CODEX_ARGS.split(' ') : [];
-const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
-
-// Map a cli name to its provider pool (appType). codex has its own pool; every
-// other cli (claude, opencode, zcode, …) shares the Anthropic-compatible 'claude'
-// pool. opencode/zcode read ANTHROPIC_* env too when using an anthropic provider,
-// so a chosen claude-pool provider routes correctly for them.
-function sessionProviderName(session) {
-  const providerId = session && session.provider;
-  if (!providerId) return null;
-  try {
-    return providerRouterRuntime.getProviderSummary(providers.appTypeForCli(session.cli), providerId)?.name || providerId;
-  } catch (_) {
-    return providerId;
-  }
-}
-
-const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
-const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-const OPENCODE_VARIANTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
-function normalizeEffort(v) {
-  const s = (v == null ? '' : String(v)).trim().toLowerCase();
-  if (!s) return null;
-  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) || OPENCODE_VARIANTS.has(s) ? s : undefined;
-}
-function validEffortForCli(cli, effort) {
-  if (!effort) return true;
-  if (cli === 'codex') return CODEX_REASONING_LEVELS.has(effort);
-  if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
-  if (cli === 'zcode') return false;
-  return EFFORT_LEVELS.has(effort);
-}
-function cliEffortLevel(session) {
-  const e = normalizeEffort(session?.effort);
-  if (!e || !EFFORT_LEVELS.has(e)) return null;
-  return e === 'ultracode' ? 'xhigh' : e;
-}
-function codexReasoningLevel(session) {
-  const e = normalizeEffort(session?.effort);
-  return e && CODEX_REASONING_LEVELS.has(e) ? e : null;
-}
-function codexReasoningConfigArg(session) {
-  const level = codexReasoningLevel(session);
-  return level ? `model_reasoning_effort="${level}"` : null;
-}
-function codexModelConfigArg(session) {
-  const model = session && session.model ? String(session.model).trim() : '';
-  return model ? `model="${model}"` : null;
-}
-function isCodexResponseCompletedDisconnect(message) {
-  const s = String(message || '');
-  return /stream disconnected before completion/i.test(s) && /response\.completed/i.test(s);
-}
-function isCodexTransportDisconnect(message) {
-  const s = String(message || '');
-  return /stream disconnected before completion/i.test(s) &&
-    (/error sending request/i.test(s) || /\/backend-api\/codex\/responses/i.test(s));
-}
-const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
-function codexStreamDisconnectContinuePrompt() {
-  return [
-    '上一轮因为传输连接中断提前停了，已有部分输出已经显示给用户。',
-    '请不要重复已经完成或已经输出的内容，从中断处继续完成原任务。',
-    '如果原任务其实已经全部完成，只用一句话确认完成；否则继续执行必要步骤，直到可以交付。',
-  ].join('\n');
-}
-function isGlm52Session(session) {
-  return String(session?.model || '').toLowerCase() === 'xopglm52';
-}
-function effortLabel(e) {
-  return e || claudeDefaultEffort();
-}
-function claudeDefaultEffort() {
-  for (const file of ['settings.local.json', 'settings.json']) {
-    try {
-      const settings = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', file), 'utf8'));
-      const effort = normalizeEffort(settings.effort || settings.thinkingEffort);
-      if (effort) return effort;
-    } catch (_) { /* fall through */ }
-  }
-  return 'medium';
-}
-function effectiveSessionEffort(session) {
-  if (!session) return null;
-  const cli = session.cli || 'claude';
-  if (cli === 'codex') return codexReasoningLevel(session) || codexDefaultReasoningLevel();
-  if (cli === 'opencode') {
-    const effort = normalizeEffort(session.effort);
-    return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;
-  }
-  if (cli === 'zcode') return null;
-  const effort = normalizeEffort(session.effort);
-  return effort && EFFORT_LEVELS.has(effort) ? effort : claudeDefaultEffort();
-}
-
-function normalizeCliAgent(cli, value) {
-  const agent = value == null ? '' : String(value).trim();
-  if (!agent) return null;
-  if (!['claude', 'opencode'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
-  return agent;
-}
-function codexDefaultReasoningLevel() {
-  const homes = [process.env.CODEX_HOME, path.join(os.homedir(), '.codex')].filter(Boolean);
-  for (const home of homes) {
-    try {
-      const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
-      const m = toml.match(/^\s*model_reasoning_effort\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*$/m);
-      const effort = normalizeEffort(m && m[1]);
-      if (effort && CODEX_REASONING_LEVELS.has(effort)) return effort;
-    } catch (_) { /* fall through */ }
-  }
-  return 'xhigh';
-}
+const CODEX_SESSIONS_DIR = sessionPolicy.codexSessionsDir;
 
 // ── CLI provider abstraction ──
 // Each provider knows how to (1) build the interactive terminal command line for tmux,
@@ -1296,6 +1062,22 @@ const sessionPersistence = createSessionPersistence({
 function savePersistedSessionsBestEffort(source) {
   return sessionPersistence.bestEffort(source);
 }
+
+// Runtime-reported model discovery is intentionally composed after the
+// persisted session map and its best-effort writer exist. The policy module is
+// pure with respect to host state; this adapter owns the two side effects that
+// update the active CLI snapshot and persist the discovered model.
+const reportedModelRuntime = createReportedModelRuntime({
+  fs,
+  homeDir: os.homedir,
+  records: persistedSessions,
+  effectiveSessionModel,
+  rememberActiveCliState,
+  saveBestEffort: savePersistedSessionsBestEffort,
+  log: message => console.log(message),
+});
+const noteReportedModel = reportedModelRuntime.note;
+const backfillReportedModels = reportedModelRuntime.backfill;
 
 // Schema vNext: preserve one native session/settings snapshot per CLI. Legacy
 // records keep their active top-level fields for backward compatibility; the
