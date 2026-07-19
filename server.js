@@ -132,6 +132,12 @@ const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
+const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
+const {
+  listInstalledSkills,
+  listClaudeHistory,
+  removeClaudeHistorySession,
+} = require('./src/skills');
 const { createFolderMemoryService } = require('./src/memory/folder-service');
 const {
   createMemoryRuntime,
@@ -234,6 +240,20 @@ const providerRouterRuntime = createProviderRouterRuntime({
   onShadowDiff: recordProviderRouterShadowComparison,
   logger,
 });
+const agentResources = createAgentResourcesRoutes({
+  fs,
+  presetsFile: path.join(__dirname, 'public', 'agent-presets.json'),
+  providers,
+  providerRouter: providerRouterRuntime,
+  listInstalledSkills,
+  listClaudeHistory,
+  removeClaudeHistorySession,
+  reportError: (error, fields) => logger.error('agent_resources_failure', {
+    ...fields,
+    error: error && error.message,
+  }),
+});
+const agentCommanderPrompt = agentResources.agentCommanderPrompt;
 logger.info('provider_router_runtime', {
   mode: providerRouterRuntime.mode,
   portApiVersion: providerRouterRuntime.apiVersion,
@@ -1313,7 +1333,7 @@ async function seedCommanderSession(dir) {
       persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
     });
     if (r.ok) {
-      r.session.rolePrompt = commander.prompt;
+      r.session.rolePrompt = commander;
       savePersistedSessionsBestEffort('directory.seed-commander-role');
       appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
     } else {
@@ -2378,145 +2398,8 @@ app.get('/api/v1/providers', (req, res) => {
   res.json(withApiMeta({ providers: list, count: list.length }, requestContext(req, res)));
 });
 
-// ── Agent resources (extracted to src/skills.js) ──
-// Reads core state (directories, persistedSessions) from the shared state registry.
-const {
-  listInstalledSkills, listClaudeHistory, removeClaudeHistorySession,
-} = require('./src/skills');
-
-app.get('/api/agent-resources/skills', (req, res) => {
-  const skills = listInstalledSkills();
-  res.json({
-    skills,
-    counts: {
-      claude: skills.filter(s => s.provider === 'claude').length,
-      codex: skills.filter(s => s.provider === 'codex').length,
-    },
-  });
-});
-
-// ── Agent presets (role prompt library, generated from agency-agents) ──
-// Lazily read public/agent-presets.json once and cache in memory.
-let _agentPresetsCache = null;
-let _agentPresetsErr = null;
-function loadAgentPresets() {
-  if (_agentPresetsCache || _agentPresetsErr) return _agentPresetsCache;
-  try {
-    const raw = fs.readFileSync(path.join(__dirname, 'public', 'agent-presets.json'), 'utf8');
-    _agentPresetsCache = JSON.parse(raw);
-  } catch (e) {
-    _agentPresetsErr = e;
-    _agentPresetsCache = null;
-  }
-  return _agentPresetsCache;
-}
-
-// Prompt of the bundled "Agent Commander" preset — used to seed a default
-// commander session in every newly-created directory. Returns null if missing.
-const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
-function resolveAgentPresetProviderId(preset) {
-  const cli = preset && preset.defaultCli === 'claude' ? 'claude' : 'codex';
-  const key = String((preset && preset.defaultProviderKey) || '').toLowerCase();
-  const model = String((preset && preset.defaultModel) || '').trim();
-  const list = providers.listProviders(cli);
-  if (key === 'openai-codex') {
-    const byName = list.find(p => /openai|codex\s*官方|官方/i.test(p.name || ''));
-    if (byName) return byName.id;
-    const byModel = list.find(p => (p.modelOptions || []).includes('gpt-5.5') || (p.modelOptions || []).some(m => /^gpt-/i.test(m)));
-    return byModel ? byModel.id : null;
-  }
-  if (key === 'xf-maas-coding') {
-    const byModel = list.find(p => model && (p.modelOptions || []).includes(model));
-    if (byModel) return byModel.id;
-    const byName = list.find(p => /讯飞|xf|maas/i.test(p.name || ''));
-    return byName ? byName.id : null;
-  }
-  return null;
-}
-
-function enrichAgentPresetDefaults(preset) {
-  if (!preset || typeof preset !== 'object') return preset;
-  const defaultProviderId = resolveAgentPresetProviderId(preset);
-  const cli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
-  const defaultProviderName = defaultProviderId
-    ? (providerRouterRuntime.getProviderSummary(cli, defaultProviderId)?.name || defaultProviderId)
-    : null;
-  return { ...preset, defaultProviderId, defaultProviderName };
-}
-
-function agentCommanderPreset() {
-  const data = loadAgentPresets();
-  const p = data && (data.presets || []).find(x => x.id === AGENT_COMMANDER_PRESET_ID);
-  return p || null;
-}
-function agentCommanderPrompt() {
-  const p = agentCommanderPreset();
-  return (p && p.prompt) ? p.prompt : null;
-}
-
-app.get('/api/agent-presets', (req, res) => {
-  const data = loadAgentPresets();
-  if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-  // Strip the prompt field from the list to keep the payload small.
-  const presets = (data.presets || []).map(p => {
-    const { prompt, ...meta } = enrichAgentPresetDefaults(p);
-    return meta;
-  });
-  res.json({
-    source: data.source,
-    version: data.version,
-    generatedAt: data.generatedAt,
-    categories: data.categories || [],
-    featured: data.featured || [],
-    presets,
-  });
-});
-
-app.get('/api/agent-presets/:id', (req, res) => {
-  const data = loadAgentPresets();
-  if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-  const preset = (data.presets || []).find(p => p.id === req.params.id);
-  if (!preset) return res.status(404).json({ error: 'not found' });
-  res.json(enrichAgentPresetDefaults(preset));
-});
-
-app.get('/api/agent-resources/claude-sessions', (req, res) => {
-  const sessions = listClaudeHistory();
-  res.json({
-    sessions,
-    count: sessions.length,
-    totalSize: sessions.reduce((sum, s) => sum + s.size, 0),
-    protectedCount: sessions.filter(s => s.linked).length,
-  });
-});
-
-app.delete('/api/agent-resources/claude-sessions/:project/:id', (req, res) => {
-  try {
-    const result = removeClaudeHistorySession(req.params.project, req.params.id);
-    if (!result.ok) return res.status(result.error.includes('protected') ? 409 : 404).json({ error: result.error });
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.delete('/api/agent-resources/claude-sessions', (req, res) => {
-  const olderThanDays = Number(req.query.olderThanDays);
-  if (!Number.isFinite(olderThanDays) || olderThanDays < 1) {
-    return res.status(400).json({ error: 'olderThanDays must be at least 1' });
-  }
-  const cutoff = Date.now() - olderThanDays * 86400 * 1000;
-  let deleted = 0;
-  let freed = 0;
-  for (const session of listClaudeHistory()) {
-    if (session.linked || new Date(session.updatedAt).getTime() >= cutoff) continue;
-    try {
-      const result = removeClaudeHistorySession(session.project, session.id);
-      if (result.ok) { deleted++; freed += result.freed; }
-    } catch (_) {}
-  }
-  res.json({ ok: true, deleted, freed });
-});
+// Agent presets, installed skills and Claude history share one read/cleanup boundary.
+agentResources.mountRoutes(app);
 
 // ── Directory REST API (src/directory: controller / service / repository) ──
 // Routes: GET /api/fs/list · GET|POST /api/directories · PATCH|DELETE
