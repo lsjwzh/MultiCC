@@ -138,6 +138,7 @@ const { createProviderRoutes } = require('./src/routes/providers');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
+const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const {
   listInstalledSkills,
   listClaudeHistory,
@@ -7240,205 +7241,20 @@ waitInjector.init({
   log: (m) => console.log('[multicc/wait]', m),
 });
 
-// Register a wait — called by the model via localhost (MULTICC_BASE_URL) when it
-// needs to pause for external data instead of ending the turn dead.
-//   poll:     { mode:'poll', pollCmd|pollUrl, untilContains|untilRegex, intervalSec?, maxChecks?, injectPrefix? }
-//   callback: { mode:'callback', injectPrefix?, timeoutSec? } → returns a callbackUrl
-app.post('/api/sessions/:id/wait', async (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const b = req.body || {};
-  try {
-    const reg = await orchestrationRuntime.register({
-      session: s.id, mode: b.mode, cwd: cwdForSession(s),
-      pollCmd: b.pollCmd, pollUrl: b.pollUrl,
-      untilContains: b.untilContains, untilRegex: b.untilRegex,
-      intervalSec: b.intervalSec, maxChecks: b.maxChecks,
-      injectPrefix: b.injectPrefix, timeoutSec: b.timeoutSec,
-    });
-    const callbackUrl = reg.token
-      ? `${req.protocol}://${req.get('host')}/api/wait/${reg.id}/resolve?token=${reg.token}`
-      : null;
-    res.json({ ok: true, ...reg, callbackUrl, status: reg.status || 'pending' });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-// Resolve a callback wait — the external system POSTs its result here. Secured
-// by the per-wait token (exempt from ACCESS_TOKEN so off-box callers can reach it).
-app.post('/api/wait/:wid/resolve', async (req, res) => {
-  const body = req.body;
-  const token = req.query.token || req.headers['x-wait-token'] || (body && body.token);
-  let data;
-  if (body && body.data !== undefined) {
-    data = body.data;
-  } else if (body && typeof body === 'object' && !Array.isArray(body)) {
-    data = { ...body };
-    delete data.token; // raw callback capabilities must never enter durable payloads
-  } else {
-    data = body ?? '';
-  }
-  try {
-    const r = await orchestrationRuntime.resolveCallback(req.params.wid, token, data);
-    const statusCode = r.ok ? 200
-      : r.code === 'invalid_token' ? 403
-        : r.code === 'not_found' ? 404
-          : r.code === 'payload_conflict' ? 409
-            : 400;
-    const legacyError = r.code === 'invalid_token' ? 'bad token'
-      : r.code === 'not_found' ? 'wait not found'
-        : r.code === 'payload_conflict' ? 'callback payload conflicts with resolved wait'
-          : r.code;
-    res.status(statusCode).json({
-      ...r,
-      ...(r.ok ? {} : { error: legacyError }),
-      duplicate: !!(r.ok && r.idempotent),
-      status: r.status || (r.ok ? 'resolved' : undefined),
-    });
-  } catch (e) {
-    res.status(e.statusCode || 400).json({ ok: false, error: e.message });
-  }
-});
-
-app.get('/api/sessions/:id/waits', async (req, res) => {
-  try {
-    const durableWaits = await orchestrationRuntime.listForSession(req.params.id);
-    const legacyWaits = waitInjector.listForSession(req.params.id).map(wait => ({ ...wait, status: 'pending' }));
-    const durableStats = await orchestrationRuntime.stats();
-    const legacyStats = waitInjector.stats();
-    res.json({
-      waits: [...durableWaits, ...legacyWaits],
-      stats: {
-        ...legacyStats,
-        ...durableStats,
-        waits: durableStats.waits + legacyStats.waits,
-        legacyWaits: legacyStats.waits,
-      },
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/v1/sessions/:id/waits', async (req, res) => {
-  const session = persistedSessions.get(req.params.id);
-  if (!session) return v1Error(req, res, 404, 'session not found', 'session_not_found');
-  try {
-    const durableWaits = await orchestrationRuntime.listForSession(session.id);
-    const legacyWaits = waitInjector.listForSession(session.id).map(wait => ({ ...wait, status: 'pending' }));
-    const waits = [...durableWaits, ...legacyWaits].map(toWaitDto);
-    res.json(withApiMeta({ waits, count: waits.length }, requestContext(req, res)));
-  } catch (error) {
-    v1Error(req, res, 500, 'failed to list waits', 'wait_list_failed', { cause: error });
-  }
-});
-
-app.delete('/api/wait/:wid', async (req, res) => {
-  try {
-    let result = await orchestrationRuntime.cancel(req.params.wid);
-    if (!result.ok && result.code === 'not_found') {
-      const legacy = waitInjector.cancel(req.params.wid);
-      result = legacy.ok ? { ...legacy, status: 'cancelled' } : result;
-    }
-    res.status(result.ok ? 200 : result.code === 'not_found' ? 404 : 409).json(result);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// ── Detached tasks ──
-// Run a long-running command (build / batch / deploy) that must OUTLIVE the
-// current chat turn. A bare `&`/nohup started from an agent's bash is a child of
-// that transient shell and gets reaped when the turn ends — the job dies and the
-// session never resumes (looks like a hang). This launches the command from the
-// server with setsid (detached), so it survives the turn AND a server restart,
-// then auto-registers a poll that injects the exit code + output tail back into
-// the session on completion. Body: { command, cwd?, label?, intervalSec?,
-// maxChecks?, injectPrefix? }.
-app.post('/api/sessions/:id/run-detached', async (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const b = req.body || {};
-  const command = (b.command || b.cmd || '').toString();
-  if (!command.trim()) return res.status(400).json({ error: 'command required' });
-  try {
-    const baseCwd = cwdForSession(s);
-    const cwd = b.cwd ? resolveCwd(baseCwd, String(b.cwd)) : baseCwd;
-    const label = (b.label || command.replace(/\s+/g, ' ').slice(0, 60)).trim();
-    // Daemon mode: for long-running services (dev server, API, etc.) that never
-    // exit on their own. The done-file model (poll until process exits) doesn't
-    // apply — the poll would always time out and produce false "[轮询超时]"
-    // injections. Instead, just launch the process and return; the caller can
-    // check status via GET /api/detached/:taskId at any time.
-    const isDaemon = b.daemon === true || b.daemon === 'true';
-    const intervalSec = Math.max(3, Number(b.intervalSec) || 10);
-    const maxChecks = Math.max(1, Number(b.maxChecks) || 360);
-    const started = await orchestrationRuntime.startDetached({
-      sessionId: s.id,
-      idempotencyKey: req.get('Idempotency-Key') || b.idempotencyKey || null,
-      spec: {
-        command,
-        cwd,
-        label,
-        daemon: isDaemon,
-        intervalSec,
-        maxChecks,
-        injectPrefix: b.injectPrefix || `[后台任务完成] ${label}`,
-      },
-    });
-    const operation = started.operation;
-    const job = started.state || detached.status(operation.externalId) || {};
-    res.json({
-      ok: true,
-      taskId: operation.externalId,
-      waitId: null,
-      pid: job.pid || operation.pid || null,
-      logPath: job.logPath || null,
-      intervalSec,
-      maxChecks,
-      daemon: isDaemon,
-      operationId: operation.id,
-      status: operation.status,
-      duplicate: !!started.idempotent,
-    });
-  } catch (e) { res.status(e.statusCode || 400).json({ error: e.message, operationId: e.operationId || null }); }
-});
-
-// Inspect detached tasks (survives restart — read from disk).
-app.get('/api/sessions/:id/detached', async (req, res) => {
-  const session = persistedSessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'session not found' });
-  const operations = await orchestrationRuntime.operations.list({
-    kind: 'detached',
-    ownerSessionId: session.id,
-  });
-  res.json({
-    tasks: operations.map(operation => {
-      const task = detached.status(operation.externalId);
-      return task ? { ...task, operationId: operation.id, status: operation.status } : null;
-    }).filter(Boolean),
-  });
-});
-
-// CLI Agent/Task processes remain owned by their native CLI.  This endpoint is
-// deliberately an observation ledger: it reports the last durable fact but
-// does not imply that a running task can survive a MultiCC process restart.
-app.get('/api/sessions/:id/tasks', async (req, res) => {
-  const session = persistedSessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'session not found' });
-  try {
-    const tasks = await orchestrationRuntime.operations.listTasks({ sessionId: session.id });
-    res.json({ tasks, count: tasks.length });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-app.get('/api/detached/:taskId', async (req, res) => {
-  const st = detached.status(req.params.taskId);
-  if (!st) return res.status(404).json({ error: 'task not found' });
-  const operations = await orchestrationRuntime.operations.list({ kind: 'detached' });
-  const operation = operations.find(entry => entry.externalId === req.params.taskId);
-  res.json(operation ? { ...st, operationId: operation.id, status: operation.status } : st);
-});
+// Durable wait/callback, detached operation and observed-task HTTP surfaces share
+// one controller boundary over the already-composed orchestration runtime.
+createOrchestrationRoutes({
+  records: persistedSessions,
+  runtime: orchestrationRuntime,
+  waitInjector,
+  detached,
+  cwdForSession,
+  resolveCwd,
+  toWaitDto,
+  withApiMeta,
+  requestContext,
+  v1Error,
+}).mountRoutes(app);
 
 // ── Streaming chat turn (persistent process; see runChatTurn's streaming branch) ──
 // Feeds the prompt into the session's long-lived `claude` process and forwards
