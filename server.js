@@ -136,6 +136,14 @@ const {
   classifyDisplay,
   phaseLabel,
 } = require('./src/classify/vocab');
+const {
+  DISPATCH_RE,
+  DISPATCH_CONFIRM_RE,
+  DISPATCH_CANCEL_RE,
+  parseDispatchMarker,
+  parseAllDispatchMarkers,
+  isDispatchPlaceholderTarget,
+} = require('./src/dispatch/markers');
 const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
@@ -1120,41 +1128,7 @@ const GATEWAY_ID = '__gateway__';
 const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;   // pending confirmation expires after 10 min
 let pendingDispatch = null;                    // { id, targetId, message, createdAt }
 const dispatchRuns = new Map();                // hot cache; durable source of truth is orchestrationRuntime
-const DISPATCH_RE = /<<dispatch\s+target=["'“”]?([^"'“”>\s]+)["'“”]?\s*>([\s\S]*?)<\/dispatch>>?/;
-const DISPATCH_CONFIRM_RE = /^(确认|确定|yes|y|ok)$/i;
-const DISPATCH_CANCEL_RE = /^(取消|算了|no|n)$/i;
 const TERMINAL_DISPATCH_STATUS = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
-
-// Pull a single dispatch marker out of gateway reply text.
-// Returns { target, message, cleanText } (marker removed) or null.
-function parseDispatchMarker(text) {
-  if (!text) return null;
-  const m = text.match(DISPATCH_RE);
-  if (!m) return null;
-  const target = (m[1] || '').trim();
-  const message = (m[2] || '').trim();
-  if (!target || !message) return null;
-  const cleanText = text.replace(DISPATCH_RE, '').replace(/\n{3,}/g, '\n\n').trim();
-  return { target, message, cleanText };
-}
-
-function isDispatchPlaceholderTarget(targetId) {
-  const raw = String(targetId || '').trim();
-  if (!raw) return true;
-  const normalized = raw
-    .replace(/[“”"'`]/g, '')
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-  if (/^(\.{2,}|…+)$/.test(normalized)) return true;
-  if (/^<[^>]+>$/.test(normalized)) return true;
-  return new Set([
-    'sid', 'session_id', 'session id', 'sessionid',
-    'target', 'target_id', 'target id',
-    'worker session id', 'worker-session-id',
-    '真实 session id', '真实sessionid',
-    '目标会话id', '目标 session id',
-  ]).has(normalized);
-}
 
 function dispatchTargetHintFor(sessionId) {
   const targets = dispatchableSessionsFor(sessionId);
@@ -1409,17 +1383,6 @@ bus.on('chat:dispatch-complete', (dispatchId, sessionName, finalText) => {
 // in the SAME directory. A dispatched worker's own turn carries originDispatchId
 // and is handled by the回流 branch above, so workers cannot re-dispatch (mirrors
 // "a fork can't fork").
-const DISPATCH_RE_G = /<<dispatch\s+target=["'“”]?([^"'“”>\s]+)["'“”]?\s*>([\s\S]*?)<\/dispatch>>?/g;
-function parseAllDispatchMarkers(text) {
-  if (!text) return [];
-  const out = [];
-  for (const m of text.matchAll(DISPATCH_RE_G)) {
-    const target = (m[1] || '').trim();
-    const message = (m[2] || '').trim();
-    if (target && message) out.push({ target, message });
-  }
-  return out;
-}
 // Ultracode safety net. Observed failure mode (mafit chat-24): the model
 // narrates "分发给3个 ultra worker" but hands the work to run-detached shell
 // tasks instead of emitting markers — the workers silently receive nothing.
