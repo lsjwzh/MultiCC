@@ -251,77 +251,20 @@ const cancelBtn   = document.getElementById('cancel-btn');
 const mergeBtn    = document.getElementById('merge-btn');
 const mergeHint   = document.getElementById('merge-hint');
 const mergeHintBtn = document.getElementById('merge-hint-btn');
-const headerMoreBtn = document.getElementById('header-more-btn');
-const headerMoreMenu = document.getElementById('header-more-menu');
-const headerMoreWrap = document.getElementById('header-more-wrap');
-const HEADER_MORE_IDS = [
-  'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
-  'memory-btn', 'auto-commit-btn', 'share-btn', 'clear-ctx-wrap', 'memo-btn',
-];
-
-function syncHeaderMoreMenu() {
-  if (!headerMoreMenu || !headerMoreWrap) return;
-  const compact = window.innerWidth <= 760;
-  const header = document.getElementById('header');
-  if (!header) return;
-  if (compact) {
-    for (const id of HEADER_MORE_IDS) {
-      const el = document.getElementById(id);
-      if (el && el.parentElement !== headerMoreMenu) headerMoreMenu.appendChild(el);
-    }
-  } else {
-    for (const id of HEADER_MORE_IDS) {
-      const el = document.getElementById(id);
-      if (el && el.parentElement !== header) header.insertBefore(el, headerMoreWrap);
-    }
-    headerMoreMenu.classList.remove('open');
-  }
-}
-
-headerMoreBtn?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  const willOpen = !headerMoreMenu?.classList.contains('open');
-  if (willOpen) openHeaderMoreModal();
+const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
+  window,
+  document,
+  button: document.getElementById('header-more-btn'),
+  menu: document.getElementById('header-more-menu'),
+  wrap: document.getElementById('header-more-wrap'),
+  ids: [
+    'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
+    'memory-btn', 'auto-commit-btn', 'share-btn', 'clear-ctx-wrap', 'memo-btn',
+  ],
 });
-headerMoreMenu?.addEventListener('click', (e) => {
-  if (e.target.closest('.hdr-btn')) closeHeaderMoreModal();
-});
-document.addEventListener('click', (e) => {
-  if (headerMoreWrap && !headerMoreWrap.contains(e.target) &&
-      (!_headerMoreBackdrop || !_headerMoreBackdrop.contains(e.target))) {
-    closeHeaderMoreModal();
-  }
-});
-window.addEventListener('resize', syncHeaderMoreMenu);
-setTimeout(syncHeaderMoreMenu, 0);
-
-// Phone (<=760px): render the "more" menu as a centered modal with a backdrop,
-// so items never get clipped by the viewport edge. Desktop keeps the original
-// dropdown behavior.
-let _headerMoreBackdrop = null;
-function openHeaderMoreModal() {
-  closeHeaderMoreModal();
-  const compact = window.innerWidth <= 760;
-  if (compact) {
-    _headerMoreBackdrop = document.createElement('div');
-    _headerMoreBackdrop.style.cssText =
-      'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px;';
-    // Re-parent the menu into the backdrop so it can be centered.
-    _headerMoreBackdrop.appendChild(headerMoreMenu);
-    document.body.appendChild(_headerMoreBackdrop);
-    _headerMoreBackdrop.onclick = (e) => { if (e.target === _headerMoreBackdrop) closeHeaderMoreModal(); };
-  }
-  headerMoreMenu?.classList.add('open');
-}
-function closeHeaderMoreModal() {
-  headerMoreMenu?.classList.remove('open');
-  // Restore the menu to its original wrap when we tore it out for modal mode.
-  if (_headerMoreBackdrop) {
-    headerMoreWrap?.appendChild(headerMoreMenu);
-    _headerMoreBackdrop.remove();
-    _headerMoreBackdrop = null;
-  }
-}
+function syncHeaderMoreMenu() { return headerMoreController.sync(); }
+function openHeaderMoreModal() { return headerMoreController.open(); }
+function closeHeaderMoreModal() { return headerMoreController.close(); }
 
 /* ── State ── */
 let ws = null;
@@ -511,7 +454,7 @@ function dbg(cat, text) {
 function dbgState() {
   if (!_dbgStateEl) return;
   const wsName = _wsStateName();
-  const thinking = !!thinkingEl;
+  const thinking = !!chatLiveUi.getThinkingElement();
   const stuck = thinking && !isStreaming;  // the exact bug signature
   const badges = [
     `<span class="dbg-badge ${wsName === 'OPEN' ? 'ok' : 'bad'}"><b>ws</b> ${wsName}</span>`,
@@ -550,13 +493,25 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
 });
 let _loadingOlderSentinel = null; // DOM node inserted at top while loading, also scroll anchor
 let _wasConnected = false;       // true once we've successfully opened at least one WS
-let _disconnectBannerEl = null;  // in-chat sticky banner while disconnected
 let _isDisconnected = false;
 let _isRestarting = false;       // true while a user-triggered server restart is in progress
 let _restartAt = 0;              // Date.now() when restart was hit — grace gate so we don't reconnect to the dying old server
 let _disconnectEpisodeId = 0;
 let _lastReconnectNoticeEpisode = 0;
 let _lastInitInfoLine = '';
+const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
+  window,
+  document,
+  messagesEl,
+  translate: tt,
+  maybeScrollToBottom,
+  retryTransport: () => chatTransport.retryNow(),
+  isRestarting: () => _isRestarting,
+  getBaseTitle: () => _baseTitle,
+  debug: dbg,
+});
+let chatEventController = null;
+let _eventGeneration = 0;
 const chatTransport = window.MultiCCChatTransport.createTransport({
   window,
   document,
@@ -587,9 +542,8 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     statusEl.onclick = () => forceReconnect('status click');
     dbg('ws', 'onopen — 连接已建立');
     // If we'd shown the disconnect banner, replace it with a reconnected marker.
-    if (_disconnectBannerEl) {
-      _disconnectBannerEl.remove();
-      _disconnectBannerEl = null;
+    _eventGeneration = chatEventController?.beginGeneration() || 0;
+    if (chatLiveUi.clearDisconnectBanner()) {
       if (_disconnectEpisodeId !== _lastReconnectNoticeEpisode) {
         _lastReconnectNoticeEpisode = _disconnectEpisodeId;
         addSystemMsg('✓ 已重新连接');
@@ -605,12 +559,13 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   },
   onMessage({ data }) {
     try {
-      handleEvent(JSON.parse(data));
+      handleEvent(JSON.parse(data), _eventGeneration);
     } catch (e) {
       console.warn('Bad message:', data, e);
     }
   },
   onClose({ event: e, seconds: secs }) {
+    chatEventController?.invalidateGeneration();
     dbg('ws', `onclose — code=${e.code} (isStreaming=${isStreaming})`);
     if (_wasConnected && !_isDisconnected) {
       _isDisconnected = true;
@@ -638,662 +593,31 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   onEnsureAlive() { updateUI(); },
 });
 
-// Compatibility wrappers remain global for the native WebView and diagnostic
-// snippets; socket ownership and retry state live exclusively in the transport.
 function connect() { return chatTransport.connect(); }
 
 function isRecoverableCodexReconnectErrorText(text) {
-  const s = String(text || '');
-  return /^Codex 出错：Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(s)
-    && /stream disconnected before completion|response\.completed/i.test(s);
+  return window.MultiCCChatEventController.isRecoverableCodexReconnectErrorText(text);
 }
 
-/* ── Event handler ── */
-function handleEvent(msg) {
-  let _s = msg.type;
-  if (msg.type === 'system') _s += `/${msg.subtype || '?'}` + ('is_streaming' in msg ? ` is_streaming=${msg.is_streaming}` : '');
-  else if (msg.type === 'stream_event') _s += `/${msg.event?.type || '?'}`;
-  else if (msg.type === 'assistant') {
-    const kinds = (msg.message?.content || []).map(b => b.type).join(',');
-    _s += kinds ? ` [${kinds}]` : '';
-  }
-  else if (msg.type === 'result') _s += ` cost=${msg.total_cost_usd ?? 'null'}`;
-  else if (msg.type === 'error') _s += ` ${msg.error || ''}`;
-  dbg('event', `WS ◀ ${_s}`);
-
-  switch (msg.type) {
-    case 'system':
-      if (msg.subtype === 'init') {
-        // Only the SERVER's init carries `is_streaming`. Claude CLI's own
-        // stream-json init has the same shape but no `is_streaming`, and
-        // must NOT be treated as a (re)connect init — otherwise it would
-        // fire the "completed while disconnected" warning every single turn.
-        if (!('is_streaming' in msg)) break;
-
-        sessionId = msg.session_id || msg.session || sessionId;
-        refreshNotifyPreference();
-        if (!_sessionName && sessionId) updateTabIdentity(sessionId);
-        if (msg.cwd) updateCwdDisplay(msg.cwd);
-        if (msg.cli) applyCliUi(msg.cli);
-        const parts = [];
-        if (sessionId) parts.push(`Session: ${sessionId.slice(0, 8)}...`);
-        if (msg.cli) parts.push(msg.cli);
-        if (msg.model) parts.push(msg.model);
-        const initInfoLine = parts.join(' | ');
-        if (initInfoLine && initInfoLine !== _lastInitInfoLine) {
-          _lastInitInfoLine = initInfoLine;
-          addSystemMsg(initInfoLine);
-        }
-        if (msg.effort !== undefined) {
-          _sessionEffort = msg.effort || '';
-          _sessionEffectiveEffort = msg.effectiveEffort || _sessionEffort || 'medium';
-        }
-        // 重新打开 / 断线重连时，用 init 携带的实际生效 provider/model 恢复顶部标签。
-        // loadSessionModel() 仅首次加载执行；重连只走 init，缺这些字段就会显示 Default。
-        // providerId 必须恢复，否则 AI 配置弹窗的 Provider 下拉会落到「默认登录」。
-        if (msg.providerId !== undefined) _sessionProvider = msg.providerId || '';
-        if (msg.providerName !== undefined) _sessionProviderDisplayName = msg.providerName || '';
-        if (msg.cliStates) _sessionCliStates = msg.cliStates;
-        if (msg.cliAvailability) _cliAvailability = msg.cliAvailability;
-        if (msg.agent !== undefined) _sessionAgent = msg.agent || '';
-        _pendingCliHandoff = msg.pendingCliHandoff || null;
-        // effectiveModel/model refresh unconditionally on reconnect, exactly like
-        // provider/effort above — otherwise a server-side alias-map change leaves
-        // the AI-config button showing the NEW provider paired with the OLD model.
-        if (msg.effectiveModel !== undefined) {
-          _sessionEffectiveModel = msg.effectiveModel || '';
-          if (msg.model !== undefined) _sessionModel = msg.model || '';
-        }
-        if (msg.effort !== undefined || msg.providerName || msg.effectiveModel !== undefined || msg.providerId !== undefined || msg.agent !== undefined) {
-          updateEffortBtn();
-          updateModelBtn();
-        }
-        // Sync streaming state with server on (re)connect
-        if (msg.is_streaming && _pendingCancel) {
-          // User cancelled while disconnected — now that we're back, send it
-          _pendingCancel = false;
-          chatTransport.send({ type: 'cancel' });
-          // Don't enter streaming state — we just cancelled
-        } else if (msg.is_streaming && !isStreaming) {
-          isStreaming = true;
-          showThinking();
-          startTitleAnimation();
-          updateUI();
-        } else if (!msg.is_streaming && isStreaming) {
-          // Task finished while we were disconnected. No notification here: the
-          // aux-AI `notify` verdict (single judge) fired live at completion
-          // time, and reconnecting means the tab is in front of the user again.
-          isStreaming = false;
-          hideThinking();
-          finishStreaming();
-          stopTitleAnimation();
-          addSystemMsg('⚠️ Response completed while disconnected. Check history above.');
-          updateUI();
-        }
-        // Capture provider info + time-window token stats from server.
-        if (msg.providerId !== undefined) _providerId = msg.providerId;
-        if (msg.providerName !== undefined) _providerName = msg.providerName;
-        if (msg.providerTokenWindows) {
-          _providerTokenWindows = msg.providerTokenWindows;
-          updateContextBar();
-        }
-      } else if (msg.subtype === 'agent_notes' && Array.isArray(msg.notes)) {
-        addAgentNotes(msg.notes);
-      } else if (msg.message) {
-        addSystemMsg(msg.message);
-      }
-      break;
-
-    case 'session_id':
-      if (msg.id) { sessionId = msg.id; refreshNotifyPreference(); if (!_sessionName) updateTabIdentity(msg.id); }
-      break;
-
-    case 'cli_switched':
-      applyCliSwitchState(msg);
-      addSystemMsg(`⇄ CLI 已从 ${CLI_META[msg.fromCli]?.label || msg.fromCli} 切换到 ${CLI_META[msg.cli]?.label || msg.cli}；下一条消息会携带结构化上下文交接${msg.reusedTarget ? '并恢复该 CLI 原会话' : ''}`);
-      loadSessionModel();
-      break;
-
-    case 'stream_event':
-      handleStreamEvent(msg.event);
-      break;
-
-    case 'assistant':
-      finalizeAssistantMsg(msg.message);
-      break;
-
-    case 'user':
-      if (msg.tool_use_result || msg.message?.content) handleToolResult(msg);
-      break;
-
-    case 'result':
-      isStreaming = false;
-      var _resultBubble = currentMsgEl;  // capture before finishStreaming() nulls it
-      finishStreaming();
-      // Pass the per-role breakdown so the message footer shows 主/辅 split
-      // (from claude-proxy onUsage) alongside the CLI's merged aggregate.
-      if (msg.usage || _roleTokens.main) attachUsageLine(_resultBubble, msg.usage, _roleTokens);
-      // Live timing line: prefer server-stamped durationMs, else client turn clock.
-      if (_resultBubble) {
-        const ce = _resultBubble.querySelector('.msg-content');
-        if (ce && !ce.querySelector('.msg-timing')) {
-          const dur = Number.isFinite(msg.durationMs) ? msg.durationMs
-            : (_turnStartMs ? Date.now() - _turnStartMs : NaN);
-          const timing = buildTimingLine({ role: 'assistant', ts: Date.now(), durationMs: dur });
-          if (timing) ce.appendChild(timing);
-        }
-      }
-      _turnStartMs = 0;
-      stopTitleAnimation();
-      // No notification here: a `result` only means the stream paused, which
-      // happens between turns of a multi-step agent run too. The server's
-      // aux-AI debounces the pause and sends a `notify` verdict — that's the
-      // single judge (see 'notify' case).
-      if (msg.total_cost_usd) {
-        const durStr = Number.isFinite(msg.durationMs) ? fmtDuration(msg.durationMs) : (msg.duration_ms ? msg.duration_ms + 'ms' : '');
-        _costText = `$${msg.total_cost_usd.toFixed(4)}`;
-        if (durStr) _costText += ` | ${durStr}`;
-        if (msg.num_turns) _costText += ` | ${msg.num_turns} turn(s)`;
-      }
-      // Accumulate per-session token totals.
-      if (msg.usage) {
-        _sessionTokens.input += msg.usage.input_tokens || 0;
-        _sessionTokens.output += msg.usage.output_tokens || 0;
-      }
-      updateContextBar(msg.usage, msg.modelUsage);
-      updateUI();
-      // Auto-commit & merge if enabled for this turn (checkbox lives under the user message)
-      autoCommitIfNeeded(_lastUserBubble);
-      break;
-
-    case 'provider_token_stats':
-      if (msg.windows) {
-        _providerTokenWindows = msg.windows;
-        updateContextBar();
-      }
-      break;
-
-    case 'role_token_stats':
-      // Per-turn main/sub breakdown from the claude-proxy (the only place that
-      // knows each request's real route). Drives the "本轮 主 A / 辅 B" split
-      // that the merged CLI result event can't provide.
-      if (msg.role) {
-        _roleTokens = { main: msg.role.main || null, sub: msg.role.sub || null, subByProvider: msg.role.subByProvider || [] };
-        // Live update: refresh the CURRENTLY STREAMING bubble's footer token
-        // line as each /v1/messages response lands — previously the footer
-        // stayed empty until the `result` event at turn end. currentMsgEl is
-        // non-null mid-stream; pass null usage to let roleBreakdown drive the
-        // numbers (the CLI's aggregate isn't available until result).
-        if (currentMsgEl && isStreaming) {
-          attachUsageLine(currentMsgEl, null, _roleTokens);
-        }
-        updateContextBar();
-      }
-      break;
-
-    case 'monitor_started': {
-      // Background task (Monitor / run_in_background Bash) just started. Show it
-      // live in the danmaku panel (see pushDanmaku) instead of a chat bubble, so
-      // these ephemeral status lines don't consume chat scroll space. The task's
-      // full result still arrives later via the bg-completion nudge.
-      // Skip foreground (sync) Bash — the server flags those background:false
-      // since their result returns via tool_result, not as a 后台任务 notice.
-      // (`!== false` so an unflagged/legacy payload still shows.)
-      if (msg.background === false) break;
-      pushDanmaku('start', msg.description || msg.command || '后台任务', msg.task_id);
-      break;
-    }
-
-    case 'monitor_done': {
-      // Background task finished — resolve its danmaku row in place (spinner →
-      // ✓/✗, paired by task_id). The real result is ALSO injected as a
-      // continuation turn (~1.5s later via the coalescer); this is just the live
-      // signal that closes the "task vanished into a void" gap.
-      if (msg.background === false) break;
-      const desc = msg.summary || msg.description || '后台任务';
-      const kind = (msg.status === 'error' || msg.status === 'failed') ? 'fail' : 'done';
-      pushDanmaku(kind, desc, msg.task_id);
-      break;
-    }
-
-    case 'background_tasks':
-      // Periodic background-task list refresh from the CLI. No UI action needed
-      // right now (the per-task start/done events above are the useful signal);
-      // explicitly handled so it is NOT silently dropped.
-      break;
-
-    case 'chat_msg_meta': {
-      // Server saved a message and assigned its history id — tag the newest
-      // bubble of that role (if it isn't tagged yet) so its delete button
-      // goes live without waiting for a reload.
-      if (msg.id && msg.role) {
-        chatHistoryView.tagLatestMessage(msg.role, msg.id);
-      }
-      break;
-    }
-
-    case 'chat_msg_deleted': {
-      // Broadcast from the server after a successful delete (from any client).
-      if (msg.id) removeHistoryMessageById(msg.id);
-      break;
-    }
-
-    case 'chat_history': {
-      const historyPlan = chatHistoryStore.acceptHistory(msg, chatHistoryView.visibleIds());
-      applyHistoryPlan(historyPlan);
-      break;
-    }
-
-    case 'chat_history_reset': {
-      // A clear/keep operation may originate from another browser or app.
-      // Invalidate every older-page request first, then rebuild from the
-      // durable newest page broadcast by the server. The initiating client
-      // follows the same path so its optimistic DOM cannot drift.
-      resetHistoryPagination();
-      chatHistoryView.clearMessages();
-      const historyPlan = chatHistoryStore.acceptHistory({
-        messages: Array.isArray(msg.messages) ? msg.messages : [],
-        hasMore: msg.hasMore === true,
-      }, []);
-      applyHistoryPlan(historyPlan);
-      if ((Number(msg.keep) || 0) > 0) {
-        if ((Number(msg.removedCount) || 0) > 0) {
-          addSystemMsg(tt('contextKept', {
-            removed: Number(msg.removedCount) || 0,
-            kept: Number(msg.retainedCount) || 0,
-          }));
-        } else {
-          addSystemMsg(tt('contextResetKept'));
-        }
-      } else {
-        addSystemMsg(tt('contextCleared'));
-      }
-      break;
-    }
-
-    case 'task_state':
-      // aux classify result: what the assistant thinks this session's goal/phase/state
-      // is. Render into the classify bar under the header.
-      // classifyState is the D/C/W/B/E/P letter — drives the dominant tint.
-      renderAuxClassify(msg.goal, msg.phase, msg.classifyState);
-      break;
-
-    case 'rate_limit_event':
-      break;
-
-    case 'stream_end':
-      // Safety net: server confirms process exited — ensure cancel button is
-      // hidden. No notification here; the aux-AI `notify` verdict is the judge.
-      if (isStreaming) {
-        isStreaming = false;
-        finishStreaming();
-        stopTitleAnimation();
-        updateUI();
-      }
-      break;
-
-    case 'notify': {
-      // Server-side aux-AI verdict that the turn finished / is waiting / running.
-      // classifyState (D/C/W/B/E/P) is the primary driver; msg.state is fallback.
-      const cls = msg.classifyState || null;
-      if (msg.state === 'running' || cls === 'P' || cls === 'C') {
-        // In-progress summary: show a toast (even when tab is visible) but
-        // don't play a sound — it's a status update, not an alert.
-        showNotifyToast(msg.message || '任务进行中', 'running');
-      } else {
-        // Terminal verdict — use classifyState to pick voice/ding text
-        const disp = _classifyDisp(cls);
-        if (disp.voice) {
-          speakNotify(disp.voice, disp.ding);
-        } else {
-          // Fallback: no classifyState → use old msg.state logic
-          const waiting = msg.state === 'waiting';
-          speakNotify(waiting ? '等待操作' : '任务已完成', waiting ? 'waiting' : 'completed');
-        }
-      }
-      break;
-    }
-
-    case 'error':
-      if (isRecoverableCodexReconnectErrorText(msg.error || '')) {
-        console.warn('[multicc/chat] suppressed recoverable codex reconnect:', msg.error);
-        break;
-      }
-      addSystemMsg(`Error: ${msg.error || JSON.stringify(msg)}`);
-      isStreaming = false;
-      finishStreaming();
-      stopTitleAnimation();
-      updateUI();
-      break;
-  }
+function handleEvent(message, generation) {
+  return chatEventController?.handleEvent(message, generation);
 }
-
-function handleStreamEvent(evt) {
-  if (!evt) return;
-  switch (evt.type) {
-    case 'message_start':
-      isStreaming = true;
-      hideThinking();
-      // Within ONE user turn, the agent loop emits a fresh message_start per
-      // LLM step. Reuse the same bubble across the whole turn so all text and
-      // tool cards land in one place (one bounded, scrollable .tool-stack)
-      // instead of spawning a new bubble — and a new stack — on every step.
-      // This matches how the server persists a turn (one assistant message
-      // with all tools) and the codex path (no message_start at all).
-      // The turn ends at `result` / `stream_end` / `error`, which all call
-      // finishStreaming() and null currentMsgEl, so a genuinely new turn (or a
-      // stale bubble left by an error) still starts a fresh bubble below.
-      if (!currentMsgEl) {
-        currentMsgEl = createAssistantBubble();
-      } else if (currentTextContent && !currentTextContent.endsWith('\n\n')) {
-        // Continuing the same turn: keep prior text but separate this step's
-        // text from the previous step's with a blank line.
-        currentTextContent += '\n\n';
-      }
-      startTitleAnimation();
-      updateUI();
-      // Live token display: message_start carries the input-side usage
-      // (input_tokens, cache_read_input_tokens, cache_creation_input_tokens)
-      // the instant this LLM step begins. Show it on the streaming bubble's
-      // footer right away so the user sees token counts during output — not
-      // only after the turn ends. output_tokens arrives later in
-      // message_delta. Falls back to _roleTokens (proxy onUsage) for the
-      // 主/辅 split when available.
-      if (evt.message?.usage) {
-        _liveStreamUsage = accumulateLiveUsage(evt.message.usage, _liveStreamUsage);
-        attachUsageLine(currentMsgEl, null, _roleTokens.main ? _roleTokens : { main: _liveStreamUsage, sub: null, subByProvider: [] });
-      }
-      break;
-
-    case 'content_block_start':
-      activeContentIndex = evt.index;
-      if (evt.content_block?.type === 'text') {
-        activeContentType = 'text';
-      } else if (evt.content_block?.type === 'tool_use') {
-        activeContentType = 'tool_use';
-        const card = chatHistoryView.createToolCard(evt.content_block.name, evt.content_block.id);
-        currentToolCards.set(evt.index, {
-          card, inputJson: '', name: evt.content_block.name, id: evt.content_block.id
-        });
-        chatHistoryView.appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
-      }
-      break;
-
-    case 'content_block_delta':
-      if (evt.delta?.type === 'text_delta' && evt.delta.text) {
-        currentTextContent += evt.delta.text;
-        renderCurrentText();
-        maybeScrollToBottom();
-      } else if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
-        const tc = currentToolCards.get(evt.index);
-        if (tc) {
-          tc.inputJson += evt.delta.partial_json;
-          chatHistoryView.updateToolInput(tc);
-        }
-      }
-      break;
-
-    case 'content_block_stop':
-      activeContentType = null;
-      activeContentIndex = -1;
-      break;
-
-    case 'message_delta':
-      if (evt.usage) {
-        updateContextBar(evt.usage);
-        // Live token display: message_delta carries output_tokens (cumulative
-        // for this LLM step) near the end of the step. Accumulate into the
-        // streaming bubble's footer line so output tokens appear as soon as
-        // the step finishes — not only at turn-end result.
-        _liveStreamUsage = accumulateLiveUsage(evt.usage, _liveStreamUsage);
-        if (currentMsgEl) {
-          attachUsageLine(currentMsgEl, null, _roleTokens.main ? _roleTokens : { main: _liveStreamUsage, sub: null, subByProvider: [] });
-        }
-      }
-      break;
-    case 'message_stop':
-      break;
-  }
+function handleStreamEvent(event, generation) {
+  return chatEventController?.handleStreamEvent(event, generation);
 }
-
-function handleToolResult(msg) {
-  const content = msg.message?.content;
-  if (!content) return;
-  const results = Array.isArray(content) ? content : [content];
-  for (const r of results) {
-    if (r.type !== 'tool_result') continue;
-    for (const [, tc] of currentToolCards) {
-      if (tc.id === r.tool_use_id) {
-        const text = typeof r.content === 'string' ? r.content :
-          Array.isArray(r.content) ? r.content.map(c => c.text || '').join('') : JSON.stringify(r.content);
-        chatHistoryView.addToolResult(tc, text, r.is_error);
-        break;
-      }
-    }
-  }
-  maybeScrollToBottom();
-
-  // Speak the assistant's response if TTS is enabled
-  if (textForTts && _ttsEnabled && !_voiceOutputInstance) {
-    speakText(textForTts.trim());
-  }
-}
-
-function findCurrentToolCardById(id) {
-  for (const [, tc] of currentToolCards) {
-    if (tc.id === id) return tc;
-  }
-  return null;
-}
-
-function finalizeAssistantMsg(message) {
-  if (!message?.content) return;
-  // Real assistant content arrived — the thinking bubble must go away now.
-  // Codex never emits a `message_start` stream event (which is what hides the
-  // bubble for Claude), so without this the bubble lingers until `result`.
-  hideThinking();
-
-  // Collect text for TTS
-  let textForTts = '';
-
-  for (const block of message.content) {
-    if (block.type === 'text' && block.text) {
-      if (!currentMsgEl) currentMsgEl = createAssistantBubble();
-      if (currentCli === 'codex') {
-        currentTextContent += block.text;
-      } else if (!currentTextContent) {
-        currentTextContent = block.text;
-      }
-      textForTts += block.text;
-      renderCurrentText();
-      maybeScrollToBottom();
-    } else if (currentCli === 'codex' && block.type === 'tool_use' && block.id) {
-      if (!currentMsgEl) currentMsgEl = createAssistantBubble();
-      let tc = findCurrentToolCardById(block.id);
-      if (!tc) {
-        const card = chatHistoryView.createToolCard(block.name || 'Tool', block.id);
-        tc = {
-          card,
-          inputJson: block.input ? JSON.stringify(block.input) : '',
-          name: block.name || 'Tool',
-          id: block.id,
-        };
-        currentToolCards.set(`id:${block.id}`, tc);
-        chatHistoryView.appendToolCard(currentMsgEl.querySelector('.msg-content'), card);
-      } else if (block.input) {
-        tc.inputJson = JSON.stringify(block.input);
-      }
-      chatHistoryView.updateToolInput(tc);
-      maybeScrollToBottom();
-    }
-  }
-}
-
-function finishStreaming() {
-  // Catch-all: every terminal/transition path funnels through here, so this is
-  // the one reliable place to guarantee the thinking bubble is cleared.
-  hideThinking();
-  // Reset the per-step live usage accumulator — the next turn's message_start
-  // starts fresh. The finalized footer (attached at result) used the CLI's
-  // authoritative usage, so the live accumulator is no longer needed.
-  _liveStreamUsage = null;
-  if (currentMsgEl) {
-    const dot = currentMsgEl.querySelector('.streaming-dot');
-    if (dot) dot.classList.remove('streaming-dot');
-    try {
-      renderCurrentText(true);
-    } catch (e) {
-      console.warn('Failed to render final assistant text:', e);
-      dbg('event', `render final failed: ${e.message}`);
-    }
-  }
-  currentMsgEl = null;
-  currentTextContent = '';
-  currentToolCards = new Map();
-  // A turn just ended. Re-arm the unread counter so the NEXT turn (or next
-  // discrete new message) can bump the "N new" pill again while the user is
-  // pinned away reading history. Also nudge the view once more so the final
-  // rendered bubble is visible when the user is following along.
-  rearmUnread();
-  maybeScrollToBottom();
-}
-
-/* ── Rendering ── */
+function handleToolResult(message) { return chatEventController?.handleToolResult(message); }
+function finalizeAssistantMsg(message) { return chatEventController?.finalizeAssistantMsg(message); }
+function finishStreaming() { return chatEventController?.finishStreaming(); }
 function createAssistantBubble() {
-  const div = chatHistoryView.createAssistantBubble(true);
+  const bubble = chatHistoryView.createAssistantBubble(true);
   maybeScrollToBottom();
-  return div;
+  return bubble;
 }
 
-// Accumulate Anthropic-native usage (snake_case fields from message_start /
-// message_delta SSE events) into the live streaming bucket (camelCase).
-// output_tokens in message_delta is CUMULATIVE for this LLM step, so take
-// max rather than sum; input/cache fields from message_start are the step's
-// totals and are summed across steps within the turn.
-function accumulateLiveUsage(usage, bucket) {
-  if (!usage) return bucket;
-  const b = bucket || { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0 };
-  if (typeof usage.input_tokens === 'number') b.inputTokens += usage.input_tokens;
-  if (typeof usage.output_tokens === 'number' && usage.output_tokens > b.outputTokens) b.outputTokens = usage.output_tokens;
-  if (typeof usage.cache_creation_input_tokens === 'number') b.cacheWrite += usage.cache_creation_input_tokens;
-  if (typeof usage.cache_read_input_tokens === 'number') b.cacheRead += usage.cache_read_input_tokens;
-  return b;
-}
-
-// Build the per-message token usage line shown under an assistant bubble.
-// `usage` mirrors Anthropic's shape (input_tokens / output_tokens /
-// cache_read_input_tokens / cache_creation_input_tokens). Returns null when
-// there's nothing meaningful to show.
-//
-// `roleBreakdown` (optional) splits the turn's tokens into 主 (main loop) vs
-// 辅 (Task-tool subagents), each billed to its actual provider — the CLI's
-// `result.usage` merges them into one aggregate even across different
-// providers. When present, the line shows per-role totals with a tooltip
-// breaking down each sub-provider; when absent, falls back to the merged
-// aggregate. roleBreakdown shape: { main:{inputTokens,outputTokens,cacheWrite,cacheRead},
-//                                   sub:{...}|null,
-//                                   subByProvider:[{name,model,inputTokens,outputTokens,...}] }
-function buildUsageLine(usage, roleBreakdown) {
-  if (!usage && !roleBreakdown) return null;
-  const i  = (usage && usage.input_tokens) || 0;
-  const o  = (usage && usage.output_tokens) || 0;
-  const cr = (usage && usage.cache_read_input_tokens) || 0;
-  const cw = (usage && usage.cache_creation_input_tokens) || 0;
-  const n = x => x.toLocaleString('en-US');
-  const fs = v => v > 1e6 ? (v / 1e6).toFixed(2) + 'M' : v > 1e3 ? (v / 1e3).toFixed(1) + 'k' : v.toLocaleString('en-US');
-
-  // ── Role-split mode (主/辅) ──
-  if (roleBreakdown && (roleBreakdown.main || roleBreakdown.sub)) {
-    const sumB = (b) => b ? { i: b.inputTokens||0, o: b.outputTokens||0, cr: b.cacheRead||0, cw: b.cacheWrite||0, t: (b.inputTokens||0)+(b.outputTokens||0)+(b.cacheRead||0)+(b.cacheWrite||0) } : null;
-    const mb = sumB(roleBreakdown.main);
-    const sb = sumB(roleBreakdown.sub);
-    // Aggregate (main+sub) for the headline numbers; equals the CLI's merged
-    // total when both routes reported — keeps the row comparable to the old
-    // single-number display, with the split as added detail.
-    const ai = (mb?mb.i:0) + (sb?sb.i:0);
-    const ao = (mb?mb.o:0) + (sb?sb.o:0);
-    const acr = (mb?mb.cr:0) + (sb?sb.cr:0);
-    const acw = (mb?mb.cw:0) + (sb?sb.cw:0);
-    if (ai + ao + acr + acw === 0) return null;
-    const el = document.createElement('div');
-    el.className = 'msg-usage';
-    // Tooltip: aggregate + per-role + per-sub-provider detail.
-    let tip = `本条消息 token 用量\n合计 ${n(ai+ao+acr+acw)}\n`;
-    if (mb) tip += `— 主 — 输入 ${n(mb.i)} 输出 ${n(mb.o)} 缓存读 ${n(mb.cr)} 缓存写 ${n(mb.cw)}\n`;
-    if (sb) {
-      tip += `— 辅 合计 — 输入 ${n(sb.i)} 输出 ${n(sb.o)} 缓存读 ${n(sb.cr)} 缓存写 ${n(sb.cw)}\n`;
-      for (const p of (roleBreakdown.subByProvider || [])) {
-        tip += `    · ${p.name||p.providerId} / ${p.model||'?'}: ↑入 ${n(p.inputTokens||0)} ↓出 ${n(p.outputTokens||0)}\n`;
-      }
-      tip += `省主模型 ≈ ${n(sb.t)}（子任务代劳）\n`;
-    }
-    el.title = tip.trim();
-    // Headline: ↑入 / ↓出 with a 主/辅 split suffix when subagents ran.
-    let html =
-      `<span class="u-in">&#8593;入 ${n(ai)}</span>` +
-      `<span class="u-out">&#8595;出 ${n(ao)}</span>`;
-    if (acr) html += `<span class="u-cache">&#9851;读 ${n(acr)}</span>`;
-    if (acw) html += `<span class="u-cache">&#9851;写 ${n(acw)}</span>`;
-    if (mb && sb) {
-      const mt = mb.t, st = sb.t;
-      html += `<span class="u-role" title="主 ${n(mt)} · 辅 ${n(st)}">主 ${n(mt)} · 辅 ${n(st)}</span>`;
-    } else if (mb) {
-      html += `<span class="u-role" title="仅主循环">主 ${n(mb.t)}</span>`;
-    }
-    if (sb) {
-      html += `<span class="u-saved" title="子任务替主模型处理的 token 量（四桶总额，未走主模型）">↺省主 ${fs(sb.t)}</span>`;
-    }
-    el.innerHTML = html;
-    return el;
-  }
-
-  // ── Legacy aggregate mode (no role info, e.g. official/non-proxy sessions) ──
-  if (i + o + cr + cw === 0) return null;
-  const el = document.createElement('div');
-  el.className = 'msg-usage';
-  el.title = `本条消息 token 用量\n输入 ${n(i)}\n输出 ${n(o)}\n缓存读 ${n(cr)}\n缓存写 ${n(cw)}\n合计 ${n(i + o + cr + cw)}`;
-  el.innerHTML =
-    `<span class="u-in">&#8593;入 ${n(i)}</span>` +
-    `<span class="u-out">&#8595;出 ${n(o)}</span>` +
-    (cr ? `<span class="u-cache">&#9851;读 ${n(cr)}</span>` : '') +
-    (cw ? `<span class="u-cache">&#9851;写 ${n(cw)}</span>` : '');
-  return el;
-}
-
-// Human-friendly duration: 820ms / 6.2s / 1m3s.
-function fmtDuration(ms) {
-  if (!Number.isFinite(ms) || ms < 0) return '';
-  if (ms < 1000) return `${ms}ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m${Math.round(s % 60)}s`;
-}
-
-// Per-message timing line: reply clock time + interaction latency (durationMs).
-// Shown under an assistant bubble so each reply records when it came back and
-// how long the turn took.
-function buildTimingLine(m) {
-  const ts = Number(m.ts);
-  const hasTs = Number.isFinite(ts) && ts > 0;
-  const dur = Number(m.durationMs);
-  const hasDur = Number.isFinite(dur) && dur >= 0;
-  if (!hasTs && !hasDur) return null;
-  const el = document.createElement('div');
-  el.className = 'msg-timing';
-  el.style.cssText = 'font-size:11px;color:#6e7681;display:flex;gap:10px;padding:1px 0;';
-  let html = '';
-  if (hasTs) {
-    const d = new Date(ts);
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
-    html += `<span title="回复时间">&#128336; ${hh}:${mm}:${ss}</span>`;
-  }
-  if (hasDur) html += `<span title="本次交互耗时">&#9201; ${fmtDuration(dur)}</span>`;
-  el.innerHTML = html;
-  return el;
-}
+function accumulateLiveUsage(usage, bucket) { return chatLiveUi.accumulateLiveUsage(usage, bucket); }
+function buildUsageLine(usage, roleBreakdown) { return chatLiveUi.buildUsageLine(usage, roleBreakdown); }
+function fmtDuration(ms) { return chatLiveUi.fmtDuration(ms); }
+function buildTimingLine(message) { return chatLiveUi.buildTimingLine(message); }
 
 // ── Per-message delete ──
 // Hover "×" on a bubble whose server-side history id is known. Deleting
@@ -1303,64 +627,8 @@ function buildTimingLine(m) {
 
 // ── In-page dialog helpers (replaces native confirm/alert which browsers
 // often suppress inside iframes) ──
-function _chatConfirm(message, opts = {}) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:360px;max-width:90vw;';
-    const msg = document.createElement('div');
-    msg.style.cssText = 'font-size:14px;color:#c9d1d9;line-height:1.6;white-space:pre-wrap;margin-bottom:12px;';
-    msg.textContent = message;
-    box.appendChild(msg);
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'btn'; cancelBtn.textContent = opts.cancelText || '取消';
-    const okBtn = document.createElement('button');
-    okBtn.className = 'btn ' + (opts.danger ? 'btn-danger' : 'btn-green');
-    okBtn.textContent = opts.okText || '确认';
-    row.appendChild(cancelBtn); row.appendChild(okBtn);
-    box.appendChild(row);
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    const close = (result) => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(result); };
-    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(false); } }
-    okBtn.onclick = () => close(true);
-    cancelBtn.onclick = () => close(false);
-    overlay.onclick = (e) => { if (e.target === overlay) close(false); };
-    document.addEventListener('keydown', onKey, true);
-    setTimeout(() => okBtn.focus(), 0);
-  });
-}
-function _chatAlert(message, opts = {}) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:360px;max-width:90vw;';
-    const msg = document.createElement('div');
-    msg.style.cssText = 'font-size:14px;color:' + (opts.danger ? '#f85149' : '#c9d1d9') + ';line-height:1.6;white-space:pre-wrap;margin-bottom:12px;';
-    msg.textContent = message;
-    box.appendChild(msg);
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
-    const okBtn = document.createElement('button');
-    okBtn.className = 'btn btn-green'; okBtn.textContent = opts.okText || tt('acknowledge');
-    row.appendChild(okBtn);
-    box.appendChild(row);
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    const close = () => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(); };
-    function onKey(e) { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); close(); } }
-    okBtn.onclick = close;
-    overlay.onclick = (e) => { if (e.target === overlay) close(); };
-    document.addEventListener('keydown', onKey, true);
-    setTimeout(() => okBtn.focus(), 0);
-  });
-}
+function _chatConfirm(message, options = {}) { return chatLiveUi.confirm(message, options); }
+function _chatAlert(message, options = {}) { return chatLiveUi.alert(message, options); }
 
 function attachDeleteButton(msgEl) {
   if (!msgEl || !msgEl.dataset.msgId || msgEl.querySelector('.msg-del')) return;
@@ -1437,62 +705,12 @@ function attachForkButton(msgEl) {
 // ── Unified classify display maps (mirrors server.js CLASSIFY_DISPLAY) ──────
 // Keyed by classify-state LETTER (D/C/W/B/E/P) — single source of truth for
 // all frontend display: bar badge, voice, ding, toast.
-const _CLASSIFY_DISPLAY = {
-  D: { label: tt('classifyDone'), barTint: 'completed', voice: tt('voiceTaskCompleted'), ding: 'completed' },
-  C: { label: tt('classifyContinuing'), barTint: 'running', voice: null, ding: null },
-  W: { label: tt('classifyWaitingUser'), barTint: 'waiting', voice: tt('voiceWaitingAction'), ding: 'waiting' },
-  B: { label: tt('classifyWaitingBackground'), barTint: 'waiting', voice: tt('voiceWaitingBackground'), ding: 'waiting' },
-  E: { label: tt('classifyApiError'), barTint: 'error', voice: tt('voiceApiInterrupted'), ding: 'error' },
-  P: { label: tt('classifyProcessing'), barTint: 'running', voice: null, ding: null },
-};
-function _classifyDisp(cls) { return _CLASSIFY_DISPLAY[cls] || _CLASSIFY_DISPLAY['W']; }
-
-const _PHASE_LABELS = {
-  planning: tt('phasePlanning'), implementing: tt('phaseImplementing'), verifying: tt('phaseVerifying'),
-  wrapping: tt('phaseWrapping'), done: tt('phaseDone'),
-};
-function _phaseLabel(ph) { return _PHASE_LABELS[ph] || ''; }
-
-// Renders what aux thinks this session's goal/phase/state is into #aux-classify-bar.
-// classifyState (D/C/W/B/E/P) drives the dominant tint; phase is secondary.
-// Hidden entirely when there's no goal.
+function _classifyDisp(classifyState) { return chatLiveUi.classifyDisplay(classifyState); }
 function renderAuxClassify(goal, phase, classifyState) {
-  const bar = document.getElementById('aux-classify-bar');
-  if (!bar) return;
-  const g = (goal || '').trim();
-  if (!g) { bar.classList.remove('show'); return; }
-  const goalEl = document.getElementById('ac-goal');
-  const phaseEl = document.getElementById('ac-phase');
-  const stateEl = document.getElementById('ac-state');
-  if (goalEl) { goalEl.textContent = g; goalEl.title = g; }
-  // Phase badge (secondary, rightmost) — show only when phase is meaningful
-  const ph = (phase || '').toLowerCase();
-  if (phaseEl) {
-    phaseEl.textContent = _phaseLabel(ph) || '';
-    phaseEl.style.display = _phaseLabel(ph) ? '' : 'none';
-  }
-  // State badge (primary, left of phase) — driven by classifyState letter
-  const cls = classifyState || 'P';
-  const disp = _classifyDisp(cls);
-  bar.classList.remove('lc-running', 'lc-completed', 'lc-waiting', 'lc-interrupted',
-    'st-running', 'st-completed', 'st-waiting', 'st-error');
-  if (stateEl) {
-    stateEl.textContent = disp.label;
-    stateEl.style.display = '';
-  }
-  bar.classList.add('st-' + disp.barTint);
-  bar.classList.add('show');
+  return chatLiveUi.renderAuxClassify(goal, phase, classifyState);
 }
-
-// Attach (or refresh) the usage line on a given assistant bubble element.
 function attachUsageLine(bubbleEl, usage, roleBreakdown) {
-  if (!bubbleEl) return;
-  const ce = bubbleEl.querySelector('.msg-content');
-  if (!ce) return;
-  const old = ce.querySelector('.msg-usage');
-  if (old) old.remove();
-  const line = buildUsageLine(usage, roleBreakdown);
-  if (line) ce.appendChild(line);
+  return chatLiveUi.attachUsageLine(bubbleEl, usage, roleBreakdown);
 }
 
 function renderCurrentText(final = false) {
@@ -1552,192 +770,11 @@ function addSystemMsg(text) {
  * auto-hides 5s after every row goes terminal, and collapses to a count pill.
  * All text goes through textContent — task descriptions are agent-authored and
  * must never be treated as HTML. */
-const DANMAKU_MAX_ROWS = 8;
-const DANMAKU_AUTOHIDE_MS = 5000;
-// Watchdog: a 'start' row that never gets a matching monitor_done (server crash,
-// WS disconnect, or a genuinely hung task) would otherwise keep _danmakuHasRunning
-// true forever and pin the panel on screen with a stuck spinner. After this idle
-// it is demoted to a muted 'stale' state so the panel can auto-hide. Long enough
-// not to prematurely resolve normal multi-minute background tasks.
-const DANMAKU_STALE_MS = 180000; // 3 min
-let _danmakuCollapsed = false;
-let _danmakuHideTimer = null;
-let _danmakuFadeTimer = null;
-let _danmakuInited = false;
-const _danmakuRows = new Map(); // key(task_id) -> { el, txtEl, icEl, state, staleTimer }
+function danmakuOnDisconnect() { return chatLiveUi.danmakuOnDisconnect(); }
+function pushDanmaku(kind, description, taskId) { return chatLiveUi.pushDanmaku(kind, description, taskId); }
+function toggleDanmakuCollapse() { return chatLiveUi.toggleDanmakuCollapse(); }
 
-function _dmEls() {
-  return {
-    panel: document.getElementById('danmaku-panel'),
-    head:  document.getElementById('danmaku-head'),
-    body:  document.getElementById('danmaku-body'),
-    title: document.getElementById('danmaku-title'),
-    count: document.getElementById('danmaku-count'),
-    dot:   document.getElementById('danmaku-dot'),
-    btn:   document.getElementById('danmaku-collapse-btn'),
-  };
-}
-
-function initDanmakuPanel() {
-  if (_danmakuInited) return;
-  const e = _dmEls();
-  if (!e.panel) return;
-  _danmakuInited = true;
-  e.btn.addEventListener('click', (ev) => { ev.stopPropagation(); toggleDanmakuCollapse(); });
-  // Tapping anywhere on the collapsed pill re-expands it.
-  e.head.addEventListener('click', () => { if (_danmakuCollapsed) toggleDanmakuCollapse(); });
-}
-
-function _danmakuHasRunning() {
-  for (const r of _danmakuRows.values()) if (r.state === 'start') return true;
-  return false;
-}
-
-function _danmakuRefreshMeta() {
-  const e = _dmEls();
-  if (!e.panel) return;
-  e.dot.className = _danmakuHasRunning() ? 'dm-dot-running' : 'dm-dot-idle';
-  e.count.textContent = (_danmakuCollapsed || !_danmakuRows.size) ? '' : String(_danmakuRows.size);
-  e.title.textContent = _danmakuCollapsed ? `${_danmakuRows.size} 后台任务` : '后台任务';
-}
-
-function _danmakuShow() {
-  const e = _dmEls();
-  if (!e.panel) return;
-  clearTimeout(_danmakuFadeTimer);
-  e.panel.style.display = 'flex';
-  e.panel.style.opacity = '1';
-}
-
-function _danmakuScheduleHide() {
-  clearTimeout(_danmakuHideTimer);
-  _danmakuHideTimer = null;
-  if (_danmakuCollapsed) return;      // pinned open as a pill until user expands
-  if (_danmakuHasRunning()) return;   // keep visible while any task is still running
-  _danmakuHideTimer = setTimeout(() => {
-    const e = _dmEls();
-    if (!e.panel) return;
-    e.panel.style.opacity = '0';
-    _danmakuFadeTimer = setTimeout(() => {
-      e.panel.style.display = 'none';
-      for (const r of _danmakuRows.values()) clearTimeout(r.staleTimer); // no leaked watchdogs
-      _danmakuRows.clear();           // fresh slate for the next burst
-      if (e.body) e.body.textContent = '';
-      _danmakuRefreshMeta();
-    }, 320);
-  }, DANMAKU_AUTOHIDE_MS);
-}
-
-function _danmakuSetRowState(row, state) {
-  // Any transition disarms the previous watchdog; a fresh 'start' re-arms it.
-  clearTimeout(row.staleTimer);
-  row.staleTimer = null;
-  row.state = state;
-  row.el.className = 'dm-row dm-' + state;
-  row.icEl.className = 'dm-ic';
-  if (state === 'start') {
-    row.icEl.textContent = '';
-    const sp = document.createElement('span');
-    sp.className = 'dm-spin';
-    row.icEl.appendChild(sp);
-    row.staleTimer = setTimeout(() => {
-      if (row.state !== 'start') return;        // resolved in the meantime
-      _danmakuSetRowState(row, 'stale');         // stop blocking auto-hide
-      _danmakuRefreshMeta();
-      _danmakuScheduleHide();
-    }, DANMAKU_STALE_MS);
-  } else if (state === 'stale') {
-    row.icEl.textContent = '·';                  // muted: outcome unknown (never reported)
-  } else {
-    row.icEl.textContent = state === 'fail' ? '✗' : '✓'; // ✗ / ✓
-  }
-}
-
-// Called when the WebSocket drops: a running task's monitor_done can never arrive
-// on the dead socket, so demote every 'start' row to 'stale' now instead of waiting
-// out the full watchdog. Lets the panel auto-hide promptly on disconnect.
-function danmakuOnDisconnect() {
-  if (!_danmakuRows.size) return;
-  let changed = false;
-  for (const r of _danmakuRows.values()) {
-    if (r.state === 'start') { _danmakuSetRowState(r, 'stale'); changed = true; }
-  }
-  if (changed) { _danmakuRefreshMeta(); _danmakuScheduleHide(); }
-}
-
-// kind: 'start' | 'done' | 'fail'; desc: task text; taskId: server msg.task_id (pairing key)
-function pushDanmaku(kind, desc, taskId) {
-  initDanmakuPanel();
-  const e = _dmEls();
-  if (!e.panel) return;
-  const text = (desc && String(desc).trim()) || '后台任务';
-  const key = taskId ? 't:' + taskId : 'd:' + text;   // fall back to desc when no id
-
-  const existing = _danmakuRows.get(key);
-  if (existing) {
-    if (kind === 'start') { _danmakuShow(); return; }  // duplicate start → ignore
-    _danmakuSetRowState(existing, kind);               // done/fail resolves the row in place
-    existing.txtEl.textContent = text;
-    _danmakuRefreshMeta();
-    _danmakuShow();
-    _danmakuScheduleHide();
-    return;
-  }
-
-  // New row — evict the oldest first if we are at the cap.
-  if (_danmakuRows.size >= DANMAKU_MAX_ROWS) {
-    const oldestKey = _danmakuRows.keys().next().value;
-    const oldest = _danmakuRows.get(oldestKey);
-    if (oldest) {
-      clearTimeout(oldest.staleTimer);
-      if (oldest.el.parentNode) oldest.el.parentNode.removeChild(oldest.el);
-    }
-    _danmakuRows.delete(oldestKey);
-  }
-
-  const row = document.createElement('div');
-  const ic = document.createElement('span');
-  const txt = document.createElement('span');
-  txt.className = 'dm-txt';
-  txt.textContent = text;
-  row.appendChild(ic);
-  row.appendChild(txt);
-  const rec = { el: row, txtEl: txt, icEl: ic, state: kind };
-  _danmakuSetRowState(rec, kind);
-  e.body.prepend(row);                 // newest at the top → live-feed feel
-  _danmakuRows.set(key, rec);
-
-  _danmakuShow();
-  _danmakuRefreshMeta();
-  _danmakuScheduleHide();
-}
-
-function toggleDanmakuCollapse() {
-  const e = _dmEls();
-  if (!e.panel) return;
-  _danmakuCollapsed = !_danmakuCollapsed;
-  e.panel.classList.toggle('dm-collapsed', _danmakuCollapsed);
-  e.btn.textContent = _danmakuCollapsed ? '▸' : '▾'; // ▸ / ▾
-  _danmakuRefreshMeta();
-  if (_danmakuCollapsed) {
-    clearTimeout(_danmakuHideTimer);   // stay visible as a pill
-    _danmakuShow();
-  } else {
-    _danmakuScheduleHide();
-  }
-}
-
-function showDisconnectBanner(secs) {
-  if (_isRestarting) return;  // during a restart we show a dedicated status, not the disconnect banner
-  if (!_disconnectBannerEl) {
-    _disconnectBannerEl = document.createElement('div');
-    _disconnectBannerEl.className = 'msg system-msg disconnect-banner';
-    _disconnectBannerEl.onclick = () => chatTransport.retryNow();
-    messagesEl.appendChild(_disconnectBannerEl);
-  }
-  _disconnectBannerEl.textContent = `⚠️ 连接断开，${secs}s 后自动重连（点此立即重试）`;
-  maybeScrollToBottom();
-}
+function showDisconnectBanner(seconds) { return chatLiveUi.showDisconnectBanner(seconds); }
 
 function removeHistoryMessageById(id) {
   const element = chatHistoryView.findById(id);
@@ -1806,25 +843,8 @@ function applyHistoryPlan(plan) {
 }
 
 /* ── Thinking bubble ── */
-let thinkingEl = null;
-
-function showThinking() {
-  if (thinkingEl) { dbg('think', 'showThinking() — 已在显示，忽略'); return; }
-  thinkingEl = document.createElement('div');
-  thinkingEl.className = 'thinking-bubble';
-  thinkingEl.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div> Thinking...';
-  messagesEl.appendChild(thinkingEl);
-  maybeScrollToBottom();
-  dbg('think', 'showThinking() — 气泡已显示');
-}
-
-function hideThinking() {
-  if (thinkingEl) {
-    thinkingEl.remove();
-    thinkingEl = null;
-    dbg('think', 'hideThinking() — 气泡已移除');
-  }
-}
+function showThinking() { return chatLiveUi.showThinking(); }
+function hideThinking() { return chatLiveUi.hideThinking(); }
 
 /* ── Composer compatibility surface ──
  * Message sending, attachments, keyboard/touch bindings and voice input are
@@ -2279,92 +1299,13 @@ function startMergeStatusPolling() {
 
 /* ── Merge worktree button ── */
 function confirmInPage(message) {
-  return new Promise((resolve) => {
-    const backdrop = document.createElement('div');
-    backdrop.style.cssText = 'position:fixed;inset:0;z-index:12000;background:#0009;display:flex;align-items:center;justify-content:center;padding:18px;';
-    const card = document.createElement('div');
-    card.style.cssText = 'width:min(92vw,420px);background:#0f1115;border:1px solid #30363d;border-radius:10px;box-shadow:0 18px 60px #000c;color:#e7eaee;overflow:hidden;';
-    const title = document.createElement('div');
-    title.textContent = tt('mergeTitle');
-    title.style.cssText = 'padding:14px 16px;border-bottom:1px solid #20242b;font-size:15px;font-weight:700;color:#f2f4f7;';
-    const body = document.createElement('div');
-    body.textContent = message;
-    body.style.cssText = 'padding:16px;white-space:pre-wrap;font-size:13px;line-height:1.55;color:#c9d1d9;';
-    const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #20242b;';
-    const cancel = document.createElement('button');
-    cancel.textContent = tt('cancel');
-    cancel.style.cssText = 'border:1px solid #30363d;background:#161b22;color:#c9d1d9;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
-    const ok = document.createElement('button');
-    ok.textContent = tt('merge');
-    ok.style.cssText = 'border:1px solid #58a6ff;background:#1f6feb;color:#fff;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
-    const finish = (value) => {
-      document.removeEventListener('keydown', onKey);
-      backdrop.remove();
-      resolve(value);
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') finish(false);
-      if (e.key === 'Enter') finish(true);
-    };
-    cancel.onclick = () => finish(false);
-    ok.onclick = () => finish(true);
-    backdrop.onclick = (e) => { if (e.target === backdrop) finish(false); };
-    document.addEventListener('keydown', onKey);
-    actions.append(cancel, ok);
-    card.append(title, body, actions);
-    backdrop.append(card);
-    document.body.append(backdrop);
-    ok.focus();
+  return chatLiveUi.confirm(message, {
+    title: tt('mergeTitle'), okText: tt('merge'), cancelText: tt('cancel'), enterConfirms: true,
   });
 }
-
-// Lightweight in-page text prompt (window.prompt is unreliable in WebViews).
-// Resolves to the trimmed string, or null if cancelled.
 function promptInPage(title, defaultValue) {
-  return new Promise((resolve) => {
-    const backdrop = document.createElement('div');
-    backdrop.style.cssText = 'position:fixed;inset:0;z-index:12000;background:#0009;display:flex;align-items:center;justify-content:center;padding:18px;';
-    const card = document.createElement('div');
-    card.style.cssText = 'width:min(92vw,440px);background:#0f1115;border:1px solid #30363d;border-radius:10px;box-shadow:0 18px 60px #000c;color:#e7eaee;overflow:hidden;';
-    const head = document.createElement('div');
-    head.textContent = title;
-    head.style.cssText = 'padding:14px 16px;border-bottom:1px solid #20242b;font-size:15px;font-weight:700;color:#f2f4f7;';
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:16px;';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = defaultValue || '';
-    input.maxLength = 80;
-    input.style.cssText = 'width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:9px 11px;font-size:14px;color:#e7eaee;outline:none;';
-    input.placeholder = tt('sessionAliasHint');
-    body.append(input);
-    const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #20242b;';
-    const cancel = document.createElement('button');
-    cancel.textContent = tt('cancel');
-    cancel.style.cssText = 'border:1px solid #30363d;background:#161b22;color:#c9d1d9;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
-    const ok = document.createElement('button');
-    ok.textContent = tt('save');
-    ok.style.cssText = 'border:1px solid #58a6ff;background:#1f6feb;color:#fff;border-radius:7px;padding:7px 13px;font-weight:700;cursor:pointer;';
-    const finish = (value) => {
-      document.removeEventListener('keydown', onKey);
-      backdrop.remove();
-      resolve(value);
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); finish(null); }
-      else if (e.key === 'Enter') { e.preventDefault(); finish(input.value.trim()); }
-    };
-    cancel.onclick = () => finish(null);
-    ok.onclick = () => finish(input.value.trim());
-    backdrop.onclick = (e) => { if (e.target === backdrop) finish(null); };
-    document.addEventListener('keydown', onKey);
-    actions.append(cancel, ok);
-    card.append(head, body, actions);
-    backdrop.append(card);
-    document.body.append(backdrop);
-    setTimeout(() => { input.focus(); input.select(); }, 0);
+  return chatLiveUi.prompt(title, defaultValue, {
+    placeholder: tt('sessionAliasHint'), okText: tt('save'), cancelText: tt('cancel'), maxLength: 80,
   });
 }
 
@@ -2466,36 +1407,7 @@ async function autoCommitIfNeeded(bubbleEl) {
 }
 
 /* ── Diff viewer ── */
-function escapeDiffHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function renderDiffLines(text) {
-  if (!text || !text.trim()) {
-    return '<div class="diff-line diff-meta" style="text-align:center;padding:24px;">（无变更）</div>';
-  }
-  const MAX_LINES = 5000;
-  const lines = text.split('\n');
-  const truncated = lines.length > MAX_LINES;
-  const arr = truncated ? lines.slice(0, MAX_LINES) : lines;
-  const parts = [];
-  for (const raw of arr) {
-    let cls = 'diff-line';
-    if (/^[+\- ]*(<<<<<<<|=======|>>>>>>>)/.test(raw)) {
-      cls += ' diff-conflict';
-    } else if (raw.startsWith('diff --git') || raw.startsWith('diff --cc') || raw.startsWith('index ') || raw.startsWith('+++ ') || raw.startsWith('--- ') || raw.startsWith('new file') || raw.startsWith('deleted file') || raw.startsWith('rename ') || raw.startsWith('similarity ')) {
-      cls += ' diff-head';
-    } else if (raw.startsWith('@@')) cls += ' diff-hunk';
-    else if (raw.startsWith('+')) cls += ' diff-add';
-    else if (raw.startsWith('-')) cls += ' diff-del';
-    const safe = escapeDiffHtml(raw);
-    parts.push(`<span class="${cls}">${safe || '&nbsp;'}</span>`);
-  }
-  if (truncated) {
-    parts.push(`<span class="diff-line diff-meta">… 行数过多已截断（${lines.length - MAX_LINES} 行省略）</span>`);
-  }
-  return parts.join('');
-}
+function renderDiffLines(container, text) { return chatLiveUi.renderDiff(container, text); }
 
 async function showDiff() {
   if (!_sessionName) { addSystemMsg('无 session id，无法查看 diff'); return; }
@@ -2508,7 +1420,7 @@ async function showDiff() {
   titleEl.textContent = `Diff · ${_sessionName}`;
   subEl.textContent = '加载中…';
   statEl.textContent = '';
-  contentEl.innerHTML = '';
+  contentEl.textContent = '';
   modal.classList.add('open');
   try {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/diff`));
@@ -2526,7 +1438,7 @@ async function showDiff() {
     if (data.truncated) parts.push('已截断到 1MB');
     subEl.textContent = parts.join(' · ');
     statEl.textContent = (data.stat || '').trim() || '(无变更)';
-    contentEl.innerHTML = renderDiffLines(data.diff || '');
+    renderDiffLines(contentEl, data.diff || '');
     if (data.error) {
       const errLine = document.createElement('div');
       errLine.className = 'diff-line diff-del';
@@ -2552,67 +1464,7 @@ startMergeStatusPolling();
 
 /* ── Cross-CLI switch (one logical chat, independent native sessions) ── */
 function showCliSwitchPicker(current, states, availability) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;width:460px;max-width:94vw;color:#c9d1d9;box-shadow:0 18px 60px rgba(0,0,0,.45);';
-    const title = document.createElement('div');
-    title.style.cssText = 'font-size:17px;font-weight:700;margin-bottom:8px;';
-    title.textContent = '切换 CLI';
-    const desc = document.createElement('div');
-    desc.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;margin-bottom:14px;';
-    desc.textContent = '切换后，目标 CLI 会接着当前任务继续工作。每个 CLI 的原对话都会单独保留。';
-    const select = document.createElement('select');
-    select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#c9d1d9;font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
-    for (const [value, meta] of Object.entries(CLI_META)) {
-      const state = states && states[value];
-      const installed = availability?.[value]?.available !== false;
-      const opt = document.createElement('option');
-      opt.value = value;
-      opt.disabled = !installed && value !== current;
-      opt.textContent = `${meta.label}${value === current ? '（当前）' : ''}${installed ? (state?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
-      select.appendChild(opt);
-    }
-    select.value = current;
-    const targetInfo = document.createElement('div');
-    targetInfo.style.cssText = 'min-height:34px;font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:8px;';
-    const resetRow = document.createElement('label');
-    resetRow.style.cssText = 'display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#c9d1d9;background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:9px;margin-bottom:14px;cursor:pointer;';
-    const reset = document.createElement('input');
-    reset.type = 'checkbox';
-    reset.style.marginTop = '2px';
-    const resetText = document.createElement('span');
-    resetText.textContent = '重新开始目标 CLI（仅在切换后无法继续时勾选，当前任务信息会保留）';
-    resetRow.append(reset, resetText);
-    const updateInfo = () => {
-      const state = states && states[select.value];
-      targetInfo.textContent = state?.hasNativeSession
-        ? `将继续 ${CLI_META[select.value].label} 上次的对话，并带上切换后新增的内容。`
-        : `将打开新的 ${CLI_META[select.value].label} 对话，并带上当前任务信息。`;
-    };
-    select.onchange = updateInfo;
-    updateInfo();
-    const warning = document.createElement('div');
-    warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
-    warning.textContent = '请在当前回复结束后切换。如果无法继续，请勾选上面的“重新开始”后再试。';
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
-    const cancel = document.createElement('button');
-    cancel.textContent = '取消';
-    cancel.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 15px;cursor:pointer;';
-    const ok = document.createElement('button');
-    ok.textContent = '确认切换';
-    ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 15px;cursor:pointer;';
-    row.append(cancel, ok);
-    box.append(title, desc, select, targetInfo, resetRow, warning, row);
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    const close = (value) => { overlay.remove(); resolve(value); };
-    cancel.onclick = () => close(null);
-    ok.onclick = () => close({ cli: select.value, fresh: reset.checked });
-    overlay.onclick = (event) => { if (event.target === overlay) close(null); };
-  });
+  return chatLiveUi.showCliSwitchPicker(current, states, availability, CLI_META);
 }
 
 cliBtn?.addEventListener('click', async () => {
@@ -3540,6 +2392,79 @@ async function openMessagePicker() {
   };
 }
 
+const chatEventState = {};
+const eventStateBindings = {
+  sessionId: [() => sessionId, value => { sessionId = value; }],
+  pendingCancel: [() => _pendingCancel, value => { _pendingCancel = value; }],
+  isStreaming: [() => isStreaming, value => { isStreaming = value; }],
+  sessionEffort: [() => _sessionEffort, value => { _sessionEffort = value; }],
+  sessionEffectiveEffort: [() => _sessionEffectiveEffort, value => { _sessionEffectiveEffort = value; }],
+  sessionProvider: [() => _sessionProvider, value => { _sessionProvider = value; }],
+  sessionProviderDisplayName: [() => _sessionProviderDisplayName, value => { _sessionProviderDisplayName = value; }],
+  sessionCliStates: [() => _sessionCliStates, value => { _sessionCliStates = value; }],
+  cliAvailability: [() => _cliAvailability, value => { _cliAvailability = value; }],
+  sessionAgent: [() => _sessionAgent, value => { _sessionAgent = value; }],
+  pendingCliHandoff: [() => _pendingCliHandoff, value => { _pendingCliHandoff = value; }],
+  sessionEffectiveModel: [() => _sessionEffectiveModel, value => { _sessionEffectiveModel = value; }],
+  sessionModel: [() => _sessionModel, value => { _sessionModel = value; }],
+  providerId: [() => _providerId, value => { _providerId = value; }],
+  providerName: [() => _providerName, value => { _providerName = value; }],
+  providerTokenWindows: [() => _providerTokenWindows, value => { _providerTokenWindows = value; }],
+  roleTokens: [() => _roleTokens, value => { _roleTokens = value; }],
+  currentMsgEl: [() => currentMsgEl, value => { currentMsgEl = value; }],
+  currentTextContent: [() => currentTextContent, value => { currentTextContent = value; }],
+  currentToolCards: [() => currentToolCards, value => { currentToolCards = value; }],
+  activeContentType: [() => activeContentType, value => { activeContentType = value; }],
+  activeContentIndex: [() => activeContentIndex, value => { activeContentIndex = value; }],
+  currentCli: [() => currentCli, value => { currentCli = value; }],
+  liveStreamUsage: [() => _liveStreamUsage, value => { _liveStreamUsage = value; }],
+  turnStartMs: [() => _turnStartMs, value => { _turnStartMs = value; }],
+  costText: [() => _costText, value => { _costText = value; }],
+  sessionTokens: [() => _sessionTokens, value => { _sessionTokens = value; }],
+  lastUserBubble: [() => _lastUserBubble, value => { _lastUserBubble = value; }],
+  lastInitInfoLine: [() => _lastInitInfoLine, value => { _lastInitInfoLine = value; }],
+};
+for (const [name, binding] of Object.entries(eventStateBindings)) {
+  Object.defineProperty(chatEventState, name, { enumerable: true, get: binding[0], set: binding[1] });
+}
+chatEventController = window.MultiCCChatEventController.createEventController({
+  state: chatEventState,
+  liveUi: chatLiveUi,
+  historyStore: chatHistoryStore,
+  historyView: chatHistoryView,
+  host: {
+    debug: dbg,
+    warn: (...args) => console.warn(...args),
+    translate: tt,
+    getSessionName: () => _sessionName,
+    refreshNotifyPreference,
+    updateTabIdentity,
+    updateCwdDisplay,
+    applyCliUi,
+    addSystemMsg,
+    addAgentNotes,
+    updateEffortBtn,
+    updateModelBtn,
+    transportSend: payload => chatTransport.send(payload),
+    startTitleAnimation,
+    stopTitleAnimation,
+    updateUI,
+    loadSessionModel,
+    applyCliSwitchState,
+    cliMeta: CLI_META,
+    updateContextBar,
+    autoCommitIfNeeded,
+    resetHistoryPagination,
+    applyHistoryPlan,
+    removeHistoryMessageById,
+    showNotifyToast,
+    speakNotify,
+    maybeScrollToBottom,
+    renderCurrentText,
+    rearmUnread,
+  },
+});
+
 updateRoleBtn();
 loadSessionModel();
 
@@ -3607,22 +2532,8 @@ function playDing(type) { return _chatNotifications.playDing(type); }
 function speakNotify(text, type) { return _chatNotifications.speak(text, type); }
 
 /* ── Dynamic title animation during streaming ── */
-let _titleTimer = null;
-let _titleDots = 0;
-
-function startTitleAnimation() {
-  if (_titleTimer) return;
-  _titleDots = 0;
-  _titleTimer = setInterval(() => {
-    _titleDots = (_titleDots % 3) + 1;
-    document.title = _baseTitle + ' ' + '.'.repeat(_titleDots);
-  }, 500);
-}
-
-function stopTitleAnimation() {
-  if (_titleTimer) { clearInterval(_titleTimer); _titleTimer = null; }
-  document.title = _baseTitle;
-}
+function startTitleAnimation() { return chatLiveUi.startTitleAnimation(); }
+function stopTitleAnimation() { return chatLiveUi.stopTitleAnimation(); }
 
 /* ── Message composer / attachment / voice host adapter ── */
 chatComposer = window.MultiCCChatComposer.createComposer({

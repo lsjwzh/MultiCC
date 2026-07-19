@@ -163,13 +163,14 @@ test('classic script exports the narrow state API without DOM, network or creden
 test('chat host uses reconcile/upsert, generation-aware paging and bounded initial fill', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
   const chat = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+  const events = fs.readFileSync(path.join(ROOT, 'public', 'chat-event-controller.js'), 'utf8');
   const view = fs.readFileSync(path.join(ROOT, 'public', 'chat-history-view.js'), 'utf8');
   const storeTag = '<script src="chat-history-store.js"></script>';
   const viewTag = '<script src="chat-history-view.js"></script>';
   assert.ok(html.indexOf(storeTag) < html.indexOf('<script src="chat.js"></script>'));
   assert.ok(html.indexOf(storeTag) < html.indexOf(viewTag));
   assert.ok(html.indexOf(viewTag) < html.indexOf('<script src="chat.js"></script>'));
-  assert.match(chat, /chatHistoryStore\.acceptHistory\(msg, chatHistoryView\.visibleIds\(\)\)/);
+  assert.match(events, /historyStore\.acceptHistory\(message, historyView\.visibleIds\(\)\)/);
   assert.match(view, /operation\.id \? findById\(operation\.id\)/);
   assert.match(view, /existing\.replaceWith\(node\)/);
   assert.match(view, /operation\.kind === 'stream-tail'/);
@@ -196,7 +197,7 @@ test('page size remains stable and immutable snapshots expose request generation
 
 test('durable history reset broadcasts an authoritative page and invalidates every client cursor', () => {
   const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  const chat = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+  const events = fs.readFileSync(path.join(ROOT, 'public', 'chat-event-controller.js'), 'utf8');
 
   assert.match(server,
     /afterCommit:\s*\(\)\s*=>\s*\{[\s\S]*chatHistoryService\.paginate\(sessionName,[\s\S]*type:\s*'chat_history_reset'/,
@@ -204,14 +205,14 @@ test('durable history reset broadcasts an authoritative page and invalidates eve
   assert.match(server, /removedCount:\s*removed\.length/);
   assert.match(server, /retainedCount:\s*retained\.length/);
 
-  const resetCase = chat.match(/case 'chat_history_reset':\s*\{([\s\S]*?)\n\s*break;\s*\n\s*\}/);
-  assert.ok(resetCase, 'chat host must handle authoritative reset broadcasts');
-  assert.match(resetCase[1], /resetHistoryPagination\(\)/);
-  assert.match(resetCase[1], /chatHistoryView\.clearMessages\(\)/);
-  assert.match(resetCase[1], /chatHistoryStore\.acceptHistory\(/);
-  assert.match(resetCase[1], /applyHistoryPlan\(historyPlan\)/);
+  const resetHandler = events.match(/function handleHistoryReset\(message\)\s*\{([\s\S]*?)\n\s*function handleEvent/);
+  assert.ok(resetHandler, 'event controller must handle authoritative reset broadcasts');
+  assert.match(resetHandler[1], /host\.resetHistoryPagination\?\.\(\)/);
+  assert.match(resetHandler[1], /historyView\.clearMessages\(\)/);
+  assert.match(resetHandler[1], /historyStore\.acceptHistory\(/);
+  assert.match(resetHandler[1], /host\.applyHistoryPlan\?\.\(plan\)/);
   assert.ok(
-    resetCase[1].indexOf('resetHistoryPagination()') < resetCase[1].indexOf('acceptHistory('),
+    resetHandler[1].indexOf('resetHistoryPagination') < resetHandler[1].indexOf('acceptHistory('),
     'stale pagination must be invalidated before the committed page is accepted',
   );
 });

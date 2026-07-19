@@ -351,3 +351,18 @@
 | `public/chat.js` | 4,087 | 3,000 | WS event glue、工具交互和剩余 modal/controller；保留 transport/history/composer 所有权 |
 
 Flutter `main_shell.dart` 约 2.4k、`chat_screen.dart` 约 1.7k，已进入常规 2k–3k 预算；第三方 minified/generated 资产按精确 reviewed exception 管理，不与第一方 God file 混淆。当前目标尚未完成，以上三笔 debt 不能被描述为永久 5k 例外。
+
+## 大重构第十一波实施结果（2026-07-19）
+
+- `src/routes/aux-goal.js` 接管 AuxQueue、Aux Provider/模型配置、9 个 Aux/Goal 路由与 Goal 规则；`server.js` 从预算口径 12,016 降至 11,522（-494）。对抗审查修复了拆分后遗漏导出的 `AUX_HISTORY_MAX`、Aux WS stale client、cancel 后错误污染 health，以及原始 Provider/path/secret 错误进入 REST/WS/history/log 的问题。
+- `public/manage-session-lifecycle.js` 接管会话创建、Provider/模型、Agent preset、角色与命名配置；`manage.js` 从 5,221 降至 4,569（-652），正式低于 5,000。请求统一走 `MultiCCApi`，Provider 只消费 catalog 白名单。对抗审查将模型/角色/名称 mutation owner 分离，避免不同字段并发时吞掉真实成功响应，并收口 modal/preset 迟到 continuation。
+- `public/chat-event-controller.js` 与 `public/chat-live-ui.js` 接管 WS/Claude/Codex 流式事件、工具结果、usage/timing、任务弹幕、Thinking、断线提示与安全弹窗；`chat.js` 从 4,087 降至 2,998（-1,089），已退出迁移债务并受默认 3,000 行/240KB 硬闸门约束。
+- Chat generation 从 transport 贯通到 event controller；missing/stale generation 在 debug、DOM 与 state 变化前 fail-closed。原始 error/token/path 不进入诊断日志；新模块不创建网络连接、不拼 token query、不使用 `innerHTML`，Markdown 仍只有 DOMPurify 安全边界。
+- 新增 Aux/Goal、Manage lifecycle、Chat event/live UI 的确定性测试并纳入默认 core/security 门；line-budget 已 ratchet 为 `server.js=11,522`、`manage.js=4,569`，Chat debt 已删除。
+
+### 第十一波后的真实边界
+
+1. `server.js` 仍有 11.5k 行；下一批继续迁 files/upload/push/provider route groups，再拆 WS 与 runner composition。Claude streaming 与 Codex process finality 继续保持两个协议边界。
+2. `manage.js` 仍有 4.6k 行；下一批优先 directory lifecycle、dashboard card/controller 与共享 Git diff/preset renderer，目标直接进入 3,000。
+3. `chat.js` 已达预算，但与 Manage 仍存在 Git diff/preset 展示的跨文件重复；应抽共享安全 renderer，不能为减少行数重新引入 HTML 字符串 sink。
+4. Token 只读审计确认全局 Codex fork 首累计快照重复计算约 47.65 亿；该问题属于独立统计修复，不在本波重构中偷偷修改。缓存读取占校正总量约 97.57%，UI 主指标还需单独调整口径。
