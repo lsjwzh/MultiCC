@@ -403,10 +403,20 @@ test('installed CPR 0.3 negotiates the production API and required capabilities'
     mode: 'cpr', providers: fakeProviders(), router, ...HOST,
   });
   assert.equal(runtime.mode, 'cpr');
-  assert.equal(runtime.routerApiVersion, '1.0.0');
-  assert.deepEqual(runtime.routerCapabilities, Object.fromEntries(
-    Object.keys(REQUIRED_CAPABILITIES).map(name => [name, '1.0']),
-  ));
+  // CPR advertises a backward-compatible minor bump (API 1.0.0 → 1.1.0, and
+  // providerStore capability 1.0 → 1.1) alongside the dangling-subagent
+  // fail-open fix. The port gate only requires API major 1 and capability
+  // major ≥ the REQUIRED_CAPABILITIES floor (asserted above via routerApiMajor),
+  // so the runtime stays compatible; we pin the exact advertised values here so
+  // a future MAJOR bump — which would be breaking — still trips this test.
+  assert.equal(runtime.routerApiVersion, '1.1.0');
+  assert.deepEqual(runtime.routerCapabilities, {
+    providerStore: '1.1',
+    spawnEnvironment: '1.0',
+    protocolProxy: '1.0',
+    agentRouting: '1.0',
+    normalizedUsage: '1.0',
+  });
 });
 
 test('legacy CPR 0.2 proxy usage enters the standardized UsageObserved callback', () => {
