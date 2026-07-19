@@ -1,9 +1,13 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
-const { evaluatePolicy, scanTrackedEntry } = require('../scripts/check-repository-artifacts');
+const { evaluatePolicy, scanTrackedEntry, trackedEntries } = require('../scripts/check-repository-artifacts');
 
 function entry(path, content) {
   return { path, buffer: Buffer.isBuffer(content) ? content : Buffer.from(content || '') };
@@ -38,4 +42,18 @@ test('reviewed baseline accepts exact findings and reports stale entries', () =>
   assert.deepEqual(accepted.stale, []);
   const stale = evaluatePolicy([], { accepted: { 'tracked-apk': ['old.apk'] } });
   assert.deepEqual(stale.stale, ['tracked-apk:old.apk']);
+});
+
+test('tracked entry scan tolerates files deleted in the uncommitted worktree', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-artifact-worktree-'));
+  try {
+    childProcess.execFileSync('git', ['init', '-q'], { cwd: root });
+    fs.writeFileSync(path.join(root, 'keep.js'), 'module.exports = true;\n');
+    fs.writeFileSync(path.join(root, 'drop.js'), 'module.exports = false;\n');
+    childProcess.execFileSync('git', ['add', 'keep.js', 'drop.js'], { cwd: root });
+    fs.unlinkSync(path.join(root, 'drop.js'));
+    assert.deepEqual(trackedEntries(root).map(entry => entry.path), ['keep.js']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

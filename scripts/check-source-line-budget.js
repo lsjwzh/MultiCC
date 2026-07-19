@@ -18,8 +18,8 @@ const SOURCE_EXTENSIONS = new Set([
 // smaller. These entries are not permanent exceptions to the 3k target.
 const MIGRATION_DEBT = Object.freeze({
   'server.js': Object.freeze({
-    ceiling: 9971,
-    byteCeiling: 477685,
+    ceiling: 9491,
+    byteCeiling: 455313,
     target: DEFAULT_MAX_LINES,
     reason: 'legacy host composition and inline route/controller migration',
   }),
@@ -135,13 +135,18 @@ function trackedSourceEntries({ rootDir = path.resolve(__dirname, '..') } = {}) 
     cwd: rootDir,
     encoding: 'utf8',
   });
-  return output.split('\0').filter(Boolean).filter(isSourceFile).map(file => ({
+  return output.split('\0').filter(Boolean).filter(isSourceFile)
+    // `git ls-files --cached` still reports a tracked file deleted in the
+    // worktree until that deletion is staged. Governance must evaluate the
+    // candidate tree, not crash midway through an intentional cleanup.
+    .filter(file => fs.existsSync(path.join(rootDir, file)))
+    .map(file => ({
     file,
     ...(() => {
       const content = fs.readFileSync(path.join(rootDir, file), 'utf8');
       return { lines: countLines(content), bytes: Buffer.byteLength(content) };
     })(),
-  }));
+    }));
 }
 
 function main() {

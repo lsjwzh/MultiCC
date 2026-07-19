@@ -559,10 +559,11 @@ test('server is a thin runtime consumer and keeps CC-Switch import read-only', (
   assert.match(server, /logger\.info\('provider_router_runtime'/);
   assert.match(server, /createProviderRoutes\(/);
   assert.match(server, /providerRoutes\.mountCatalogRoutes\(app\)/);
+  assert.match(server, /tokenUsageRuntime\.mountRoutes\(app\)/);
   assert.match(server, /providerRoutes\.mountManagementRoutes\(app\)/);
   assert.ok(server.indexOf('providerRoutes.mountCatalogRoutes(app)')
-    < server.indexOf("app.get('/api/token-usage/global'"));
-  assert.ok(server.indexOf("app.get('/api/token-usage/by-role'")
+    < server.indexOf('tokenUsageRuntime.mountRoutes(app)'));
+  assert.ok(server.indexOf('tokenUsageRuntime.mountRoutes(app)')
     < server.indexOf('providerRoutes.mountManagementRoutes(app)'));
   assert.match(providerRoutes, /providers\.importFromCcSwitch\(\)/);
   assert.match(providerRoutes, /res\.status\(409\).*PROVIDER_IN_USE/s);

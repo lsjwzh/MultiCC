@@ -117,6 +117,7 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
 /* ── Config ── */
 const _params = new URLSearchParams(location.search);
+const _providerCatalog = window.MultiCCProviderCatalog;
 let _cwd = _params.get('cwd') || '';
 const _sessionName = _params.get('session') || '';  // dashboard session name
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
@@ -898,14 +899,8 @@ function updateContextBar(usage, modelUsage) {
 
   const parts = [];
 
-  // ── Compact number formatter: 1234 → "1.2K", 1500000 → "1.5M" ──
-  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1).replace(/\.0$/,'')+'M' : n >= 1e3 ? (n/1e3).toFixed(1).replace(/\.0$/,'')+'K' : String(n);
-  const windowFmt = (w) => {
-    if (!w || (w.inputTokens + w.outputTokens === 0)) return '';
-    const i = fmt(w.inputTokens);
-    const o = fmt(w.outputTokens);
-    return `I:${i}/O:${o}`;
-  };
+  const fmt = _providerCatalog.formatCompactTokens;
+  const windowFmt = _providerCatalog.formatUsageWindow;
 
   // ── Provider time-window stats ──
   if (_providerTokenWindows) {

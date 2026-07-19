@@ -131,11 +131,13 @@ const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
+const { createChatHistoryRuntime } = require('./src/routes/chat-history');
+const { createTokenUsageRoutes } = require('./src/routes/token-usage');
+const { mountShareRoutes } = require('./src/routes/share');
 const { createSessionTriggers } = require('./src/triggers');
 const { createPushRuntime } = require('./src/push-runtime');
 const {
   createChatHistoryFileRepository,
-  createChatHistoryService,
   createSessionQueryService,
   createSessionStateService,
   createWorkspaceService,
@@ -181,6 +183,9 @@ const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } 
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
+const chatSessions = new Map();
+let chatHistoryRuntime = null;
+let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
@@ -2273,22 +2278,37 @@ async function createSession(id) {
 // each request to its actual (role, provider, model) — independent of the
 // session's main provider — and stash a per-turn runtime breakdown so the chat
 // frontend can show "本轮 主 A / 辅 B" instead of a single merged number.
-const TOKEN_BY_ROLE_FILE = MULTICC_PATHS.tokenByRoleFile;
 // In-memory current-turn snapshots and the persistent per-day × role × provider
 // ledger share one tested implementation. The proxy callback is the only source
 // that knows both the real upstream and whether a request came from a subagent.
-const roleTokenTracker = createRoleTokenTracker({ filePath: TOKEN_BY_ROLE_FILE });
-function recordRoleTokenUsage(info) {
-  if (!roleTokenTracker.accumulate(info)) return;
-  // Push on every completed upstream response, not only on the parent turn's
-  // result boundary. A background subagent can finish after that boundary; its
-  // usage must still appear in the live 主/辅 split without waiting for another turn.
-  broadcastRoleTokenStats(info.sessionId);
-}
-function recordUsageObserved(event) {
-  if (!roleTokenTracker.accumulateObserved(event)) return;
-  broadcastRoleTokenStats(event.sessionId);
-}
+const roleTokenTracker = createRoleTokenTracker({ filePath: MULTICC_PATHS.tokenByRoleFile });
+const tokenUsageRuntime = createTokenUsageRoutes({
+  fs,
+  atomicWriteJson,
+  tokenUsageFile: MULTICC_PATHS.tokenUsageFile,
+  tokenDailyFile: MULTICC_PATHS.tokenDailyFile,
+  getGlobalUsage: options => tokenGlobal.getGlobalUsage(options),
+  roleTokenTracker,
+  persistedSessions,
+  chatHistoryRepository,
+  readProviderWindows: () => providers.readDailyWindows(),
+  getProviderSummary: (cli, providerId) => providerRouterRuntime.getProviderSummary(cli, providerId),
+  getEffectiveSessionModel: effectiveSessionModel,
+  broadcast: chatBroadcast,
+  logger,
+});
+const {
+  accumulateTokenUsage,
+  broadcastProviderTokenStats,
+  broadcastRoleTokenStats,
+  getTokenUsage,
+  providerTokenWindows,
+  reconcileCodexRoleUsage,
+  recordRoleTokenUsage,
+  recordUsageObserved,
+  resetRoleTokenUsage,
+  seedTokenUsageFromHistory,
+} = tokenUsageRuntime;
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['claude'],
   onUsageObserved: recordUsageObserved,
@@ -3587,78 +3607,6 @@ app.get('/api/debug/classify-test-cases', (req, res) => {
   res.json({ count: cases.length, cases });
 });
 
-app.delete('/api/sessions/:id/messages/:msgId', (req, res) => {
-  const sessionName = req.params.id;
-  if (!persistedSessions.get(sessionName)) return res.status(404).json({ error: 'session not found' });
-  const result = chatHistoryService.remove(sessionName, req.params.msgId);
-  if (!result.removed) return res.status(404).json({ error: 'message not found' });
-  res.json({ ok: true });
-});
-
-// ── Session sharing (admin: create/list/revoke; ACCESS_TOKEN-gated) ──
-// The link is built from the request host so a share created via the public
-// (tunnel) URL is reachable externally; created on localhost it'll be a local link.
-app.post('/api/sessions/:id/share', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  if (s.type === 'aux') return res.status(400).json({ error: 'cannot share system session' });
-  const b = req.body || {};
-  try {
-    const rec = share.create(s.id, {
-      access: b.access, password: b.password,
-      expiresAt: b.expiresAt, label: b.label || s.label || s.id,
-    });
-    const base = `${req.protocol}://${req.get('host')}`;
-    res.json({ ok: true, ...rec, url: `${base}/share/${rec.token}` });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-app.get('/api/sessions/:id/shares', (req, res) => {
-  const base = `${req.protocol}://${req.get('host')}`;
-  res.json({ shares: share.listForSession(req.params.id).map(r => ({ ...r, url: `${base}/share/${r.token}` })) });
-});
-
-app.delete('/api/sessions/:id/share/:token', (req, res) => {
-  const r = share.get(req.params.token);
-  if (r && r.sessionId !== req.params.id) return res.status(400).json({ error: 'token does not belong to this session' });
-  res.json({ ok: share.remove(req.params.token) });
-});
-
-// Chat history (admin) — used by the "share selected messages" picker.
-// Paginate chat_history for scroll-back. Returns the newest `limit` messages
-// (when `before` is omitted) or the `limit` messages older than the entry with
-// id `before`. `hasMore` tells the client there's even older history to fetch.
-// Used by both the HTTP /history route and the initial WS chat_history push.
-app.get('/api/sessions/:id/history', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const page = chatHistoryService.paginate(req.params.id, {
-    before: req.query.before && String(req.query.before),
-    limit: req.query.limit && String(req.query.limit),
-  });
-  res.json({ messages: page.messages, hasMore: page.hasMore });
-});
-
-// Create a read-only snapshot share of selected messages (by index into history).
-app.post('/api/sessions/:id/share-messages', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const b = req.body || {};
-  const history = loadChatHistory(req.params.id);
-  const indices = Array.isArray(b.indices) ? b.indices : [];
-  const picked = indices
-    .map(i => history[i])
-    .filter(Boolean);
-  if (!picked.length) return res.status(400).json({ error: 'no valid messages selected' });
-  try {
-    const rec = share.createMessageShare(s.id, picked, {
-      password: b.password, expiresAt: b.expiresAt, label: b.label || s.label || s.id,
-    });
-    const base = `${req.protocol}://${req.get('host')}`;
-    res.json({ ok: true, ...rec, url: `${base}/share/${rec.token}` });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
 // ── Session fork (Happier-parity: branch a session at any message) ──
 // Creates a NEW live session that inherits the source's provider/model/effort/
 // rolePrompt and replays the transcript up to (and including) the chosen message
@@ -4019,48 +3967,6 @@ app.post('/api/sessions/import', asyncHandler(async (req, res) => {
     res.status(500).json({ error: 'import failed (session record created): ' + e.message, sessionId: newSid });
   }
 }));
-
-// ── Share recipient endpoints (NO ACCESS_TOKEN; gated by the share token only) ──
-// The page; the inline JS reads the token from the URL and self-gates.
-app.get('/share/:token', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'share.html'));
-});
-
-// Submit the share password → mint the per-share auth cookie.
-app.post('/api/share/:token/auth', (req, res) => {
-  const token = req.params.token;
-  const r = share.get(token);
-  if (!r) return res.status(404).json({ error: 'share not found or expired' });
-  if (!share.verifyPassword(token, (req.body || {}).password)) {
-    return res.status(403).json({ error: '密码错误' });
-  }
-  res.setHeader('Set-Cookie',
-    `${share.cookieName(token)}=${share.authCookieValue(r)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 86400}`);
-  res.json({ ok: true, access: r.access });
-});
-
-// Scoped read of the shared session: meta + history. 401 if a password is needed.
-app.get('/api/share/:token/session', (req, res) => {
-  const token = req.params.token;
-  const r = share.get(token);
-  if (!r) return res.status(404).json({ error: 'share not found or expired' });
-  const a = share.access(token, { cookies: parseCookies(req.headers.cookie) });
-  if (!a) return res.status(401).json({ needPassword: true });
-  // Message snapshot share: static, read-only, independent of the live session.
-  if (r.type === 'messages') {
-    return res.json({ access: 'view', type: 'messages', label: r.label || '消息分享', messages: r.messages || [] });
-  }
-  const persisted = persistedSessions.get(r.sessionId);
-  if (!persisted) return res.status(404).json({ error: 'session no longer exists' });
-  res.json({
-    access: a.access,
-    type: 'session',
-    sessionId: r.sessionId,
-    label: persisted.label || r.sessionId,
-    cli: persisted.cli || 'claude',
-    messages: loadChatHistory(r.sessionId),
-  });
-});
 
 app.get('/api/sessions/:id', (req, res) => {
   const id = req.params.id;
@@ -4810,6 +4716,14 @@ const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const share = require('./src/share');
+mountShareRoutes(app, {
+  share,
+  persistedSessions,
+  loadChatHistory,
+  parseCookies,
+  sharePageFile: path.join(__dirname, 'public', 'share.html'),
+  logger,
+});
 
 // Read-only host/install metadata lives behind a narrow route boundary. PORT is
 // read lazily because development mode may select a fallback port at startup.
@@ -4957,36 +4871,9 @@ const providerRoutes = createProviderRoutes({
 const { providerDefaults, validProviderId } = providerRoutes;
 providerRoutes.mountCatalogRoutes(app);
 
-// Global Claude Code token usage, read from the claude CLI transcripts under
-// ~/.claude/projects (ground truth, covers ALL usage — not just multicc turns).
-// Independent of the per-provider stats above; grouped by model + day. Cached
-// (~120s); pass ?refresh=1 to force a re-scan.
-app.get('/api/token-usage/global', async (req, res) => {
-  try {
-    const data = await tokenGlobal.getGlobalUsage({ force: req.query.refresh === '1' });
-    res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Per-role (main vs sub) + per-provider token breakdown. The CLI's `result`
-// event merges main + all subagents into one usage block even when they ran on
-// different providers, so this endpoint surfaces the proxy's per-request
-// accounting (the only source that knows each request's real route).
-//   ?session=<id>  → current-turn runtime breakdown (main/sub/byProviderSub)
-//   (no arg)       → persistent per-day ledger from token_by_role.json
-app.get('/api/token-usage/by-role', (req, res) => {
-  try {
-    if (req.query.session) {
-      return res.json(roleTokenTracker.snapshot(req.query.session)
-        || { main: null, sub: null, subByProvider: [] });
-    }
-    res.json(roleTokenTracker.readLedger());
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// Token APIs remain between the two Provider route phases so the established
+// route ordering stays byte-compatible while accounting lives in one runtime.
+tokenUsageRuntime.mountRoutes(app);
 
 providerRoutes.mountManagementRoutes(app);
 
@@ -5071,226 +4958,50 @@ const CHAT_HISTORY_SOFT_CAP = 10000;
 // the user scrolls up.
 const CHAT_HISTORY_PAGE = 5;
 
-// ── Per-session token usage accumulator ──
-// chat_history has bounded retention, so sufficiently old usage data can be
-// trimmed. This file stores the CUMULATIVE total per session and never shrinks.
-const TOKEN_USAGE_FILE = MULTICC_PATHS.tokenUsageFile;
-// Real consumed input for a turn = fresh input + cache reads + cache writes.
-// Anthropic's input_tokens EXCLUDES cache_read/cache_creation, but those are
-// real billed/consumed context tokens — counting only input_tokens undercounts
-// actual usage by a large factor on cache-heavy turns. Matches how the
-// frontend computes "本轮" context size.
-function consumedInput(u) {
-  return (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-}
-function accumulateTokenUsage(sessionName, usage) {
-  if (!usage || (!usage.input_tokens && !usage.output_tokens && !usage.cache_read_input_tokens && !usage.cache_creation_input_tokens)) return true;
-  let data = {};
-  try { data = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
-  if (typeof data !== 'object' || Array.isArray(data)) data = {};
-  const cur = data[sessionName] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
-  cur.inputTokens += consumedInput(usage);
-  cur.outputTokens += usage.output_tokens || 0;
-  cur.turnCount += 1;
-  data[sessionName] = cur;
-  try { atomicWriteJson(TOKEN_USAGE_FILE, data); } catch (e) {
-    console.error(`[multicc] Failed to save token usage: ${e.message}`);
-    return false;
-  }
-  // ── Main usage is durable; derive the per-day aggregation best-effort ──
-  accumulateTokenDaily(sessionName, usage);
-  return true;
-}
-function getTokenUsage() {
-  try { return JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) { return {}; }
-}
-
-// ── Per-provider daily token aggregation ──
-// token_daily.json: { "YYYY-MM-DD": { "<providerId>": { inputTokens, outputTokens, turnCount }, ... } }
-// Enables "today / this week / this month" queries per provider.
-const TOKEN_DAILY_FILE = MULTICC_PATHS.tokenDailyFile;
-
-function accumulateTokenDaily(sessionName, usage) {
-  const inp = consumedInput(usage);
-  const out = usage.output_tokens || 0;
-  if (inp + out === 0) return;
-
-  // Resolve provider from persisted session.
-  const persisted = persistedSessions.get(sessionName);
-  const providerId = (persisted && persisted.provider) || '_default_';
-
-  const today = new Date();
-  const dateKey = today.getFullYear() + '-' +
-    String(today.getMonth() + 1).padStart(2, '0') + '-' +
-    String(today.getDate()).padStart(2, '0');
-
-  let daily = {};
-  try { daily = JSON.parse(fs.readFileSync(TOKEN_DAILY_FILE, 'utf8')); } catch (_) {}
-  if (typeof daily !== 'object' || Array.isArray(daily)) daily = {};
-
-  const dayEntry = daily[dateKey] || {};
-  const prov = dayEntry[providerId] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
-  prov.inputTokens += inp;
-  prov.outputTokens += out;
-  prov.turnCount += 1;
-  dayEntry[providerId] = prov;
-  daily[dateKey] = dayEntry;
-
-  try { atomicWriteJson(TOKEN_DAILY_FILE, daily); } catch (e) {
-    console.error(`[multicc] Failed to save daily token usage: ${e.message}`);
-  }
-}
-
-// One-time migration: seed token_usage.json from existing chat_history/*.json
-// so historical usage (mostly codex) isn't lost on first boot after upgrade.
-function seedTokenUsageFromHistory() {
-  let accum = {};
-  try { accum = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
-  if (typeof accum !== 'object' || Array.isArray(accum)) accum = {};
-  let seeded = 0;
-
-  let sessionIds;
-  try { sessionIds = chatHistoryRepository.listSessionIds(); } catch (_) { return; }
-  for (const sessionId of sessionIds) {
-    if (sessionId === '__aux__' || sessionId === '__gateway__') continue;
-    if (accum[sessionId]) continue;  // already tracked
-
-    try {
-      const msgs = chatHistoryRepository.readStrict(sessionId);
-      let inp = 0, out = 0, turns = 0;
-      for (const m of msgs) {
-        const u = m.usage;
-        if (!u || (typeof u.input_tokens !== 'number' && typeof u.output_tokens !== 'number')) continue;
-        inp += u.input_tokens || 0;
-        out += u.output_tokens || 0;
-        turns += 1;
-      }
-      if (turns > 0) {
-        accum[sessionId] = { inputTokens: inp, outputTokens: out, turnCount: turns };
-        seeded++;
-      }
-    } catch (_) {}
-  }
-
-  if (seeded > 0) {
-    try { atomicWriteJson(TOKEN_USAGE_FILE, accum); } catch (_) {}
-    console.log(`[multicc] Seeded token_usage.json from chat_history: ${seeded} session(s)`);
-  }
-}
-
-// Messages dropped by the rolling-window trim accumulate here per session; once
-// a batch builds up we distill them into memory before they're gone for good.
-const _droppedForMemory = new Map();  // sessionName → [msg, …]
-const MEMORY_DISTILL_BATCH = 10;
-
-// Stable per-message id so a single history entry can be addressed later
-// (per-message delete). Monotonic-ish and collision-free within a process.
+// Chat history runtime owns persistence composition, pagination routes,
+// incremental checkpoints, history clear and committed-message side effects.
 let _chatMsgIdSeq = 0;
 function newChatMsgId() {
   return 'm' + Date.now().toString(36) + '-' + (_chatMsgIdSeq++).toString(36);
 }
-
-function handleCommittedHistoryEvent(event) {
-  if (event.type === 'append') {
-    for (const dropped of event.dropped || []) {
-      if (event.sessionId === AUX_SESSION_ID || !dropped) continue;
-      const buffer = _droppedForMemory.get(event.sessionId) || [];
-      buffer.push(dropped);
-      if (buffer.length >= MEMORY_DISTILL_BATCH) {
-        distillHistoryIntoMemory(event.sessionId, buffer);
-        _droppedForMemory.set(event.sessionId, []);
-      } else {
-        _droppedForMemory.set(event.sessionId, buffer);
-      }
-    }
-    const message = event.message;
-    chatBroadcast(event.sessionId, {
-      type: 'chat_msg_meta', id: message.id, role: message.role, ts: message.ts,
-    });
-    if (!event.deduplicated && message.role === 'assistant' && !message._interim
-        && !message.cancelled && !message.partial && !message.error) {
-      setImmediate(() => maybeSchedulePeriodicMemoryReview(event.sessionId));
-    }
-  } else if (event.type === 'remove' && event.message) {
-    chatBroadcast(event.sessionId, { type: 'chat_msg_deleted', id: event.message.id });
-  }
-}
-
-const chatHistoryService = createChatHistoryService({
+chatHistoryRuntime = createChatHistoryRuntime({
   history: chatHistoryRepository,
+  persistedSessions,
+  chatSessions,
   idFactory: newChatMsgId,
+  chatBroadcast,
+  distillHistoryIntoMemory,
+  maybeSchedulePeriodicMemoryReview,
+  auxSessionId: AUX_SESSION_ID,
   maxMessages: CHAT_HISTORY_SOFT_CAP,
-  retentionPolicy: sessionName => sessionName === AUX_SESSION_ID
+  historyPageSize: CHAT_HISTORY_PAGE,
+  retentionPolicy: sessionId => sessionId === AUX_SESSION_ID
     ? AUX_HISTORY_MAX
     : CHAT_HISTORY_SOFT_CAP,
-  postPersist: handleCommittedHistoryEvent,
-  onPostPersistError: (error, event) => logger.warn('chat_history_post_persist_failed', {
-    sessionId: event.sessionId, operation: event.type, error: error.message,
-  }),
+  cliSwitchGitSnapshot,
+  clearAllNativeCliStates,
+  buildHandoffCheckpoint,
+  rememberActiveCliState,
+  saveBestEffort: savePersistedSessionsBestEffort,
+  chatStream,
+  trackPendingMemoryDistill: _trackPendingMemoryDistill,
+  logger,
 });
+chatHistoryService = chatHistoryRuntime.service;
+chatHistoryRuntime.mountRoutes(app);
 
-function loadChatHistory(sessionName) {
-  return chatHistoryService.read(sessionName);
+// Compatibility wrappers keep earlier host composition (Aux, dispatch and
+// session queries) independent of the runtime's later construction point.
+function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
+function latestAssistantMessageAt(sessionId) { return chatHistoryRuntime.latestAssistantAt(sessionId); }
+function chatLastActivity(sessionId, activeChat) {
+  return chatHistoryRuntime.lastActivity(sessionId, activeChat);
 }
-
-function latestAssistantMessageAt(sessionName) {
-  return chatHistoryService.latestAssistantAt(sessionName);
+function scheduleIncrementalSave(sessionId, state) {
+  return chatHistoryRuntime.scheduleIncrementalSave(sessionId, state);
 }
-
-function chatLastActivity(sessionName, activeChat) {
-  const saved = latestAssistantMessageAt(sessionName);
-  const live = activeChat?.lastActivity ? new Date(activeChat.lastActivity) : null;
-  if (saved && live && Number.isFinite(live.getTime())) {
-    return saved.getTime() >= live.getTime() ? saved : live;
-  }
-  return saved || (live && Number.isFinite(live.getTime()) ? live : null);
-}
-
-// Incremental save: flush the in-progress assistant message to chat_history
-// while the turn is still running. Throttled to at most once per 5s per session
-// so we don't hammer the disk. The final save in the close handler overwrites
-// this interim version with the complete message.
-const _incrSaveTimers = new Map(); // sessionName → setTimeout
-
-function scheduleIncrementalSave(sessionName, cs) {
-  if (_incrSaveTimers.has(sessionName)) return; // already scheduled
-  _incrSaveTimers.set(sessionName, setTimeout(() => {
-    _incrSaveTimers.delete(sessionName);
-    if (!cs.currentAssistantText || cs.currentAssistantText.length < 20) return;
-    const interimMsg = {
-      role: 'assistant', content: cs.currentAssistantText,
-      tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-      ts: Date.now(), _interim: true,
-    };
-    try { chatHistoryService.upsertInterim(sessionName, interimMsg); }
-    catch (error) {
-      console.error(`[multicc/chat] Failed to save interim history for ${sessionName}:`, error.message);
-    }
-  }, 5000));
-}
-
-function appendChatMessage(sessionName, msg) {
-  if (!msg.id) msg.id = newChatMsgId();
-  let afterCommit;
-  if (msg && msg.role === 'assistant') {
-    const ts = Number(msg.ts);
-    const at = Number.isFinite(ts) && ts > 0 ? new Date(ts) : new Date();
-    const cs = chatSessions.get(sessionName);
-    // Interaction latency: time from this turn's start (user submit / LLM call)
-    // to the reply being saved. Stamped centrally so every completion path
-    // (claude/codex, normal/cancelled/error) records it without duplication.
-    if (msg.durationMs == null && cs && cs.turnStartedAt) {
-      msg.durationMs = Math.max(0, at.getTime() - cs.turnStartedAt);
-    }
-    afterCommit = () => { if (cs) cs.lastActivity = at; };
-  }
-  try {
-    chatHistoryService.append(sessionName, msg, { afterCommit });
-    return true;
-  } catch (error) {
-    console.error(`[multicc/chat] Failed to save history for ${sessionName}:`, error.message);
-    return false;
-  }
+function appendChatMessage(sessionId, message) {
+  return chatHistoryRuntime.appendMessage(sessionId, message);
 }
 
 // The host coordinator owns result/usage/post-turn ordering. server.js supplies
@@ -5318,93 +5029,10 @@ const {
   logSuppressed: (detail) => logger.info('chat_post_turn_suppressed', detail),
 });
 
-// ── Chat sessions: session-level state for multi-client broadcast ──
-// Keyed by sessionName, holds { claudeProc, lineBuf, clients, chatTurnCount,
-//   chatClaudeSessionId, cwd, currentAssistantText, currentToolCalls, currentCost,
-//   streamEvents }
-const chatSessions = new Map();
-
 function chatBroadcast(sessionName, payload) {
   const cs = chatSessions.get(sessionName);
   if (!cs) return;
   broadcastTo(cs.clients, payload);
-}
-
-// Push updated provider time-window stats to the chat frontend after a turn.
-function broadcastProviderTokenStats(sessionName) {
-  const persisted = persistedSessions.get(sessionName);
-  const provId = (persisted && persisted.provider) || null;
-  const dailyWindows = providers.readDailyWindows();
-  const provWindows = provId ? {
-    today: (dailyWindows.today && dailyWindows.today[provId]) || null,
-    week: (dailyWindows.week && dailyWindows.week[provId]) || null,
-    month: (dailyWindows.month && dailyWindows.month[provId]) || null,
-    all: (dailyWindows.all && dailyWindows.all[provId]) || null,
-  } : null;
-  // Same all-time fallback as the init path, so the bar still shows lifetime
-  // totals when daily data is sparse.
-  if (provId && provWindows && !provWindows.all) {
-    const accum = getTokenUsage();
-    let allIn = 0, allOut = 0, allTurns = 0;
-    for (const [sid, entry] of Object.entries(accum)) {
-      const sp = persistedSessions.get(sid);
-      if ((sp && sp.provider === provId) || sid === sessionName) {
-        allIn += entry.inputTokens || 0;
-        allOut += entry.outputTokens || 0;
-        allTurns += entry.turnCount || 0;
-      }
-    }
-    if (allIn + allOut > 0) provWindows.all = { inputTokens: allIn, outputTokens: allOut, turnCount: allTurns };
-  }
-  chatBroadcast(sessionName, { type: 'provider_token_stats', windows: provWindows });
-}
-
-// Push the per-turn main/sub role breakdown to the chat frontend so "本轮" can
-// render "主 A / 辅 B" instead of the CLI's single merged number. Sourced from
-// the claude-proxy onUsage hook (roleTokenTracker), which sees each /v1/messages
-// request's real route — independent of the session's main provider.
-function broadcastRoleTokenStats(sessionName) {
-  const payload = roleTokenTracker.snapshot(sessionName);
-  if (!payload) return;
-  chatBroadcast(sessionName, { type: 'role_token_stats', role: payload });
-}
-
-// Codex reports one aggregate turn usage for the parent plus every child thread.
-// Proxy-backed requests are already exact per role. An official parent can stay
-// direct, though, so fill only the positive remainder after subtracting all
-// proxy-observed main/sub buckets. This also covers providers that omitted usage
-// on one response without double-counting routes the proxy did observe.
-function reconcileCodexRoleUsage(sessionName, usage) {
-  const persisted = persistedSessions.get(sessionName);
-  if (!persisted || persisted.cli !== 'codex' || !usage) return;
-  const cached = Number(usage.cache_read_input_tokens || usage.cached_input_tokens || 0);
-  const input = Number(usage.input_tokens || 0);
-  const aggregate = {
-    inputTokens: usage.cache_read_input_tokens == null ? Math.max(0, input - cached) : input,
-    outputTokens: Number(usage.output_tokens || 0),
-    cacheWrite: Number(usage.cache_creation_input_tokens || 0),
-    cacheRead: cached,
-  };
-  const snapshot = roleTokenTracker.snapshot(sessionName) || {};
-  const main = snapshot.main || {};
-  const sub = snapshot.sub || {};
-  const missing = {
-    inputTokens: Math.max(0, aggregate.inputTokens - (main.inputTokens || 0) - (sub.inputTokens || 0)),
-    outputTokens: Math.max(0, aggregate.outputTokens - (main.outputTokens || 0) - (sub.outputTokens || 0)),
-    cacheWrite: Math.max(0, aggregate.cacheWrite - (main.cacheWrite || 0) - (sub.cacheWrite || 0)),
-    cacheRead: Math.max(0, aggregate.cacheRead - (main.cacheRead || 0) - (sub.cacheRead || 0)),
-  };
-  if (missing.inputTokens + missing.outputTokens + missing.cacheWrite + missing.cacheRead === 0) return;
-  const providerId = persisted.provider || '_default_';
-  const summary = persisted.provider ? providerRouterRuntime.getProviderSummary('codex', persisted.provider) : null;
-  recordRoleTokenUsage({
-    sessionId: sessionName,
-    role: 'main',
-    providerId,
-    providerName: (summary && summary.name) || (persisted.provider ? providerId : 'Default login'),
-    model: effectiveSessionModel(persisted) || '',
-    usage: missing,
-  });
 }
 
 // ── WeChat Bridge ──
@@ -7456,8 +7084,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
       // persisted, so a timer firing 0-5s later would append a stale _interim
       // AFTER the final — a duplicate bubble on reconnect. Mirrors the cancel
       // in the child-process close handler.
-      const incrTimer = _incrSaveTimers.get(sessionName);
-      if (incrTimer) { clearTimeout(incrTimer); _incrSaveTimers.delete(sessionName); }
+      chatHistoryRuntime.clearIncrementalSave(sessionName);
     } else {
       recordResultEvent(turn, runner, { current: true, persisted: false });
     }
@@ -8223,7 +7850,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   // Reset the per-turn role breakdown (main vs sub) collected by the claude-proxy
   // onUsage hook. A new user turn starts a fresh "本轮" window, so stale subagent
   // totals from the previous turn must not bleed into the new one.
-  roleTokenTracker.reset(sessionName);
+  resetRoleTokenUsage(sessionName);
   cs._codexRecoveredDisconnect = false;
   cs._codexPendingStreamError = '';
   cs._codexPendingStreamErrorCount = 0;
@@ -9017,12 +8644,7 @@ const turnFinalizationExecutor = createTurnFinalizationExecutor({
   },
   broadcast: chatBroadcast,
   cancelClassify,
-  clearIncrementalSave(sessionName) {
-    const timer = _incrSaveTimers.get(sessionName);
-    if (!timer) return;
-    clearTimeout(timer);
-    _incrSaveTimers.delete(sessionName);
-  },
+  clearIncrementalSave: sessionName => chatHistoryRuntime.clearIncrementalSave(sessionName),
   setStatus(sessionName, status) {
     setSessionStatus(sessionName, { status, currentFile: null });
   },
@@ -9138,40 +8760,12 @@ function handleChatWs(ws, req, urlObj) {
 
   cs.clients.add(ws);
 
-  // Resolve provider info for this session (for token-window display).
-  // (`persisted` is already declared+validated at the top of handleChatWs.)
-  const provId = (persisted && persisted.provider) || null;
+  // Resolve Provider identity and the shared cumulative/daily window view from
+  // the token runtime so initial WS state and post-turn broadcasts cannot drift.
+  const { providerId: provId, windows: provWindows } = providerTokenWindows(sessionName);
   let provName = null;
   if (provId) {
     try { provName = providers.getProvider(undefined, provId)?.name || null; } catch (_) {}
-  }
-  // Time-window token stats for the session's provider.
-  const dailyWindows = providers.readDailyWindows();
-  const provWindows = provId ? {
-    today: (dailyWindows.today && dailyWindows.today[provId]) || null,
-    week: (dailyWindows.week && dailyWindows.week[provId]) || null,
-    month: (dailyWindows.month && dailyWindows.month[provId]) || null,
-    all: (dailyWindows.all && dailyWindows.all[provId]) || null,
-  } : null;
-
-  // Fallback: when no daily data exists yet for this provider, compute
-  // all-time totals from token_usage.json so the context bar always shows
-  // something immediately (instead of waiting for a new turn to populate
-  // token_daily.json).
-  if (provId && provWindows && !provWindows.all) {
-    const accum = getTokenUsage();
-    let allIn = 0, allOut = 0, allTurns = 0;
-    for (const [sid, entry] of Object.entries(accum)) {
-      const sp = persistedSessions.get(sid);
-      if ((sp && sp.provider === provId) || sid === sessionName) {
-        allIn += entry.inputTokens || 0;
-        allOut += entry.outputTokens || 0;
-        allTurns += entry.turnCount || 0;
-      }
-    }
-    if (allIn + allOut > 0) {
-      provWindows.all = { inputTokens: allIn, outputTokens: allOut, turnCount: allTurns };
-    }
   }
 
   sendWs(ws, {
@@ -9306,81 +8900,7 @@ function handleChatWs(ws, req, urlObj) {
       }
 
       if (msg.type === 'clear_history') {
-        const h = loadChatHistory(sessionName);
-        const keep = Math.max(0, parseInt(msg.keep || '0', 10) || 0);
-        const pExisting = persistedSessions.get(sessionName);
-        const gitSnapshot = pExisting && keep > 0
-          ? await cliSwitchGitSnapshot(pExisting)
-          : null;
-        let retained = [];
-        let memoryDistill = null;
-        let removed = [];
-        if (keep > 0) {
-          // Keep the last N messages (typically user/assistant pairs), distill the rest.
-          // If history is shorter than N, retain all of it rather than falling
-          // through to the clear-all branch.
-          const split = Math.max(0, h.length - keep);
-          removed = h.slice(0, split);
-          retained = h.slice(split);
-        } else {
-          removed = h.slice();
-        }
-        chatHistoryService.replace(sessionName, retained, {
-          reason: 'clear-history',
-          afterCommit: () => {
-            if (removed.length) memoryDistill = distillHistoryIntoMemory(sessionName, removed);
-            // History replacement is durable at this point. Reconcile every
-            // connected client (including shares and the initiating client)
-            // from one authoritative newest page so stale pagination or a
-            // streaming tail cannot survive a clear performed elsewhere.
-            const resetPage = chatHistoryService.paginate(sessionName, {
-              limit: CHAT_HISTORY_PAGE,
-            });
-            chatBroadcast(sessionName, {
-              type: 'chat_history_reset',
-              messages: resetPage.messages,
-              hasMore: resetPage.hasMore,
-              keep,
-              removedCount: removed.length,
-              retainedCount: retained.length,
-            });
-          },
-        });
-        // Reset every vendor-native session. Clearing only the active CLI lets
-        // an old conversation reappear after switching away and back.
-        if (pExisting) {
-          chatStream.close(sessionName);
-          delete pExisting.pendingCliHandoff;
-          const cleared = clearAllNativeCliStates(pExisting);
-          if (keep > 0 && retained.length) {
-            const checkpoint = buildHandoffCheckpoint({
-              session: pExisting,
-              fromCli: cs.cli,
-              toCli: cs.cli,
-              history: retained,
-              git: gitSnapshot,
-            });
-            checkpoint.reason = 'history_clear_keep';
-            pExisting.pendingCliHandoff = {
-              id: `checkpoint_${crypto.randomBytes(8).toString('hex')}`,
-              fromCli: cs.cli,
-              toCli: cs.cli,
-              createdAt: checkpoint.createdAt,
-              status: 'pending',
-              reason: 'history_clear_keep',
-              reusedTarget: false,
-              checkpoint,
-            };
-          }
-          rememberActiveCliState(pExisting);
-          savePersistedSessionsBestEffort('websocket.clear-native-session-state');
-          console.log(`[multicc/chat] Cleared history and reset ${cleared} native CLI session(s) for ${sessionName}`);
-        }
-        cs.chatTurnCount = 0;
-        // Clear resets all native contexts. Gate the first following turn until
-        // distillation has landed in _auto.md, otherwise that fresh context can
-        // freeze the old memory snapshot for its entire lifetime.
-        if (memoryDistill) _trackPendingMemoryDistill(sessionName, memoryDistill);
+        await chatHistoryRuntime.clearHistory(sessionName, msg, cs);
         return;
       }
 
@@ -9710,8 +9230,7 @@ tunnel.init();
 function flushInFlightChats() {
   // Prevent a delayed interim write from landing after the shutdown partial
   // checkpoint and recreating a trailing duplicate message.
-  for (const timer of _incrSaveTimers.values()) clearTimeout(timer);
-  _incrSaveTimers.clear();
+  if (chatHistoryRuntime) chatHistoryRuntime.clearAllIncrementalSaves();
   let n = 0;
   for (const [name, cs] of chatSessions) {
     if (!cs || cs._resultSaved) continue;
@@ -9770,6 +9289,7 @@ async function quiesceRuntimeSources() {
   try { await skillSyncRuntime.stop(); } catch (_) {}
   try { await triggerRuntime.stop(); } catch (_) {}
   try { pushRuntime.stop(); } catch (_) {}
+  try { if (chatHistoryRuntime) chatHistoryRuntime.stop(); } catch (_) {}
   clearServiceTimers();
 }
 
