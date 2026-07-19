@@ -237,6 +237,41 @@ test('duplicates, lower snapshots and cumulative resets fail closed at vector hi
   });
 });
 
+test('resume files for one native Codex thread share a single cumulative high-water', async () => {
+  await withFixture(async ({ projectsDir, codexDir }) => {
+    write(codexDir, '01-first.jsonl', rollout(
+      { id: 'native-thread-1', source: 'exec', thread_source: 'user' },
+      [
+        tokenRow(`${DAY}T04:00:00.000Z`, usage(100, 40, 10), usage(100, 40, 10)),
+        tokenRow(`${DAY}T04:01:00.000Z`, usage(150, 60, 18), usage(50, 20, 8)),
+      ],
+    ));
+    write(codexDir, '02-resume.jsonl', rollout(
+      { id: 'native-thread-1', source: 'exec', thread_source: 'user' },
+      [
+        // Resume starts by replaying the previously accepted cumulative total.
+        tokenRow(`${DAY}T05:00:00.000Z`, usage(150, 60, 18), usage(50, 20, 8)),
+        tokenRow(`${DAY}T05:01:00.000Z`, usage(180, 75, 24), usage(30, 15, 6)),
+      ],
+    ));
+    write(codexDir, '03-second-resume.jsonl', rollout(
+      { id: 'native-thread-1', source: 'exec', thread_source: 'user' },
+      [tokenRow(`${DAY}T06:00:00.000Z`, usage(200, 80, 27), usage(20, 5, 3))],
+    ));
+
+    const result = await _compute({ projectsDir, codexDir, now: new Date(`${DAY}T12:00:00Z`) });
+    assert.deepEqual(bucket(result), {
+      inputTokens: 120,
+      outputTokens: 27,
+      cacheWrite: 0,
+      cacheRead: 80,
+      msgs: 4,
+    });
+    assert.equal(result.responses, 4);
+    assert.equal(result.scannedFiles, 3);
+  });
+});
+
 test('week can cross the month boundary and future records stay out of current windows', async () => {
   await withFixture(async ({ projectsDir, codexDir }) => {
     const claudeRow = (timestamp, id, input) => JSON.stringify({

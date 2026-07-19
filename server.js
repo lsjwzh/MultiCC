@@ -82,6 +82,11 @@ const providers = require('./src/providers');
 const { executeAuxHttp } = require('./src/aux-http');
 const tokenGlobal = require('./src/token-global');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
+const {
+  createCodexUsageHost,
+  projectHistoryUsage,
+  summarizeHistoryUsage,
+} = require('./src/codex-usage');
 const { createProviderRouterRuntime } = require('./src/provider-router-runtime');
 const { findProviderReferences } = require('./src/provider-references');
 const { createCliAdapters } = require('./src/cli-adapters');
@@ -4514,6 +4519,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
   saveBestEffort: savePersistedSessionsBestEffort,
   chatStream,
   trackPendingMemoryDistill: _trackPendingMemoryDistill,
+  projectMessages: (_sessionId, messages) => projectHistoryUsage(messages),
   logger,
 });
 chatHistoryService = chatHistoryRuntime.service;
@@ -4556,6 +4562,16 @@ const {
   emitGatewayComplete: (text) => bus.emit('chat:gateway-turn-complete', text),
   inspectDispatchMarkers: maybeDispatchFromChatTurn,
   logSuppressed: (detail) => logger.info('chat_post_turn_suppressed', detail),
+});
+// Codex usage is cumulative upstream; this host converts it before any consumer sees it.
+const codexUsageHost = createCodexUsageHost({
+  loadHistory: loadChatHistory,
+  reconcileRole: reconcileCodexRoleUsage,
+  persistFinalAssistantResult,
+  recordDurableTurnUsage,
+  recordResultEvent,
+  setSessionStatus,
+  logger,
 });
 
 function chatBroadcast(sessionName, payload) {
@@ -6509,29 +6525,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       continue;
     }
     if (evt.type === 'complete') {
-      cs.currentCost = evt.cost == null ? null : evt.cost;
-      const usage = evt.usage || {};
-      runner.pendingUsage = usage;
-      reconcileCodexRoleUsage(sessionName, usage);
-      if (cs.currentAssistantText || cs.currentToolCalls.length) {
-        const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
-          role: 'assistant', content: cs.currentAssistantText,
-          tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-          cost: cs.currentCost, usage, ts: Date.now(),
-        }, { resultEvent: true });
-        if (resultDurable) {
-          recordDurableTurnUsage(sessionName, runner, usage);
-          cs.chatTurnCount++;
-        }
-      } else {
-        recordResultEvent(turn, runner, { current: true, persisted: false });
-      }
-      forward({
-        type: 'result', total_cost_usd: cs.currentCost, usage,
-        durationMs: cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined,
-        num_turns: cs.chatTurnCount,
-      });
-      setSessionStatus(sessionName, { status: cs._resultSaved ? 'completed' : 'idle', currentFile: null });
+      codexUsageHost.complete({ evt, cs, persisted, sessionName, turn, runner, forward });
       continue;
     }
     if (evt.type === 'error') {
@@ -8077,7 +8071,7 @@ function handleChatWs(ws, req, urlObj) {
   // the already-saved assistant message — two identical bubbles. Guarding on
   // !_resultSaved closes that race (matches the "unsaved" intent below).
   const hasInProgress = !cs._resultSaved && !!(cs.currentAssistantText || cs.currentToolCalls.length);
-  const canonicalPage = chatHistoryService.paginate(sessionName, { limit: CHAT_HISTORY_PAGE });
+  const canonicalPage = chatHistoryRuntime.paginate(sessionName, { limit: CHAT_HISTORY_PAGE });
   const page = { messages: canonicalPage.messages, hasMore: canonicalPage.hasMore };
   const replayMessages = [...page.messages];
   // Append unsaved in-progress response so reconnecting clients see current state
@@ -8094,7 +8088,13 @@ function handleChatWs(ws, req, urlObj) {
   // accumulator so the frontend doesn't need to reconstruct it from the
   // rolling chat_history window (which trims old messages).
   const tokenUsage = getTokenUsage();
-  const sessionTokenUsage = tokenUsage[sessionName] || null;
+  // Existing Codex ledgers contain cumulative snapshots added once per turn.
+  // Until an operator performs a controlled on-disk rebuild, derive the chat
+  // header from non-mutating history projection so it agrees with the fixed
+  // per-message footers immediately after upgrade.
+  const sessionTokenUsage = persisted.cli === 'codex'
+    ? summarizeHistoryUsage(loadChatHistory(sessionName))
+    : tokenUsage[sessionName] || null;
   if (replayMessages.length > 0 || sessionTokenUsage) {
     sendWs(ws, { type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore });
     // Seed the aux classify bar with the current task snapshot on connect, so
