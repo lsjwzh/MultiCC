@@ -831,54 +831,132 @@ function dateKey(d) {
     String(d.getDate()).padStart(2, '0');
 }
 
-// Reads token_daily.json and computes today / week / month / all windows per provider.
-function readDailyWindows() {
-  let daily = {};
-  try { daily = JSON.parse(fs.readFileSync(TOKEN_DAILY_FILE, 'utf8')); } catch (_) {}
-  if (typeof daily !== 'object' || Array.isArray(daily)) daily = {};
+function validDateKey(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(year, month - 1, day);
+  return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
+}
 
-  const now = new Date();
-  const todayStr = dateKey(now);
+function safeUsageCount(value) {
+  let numeric = value;
+  if (typeof numeric === 'string' && /^\d+$/.test(numeric.trim())) {
+    numeric = Number(numeric.trim());
+  }
+  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : 0;
+}
 
-  // Week start (Monday)
+function normalizedUsageBucket(value) {
+  const bucket = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const inputTokens = safeUsageCount(bucket.consumedInputTokens == null
+    ? bucket.inputTokens
+    : bucket.consumedInputTokens);
+  const freshInputTokens = safeUsageCount(bucket.freshInputTokens);
+  const cacheReadTokens = safeUsageCount(bucket.cacheReadTokens);
+  const cacheWriteTokens = safeUsageCount(bucket.cacheWriteTokens);
+  const breakdownKnown = typeof bucket.breakdownKnown === 'boolean'
+    ? bucket.breakdownKnown
+    : ['freshInputTokens', 'cacheReadTokens', 'cacheWriteTokens']
+      .some(key => Object.prototype.hasOwnProperty.call(bucket, key));
+  return {
+    inputTokens,
+    consumedInputTokens: inputTokens,
+    freshInputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    unattributedInputTokens: Math.max(
+      0,
+      inputTokens - freshInputTokens - cacheReadTokens - cacheWriteTokens,
+    ),
+    breakdownKnown,
+    outputTokens: safeUsageCount(bucket.outputTokens),
+    turnCount: safeUsageCount(bucket.turnCount),
+  };
+}
+
+function readUsageObject(file) {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function usageWindowBounds(now = new Date()) {
   const weekStart = new Date(now);
   weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7));
-  const weekStartStr = dateKey(weekStart);
-
-  // Month start
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthStartStr = dateKey(monthStart);
-
-  const result = { today: {}, week: {}, month: {}, all: {} };
-
-  const add = (target, provId, inp, out, tc) => {
-    const e = target[provId] || { inputTokens: 0, outputTokens: 0, turnCount: 0 };
-    e.inputTokens += inp;
-    e.outputTokens += out;
-    e.turnCount += tc;
-    target[provId] = e;
+  return {
+    today: dateKey(now),
+    week: dateKey(weekStart),
+    month: dateKey(new Date(now.getFullYear(), now.getMonth(), 1)),
   };
+}
 
-  for (const [dk, dayEntry] of Object.entries(daily)) {
-    for (const [pid, p] of Object.entries(dayEntry)) {
-      add(result.all, pid, p.inputTokens, p.outputTokens, p.turnCount);
-      if (dk >= monthStartStr) {
-        add(result.month, pid, p.inputTokens, p.outputTokens, p.turnCount);
-        if (dk >= weekStartStr) {
-          add(result.week, pid, p.inputTokens, p.outputTokens, p.turnCount);
-          if (dk === todayStr) {
-            add(result.today, pid, p.inputTokens, p.outputTokens, p.turnCount);
-          }
-        }
-      }
+function validUsageProviderId(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 180
+    && value !== '__proto__' && value !== 'prototype' && value !== 'constructor';
+}
+
+function addUsageWindow(target, providerId, source) {
+  if (!validUsageProviderId(providerId)) return;
+  const bucket = normalizedUsageBucket(source);
+  const current = Object.prototype.hasOwnProperty.call(target, providerId)
+    ? target[providerId]
+    : normalizedUsageBucket({});
+  current.inputTokens += bucket.inputTokens;
+  current.consumedInputTokens = current.inputTokens;
+  current.freshInputTokens += bucket.freshInputTokens;
+  current.cacheReadTokens += bucket.cacheReadTokens;
+  current.cacheWriteTokens += bucket.cacheWriteTokens;
+  current.breakdownKnown = current.breakdownKnown || bucket.breakdownKnown;
+  current.unattributedInputTokens = Math.max(
+    0,
+    current.inputTokens - current.freshInputTokens - current.cacheReadTokens - current.cacheWriteTokens,
+  );
+  current.outputTokens += bucket.outputTokens;
+  current.turnCount += bucket.turnCount;
+  target[providerId] = current;
+}
+
+function addDatedUsage(result, bounds, dayKey, providerId, source) {
+  addUsageWindow(result.all, providerId, source);
+  if (dayKey < bounds.month) return;
+  addUsageWindow(result.month, providerId, source);
+  if (dayKey < bounds.week) return;
+  addUsageWindow(result.week, providerId, source);
+  if (dayKey === bounds.today) addUsageWindow(result.today, providerId, source);
+}
+
+// Reads the compatibility daily ledger. A CLI result is associated with the
+// session's main Provider at commit time; exact cross-Provider request
+// attribution remains owned by the separate role-token ledger.
+function readDailyWindows() {
+  const daily = readUsageObject(TOKEN_DAILY_FILE);
+  const bounds = usageWindowBounds();
+  const result = { today: {}, week: {}, month: {}, all: {} };
+  for (const [dayKey, dayEntry] of Object.entries(daily)) {
+    if (!validDateKey(dayKey) || !dayEntry || typeof dayEntry !== 'object' || Array.isArray(dayEntry)) continue;
+    for (const [providerId, bucket] of Object.entries(dayEntry)) {
+      addDatedUsage(result, bounds, dayKey, providerId, bucket);
     }
   }
   return result;
 }
 
 function getProviderUsageStats() {
-  const providerMap = new Map();  // providerId → { inputTokens, outputTokens, turnCount, sessionCount }
-  const total = { inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+  const total = {
+    inputTokens: 0,
+    consumedInputTokens: 0,
+    freshInputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    unattributedInputTokens: 0,
+    breakdownKnown: false,
+    outputTokens: 0,
+    totalTokens: 0,
+    turnCount: 0,
+  };
 
   // Load persisted sessions to map session id → provider.
   let sessionProviderMap = new Map();
@@ -899,36 +977,44 @@ function getProviderUsageStats() {
     providerMeta.set(p.id, { name: p.name, appType: p.appType });
   }
 
-  // Primary source: persistent token_usage.json (never trimmed)
+  // The session ledger remains the authoritative global total, including
+  // deleted sessions. It is deliberately NOT projected onto each session's
+  // current Provider: doing so moves the whole past when a session switches.
   let accum = {};
   try { accum = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')); } catch (_) {}
   if (typeof accum !== 'object' || Array.isArray(accum)) accum = {};
 
   for (const [sessionId, entry] of Object.entries(accum)) {
-    const providerId = sessionProviderMap.get(sessionId) || null;
-    const key = (providerId === null || providerId === '') ? '_default_' : providerId;
-    const inp = entry.inputTokens || 0;
-    const out = entry.outputTokens || 0;
-    const tc = entry.turnCount || 1;
-
-    if (!providerMap.has(key)) {
-      providerMap.set(key, { inputTokens: 0, outputTokens: 0, turnCount: 0, sessions: new Set() });
-    }
-    const agg = providerMap.get(key);
-    agg.inputTokens += inp;
-    agg.outputTokens += out;
-    agg.turnCount += tc;
-    agg.sessions.add(sessionId);
-
-    total.inputTokens += inp;
-    total.outputTokens += out;
-    total.turnCount += tc;
+    const bucket = normalizedUsageBucket(entry);
+    total.inputTokens += bucket.inputTokens;
+    total.consumedInputTokens = total.inputTokens;
+    total.freshInputTokens += bucket.freshInputTokens;
+    total.cacheReadTokens += bucket.cacheReadTokens;
+    total.cacheWriteTokens += bucket.cacheWriteTokens;
+    total.breakdownKnown = total.breakdownKnown || bucket.breakdownKnown;
+    total.outputTokens += bucket.outputTokens;
+    total.turnCount += bucket.turnCount || 1;
   }
 
   total.totalTokens = total.inputTokens + total.outputTokens;
+  total.unattributedInputTokens = Math.max(
+    0,
+    total.inputTokens - total.freshInputTokens - total.cacheReadTokens - total.cacheWriteTokens,
+  );
 
-  // Time-window breakdown from daily aggregation
+  // Provider attribution comes only from the daily ledger, which records the
+  // Provider at event time. Missing historical attribution stays explicit
+  // instead of being guessed from the session's current Provider.
   const dailyWindows = readDailyWindows();
+  const providerMap = new Map(Object.entries(dailyWindows.all).map(([id, bucket]) => [
+    id,
+    { ...bucket, sessions: new Set() },
+  ]));
+  for (const [sessionId, providerId] of sessionProviderMap) {
+    const key = providerId || '_default_';
+    const bucket = providerMap.get(key);
+    if (bucket) bucket.sessions.add(sessionId);
+  }
 
   const stats = [];
   for (const [id, agg] of providerMap) {
@@ -939,6 +1025,12 @@ function getProviderUsageStats() {
       providerName: meta.name,
       appType: meta.appType,
       inputTokens: agg.inputTokens,
+      consumedInputTokens: agg.consumedInputTokens,
+      freshInputTokens: agg.freshInputTokens,
+      cacheReadTokens: agg.cacheReadTokens,
+      cacheWriteTokens: agg.cacheWriteTokens,
+      unattributedInputTokens: agg.unattributedInputTokens,
+      breakdownKnown: agg.breakdownKnown,
       outputTokens: agg.outputTokens,
       totalTokens: agg.inputTokens + agg.outputTokens,
       turnCount: agg.turnCount,
@@ -950,7 +1042,20 @@ function getProviderUsageStats() {
   }
 
   stats.sort((a, b) => b.totalTokens - a.totalTokens);
-  return { stats, total };
+  const attributed = stats.reduce((sum, entry) => ({
+    inputTokens: sum.inputTokens + entry.inputTokens,
+    outputTokens: sum.outputTokens + entry.outputTokens,
+    turnCount: sum.turnCount + entry.turnCount,
+  }), { inputTokens: 0, outputTokens: 0, turnCount: 0 });
+  return {
+    stats,
+    total,
+    unattributed: {
+      inputTokens: Math.max(0, total.inputTokens - attributed.inputTokens),
+      outputTokens: Math.max(0, total.outputTokens - attributed.outputTokens),
+      turnCount: Math.max(0, total.turnCount - attributed.turnCount),
+    },
+  };
 }
 
 // ── Relay probe + cc-switch source correction ────────────────────────────────

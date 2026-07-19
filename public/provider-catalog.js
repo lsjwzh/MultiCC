@@ -18,6 +18,37 @@
     return Number.isFinite(result) && result >= 0 ? result : 0;
   }
 
+  function formatCompactTokens(value) {
+    const count = number(value);
+    if (count >= 1000000) return `${(count / 1000000).toFixed(1).replace(/\.0$/, '')}M`;
+    if (count >= 1000) return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}K`;
+    return String(count);
+  }
+
+  function formatUsageWindow(value) {
+    const window = normalizeWindow(value);
+    if (window.inputTokens + window.outputTokens === 0) return '';
+    const output = formatCompactTokens(window.outputTokens);
+    if (!window.breakdownKnown) {
+      return `入(含缓存):${formatCompactTokens(window.inputTokens)}/出:${output}`;
+    }
+    const unknown = window.unattributedInputTokens;
+    return `新:${formatCompactTokens(window.freshInputTokens)}` +
+      `/缓读:${formatCompactTokens(window.cacheReadTokens)}` +
+      `/缓写:${formatCompactTokens(window.cacheWriteTokens)}` +
+      `${unknown ? `/未分:${formatCompactTokens(unknown)}` : ''}/出:${output}`;
+  }
+
+  function formatUsageCumulative(value) {
+    const stat = value && typeof value === 'object' ? value : {};
+    if (!stat.breakdownKnown) return `输入含缓存 ${formatCompactTokens(stat.inputTokens)}`;
+    const unknown = number(stat.unattributedInputTokens);
+    return `新 ${formatCompactTokens(stat.freshInputTokens)}` +
+      ` / 缓读 ${formatCompactTokens(stat.cacheReadTokens)}` +
+      ` / 缓写 ${formatCompactTokens(stat.cacheWriteTokens)}` +
+      `${unknown ? ` / 未分 ${formatCompactTokens(unknown)}` : ''}`;
+  }
+
   function safeBaseUrl(value) {
     const raw = text(value, 2048);
     if (!raw) return '';
@@ -99,8 +130,21 @@
 
   function normalizeWindow(value) {
     const source = value && typeof value === 'object' ? value : {};
+    const inputTokens = number(source.consumedInputTokens == null
+      ? source.inputTokens
+      : source.consumedInputTokens);
+    const freshInputTokens = number(source.freshInputTokens);
+    const cacheReadTokens = number(source.cacheReadTokens);
+    const cacheWriteTokens = number(source.cacheWriteTokens);
+    const breakdownKnown = source.breakdownKnown === true;
     return Object.freeze({
-      inputTokens: number(source.inputTokens),
+      inputTokens,
+      consumedInputTokens: inputTokens,
+      freshInputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      unattributedInputTokens: number(source.unattributedInputTokens),
+      breakdownKnown,
       outputTokens: number(source.outputTokens),
     });
   }
@@ -111,6 +155,13 @@
     if (!providerId) return null;
     return Object.freeze({
       providerId,
+      inputTokens: number(value.consumedInputTokens == null ? value.inputTokens : value.consumedInputTokens),
+      freshInputTokens: number(value.freshInputTokens),
+      cacheReadTokens: number(value.cacheReadTokens),
+      cacheWriteTokens: number(value.cacheWriteTokens),
+      unattributedInputTokens: number(value.unattributedInputTokens),
+      breakdownKnown: value.breakdownKnown === true,
+      outputTokens: number(value.outputTokens),
       today: normalizeWindow(value.today),
       week: normalizeWindow(value.week),
       month: normalizeWindow(value.month),
@@ -206,6 +257,9 @@
     normalizeCatalog,
     normalizeDefaults,
     normalizeModelOptions,
+    formatCompactTokens,
+    formatUsageWindow,
+    formatUsageCumulative,
     groupByAppType,
     findProvider,
     modelsFor,

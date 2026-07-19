@@ -1,0 +1,402 @@
+'use strict';
+
+const crypto = require('node:crypto');
+const { createChatHistoryService } = require('../session/chat-history-service');
+const { sanitizePublicText } = require('../http/public-safety');
+
+const DEFAULT_HISTORY_PAGE_SIZE = 5;
+const DEFAULT_HISTORY_LIMIT = 10000;
+const DEFAULT_MEMORY_DISTILL_BATCH = 10;
+const DEFAULT_INCREMENTAL_SAVE_DELAY_MS = 5000;
+
+function requireFunction(deps, name) {
+  if (typeof deps[name] !== 'function') {
+    throw new TypeError(`chat history dependency missing: ${name}`);
+  }
+}
+
+function assertChatHistoryDeps(deps) {
+  if (!deps || typeof deps !== 'object') {
+    throw new TypeError('chat history dependencies are required');
+  }
+  if (!deps.history || typeof deps.history !== 'object') {
+    throw new TypeError('chat history dependency missing: history');
+  }
+  for (const method of ['read', 'write', 'deleteSession', 'hasPersistedDelivery']) {
+    if (typeof deps.history[method] !== 'function') {
+      throw new TypeError(`chat history dependency missing: history.${method}`);
+    }
+  }
+  if (!deps.persistedSessions || typeof deps.persistedSessions.get !== 'function') {
+    throw new TypeError('chat history dependency missing: persistedSessions');
+  }
+  if (!deps.chatSessions || typeof deps.chatSessions.get !== 'function') {
+    throw new TypeError('chat history dependency missing: chatSessions');
+  }
+  for (const name of [
+    'idFactory',
+    'chatBroadcast',
+    'distillHistoryIntoMemory',
+    'maybeSchedulePeriodicMemoryReview',
+    'cliSwitchGitSnapshot',
+    'clearAllNativeCliStates',
+    'buildHandoffCheckpoint',
+    'rememberActiveCliState',
+    'saveBestEffort',
+    'trackPendingMemoryDistill',
+  ]) requireFunction(deps, name);
+  if (!deps.chatStream || typeof deps.chatStream.close !== 'function') {
+    throw new TypeError('chat history dependency missing: chatStream.close');
+  }
+  return deps;
+}
+
+function assertApp(app) {
+  for (const method of ['get', 'delete']) {
+    if (!app || typeof app[method] !== 'function') {
+      throw new TypeError(`Express app.${method} is required`);
+    }
+  }
+}
+
+function positiveInteger(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function publicError(error, fallback) {
+  return sanitizePublicText(error && error.message, fallback);
+}
+
+function createChatHistoryRuntime(rawDeps) {
+  const deps = assertChatHistoryDeps(rawDeps);
+  const logger = deps.logger || console;
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const scheduleImmediate = typeof deps.setImmediate === 'function' ? deps.setImmediate : setImmediate;
+  const setTimeoutFn = typeof deps.setTimeout === 'function' ? deps.setTimeout : setTimeout;
+  const clearTimeoutFn = typeof deps.clearTimeout === 'function' ? deps.clearTimeout : clearTimeout;
+  const randomBytes = typeof deps.randomBytes === 'function' ? deps.randomBytes : crypto.randomBytes;
+  const historyPageSize = positiveInteger(deps.historyPageSize, DEFAULT_HISTORY_PAGE_SIZE);
+  const memoryDistillBatch = positiveInteger(deps.memoryDistillBatch, DEFAULT_MEMORY_DISTILL_BATCH);
+  const incrementalSaveDelayMs = Number.isFinite(deps.incrementalSaveDelayMs)
+    && deps.incrementalSaveDelayMs >= 0
+    ? deps.incrementalSaveDelayMs
+    : DEFAULT_INCREMENTAL_SAVE_DELAY_MS;
+  const droppedForMemory = new Map();
+  const incrementalSaveTimers = new Map();
+  let stopped = false;
+
+  function logFailure(event, error, sessionId) {
+    const payload = {
+      error: publicError(error, 'chat history operation failed'),
+    };
+    if (sessionId) payload.sessionId = sanitizePublicText(String(sessionId), 'unknown_session').slice(0, 128);
+    try {
+      if (typeof logger.warn === 'function') logger.warn(event, payload);
+      else if (typeof logger.error === 'function') logger.error(event, payload);
+    } catch (_) {}
+  }
+
+  function startMemoryDistill(sessionId, messages) {
+    let result;
+    try {
+      result = deps.distillHistoryIntoMemory(sessionId, messages);
+    } catch (error) {
+      logFailure('chat_history_memory_distill_failed', error, sessionId);
+      return null;
+    }
+    Promise.resolve(result).catch(error => {
+      logFailure('chat_history_memory_distill_failed', error, sessionId);
+    });
+    return result;
+  }
+
+  function handleCommittedHistoryEvent(event) {
+    if (!event || !event.sessionId) return;
+    if (event.type === 'append') {
+      for (const dropped of event.dropped || []) {
+        if (event.sessionId === deps.auxSessionId || !dropped) continue;
+        const buffer = droppedForMemory.get(event.sessionId) || [];
+        buffer.push(dropped);
+        if (buffer.length >= memoryDistillBatch) {
+          startMemoryDistill(event.sessionId, buffer.slice());
+          droppedForMemory.set(event.sessionId, []);
+        } else {
+          droppedForMemory.set(event.sessionId, buffer);
+        }
+      }
+
+      const message = event.message;
+      if (message) {
+        deps.chatBroadcast(event.sessionId, {
+          type: 'chat_msg_meta',
+          id: message.id,
+          role: message.role,
+          ts: message.ts,
+        });
+        if (!event.deduplicated && message.role === 'assistant' && !message._interim
+            && !message.cancelled && !message.partial && !message.error) {
+          scheduleImmediate(() => {
+            if (stopped) return;
+            try { deps.maybeSchedulePeriodicMemoryReview(event.sessionId); }
+            catch (error) {
+              logFailure('chat_history_memory_review_schedule_failed', error, event.sessionId);
+            }
+          });
+        }
+      }
+      return;
+    }
+    if (event.type === 'remove' && event.message) {
+      deps.chatBroadcast(event.sessionId, {
+        type: 'chat_msg_deleted',
+        id: event.message.id,
+      });
+    }
+  }
+
+  const service = createChatHistoryService({
+    history: deps.history,
+    idFactory: deps.idFactory,
+    clock: now,
+    maxMessages: positiveInteger(deps.maxMessages, DEFAULT_HISTORY_LIMIT),
+    retentionPolicy: typeof deps.retentionPolicy === 'function' ? deps.retentionPolicy : null,
+    postPersist: handleCommittedHistoryEvent,
+    onPostPersistError: (error, event) => {
+      logFailure('chat_history_post_persist_failed', error, event && event.sessionId);
+    },
+  });
+
+  function load(sessionId) {
+    return service.read(sessionId);
+  }
+
+  function latestAssistantAt(sessionId) {
+    return service.latestAssistantAt(sessionId);
+  }
+
+  function lastActivity(sessionId, activeChat) {
+    const saved = latestAssistantAt(sessionId);
+    const live = activeChat && activeChat.lastActivity
+      ? new Date(activeChat.lastActivity)
+      : null;
+    const liveValid = live && Number.isFinite(live.getTime());
+    if (saved && liveValid) return saved.getTime() >= live.getTime() ? saved : live;
+    return saved || (liveValid ? live : null);
+  }
+
+  function appendMessage(sessionId, message) {
+    if (!message || typeof message !== 'object') return false;
+    if (!message.id) message.id = deps.idFactory();
+    let afterCommit;
+    if (message.role === 'assistant') {
+      const stamp = Number(message.ts);
+      const at = Number.isFinite(stamp) && stamp > 0 ? new Date(stamp) : new Date(now());
+      const state = deps.chatSessions.get(sessionId);
+      if (message.durationMs == null && state && state.turnStartedAt) {
+        message.durationMs = Math.max(0, at.getTime() - state.turnStartedAt);
+      }
+      afterCommit = () => { if (state) state.lastActivity = at; };
+    }
+    try {
+      service.append(sessionId, message, { afterCommit });
+      return true;
+    } catch (error) {
+      logFailure('chat_history_append_failed', error, sessionId);
+      return false;
+    }
+  }
+
+  function clearIncrementalSave(sessionId) {
+    const key = String(sessionId);
+    const timer = incrementalSaveTimers.get(key);
+    if (!timer) return false;
+    clearTimeoutFn(timer);
+    incrementalSaveTimers.delete(key);
+    return true;
+  }
+
+  function clearAllIncrementalSaves() {
+    for (const timer of incrementalSaveTimers.values()) clearTimeoutFn(timer);
+    const count = incrementalSaveTimers.size;
+    incrementalSaveTimers.clear();
+    return count;
+  }
+
+  function scheduleIncrementalSave(sessionId, state) {
+    const key = String(sessionId);
+    if (stopped || incrementalSaveTimers.has(key)) return false;
+    const timer = setTimeoutFn(() => {
+      incrementalSaveTimers.delete(key);
+      if (stopped || !state || !state.currentAssistantText
+          || state.currentAssistantText.length < 20) return;
+      const tools = Array.isArray(state.currentToolCalls) && state.currentToolCalls.length
+        ? state.currentToolCalls
+        : undefined;
+      try {
+        service.upsertInterim(key, {
+          role: 'assistant',
+          content: state.currentAssistantText,
+          tools,
+          ts: now(),
+          _interim: true,
+        });
+      } catch (error) {
+        logFailure('chat_history_interim_save_failed', error, key);
+      }
+    }, incrementalSaveDelayMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    incrementalSaveTimers.set(key, timer);
+    return true;
+  }
+
+  async function clearHistoryUnsafe(sessionId, message, chatState) {
+    const key = String(sessionId);
+    const history = load(key);
+    const keep = Math.max(0, parseInt(message && message.keep || '0', 10) || 0);
+    const persisted = deps.persistedSessions.get(key);
+    const gitSnapshot = persisted && keep > 0
+      ? await deps.cliSwitchGitSnapshot(persisted)
+      : null;
+    const split = keep > 0 ? Math.max(0, history.length - keep) : history.length;
+    const removed = history.slice(0, split);
+    const retained = history.slice(split);
+    let memoryDistill = null;
+
+    // replace() writes the full new array before afterCommit runs. Therefore no
+    // client reset or native-context mutation can happen without durable proof.
+    service.replace(key, retained, {
+      reason: 'clear-history',
+      afterCommit: () => {
+        if (removed.length) memoryDistill = startMemoryDistill(key, removed);
+        const page = service.paginate(key, { limit: historyPageSize });
+        deps.chatBroadcast(key, {
+          type: 'chat_history_reset',
+          messages: page.messages,
+          hasMore: page.hasMore,
+          keep,
+          removedCount: removed.length,
+          retainedCount: retained.length,
+        });
+      },
+    });
+
+    let clearedNativeSessions = 0;
+    if (persisted) {
+      deps.chatStream.close(key);
+      delete persisted.pendingCliHandoff;
+      clearedNativeSessions = deps.clearAllNativeCliStates(persisted);
+      if (keep > 0 && retained.length) {
+        const cli = chatState && chatState.cli;
+        const checkpoint = deps.buildHandoffCheckpoint({
+          session: persisted,
+          fromCli: cli,
+          toCli: cli,
+          history: retained,
+          git: gitSnapshot,
+        });
+        checkpoint.reason = 'history_clear_keep';
+        persisted.pendingCliHandoff = {
+          id: `checkpoint_${randomBytes(8).toString('hex')}`,
+          fromCli: cli,
+          toCli: cli,
+          createdAt: checkpoint.createdAt,
+          status: 'pending',
+          reason: 'history_clear_keep',
+          reusedTarget: false,
+          checkpoint,
+        };
+      }
+      deps.rememberActiveCliState(persisted);
+      deps.saveBestEffort('websocket.clear-native-session-state');
+    }
+    if (chatState) chatState.chatTurnCount = 0;
+    if (memoryDistill) deps.trackPendingMemoryDistill(key, memoryDistill);
+    return Object.freeze({
+      keep,
+      removedCount: removed.length,
+      retainedCount: retained.length,
+      clearedNativeSessions,
+    });
+  }
+
+  async function clearHistory(sessionId, message, chatState) {
+    try {
+      return await clearHistoryUnsafe(sessionId, message, chatState);
+    } catch (error) {
+      logFailure('chat_history_clear_failed', error, sessionId);
+      const failure = new Error('chat history clear failed');
+      failure.code = 'CHAT_HISTORY_CLEAR_FAILED';
+      throw failure;
+    }
+  }
+
+  function mountRoutes(app) {
+    assertApp(app);
+    app.delete('/api/sessions/:id/messages/:msgId', (req, res, next) => {
+      const sessionId = req.params.id;
+      if (!deps.persistedSessions.get(sessionId)) {
+        return res.status(404).json({ error: 'session not found' });
+      }
+      try {
+        const result = service.remove(sessionId, req.params.msgId);
+        if (!result.removed) return res.status(404).json({ error: 'message not found' });
+        return res.json({ ok: true });
+      } catch (error) {
+        logFailure('chat_history_delete_failed', error, sessionId);
+        if (typeof next === 'function') return next(new Error('chat history operation failed'));
+        return res.status(500).json({ error: 'chat history delete failed' });
+      }
+    });
+
+    app.get('/api/sessions/:id/history', (req, res, next) => {
+      const sessionId = req.params.id;
+      if (!deps.persistedSessions.get(sessionId)) {
+        return res.status(404).json({ error: 'session not found' });
+      }
+      try {
+        const page = service.paginate(sessionId, {
+          before: req.query.before && String(req.query.before),
+          limit: req.query.limit && String(req.query.limit),
+        });
+        return res.json({ messages: page.messages, hasMore: page.hasMore });
+      } catch (error) {
+        logFailure('chat_history_page_failed', error, sessionId);
+        if (typeof next === 'function') return next(new Error('chat history operation failed'));
+        return res.status(500).json({ error: 'chat history load failed' });
+      }
+    });
+
+    return app;
+  }
+
+  function stop() {
+    if (stopped) return false;
+    stopped = true;
+    clearAllIncrementalSaves();
+    droppedForMemory.clear();
+    return true;
+  }
+
+  return Object.freeze({
+    appendMessage,
+    clearAllIncrementalSaves,
+    clearHistory,
+    clearIncrementalSave,
+    hasIncrementalSave: sessionId => incrementalSaveTimers.has(String(sessionId)),
+    lastActivity,
+    latestAssistantAt,
+    load,
+    mountRoutes,
+    scheduleIncrementalSave,
+    service,
+    stop,
+  });
+}
+
+module.exports = {
+  DEFAULT_HISTORY_LIMIT,
+  DEFAULT_HISTORY_PAGE_SIZE,
+  DEFAULT_INCREMENTAL_SAVE_DELAY_MS,
+  DEFAULT_MEMORY_DISTILL_BATCH,
+  createChatHistoryRuntime,
+};
