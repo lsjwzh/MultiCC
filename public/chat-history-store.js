@@ -8,7 +8,7 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.MultiCCChatHistoryStore = api;
 })(typeof window !== 'undefined' ? window : globalThis, function createApi() {
-  const DEFAULT_PAGE_SIZE = 30;
+  const DEFAULT_PAGE_SIZE = 5;
 
   function numberOrZero(value) {
     const parsed = Number(value);
