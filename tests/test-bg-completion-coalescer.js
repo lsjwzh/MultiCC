@@ -233,40 +233,34 @@ test('REPRO end-to-end: the daemon completion flows to a nudge with the exact ob
 });
 
 // ── Wiring guard (structural) ────────────────────────────────────────────────
-// The tests above prove the PURE function is correct, but not that server.js
-// still calls it and dispatches each reason to the right side effect. Booting
-// handleBackgroundTaskEvent in isolation is impractical (it lives in a 500KB
-// server that starts listening on require), so this guards the call site at the
-// source level: it catches a silent removal of the call, a renamed predicate
-// key, or a reason→consume* mis-dispatch — all of which would otherwise leave
-// every unit test green. It is a coarse net, not a behavioural test.
+// The tests above prove the pure function. The extracted runtime tests behaviour;
+// these source guards additionally lock its composition and predicate wiring.
 const fs = require('fs');
 const path = require('path');
 const SERVER = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const RUNTIME = fs.readFileSync(path.join(__dirname, '..', 'src/chat/background-task-runtime.js'), 'utf8');
 
-test('wiring: server.js calls classifyBgCompletion with the four predicate keys', () => {
-  const call = /bgCoalesce\.classifyBgCompletion\(\{([\s\S]{0,400}?)\}\)/.exec(SERVER);
-  assert.ok(call, 'handleBackgroundTaskEvent must call bgCoalesce.classifyBgCompletion({...})');
+test('wiring: runtime calls classifyCompletion with the four predicate keys', () => {
+  assert.ok(SERVER.includes('classifyCompletion: bgCoalesce.classifyBgCompletion'));
+  const call = /classifyCompletion\(\{([\s\S]{0,400}?)\}\)/.exec(RUNTIME);
+  assert.ok(call, 'background runtime must call classifyCompletion({...})');
   for (const key of ['awaitingTaskOutput', 'sync', 'subagent', 'sidechainByToolUse']) {
-    assert.ok(new RegExp('\\b' + key + '\\s*:').test(call[1]), `classifyBgCompletion call must pass the "${key}" predicate`);
+    assert.ok(new RegExp('\\b' + key + '(?:\\s*:|\\s*[,}])').test(call[1]),
+      `classifyBgCompletion call must pass the "${key}" predicate`);
   }
 });
 
 test('wiring: each reason dispatches to its matching consume* side effect', () => {
-  // The suppress block branches on decision.reason; assert the three pairings
-  // still co-occur so a mis-dispatch (e.g. sync-bash → consumeTaskOutputAwaiting)
-  // is caught.
   const pairs = [
-    ["reason === 'taskoutput'", 'consumeTaskOutputAwaiting'],
-    ["reason === 'sync-bash'", 'consumeSyncBashTask'],
-    ['consumeSubagentTask', 'consumeSubagentTask'], // sidechain is the else branch
+    ["reason === 'taskoutput'", 'consumeTimed(taskOutputAwaiting'],
+    ["reason === 'sync-bash'", 'consumeTimed(syncBashTasks'],
+    ["reason === 'sidechain'", 'consumeTimed(subagentTasks'],
   ];
   for (const [guard, consume] of pairs) {
-    assert.ok(SERVER.includes(guard), `expected wiring token: ${guard}`);
-    assert.ok(SERVER.includes(consume), `expected consume call: ${consume}`);
+    assert.ok(RUNTIME.includes(guard), `expected wiring token: ${guard}`);
+    assert.ok(RUNTIME.includes(consume), `expected consume call: ${consume}`);
   }
-  // And the inject path must still reach the coalescer.
-  assert.ok(/bgCompletionCoalescer\.add\(/.test(SERVER), 'inject path must call bgCompletionCoalescer.add(...)');
+  assert.ok(/coalescer\.add\(/.test(RUNTIME), 'inject path must call coalescer.add(...)');
 });
 
 console.log(`\nbg-completion-coalescer: ${passed} tests passed`);

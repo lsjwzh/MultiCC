@@ -1,0 +1,319 @@
+'use strict';
+
+const assert = require('assert');
+const { EventEmitter } = require('events');
+const fs = require('fs');
+const path = require('path');
+const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
+const bgCompletion = require('../src/bg-completion-coalescer');
+
+function makeClock() {
+  let time = 0;
+  let sequence = 0;
+  const timers = [];
+  let unrefCount = 0;
+  function setTimer(fn, delay) {
+    const timer = {
+      id: ++sequence,
+      at: time + delay,
+      fn,
+      cleared: false,
+      unref() { unrefCount += 1; },
+    };
+    timers.push(timer);
+    return timer;
+  }
+  function clearTimer(timer) {
+    if (timer) timer.cleared = true;
+  }
+  function advance(ms) {
+    time += ms;
+    for (;;) {
+      const timer = timers
+        .filter(item => !item.cleared && item.at <= time)
+        .sort((a, b) => a.at - b.at || a.id - b.id)[0];
+      if (!timer) break;
+      timer.cleared = true;
+      timer.fn();
+    }
+  }
+  return { now: () => time, setTimer, clearTimer, advance, get unrefCount() { return unrefCount; } };
+}
+
+function makeHarness(overrides = {}) {
+  const clock = makeClock();
+  const broadcasts = [];
+  const observations = [];
+  const notes = [];
+  const injections = [];
+  const processes = [];
+  const files = new Map();
+  const logs = [];
+  function spawn(command, args, options) {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.command = command;
+    child.args = args;
+    child.options = options;
+    child.killed = false;
+    child.kill = () => { child.killed = true; };
+    processes.push(child);
+    return child;
+  }
+  const dependencies = {
+    broadcast: (sessionName, event) => broadcasts.push({ sessionName, event }),
+    observeTask: observation => { observations.push(observation); },
+    noteBgResultInjected: sessionName => notes.push(sessionName),
+    injectSystemMsg: (sessionName, text, delay, origin) => {
+      injections.push({ sessionName, text, delay, origin });
+    },
+    createCoalescer: bgCompletion.createCoalescer,
+    buildNudge: bgCompletion.buildNudge,
+    classifyCompletion: bgCompletion.classifyBgCompletion,
+    spawn,
+    readFile: file => {
+      if (!files.has(file)) throw new Error('ENOENT');
+      return files.get(file);
+    },
+    realpath: value => value === '/tmp' ? '/private/tmp' : `/real${value}`,
+    tmpdir: () => '/tmp',
+    getuid: () => 501,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+    now: clock.now,
+    logger: {
+      warn: message => logs.push({ level: 'warn', message }),
+      info: message => logs.push({ level: 'info', message }),
+    },
+    completionWindowMs: 100,
+    ...overrides,
+  };
+  const runtime = createBackgroundTaskRuntime(dependencies);
+  return { runtime, clock, broadcasts, observations, notes, injections, processes, files, logs, dependencies };
+}
+
+let passed = 0;
+async function test(name, fn) {
+  try {
+    await fn();
+    passed += 1;
+    console.log('  ✓', name);
+  } catch (error) {
+    console.error('  ✗', name);
+    throw error;
+  }
+}
+
+(async () => {
+  await test('constructor fails closed when a required host dependency is missing', () => {
+    assert.throws(() => createBackgroundTaskRuntime({}), /broadcast is required/);
+    const harness = makeHarness();
+    const missing = { ...harness.dependencies };
+    delete missing.observeTask;
+    assert.throws(() => createBackgroundTaskRuntime(missing), /observeTask is required/);
+  });
+
+  await test('public API is narrow and frozen', () => {
+    const { runtime } = makeHarness();
+    assert.deepStrictEqual(Object.keys(runtime).sort(), [
+      'handleEvent', 'markTaskOutputAwaiting', 'recordMainToolUseId', 'stopAll', 'stopSession',
+    ]);
+    assert.strictEqual(Object.isFrozen(runtime), true);
+  });
+
+  await test('production host delegates events, dedup marks, teardown and shutdown', () => {
+    const root = path.join(__dirname, '..');
+    const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+    const source = fs.readFileSync(path.join(root, 'src/chat/background-task-runtime.js'), 'utf8');
+    assert.match(server, /createBackgroundTaskRuntime\s*\(\s*\{/);
+    assert.match(server, /backgroundTaskRuntime\.handleEvent\(/);
+    assert.match(server, /backgroundTaskRuntime\.markTaskOutputAwaiting\(/);
+    assert.match(server, /backgroundTaskRuntime\.stopSession\(/);
+    assert.match(server, /backgroundTaskRuntime\.stopAll\(/);
+    assert.doesNotMatch(server, /function\s+(?:handleBackgroundTaskEvent|startMonitorShadow|stopMonitorShadow)\b/);
+    assert.doesNotMatch(source, /require\(['"](?:fs|child_process|(?:\.\.\/)+server)/);
+  });
+
+  await test('task_started classifies foreground Bash and sub-agent tasks and records ledger facts', () => {
+    const h = makeHarness();
+    const foreground = h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'tool-fg', name: 'Bash', input: { command: 'echo hi' } }],
+    }, {
+      subtype: 'task_started', task_id: 'task-fg', tool_use_id: 'tool-fg',
+      session_id: 'native', description: 'foreground',
+    });
+    const sidechain = h.runtime.handleEvent('s1', { cwd: '/repo', currentToolCalls: [] }, {
+      subtype: 'task_started', task_id: 'task-agent', tool_use_id: 'agent-tool',
+      session_id: 'native', description: 'agent work',
+    });
+    assert.strictEqual(foreground.kind, 'sync-bash');
+    assert.strictEqual(sidechain.kind, 'agent-task');
+    assert.deepStrictEqual(h.observations.map(item => item.detail.kind), ['sync-bash', 'agent-task']);
+    assert.strictEqual(h.broadcasts[0].event.background, false);
+    assert.strictEqual(h.broadcasts[0].event.command, 'echo hi');
+    assert.strictEqual(h.broadcasts[1].event.background, true);
+    assert.deepStrictEqual(h.processes[0].args, [
+      '-n', '+1', '-F', '/private/tmp/claude-501/-real-repo/native/tasks/task-fg.output',
+    ]);
+  });
+
+  await test('tail activity emits only a safe throttled progress description, never the raw line', () => {
+    const h = makeHarness();
+    h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'tool-bg', name: 'Bash', input: { run_in_background: true } }],
+    }, {
+      subtype: 'task_started', task_id: 'task-bg', tool_use_id: 'tool-bg',
+      session_id: 'native', description: 'build\nstep',
+    });
+    h.broadcasts.length = 0;
+    h.processes[0].stdout.emit('data', 'SECRET RAW OUTPUT\n');
+    h.processes[0].stdout.emit('data', 'SECOND SECRET\n');
+    h.clock.advance(4999);
+    h.processes[0].stdout.emit('data', 'THIRD SECRET\n');
+    h.clock.advance(1);
+    h.processes[0].stdout.emit('data', 'FOURTH SECRET\n');
+    assert.strictEqual(h.broadcasts.length, 2, 'first signal and one after throttle window');
+    assert.deepStrictEqual(h.broadcasts.map(item => item.event.description), ['build step', 'build step']);
+    assert.ok(!JSON.stringify(h.broadcasts).includes('SECRET'), 'raw tail bytes never leave the runtime');
+    assert.ok(h.broadcasts.every(item => item.event.type === 'monitor_progress'));
+  });
+
+  await test('task progress normalizes ledger status and keeps raw output out of the UI DTO', () => {
+    const h = makeHarness();
+    const cases = [
+      ['completed', 'completed'], ['error', 'failed'], ['cancelled', 'interrupted'], ['busy', 'running'],
+    ];
+    for (const [raw, expected] of cases) {
+      const result = h.runtime.handleEvent('s1', {}, {
+        subtype: 'task_progress', task_id: `t-${raw}`, status: raw,
+        description: 'still running', output: `private-${raw}`,
+      });
+      assert.strictEqual(result.status, expected);
+    }
+    assert.deepStrictEqual(h.observations.map(item => item.status), cases.map(item => item[1]));
+    assert.ok(h.observations[1].detail.lastOutput.includes('private-error'), 'ledger retains the observed fact');
+    assert.ok(!JSON.stringify(h.broadcasts).includes('private-'), 'progress DTO contains no raw output');
+    assert.ok(h.broadcasts.every(item => item.event.description === 'still running'));
+  });
+
+  await test('completion suppression preserves TaskOutput then sync Bash then sidechain behavior', () => {
+    const h = makeHarness();
+    h.runtime.markTaskOutputAwaiting('s1', { block: true, task_id: 'pulled' });
+    let result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'pulled', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'taskoutput');
+
+    h.runtime.handleEvent('s1', {
+      cwd: '/repo', currentToolCalls: [{ id: 'fg', name: 'Bash', input: {} }],
+    }, { subtype: 'task_started', task_id: 'sync', tool_use_id: 'fg', session_id: 'native' });
+    result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'sync', tool_use_id: 'fg', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'sync-bash');
+
+    h.runtime.handleEvent('s1', { cwd: '/repo', currentToolCalls: [] }, {
+      subtype: 'task_started', task_id: 'agent', tool_use_id: 'agent-tool', session_id: 'native',
+    });
+    result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'agent', tool_use_id: 'agent-tool', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'sidechain');
+    h.clock.advance(100);
+    assert.strictEqual(h.notes.length, 0);
+    assert.strictEqual(h.injections.length, 0);
+  });
+
+  await test('unconsumed completions coalesce once with output tails and full origin metadata', () => {
+    const h = makeHarness({ outputCap: 8 });
+    h.files.set('/out/a', 'prefix-OUTPUT-A');
+    h.files.set('/out/b', 'prefix-OUTPUT-B');
+    h.runtime.recordMainToolUseId('s1', 'tool-a');
+    h.runtime.recordMainToolUseId('s1', 'tool-b');
+    for (const [task, tool, file] of [['task-a', 'tool-a', '/out/a'], ['task-b', 'tool-b', '/out/b']]) {
+      const result = h.runtime.handleEvent('s1', {}, {
+        subtype: 'task_notification', task_id: task, tool_use_id: tool,
+        output_file: file, description: task, status: 'completed',
+      });
+      assert.strictEqual(result.decision, 'inject');
+    }
+    assert.deepStrictEqual(h.notes, ['s1', 's1']);
+    assert.strictEqual(h.injections.length, 0, 'fixed window has not flushed yet');
+    assert.strictEqual(h.clock.unrefCount, 1, 'coalescer timer is unrefed');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
+    assert.deepStrictEqual(h.injections[0].origin, {
+      bgTaskIds: ['task-a', 'task-b'],
+      bgToolUseIds: ['tool-a', 'tool-b'],
+    });
+    assert.ok(h.injections[0].text.includes('OUTPUT-A'));
+    assert.ok(h.injections[0].text.includes('OUTPUT-B'));
+    assert.strictEqual(h.injections[0].delay, 0);
+  });
+
+  await test('completion ledger and monitor_done preserve the bounded final result DTO', () => {
+    const h = makeHarness({ outputCap: 5 });
+    h.files.set('/out/fail', '0123456789');
+    h.runtime.recordMainToolUseId('s1', 'main-tool');
+    h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'failed-task', tool_use_id: 'main-tool',
+      output_file: '/out/fail', status: 'failed', summary: 'compile failed',
+    });
+    const ledger = h.observations[0];
+    const done = h.broadcasts.find(item => item.event.type === 'monitor_done').event;
+    assert.strictEqual(ledger.status, 'failed');
+    assert.strictEqual(ledger.detail.lastOutput, '56789');
+    assert.strictEqual(ledger.detail.error, 'compile failed');
+    assert.strictEqual(done.output, '56789');
+    assert.strictEqual(done.background, true);
+  });
+
+  await test('background_tasks_changed preserves its established DTO', () => {
+    const h = makeHarness();
+    const tasks = [{ id: 'a', status: 'running' }];
+    assert.deepStrictEqual(h.runtime.handleEvent('s1', {}, {
+      subtype: 'background_tasks_changed', tasks,
+    }), { handled: true });
+    assert.deepStrictEqual(h.broadcasts[0], {
+      sessionName: 's1', event: { type: 'background_tasks', tasks },
+    });
+    assert.deepStrictEqual(h.runtime.handleEvent('s1', {}, { subtype: 'unknown' }), { handled: false });
+  });
+
+  await test('stopSession and stopAll kill tails, cancel coalescing, and clear dedup ledgers', () => {
+    const h = makeHarness();
+    function start(sessionName, taskId, toolId) {
+      h.runtime.handleEvent(sessionName, {
+        cwd: '/repo', currentToolCalls: [{ id: toolId, name: 'Bash', input: { run_in_background: true } }],
+      }, { subtype: 'task_started', task_id: taskId, tool_use_id: toolId, session_id: 'native' });
+    }
+    start('s1', 'tail-1', 'tool-1');
+    start('s2', 'tail-2', 'tool-2');
+    h.runtime.recordMainToolUseId('s1', 'done-tool');
+    h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'done', tool_use_id: 'done-tool', status: 'completed',
+    });
+    h.runtime.markTaskOutputAwaiting('s1', { block: true, task_id: 'old-await' });
+    assert.strictEqual(h.runtime.stopSession('s1'), 1);
+    assert.strictEqual(h.processes[0].killed, true);
+    assert.strictEqual(h.runtime.stopAll(), 1);
+    assert.strictEqual(h.processes[1].killed, true);
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 0, 'shutdown canceled the buffered completion');
+
+    // If the awaiting ledger leaked across stopSession this would suppress.
+    const result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'old-await', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'inject');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
+  });
+
+  console.log(`\n${passed} background-task runtime tests passed`);
+})().catch(error => {
+  console.error(error.stack || error);
+  process.exitCode = 1;
+});
