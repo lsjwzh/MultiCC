@@ -46,6 +46,14 @@ assert.strictEqual(
   'assistant_text',
 );
 assert.deepStrictEqual(
+  codex.decodeEvent({ type: 'item.started', item: { type: 'function_call', name: 'wait_agent' } }),
+  [{ type: 'activity', phase: 'tool', toolKind: 'wait_agent' }],
+);
+assert.deepStrictEqual(
+  codex.decodeEvent({ type: 'item.completed', item: { type: 'custom_tool_call', name: 'exec' } }),
+  [{ type: 'activity', phase: 'tool', toolKind: 'exec' }],
+);
+assert.deepStrictEqual(
   codex.decodeEvent({
     type: 'item.started',
     item: { type: 'collab_tool_call', id: 'a1', tool: 'spawn_agent', prompt: 'inspect' },
