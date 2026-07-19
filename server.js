@@ -133,6 +133,7 @@ const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
+const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -983,17 +984,14 @@ async function destroySessionCascade(s, d, opts = {}) {
     sessions.delete(s.id);
   }
   if (chat) {
-    if (chat._monitorShadows) {
-      for (const taskId of [...chat._monitorShadows.keys()]) stopMonitorShadow(chat, taskId);
-    }
     assignKillReason(chat._activeRunner, 'session_delete');
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
     chatSessions.delete(s.id);
   }
+  backgroundTaskRuntime.stopSession(s.id);
   waitInjector.cancelForSession(s.id);
   if (orchestrationRuntime) await orchestrationRuntime.cancelForSession(s.id);
-  bgCompletionCoalescer.cancel(s.id); // drop any completions buffered for this now-deleted session
   share.removeForSession(s.id);
   try { chatHistoryService.deleteSession(s.id); }
   catch (error) {
@@ -4868,8 +4866,8 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
       if (block.type === 'tool_use') {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'tool', block.name);
         cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id });
-        recordMainToolUseId(sessionName, block.id);
-        if (block.name === 'TaskOutput') markTaskOutputAwaiting(block.input);
+        backgroundTaskRuntime.recordMainToolUseId(sessionName, block.id);
+        if (block.name === 'TaskOutput') backgroundTaskRuntime.markTaskOutputAwaiting(sessionName, block.input);
         const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
         if (editTools.includes(block.name)) {
           setSessionStatus(sessionName, { status: 'editing', currentFile: block.input?.file_path || null });
@@ -5028,7 +5026,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'tool', evt.name);
       const tool = { name: evt.name, input: evt.input || {}, id: evt.id };
       cs.currentToolCalls.push(tool);
-      recordMainToolUseId(sessionName, evt.id);
+      backgroundTaskRuntime.recordMainToolUseId(sessionName, evt.id);
       forward({
         type: 'assistant',
         message: { content: [{ type: 'tool_use', name: evt.name, id: evt.id, input: evt.input || {} }] },
@@ -5058,7 +5056,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       if (!tool) {
         tool = { name: evt.name, input: evt.input || {}, id };
         cs.currentToolCalls.push(tool);
-        recordMainToolUseId(sessionName, id);
+        backgroundTaskRuntime.recordMainToolUseId(sessionName, id);
         forward({
           type: 'assistant',
           message: { content: [{ type: 'tool_use', name: evt.name, id, input: evt.input || {} }] },
@@ -5080,7 +5078,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
       const tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, result: evt.text || '' };
       cs.currentToolCalls.push(tool);
-      recordMainToolUseId(sessionName, evt.id);
+      backgroundTaskRuntime.recordMainToolUseId(sessionName, evt.id);
       forward({
         type: 'assistant',
         message: { content: [{ type: 'tool_use', name: 'Thinking', id: evt.id, input: tool.input }] },
@@ -5116,336 +5114,24 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
   }
 }
 
-// === Background task (Monitor / run_in_background) shadow tracking ===
-//
-// CC emits task_started/task_updated/task_notification/background_tasks_changed
-// as type:"system" stream-json events. The per-turn onEvent is cleared at the
-// turn's `result` (chat-stream finishTurn sets s.current=null), but a Monitor
-// is a session-lifetime process: the model starts it, ends its turn, and the
-// task keeps running - so its events arrive AFTER result and would be dropped.
-// chat-stream forwards them via onBackgroundEvent (independent of s.current),
-// which lands here.
-//
-// CC tee's a Monitor's stdout to a predictable file:
-//   <realpath(/tmp)>/claude-<uid>/<encoded-cwd>/<sessionId>/tasks/<taskId>.output
-// where encoded-cwd = realpath(cwd).replace(/[\/.]/g, "-") (slashes AND dots -> dash).
-// We shadow-tail it to surface live progress to the UI. The authoritative
-// output_file path arrives in the task_notification(completed) event; we use
-// that for the final full read (handles any path-mismatch fallback).
-function monitorOutputFilePath(sessionId, taskId, cwd) {
-  try {
-    const { realpathSync } = require('fs');
-    const tmpReal = realpathSync('/tmp');
-    const encoded = realpathSync(cwd || '.').replace(/[\/.]/g, '-');
-    return `${tmpReal}/claude-${process.getuid()}/${encoded}/${sessionId}/tasks/${taskId}.output`;
-  } catch { return null; }
-}
-
-function startMonitorShadow(sessionName, cs, taskId, outputFile, desc) {
-  if (!cs._monitorShadows) cs._monitorShadows = new Map();
-  if (cs._monitorShadows.has(taskId) || !outputFile) return;
-  const { spawn } = require('child_process');
-  // -F (capital) retries while the file doesn't exist yet and follows
-  // rotation; task_started fires before CC creates the file, so -F is required.
-  const tail = spawn('tail', ['-n', '+1', '-F', outputFile], { stdio: ['ignore', 'pipe', 'ignore'] });
-  const shadow = { tail, outputFile, lastProgressAt: 0 };
-  cs._monitorShadows.set(taskId, shadow);
-  tail.stdout.on('data', (chunk) => {
-    if (!String(chunk || '').trim()) return;
-    const now = Date.now();
-    if (now - shadow.lastProgressAt < 5000) return;
-    shadow.lastProgressAt = now;
-    chatBroadcast(sessionName, {
-      type: 'monitor_progress', task_id: taskId,
-      description: desc || '后台任务仍在执行', background: true,
-    });
-  });
-  tail.on('error', () => {});
-}
-
-function stopMonitorShadow(cs, taskId) {
-  const sh = cs._monitorShadows && cs._monitorShadows.get(taskId);
-  if (!sh) return;
-  try { sh.tail.kill(); } catch {}
-  cs._monitorShadows.delete(taskId);
-}
-
-// De-dup vs TaskOutput: when the main session actively pulls a bg task's result
-// via TaskOutput(block=true), the task_notification(completed) event arriving
-// moments later would otherwise double-inject a "后台任务完成" nudge on top of the
-// result the session already pulled (esp. across an SDK-session switch, where the
-// new session has no TaskOutput context and gets a cold "task finished" nudge for
-// a task whose result the prior session already consumed). Track taskIds the main
-// session is awaiting via block=true; suppress the nudge for those.
-const _taskOutputAwaiting = new Map(); // taskId -> { at }
-const TASKOUTPUT_AWAIT_TTL_MS = 5 * 60 * 1000;
-// NOTE: only block=true pulls are marked. Marking block=false peeks too was tried
-// (to close the same-task double-delivery when a peek already saw the completed
-// output) but reverted: at tool_use time we can't tell whether the peek observed
-// completion or only partial output, so a short-TTL peek mark would suppress the
-// completion nudge of a task that finishes shortly after an EARLY peek — stalling
-// an idle session. A correct fix must gate on the tool_result showing completion.
-function markTaskOutputAwaiting(input) {
-  try {
-    if (!input || !input.block || !input.task_id) return; // only block=true pulls consume the result
-    const tid = String(input.task_id);
-    const now = Date.now();
-    for (const [k, v] of _taskOutputAwaiting) if (now - v.at > TASKOUTPUT_AWAIT_TTL_MS) _taskOutputAwaiting.delete(k);
-    _taskOutputAwaiting.set(tid, { at: now });
-  } catch {}
-}
-function isTaskOutputAwaiting(taskId) {
-  if (!taskId) return false;
-  const v = _taskOutputAwaiting.get(String(taskId));
-  if (!v) return false;
-  if (Date.now() - v.at > TASKOUTPUT_AWAIT_TTL_MS) { _taskOutputAwaiting.delete(String(taskId)); return false; }
-  return true;
-}
-function consumeTaskOutputAwaiting(taskId) { if (taskId) _taskOutputAwaiting.delete(String(taskId)); }
-// De-dup vs sync Bash: a synchronous Bash tool_use (run_in_background !== true)
-// returns its result to the main session via tool_result. CC may still emit
-// task_started+task_notification for it; the notification would double-inject a
-// "后台任务完成" nudge on top of the tool_result the session already got. task_started
-// tags the task_id (via tool_use_id); task_notification suppresses. (Monitor /
-// run_in_background:true Bash outlive the turn and still notify.)
-const _syncBashTaskIds = new Map(); // taskId -> { at }
-const SYNC_BASH_TAG_TTL_MS = 5 * 60 * 1000;
-function tagSyncBashTask(taskId) {
-  if (!taskId) return;
-  const now = Date.now();
-  for (const [k, v] of _syncBashTaskIds) if (now - v.at > SYNC_BASH_TAG_TTL_MS) _syncBashTaskIds.delete(k);
-  _syncBashTaskIds.set(String(taskId), { at: now });
-}
-function isSyncBashTask(taskId) {
-  if (!taskId) return false;
-  const v = _syncBashTaskIds.get(String(taskId));
-  if (!v) return false;
-  if (Date.now() - v.at > SYNC_BASH_TAG_TTL_MS) { _syncBashTaskIds.delete(String(taskId)); return false; }
-  return true;
-}
-function consumeSyncBashTask(taskId) { if (taskId) _syncBashTaskIds.delete(String(taskId)); }
-// Sub-agent sidechain tasks: a sub-agent (Workflow internal / Task tool) runs
-// Bash in its own sidechain; its tool_use_id is NOT in the main session's
-// currentToolCalls list, so tu=undefined at task_started. These are NOT real
-// background tasks from the user's perspective and must not fire a 后台任务 nudge.
-// We tag them at task_started and suppress at task_notification — same scoping
-// pattern as the sync-Bash helpers above.
-const _subagentTaskIds = new Map(); // taskId -> { at }
-const SUBAGENT_TAG_TTL_MS = 5 * 60 * 1000;
-function tagSubagentTask(taskId) {
-  if (!taskId) return;
-  const now = Date.now();
-  for (const [k, v] of _subagentTaskIds) if (now - v.at > SUBAGENT_TAG_TTL_MS) _subagentTaskIds.delete(k);
-  _subagentTaskIds.set(String(taskId), { at: now });
-}
-function isSubagentTask(taskId) {
-  if (!taskId) return false;
-  const v = _subagentTaskIds.get(String(taskId));
-  if (!v) return false;
-  if (Date.now() - v.at > SUBAGENT_TAG_TTL_MS) { _subagentTaskIds.delete(String(taskId)); return false; }
-  return true;
-}
-function consumeSubagentTask(taskId) { if (taskId) _subagentTaskIds.delete(String(taskId)); }
-// Robust sidechain detection: a session-lifetime, append-only set of tool_use
-// ids that the MAIN session has emitted. Populated from the main assistant
-// stream (NOT cleared per turn), so it survives across turns. At
-// task_notification: if evt.tool_use_id is present AND not in this set, the
-// task is a sidechain (sub-agent) task and must be suppressed — regardless of
-// whether the CLI delivered task_started for it.
-const _mainToolUseIds = new Map(); // sessionName -> { set: Set, order: string[] }
-const MAIN_TOOL_USE_CAP = 2000;
-function recordMainToolUseId(sessionName, id) {
-  if (!sessionName || !id) return;
-  let rec = _mainToolUseIds.get(sessionName);
-  if (!rec) { rec = { set: new Set(), order: [] }; _mainToolUseIds.set(sessionName, rec); }
-  if (rec.set.has(id)) return; // already recorded
-  rec.set.add(id);
-  rec.order.push(id);
-  while (rec.order.length > MAIN_TOOL_USE_CAP) {
-    const old = rec.order.shift();
-    rec.set.delete(old);
-  }
-}
-function isMainToolUseId(sessionName, id) {
-  if (!sessionName || !id) return false;
-  const rec = _mainToolUseIds.get(sessionName);
-  return rec ? rec.set.has(id) : false;
-}
-// C2: coalesce completion nudges per session. Several bg tasks finishing within a
-// short window wake the session with ONE merged nudge instead of one turn each.
-const bgCompletionCoalescer = bgCoalesce.createCoalescer({
-  onFlush: (sessionName, items) => {
-    console.log(`[multicc/bg] ${sessionName} flush ${items.length} completion(s) -> ${items.length > 1 ? 'merged' : 'single'} nudge`);
-    // noteBgResultInjected was already called at add()-time (when the completion
-    // was known) so the classify dedup window covers the coalescing gap; don't
-    // re-open it here (that would suppress a user's own continuation for 60s if a
-    // user message landed during the window). Just inject the (merged) result.
-    //
-    // Aggregate the origin ids of EVERY item in the window so the resulting user
-    // message can be traced back to its task(s). A single completion yields a
-    // precise one-tool_use_id link (the frontend can pin the notice to that tool
-    // card); a merged flush carries the full set so history can still map the
-    // message to all originating tasks even though it won't pin to one card.
-    const bgTaskIds = items.map(it => it.taskId).filter(Boolean);
-    const bgToolUseIds = items.map(it => it.toolUseId).filter(Boolean);
-    // Guard on EITHER list: a completion may carry tool_use_id without a task_id
-    // (some CLI event shapes), and tool_use_id is the primary join key to the
-    // originating tool card — keying only on bgTaskIds.length would drop it
-    // exactly when taskId is absent.
-    const origin = (bgTaskIds.length || bgToolUseIds.length) ? { bgTaskIds, bgToolUseIds } : {};
-    waitInjector.injectSystemMsg(sessionName, bgCoalesce.buildNudge(items), 0, origin);
-  },
+const backgroundTaskRuntime = createBackgroundTaskRuntime({
+  broadcast: chatBroadcast,
+  observeTask: observation => orchestrationRuntime.observeTask(observation),
+  noteBgResultInjected: sessionName => waitInjector.noteBgResultInjected(sessionName),
+  injectSystemMsg: (...args) => waitInjector.injectSystemMsg(...args),
+  createCoalescer: bgCoalesce.createCoalescer,
+  buildNudge: bgCoalesce.buildNudge,
+  classifyCompletion: bgCoalesce.classifyBgCompletion,
+  spawn,
+  readFile: fs.readFileSync,
+  realpath: fs.realpathSync,
+  tmpdir: () => '/tmp',
+  getuid: () => process.getuid(),
+  setTimer: setTimeout,
+  clearTimer: clearTimeout,
+  now: Date.now,
+  logger,
 });
-function handleBackgroundTaskEvent(sessionName, cs, evt) {
-  const sub = evt.subtype;
-  if (sub === 'task_started') {
-    const taskId = evt.task_id;
-    if (!taskId) return;
-    const outputFile = monitorOutputFilePath(evt.session_id || '', taskId, cs.cwd);
-    const tu = cs.currentToolCalls && cs.currentToolCalls.find(t => t.id === evt.tool_use_id);
-    const cmd = (tu && tu.input && tu.input.command) || '';
-    // A foreground (sync) Bash still emits task_started/task_notification — its
-    // result returns via the normal tool_result path, so it is NOT a background
-    // task and must not fire a 后台任务 notice. Tag it for nudge suppression AND
-    // flag the broadcast so the frontend can skip it.
-    const isSyncBash = !!(tu && tu.name === 'Bash' && !(tu.input && tu.input.run_in_background));
-    if (isSyncBash) {
-      tagSyncBashTask(taskId);
-      console.log(`[multicc/bg] ${sessionName} task ${taskId} sync Bash (${cmd.slice(0, 60)}) -> will suppress completion nudge`);
-    }
-    // A sub-agent (Workflow internal / Task tool) Bash runs in a sidechain; its
-    // tool_use_id is NOT in the main session's currentToolCalls, so tu=undefined.
-    // A MAIN-session run_in_background Bash ALWAYS has its tool_use in
-    // currentToolCalls (pushed synchronously before the task starts), so !tu is
-    // false for those — they are never tagged here.
-    const isSubagentTask = !!(evt.tool_use_id && !tu);
-    if (isSubagentTask) {
-      tagSubagentTask(taskId);
-      console.log(`[multicc/bg] ${sessionName} task ${taskId} sub-agent task (tool_use=${evt.tool_use_id} absent from currentToolCalls) -> will suppress completion nudge`);
-    }
-    orchestrationRuntime.observeTask({
-      sessionId: sessionName,
-      taskId,
-      status: 'running',
-      detail: {
-        kind: isSyncBash ? 'sync-bash' : isSubagentTask ? 'agent-task' : 'background-task',
-        description: evt.description || '',
-        toolUseId: evt.tool_use_id || null,
-        outputFile,
-      },
-    }).catch(error => console.warn(`[multicc/task-ledger] start ${taskId} failed: ${error.message}`));
-    chatBroadcast(sessionName, { type: 'monitor_started', task_id: taskId, description: evt.description || '', command: cmd, background: !isSyncBash });
-    startMonitorShadow(sessionName, cs, taskId, outputFile, evt.description || '');
-  } else if (sub === 'task_progress' || sub === 'task_updated') {
-    const taskId = evt.task_id;
-    if (!taskId) return;
-    const rawStatus = String(evt.status || 'running').toLowerCase();
-    const status = rawStatus === 'completed' ? 'completed'
-      : ['failed', 'error'].includes(rawStatus) ? 'failed'
-        : ['cancelled', 'canceled', 'stopped', 'interrupted'].includes(rawStatus) ? 'interrupted'
-          : 'running';
-    orchestrationRuntime.observeTask({
-      sessionId: sessionName,
-      taskId,
-      status,
-      detail: {
-        description: evt.description || evt.summary || '',
-        toolUseId: evt.tool_use_id || null,
-        lastOutput: evt.output || evt.content || evt.summary || '',
-        error: evt.error || null,
-      },
-    }).catch(error => console.warn(`[multicc/task-ledger] update ${taskId} failed: ${error.message}`));
-    chatBroadcast(sessionName, {
-      type: 'monitor_progress', task_id: taskId,
-      description: evt.description || evt.summary || '后台任务仍在执行',
-      status, background: !isSyncBashTask(taskId),
-    });
-  } else if (sub === 'task_notification') {
-    const taskId = evt.task_id;
-    console.log(`[multicc/bg-diag] ${sessionName} task_notification taskId=${taskId} toolUseId=${evt.tool_use_id || '-'} desc="${(evt.description || '').slice(0, 40)}"`);
-    stopMonitorShadow(cs, taskId);
-    // evt.output_file is CC's authoritative path; prefer it over our prediction.
-    const outputFile = evt.output_file || (taskId && evt.session_id ? monitorOutputFilePath(evt.session_id, taskId, cs.cwd) : null);
-    let output = '';
-    if (outputFile) { try { output = require('fs').readFileSync(outputFile, 'utf8'); } catch {} }
-    const snippet = output.length > 2000 ? output.slice(-2000) : output;
-    const rawStatus = String(evt.status || 'completed').toLowerCase();
-    const ledgerStatus = rawStatus === 'completed' ? 'completed'
-      : ['failed', 'error'].includes(rawStatus) ? 'failed'
-        : 'interrupted';
-    orchestrationRuntime.observeTask({
-      sessionId: sessionName,
-      taskId,
-      status: ledgerStatus,
-      detail: {
-        description: evt.description || evt.summary || '',
-        toolUseId: evt.tool_use_id || null,
-        outputFile,
-        lastOutput: snippet,
-        error: evt.error || (ledgerStatus === 'failed' ? evt.summary || 'task failed' : null),
-      },
-    }).catch(error => console.warn(`[multicc/task-ledger] finish ${taskId} failed: ${error.message}`));
-    // Resolve sync-Bash ONCE: it drives both the broadcast flag (foreground Bash
-    // must NOT show a 后台任务 notice — its result returns via tool_result) and
-    // the nudge-suppression branch below.
-    const isSync = isSyncBashTask(taskId);
-    chatBroadcast(sessionName, { type: 'monitor_done', task_id: taskId, status: evt.status, summary: evt.summary || '', output: snippet, background: !isSync });
-    // v2: drive a continuation inject straight from the completion event. The
-    // event is a deterministic fact carrying the real result, so hand it to the
-    // model now rather than letting classify guess B/C and nudge with an empty
-    // "继续" (which can misjudge-stall, or make the model re-run finished work).
-    // De-duped vs classify via noteBgResultInjected: autoContinue (D) and bgCheck
-    // (E) skip their empty nudges within BG_RESULT_DEDUP_MS so we don't
-    // double-inject (result + empty nudge) on top of each other.
-    if (cs) {
-      // Robust sidechain suppression: the v1 tag (set at task_started) is a fast
-      // path; the fallback uses the session-lifetime main-tool-use set and works
-      // even when the CLI never emits task_started for sidechain tasks.
-      const isSidechainByToolUse = !!(evt.tool_use_id && !isMainToolUseId(sessionName, evt.tool_use_id));
-      // The suppress-vs-inject decision is a pure function (unit-tested in
-      // test-bg-completion-coalescer.js). The predicates are pure reads; only the
-      // consume* side effects mutate, and we run just the winning reason's — so
-      // routing through classifyBgCompletion is behaviour-identical to the old
-      // if-chain (same precedence, same log lines, same early return).
-      const decision = bgCoalesce.classifyBgCompletion({
-        awaitingTaskOutput: isTaskOutputAwaiting(taskId),
-        sync: isSync,
-        subagent: isSubagentTask(taskId),
-        sidechainByToolUse: isSidechainByToolUse,
-      });
-      if (decision.action === 'suppress') {
-        if (decision.reason === 'taskoutput') {
-          console.log(`[multicc/bg] ${sessionName} task ${taskId} completed; main session pulling via TaskOutput -> suppress completion nudge (de-dup)`);
-          consumeTaskOutputAwaiting(taskId);
-        } else if (decision.reason === 'sync-bash') {
-          console.log(`[multicc/bg] ${sessionName} task ${taskId} completed (sync Bash) -> suppress completion nudge (de-dup vs tool_result)`);
-          consumeSyncBashTask(taskId);
-        } else { // sidechain
-          console.log(`[multicc/bg] ${sessionName} task ${taskId} sidechain (subagent=${isSubagentTask(taskId)} toolUseId=${evt.tool_use_id || '-'} not in main tool-use set) -> suppress`);
-          consumeSubagentTask(taskId);
-        }
-        return;
-      }
-      const desc = evt.description || evt.summary || '后台任务';
-      const status = evt.status || 'completed';
-      // Carry the origin ids through the coalescer so the flushed nudge can be
-      // linked back to the task that produced it (task_id) and — more usefully —
-      // to the tool_use block that launched it (tool_use_id is the natural join
-      // key to the assistant message's tools[].id and to the frontend's
-      // currentToolCards index). buildNudge ignores these (its text stays
-      // identical for back-compat with the regression script / string matchers);
-      // they ride along as metadata for onFlush to stamp onto the user message.
-      waitInjector.noteBgResultInjected(sessionName);
-      bgCompletionCoalescer.add(sessionName, {
-        desc, status, snippet,
-        taskId: taskId || null,
-        toolUseId: evt.tool_use_id || null,
-      });
-    }
-  } else if (sub === 'background_tasks_changed') {
-    chatBroadcast(sessionName, { type: 'background_tasks', tasks: evt.tasks || [] });
-  }
-}
 
 function runChatTurn(sessionName, text, opts = {}) {
   const persisted = persistedSessions.get(sessionName);
@@ -6248,7 +5934,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
       }
     },
     env: childEnv,
-    onBackgroundEvent: (evt) => handleBackgroundTaskEvent(sessionName, cs, evt),
+    onBackgroundEvent: (evt) => backgroundTaskRuntime.handleEvent(sessionName, cs, evt),
   });
 
   // An in-flight turn (if any) was already interrupted at the top of
@@ -6965,6 +6651,7 @@ function closeWebSocketRuntime() {
 
 async function closeSessionRuntime() {
   turnProgressHeartbeat.stopAll();
+  backgroundTaskRuntime.stopAll();
   for (const [name, cs] of chatSessions) {
     try { cancelClassify(cs); } catch (_) {}
     if (cs) assignKillReason(cs._activeRunner, 'shutdown');
