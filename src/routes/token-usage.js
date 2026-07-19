@@ -1,5 +1,7 @@
 'use strict';
 
+const { projectHistoryUsage } = require('../codex-usage');
+
 const EMPTY_ROLE_SNAPSHOT = Object.freeze({
   main: null,
   sub: null,
@@ -284,7 +286,7 @@ function createTokenUsageRoutes(rawDeps) {
     for (const sessionId of sessionIds) {
       if (sessionId === '__aux__' || sessionId === '__gateway__' || accumulated[sessionId]) continue;
       try {
-        const messages = deps.chatHistoryRepository.readStrict(sessionId);
+        const messages = projectHistoryUsage(deps.chatHistoryRepository.readStrict(sessionId));
         let inputTokens = 0;
         let outputTokens = 0;
         let turnCount = 0;

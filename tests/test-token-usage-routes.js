@@ -451,6 +451,16 @@ test('history seed is one-time, skips internal sessions, and preserves old input
         { usage: { input_tokens: 0, output_tokens: 2 } },
         { usage: { input_tokens: 'bad', output_tokens: 'bad' } },
       ]],
+      ['codex-cumulative', [
+        { role: 'assistant', usage: {
+          input_tokens: 30, cached_input_tokens: 70, cache_read_input_tokens: 70,
+          output_tokens: 20, reasoning_output_tokens: 5,
+        } },
+        { role: 'assistant', usage: {
+          input_tokens: 45, cached_input_tokens: 100, cache_read_input_tokens: 100,
+          output_tokens: 29, reasoning_output_tokens: 8,
+        } },
+      ]],
       ['broken', null],
       ['__aux__', [{ usage: { input_tokens: 9, output_tokens: 9 } }]],
       ['__gateway__', [{ usage: { input_tokens: 9, output_tokens: 9 } }]],
@@ -465,10 +475,11 @@ test('history seed is one-time, skips internal sessions, and preserves old input
         },
       },
     });
-    assert.deepEqual(harness.runtime.seedTokenUsageFromHistory(), { seeded: 1, persisted: true });
+    assert.deepEqual(harness.runtime.seedTokenUsageFromHistory(), { seeded: 2, persisted: true });
     assert.deepEqual(readJson(usageFile), {
       existing: { inputTokens: 5, outputTokens: 2, turnCount: 1 },
       new: { inputTokens: 7, outputTokens: 5, turnCount: 2 },
+      'codex-cumulative': { inputTokens: 45, outputTokens: 29, turnCount: 2 },
     });
     assert.deepEqual(harness.runtime.seedTokenUsageFromHistory(), { seeded: 0, persisted: true });
   } finally {
