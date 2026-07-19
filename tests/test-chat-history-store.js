@@ -180,6 +180,7 @@ test('chat host uses reconcile/upsert, generation-aware paging and bounded initi
 });
 
 test('page size remains stable and immutable snapshots expose request generation', () => {
+  assert.equal(DEFAULT_PAGE_SIZE, 5);
   const store = createHistoryStore();
   store.acceptHistory({ messages: [{ id: 'm1' }], hasMore: true });
   const request = store.beginOlder();
