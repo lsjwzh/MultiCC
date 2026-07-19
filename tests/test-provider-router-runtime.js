@@ -546,6 +546,10 @@ test('shadow compares only summary/model/spawn, returns legacy, redacts diffs an
 
 test('server is a thin runtime consumer and keeps CC-Switch import read-only', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const providerRoutes = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'routes', 'providers.js'),
+    'utf8',
+  );
   assert.equal(/require\(['"]cli-provider-router['"]\)/.test(server), false);
   assert.match(server, /providerRouterRuntime\.mountProtocolProxies/);
   assert.match(server, /onShadowDiff:\s*recordProviderRouterShadowComparison/);
@@ -553,7 +557,15 @@ test('server is a thin runtime consumer and keeps CC-Switch import read-only', (
   assert.match(server, /multicc_provider_router_shadow_differences_total/);
   assert.match(server, /multicc_provider_router_shadow_errors_total/);
   assert.match(server, /logger\.info\('provider_router_runtime'/);
-  assert.match(server, /providers\.importFromCcSwitch\(\)/);
-  assert.match(server, /res\.status\(409\).*PROVIDER_IN_USE/s);
+  assert.match(server, /createProviderRoutes\(/);
+  assert.match(server, /providerRoutes\.mountCatalogRoutes\(app\)/);
+  assert.match(server, /providerRoutes\.mountManagementRoutes\(app\)/);
+  assert.ok(server.indexOf('providerRoutes.mountCatalogRoutes(app)')
+    < server.indexOf("app.get('/api/token-usage/global'"));
+  assert.ok(server.indexOf("app.get('/api/token-usage/by-role'")
+    < server.indexOf('providerRoutes.mountManagementRoutes(app)'));
+  assert.match(providerRoutes, /providers\.importFromCcSwitch\(\)/);
+  assert.match(providerRoutes, /res\.status\(409\).*PROVIDER_IN_USE/s);
   assert.equal(/providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i.test(server), false);
+  assert.equal(/providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i.test(providerRoutes), false);
 });

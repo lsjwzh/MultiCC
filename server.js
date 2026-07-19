@@ -126,6 +126,10 @@ const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { mountVoiceRoutes } = require('./src/routes/voice');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
+const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
+const { createSkillSyncRuntime } = require('./src/skill-sync');
+const skillConverter = require('./src/skill-converter');
+const { createProviderRoutes } = require('./src/routes/providers');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -2664,35 +2668,6 @@ app.get('/api/agent-resources/skills', (req, res) => {
       codex: skills.filter(s => s.provider === 'codex').length,
     },
   });
-});
-
-// ── Skill sync: status + manual trigger (drives the 技能同步 manage panel) ──
-// GET returns the latest sync run snapshot; POST forces a full sync cycle.
-// Both are gated by the same global auth middleware as the routes above.
-app.get('/api/skill-sync/status', (req, res) => {
-  res.json(_lastSkillSyncResult || {
-    ts: 0, status: 'never-synced', providers: null,
-    linkCount: 0, skipCount: 0, convCount: 0, reverseImportCount: 0, bundledInstallCount: 0,
-    sharedSkillCount: 0, sharedSkillNames: [],
-    aiQueue: { queueLength: 0, items: [], timerActive: false }, error: null,
-  });
-});
-
-app.post('/api/skill-sync/run', (req, res) => {
-  if (_skillSyncRunning) return res.status(409).json({ ok: false, error: 'sync already running' });
-  _skillSyncRunning = true;
-  try {
-    const bundled = installBundledSkills();          // bundled multicc skills → agents
-    const rev = skillConv.importAllProviderSkills(); // reverse-import providers → agents
-    syncSharedSkills();                              // forward sync → all providers (records providers)
-    _recordSkillSyncResult({ bundledInstallCount: bundled, reverseImportCount: (rev || []).length, error: null });
-    res.json({ ok: true, result: _lastSkillSyncResult });
-  } catch (e) {
-    try { _recordSkillSyncResult({ error: e.message }); } catch (_) {}
-    res.status(500).json({ ok: false, error: e.message });
-  } finally {
-    _skillSyncRunning = false;
-  }
 });
 
 // ── Agent presets (role prompt library, generated from agency-agents) ──
@@ -5730,51 +5705,45 @@ const {
   executeAuxHttp,
   broadcast: broadcastTo,
 });
+
+// Skill-sync owns converter/link state, its watcher and its periodic timer.
+// The host supplies only the process/session ports needed by detached AI conversion.
+const skillSyncRuntime = createSkillSyncRuntime({
+  fs,
+  path,
+  os,
+  crypto,
+  chokidar,
+  skillConverter,
+  persistedSessions,
+  cwdForSession,
+  startDetached: request => orchestrationRuntime.startDetached(request),
+  rootDir: __dirname,
+  claudeCommand: CLAUDE_CMD,
+  auxSessionId: AUX_SESSION_ID,
+  logger: console,
+});
+mountSkillSyncRoutes(app, skillSyncRuntime);
+
 // ── Per-session providers (backed by cc-switch) ──────────────────────────────
-// Global default provider per CLI; new sessions inherit it. Stored separately
-// from cc-switch's own "current" selection so multicc stays independent.
-const PROVIDER_DEFAULTS_FILE = MULTICC_PATHS.providerDefaultsFile;
-let providerDefaults = { claude: null, codex: null };
-try {
-  const d = JSON.parse(fs.readFileSync(PROVIDER_DEFAULTS_FILE, 'utf8'));
-  providerDefaults = { claude: d.claude || null, codex: d.codex || null };
-} catch (_) { /* none yet */ }
-function saveProviderDefaults() {
-  try { atomicWriteJson(PROVIDER_DEFAULTS_FILE, providerDefaults); }
-  catch (e) { console.error('[multicc] save provider-defaults failed:', e.message); }
-}
-// Validate a provider id exists for the given cli; '' / null clears the override.
-function validProviderId(cli, id) {
-  if (id == null || id === '') return { ok: true, value: null };
-  const appType = cli === 'codex' ? 'codex' : 'claude';
-  if (!providerRouterRuntime.getProviderSummary(appType, String(id))) return { ok: false };
-  return { ok: true, value: String(id) };
-}
-
-// List providers (optionally ?appType=claude|codex). Secrets are masked.
-// multicc owns this store; cc-switch is only an import source.
-app.get('/api/providers', (req, res) => {
-  const appType = (req.query.appType || '').trim();
-  const ccSwitchStatus = providers.getCcSwitchStatus();
-  res.json({
-    available: true,
-    ccSwitchAvailable: ccSwitchStatus.available,
-    ccSwitchStatus,
-    providers: providers.listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined),
-    defaults: providerDefaults,
-    stats: providers.getProviderUsageStats().stats,
-  });
+const providerRoutes = createProviderRoutes({
+  fs,
+  providerDefaultsFile: MULTICC_PATHS.providerDefaultsFile,
+  atomicWriteJson,
+  providers,
+  providerRouterRuntime,
+  findProviderReferences,
+  persistedSessions,
+  getAuxConfig,
+  claudeCmd: CLAUDE_CMD,
+  getPort: () => PORT,
+  getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
+  http,
+  https,
+  logger: console,
 });
-
-// Per-provider token usage stats aggregated from chat_history.
-app.get('/api/providers/stats', (req, res) => {
-  try {
-    const stats = providers.getProviderUsageStats();
-    res.json(stats);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+const { providerDefaults, validProviderId } = providerRoutes;
+providerRoutes.mountCatalogRoutes(app);
 
 // Global Claude Code token usage, read from the claude CLI transcripts under
 // ~/.claude/projects (ground truth, covers ALL usage — not just multicc turns).
@@ -5807,231 +5776,7 @@ app.get('/api/token-usage/by-role', (req, res) => {
   }
 });
 
-// Import / sync providers from cc-switch into multicc's own store (idempotent).
-app.post('/api/providers/import', (req, res) => {
-  try {
-    const r = providers.importFromCcSwitch();
-    res.json({ ok: true, ...r });
-  } catch (e) {
-    res.status(400).json({
-      error: e.message,
-      ...(e.code ? { code: e.code } : {}),
-      ...(e.reason ? { reason: e.reason } : {}),
-    });
-  }
-});
-
-app.post('/api/providers', (req, res) => {
-  try {
-    const r = providers.createProvider({
-      appType: (req.body.appType || '').trim(),
-      name: req.body.name,
-      baseUrl: (req.body.baseUrl || '').trim(),
-      authToken: (req.body.authToken || '').trim(),
-      model: (req.body.model || '').trim(),
-      models: req.body.models,
-      useChatResponsesProxy: req.body.useChatResponsesProxy,
-      settingsConfig: req.body.settingsConfig,
-      aliasMap: req.body.aliasMap,
-    });
-    res.json({ ok: true, ...r });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-app.patch('/api/providers/:appType/:id', (req, res) => {
-  try {
-    providers.updateProvider(req.params.appType, req.params.id, {
-      name: req.body.name,
-      baseUrl: req.body.baseUrl,
-      authToken: req.body.authToken,
-      model: req.body.model,
-      models: req.body.models,
-      useChatResponsesProxy: req.body.useChatResponsesProxy,
-      settingsConfig: req.body.settingsConfig,
-      aliasMap: req.body.aliasMap,
-    });
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-app.delete('/api/providers/:appType/:id', (req, res) => {
-  try {
-    const references = findProviderReferences({
-      appType: req.params.appType,
-      providerId: req.params.id,
-      sessions: persistedSessions,
-      defaults: providerDefaults,
-      aux: getAuxConfig(),
-    });
-    if (references.length) {
-      return res.status(409).json({
-        error: 'provider is still referenced',
-        code: 'PROVIDER_IN_USE',
-        references,
-      });
-    }
-    const removed = providers.deleteProvider(req.params.appType, req.params.id);
-    res.json({ ok: removed });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-// Probe which model names a provider's relay accepts (read-only; max_tokens:1).
-// Used to confirm the safe wire name for an alias-only relay. Body: { candidates?: string[] }.
-app.post('/api/providers/:appType/:id/probe', async (req, res) => {
-  try {
-    const p = providers.getProvider(req.params.appType, req.params.id);
-    if (!p) return res.status(404).json({ error: 'provider not found' });
-    const cfg = typeof p.settingsConfig === 'string' ? JSON.parse(p.settingsConfig) : (p.settingsConfig || {});
-    const env = (cfg && cfg.env) || {};
-    const result = await providers.probeRelayModels(env, req.body && req.body.candidates, CLAUDE_CMD);
-    res.json(result);
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-// Speed-test: fire a minimal API call through the provider's real relay and
-// measure round-trip latency.  Returns { ok, ms, status, model, error? }.
-app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
-  const t0 = Date.now();
-  try {
-    const p = providers.getProvider(req.params.appType, req.params.id);
-    if (!p) return res.status(404).json({ ok: false, ms: Date.now() - t0, error: 'provider not found' });
-    const cfg = typeof p.settingsConfig === 'string' ? JSON.parse(p.settingsConfig) : (p.settingsConfig || {});
-    const env = (cfg && cfg.env) || {};
-    const appType = req.params.appType;
-
-    // ── Codex providers ──────────────────────────────────────────────
-    if (appType === 'codex') {
-      const cx = providers.resolveCodexDirectHttp(req.params.id);
-      if (!cx.canDirect) {
-        return res.json({ ok: false, ms: Date.now() - t0, error: cx.reason || 'OAuth 订阅型 provider 不支持测速' });
-      }
-      const model = (cx.modelOptions && cx.modelOptions[0]) || cx.model || 'gpt-4o-mini';
-      const body = JSON.stringify(cx.wireApi === 'responses'
-        ? { model, input: 'hi', max_output_tokens: 1 }
-        : { model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] });
-      let urlObj;
-      try { urlObj = new URL(cx.url); } catch (e) {
-        return res.json({ ok: false, ms: Date.now() - t0, error: 'bad url: ' + cx.url });
-      }
-      const isHttps = urlObj.protocol === 'https:';
-      const lib = isHttps ? require('https') : require('http');
-      await new Promise((resolve, reject) => {
-        const hReq = lib.request({
-          hostname: urlObj.hostname,
-          port: urlObj.port || (isHttps ? 443 : 80),
-          path: urlObj.pathname + urlObj.search,
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cx.apiKey}` },
-        }, (hRes) => {
-          let data = '';
-          hRes.on('data', chunk => data += chunk);
-          hRes.on('end', () => {
-            const ms = Date.now() - t0;
-            if (hRes.statusCode >= 200 && hRes.statusCode < 300) {
-              res.json({ ok: true, ms, status: hRes.statusCode, model });
-            } else {
-              let err = `HTTP ${hRes.statusCode}`;
-              try { const pe = JSON.parse(data); if (pe.error) err = (pe.error.message || JSON.stringify(pe.error)); } catch (_) {}
-              res.json({ ok: false, ms, status: hRes.statusCode, model, error: err });
-            }
-            resolve();
-          });
-        });
-        hReq.on('error', (e) => { res.json({ ok: false, ms: Date.now() - t0, error: e.message }); resolve(); });
-        hReq.setTimeout(15000, () => { hReq.destroy(); res.json({ ok: false, ms: Date.now() - t0, error: 'timeout' }); });
-        hReq.write(body);
-        hReq.end();
-      });
-      return;
-    }
-
-    // ── Claude providers ─────────────────────────────────────────────
-    const hasKey = !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
-    const isOfficial = req.params.id === 'claude-official';
-    const canDirect = (env.ANTHROPIC_BASE_URL && hasKey) || (isOfficial && CLAUDE_OFFICIAL_VIA_PROXY);
-
-    if (!canDirect) {
-      return res.json({ ok: false, ms: Date.now() - t0, error: isOfficial ? 'OAuth 订阅型 provider 不支持测速（开启 CLAUDE_OFFICIAL_VIA_PROXY 可测速）' : '缺少 API Key 或 Base URL' });
-    }
-
-    // Resolve a real wire model id to POST. The provider's own model wins
-    // (canonical ANTHROPIC_MODEL, else its haiku-tier target — e.g. iFlytek's
-    // xopdeepseekv4flash). OAuth-subscription providers (claude-official) declare
-    // no model of their own, so fall back to WIRE_DEFAULT_MODEL — the same safe
-    // wire name the spawn path stamps for alias-only providers. Never fall back
-    // to a CLI-only alias like 'haiku': the raw /v1/messages endpoint bypasses the
-    // CLI's alias resolution and rejects it with 404 model-not-found.
-    const model = env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_HAIKU_MODEL || providers.WIRE_DEFAULT_MODEL;
-
-    // OAuth subscription tokens (claude-official) require the Claude Code
-    // identity assertion in the first system block. Without it, Anthropic
-    // treats the bare request as token probing and returns 429 rate_limit
-    // (anti-abuse). The CLI always sends this block; normal CLI requests
-    // forwarded through the proxy carry it naturally, but speedtest generates
-    // a synthetic body — so we inject it here. Mirrors ensureClaudeIdentity()
-    // in claude-proxy.js.
-    const isOfficialOAuth = isOfficial && !hasKey;
-    const body = JSON.stringify({
-      model,
-      max_tokens: 1,
-      ...(isOfficialOAuth ? { system: [{ type: 'text', text: 'You are Claude Code, Anthropic\'s official CLI for Claude.' }] } : {}),
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-
-    await new Promise((resolve) => {
-      const hReq = require('http').request({
-        hostname: '127.0.0.1',
-        port: PORT,
-        path: `/claude-proxy/${req.params.id}/speedtest/v1/messages?beta=true`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `multicc-speedtest`,
-          'anthropic-version': '2023-06-01',
-          'x-api-key': 'multicc-speedtest',
-          // OAuth token recognized only when x-app: cli signals official CLI
-          // origin — without it, even a correct system block + Bearer token
-          // still hits anti-abuse 429 (Anthropic sees a script, not a CLI).
-          ...(isOfficialOAuth ? { 'x-app': 'cli' } : {}),
-        },
-      }, (hRes) => {
-        let data = '';
-        hRes.on('data', chunk => data += chunk);
-        hRes.on('end', () => {
-          const ms = Date.now() - t0;
-          if (hRes.statusCode >= 200 && hRes.statusCode < 300) {
-            res.json({ ok: true, ms, status: hRes.statusCode, model });
-          } else {
-            let err = `HTTP ${hRes.statusCode}`;
-            try { const pe = JSON.parse(data); if (pe.error) err = (pe.error.message || JSON.stringify(pe.error)); } catch (_) {}
-            res.json({ ok: false, ms, status: hRes.statusCode, model, error: err });
-          }
-          resolve();
-        });
-      });
-      hReq.on('error', (e) => { res.json({ ok: false, ms: Date.now() - t0, error: e.message }); resolve(); });
-      hReq.setTimeout(15000, () => { hReq.destroy(); res.json({ ok: false, ms: Date.now() - t0, error: 'timeout' }); });
-      hReq.write(body);
-      hReq.end();
-    });
-  } catch (e) {
-    res.json({ ok: false, ms: Date.now() - t0, error: e.message });
-  }
-});
-
-// Get / set the global default provider per CLI.
-app.get('/api/provider-defaults', (req, res) => res.json(providerDefaults));
-app.put('/api/provider-defaults', (req, res) => {
-  for (const cli of ['claude', 'codex']) {
-    if (req.body[cli] !== undefined) {
-      const v = validProviderId(cli, req.body[cli]);
-      if (!v.ok) return res.status(400).json({ error: `invalid ${cli} provider id` });
-      providerDefaults[cli] = v.value;
-    }
-  }
-  saveProviderDefaults();
-  res.json({ ok: true, defaults: providerDefaults });
-});
+providerRoutes.mountManagementRoutes(app);
 
 // Root → manage page (unless ?id= is specified, which means a terminal session)
 app.get('/', (req, res, next) => {
@@ -10890,250 +10635,6 @@ function reconcileAllTriggers() {
   if (n) console.log(`[multicc/trigger] armed triggers for ${n} session(s)`);
 }
 
-// ── Skill sync: keep Claude, Codex & Hermes skills consistent ──
-// Three-tier: (1) bundled multicc skills from ./skills copied to all providers;
-// (2) shared skills from ~/.agents/skills symlinked to all providers;
-// (3) skill-converter transforms canonical skills for each provider's format.
-// Runs on startup + every 5 min + on chokidar changes to ~/.agents/skills.
-
-const skillConv = require('./src/skill-converter');
-
-const SKILL_PROVIDERS = [
-  { name: 'claude',  dir: path.join(os.homedir(), '.claude', 'skills'),  protectedSubdirs: [] },
-  { name: 'codex',   dir: path.join(os.homedir(), '.codex', 'skills'),   protectedSubdirs: ['.system'] },
-  { name: 'hermes',  dir: path.join(os.homedir(), '.hermes', 'skills'),  protectedSubdirs: [] },
-];
-const AGENTS_SKILLS_DIR = skillConv.AGENTS_ROOT;
-
-// ── Skill-sync status (surfaced by /api/skill-sync/status + the 技能同步 panel) ──
-// syncSharedSkills throws away its per-run counts after logging; capture the
-// latest run here so the manage UI can show live state. _skillSyncRunning guards
-// a manual /run against a concurrent timer/chokidar sync.
-let _lastSkillSyncResult = null;
-let _skillSyncRunning = false;
-
-function _listSharedSkillNames() {
-  try {
-    return fs.readdirSync(AGENTS_SKILLS_DIR)
-      .filter(n => !n.startsWith('.') && _isSkillDir(path.join(AGENTS_SKILLS_DIR, n)))
-      .sort();
-  } catch (_) { return []; }
-}
-
-// Merge a partial run summary into _lastSkillSyncResult, refreshing the
-// derived fields (shared skill list, AI-convert queue snapshot) each time.
-function _recordSkillSyncResult(partial) {
-  const prev = _lastSkillSyncResult || {};
-  const p = partial || {};
-  const sharedSkillNames = _listSharedSkillNames();
-  let aiQueue = { queueLength: 0, items: [], timerActive: false };
-  try { if (typeof skillConv.getAiQueueStatus === 'function') aiQueue = skillConv.getAiQueueStatus(); } catch (_) {}
-  _lastSkillSyncResult = {
-    ts: Date.now(),
-    providers: p.providers || prev.providers || null,
-    linkCount: p.linkCount != null ? p.linkCount : (prev.linkCount || 0),
-    skipCount: p.skipCount != null ? p.skipCount : (prev.skipCount || 0),
-    convCount: p.convCount != null ? p.convCount : (prev.convCount || 0),
-    reverseImportCount: p.reverseImportCount != null ? p.reverseImportCount : (prev.reverseImportCount || 0),
-    bundledInstallCount: p.bundledInstallCount != null ? p.bundledInstallCount : (prev.bundledInstallCount || 0),
-    sharedSkillCount: sharedSkillNames.length,
-    sharedSkillNames,
-    aiQueue,
-    error: p.error !== undefined ? p.error : (prev.error || null),
-  };
-  return _lastSkillSyncResult;
-}
-
-function _readSkillVer(dir) {
-  try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); } catch (_) { return null; }
-}
-
-function _isSkillDir(dir) {
-  try { return fs.statSync(dir).isDirectory() && fs.existsSync(path.join(dir, 'SKILL.md')); } catch (_) { return false; }
-}
-
-// (1) Import bundled multicc skills (./skills/) into ~/.agents/skills - the
-// single authority source. Providers load from agents via syncSharedSkills.
-// Re-imports when .skill-version differs or is missing.
-function installBundledSkills() {
-  const srcRoot = path.join(__dirname, 'skills');
-  let names;
-  try { names = fs.readdirSync(srcRoot); } catch (_) { return 0; }
-  let installed = 0;
-  for (const name of names) {
-    try {
-      const src = path.join(srcRoot, name);
-      if (!_isSkillDir(src)) continue;
-      // Import into agents (authority). agents' stale reverse-import copy has
-      // no .skill-version -> overwritten on first run; later runs skip on match.
-      const dest = path.join(AGENTS_SKILLS_DIR, name);
-      if (fs.existsSync(dest) && _readSkillVer(dest) === _readSkillVer(src)) continue;
-      fs.mkdirSync(AGENTS_SKILLS_DIR, { recursive: true });
-      fs.rmSync(dest, { recursive: true, force: true });
-      fs.cpSync(src, dest, { recursive: true });
-      try { for (const f of fs.readdirSync(path.join(dest, 'bin'))) fs.chmodSync(path.join(dest, 'bin', f), 0o755); } catch (_) {}
-      installed++;
-      console.log(`[multicc/skills] imported bundled -> ~/.agents/skills/${name}`);
-    } catch (e) {
-      console.warn(`[multicc/skills] install bundled ${name} failed: ${e.message}`);
-    }
-  }
-  return installed;
-}
-
-// (2) Symlink ~/.agents/skills/* into each provider's skill dir, using the
-// skill-converter to produce provider-appropriate versions when needed (e.g.
-// stripped Codex frontmatter, Hermes metadata). Mechanical conversion runs
-// inline; AI-assisted deep conversion is queued for background processing.
-function syncSharedSkills() {
-  // Per-provider tallies so the status UI can show a claude/codex/hermes
-  // breakdown, not just an aggregate. providers[name] = {linked,skipped,converted}.
-  const providers = {};
-  for (const prov of SKILL_PROVIDERS) providers[prov.name] = { linked: 0, skipped: 0, converted: 0 };
-
-  let agentNames;
-  try { agentNames = fs.readdirSync(AGENTS_SKILLS_DIR); }
-  catch (_) { return _recordSkillSyncResult({ linkCount: 0, skipCount: 0, convCount: 0, providers }); }
-
-  for (const prov of SKILL_PROVIDERS) {
-    const pc = providers[prov.name];
-    fs.mkdirSync(prov.dir, { recursive: true });
-    const protectedSet = new Set(prov.protectedSubdirs || []);
-
-    for (const name of agentNames) {
-      if (protectedSet.has(name)) continue;
-
-      const src = path.join(AGENTS_SKILLS_DIR, name);
-      if (!_isSkillDir(src)) continue;
-
-      // ── Run converter for this skill → target provider ──
-      if (prov.name !== 'claude') {
-        const convResult = skillConv.ensureSkillConverted(name);
-        if (convResult.mechanical.length > 0) pc.converted++;
-      }
-
-      // ── Determine link target ──
-      // Claude: use canonical source directly
-      // Codex/Hermes: prefer converted cache, fall back to source
-      const linkSrc = skillConv.getLinkTarget(name, prov.name);
-      if (!linkSrc) continue;
-
-      const dest = path.join(prov.dir, name);
-
-      // Already a correct symlink? Resolve to compare.
-      try {
-        const lstat = fs.lstatSync(dest);
-        if (lstat.isSymbolicLink()) {
-          try { if (fs.realpathSync(dest) === fs.realpathSync(linkSrc)) continue; } catch (_) {}
-        }
-      } catch (_) {}
-
-      // Real directory exists. With .skill-version = stale bundled copy (from
-      // installBundledSkills' old behavior) -> replace with symlink to agents.
-      // Without .skill-version = user's own version -> leave it alone.
-      if (fs.existsSync(dest) && !fs.lstatSync(dest).isSymbolicLink()) {
-        if (_readSkillVer(dest) === null) continue;
-        try { fs.rmSync(dest, { recursive: true, force: true }); }
-        catch (e) { pc.skipped++; continue; }
-      }
-
-      // Remove broken/wrong symlink and create correct one.
-      try { fs.unlinkSync(dest); } catch (_) {}
-      try {
-        fs.symlinkSync(linkSrc, dest);
-        pc.linked++;
-      } catch (e) {
-        console.warn(`[multicc/skills] symlink ${prov.name} ← ${name}: ${e.message}`);
-        pc.skipped++;
-      }
-    }
-  }
-  let linkCount = 0, skipCount = 0, convCount = 0;
-  for (const k of Object.keys(providers)) {
-    linkCount += providers[k].linked; skipCount += providers[k].skipped; convCount += providers[k].converted;
-  }
-  if (linkCount > 0 || skipCount > 0 || convCount > 0) {
-    console.log(`[multicc/skills] shared sync: ${linkCount} linked, ${skipCount} skipped, ${convCount} converted`);
-  }
-  return _recordSkillSyncResult({ linkCount, skipCount, convCount, providers });
-}
-
-// ── AI-assisted skill conversion callback ──
-// When mechanical conversion is done, the converter queues deeper AI rewrites.
-// We spawn a one-shot background session to do the actual rewriting via Claude.
-async function queueAiSkillConversions(batch) {
-  // The detached conversion job needs a live session to own its lifecycle.
-  // Pick any non-aux claude session; the job writes to absolute paths so the
-  // host session's cwd is otherwise irrelevant.
-  const host = [...persistedSessions.values()].find(
-    s => s.id !== AUX_SESSION_ID && (s.cli || 'claude') !== 'codex'
-  );
-  if (!host) {
-    console.warn(`[multicc/skills] AI skill conversion skipped (${batch.length} skill(s)): no claude session to host the detached job`);
-    return;
-  }
-  for (const { skillName, provider } of batch) {
-    const spec = skillConv.buildAiConvertPrompt(skillName, provider);
-    if (!spec) continue;
-
-    // Materialize the prompt before launching so neither skill names nor prompt
-    // content are interpolated into shell syntax. The detached shell owns
-    // cleanup through its EXIT trap.
-    const promptFile = path.join(os.tmpdir(), `multicc-skillconv-${crypto.randomBytes(8).toString('hex')}.txt`);
-    await fs.promises.writeFile(promptFile, spec.prompt, { encoding: 'utf8', mode: 0o600 });
-    const shellQuote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
-    const cmd = [
-      `PROMPT_FILE=${shellQuote(promptFile)}`,
-      `trap 'rm -f -- "$PROMPT_FILE"' EXIT`,
-      `mkdir -p ${shellQuote(spec.outputDir)}`,
-      `${shellQuote(CLAUDE_CMD)} -p "$(cat "$PROMPT_FILE")" --allowedTools "Bash,Read,Write,Edit" --output-format text --max-turns 3 2>&1`,
-    ].join('; ');
-    console.log(`[multicc/skills] queued AI conversion: ${skillName} → ${provider}`);
-    try {
-      await orchestrationRuntime.startDetached({
-        sessionId: host.id,
-        idempotencyKey: null,
-        spec: {
-          command: cmd,
-          cwd: cwdForSession(host),
-          label: `skillconv-${skillName}→${provider}`,
-          daemon: false,
-          intervalSec: 10,
-          maxChecks: 360,
-          injectPrefix: `[技能转换完成] ${skillName} → ${provider}`,
-        },
-      });
-    } catch (e) {
-      await fs.promises.rm(promptFile, { force: true }).catch(() => {});
-      console.warn(`[multicc/skills] AI conversion submit failed (${skillName}->${provider}): ${e.message}`);
-    }
-  }
-}
-
-skillConv.onAiConvertNeeded((batch) => {
-  void queueAiSkillConversions(batch).catch((e) => {
-    console.warn(`[multicc/skills] AI conversion batch failed: ${e.message}`);
-  });
-});
-
-let _skillsSyncWatcher = null;
-function watchSharedSkills() {
-  if (_skillsSyncWatcher) return;
-  try {
-    if (!fs.existsSync(AGENTS_SKILLS_DIR)) return;
-    _skillsSyncWatcher = chokidar.watch(AGENTS_SKILLS_DIR, {
-      ignoreInitial: true,
-      depth: 0,
-      awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 500 },
-    });
-    _skillsSyncWatcher.on('addDir', () => syncSharedSkills());
-    _skillsSyncWatcher.on('unlinkDir', () => syncSharedSkills());
-    console.log(`[multicc/skills] watching ~/.agents/skills for changes`);
-  } catch (e) {
-    // non-fatal — periodic polling is the fallback
-  }
-}
-
 // Scheduled tasks (定时任务): inject the session-creation + turn-running machinery.
 // Complements the per-session triggers above — this one fires by creating a
 // fresh chat session in a target directory (directory-level recurring tasks).
@@ -11220,18 +10721,13 @@ async function quiesceRuntimeSources() {
   try { cronTasks.stop(); } catch (_) {}
   try { tunnel.stop(); } catch (_) {}
   try { stopNetworkProbe(); } catch (_) {}
-  try { if (typeof skillConv.stop === 'function') skillConv.stop(); } catch (_) {}
+  try { await skillSyncRuntime.stop(); } catch (_) {}
   clearServiceTimers();
 
   for (const timer of _deferredFire.values()) clearTimeout(timer);
   _deferredFire.clear();
   for (const sessionId of [...new Set([...triggerWatchers.keys(), ...triggerCronTasks.keys()])]) {
     try { teardownTriggers(sessionId); } catch (_) {}
-  }
-  if (_skillsSyncWatcher) {
-    const watcher = _skillsSyncWatcher;
-    _skillsSyncWatcher = null;
-    try { await watcher.close(); } catch (_) {}
   }
 }
 
@@ -11416,16 +10912,7 @@ app.use(safeErrorHandler(logger));
     console.log(`  Use Tailscale / ngrok for HTTPS access from external devices.\n`);
     seedTokenUsageFromHistory();
     backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
-    const _bundled = installBundledSkills();        // bundled multicc skills → all providers
-    const _rev = skillConv.importAllProviderSkills(); // reverse-import: Codex/Hermes → agents
-    syncSharedSkills();                             // forward sync: agents → all providers (records providers)
-    _recordSkillSyncResult({ bundledInstallCount: _bundled, reverseImportCount: (_rev || []).length });
-    watchSharedSkills();                            // real-time chokidar watch on ~/.agents/skills
-    trackServiceTimer(setInterval(() => {
-      const rev = skillConv.importAllProviderSkills(); // periodic reverse import
-      syncSharedSkills();                           // periodic forward sync (records providers)
-      _recordSkillSyncResult({ reverseImportCount: (rev || []).length });
-    }, 5 * 60 * 1000));
+    skillSyncRuntime.start();
     reconcileAllTriggers();
     // Periodic scan: re-judge non-terminal/junk sessions every minute. First
     // tick delayed 6s so aux warms up and WS clients reconnect. Replaces the
