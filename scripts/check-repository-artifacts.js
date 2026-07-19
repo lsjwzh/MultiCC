@@ -92,7 +92,7 @@ function evaluatePolicy(entries, baseline) {
 function trackedEntries(root = ROOT) {
   const output = childProcess.execFileSync('git', ['ls-files', '-z'], { cwd: root });
   const files = output.toString('utf8').split('\0').filter(Boolean);
-  return files.map(relativePath => ({
+  return files.filter(relativePath => fs.existsSync(path.join(root, relativePath))).map(relativePath => ({
     path: relativePath,
     buffer: fs.readFileSync(path.join(root, relativePath)),
   }));

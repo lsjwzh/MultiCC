@@ -197,13 +197,16 @@ test('page size remains stable and immutable snapshots expose request generation
 
 test('durable history reset broadcasts an authoritative page and invalidates every client cursor', () => {
   const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const historyRuntime = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'chat-history.js'), 'utf8');
   const events = fs.readFileSync(path.join(ROOT, 'public', 'chat-event-controller.js'), 'utf8');
 
-  assert.match(server,
-    /afterCommit:\s*\(\)\s*=>\s*\{[\s\S]*chatHistoryService\.paginate\(sessionName,[\s\S]*type:\s*'chat_history_reset'/,
+  assert.match(server, /await chatHistoryRuntime\.clearHistory\(sessionName, msg, cs\)/,
+    'the WebSocket host must delegate clear ownership to the history runtime');
+  assert.match(historyRuntime,
+    /afterCommit:\s*\(\)\s*=>\s*\{[\s\S]*service\.paginate\(key,[\s\S]*type:\s*'chat_history_reset'/,
     'reset must be broadcast only from the post-persist commit boundary');
-  assert.match(server, /removedCount:\s*removed\.length/);
-  assert.match(server, /retainedCount:\s*retained\.length/);
+  assert.match(historyRuntime, /removedCount:\s*removed\.length/);
+  assert.match(historyRuntime, /retainedCount:\s*retained\.length/);
 
   const resetHandler = events.match(/function handleHistoryReset\(message\)\s*\{([\s\S]*?)\n\s*function handleEvent/);
   assert.ok(resetHandler, 'event controller must handle authoritative reset broadcasts');

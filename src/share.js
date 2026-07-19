@@ -26,13 +26,52 @@ const { atomicWriteJson } = require('./runtime-security');
 const { timingSafeEqualText } = require('./auth-security');
 
 const FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).sharesFile;
+const MAX_SHARE_PASSWORD_BYTES = 4096;
 let shares = {}; // token -> record
 
-function load() { try { shares = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch { shares = {}; } }
-function save() { try { atomicWriteJson(FILE, shares); } catch (e) { console.error('[share] save failed:', e.message); } }
+function load() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+    shares = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    shares = {};
+  }
+}
+
+// Commit to disk before publishing the new in-memory snapshot. Admin create
+// and revoke routes must never report success for a share that disappears on
+// restart. Callers that intentionally use best-effort cleanup catch this error
+// explicitly at their own lifecycle boundary.
+function save(next) {
+  atomicWriteJson(FILE, next);
+  shares = next;
+}
+
+function logPersistenceFailure(operation, error) {
+  const code = error && typeof error.code === 'string' ? error.code : 'UNKNOWN';
+  console.error('[share] persistence failed', { operation, code });
+}
 load();
 
-function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
+function normalizePassword(password) {
+  if (password == null || password === '') return null;
+  const value = String(password);
+  if (Buffer.byteLength(value, 'utf8') > MAX_SHARE_PASSWORD_BYTES) {
+    throw new Error('share password is too long');
+  }
+  return value;
+}
+
+function normalizeExpiresAt(expiresAt) {
+  if (expiresAt == null || expiresAt === '') return null;
+  const value = Number(expiresAt);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('invalid share expiry');
+  }
+  return value;
+}
+
+function hashPw(pw, salt) { return crypto.scryptSync(pw, salt, 32).toString('hex'); }
 
 function publicRec(r) {
   return {
@@ -49,20 +88,23 @@ function isExpired(r) { return !!(r && r.expiresAt && Date.now() > r.expiresAt);
 // Create a share. access: 'view'|'operate'. operate requires a password.
 function create(sessionId, { access, password, expiresAt, label } = {}) {
   const lvl = access === 'operate' ? 'operate' : 'view';
-  if (lvl === 'operate' && !password) {
+  const safePassword = normalizePassword(password);
+  if (lvl === 'operate' && !safePassword) {
     throw new Error('operate share requires a password');
   }
   const token = crypto.randomBytes(18).toString('base64url');
   const rec = {
     token, sessionId, access: lvl,
     createdAt: Date.now(),
-    expiresAt: expiresAt ? Number(expiresAt) : null,
+    expiresAt: normalizeExpiresAt(expiresAt),
     label: label || null,
     salt: null, pwHash: null, secret: crypto.randomBytes(16).toString('hex'),
   };
-  if (password) { rec.salt = crypto.randomBytes(16).toString('hex'); rec.pwHash = hashPw(password, rec.salt); }
-  shares[token] = rec;
-  save();
+  if (safePassword) {
+    rec.salt = crypto.randomBytes(16).toString('hex');
+    rec.pwHash = hashPw(safePassword, rec.salt);
+  }
+  save({ ...shares, [token]: rec });
   return publicRec(rec);
 }
 
@@ -71,6 +113,7 @@ function create(sessionId, { access, password, expiresAt, label } = {}) {
 // or is deleted, and it never exposes the live session. access is always 'view'.
 function createMessageShare(sessionId, messages, { password, expiresAt, label } = {}) {
   if (!Array.isArray(messages) || messages.length === 0) throw new Error('no messages to share');
+  const safePassword = normalizePassword(password);
   const token = crypto.randomBytes(18).toString('base64url');
   const rec = {
     token, sessionId, access: 'view', type: 'messages',
@@ -80,19 +123,27 @@ function createMessageShare(sessionId, messages, { password, expiresAt, label } 
       tools: Array.isArray(m.tools) ? m.tools.map(t => ({ name: t.name, input: t.input })) : undefined,
       ts: m.ts || null,
     })),
-    createdAt: Date.now(), expiresAt: expiresAt ? Number(expiresAt) : null,
+    createdAt: Date.now(), expiresAt: normalizeExpiresAt(expiresAt),
     label: label || null, salt: null, pwHash: null, secret: crypto.randomBytes(16).toString('hex'),
   };
-  if (password) { rec.salt = crypto.randomBytes(16).toString('hex'); rec.pwHash = hashPw(password, rec.salt); }
-  shares[token] = rec;
-  save();
+  if (safePassword) {
+    rec.salt = crypto.randomBytes(16).toString('hex');
+    rec.pwHash = hashPw(safePassword, rec.salt);
+  }
+  save({ ...shares, [token]: rec });
   return publicRec(rec);
 }
 
 function get(token) {
   const r = shares[token];
   if (!r) return null;
-  if (isExpired(r)) { delete shares[token]; save(); return null; }
+  if (isExpired(r)) {
+    const next = { ...shares };
+    delete next[token];
+    try { save(next); }
+    catch (error) { logPersistenceFailure('expire', error); }
+    return null;
+  }
   return r;
 }
 
@@ -100,26 +151,50 @@ function listForSession(sessionId) {
   return Object.values(shares).filter(r => r.sessionId === sessionId && !isExpired(r)).map(publicRec);
 }
 
-function remove(token) { const had = !!shares[token]; if (had) { delete shares[token]; save(); } return had; }
+function remove(token) {
+  if (!shares[token]) return false;
+  const next = { ...shares };
+  delete next[token];
+  save(next);
+  return true;
+}
 
 // Drop a session's LIVE shares when the session is deleted. Message snapshots
 // are independent copies (their content lives in the share record), so they
 // survive — the shared excerpt link keeps working after the session is gone.
 function removeForSession(sessionId) {
+  const next = { ...shares };
   let n = 0;
-  for (const t of Object.keys(shares)) {
-    if (shares[t].sessionId === sessionId && (shares[t].type || 'session') !== 'messages') { delete shares[t]; n++; }
+  for (const token of Object.keys(next)) {
+    const record = next[token];
+    if (record.sessionId === sessionId && (record.type || 'session') !== 'messages') {
+      delete next[token];
+      n++;
+    }
   }
-  if (n) save();
-  return n;
+  if (!n) return 0;
+  try {
+    save(next);
+    return n;
+  } catch (error) {
+    // Session deletion has already torn down external resources by this point.
+    // Keep cleanup best-effort so a share-file IO failure cannot leave a ghost
+    // session record whose worktree is gone. Live reads still fail closed once
+    // the owning session disappears from persistedSessions.
+    logPersistenceFailure('remove-for-session', error);
+    return 0;
+  }
 }
 
 function verifyPassword(token, pw) {
   const r = get(token);
   if (!r) return false;
   if (!r.pwHash) return true; // public
-  if (!pw) return false;
-  const a = Buffer.from(hashPw(pw, r.salt));
+  let safePassword;
+  try { safePassword = normalizePassword(pw); }
+  catch (_) { return false; }
+  if (!safePassword) return false;
+  const a = Buffer.from(hashPw(safePassword, r.salt));
   const b = Buffer.from(r.pwHash, 'hex').length === 32 ? Buffer.from(r.pwHash) : Buffer.from(r.pwHash);
   try { return a.length === b.length && crypto.timingSafeEqual(a, b); } catch { return false; }
 }
@@ -144,7 +219,9 @@ function access(token, { cookies = {}, password } = {}) {
 }
 
 module.exports = {
+  MAX_SHARE_PASSWORD_BYTES,
   create, createMessageShare, get, publicRec, listForSession, remove, removeForSession,
   verifyPassword, authCookieValue, access,
+  normalizeExpiresAt, normalizePassword,
   cookieName: (token) => `multicc_share_${token}`,
 };

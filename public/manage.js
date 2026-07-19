@@ -2382,10 +2382,7 @@ function renderProviderDefaults() {
 }
 
 function formatTokens(n) {
-  if (n == null || n === 0) return '0';
-  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-  return String(n);
+  return providerCatalog.formatCompactTokens(n);
 }
 
 function renderProviderList() {
@@ -2412,17 +2409,13 @@ function renderProviderList() {
     const stat = (_providerData.stats || []).find(s => s.providerId === p.id);
     let statHtml = '';
     if (stat) {
-      const wf = (w) => {
-        if (!w || (w.inputTokens + w.outputTokens === 0)) return '';
-        const i = formatTokens(w.inputTokens);
-        const o = formatTokens(w.outputTokens);
-        return `I:${i}/O:${o}`;
-      };
+      const wf = providerCatalog.formatUsageWindow;
       const parts = [];
       if (stat.today) { const s = wf(stat.today); if (s) parts.push(`日${s}`); }
       if (stat.week) { const s = wf(stat.week); if (s) parts.push(`周${s}`); }
       if (stat.month) { const s = wf(stat.month); if (s) parts.push(`月${s}`); }
-      parts.push(`累计 <b>${formatTokens(stat.totalTokens)}</b>（${stat.turnCount}轮/${stat.sessionCount}会话）`);
+      const cumulativeDetail = providerCatalog.formatUsageCumulative(stat);
+      parts.push(`累计 <b>${formatTokens(stat.totalTokens)}</b>（${cumulativeDetail} · ${stat.turnCount}轮/${stat.sessionCount}会话）`);
       statHtml = parts.join(' · ');
     }
     const latBadge = latencyBadge(p.id);

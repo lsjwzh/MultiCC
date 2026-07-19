@@ -67,7 +67,19 @@ test('catalog grouping, lookup and model options are deterministic', () => {
     ],
     stats: [{
       providerId: 'c1',
-      today: { inputTokens: 10, outputTokens: 2, secret: 'drop' },
+      inputTokens: 10,
+      freshInputTokens: 2,
+      cacheReadTokens: 6,
+      unattributedInputTokens: 2,
+      breakdownKnown: true,
+      today: {
+        inputTokens: 10,
+        freshInputTokens: 2,
+        cacheReadTokens: 8,
+        breakdownKnown: true,
+        outputTokens: 2,
+        secret: 'drop',
+      },
       totalTokens: 12,
       turnCount: 1,
       sessionCount: 1,
@@ -85,6 +97,11 @@ test('catalog grouping, lookup and model options are deterministic', () => {
   assert.equal(normalized.ccSwitchStatus.dbPath, undefined);
   assert.equal(normalized.authToken, undefined);
   assert.equal(normalized.stats[0].today.inputTokens, 10);
+  assert.equal(normalized.stats[0].today.cacheReadTokens, 8);
+  assert.equal(normalized.stats[0].cacheReadTokens, 6);
+  assert.equal(catalog.formatUsageWindow(normalized.stats[0].today), '新:2/缓读:8/缓写:0/出:2');
+  assert.equal(catalog.formatUsageCumulative(normalized.stats[0]), '新 2 / 缓读 6 / 缓写 0 / 未分 2');
+  assert.equal(catalog.formatUsageWindow({ inputTokens: 1200, outputTokens: 4 }), '入(含缓存):1.2K/出:4');
 });
 
 test('provider-in-use references become bounded display data', () => {
