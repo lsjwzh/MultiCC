@@ -59,6 +59,7 @@ function saveSubscriptions() {
     atomicWriteJson(PUSH_SUBS_FILE, [...subscriptions.values()]);
   } catch (e) {
     console.error('[multicc/push] Failed to save subscriptions:', e.message);
+    throw e;
   }
 }
 
