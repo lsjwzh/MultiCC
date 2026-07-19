@@ -7,6 +7,33 @@
       && /stream disconnected before completion|response\.completed/i.test(value);
   }
 
+  const PROGRESS_PHASES = Object.freeze({
+    starting: '正在启动',
+    thinking: '正在处理',
+    tool: '正在调用工具',
+    recovering: '正在恢复连接',
+    finalizing: '正在收尾',
+  });
+  const PROGRESS_TOOLS = Object.freeze({
+    subagent: '子 Agent',
+    monitor: '后台监控',
+    process: '命令执行',
+    filesystem: '文件操作',
+    search: '代码检索',
+    network: '网络请求',
+  });
+
+  function formatProgressHeartbeat(message) {
+    const source = message && typeof message === 'object' ? message : {};
+    const phase = PROGRESS_PHASES[source.phase] || '仍在执行';
+    const elapsedSeconds = Math.max(0, Math.floor((Number(source.elapsedMs) || 0) / 1000));
+    const elapsed = elapsedSeconds >= 60
+      ? `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`
+      : `${elapsedSeconds}s`;
+    const tool = PROGRESS_TOOLS[source.toolKind];
+    return [phase, elapsed, tool].filter(Boolean).join(' · ');
+  }
+
   function createEventController(options) {
     const opts = options || {};
     const state = opts.state || {};
@@ -15,6 +42,7 @@
     const historyStore = opts.historyStore;
     const historyView = opts.historyView;
     let generation = 0;
+    let activeProgressTurnId = null;
 
     function beginGeneration() { generation += 1; return generation; }
     function invalidateGeneration() { generation += 1; return generation; }
@@ -33,6 +61,12 @@
       } else if (message.type === 'result') summary += ` cost=${message.total_cost_usd ?? 'null'}`;
       else if (message.type === 'error') summary += ' [redacted]';
       host.debug?.('event', `WS ◀ ${summary}`);
+    }
+
+    function finishTurnProgress(kind, text) {
+      if (!activeProgressTurnId) return;
+      liveUi.pushDanmaku(kind || 'done', text || '本轮已结束', `turn:${activeProgressTurnId}`);
+      activeProgressTurnId = null;
     }
 
     function applySystemInit(message) {
@@ -85,6 +119,7 @@
         host.stopTitleAnimation?.();
         host.addSystemMsg?.('⚠️ Response completed while disconnected. Check history above.');
         host.updateUI?.();
+        finishTurnProgress('done', '本轮已结束');
       }
       if (message.providerId !== undefined) state.providerId = message.providerId;
       if (message.providerName !== undefined) state.providerName = message.providerName;
@@ -125,6 +160,7 @@
       host.updateContextBar?.(message.usage, message.modelUsage);
       host.updateUI?.();
       host.autoCommitIfNeeded?.(state.lastUserBubble);
+      finishTurnProgress('done', '本轮已完成');
     }
 
     function handleHistoryReset(message) {
@@ -199,6 +235,15 @@
             );
           }
           break;
+        case 'monitor_progress':
+          if (message.background !== false) {
+            liveUi.pushDanmaku('progress', message.description || '后台任务仍在执行', message.task_id);
+          }
+          break;
+        case 'progress_heartbeat':
+          activeProgressTurnId = String(message.turnId || 'active');
+          liveUi.pushDanmaku('progress', formatProgressHeartbeat(message), `turn:${activeProgressTurnId}`);
+          break;
         case 'background_tasks': break;
         case 'chat_msg_meta':
           if (message.id && message.role) historyView.tagLatestMessage(message.role, message.id);
@@ -219,6 +264,7 @@
             host.stopTitleAnimation?.();
             host.updateUI?.();
           }
+          finishTurnProgress('done', '本轮已结束');
           break;
         case 'notify': {
           const classifyState = message.classifyState || null;
@@ -244,6 +290,7 @@
           finishStreaming();
           host.stopTitleAnimation?.();
           host.updateUI?.();
+          finishTurnProgress('fail', '本轮执行失败');
           break;
         default: break;
       }
@@ -395,7 +442,11 @@
     });
   }
 
-  const api = Object.freeze({ createEventController, isRecoverableCodexReconnectErrorText });
+  const api = Object.freeze({
+    createEventController,
+    isRecoverableCodexReconnectErrorText,
+    formatProgressHeartbeat,
+  });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCChatEventController = api;
 })(typeof window !== 'undefined' ? window : globalThis);

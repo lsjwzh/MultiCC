@@ -342,10 +342,11 @@
       if (!elements.panel) return;
       const text = String(description || '').trim() || '后台任务';
       const key = taskId ? `t:${taskId}` : `d:${text}`;
+      const rowState = kind === 'progress' ? 'start' : kind;
       const existing = danmaku.rows.get(key);
       if (existing) {
         if (kind === 'start') { showDanmaku(); return; }
-        setDanmakuRowState(existing, kind);
+        setDanmakuRowState(existing, rowState);
         existing.text.textContent = text;
         refreshDanmakuMeta(); showDanmaku(); scheduleDanmakuHide();
         return;
@@ -362,8 +363,8 @@
       textEl.className = 'dm-txt';
       textEl.textContent = text;
       rowEl.append(icon, textEl);
-      const row = { element: rowEl, icon, text: textEl, state: kind, staleTimer: null };
-      setDanmakuRowState(row, kind);
+      const row = { element: rowEl, icon, text: textEl, state: rowState, staleTimer: null };
+      setDanmakuRowState(row, rowState);
       elements.body.prepend(rowEl);
       danmaku.rows.set(key, row);
       showDanmaku(); refreshDanmakuMeta(); scheduleDanmakuHide();

@@ -84,7 +84,7 @@ function fakeDocument() {
 function controllerFixture() {
   const { document } = fakeDocument();
   const messages = new FakeElement('div');
-  const liveUi = liveUiApi.createLiveUi({
+  const rawLiveUi = liveUiApi.createLiveUi({
     document,
     messagesEl: messages,
     translate: key => key,
@@ -93,6 +93,11 @@ function controllerFixture() {
     isRestarting: () => false,
     debug() {},
   });
+  const progressCalls = [];
+  const liveUi = {
+    ...rawLiveUi,
+    pushDanmaku: (...args) => progressCalls.push(args),
+  };
   const calls = [];
   const debugCalls = [];
   const content = new FakeElement('div');
@@ -176,7 +181,7 @@ function controllerFixture() {
     rearmUnread() {},
   };
   const controller = eventApi.createEventController({ state, host, liveUi, historyStore, historyView });
-  return { controller, state, calls, debugCalls, tools, bubble, content, liveUi };
+  return { controller, state, calls, debugCalls, progressCalls, tools, bubble, content, liveUi };
 }
 
 test('event module exports a frozen narrow API and codex reconnect classifier', () => {
@@ -185,6 +190,35 @@ test('event module exports a frozen narrow API and codex reconnect classifier', 
     'Codex 出错：Reconnecting... 1/5 (stream disconnected before completion)',
   ), true);
   assert.equal(eventApi.isRecoverableCodexReconnectErrorText('permission denied'), false);
+});
+
+test('progress heartbeat formatter exposes only safe bounded status fields', () => {
+  assert.equal(eventApi.formatProgressHeartbeat({
+    phase: 'tool', elapsedMs: 150_900, toolKind: 'subagent',
+    prompt: 'secret prompt', output: 'secret output', token: 'sk-secret',
+  }), '正在调用工具 · 2m 30s · 子 Agent');
+  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }), '仍在执行 · 0s');
+});
+
+test('turn and monitor progress update stable rows and terminal events close the turn row', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'progress_heartbeat', turnId: 'turn-1', phase: 'tool', elapsedMs: 31_000, toolKind: 'process',
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'progress_heartbeat', turnId: 'turn-1', phase: 'thinking', elapsedMs: 61_000,
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'monitor_progress', task_id: 'task-1', description: '后台测试仍在执行', background: true,
+  }, generation);
+  fixture.controller.handleEvent({ type: 'result' }, generation);
+  assert.deepEqual(fixture.progressCalls, [
+    ['progress', '正在调用工具 · 31s · 命令执行', 'turn:turn-1'],
+    ['progress', '正在处理 · 1m 1s', 'turn:turn-1'],
+    ['progress', '后台测试仍在执行', 'task-1'],
+    ['done', '本轮已完成', 'turn:turn-1'],
+  ]);
 });
 
 test('connection generation rejects stale late events before any host mutation', () => {
@@ -297,6 +331,30 @@ test('live UI renders token and timing nodes through textContent only', () => {
   assert.match(line.title, /<img onerror=boom>/, 'tooltip remains inert text');
   const timing = fixture.liveUi.buildTimingLine({ ts: 1_700_000_000_000, durationMs: 1234 });
   assert.equal(timing.children.at(-1).textContent, '⏱ 1.2s');
+});
+
+test('live UI progress refreshes one stable row until the terminal update', () => {
+  const { document, ids } = fakeDocument();
+  for (const id of [
+    'danmaku-panel', 'danmaku-head', 'danmaku-body', 'danmaku-title',
+    'danmaku-count', 'danmaku-dot', 'danmaku-collapse-btn',
+  ]) ids.set(id, new FakeElement('div'));
+  let timerId = 0;
+  const liveUi = liveUiApi.createLiveUi({
+    document,
+    messagesEl: new FakeElement('div'),
+    setTimeout: () => ++timerId,
+    clearTimeout() {},
+  });
+  liveUi.pushDanmaku('progress', '正在启动 · 30s', 'turn:1');
+  liveUi.pushDanmaku('progress', '正在调用工具 · 1m 0s', 'turn:1');
+  const body = ids.get('danmaku-body');
+  assert.equal(body.children.length, 1);
+  assert.equal(body.children[0].querySelector('.dm-txt').textContent, '正在调用工具 · 1m 0s');
+  assert.equal(body.children[0].className, 'dm-row dm-start');
+  liveUi.pushDanmaku('done', '本轮已完成', 'turn:1');
+  assert.equal(body.children.length, 1);
+  assert.equal(body.children[0].className, 'dm-row dm-done');
 });
 
 test('chat host loads new controllers before chat and reaches the 3000-line budget', () => {

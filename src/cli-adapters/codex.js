@@ -99,6 +99,9 @@ function createCodexAdapter(deps) {
             status: 'running',
           }];
         }
+        if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+          return [{ type: 'activity', phase: 'tool', toolKind: item.name || item.type }];
+        }
         if (item.type !== 'command_execution') return [];
         return [{
           type: 'tool_start', id: item.id, name: 'Bash',
@@ -141,6 +144,9 @@ function createCodexAdapter(deps) {
             text: `\n\n> [提问工具 ${item.name} 在非交互环境不可用，已转为文本透传]\n${questionText}\n`,
             log: `ask-tool ${item.name} degraded to text`,
           }];
+        }
+        if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+          return [{ type: 'activity', phase: 'tool', toolKind: item.name || item.type }];
         }
         if (item.type === 'agent_message') {
           return [{ type: 'assistant_text', text: item.text || '', forwardSuffix: '\n\n' }];
