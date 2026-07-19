@@ -112,6 +112,7 @@ const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
+const { createSessionGitRuntime } = require('./src/routes/session-git');
 const {
   listInstalledSkills,
   listClaudeHistory,
@@ -784,38 +785,6 @@ app.get('/api/repo-operations/:operationId', (req, res) => {
   res.json(operation);
 });
 
-// gitWorktreeMergeState fires several asynchronous git subprocesses per session.
-// It is read once per session on every /api/sessions poll, so on a busy server
-// we keep REST serialization synchronous by returning the latest cached state
-// while RepoActor refreshes it in the background. Mutating endpoints
-// (merge/sync/commit) call mergeStateFresh() to recompute and refresh the cache
-// so the UI never shows a stale indicator after an actual git change. WS
-// broadcasts already push fresh state to active viewers, so the bounded staleness
-// only ever affects passive REST polling.
-const _mergeStateCache = new Map();
-const _mergeStatePending = new Map();
-function mergeStateKey(session) { return session && session.id ? session.id : null; }
-function mergeStateCached(dir, session) {
-  const key = mergeStateKey(session);
-  if (!key) return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'loading' };
-  const cached = _mergeStateCache.get(key);
-  const now = Date.now();
-  if ((!cached || cached.expiry <= now) && !_mergeStatePending.has(key)) {
-    const pending = gitWorktreeMergeState(dir, session)
-      .then(value => { _mergeStateCache.set(key, { value, expiry: Date.now() + 4000 + Math.floor(Math.random() * 3000) }); return value; })
-      .catch(() => cached?.value || null)
-      .finally(() => _mergeStatePending.delete(key));
-    _mergeStatePending.set(key, pending);
-  }
-  return cached?.value || { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'loading' };
-}
-async function mergeStateFresh(dir, session) {
-  const value = await gitWorktreeMergeState(dir, session);
-  const key = mergeStateKey(session);
-  if (key) _mergeStateCache.set(key, { value, expiry: Date.now() + 4000 });
-  return value;
-}
-
 const gitReadyDirs = new Set();          // dir.id once its repo is verified/initialised
 const invalidSessions = new Map();       // sessionId → reason; recovery is skipped for these
 
@@ -994,7 +963,7 @@ async function destroySessionCascade(s, d, opts = {}) {
     try {
       removal = await gitWorktreeRemove(d.path, s.worktreePath, s.branch, {
         sessionId: s.id, baseBranch: d.baseBranch, force: !!opts.force,
-        activeCheck: opts.force ? null : () => sessionWorktreeActive(s.id),
+        activeCheck: opts.force ? null : () => sessionGitRuntime.isWorktreeActive(s.id),
       });
     } catch (error) {
       const reason = error.code === 'SESSION_ACTIVE' ? 'active'
@@ -1937,6 +1906,25 @@ providerRouterRuntime.mountProtocolProxies(app, {
 // Session query, dashboard, workspace and classify-admin routes share one
 // bounded composition. Dependencies that initialize later (Aux, workspace facts,
 // classifier helpers) are resolved lazily by closures and never snapshotted here.
+const sessionGitRuntime = createSessionGitRuntime({
+  records: persistedSessions,
+  directories,
+  terminalSessions: sessions,
+  chatSessions,
+  gitWorktreeMergeState,
+  gitBaseBranch,
+  gitRunQueued,
+  gitMergeBack,
+  gitSyncFromBase,
+  gitRebaseResolve,
+  appendEvent,
+  workspaceBroadcast: (...args) => workspaceBroadcast(...args),
+  existsSync: fs.existsSync,
+  now: Date.now,
+  random: Math.random,
+  logger: console,
+});
+const mergeStateCached = sessionGitRuntime.mergeStateCached;
 const sessionAdmin = createSessionAdminRuntime({
   records: persistedSessions,
   terminalSessions: sessions,
@@ -2806,91 +2794,7 @@ app.post('/api/sessions/import', asyncHandler(async (req, res) => {
   }
 }));
 
-app.get('/api/sessions/:id/merge-status', (req, res) => {
-  const persisted = persistedSessions.get(req.params.id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  const dir = directories.get(persisted.dirId);
-  if (!dir) return res.status(404).json({ error: 'directory not found' });
-  res.json(mergeStateCached(dir, persisted));
-});
-
-app.get('/api/sessions/:id/diff', async (req, res) => {
-  const persisted = persistedSessions.get(req.params.id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  const dir = directories.get(persisted.dirId);
-  if (!dir) return res.status(404).json({ error: 'directory not found' });
-  if (!persisted.worktreePath || !fs.existsSync(persisted.worktreePath)) {
-    return res.status(400).json({ error: 'worktree missing' });
-  }
-  const baseBranch = dir.baseBranch || await gitBaseBranch(dir.path);
-  const wt = persisted.worktreePath;
-  const MAX_DIFF = 1024 * 1024;   // 1 MiB cap; keep UI snappy
-  let diff = '', stat = '', truncated = false, error = null;
-  // Async + serialized via the git queue: a big/slow diff no longer blocks the
-  // event loop, and never runs concurrently with other git work.
-  try {
-    diff = await gitRunQueued(wt, ['diff', '--no-color', baseBranch], { maxBuffer: MAX_DIFF + 16 * 1024 });
-    if (diff.length > MAX_DIFF) { diff = diff.slice(0, MAX_DIFF); truncated = true; }
-  } catch (e) {
-    if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-      truncated = true;
-      diff = '(diff exceeds 1MB cap — too large to display in browser)';
-    } else {
-      error = e.stderr ? String(e.stderr).slice(0, 400) : e.message;
-    }
-  }
-  try {
-    stat = await gitRunQueued(wt, ['diff', '--stat', '--no-color', baseBranch], { maxBuffer: 256 * 1024 });
-  } catch (_) { /* stat is best-effort */ }
-  res.json({
-    baseBranch,
-    branch: persisted.branch,
-    stat,
-    diff,
-    truncated,
-    mergeState: mergeStateCached(dir, persisted),
-    error,
-  });
-});
-
-// ── Git tree viewer ──
-// Returns a simplified git log for a directory or session, suitable for
-// rendering a commit-tree in the fleet panel. Supports ?limit= (default 30)
-// and ?all (include all branches).
-app.get('/api/git/log', async (req, res) => {
-  const dirId = req.query.dirId;
-  const sessionId = req.query.sessionId;
-  const limit = Math.min(parseInt(req.query.limit) || 30, 100);
-  const allBranches = req.query.all === '1';
-
-  let repoPath;
-  if (sessionId) {
-    const persisted = persistedSessions.get(sessionId);
-    if (!persisted || !persisted.worktreePath) return res.status(404).json({ error: 'session or worktree not found' });
-    repoPath = persisted.worktreePath;
-  } else if (dirId) {
-    const dir = directories.get(dirId);
-    if (!dir) return res.status(404).json({ error: 'directory not found' });
-    repoPath = dir.path;
-  } else {
-    return res.status(400).json({ error: 'dirId or sessionId required' });
-  }
-  if (!fs.existsSync(repoPath)) return res.status(404).json({ error: 'repo path missing' });
-
-  const args = ['log', `-${limit}`, '--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%D', '--no-color'];
-  if (allBranches) args.push('--all');
-  try {
-    const raw = await gitRunQueued(repoPath, args, { maxBuffer: 512 * 1024 });
-    const lines = raw.trim().split('\n').filter(Boolean);
-    const commits = lines.map(line => {
-      const [hash, short, author, date, subject, refs] = line.split('\x00');
-      return { hash, short, author, date, subject, refs: refs ? refs.replace(/^,\s*/, '').trim() : '' };
-    });
-    res.json({ commits, repoPath });
-  } catch (e) {
-    res.status(500).json({ error: e.stderr ? String(e.stderr).slice(0, 400) : e.message });
-  }
-});
+sessionGitRuntime.mountRoutes(app);
 
 app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
   const id = req.params.id;
@@ -2950,7 +2854,7 @@ app.post('/api/sessions/:id/relocate', asyncHandler(async (req, res) => {
   const oldSession = sessions.get(id);
   const relocated = await gitRelocateWorktree(oldDir, targetDir, persisted, {
     force, active,
-    activeCheck: force ? null : () => sessionWorktreeActive(id),
+    activeCheck: force ? null : () => sessionGitRuntime.isWorktreeActive(id),
     beforeRemove: async () => {
       if (oldSession) {
         broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
@@ -3121,199 +3025,6 @@ app.post('/api/restart', (req, res) => {
   }
 
   return res.status(202).json({ ok: true, status: 'scheduled', activeStreaming });
-});
-
-// ── Merge a session's worktree branch back into the directory's base branch ──
-app.post('/api/sessions/:id/merge', async (req, res) => {
-  const id = req.params.id;
-  const persisted = persistedSessions.get(id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  if (!persisted.worktreePath || !persisted.branch) {
-    return res.status(400).json({ error: '该会话没有 worktree，无需合并' });
-  }
-  const dir = directories.get(persisted.dirId);
-  if (!dir) return res.status(404).json({ error: 'directory not found' });
-
-  const result = await gitMergeBack(dir, persisted);
-  if (!result.ok) {
-    // conflict → 409 with file list; other failures → 400
-    return res.status(result.conflicts?.length ? 409 : 400).json(result);
-  }
-  console.log(`[multicc] merge ${persisted.branch} → ${dir.baseBranch}: ` +
-    (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
-  appendEvent(dir.id, 'merged',
-    result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', id);
-  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
-
-  // When this merge actually advanced the base branch, every OTHER worktree in
-  // the same directory is now behind base. Auto-sync them so siblings don't have
-  // to be manually caught up one by one (the #1 friction in multi-session work).
-  // Best-effort & non-blocking: each sync is independent; conflicts are skipped
-  // and surfaced via the workspace event log rather than failing this response.
-  if (result.merged) {
-    const synced = await autoSyncSiblingWorktrees(dir, id);
-    if (synced.length) result.siblingsSynced = synced;
-  }
-  res.json(result);
-});
-
-// Pull the (just-advanced) base branch into every sibling worktree in `dir`
-// except `exceptId`. Returns a summary array; broadcasts per-session merge state
-// and a directory event. Conflicts are reported, not merged.
-// "Active" = something is (or may imminently be) writing to the worktree: a
-// terminal PTY, a running CLI process, or an in-flight streaming turn. A chat
-// page merely being OPEN (clients.size) no longer counts — a viewer doesn't
-// write files, and counting it created a self-lock where a session could
-// never be synced from its own chat page.
-function sessionWorktreeActive(id) {
-  if (sessions.has(id)) return true;
-  const chat = chatSessions.get(id);
-  return !!(chat && (chat.claudeProc || chat.isStreaming));
-}
-
-// Gate for user-facing sync/rebase: on top of the hard process check, consult
-// the aux classify verdict for this session. Only quiescent states allow a
-// rebase to rewrite the worktree:
-//   D=完成  W=等用户  E=API异常  → allow (nothing will write the worktree)
-//   C=继续  P=处理中  B=等后台   → block (turn ongoing / bg task may write)
-// Returns null when allowed, else { state, message } for a friendly 4xx.
-function sessionSyncGate(id) {
-  if (sessionWorktreeActive(id)) {
-    return { state: 'running', message: '会话正在执行任务（进程运行中），请等待本轮结束后再同步' };
-  }
-  const persisted = persistedSessions.get(id);
-  const cls = persisted?.taskState?.classifyState || null;
-  if (cls === 'C' || cls === 'P' || cls === 'B') {
-    const label = cls === 'B' ? '等待后台任务' : (cls === 'C' ? '任务待继续' : '处理中');
-    return { state: cls, message: `会话任务未结束（${label}，状态 ${cls}），请等待任务完成/暂停后再同步` };
-  }
-  return null;
-}
-
-async function autoSyncSiblingWorktrees(dir, exceptId) {
-  const out = [];
-  for (const s of persistedSessions.values()) {
-    if (s.id === exceptId) continue;
-    if (s.dirId !== dir.id) continue;
-    if (!s.worktreePath || !s.branch) continue;
-    try {
-      if (sessionWorktreeActive(s.id)) {
-        out.push({ id: s.id, skipped: true, reason: 'active' });
-        appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：会话仍 active', s.id);
-        continue;
-      }
-      const state = await gitWorktreeMergeState(dir, s);
-      if (state.dirty) {
-        out.push({ id: s.id, skipped: true, reason: 'dirty' });
-        appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：worktree 有未提交改动', s.id);
-        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: state });
-        continue;
-      }
-      if (state.ahead > 0) {
-        out.push({ id: s.id, skipped: true, reason: 'unmerged' });
-        appendEvent(dir.id, 'sync_skipped', '自动同步已跳过：worktree 有尚未合回主分支的提交', s.id);
-        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: state });
-        continue;
-      }
-      // Automatic sync: abort on conflict so an unattended sibling session is
-      // never left parked mid-rebase. The conflict still surfaces via merge
-      // state (conflict badge) so the user can sync manually and resolve it.
-      const r = await gitSyncFromBase(dir, s, { abortOnConflict: true,
-        activeCheck: () => sessionWorktreeActive(s.id) });
-      if (r.ok && r.merged) {
-        out.push({ id: s.id, commits: r.commits });
-        appendEvent(dir.id, 'synced', `自动同步 ${r.commits} 个提交（${dir.baseBranch} 合并后）`, s.id);
-        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: await mergeStateFresh(dir, s) });
-      } else if (!r.ok && r.conflicts?.length) {
-        out.push({ id: s.id, conflict: true, files: r.conflicts });
-        appendEvent(dir.id, 'sync_conflict', `自动同步遇冲突，需手动处理：${r.conflicts.slice(0, 5).join(', ')}`, s.id);
-        workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: s.id, mergeState: await mergeStateFresh(dir, s) });
-      }
-    } catch (e) {
-      console.warn(`[multicc] auto-sync sibling ${s.id} failed: ${e.message}`);
-    }
-  }
-  if (out.length) {
-    console.log(`[multicc] auto-synced ${out.length} sibling worktree(s) after merge into ${dir.baseBranch}`);
-  }
-  return out;
-}
-
-// Sync: pull the base branch INTO this session's worktree (catch a stale
-// worktree up to main). Inverse direction of /merge.
-app.post('/api/sessions/:id/sync', async (req, res) => {
-  const id = req.params.id;
-  const persisted = persistedSessions.get(id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  if (!persisted.worktreePath || !persisted.branch) {
-    return res.status(400).json({ error: '该会话没有 worktree，无需同步' });
-  }
-  const dir = directories.get(persisted.dirId);
-  if (!dir) return res.status(404).json({ error: 'directory not found' });
-
-  const force = req.query.force === '1' || req.body?.force === true;
-  // Classify-based gate: sync only when the session's task is quiescent
-  // (完成/等用户/异常). While a turn is running or a bg task may write the
-  // worktree, tell the user to wait instead of failing with a cryptic error.
-  if (!force) {
-    const gate = sessionSyncGate(id);
-    if (gate) {
-      return res.status(409).json({ ok: false, blocked: true, reasons: ['busy'],
-        classifyState: gate.state, error: gate.message });
-    }
-  }
-  const result = await gitSyncFromBase(dir, persisted, {
-    force,
-    activeCheck: force ? null : () => sessionWorktreeActive(id),
-  }).catch(error => ({ ok: false, blocked: true, reasons: [error.code === 'SESSION_ACTIVE' ? 'active' : 'leased'],
-    operationId: error.operationId, queueDepth: error.queueDepth, error: error.message }));
-  if (!result.ok) {
-    // A conflict leaves the worktree parked mid-rebase; broadcast the merge
-    // state so the conflict badge shows up persistently on the card + chat,
-    // not just as a one-shot toast on this response.
-    if (result.conflicts?.length) {
-      appendEvent(dir.id, 'sync_conflict',
-        `同步 rebase 冲突，需手动解决：${result.conflicts.slice(0, 5).join(', ')}`, id);
-      workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
-    }
-    return res.status(result.conflicts?.length ? 409 : 400).json(result);
-  }
-  console.log(`[multicc] sync ${dir.baseBranch} → ${persisted.branch}: ` +
-    (result.merged ? `${result.commits} commit(s)` : 'already up to date'));
-  appendEvent(dir.id, 'synced',
-    result.merged ? `从 ${result.baseBranch} 同步 ${result.commits} 个提交` : '已是最新', id);
-  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
-  res.json(result);
-});
-
-// Resolve a parked rebase (created by a conflicting sync): continue after the
-// user staged their fixes in the worktree, or abort to roll back. Body: { action }.
-app.post('/api/sessions/:id/rebase', async (req, res) => {
-  const id = req.params.id;
-  const persisted = persistedSessions.get(id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  if (!persisted.worktreePath || !persisted.branch) {
-    return res.status(400).json({ error: '该会话没有 worktree' });
-  }
-  const dir = directories.get(persisted.dirId);
-  if (!dir) return res.status(404).json({ error: 'directory not found' });
-
-  const action = (req.body && req.body.action) === 'abort' ? 'abort' : 'continue';
-  const force = req.query.force === '1' || req.body?.force === true;
-  const result = await gitRebaseResolve(dir, persisted, action, {
-    activeCheck: force ? null : () => sessionWorktreeActive(id),
-  }).catch(error => ({ ok: false, blocked: true, reasons: [error.code === 'SESSION_ACTIVE' ? 'active' : 'leased'],
-    operationId: error.operationId, queueDepth: error.queueDepth, error: error.message }));
-  // Always re-broadcast: success clears the badge, partial-continue updates the
-  // remaining conflict list, abort returns the worktree to a clean state.
-  workspaceBroadcast(dir.id, { type: 'merge_status', sessionId: id, mergeState: await mergeStateFresh(dir, persisted) });
-  if (!result.ok) {
-    return res.status(result.conflicts?.length ? 409 : 400).json(result);
-  }
-  appendEvent(dir.id, 'synced',
-    result.aborted ? 'rebase 已放弃，worktree 回到同步前状态'
-      : (result.done ? 'rebase 冲突已解决并完成同步' : 'rebase 已继续'), id);
-  res.json(result);
 });
 
 // ── Inter-agent notes ──
