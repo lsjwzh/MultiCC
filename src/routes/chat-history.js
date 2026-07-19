@@ -48,6 +48,9 @@ function assertChatHistoryDeps(deps) {
   if (!deps.chatStream || typeof deps.chatStream.close !== 'function') {
     throw new TypeError('chat history dependency missing: chatStream.close');
   }
+  if (deps.projectMessages != null && typeof deps.projectMessages !== 'function') {
+    throw new TypeError('chat history dependency invalid: projectMessages');
+  }
   return deps;
 }
 
@@ -170,6 +173,35 @@ function createChatHistoryRuntime(rawDeps) {
     return service.read(sessionId);
   }
 
+  function projectedMessages(sessionId) {
+    const messages = service.read(sessionId);
+    if (!deps.projectMessages) return messages;
+    try {
+      const projected = deps.projectMessages(String(sessionId), messages);
+      return Array.isArray(projected) ? projected : messages;
+    } catch (error) {
+      logFailure('chat_history_projection_failed', error, sessionId);
+      return messages;
+    }
+  }
+
+  function paginate(sessionId, { before, limit = historyPageSize } = {}) {
+    const messages = projectedMessages(sessionId);
+    const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || historyPageSize));
+    let end = messages.length;
+    if (before) {
+      const index = messages.findIndex(message => message.id === before);
+      if (index < 0) return Object.freeze({ messages: [], hasMore: false, before: null });
+      end = index;
+    }
+    const start = Math.max(0, end - pageSize);
+    return Object.freeze({
+      messages: messages.slice(start, end),
+      hasMore: start > 0,
+      before: start > 0 ? messages[start].id : null,
+    });
+  }
+
   function latestAssistantAt(sessionId) {
     return service.latestAssistantAt(sessionId);
   }
@@ -268,7 +300,10 @@ function createChatHistoryRuntime(rawDeps) {
       reason: 'clear-history',
       afterCommit: () => {
         if (removed.length) memoryDistill = startMemoryDistill(key, removed);
-        const page = service.paginate(key, { limit: historyPageSize });
+        const canonicalPage = service.paginate(key, { limit: historyPageSize });
+        const page = deps.projectMessages
+          ? paginate(key, { limit: historyPageSize })
+          : canonicalPage;
         deps.chatBroadcast(key, {
           type: 'chat_history_reset',
           messages: page.messages,
@@ -354,7 +389,7 @@ function createChatHistoryRuntime(rawDeps) {
         return res.status(404).json({ error: 'session not found' });
       }
       try {
-        const page = service.paginate(sessionId, {
+        const page = paginate(sessionId, {
           before: req.query.before && String(req.query.before),
           limit: req.query.limit && String(req.query.limit),
         });
@@ -387,6 +422,7 @@ function createChatHistoryRuntime(rawDeps) {
     latestAssistantAt,
     load,
     mountRoutes,
+    paginate,
     scheduleIncrementalSave,
     service,
     stop,

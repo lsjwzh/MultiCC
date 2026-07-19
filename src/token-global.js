@@ -120,17 +120,6 @@ function isDerivedCodexRollout(meta) {
   );
 }
 
-function findCodexRolloutMeta(text) {
-  for (const line of text.split('\n')) {
-    if (!line || line.indexOf('"session_meta"') === -1) continue;
-    try {
-      const value = JSON.parse(line);
-      if (value.type === 'session_meta') return value.payload || {};
-    } catch (_) {}
-  }
-  return {};
-}
-
 function completeCodexLastUsage(info, total) {
   const value = info && info.last_token_usage;
   if (!value || typeof value !== 'object') return null;
@@ -151,63 +140,123 @@ function recordCodexUsage(windows, byDay, W, timestamp, model, usage) {
   return usage.output > 0 ? 1 : 0;
 }
 
-function scanCodexRollout(text, windows, byDay, W) {
-  const derived = isDerivedCodexRollout(findCodexRolloutMeta(text));
+function parseCodexRollout(text, sourceOrder = 0) {
+  let meta = {};
+  let hasMeta = false;
   let model = 'codex';
-  let highWater = null;              // accepted cumulative { fresh, cached, output }
-  let responses = 0;
+  const events = [];
+  let eventOrder = 0;
 
   for (const line of text.split('\n')) {
     if (!line) continue;
-    if (line.indexOf('"token_count"') === -1 && line.indexOf('"model"') === -1) continue;
+    if (line.indexOf('"session_meta"') === -1
+        && line.indexOf('"token_count"') === -1
+        && line.indexOf('"model"') === -1) continue;
     let d;
     try { d = JSON.parse(line); } catch { continue; }
     const p = d.payload || {};
+    if (d.type === 'session_meta') {
+      // A derived rollout can embed its parent's session_meta immediately
+      // after the child's own envelope. The first record owns this file; using
+      // the last one would collapse independent child agents into the parent.
+      if (!hasMeta) {
+        meta = p && typeof p === 'object' ? p : {};
+        hasMeta = true;
+      }
+      continue;
+    }
     if (p.model) model = p.model;
     if (!(d.type === 'event_msg' && p.type === 'token_count')) continue;
     const info = p.info || {};
-    const cur = exclusiveCodexUsage(info.total_token_usage);
-    if (!cur) continue;
+    const current = exclusiveCodexUsage(info.total_token_usage);
     const timestamp = new Date(d.timestamp).getTime();
-    if (!Number.isFinite(timestamp)) continue;
+    if (!current || !Number.isFinite(timestamp)) continue;
+    events.push({
+      timestamp: d.timestamp,
+      model,
+      current,
+      last: completeCodexLastUsage(info, current),
+      sourceOrder,
+      eventOrder: eventOrder++,
+    });
+  }
+  return Object.freeze({
+    meta,
+    derived: isDerivedCodexRollout(meta),
+    events,
+    sourceOrder,
+  });
+}
 
-    if (!highWater) {
-      // Main rollouts originate at zero, so their first cumulative snapshot is
-      // real usage.  A derived rollout inherits its parent's counters: only
-      // Codex's complete per-request `last_token_usage` is safe to attribute.
-      const initial = derived ? completeCodexLastUsage(info, cur) : cur;
-      if (initial) responses += recordCodexUsage(windows, byDay, W, d.timestamp, model, initial);
+function scanCodexFragments(fragments, windows, byDay, W) {
+  const ordered = [...fragments].sort((left, right) => left.sourceOrder - right.sourceOrder);
+  const derived = ordered.some(fragment => fragment.derived);
+  let highWater = null;              // accepted cumulative { fresh, cached, output }
+  let responses = 0;
+
+  for (const fragment of ordered) {
+    for (const event of fragment.events) {
+      const cur = event.current;
+
+      if (!highWater) {
+        // Main rollouts originate at zero, so their first cumulative snapshot
+        // is real usage. A derived rollout inherits its parent's counters:
+        // only Codex's complete per-request last usage is safe to attribute.
+        const initial = derived ? event.last : cur;
+        if (initial) {
+          responses += recordCodexUsage(
+            windows, byDay, W, event.timestamp, event.model, initial,
+          );
+        }
+        highWater = { ...cur };
+        continue;
+      }
+
+      // Fresh input, cached input, and output are mutually exclusive
+      // cumulative buckets. Accept only a monotonic vector. This high-water is
+      // shared by every resume file for the same logical Codex thread.
+      if (cur.fresh < highWater.fresh
+        || cur.cached < highWater.cached
+        || cur.output < highWater.output) continue;
+      const delta = {
+        fresh: cur.fresh - highWater.fresh,
+        cached: cur.cached - highWater.cached,
+        output: cur.output - highWater.output,
+      };
       highWater = { ...cur };
-      continue;
+      responses += recordCodexUsage(
+        windows, byDay, W, event.timestamp, event.model, delta,
+      );
     }
-
-    // Fresh input, cached input, and output are mutually exclusive cumulative
-    // buckets.  Accept the snapshot only when the entire vector is monotonic.
-    // Advancing one bucket while another regresses can merely reclassify the
-    // same tokens (fresh -> cached); counting that partial rise would double
-    // charge. A reset therefore fails closed without moving the baseline.
-    if (cur.fresh < highWater.fresh
-      || cur.cached < highWater.cached
-      || cur.output < highWater.output) continue;
-    const delta = {
-      fresh: cur.fresh - highWater.fresh,
-      cached: cur.cached - highWater.cached,
-      output: cur.output - highWater.output,
-    };
-    highWater = { ...cur };
-    responses += recordCodexUsage(windows, byDay, W, d.timestamp, model, delta);
   }
 
   return responses;
 }
 
+function scanCodexRollout(text, windows, byDay, W) {
+  return scanCodexFragments([parseCodexRollout(text)], windows, byDay, W);
+}
+
 async function addCodexInto(windows, byDay, W, codexDir = CODEX_DIR) {
-  const files = await listJsonl(codexDir);
-  let responses = 0;
+  const files = (await listJsonl(codexDir)).sort();
+  const groups = new Map();
+  let sourceOrder = 0;
   for (const fp of files) {
     let text;
     try { text = await fsp.readFile(fp, 'utf8'); } catch { continue; }
-    responses += scanCodexRollout(text, windows, byDay, W);
+    const fragment = parseCodexRollout(text, sourceOrder++);
+    const meta = fragment.meta || {};
+    const nativeThreadId = meta.id || meta.session_id || meta.thread_id;
+    // A file without an explicit native thread identity cannot safely share a
+    // high-water with any other file.
+    const key = nativeThreadId ? `thread:${nativeThreadId}` : `file:${fp}`;
+    const group = groups.get(key) || [];
+    group.push(fragment);
+    groups.set(key, group);
+  }
+  let responses = 0;
+  for (const fragments of groups.values()) {
+    responses += scanCodexFragments(fragments, windows, byDay, W);
   }
   return { files: files.length, responses };
 }
