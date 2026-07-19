@@ -130,6 +130,9 @@ const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
+const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
+const { createSessionTriggers } = require('./src/triggers');
+const { createPushRuntime } = require('./src/push-runtime');
 const {
   createChatHistoryFileRepository,
   createChatHistoryService,
@@ -176,6 +179,7 @@ const { installWsBackpressure } = require('./src/ws-backpressure');
 const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
@@ -3485,486 +3489,17 @@ app.post('/api/sessions/:id/memory/action', (req, res) => {
   res.json(result);
 });
 
-// ── Memory graph ──────────────────────────────────────────────────────────
-// Build a directed graph of the memory system for visualization. Every .md
-// file under memories/<dirId>/{_shared, sessions/*} becomes a node
-// {id, title, summary, type, scope, …}; every [[wikilink]] in a file body
-// becomes a directed edge {source, target, type:'reference', strength:count}.
-// Dangling [[links]] (no matching file yet) surface as `missing` placeholder
-// nodes so the "link liberally" convention is visible rather than dropped.
-//
-//   GET /api/memory/graph            → aggregate across all projects
-//   GET /api/memory/graph?dirId=<id> → scope to one project (dir)
-const MEM_GRAPH_MAX_NODES = 600; // safety cap so a huge store still renders <3s
-
-// Estimate the token count of a memory file. No tokenizer dependency is bundled,
-// so this is a deliberately-labelled ESTIMATE (UI always prefixes it with "~估"):
-// CJK codepoints run ~1.5 tokens/char across GPT/Claude tokenizers, while Latin
-// text averages ~4 chars/token. Good enough as a size gauge, never exact.
-function estimateMemTokens(str) {
-  const s = String(str == null ? '' : str);
-  if (!s.length) return 0;
-  const cjk = (s.match(/[㐀-䶿一-鿿豈-﫿぀-ゟ゠-ヿ가-힯]/g) || []).length;
-  const other = s.length - cjk;
-  return Math.max(1, Math.round(cjk * 1.5 + other / 4));
-}
-
-// Parse one memory .md into a node descriptor. Handles both the YAML-frontmatter
-// convention (name/description/metadata.type) and the plain "# H1 + body" files
-// that live in the store today. Never throws.
-function parseMemoryMarkdown(raw, slug) {
-  let body = String(raw == null ? '' : raw);
-  const fm = {}; // flat frontmatter: title, description, name, type
-  // ── YAML frontmatter (best-effort, no yaml dep) ──
-  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(body);
-  if (m) {
-    const yaml = m[1];
-    body = body.slice(m[0].length);
-    let inMeta = false;
-    for (const line of yaml.split(/\r?\n/)) {
-      const kv = /^(\s*)([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
-      if (!kv) continue;
-      const indent = kv[1].length, key = kv[2], val = kv[3].replace(/^["']|["']$/g, '').trim();
-      if (key === 'metadata') { inMeta = true; continue; }
-      if (inMeta && indent > 0) { if (key === 'type') fm.metaType = val; continue; }
-      inMeta = false;
-      if (key === 'name') fm.name = val;
-      else if (key === 'title') fm.title = val;
-      else if (key === 'description') fm.description = val;
-      else if (key === 'type') fm.type = val;
-    }
-    // 约定里 type 落在 metadata.type 下：让它确定性优先，避免与顶层 type 的先后顺序有关。
-    if (fm.metaType) fm.type = fm.metaType;
-  }
-  // ── Title: frontmatter → first H1 → humanized slug ──
-  let title = fm.title || '';
-  if (!title) {
-    const h1 = /^\s*#\s+(.+?)\s*$/m.exec(body);
-    if (h1) title = h1[1].trim();
-  }
-  if (!title) title = String(slug || '').replace(/[-_]+/g, ' ').trim() || slug;
-  title = title.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1'); // strip wikilinks from title
-  // ── Summary: frontmatter description → first meaningful paragraph ──
-  let summary = fm.description || '';
-  if (!summary) {
-    for (let ln of body.split(/\r?\n{2,}/)) {
-      ln = ln.trim();
-      if (!ln) continue;
-      if (/^#/.test(ln)) continue;                 // skip headings
-      const cleaned = ln
-        .replace(/^>\s?/gm, '')                     // blockquote markers
-        .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1') // wikilinks → text
-        .replace(/`{1,3}/g, '')                     // code fences/ticks
-        .replace(/[*_]{1,3}/g, '')                  // emphasis
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (cleaned) { summary = cleaned; break; }
-    }
-  }
-  if (summary.length > 240) summary = summary.slice(0, 237) + '…';
-  // ── Outgoing wikilink targets → { slug: count } ──
-  const links = {};
-  const re = /\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g;
-  let lm;
-  while ((lm = re.exec(body))) {
-    let t = lm[1].trim().replace(/\.md$/i, '');
-    if (!t) continue;
-    links[t] = (links[t] || 0) + 1;
-  }
-  return { title, summary, type: (fm.type || '').toLowerCase(), links };
-}
-
-// Classify a file into a node "kind" for colouring, from filename + frontmatter.
-function memNodeKind(fileName, fmType) {
-  if (fmType) return fmType; // user | feedback | project | reference …
-  const base = String(fileName).toLowerCase();
-  if (base === '_auto.md') return 'auto';
-  if (['claude.md', 'agents.md', 'readme.md', 'memory.md'].includes(base)) return 'index';
-  return 'note';
-}
-
-function buildMemoryGraph(dirIdFilter) {
-  const nodes = [];
-  const byId = new Map();     // id → node
-  const slugIndex = new Map(); // dirId → Map(slug → [nodeId,…])
-  const pending = [];         // { fromId, dirId, slug, count } resolved after scan
-  let truncated = false;
-
-  const addNode = (n) => { nodes.push(n); byId.set(n.id, n); return n; };
-  const indexSlug = (dirId, slug, id) => {
-    if (!slugIndex.has(dirId)) slugIndex.set(dirId, new Map());
-    const m = slugIndex.get(dirId);
-    if (!m.has(slug)) m.set(slug, []);
-    m.get(slug).push(id);
-  };
-
-  let projectIds = [];
-  try {
-    projectIds = fs.readdirSync(MEMORY_STORE_ROOT, { withFileTypes: true })
-      .filter(d => d.isDirectory()).map(d => d.name);
-  } catch (_) { projectIds = []; }
-  if (dirIdFilter && dirIdFilter !== 'all') projectIds = projectIds.filter(id => id === dirIdFilter);
-
-  const projects = [];
-
-  const scanFolder = (absDir, meta) => {
-    // meta: { dirId, scope:'shared'|'session', sessionId }
-    let files;
-    try { files = fs.readdirSync(absDir).filter(f => f.toLowerCase().endsWith('.md')); }
-    catch (_) { return 0; }
-    let count = 0;
-    for (const file of files) {
-      if (nodes.length >= MEM_GRAPH_MAX_NODES) { truncated = true; break; }
-      let raw = '', size = 0;
-      try { raw = fs.readFileSync(path.join(absDir, file), 'utf8'); size = Buffer.byteLength(raw); }
-      catch (_) { continue; }
-      const slug = file.replace(/\.md$/i, '');
-      const parsed = parseMemoryMarkdown(raw, slug);
-      const id = `${meta.dirId}::${meta.scope}${meta.sessionId ? ':' + meta.sessionId : ''}::${slug}`;
-      const absFile = path.join(absDir, file);
-      addNode({
-        id, slug, file,
-        title: parsed.title,
-        summary: parsed.summary || '（无摘要）',
-        type: memNodeKind(file, parsed.type),
-        scope: meta.scope,
-        sessionId: meta.sessionId || null,
-        dirId: meta.dirId,
-        size,
-        // Storage location + token gauge, so the UI can show where a node lives
-        // and open it in the file editor. `rel` is the store-root-relative key the
-        // /api/memory/file endpoints resolve (always forward-slash separated).
-        path: absFile,
-        rel: path.relative(MEMORY_STORE_ROOT, absFile).split(path.sep).join('/'),
-        tokens: estimateMemTokens(raw),
-        missing: false,
-      });
-      indexSlug(meta.dirId, slug, id);
-      for (const [target, c] of Object.entries(parsed.links)) {
-        pending.push({ fromId: id, dirId: meta.dirId, slug: target, count: c });
-      }
-      count++;
-    }
-    return count;
-  };
-
-  for (const dirId of projectIds) {
-    const before = nodes.length;
-    const projRoot = path.join(MEMORY_STORE_ROOT, dirId);
-    // shared
-    scanFolder(path.join(projRoot, '_shared'), { dirId, scope: 'shared' });
-    // per-session
-    const sessRoot = path.join(projRoot, 'sessions');
-    let sessDirs = [];
-    try { sessDirs = fs.readdirSync(sessRoot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); }
-    catch (_) {}
-    for (const sid of sessDirs) {
-      scanFolder(path.join(sessRoot, sid), { dirId, scope: 'session', sessionId: sid });
-    }
-    const dir = directories.get(dirId);
-    const cnt = nodes.filter(n => n.dirId === dirId).length;
-    if (cnt > 0 || (dir && dir.name)) {
-      projects.push({ dirId, name: (dir && dir.name) || dirId.slice(0, 8), count: cnt });
-    }
-    void before;
-  }
-
-  // ── Resolve wikilink edges ──
-  // A [[slug]] in a file resolves within the SAME project (dirId), preferring:
-  // same-session node → shared node → any node in the project → else a dangling
-  // placeholder node so the intent is still drawn.
-  const edgeMap = new Map(); // `${source} ${target}` → strength
-  const missingByKey = new Map(); // `${dirId}::${slug}` → placeholder node id
-  const resolveTarget = (fromNode, dirId, slug) => {
-    const idx = slugIndex.get(dirId);
-    const candidates = idx && idx.get(slug);
-    if (candidates && candidates.length) {
-      // prefer a candidate in the same session, then shared, then first
-      const from = byId.get(fromNode);
-      if (from && from.sessionId) {
-        const same = candidates.find(cid => byId.get(cid) && byId.get(cid).sessionId === from.sessionId);
-        if (same) return same;
-      }
-      const shared = candidates.find(cid => byId.get(cid) && byId.get(cid).scope === 'shared');
-      if (shared) return shared;
-      return candidates[0];
-    }
-    return null;
-  };
-  for (const p of pending) {
-    const from = byId.get(p.fromId);
-    if (!from) continue;
-    let targetId = resolveTarget(p.fromId, p.dirId, p.slug);
-    if (!targetId) {
-      const key = `${p.dirId}::${p.slug}`;
-      if (missingByKey.has(key)) {
-        targetId = missingByKey.get(key);
-      } else if (nodes.length < MEM_GRAPH_MAX_NODES) {
-        targetId = `${p.dirId}::missing::${p.slug}`;
-        addNode({
-          id: targetId, slug: p.slug, file: p.slug + '.md',
-          title: String(p.slug).replace(/[-_]+/g, ' '),
-          summary: '（尚未创建的记忆 · 被引用但文件不存在）',
-          type: 'missing', scope: 'missing', sessionId: null,
-          dirId: p.dirId, size: 0, path: null, rel: null, tokens: 0, missing: true,
-        });
-        missingByKey.set(key, targetId);
-      } else { truncated = true; continue; }
-    }
-    if (targetId === p.fromId) continue; // no self-loops
-    const k = `${p.fromId} ${targetId}`;
-    edgeMap.set(k, (edgeMap.get(k) || 0) + p.count);
-  }
-
-  const edges = [];
-  for (const [k, strength] of edgeMap) {
-    const [source, target] = k.split(' ');
-    edges.push({ source, target, type: 'reference', strength });
-  }
-
-  // degree (for node sizing on the client)
-  const degree = new Map();
-  for (const e of edges) {
-    degree.set(e.source, (degree.get(e.source) || 0) + 1);
-    degree.set(e.target, (degree.get(e.target) || 0) + 1);
-  }
-  for (const n of nodes) n.degree = degree.get(n.id) || 0;
-
-  projects.sort((a, b) => b.count - a.count);
-  return { nodes, edges, projects, truncated };
-}
-
-app.get('/api/memory/graph', (req, res) => {
-  const t0 = Date.now();
-  const dirId = req.query.dirId ? String(req.query.dirId) : 'all';
-  let data;
-  try {
-    data = buildMemoryGraph(dirId);
-  } catch (e) {
-    return res.status(500).json({ error: 'graph build failed: ' + e.message });
-  }
-  res.json({
-    nodes: data.nodes,
-    edges: data.edges,
-    meta: {
-      dirId,
-      projects: data.projects,
-      nodeCount: data.nodes.length,
-      edgeCount: data.edges.length,
-      truncated: data.truncated,
-      maxNodes: MEM_GRAPH_MAX_NODES,
-      durationMs: Date.now() - t0,
-    },
-  });
-});
-
-// ── Memory TREE + generic file editor ──────────────────────────────────────
-// A hierarchical view of the same on-disk store the graph reads, grouped by
-//   项目(project=<dirId>) → 公共(_shared) + 会话(sessions/<id>)
-// Each file carries its absolute path, a store-relative `rel` key, byte size,
-// an estimated token count, its parsed title and mtime — so the UI can show
-// where memory lives, total token weight, and open any file in an editor.
-const MEM_TREE_MAX_FILES = 2000; // safety cap so a huge store still renders fast
-
-// Resolve a store-relative `rel` to a safe absolute *.md path, or null. Rejects
-// path traversal (.. / empty / backslash segments), anything outside the store
-// root, and (for existing files) symlinks that escape the root via realpath.
-function resolveMemoryFilePath(rel) {
-  if (!rel || typeof rel !== 'string') return null;
-  if (!/\.md$/i.test(rel)) return null;
-  const segments = rel.split('/');
-  for (const seg of segments) {
-    if (!seg || seg === '.' || seg === '..' || seg.includes('\\') || seg.includes('\0')) return null;
-  }
-  const root = path.resolve(MEMORY_STORE_ROOT);
-  const resolved = path.resolve(root, rel);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
-  try {
-    if (fs.existsSync(resolved)) {
-      const real = fs.realpathSync(resolved);
-      const realRoot = fs.realpathSync(root);
-      if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
-    }
-  } catch (_) { return null; }
-  return resolved;
-}
-
-// Build one tree file entry. `relDir` is the store-relative folder (forward
-// slashes). Never throws — returns null on read/stat failure so one bad file
-// doesn't sink the whole scan.
-function memTreeFileEntry(absDir, relDir, name) {
-  try {
-    const abs = path.join(absDir, name);
-    const raw = fs.readFileSync(abs, 'utf8');
-    let mtime = null;
-    try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
-    const parsed = parseMemoryMarkdown(raw, name.replace(/\.md$/i, ''));
-    return {
-      name,
-      rel: `${relDir}/${name}`,
-      path: abs,
-      size: Buffer.byteLength(raw),
-      tokens: estimateMemTokens(raw),
-      title: parsed.title || name.replace(/\.md$/i, ''),
-      mtime,
-    };
-  } catch (_) { return null; }
-}
-
-// List the *.md files of one folder as tree entries, honoring the global cap.
-// `counter` is a shared { n } so the cap spans the whole tree, not per-folder.
-function listMemTreeFiles(absDir, relDir, counter) {
-  let names;
-  try { names = fs.readdirSync(absDir).filter(f => f.toLowerCase().endsWith('.md')).sort(); }
-  catch (_) { return { files: [], tokens: 0 }; }
-  const files = [];
-  let tokens = 0;
-  for (const name of names) {
-    if (counter.n >= MEM_TREE_MAX_FILES) { counter.truncated = true; break; }
-    const e = memTreeFileEntry(absDir, relDir, name);
-    if (!e) continue;
-    files.push(e); tokens += e.tokens; counter.n++;
-  }
-  return { files, tokens };
-}
-
-function buildMemoryTree() {
-  const root = MEMORY_STORE_ROOT;
-  let projectIds = [];
-  try {
-    projectIds = fs.readdirSync(root, { withFileTypes: true })
-      .filter(d => d.isDirectory()).map(d => d.name);
-  } catch (_) { projectIds = []; }
-
-  const counter = { n: 0, truncated: false };
-  const projects = [];
-  let sessionCount = 0;
-
-  for (const dirId of projectIds) {
-    const projRoot = path.join(root, dirId);
-    const dir = directories.get(dirId);
-
-    // 公共记忆 (_shared)
-    const sharedRes = listMemTreeFiles(path.join(projRoot, '_shared'), `${dirId}/_shared`, counter);
-    const shared = {
-      dir: path.join(projRoot, '_shared'),
-      rel: `${dirId}/_shared`,
-      tokens: sharedRes.tokens,
-      files: sharedRes.files,
-    };
-
-    // 会话记忆 (sessions/<id>)
-    const sessions = [];
-    let sessDirs = [];
-    try {
-      sessDirs = fs.readdirSync(path.join(projRoot, 'sessions'), { withFileTypes: true })
-        .filter(d => d.isDirectory()).map(d => d.name).sort();
-    } catch (_) {}
-    for (const sid of sessDirs) {
-      const sRes = listMemTreeFiles(path.join(projRoot, 'sessions', sid), `${dirId}/sessions/${sid}`, counter);
-      const persisted = persistedSessions.get(sid);
-      sessions.push({
-        sessionId: sid,
-        label: (persisted && persisted.label) ? persisted.label : sid,
-        cli: (persisted && persisted.cli) || null,
-        live: !!persisted,
-        dir: path.join(projRoot, 'sessions', sid),
-        rel: `${dirId}/sessions/${sid}`,
-        tokens: sRes.tokens,
-        files: sRes.files,
-      });
-    }
-    sessionCount += sessions.length;
-
-    const projTokens = shared.tokens + sessions.reduce((a, s) => a + s.tokens, 0);
-    const fileCount = shared.files.length + sessions.reduce((a, s) => a + s.files.length, 0);
-    // Skip fully-empty projects (no files anywhere) to keep the tree tidy.
-    if (fileCount === 0) continue;
-    projects.push({
-      dirId,
-      name: (dir && dir.name) || dirId.slice(0, 8),
-      dirPath: (dir && dir.path) || null,
-      tokens: projTokens,
-      fileCount,
-      shared,
-      sessions,
-    });
-  }
-
-  projects.sort((a, b) => b.tokens - a.tokens);
-  const totals = projects.reduce((a, p) => {
-    a.tokens += p.tokens; a.files += p.fileCount; return a;
-  }, { tokens: 0, files: 0 });
-
-  return {
-    root,
-    projects,
-    meta: {
-      projectCount: projects.length,
-      sessionCount,
-      fileCount: totals.files,
-      tokenTotal: totals.tokens,
-      truncated: counter.truncated,
-      maxFiles: MEM_TREE_MAX_FILES,
-    },
-  };
-}
-
-app.get('/api/memory/tree', (req, res) => {
-  const t0 = Date.now();
-  let data;
-  try { data = buildMemoryTree(); }
-  catch (e) { return res.status(500).json({ error: 'tree build failed: ' + e.message }); }
-  data.meta.durationMs = Date.now() - t0;
-  res.json(data);
-});
-
-// Read one memory file by store-relative `rel`.
-app.get('/api/memory/file', (req, res) => {
-  const rel = req.query.rel ? String(req.query.rel) : '';
-  const abs = resolveMemoryFilePath(rel);
-  if (!abs) return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
-  if (!fs.existsSync(abs)) return res.status(404).json({ error: 'file not found' });
-  try {
-    const content = fs.readFileSync(abs, 'utf8');
-    let mtime = null;
-    try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
-    res.json({
-      rel, path: abs, name: path.basename(abs), content,
-      size: Buffer.byteLength(content), tokens: estimateMemTokens(content), mtime,
-    });
-  } catch (e) { res.status(500).json({ error: 'read failed: ' + e.message }); }
-});
-
-// Create/overwrite one memory file: { rel, content }. Parent dir must exist
-// (we never conjure new project/session folders from a raw path).
-app.put('/api/memory/file', (req, res) => {
-  const { rel, content } = req.body || {};
-  if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
-  if (content.length > 200000) return res.status(413).json({ error: 'content too long (max 200000 chars)' });
-  const abs = resolveMemoryFilePath(rel);
-  if (!abs) return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
-  if (!fs.existsSync(path.dirname(abs))) return res.status(400).json({ error: 'parent folder does not exist' });
-  try {
-    fs.writeFileSync(abs, content);
-    let mtime = null;
-    try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
-    const dirId = String(rel).split('/')[0];
-    if (dirId) try { workspaceBroadcast(dirId, { type: 'memory', rel, scope: rel.includes('/_shared/') ? 'shared' : 'own' }); } catch (_) {}
-    res.json({ ok: true, rel, path: abs, size: Buffer.byteLength(content), tokens: estimateMemTokens(content), mtime });
-  } catch (e) { res.status(500).json({ error: 'write failed: ' + e.message }); }
-});
-
-// Delete one memory file by store-relative `rel`.
-app.delete('/api/memory/file', (req, res) => {
-  const rel = (req.body && req.body.rel) || req.query.rel;
-  const abs = resolveMemoryFilePath(rel);
-  if (!abs) return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
-  try { fs.unlinkSync(abs); }
-  catch (e) { if (e.code !== 'ENOENT') return res.status(500).json({ error: 'delete failed: ' + e.message }); }
-  const dirId = String(rel).split('/')[0];
-  if (dirId) try { workspaceBroadcast(dirId, { type: 'memory', rel, scope: String(rel).includes('/_shared/') ? 'shared' : 'own' }); } catch (_) {}
-  res.json({ ok: true });
+// Memory graph/tree and generic file editing share one filesystem boundary.
+// Session-level curated memory routes above retain their separate semantics.
+mountMemoryBrowserRoutes(app, {
+  fs,
+  path,
+  memoryStoreRoot: MEMORY_STORE_ROOT,
+  directories,
+  persistedSessions,
+  workspaceBroadcast,
+  atomicWriteText,
+  now: Date.now,
 });
 
 // Delete a single message from this session's persisted chat history.
@@ -4525,65 +4060,6 @@ app.get('/api/share/:token/session', (req, res) => {
     cli: persisted.cli || 'claude',
     messages: loadChatHistory(r.sessionId),
   });
-});
-
-// ── Per-session auto-triggers ──
-// Written by the bundled multicc-trigger skill (via localhost) or the manage UI;
-// read by the trigger runtime (file-watch / cron / post-turn).
-app.get('/api/sessions/:id/triggers', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  res.json({ triggers: s.triggers || [] });
-});
-
-app.post('/api/sessions/:id/triggers', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const v = validateTrigger(req.body || {});
-  if (v.error) return res.status(400).json({ error: v.error });
-  sessionPersistence.mutate('http.create-session-trigger', () => {
-    if (!Array.isArray(s.triggers)) s.triggers = [];
-    s.triggers.push(v.trigger);
-  });
-  reconcileTriggers(s.id);
-  appendEvent(s.dirId, 'trigger_added', triggerLabel(v.trigger), s.id);
-  res.json(v.trigger);
-});
-
-app.put('/api/sessions/:id/triggers/:tid', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s || !Array.isArray(s.triggers)) return res.status(404).json({ error: 'not found' });
-  const idx = s.triggers.findIndex((t) => t.id === req.params.tid);
-  if (idx < 0) return res.status(404).json({ error: 'trigger not found' });
-  const v = validateTrigger({ ...s.triggers[idx], ...req.body, id: req.params.tid });
-  if (v.error) return res.status(400).json({ error: v.error });
-  sessionPersistence.mutate('http.update-session-trigger', () => {
-    v.trigger.lastFiredAt = s.triggers[idx].lastFiredAt; // preserve across edits
-    s.triggers[idx] = v.trigger;
-  });
-  reconcileTriggers(s.id);
-  res.json(v.trigger);
-});
-
-app.delete('/api/sessions/:id/triggers/:tid', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s || !Array.isArray(s.triggers)) return res.status(404).json({ error: 'not found' });
-  const before = s.triggers.length;
-  const next = s.triggers.filter((t) => t.id !== req.params.tid);
-  if (next.length === before) return res.status(404).json({ error: 'trigger not found' });
-  sessionPersistence.mutate('http.delete-session-trigger', () => { s.triggers = next; });
-  reconcileTriggers(s.id);
-  res.json({ ok: true });
-});
-
-// Fire a trigger immediately, bypassing cooldown + enabled (for manual testing).
-app.post('/api/sessions/:id/triggers/:tid/test', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s || !Array.isArray(s.triggers)) return res.status(404).json({ error: 'not found' });
-  const t = s.triggers.find((x) => x.id === req.params.tid);
-  if (!t) return res.status(404).json({ error: 'trigger not found' });
-  fireTrigger(s.id, { ...t, enabled: true, cooldownMs: 0 }, 'manual-test', { persistence: 'required' });
-  res.json({ ok: true });
 });
 
 app.get('/api/sessions/:id', (req, res) => {
@@ -5391,111 +4867,7 @@ mountHostWriteRoutes(app, {
   reportFailure: (stage, category) => reportHostControlFailure('host_write', stage, category),
 });
 
-// Push API endpoints
-app.post('/api/push/subscribe', (req, res) => {
-  const sub = req.body;
-  if (!sub || !sub.endpoint) return res.status(400).json({ error: 'Invalid subscription' });
-  push.subscriptions.set(sub.endpoint, sub);
-  push.saveSubscriptions();
-  console.log(`[multicc/push] New subscription (${push.subscriptions.size} total)`);
-  res.json({ ok: true });
-});
-
-app.delete('/api/push/subscribe', (req, res) => {
-  const { endpoint } = req.body || {};
-  if (endpoint && push.subscriptions.has(endpoint)) {
-    push.subscriptions.delete(endpoint);
-    push.saveSubscriptions();
-  }
-  res.json({ ok: true });
-});
-
-// Validate if a subscription is registered server-side
-app.post('/api/push/validate', (req, res) => {
-  const { endpoint } = req.body || {};
-  if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' });
-  res.json({ known: push.subscriptions.has(endpoint) });
-});
-
-// Test push notification
-app.post('/api/push/test', async (req, res) => {
-  const payload = {
-    title: 'MultiCC Test',
-    body: `Push test at ${new Date().toLocaleTimeString()}`,
-    type: 'test',
-    tag: 'multicc-test',
-    url: '/manage',
-  };
-  await push.sendPushToAll(payload);
-  push.sendBarkNotification(payload.title, payload.body, payload.url);
-  push.sendWebhookNotification(payload);
-  res.json({ ok: true, subscribers: push.subscriptions.size });
-});
-
-// Test Bark only
-app.post('/api/push/test-bark', (req, res) => {
-  if (!push.cfg.BARK_URL) return res.status(400).json({ error: 'Bark URL not configured' });
-  push.sendBarkNotification('MultiCC Test', `Bark test at ${new Date().toLocaleTimeString()}`, '/manage');
-  res.json({ ok: true });
-});
-
-// Test Webhook only
-app.post('/api/push/test-webhook', (req, res) => {
-  if (!push.cfg.WEBHOOK_URL) return res.status(400).json({ error: 'Webhook URL not configured' });
-  push.sendWebhookNotification({ title: 'MultiCC Test', body: `Webhook test at ${new Date().toLocaleTimeString()}`, type: 'test' });
-  res.json({ ok: true });
-});
-
-// ── Server-side notification detection (for push notifications) ──
-const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
-const PUSH_IDLE_MS = 6000;
-const PUSH_MIN_CHARS = 80;
-const PUSH_COOLDOWN = 8000;
-
-// Per-session server-side monitor state
-const pushMonitors = new Map();
-
-function pushStripAnsi(str) {
-  return str.replace(PUSH_ANSI_RE, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-}
-
-function initPushMonitor(sessionId) {
-  if (pushMonitors.has(sessionId)) return pushMonitors.get(sessionId);
-  const mon = {
-    state: 'idle',
-    chars: 0,
-    recentText: '',
-    idleTimer: null,
-    lastPushTime: 0,
-  };
-  pushMonitors.set(sessionId, mon);
-  return mon;
-}
-
-function cleanupPushMonitor(sessionId) {
-  const mon = pushMonitors.get(sessionId);
-  if (mon) {
-    if (mon.idleTimer) clearTimeout(mon.idleTimer);
-    pushMonitors.delete(sessionId);
-  }
-}
-
-// Is there anyone who could receive a terminal notification right now? Avoids
-// spending aux-AI calls when nothing is watching: a push channel, the
-// terminal's own WS clients, or the directory's workspace board.
-function hasNotifyConsumer(sessionId) {
-  if (push.subscriptions.size > 0 || push.cfg.BARK_URL || push.cfg.WEBHOOK_URL) return true;
-  if ((sessions.get(sessionId)?.clients?.size || 0) > 0) return true;
-  const dirId = persistedSessions.get(sessionId)?.dirId;
-  if (dirId && (workspaceClients.get(dirId)?.size || 0) > 0) return true;
-  return false;
-}
-
-// Stringify once and send to every OPEN client in an iterable. Swallows per-
-// client send errors so one dead socket doesn't abort the loop. Shared by
-// terminalBroadcast / chatBroadcast / workspaceBroadcast / the aux hub's
-// broadcast() — previously this "iterate clients + JSON send" body was copy-
-// pasted at ~9 sites.
+// WS fan-out remains host-owned because terminal, chat, workspace and Aux all use it.
 function sendWs(client, payload, context) {
   client.send(JSON.stringify(createWsEnvelope(payload, context)));
 }
@@ -5509,170 +4881,10 @@ function broadcastTo(clients, payload) {
   }
 }
 
-// Push a server-originated message to a terminal session's live WS clients.
 function terminalBroadcast(sessionId, payload) {
   const session = sessions.get(sessionId);
   if (!session) return;
   broadcastTo(session.clients, payload);
-}
-
-// Output went idle on a terminal session — the terminal equivalent of an SSE
-// pause. Let the aux-AI judge done-vs-waiting from the output tail (single
-// source of truth, same as chat), then fan the verdict out to every surface:
-// push channels, the terminal's own WS clients, and the workspace board.
-function classifyTerminalIdle(sessionId, tail) {
-  // D/W guard — terminal sessions aren't covered by scanAndReclassify (it filters
-  // kind==='chat'), so this idle-triggered classify needs its own skip: a done or
-  // waiting-on-user terminal shouldn't be re-judged just because a background
-  // log/watch process emitted a stray line. Only new user input should move D/W.
-  const _tp = persistedSessions.get(sessionId);
-  if (_tp) {
-    const _tts = getTaskState(_tp);
-    if (_tts.classifyState === 'D' || _tts.classifyState === 'W') return;
-  }
-  const mon = pushMonitors.get(sessionId);
-  if (mon) {
-    if (mon.classifyPending) return; // one classification already in flight
-    mon.classifyPending = true;
-  }
-  auxQueue.enqueue({
-    type: 'intent_classify',
-    prompt: `你是一个意图分析器。下面是一个命令行 AI 编码助手(Claude Code / Codex)终端会话的最近输出。请严格输出三行：
-第1行：当前任务目标，用一个简短的名词性短语（中文≤20字，英文≤10词）。如果没有任务则输出「—」。
-第2行：当前阶段，必须是以下五个词之一：规划中 / 实现中 / 验证中 / 收尾中 / 已完成
-第3行：仅一个字母，表示当前状态——
-  D = 任务已完成（终端回到空闲提示符、汇报结果后正常收尾，不需要用户操作、也不需要再继续）
-  C = AI 应继续（任务还没做完，但可以直接接着跑，不需要用户操作；没有反问/等待迹象）
-  W = 正在等待用户回复、确认或选择（如 y/n、Allow/Deny、编号选项、问题待答）
-  B = 正在等待后台任务/子进程/外部数据返回后才能继续（如 Monitor 监控进度、nohup 后台跑、等部署/API）
-  E = API 异常中断（输出末尾出现 “API Error”、503、”Connection closed”、”Overloaded”、”Internal server error”、”The system is busy” 等错误信息，说明 AI 并非正常完成而是被故障截断）
-
-判断时看整体走向：终端回到提示符、汇报结果后没有反问 → D（完成）；任务没做完但能接着跑 → C；有明确反问/让用户选 → W。
-
-只输出这三行。不要加序号、解释、引号、空行。
-
-终端输出（尾部）：
-${tail}`,
-    meta: { sessionId },
-  }).then(result => {
-    if (mon) mon.classifyPending = false;
-    if (result.cancelled) return;
-    const res = parseClassifyResult(result.text);
-    // Resolve sessionName for dispatch — terminal sessions use sessionId as the key.
-    const sessionName = sessionId;
-    const cs = chatSessions.get(sessionName);
-    dispatchStateAction(res, { sessionName, sessionId: sessionId, cs, isTerminal: true });
-    console.log(`[multicc/aux] Terminal classify for ${sessionId}: ${res.state}${res.goal ? ' · ' + res.goal : ''}${res.error ? ' (API error)' : ''}`);
-  }).catch(() => { if (mon) mon.classifyPending = false; });
-}
-
-/**
- * Called from ptyProcess.onData. Tracks output and, once a terminal goes idle,
- * asks the aux-AI whether the task finished or is waiting for the user, then
- * notifies all surfaces. No regex judging here — the AI is the single judge.
- */
-function pushOnOutput(sessionId, rawData) {
-  if (!hasNotifyConsumer(sessionId)) return; // nobody to notify
-
-  const mon = initPushMonitor(sessionId);
-  const text = pushStripAnsi(rawData);
-  const printable = text.replace(/\s+/g, '');
-
-  mon.recentText += text;
-  if (mon.recentText.length > 3000) mon.recentText = mon.recentText.slice(-2000);
-
-  if (printable.length > 0) {
-    // Bump bg idle timer — session is active, not idle.
-    bumpBgActivity(sessionId);
-    mon.chars += printable.length;
-    if (mon.state === 'idle') mon.state = 'active';
-  }
-
-  // Judge only after output stops for PUSH_IDLE_MS (the "stream paused" signal).
-  if (mon.idleTimer) clearTimeout(mon.idleTimer);
-  mon.idleTimer = setTimeout(() => {
-    if (mon.state === 'active' && mon.chars >= PUSH_MIN_CHARS) {
-      classifyTerminalIdle(sessionId, mon.recentText.slice(-2000));
-    }
-    mon.state = 'idle';
-    mon.chars = 0;
-    mon.recentText = '';
-  }, PUSH_IDLE_MS);
-}
-
-function pushOnInput(sessionId) {
-  const mon = pushMonitors.get(sessionId);
-  if (mon) {
-    mon.state = 'idle';
-    mon.chars = 0;
-    mon.recentText = '';
-    if (mon.idleTimer) {
-      clearTimeout(mon.idleTimer);
-      mon.idleTimer = null;
-    }
-  }
-  // Terminal recovery for the D/W guard in classifyTerminalIdle: terminals have no
-  // ensureCurrentTask, so without this a parked D/W terminal would never re-classify
-  // (the guard skips it forever, board stuck on "done"). New user input = a new
-  // processing phase → flip D/W back to P so the next idle-classify runs again.
-  // MUST run even when mon is null: after a server restart pushMonitors (in-memory)
-  // is empty, but a persisted D/W terminal still needs to recover on user input — so
-  // this sits OUTSIDE the `if (mon)` block, not behind an early `if (!mon) return`.
-  // Guarded to D/W only so ordinary keystrokes don't spam task_state broadcasts.
-  const _tp = persistedSessions.get(sessionId);
-  if (_tp) {
-    const _ts = getTaskState(_tp);
-    if (_ts.classifyState === 'D' || _ts.classifyState === 'W') {
-      setTaskState(sessionId, { classifyState: 'P' });
-    }
-  }
-}
-
-function triggerPush(sessionId, type, message) {
-  // A pushMonitor is created lazily by the TERMINAL output path (pushOnOutput),
-  // so chat sessions never had one — and the old `if (!mon) return` here meant
-  // every chat completion push was silently dropped (totalSent stayed 0). That
-  // killed the ONLY lock-screen-capable channel for chat: notifications then
-  // only worked while the app held a live WebSocket (screen on / foreground).
-  // The monitor's only job in this function is the per-session cooldown stamp,
-  // so create it on demand. Terminal callers already have one → no-op for them.
-  const mon = initPushMonitor(sessionId);
-
-  const now = Date.now();
-  if (now - mon.lastPushTime < PUSH_COOLDOWN) return; // cooldown
-  mon.lastPushTime = now;
-
-  const session = sessions.get(sessionId);
-  const cwd = session ? session.cwd : '';
-  const shortCwd = cwd.length > 30 ? '...' + cwd.slice(-27) : cwd;
-
-  const payloadForLocale = (locale) => ({
-    title: locale === 'en'
-      ? type === 'waiting' ? `MultiCC #${sessionId}: Action Required`
-        : type === 'error' ? `MultiCC #${sessionId}: Error`
-        : `MultiCC #${sessionId}: Completed`
-      : type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
-        : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
-        : `MultiCC #${sessionId}: 完成`,
-    body: `${message}\n${shortCwd}`,
-    sessionId,
-    type,
-    locale: locale === 'en' ? 'en' : 'zh',
-    tag: `multicc-${sessionId}`,
-    url: `/manage`,
-  });
-  const payload = payloadForLocale('zh');
-
-  push.globalStats.lastPushTime = now;
-  push.globalStats.lastPushType = type;
-  push.globalStats.lastPushSessionId = sessionId;
-
-  // Send to all channels in parallel
-  push.sendPushToAll((subscription) => payloadForLocale(subscription.locale));
-  push.sendBarkNotification(payload.title, `${message} ${shortCwd}`, payload.url);
-  push.sendWebhookNotification(payload);
-
-  console.log(`[multicc/push] Sent ${type} notification for session ${sessionId}`);
 }
 
 // ── AuxQueue + Goal precheck ────────────────────────────────────────────────
@@ -6245,6 +5457,31 @@ for (const [mount, bridge] of [
 const workspaceStatus = new Map();   // sessionId → { status, currentFile, lastActivity }
 const workspaceClients = new Map();  // dirId → Set<ws>
 const sessionSummaries = new Map();  // sessionId → { summary, ts } — aux-AI "最近任务" one-liner
+
+// Push subscription routes and terminal notification state share one lifecycle.
+// Aux is resolved lazily because its queue is initialized during startup below.
+const pushRuntime = createPushRuntime({
+  push,
+  sessions,
+  persistedSessions,
+  workspaceClients,
+  getAuxQueue: () => auxQueue,
+  getTaskState,
+  setTaskState,
+  parseClassifyResult,
+  dispatchStateAction,
+  chatSessions,
+  bumpBgActivity,
+  timers: { setTimeout, clearTimeout },
+  now: Date.now,
+  logger: console,
+});
+pushRuntime.mountRoutes(app);
+const pushOnOutput = pushRuntime.onOutput;
+const pushOnInput = pushRuntime.onInput;
+const triggerPush = pushRuntime.notify;
+const cleanupPushMonitor = pushRuntime.cleanup;
+
 // Hydrate the dashboard from persisted state so a restart doesn't blank every
 // card. Two runtime-only Maps are lost on restart and must be rebuilt from the
 // durable taskState:
@@ -7904,7 +7141,6 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
 // (CLAUDE.md for claude, AGENTS.md for codex). Short facts use the controlled
 // memory endpoint; longer notes may use normal file tools. own+shared are read
 // when the native CLI context is created and remain a frozen prompt snapshot.
-const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const SESSION_MEM_CAP = 5000;   // chars of own-folder memory injected per native session
 const SHARED_MEM_CAP  = 4000;   // chars of shared-folder memory injected per native session
 const SESSION_CURATED_MEM_CAP = 2200;
@@ -10412,228 +9648,38 @@ const wsPingInterval = setInterval(() => {
 
 wss.on('close', () => clearInterval(wsPingInterval));
 
+// Initialize AuxQueue (loads history, registers __aux__ session)
+auxQueue.init();
+
+// Session trigger bounded context: owns CRUD, watcher/cron lifecycle and
+// post-turn dispatch. It is created before async repository recovery so every
+// earlier host callback can safely call teardownSession without a TDZ window.
+const triggerRuntime = createSessionTriggers({
+  crypto,
+  cron,
+  chokidar,
+  fs,
+  path,
+  bus,
+  persistedSessions,
+  chatSessions,
+  sessionPersistence,
+  saveBestEffort: savePersistedSessionsBestEffort,
+  cwdForSession,
+  appendEvent,
+  chatBroadcast,
+  timers: { setTimeout, clearTimeout },
+  now: Date.now,
+  logger,
+});
+triggerRuntime.mountRoutes(app);
+const teardownTriggers = triggerRuntime.teardownSession;
+
 // Build worktrees for any session that lacks one, then recover tmux sessions.
 // Both paths are asynchronous so startup never blocks the event loop on git/tmux.
 const startupRepoReady = initWorktrees()
   .then(() => recoverTmuxSessions())
   .catch(error => console.error('[multicc] async repo/tmux startup failed:', error.message));
-
-// Initialize AuxQueue (loads history, registers __aux__ session)
-auxQueue.init();
-
-// ───────────────────────────────────────────────────────────────────────────
-// Auto-trigger runtime
-//
-// Triggers live on the session record (persisted.triggers). This is the "waking
-// half": it watches files / cron / turn-end and, when a rule matches, starts a
-// fresh chat turn via runChatTurn with originTrigger:true. All the "what to do"
-// logic lives in the bundled multicc-trigger skill, not here — a fired trigger
-// just injects a prompt that points the agent at that skill.
-// ───────────────────────────────────────────────────────────────────────────
-
-const DEFAULT_TRIGGER_PROMPT =
-  '【multicc 自动触发】请使用 multicc-trigger skill 执行检查流程：查看当前 git 改动（git status/diff），' +
-  '提醒我该提交或该补/跑测试的地方；简短汇报即可，不要擅自修改代码或提交。';
-
-const triggerWatchers = new Map();   // sessionId -> chokidar watcher
-const triggerCronTasks = new Map();  // sessionId -> [cron task]
-const _deferredFire = new Map();     // `${sessionId}:${triggerId}` -> timeout
-
-function clampInt(v, min, max, dflt) {
-  const n = parseInt(v, 10);
-  if (Number.isNaN(n)) return dflt;
-  return Math.max(min, Math.min(max, n));
-}
-
-function triggerLabel(t) {
-  if (t.type === 'file-change') return `文件变更 ${(t.paths || []).join(',')}`;
-  if (t.type === 'schedule') return `定时 ${t.cron}`;
-  return '每轮结束';
-}
-
-// Validate + normalize a trigger from API input. Returns {trigger} or {error}.
-function validateTrigger(body) {
-  const type = String(body.type || '');
-  if (!['post-turn', 'file-change', 'schedule'].includes(type)) return { error: 'invalid type' };
-  const t = {
-    id: body.id || crypto.randomUUID(),
-    type,
-    enabled: body.enabled !== false,
-    prompt: body.prompt != null ? String(body.prompt).slice(0, 4000) : '',
-    cooldownMs: clampInt(body.cooldownMs, 0, 86400000, type === 'post-turn' ? 30000 : 0),
-    mode: 'inject',
-    createdAt: body.createdAt || new Date().toISOString(),
-  };
-  if (type === 'file-change') {
-    let paths = body.paths;
-    if (typeof paths === 'string') paths = [paths];
-    if (!Array.isArray(paths) || !paths.length) return { error: 'file-change requires paths[]' };
-    t.paths = paths.map(String).slice(0, 20);
-    t.debounceMs = clampInt(body.debounceMs, 500, 60000, 3000);
-  }
-  if (type === 'schedule') {
-    if (!body.cron || !cron.validate(String(body.cron))) return { error: 'invalid cron expression' };
-    t.cron = String(body.cron);
-  }
-  return { trigger: t };
-}
-
-// Tiny glob matcher (chokidar 5 dropped glob support, so we watch the worktree
-// root and match changed relative paths ourselves). Supports ** * ?.
-const _globCache = new Map();
-function globToRegex(glob) {
-  let re = '';
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === '*') {
-      if (glob[i + 1] === '*') { re += '.*'; i++; if (glob[i + 1] === '/') i++; }
-      else re += '[^/]*';
-    } else if (c === '?') re += '[^/]';
-    else if ('.+^${}()|[]\\'.includes(c)) re += '\\' + c;
-    else re += c;
-  }
-  return new RegExp('^' + re + '$');
-}
-function matchGlob(p, glob) {
-  let r = _globCache.get(glob);
-  if (!r) { r = globToRegex(glob); _globCache.set(glob, r); }
-  return r.test(p);
-}
-function matchAnyGlob(p, globs) {
-  return Array.isArray(globs) && globs.some((g) => matchGlob(p, g));
-}
-
-// Fire a trigger: cooldown + busy checks, then inject the prompt as a new turn.
-function fireTrigger(sessionId, trigger, reason, opts = {}) {
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted || !trigger.enabled) return;
-  const now = Date.now();
-  const cd = trigger.cooldownMs || 0;
-  if (cd > 0 && trigger.lastFiredAt && (now - trigger.lastFiredAt) < cd) return;
-  // If the session is mid-turn, defer rather than clobber the running turn.
-  const cs = chatSessions.get(sessionId);
-  if (cs && cs.isStreaming) {
-    const key = sessionId + ':' + trigger.id;
-    if (!_deferredFire.has(key)) {
-      _deferredFire.set(key, setTimeout(() => {
-        _deferredFire.delete(key);
-        fireTrigger(sessionId, trigger, reason, opts);
-      }, 6000));
-    }
-    return;
-  }
-  // Persist lastFiredAt on the live record (test triggers may be ephemeral copies).
-  const live = (persisted.triggers || []).find((x) => x.id === trigger.id);
-  if (live) {
-    if (opts.persistence === 'required') {
-      sessionPersistence.mutate('http.test-session-trigger', () => { live.lastFiredAt = now; });
-    } else {
-      live.lastFiredAt = now;
-      savePersistedSessionsBestEffort(`runtime.trigger-fired.${reason || 'unknown'}`);
-    }
-  }
-  const prompt = (trigger.prompt && trigger.prompt.trim()) || DEFAULT_TRIGGER_PROMPT;
-  appendEvent(persisted.dirId, 'trigger_fired', `${triggerLabel(trigger)} · ${reason}`, sessionId);
-  chatBroadcast(sessionId, { type: 'system', subtype: 'trigger_fired', trigger: triggerLabel(trigger), reason });
-  // Decoupled via the bus so triggers doesn't depend on the chat domain.
-  bus.emit('chat:run', sessionId, prompt, { originTrigger: true });
-}
-
-// Called only after a current runner has durably committed its final result.
-// Trigger lineage is turn-owned so a retry retains the recursion guard without
-// leaking it into a later user turn.
-function firePostTurnTriggers(sessionId, cs, completion) {
-  if (!completion || completion.resultDurable !== true) return;
-  if (completion.lineage && completion.lineage.kind === 'trigger') return;
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted || !Array.isArray(persisted.triggers)) return;
-  for (const t of persisted.triggers) {
-    if (t.enabled && t.type === 'post-turn') fireTrigger(sessionId, t, 'post-turn');
-  }
-}
-// Triggers domain owns this handler; chat emits 'chat:turn-complete' after every turn.
-bus.on('chat:turn-complete', firePostTurnTriggers);
-
-function buildFileWatchers(sessionId, persisted) {
-  const triggers = (persisted.triggers || []).filter((t) => t.enabled && t.type === 'file-change');
-  if (!triggers.length) return;
-  const root = persisted.worktreePath || cwdForSession(persisted);
-  if (!root || !fs.existsSync(root)) return;
-  let watcher;
-  try {
-    watcher = chokidar.watch(root, {
-      ignoreInitial: true,
-      persistent: true,
-      depth: 20,
-      ignored: (p) => /(^|[\/\\])(\.git|node_modules|\.multicc-worktrees|\.DS_Store)([\/\\]|$)/.test(p),
-    });
-  } catch (e) {
-    console.warn(`[multicc/trigger] watch failed for ${sessionId}: ${e.message}`);
-    return;
-  }
-  const debouncers = new Map();
-  watcher._multiccDebouncers = debouncers;
-  const onChange = (full) => {
-    const rel = path.relative(root, full).split(path.sep).join('/');
-    for (const t of triggers) {
-      if (!matchAnyGlob(rel, t.paths)) continue;
-      const key = t.id;
-      if (debouncers.has(key)) clearTimeout(debouncers.get(key));
-      debouncers.set(key, setTimeout(() => {
-        debouncers.delete(key);
-        fireTrigger(sessionId, t, `file:${rel}`);
-      }, t.debounceMs || 3000));
-    }
-  };
-  watcher.on('add', onChange).on('change', onChange).on('unlink', onChange);
-  watcher.on('error', () => {});
-  triggerWatchers.set(sessionId, watcher);
-}
-
-function buildCronTasks(sessionId, persisted) {
-  const triggers = (persisted.triggers || []).filter((t) => t.enabled && t.type === 'schedule' && t.cron);
-  const tasks = [];
-  for (const t of triggers) {
-    if (!cron.validate(t.cron)) continue;
-    try {
-      tasks.push(cron.schedule(t.cron, () => fireTrigger(sessionId, t, 'schedule')));
-    } catch (e) {
-      console.warn(`[multicc/trigger] cron failed (${t.cron}) for ${sessionId}: ${e.message}`);
-    }
-  }
-  if (tasks.length) triggerCronTasks.set(sessionId, tasks);
-}
-
-function teardownTriggers(sessionId) {
-  const w = triggerWatchers.get(sessionId);
-  if (w) {
-    if (w._multiccDebouncers) {
-      for (const timer of w._multiccDebouncers.values()) clearTimeout(timer);
-      w._multiccDebouncers.clear();
-    }
-    try { w.close(); } catch (_) {}
-    triggerWatchers.delete(sessionId);
-  }
-  const tasks = triggerCronTasks.get(sessionId);
-  if (tasks) { for (const t of tasks) { try { t.stop(); } catch (_) {} } triggerCronTasks.delete(sessionId); }
-}
-
-// Rebuild watchers + cron for one session (call after its triggers change).
-function reconcileTriggers(sessionId) {
-  teardownTriggers(sessionId);
-  const p = persistedSessions.get(sessionId);
-  if (!p) return;
-  buildFileWatchers(sessionId, p);
-  buildCronTasks(sessionId, p);
-}
-
-function reconcileAllTriggers() {
-  let n = 0;
-  for (const [id, p] of persistedSessions) {
-    if (Array.isArray(p.triggers) && p.triggers.length) { reconcileTriggers(id); n++; }
-  }
-  if (n) console.log(`[multicc/trigger] armed triggers for ${n} session(s)`);
-}
 
 // Scheduled tasks (定时任务): inject the session-creation + turn-running machinery.
 // Complements the per-session triggers above — this one fires by creating a
@@ -10722,13 +9768,9 @@ async function quiesceRuntimeSources() {
   try { tunnel.stop(); } catch (_) {}
   try { stopNetworkProbe(); } catch (_) {}
   try { await skillSyncRuntime.stop(); } catch (_) {}
+  try { await triggerRuntime.stop(); } catch (_) {}
+  try { pushRuntime.stop(); } catch (_) {}
   clearServiceTimers();
-
-  for (const timer of _deferredFire.values()) clearTimeout(timer);
-  _deferredFire.clear();
-  for (const sessionId of [...new Set([...triggerWatchers.keys(), ...triggerCronTasks.keys()])]) {
-    try { teardownTriggers(sessionId); } catch (_) {}
-  }
 }
 
 async function stopBridgeRuntime() {
@@ -10913,7 +9955,7 @@ app.use(safeErrorHandler(logger));
     seedTokenUsageFromHistory();
     backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
     skillSyncRuntime.start();
-    reconcileAllTriggers();
+    triggerRuntime.start();
     // Periodic scan: re-judge non-terminal/junk sessions every minute. First
     // tick delayed 6s so aux warms up and WS clients reconnect. Replaces the
     // old one-shot startup reconcile - restart just means the first tick runs.
