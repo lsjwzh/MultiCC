@@ -120,6 +120,13 @@ fs.mkdirSync(projA, { recursive: true });
   ok(listA && listA.counts && typeof listA.counts.claude_chat === 'number', 'list entry has session counts');
   ok(listA && listA.counts.claude_chat >= 1, 'commander chat session auto-seeded on create');
   ok(listA && listA.pushState && typeof listA.pushState === 'object', 'list entry has pushState');
+  r = await api('GET', '/api/sessions');
+  const commanders = Array.isArray(r.j)
+    ? r.j.filter(session => session.dirId === dirA.id && /Agent Commander/.test(session.label || ''))
+    : [];
+  ok(commanders.length === 2, 'both Claude and Codex commander sessions are seeded');
+  ok(commanders.every(session => typeof session.rolePrompt === 'string' && session.rolePrompt.length > 100),
+    'commander sessions receive the complete preset role prompt');
 
   // ── PATCH /api/directories/:id ──
   r = await api('PATCH', '/api/directories/no-such-id', { name: 'x' });
