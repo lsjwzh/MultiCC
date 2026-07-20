@@ -817,6 +817,11 @@
                 <button class="btn gu-tab" data-w="month" onclick="setGuWindow('month')">本月</button>
                 <button class="btn gu-tab" data-w="all" onclick="setGuWindow('all')">全部</button>
               </div>
+              <div id="gu-metric-tabs" style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+                <span style="font-size:11px;color:var(--faint);margin-right:2px">统计口径</span>
+                <button class="btn gu-metric-tab" data-metric="fresh" onclick="setGuMetric('fresh')">新鲜 Token</button>
+                <button class="btn gu-metric-tab" data-metric="inclusive" onclick="setGuMetric('inclusive')">含缓存 Token</button>
+              </div>
               <div id="global-usage-body"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
             </div>
           </div>

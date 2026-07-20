@@ -652,6 +652,7 @@ test('web usage labels distinguish fresh input and cache from legacy consumed in
   const root = path.join(__dirname, '..');
   const chat = fs.readFileSync(path.join(root, 'public', 'chat.js'), 'utf8');
   const manage = fs.readFileSync(path.join(root, 'public', 'manage.js'), 'utf8');
+  const manageHtml = fs.readFileSync(path.join(root, 'public', 'manage.html'), 'utf8');
   const catalog = fs.readFileSync(path.join(root, 'public', 'provider-catalog.js'), 'utf8');
   for (const label of [/新:/, /缓读:/, /缓写:/, /入\(含缓存\):/, /输入含缓存/]) {
     assert.match(catalog, label);
@@ -660,4 +661,9 @@ test('web usage labels distinguish fresh input and cache from legacy consumed in
   assert.match(chat, /_providerCatalog\.formatUsageWindow/);
   assert.match(manage, /providerCatalog\.formatUsageWindow/);
   assert.match(manage, /providerCatalog\.formatUsageCumulative/);
+  assert.match(manageHtml, /id="gu-metric-tabs"/);
+  assert.match(manageHtml, /setGuMetric\('fresh'\)[\s\S]*setGuMetric\('inclusive'\)/);
+  assert.match(manage, /let _guMetric = 'fresh'/);
+  assert.match(manage, /fresh && hasFreshTrend[\s\S]*_globalUsage\.byDayFresh[\s\S]*_globalUsage\.byDay/);
+  assert.match(manage, /_guMetric === 'inclusive'[\s\S]*b\.cacheWrite \+ b\.cacheRead/);
 });
