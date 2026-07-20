@@ -181,6 +181,23 @@
       } else host.addSystemMsg?.(host.translate('contextCleared'));
     }
 
+    function handleCommittedMessage(event) {
+      const committed = event && event.message;
+      if (committed && committed.id && committed.role && typeof historyView.commitMessage === 'function') {
+        const result = historyView.commitMessage(committed, {
+          currentElement: state.currentMsgEl,
+          lastUserElement: state.lastUserBubble,
+        });
+        state.currentMsgEl = result.currentElement;
+        state.lastUserBubble = result.lastUserElement;
+        host.maybeScrollToBottom?.();
+        return;
+      }
+      if (event.id && event.role) {
+        historyView.tagLatestMessage(event.role, event.id, event.clientMsgId);
+      }
+    }
+
     function handleEvent(message, expectedGeneration) {
       if (!message || !isOwned(expectedGeneration)) return false;
       debugEvent(message);
@@ -246,7 +263,7 @@
           break;
         case 'background_tasks': break;
         case 'chat_msg_meta':
-          if (message.id && message.role) historyView.tagLatestMessage(message.role, message.id);
+          handleCommittedMessage(message);
           break;
         case 'chat_msg_deleted':
           if (message.id) host.removeHistoryMessageById?.(message.id);

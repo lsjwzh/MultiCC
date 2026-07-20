@@ -1278,24 +1278,9 @@ bus.on('chat:dispatch-complete', (dispatchId, sessionName, finalText) => {
     .catch(error => console.error(`[multicc/dispatch] finalize ${dispatchId} failed: ${error.message}`));
 });
 
-// ── Generalised cross-session dispatch (any chat session, not just the gateway) ──
-// A session emits one or more <<dispatch target="SID">self-contained task</dispatch>>
-// markers in its reply. On turn completion we run each on its target sibling and
-// route the result back to the dispatcher (see finalizeDispatch). This is the
-// real primitive behind "the commander splits work onto provider-specific
-// sibling sessions" — e.g. handing a chunk to a DeepSeek-backed session.
-//
-// Autonomous (no confirm step — the dispatcher is the user's own agent, unlike
-// the remote-human WeChat gateway). Targets are restricted to non-system sessions
-// in the SAME directory. A dispatched worker's own turn carries originDispatchId
-// and is handled by the回流 branch above, so workers cannot re-dispatch (mirrors
-// "a fork can't fork").
-// Ultracode safety net. Observed failure mode (mafit chat-24): the model
-// narrates "分发给3个 ultra worker" but hands the work to run-detached shell
-// tasks instead of emitting markers — the workers silently receive nothing.
-// If an ultracode turn declares dispatch intent yet neither emitted a marker
-// nor called the dispatch API recently, inject one corrective hint (cooldown-
-// limited so a stubborn model can't loop us).
+// Cross-session dispatch is same-directory and non-system; durable result flow
+// returns through finalizeDispatch. Ultracode gets one cooldown-limited nudge
+// when it narrates dispatch intent without producing a marker or API dispatch.
 const lastDispatchOutAt = new Map();   // dispatcherId → ts of last real dispatch (marker or API)
 const lastUltraNudgeAt = new Map();    // dispatcherId → ts of last nudge
 const ULTRA_NUDGE_COOLDOWN_MS = 15 * 60 * 1000;

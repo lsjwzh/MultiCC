@@ -732,10 +732,11 @@ function highlightCodeBlocks(root) {
 }
 
 let _lastUserBubble = null;  // the most recent user message bubble (holds the per-turn auto-commit checkbox)
-function addUserMsg(text) {
+function addUserMsg(text, clientMsgId) {
   const div = document.createElement('div');
   div.className = 'msg user';
   div.textContent = text;
+  if (clientMsgId) div.dataset.clientMsgId = clientMsgId;
   messagesEl.appendChild(div);
   // Per-message auto-commit checkbox lives under the user's own message.
   attachAutoCommitCheck(div, _sessionAutoCommit);
