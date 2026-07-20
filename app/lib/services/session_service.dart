@@ -177,6 +177,25 @@ class SessionService {
     return map;
   }
 
+  // Transport-level liveness for one session: {state: working|idle|stalled,
+  // reason, silentMs, phase}. Used by the chat header pill to tell "working"
+  // from "idle" and "stalled" at a glance.
+  Future<Map<String, dynamic>> fetchLiveness(String id) async {
+    final res = await http
+        .get(
+          Uri.parse(_url('/api/sessions/$id/liveness')),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 10));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['state'] = 'unknown';
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
   /// Leave a passive note for another session in the same directory. The note
   /// is delivered to the target agent at the start of its next chat turn.
   Future<void> postNote({
