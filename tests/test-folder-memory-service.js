@@ -74,6 +74,35 @@ test('folder snapshot preserves absolute paths, bounded scopes, and system-sessi
   }
 });
 
+test('curated memory STORE caps are large (>= 128k) so a project knowledge base is not choked', () => {
+  // The store cap governs how much the atomic /memory/action API accepts; it is
+  // distinct from the per-session injection caps (SESSION/SHARED_MEM_CAP above).
+  assert.ok(SESSION_CURATED_MEM_CAP >= 128 * 1024,
+    `SESSION_CURATED_MEM_CAP too small: ${SESSION_CURATED_MEM_CAP}`);
+  assert.ok(SHARED_CURATED_MEM_CAP >= 128 * 1024,
+    `SHARED_CURATED_MEM_CAP too small: ${SHARED_CURATED_MEM_CAP}`);
+});
+
+test('a large curated add that would have blown past the old 2200-char cap now succeeds', () => {
+  const { service, cleanup } = fixture();
+  const { applyCuratedMemoryAction } = require('../src/memory-store');
+  try {
+    const record = { id: 's1', dirId: 'd1', cli: 'claude' };
+    const { shared } = service.ensureDirs(record);
+    // 10k chars — well over the former 2200 limit. Uses the real route-facing cap.
+    const result = applyCuratedMemoryAction({
+      dir: shared,
+      action: 'add',
+      content: `[fact] ${'K'.repeat(10000)} shared knowledge entry`,
+      charLimit: service.curatedLimit('shared'),
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.ok(result.usage.limit >= 128 * 1024);
+  } finally {
+    cleanup();
+  }
+});
+
 test('file helpers sort markdown, reject traversal, choose scope, and remove empty auto memory', () => {
   const { service, cleanup } = fixture();
   try {
