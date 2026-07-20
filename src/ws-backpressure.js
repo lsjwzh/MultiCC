@@ -3,7 +3,15 @@
 const DEFAULTS = Object.freeze({
   highWaterBytes: 1024 * 1024,
   maxQueueBytes: 2 * 1024 * 1024,
-  maxQueueMessages: 256,
+  // Streaming chat turns emit many small delta frames; a single burst
+  // (e.g. a reconnect replay of an in-progress turn, or a fast model's
+  // token stream) can legitimately queue hundreds of messages in a tick.
+  // The 256 default this replaced was below what the normal streaming path
+  // produces, so it fired queue_overflow on healthy clients. The real
+  // slow-client guards are the byte cap (maxQueueBytes) and the congestion
+  // timer (maxCongestionMs) — message count is only a coarse safety net, so
+  // keep it high enough not to trip on normal streaming volume.
+  maxQueueMessages: 4096,
   maxCongestionMs: 15_000,
   retryMs: 25,
 });
@@ -94,7 +102,19 @@ function installWsBackpressure(ws, {
     }
   }
 
-  function enqueue(data, options, callback) {
+  // `bounded` distinguishes the two producers:
+  //   • normal live sends (bounded=true): subject to the message-count tripwire,
+  //     so a genuinely stuck client that keeps accumulating unsent frames is
+  //     eventually disconnected.
+  //   • replay bursts (bounded=false, via sendImmediate): a one-shot, already-
+  //     bounded batch (the caller's own streamReplay cap limits it) enqueued
+  //     synchronously on connect. This path skips the message-COUNT guard — that
+  //     count is a coarse proxy for "slow client" and a replay burst is neither
+  //     slow nor unbounded — but STILL respects the byte cap (real memory guard)
+  //     and the congestion timer in flush(). Skipping the count stops the
+  //     reconnect→replay→overflow→1013→reconnect death-loop that hit long
+  //     streaming turns.
+  function enqueue(data, options, callback, bounded = true) {
     if (typeof options === 'function') { callback = options; options = undefined; }
     if (closed) {
       if (typeof callback === 'function') callback(new Error('WebSocket backpressure transport closed'));
@@ -114,7 +134,11 @@ function installWsBackpressure(ws, {
         return;
       }
     }
-    if (bytes > cfg.maxQueueBytes || queue.length >= cfg.maxQueueMessages || queueBytes + bytes > cfg.maxQueueBytes) {
+    // Byte cap always applies (memory guard). Message-count cap applies only to
+    // the bounded live-send path.
+    const overByteCap = bytes > cfg.maxQueueBytes || queueBytes + bytes > cfg.maxQueueBytes;
+    const overMsgCap = bounded && queue.length >= cfg.maxQueueMessages;
+    if (overByteCap || overMsgCap) {
       metric('multicc_ws_queue_overflows_total');
       disconnect('queue_overflow');
       if (typeof callback === 'function') callback(new Error('WebSocket send queue overflow'));
@@ -127,7 +151,13 @@ function installWsBackpressure(ws, {
     flush();
   }
 
-  ws.send = enqueue;
+  // Public replay path: enqueue without the message-count tripwire. Used by the
+  // server's reconnect stream-replay loop.
+  function sendImmediate(data, options, callback) {
+    return enqueue(data, options, callback, false);
+  }
+
+  ws.send = (data, options, callback) => enqueue(data, options, callback, true);
   ws.once?.('close', () => {
     closed = true;
     if (timer) cancelSchedule(timer);
@@ -138,6 +168,7 @@ function installWsBackpressure(ws, {
   const api = {
     flush,
     disconnect,
+    sendImmediate,
     stats: () => ({ queueBytes, queueMessages: queue.length, sending, congestedAt, closed }),
     limits: cfg,
   };
