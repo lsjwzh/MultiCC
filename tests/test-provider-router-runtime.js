@@ -403,13 +403,15 @@ test('installed CPR 0.3 negotiates the production API and required capabilities'
     mode: 'cpr', providers: fakeProviders(), router, ...HOST,
   });
   assert.equal(runtime.mode, 'cpr');
-  // CPR advertises a backward-compatible minor bump (API 1.0.0 → 1.1.0, and
-  // providerStore capability 1.0 → 1.1) alongside the dangling-subagent
-  // fail-open fix. The port gate only requires API major 1 and capability
-  // major ≥ the REQUIRED_CAPABILITIES floor (asserted above via routerApiMajor),
-  // so the runtime stays compatible; we pin the exact advertised values here so
-  // a future MAJOR bump — which would be breaking — still trips this test.
-  assert.equal(runtime.routerApiVersion, '1.1.0');
+  // CPR advertises backward-compatible minor bumps (API now 1.2.0, providerStore
+  // capability 1.1) as it grows: 1.1.0 added the dangling-subagent fail-open,
+  // 1.2.0 added the metadata-only onActivity liveness callback (a new
+  // `activityEvents` capability, not in REQUIRED_CAPABILITIES so it is not
+  // negotiated here). The port gate only requires API major 1 and the required
+  // capability majors (asserted above via routerApiMajor), so the runtime stays
+  // compatible; we pin the exact advertised values so a future MAJOR bump —
+  // which would be breaking — still trips this test.
+  assert.equal(runtime.routerApiVersion, '1.2.0');
   assert.deepEqual(runtime.routerCapabilities, {
     providerStore: '1.1',
     spawnEnvironment: '1.0',
