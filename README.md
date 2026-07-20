@@ -448,7 +448,7 @@ A single operational surface for everything:
 ### Stable Release (recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.9.9/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.9.9/install.sh | bash -s -- --branch v0.9.9
 ```
 
 This installs the latest **stable release**. The script auto-detects your OS,
@@ -493,6 +493,12 @@ cd MultiCC && ./multicc install   # install as macOS launchd background service
 ```
 
 **Update anytime:** `./multicc update` — pulls latest code, reinstalls deps if `package.json` changed, and restarts.
+
+The v1 updater also verifies the independently packaged `cli-provider-router`
+(CPR) before starting the server. Provider credentials and defaults remain in
+MultiCC's existing `providers.json` / data directory; no CPR data migration is
+required. If an interrupted upgrade leaves dependencies incomplete, rerun
+`./multicc update` and it will repair them with `npm install` before restarting.
 
 > **⚠️ If `./multicc update` fails** (e.g. after a server-side history rewrite / force-push, which can happen when sensitive files are purged from the repo), reset your local branch to match the remote:
 > ```bash
