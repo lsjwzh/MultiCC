@@ -201,6 +201,7 @@
     }
 
     function attachMessageActions(node, message) {
+      if (message.clientMsgId) node.dataset.clientMsgId = message.clientMsgId;
       if (!message.id) return;
       node.dataset.msgId = message.id;
       attachDeleteButton(node);
@@ -266,6 +267,12 @@
       return historyElements().find(element => element.dataset.msgId === id) || null;
     }
 
+    function findByClientMsgId(clientMsgId) {
+      if (!clientMsgId) return null;
+      return Array.from(messagesEl.querySelectorAll('.msg'))
+        .find(element => element.dataset.clientMsgId === clientMsgId) || null;
+    }
+
     function visibleIds() {
       return historyElements().map(element => element.dataset.msgId).filter(Boolean);
     }
@@ -300,6 +307,88 @@
       return cards;
     }
 
+    function replaceMessageNode(existing, node, hostState = {}) {
+      let currentElement = hostState.currentElement || null;
+      let lastUserElement = hostState.lastUserElement || null;
+      const wasCurrent = currentElement === existing;
+      const wasLastUser = lastUserElement === existing;
+      const pendingAutoCommit = wasLastUser ? existing.querySelector('.msg-auto-commit') : null;
+      if (pendingAutoCommit) node.appendChild(pendingAutoCommit);
+      existing.replaceWith(node);
+      if (wasCurrent) currentElement = node;
+      if (wasLastUser) lastUserElement = node;
+      return { currentElement, lastUserElement };
+    }
+
+    function commitMessage(message, hostState = {}) {
+      const source = message && typeof message === 'object' ? message : {};
+      if (!source.id || !source.role) {
+        return Object.freeze({
+          node: null,
+          currentElement: hostState.currentElement || null,
+          lastUserElement: hostState.lastUserElement || null,
+        });
+      }
+
+      let existing = findById(source.id) || findByClientMsgId(source.clientMsgId);
+      if (!existing && source.role === 'assistant') {
+        existing = Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+      }
+
+      const node = renderMessage(source);
+      if (!existing) {
+        messagesEl.appendChild(node);
+        return Object.freeze({
+          node,
+          currentElement: hostState.currentElement || null,
+          lastUserElement: source.role === 'user' ? node : (hostState.lastUserElement || null),
+        });
+      }
+
+      const next = replaceMessageNode(existing, node, hostState);
+      return Object.freeze({ node, ...next });
+    }
+
+    function reorderAuthoritativeNodes(plan, currentElement) {
+      const messages = Array.isArray(plan.messages) ? plan.messages : [];
+      const ordered = [];
+      const seen = new Set();
+      const authoritativeIds = new Set();
+      const tail = messages[messages.length - 1];
+      let streamingTailNode = null;
+      for (const message of messages) {
+        if (message && message.id) authoritativeIds.add(message.id);
+        let node = message && message.id ? findById(message.id) : null;
+        if (!node && message === tail && message?.role === 'assistant' && message.streaming) {
+          node = currentElement?.classList.contains('assistant')
+            ? currentElement
+            : Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+          streamingTailNode = node;
+        }
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        ordered.push(node);
+      }
+      if (!ordered.length) return;
+
+      const children = Array.from(messagesEl.children);
+      let orderedIndex = 0;
+      const nextChildren = [];
+      for (const child of children) {
+        const isAuthoritativeSlot = authoritativeIds.has(child.dataset.msgId)
+          || (streamingTailNode && child === streamingTailNode);
+        if (!isAuthoritativeSlot) {
+          nextChildren.push(child);
+          continue;
+        }
+        // Replace every authoritative page slot in-place. Extra slots are stale
+        // duplicate DOM nodes and are deliberately dropped.
+        if (orderedIndex < ordered.length) nextChildren.push(ordered[orderedIndex++]);
+      }
+      while (orderedIndex < ordered.length) nextChildren.push(ordered[orderedIndex++]);
+      messagesEl.replaceChildren(...nextChildren);
+    }
+
     function applyPlan(plan, hostState = {}) {
       let currentElement = hostState.currentElement || null;
       let lastUserElement = hostState.lastUserElement || null;
@@ -308,6 +397,9 @@
         const operation = plan.operations[index];
         try {
           let existing = operation.id ? findById(operation.id) : null;
+          if (!existing && operation.message?.clientMsgId) {
+            existing = findByClientMsgId(operation.message.clientMsgId);
+          }
           if (!existing && operation.kind === 'stream-tail') {
             if (currentElement?.classList.contains('assistant') && !currentElement.dataset.msgId) {
               existing = currentElement;
@@ -317,13 +409,9 @@
           }
           const node = renderMessage(operation.message);
           if (existing) {
-            const wasCurrent = currentElement === existing;
-            const wasLastUser = lastUserElement === existing;
-            const pendingAutoCommit = wasLastUser ? existing.querySelector('.msg-auto-commit') : null;
-            if (pendingAutoCommit) node.appendChild(pendingAutoCommit);
-            existing.replaceWith(node);
-            if (wasCurrent) currentElement = node;
-            if (wasLastUser) lastUserElement = node;
+            const next = replaceMessageNode(existing, node, { currentElement, lastUserElement });
+            currentElement = next.currentElement;
+            lastUserElement = next.lastUserElement;
           } else {
             messagesEl.appendChild(node);
           }
@@ -331,6 +419,13 @@
           warn('[multicc] history view skipped message', index, error);
         }
       }
+
+      // A reconnect page is authoritative for the relative order of every
+      // persisted message it contains. Missing messages may have been absent
+      // from another window while later assistant frames were still rendered;
+      // move keyed nodes into canonical server order instead of merely appending
+      // the missing bubbles after newer content.
+      reorderAuthoritativeNodes(plan, currentElement);
 
       let streamingTail = null;
       if (plan.streamingTail) {
@@ -389,8 +484,17 @@
       messagesEl.replaceChildren();
     }
 
-    function tagLatestMessage(role, id) {
+    function tagLatestMessage(role, id, clientMsgId) {
       if (!id) return null;
+      const clientNode = findByClientMsgId(clientMsgId);
+      if (clientNode) {
+        if (!clientNode.dataset.msgId) {
+          clientNode.dataset.msgId = id;
+          attachDeleteButton(clientNode);
+          attachForkButton(clientNode);
+        }
+        return clientNode;
+      }
       const selector = role === 'user' ? '.msg.user' : '.msg.assistant';
       const nodes = messagesEl.querySelectorAll(selector);
       const node = nodes[nodes.length - 1];
@@ -406,8 +510,10 @@
       appendToolCard,
       applyPlan,
       clearMessages,
+      commitMessage,
       createAssistantBubble,
       createToolCard,
+      findByClientMsgId,
       findById,
       getToolStack,
       nextVisibleId,
