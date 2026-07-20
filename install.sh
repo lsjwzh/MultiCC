@@ -7,7 +7,7 @@
 # ============================================================================
 # Usage:
 #   Stable release:
-#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.9.9/install.sh | bash
+#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v0.9.9/install.sh | bash -s -- --branch v0.9.9
 #   Latest (main branch, may be ahead of the latest stable release):
 #     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 #
@@ -50,9 +50,9 @@ warn()    { echo "${C_YELLOW}[!]${C_RESET} $*"; }
 err()     { echo "${C_RED}[ERROR]${C_RESET} $*"; }
 step()    { echo ""; echo "${C_BOLD}${C_CYAN}>> $*${C_RESET}"; }
 
-check_native_dependencies() {
+check_runtime_dependencies() {
   local check_rc=0
-  node scripts/check-native-deps.js || check_rc=$?
+  node scripts/check-runtime-deps.js || check_rc=$?
   if [ "$check_rc" -eq 0 ]; then
     return 0
   fi
@@ -65,7 +65,7 @@ check_native_dependencies() {
     warn "better-sqlite3 native binding is unavailable — rebuilding it once"
     if npm rebuild better-sqlite3 --foreground-scripts 2>&1; then
       check_rc=0
-      node scripts/check-native-deps.js || check_rc=$?
+      node scripts/check-runtime-deps.js || check_rc=$?
       [ "$check_rc" -eq 0 ] && return 0
     fi
   fi
@@ -121,7 +121,7 @@ banner() {
     warn "You are on the development channel (main)."
     echo "       This may contain unfinished changes."
     echo "       For the latest stable release, run:"
-    echo "       curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install.sh | bash"
+    echo "       curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install.sh | bash -s -- --branch v${INSTALLER_VERSION}"
     echo ""
   fi
 }
@@ -154,7 +154,7 @@ while [ $# -gt 0 ]; do
 MultiCC — One-Click Install Script  v${INSTALLER_VERSION}
 
 Usage — stable release:
-  curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install.sh | bash
+  curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install.sh | bash -s -- --branch v${INSTALLER_VERSION}
 
 Usage — latest (main branch, may be ahead of stable):
   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
@@ -416,11 +416,11 @@ else
   exit 1
 fi
 
-step "Verifying native dependencies"
-if check_native_dependencies; then
-  ok "Native dependencies verified"
+step "Verifying runtime dependencies"
+if check_runtime_dependencies; then
+  ok "Runtime dependencies verified"
 else
-  err "Native dependency verification failed. Run the repair command shown above, then retry."
+  err "Runtime dependency verification failed. Run npm install, then retry."
   if [ "$IS_MACOS" = true ]; then
     echo "  Build tools: xcode-select --install"
   elif [ "$IS_LINUX" = true ]; then
