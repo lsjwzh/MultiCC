@@ -1341,58 +1341,19 @@ async function autoCommitIfNeeded(bubbleEl) {
 }
 
 /* ── Diff viewer ── */
-function renderDiffLines(container, text) { return chatLiveUi.renderDiff(container, text); }
-
-async function showDiff() {
+/* The list/detail UI lives in chat-diff.js (window.chatDiffViewer). These
+ * wrappers keep the legacy call sites (merge-hint button, Esc handling)
+ * working without duplication. */
+function showDiff() {
   if (!_sessionName) { addSystemMsg('无 session id，无法查看 diff'); return; }
-  const modal = document.getElementById('diff-modal');
-  const titleEl = document.getElementById('diff-title');
-  const subEl = document.getElementById('diff-subtitle');
-  const statEl = document.getElementById('diff-stat');
-  const contentEl = document.getElementById('diff-content');
-  if (!modal) return;
-  titleEl.textContent = `Diff · ${_sessionName}`;
-  subEl.textContent = '加载中…';
-  statEl.textContent = '';
-  contentEl.textContent = '';
-  modal.classList.add('open');
-  try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/diff`));
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      subEl.textContent = `错误：${err.error || res.status}`;
-      return;
-    }
-    const data = await res.json();
-    const ms = data.mergeState || {};
-    const parts = [];
-    if (data.branch) parts.push(`${data.branch} → ${data.baseBranch || ''}`);
-    parts.push(`${ms.ahead || 0} 个提交领先`);
-    if (ms.dirty) parts.push('含未提交改动');
-    if (data.truncated) parts.push('已截断到 1MB');
-    subEl.textContent = parts.join(' · ');
-    statEl.textContent = (data.stat || '').trim() || '(无变更)';
-    renderDiffLines(contentEl, data.diff || '');
-    if (data.error) {
-      const errLine = document.createElement('div');
-      errLine.className = 'diff-line diff-del';
-      errLine.textContent = `错误：${data.error}`;
-      contentEl.appendChild(errLine);
-    }
-  } catch (e) {
-    subEl.textContent = `请求失败：${e.message}`;
-  }
+  if (window.chatDiffViewer) window.chatDiffViewer.open(_sessionName);
 }
 
 function closeDiffModal() {
-  const modal = document.getElementById('diff-modal');
-  if (modal) modal.classList.remove('open');
+  if (window.chatDiffViewer) window.chatDiffViewer.close();
 }
 
 document.getElementById('merge-hint-diff-btn')?.addEventListener('click', showDiff);
-document.getElementById('diff-modal')?.addEventListener('click', (e) => {
-  if (e.target.id === 'diff-modal') closeDiffModal();
-});
 
 startMergeStatusPolling();
 startLivenessPolling();

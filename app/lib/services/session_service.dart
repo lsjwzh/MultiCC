@@ -161,6 +161,98 @@ class SessionService {
     return map;
   }
 
+  /// Fetch the worktree diff file list against the directory's base branch.
+  /// Returns `{baseBranch, branch, files:[{path, oldPath, status, additions,
+  /// deletions, binary}], totalFiles, totalAdditions, totalDeletions,
+  /// truncated, mergeState, error}`. On HTTP error sets `ok: false` + `error`.
+  Future<Map<String, dynamic>> fetchDiffFiles(String id) async {
+    final res = await http
+        .get(Uri.parse(_url('/api/sessions/$id/diff/files')), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
+  /// Fetch the unified-diff patch for a single file. Returns `{path, patch,
+  /// truncated, error}`. `patch` is the raw `git diff --no-color BASE -- path`
+  /// text (with `diff --git` header), truncated to 256KB. On HTTP error sets
+  /// `ok: false` + `error`.
+  Future<Map<String, dynamic>> fetchFileDiff(String id, String path) async {
+    final res = await http
+        .get(
+          Uri.parse(_url(
+              '/api/sessions/$id/diff/file?path=${Uri.encodeQueryComponent(path)}')),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 20));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
+  /// Enqueue an aux AI task. Body: `{id, type, prompt, meta}`. Returns
+  /// `{ok, result, error, taskId}`. Pass a [client] so the caller can close it
+  /// to cancel the in-flight request (the resulting http.ClientException is
+  /// rethrown so the caller can identify it as a cancellation). Timeout 130s
+  /// (the aux queue may wait behind other tasks).
+  Future<Map<String, dynamic>> enqueueAux({
+    required String id,
+    required String type,
+    required String prompt,
+    Map<String, dynamic>? meta,
+    http.Client? client,
+  }) async {
+    final c = client ?? http.Client();
+    final ownsClient = client == null;
+    final body = <String, dynamic>{
+      'id': id,
+      'type': type,
+      'prompt': prompt,
+    };
+    if (meta != null) body['meta'] = meta;
+    try {
+      final res = await c
+          .post(
+            Uri.parse(_url('/api/aux/enqueue')),
+            headers: _headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 130));
+      final parsed = jsonDecode(res.body);
+      final map = parsed is Map<String, dynamic> ? parsed : <String, dynamic>{};
+      if (res.statusCode >= 400) {
+        map['ok'] = false;
+        map['error'] ??= '${res.statusCode}';
+      }
+      return map;
+    } finally {
+      if (ownsClient) c.close();
+    }
+  }
+
+  /// Cancel an aux task by id. Best-effort: swallows all errors. Idempotent
+  /// (server always returns `{ok: true}`). Missing/empty id is a no-op.
+  Future<void> cancelAux(String taskId) async {
+    if (taskId.isEmpty) return;
+    try {
+      await http
+          .post(Uri.parse(_url('/api/aux/cancel')),
+              headers: _headers, body: jsonEncode({'id': taskId}))
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Best-effort cancel; ignore.
+    }
+  }
+
   Future<Map<String, dynamic>> fetchMergeStatus(String id) async {
     final res = await http
         .get(

@@ -53,6 +53,79 @@ function blockedGitResult(error) {
   };
 }
 
+// Parse `git diff --numstat -z` and `git diff --name-status -z` output into a
+// unified file list. numstat is the primary table (additions/deletions/path);
+// name-status supplies the status code and oldPath for renames.
+function parseDiffFiles(numstatZ, nameStatusZ) {
+  const numstatTokens = String(numstatZ || '').split('\0');
+  const files = [];
+  let i = 0;
+  while (i < numstatTokens.length) {
+    const token = numstatTokens[i];
+    if (token === '') { i += 1; continue; }
+    const parts = token.split('\t');
+    if (parts.length < 2) { i += 1; continue; }
+    const addStr = parts[0];
+    const delStr = parts[1];
+    const pathField = parts.slice(2).join('\t');
+    const numeric = value => (value === '-' ? 0 : (parseInt(value, 10) || 0));
+    const binary = addStr === '-' || delStr === '-';
+    if (pathField !== '') {
+      files.push({
+        path: pathField,
+        additions: numeric(addStr),
+        deletions: numeric(delStr),
+        binary,
+      });
+      i += 1;
+    } else {
+      // Rename: path field is empty, next two NUL tokens are old and new.
+      const oldPath = numstatTokens[i + 1] || '';
+      const newPath = numstatTokens[i + 2] || '';
+      files.push({
+        path: newPath,
+        additions: numeric(addStr),
+        deletions: numeric(delStr),
+        binary,
+      });
+      i += 3;
+    }
+  }
+
+  const statusMap = new Map();
+  const nsTokens = String(nameStatusZ || '').split('\0');
+  let j = 0;
+  while (j < nsTokens.length) {
+    const token = nsTokens[j];
+    if (token === '') { j += 1; continue; }
+    const firstChar = token.charAt(0);
+    if (firstChar === 'R' || firstChar === 'C') {
+      const oldPath = nsTokens[j + 1] || '';
+      const newPath = nsTokens[j + 2] || '';
+      statusMap.set(newPath, { status: firstChar, oldPath });
+      j += 3;
+    } else {
+      const filePath = nsTokens[j + 1] || '';
+      statusMap.set(filePath, { status: firstChar, oldPath: null });
+      j += 2;
+    }
+  }
+
+  return files.map(file => {
+    const statusInfo = statusMap.get(file.path);
+    const status = statusInfo ? statusInfo.status : 'M';
+    const oldPath = statusInfo && statusInfo.oldPath != null ? statusInfo.oldPath : null;
+    return {
+      path: file.path,
+      oldPath,
+      status,
+      additions: file.additions,
+      deletions: file.deletions,
+      binary: file.binary,
+    };
+  });
+}
+
 function createSessionGitRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
   const maxDiffBytes = Number.isFinite(deps.maxDiffBytes) && deps.maxDiffBytes > 0
@@ -219,7 +292,14 @@ function createSessionGitRuntime(rawDeps) {
       if (!persisted.worktreePath || !deps.existsSync(persisted.worktreePath)) {
         return res.status(400).json({ error: 'worktree missing' });
       }
-      const baseBranch = dir.baseBranch || await deps.gitBaseBranch(dir.path);
+      let baseBranch = dir.baseBranch;
+      if (!baseBranch) {
+        try {
+          baseBranch = await deps.gitBaseBranch(dir.path);
+        } catch (cause) {
+          return res.status(500).json({ error: errorText(cause) });
+        }
+      }
       const worktree = persisted.worktreePath;
       let diff = '';
       let stat = '';
@@ -253,6 +333,106 @@ function createSessionGitRuntime(rawDeps) {
         diff,
         truncated,
         mergeState: mergeStateCached(dir, persisted),
+        error,
+      });
+    });
+
+    app.get('/api/sessions/:id/diff/files', async (req, res) => {
+      const found = findSession(req, res);
+      if (!found) return;
+      const { persisted, dir } = found;
+      if (!persisted.worktreePath || !deps.existsSync(persisted.worktreePath)) {
+        return res.status(400).json({ error: 'worktree missing' });
+      }
+      let baseBranch = dir.baseBranch;
+      if (!baseBranch) {
+        try {
+          baseBranch = await deps.gitBaseBranch(dir.path);
+        } catch (cause) {
+          return res.status(500).json({ error: errorText(cause) });
+        }
+      }
+      const worktree = persisted.worktreePath;
+      let numstat = '';
+      let nameStatus = '';
+      let error = null;
+      try {
+        numstat = await deps.gitRunQueued(worktree,
+          ['-c', 'core.quotepath=false', 'diff', '--numstat', '--no-color', '-z', baseBranch],
+          { maxBuffer: 4 * 1024 * 1024 });
+      } catch (cause) {
+        error = errorText(cause);
+      }
+      try {
+        nameStatus = await deps.gitRunQueued(worktree,
+          ['-c', 'core.quotepath=false', 'diff', '--name-status', '--no-color', '-z', baseBranch],
+          { maxBuffer: 1024 * 1024 });
+      } catch (cause) {
+        if (!error) error = errorText(cause);
+      }
+      const allFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      const totalFiles = allFiles.length;
+      const totalAdditions = allFiles.reduce((sum, f) => sum + f.additions, 0);
+      const totalDeletions = allFiles.reduce((sum, f) => sum + f.deletions, 0);
+      const fileCap = 500;
+      const truncated = totalFiles > fileCap;
+      const files = truncated ? allFiles.slice(0, fileCap) : allFiles;
+      return res.json({
+        baseBranch,
+        branch: persisted.branch,
+        files,
+        totalFiles,
+        totalAdditions,
+        totalDeletions,
+        truncated,
+        mergeState: mergeStateCached(dir, persisted),
+        error,
+      });
+    });
+
+    app.get('/api/sessions/:id/diff/file', async (req, res) => {
+      const found = findSession(req, res);
+      if (!found) return;
+      const { persisted, dir } = found;
+      if (!persisted.worktreePath || !deps.existsSync(persisted.worktreePath)) {
+        return res.status(400).json({ error: 'worktree missing' });
+      }
+      const filePath = req.query.path;
+      if (typeof filePath !== 'string' || filePath.length === 0 || filePath.length > 500) {
+        return res.status(400).json({ error: 'path required (1..500 chars)' });
+      }
+      if (filePath.startsWith('-')) {
+        return res.status(400).json({ error: 'path must not start with "-"' });
+      }
+      let baseBranch = dir.baseBranch;
+      if (!baseBranch) {
+        try {
+          baseBranch = await deps.gitBaseBranch(dir.path);
+        } catch (cause) {
+          return res.status(500).json({ error: errorText(cause) });
+        }
+      }
+      const worktree = persisted.worktreePath;
+      const patchCap = 256 * 1024;
+      let patch = '';
+      let truncated = false;
+      let error = null;
+      try {
+        patch = await deps.gitRunQueued(worktree,
+          ['diff', '--no-color', baseBranch, '--', filePath],
+          { maxBuffer: 512 * 1024 + 16 * 1024 });
+        if (patch.length > patchCap) {
+          patch = patch.slice(0, patchCap);
+          truncated = true;
+        }
+      } catch (cause) {
+        error = errorText(cause);
+        patch = '';
+      }
+      return res.json({
+        path: filePath,
+        patch,
+        truncated,
         error,
       });
     });
@@ -406,4 +586,4 @@ function createSessionGitRuntime(rawDeps) {
   });
 }
 
-module.exports = Object.freeze({ createSessionGitRuntime, LOADING_MERGE_STATE });
+module.exports = Object.freeze({ createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles });

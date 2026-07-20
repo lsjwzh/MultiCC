@@ -573,5 +573,11 @@
   "activityWaiting": "等待用户输入",
   "activityCompleted": "已完成",
   "activityError": "出现异常",
-  "activityIdle": "空闲"
+  "activityIdle": "空闲",
+  "diffChangedFiles": "已更改 {0} 个文件",
+  "diffViewMoreFiles": "查看另外 {0} 个文件",
+  "diffAiSummary": "AI 改动摘要",
+  "diffSummarizing": "AI 正在总结改动…",
+  "diffSummaryFailed": "摘要失败",
+  "diffBackToList": "返回列表"
 }
