@@ -130,6 +130,55 @@ Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
       : chip;
 }
 
+/// Transport-level liveness → tint/label/emoji (mirrors classifyBadge but for
+/// the working/idle/stalled verdict from GET /api/sessions/:id/liveness).
+/// A null state hides the badge.
+({Color color, String label, String emoji})? livenessBadge(String? state) {
+  switch (state) {
+    case 'working':
+      return (color: const Color(0xFF56d364), label: t('livenessWorking'), emoji: '🟢');
+    case 'idle':
+      return (color: const Color(0xFFe3b341), label: t('livenessIdle'), emoji: '🟡');
+    case 'stalled':
+      return (color: const Color(0xFFf85149), label: t('livenessStalled'), emoji: '🔴');
+    case 'unknown':
+      return (color: const Color(0xFF8a909b), label: t('livenessUnknown'), emoji: '⚪');
+    default:
+      return null;
+  }
+}
+
+/// A small liveness pill for the chat header. `verdict` is the parsed liveness
+/// JSON; a null/empty verdict renders nothing. Shows the silent duration on a
+/// working/stalled turn so "stuck for 3m" reads at a glance.
+Widget livenessChip(Map<String, dynamic>? verdict) {
+  final state = verdict == null ? null : verdict['state'] as String?;
+  final b = livenessBadge(state);
+  if (b == null) return const SizedBox.shrink();
+  var label = b.label;
+  final silentMs = (verdict?['silentMs'] as num?)?.toInt() ?? 0;
+  if ((state == 'stalled' || state == 'working') && silentMs >= 5000) {
+    final s = (silentMs / 1000).round();
+    label += s >= 60 ? ' · ${s ~/ 60}m ${s % 60}s' : ' · ${s}s';
+  }
+  final reason = verdict?['reason'] as String?;
+  final chip = Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      color: b.color.withValues(alpha: 0.15),
+      border: Border.all(color: b.color.withValues(alpha: 0.4)),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      '${b.emoji} $label',
+      style: TextStyle(color: b.color, fontSize: 9.5, fontWeight: FontWeight.w700),
+    ),
+  );
+  return (reason != null && reason.isNotEmpty)
+      ? Tooltip(message: 'liveness: $state ($reason)', child: chip)
+      : chip;
+}
+
 DateTime sessionLastInteractionAt(Session session, SessionStatus? live) {
   var best = session.createdAt;
   final saved = session.lastActivity;
