@@ -1197,6 +1197,12 @@
       #mic-btn, #attach-btn, #goal-btn { order: 2; width: 44px; height: 40px; }
       #pre-input-bar { flex-wrap: wrap; gap: 6px; padding: 5px 10px; }
       #subagent-pill { margin-left: 0 !important; }
+    .lv-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+    .lv-working { background:#3fb950; box-shadow:0 0 4px #3fb950; animation:lv-pulse 1.4s ease-in-out infinite; }
+    .lv-idle { background:#8b949e; }
+    .lv-stalled { background:#f85149; box-shadow:0 0 4px #f85149; }
+    .lv-unknown { background:#484f58; }
+    @keyframes lv-pulse { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
       #merge-hint { bottom: calc(105px + env(safe-area-inset-bottom)); flex-wrap: wrap; }
       #merge-hint .merge-hint-text { flex-basis: 100%; }
     }
@@ -1662,6 +1668,7 @@
       <input type="checkbox" id="auto-dispatch-check" /> Auto dispatch to sessions
     </label>
     <button id="subagent-pill" type="button" title="子任务 (subagent) 用的 provider+model，点击修改" style="margin-left:10px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;cursor:pointer;">子任务: <span id="subagent-pill-label">随主</span></button>
+    <span id="liveness-pill" title="" style="display:none;margin-left:8px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span></span>
   </div>
 
   <!-- Input bar -->

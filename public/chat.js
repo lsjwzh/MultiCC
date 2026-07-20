@@ -1213,6 +1213,23 @@ function startMergeStatusPolling() {
   _mergePollTimer = setInterval(refreshMergeStatus, 5000);
 }
 
+/* ── Liveness pill: is this session working / idle / stalled right now ── */
+let _livenessTimer = null;
+async function refreshLiveness() {
+  if (!_sessionName || document.hidden) return;
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/liveness`));
+    if (!res.ok) { chatLiveUi.renderLiveness(null); return; }
+    chatLiveUi.renderLiveness(await res.json());
+  } catch (_) { /* transient — keep the last shown state */ }
+}
+function startLivenessPolling() {
+  refreshLiveness();
+  if (_livenessTimer) clearInterval(_livenessTimer);
+  // 4s cadence: responsive enough to catch a stall, light enough for one session.
+  _livenessTimer = setInterval(refreshLiveness, 4000);
+}
+
 /* ── Merge worktree button ── */
 function confirmInPage(message) {
   return chatLiveUi.confirm(message, {
@@ -1377,6 +1394,7 @@ document.getElementById('diff-modal')?.addEventListener('click', (e) => {
 });
 
 startMergeStatusPolling();
+startLivenessPolling();
 
 /* ── Cross-CLI switch (one logical chat, independent native sessions) ── */
 function showCliSwitchPicker(current, states, availability) {

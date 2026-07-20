@@ -10,6 +10,7 @@ import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../utils/session_status_helpers.dart';
 import '../widgets/ai_config_sheet.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/conflict_diff_dialog.dart';
@@ -41,6 +42,8 @@ class _ChatViewState extends State<ChatView> {
   Timer? _mergeTimer;
   String? _polledSession;
   Map<String, dynamic>? _mergeStatus;
+  Timer? _livenessTimer;
+  Map<String, dynamic>? _liveness;
   // Track the last-warned behind count per session so the SnackBar fires when a
   // worktree first falls behind main (or falls further), not on every 5s poll.
   int _lastWarnedBehind = 0;
@@ -112,6 +115,7 @@ class _ChatViewState extends State<ChatView> {
   void dispose() {
     _scrollCtrl.dispose();
     _mergeTimer?.cancel();
+    _livenessTimer?.cancel();
     super.dispose();
   }
 
@@ -129,6 +133,24 @@ class _ChatViewState extends State<ChatView> {
       const Duration(seconds: 5),
       (_) => _refreshMergeStatus(session),
     );
+    _liveness = null;
+    _livenessTimer?.cancel();
+    _refreshLiveness(session);
+    _livenessTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => _refreshLiveness(session),
+    );
+  }
+
+  Future<void> _refreshLiveness(String sessionId) async {
+    if (sessionId.isEmpty) return;
+    try {
+      final v = await SessionService(
+        settings: widget.settings,
+      ).fetchLiveness(sessionId);
+      if (!mounted || _polledSession != sessionId) return;
+      setState(() => _liveness = v);
+    } catch (_) {}
   }
 
   Future<void> _refreshMergeStatus(String sessionId) async {
@@ -196,6 +218,14 @@ class _ChatViewState extends State<ChatView> {
               ),
             ),
             _CwdBar(mergeStatus: _mergeStatus),
+            if (livenessBadge(_liveness?['state'] as String?) != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 12, right: 12, bottom: 2),
+                  child: livenessChip(_liveness),
+                ),
+              ),
             if (provider.hasClassify)
               _AuxClassifyBar(
                 goal: provider.classifyGoal,
