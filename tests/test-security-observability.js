@@ -9,6 +9,7 @@ const test = require('node:test');
 
 const {
   createAuthSecurity,
+  normalizeDownloadTarget,
   normalizeRedirect,
   timingSafeEqualText,
 } = require('../src/auth-security');
@@ -90,6 +91,39 @@ test('WebSocket tickets are short-lived, path-bound, and single-use', () => {
   const expired = auth.issueWsTicket('/ws/chat');
   clock += 1_001;
   assert.equal(auth.consumeWsTicket(expired.ticket, '/ws/chat'), null);
+});
+
+test('download tickets are short-lived and bound to one canonical file target', () => {
+  let clock = 20_000;
+  let nonce = 0;
+  const auth = createAuthSecurity({
+    getSecret: () => 'secret',
+    now: () => clock,
+    randomBytes: size => Buffer.alloc(size, ++nonce),
+    ticketTtlMs: 1_000,
+  });
+  const target = '/api/download?path=%2Ftmp%2Freport+one.pdf&inline=1';
+  const issued = auth.issueDownloadTicket(target, { requestId: 'req-1' });
+  assert.equal(issued.target, target);
+  assert.equal(auth.verifyDownloadTicket(
+    issued.ticket,
+    `${target}&download_ticket=${encodeURIComponent(issued.ticket)}`,
+  ), true);
+  assert.equal(auth.verifyDownloadTicket(
+    issued.ticket,
+    '/api/download?inline=1&path=%2Ftmp%2Freport+one.pdf&download_ticket=ignored',
+  ), true);
+  assert.equal(auth.verifyDownloadTicket(
+    issued.ticket,
+    '/api/download?path=%2Ftmp%2Fother.pdf&inline=1&download_ticket=ignored',
+  ), false);
+  assert.equal(auth.verifyDownloadTicket(issued.ticket, `${target}&token=secret`), false);
+  clock += 1_001;
+  assert.equal(auth.verifyDownloadTicket(issued.ticket, target), false);
+
+  assert.equal(normalizeDownloadTarget('https://evil.test/api/download?path=/tmp/x'), null);
+  assert.equal(normalizeDownloadTarget('/api/download?path=/tmp/x&extra=1'), null);
+  assert.throws(() => auth.issueDownloadTicket('/api/download?path='), /invalid download/);
 });
 
 test('runtime JSON writes are atomic and private', () => {

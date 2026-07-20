@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/download_ticket_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 
@@ -31,6 +32,7 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   List<_FileEntry> _entries = [];
   bool _loading = true;
   String? _error;
+  final DownloadTicketClient _downloadTickets = DownloadTicketClient();
   // History stack for the back button — entries are directory paths.
   final List<String> _history = [];
 
@@ -46,17 +48,6 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
       h['X-Access-Token'] = widget.settings.token;
     }
     return h;
-  }
-
-  String _downloadUrl(String path, {bool inline = false}) {
-    var url = widget.settings.buildHttpUrl(
-      '/api/download?path=${Uri.encodeQueryComponent(path)}',
-    );
-    if (inline) url += '&inline=1';
-    if (widget.settings.token.isNotEmpty) {
-      url += '&token=${Uri.encodeQueryComponent(widget.settings.token)}';
-    }
-    return url;
   }
 
   Future<void> _load({String? session, String? path}) async {
@@ -238,21 +229,42 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
         onTap: f.isDir ? () => _openDir(f.path) : null,
         onDownload: f.isDir
             ? null
-            : () => _openUrl(_downloadUrl(f.path), f.name),
+            : () => _openRemoteFile(f.path, f.name),
         onView: f.isDir || !_isInlineExt(f.name)
             ? null
-            : () => _openUrl(_downloadUrl(f.path, inline: true), f.name),
+            : () => _openRemoteFile(f.path, f.name, inline: true),
       ));
       list.add(const Divider(height: 1, color: Color(0xFF14171c)));
     }
     return ListView(children: list);
   }
 
-  Future<void> _openUrl(String url, String name) async {
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else if (mounted) {
+  Future<void> _openRemoteFile(
+    String path,
+    String name, {
+    bool inline = false,
+  }) async {
+    try {
+      final request = buildMulticcDownloadRequest(
+        host: widget.settings.host,
+        path: path,
+        accessToken: widget.settings.token,
+        inline: inline,
+      );
+      final uri = await _downloadTickets.authorize(
+        request: request,
+        ticketEndpoint: Uri.parse(
+          widget.settings.buildHttpUrl('/api/auth/download-ticket'),
+        ),
+      );
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        return;
+      }
+    } catch (_) {
+      // Present a stable UI error without exposing a token or ticket.
+    }
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('无法打开: $name')),
       );
