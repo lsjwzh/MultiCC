@@ -51,9 +51,9 @@ get_pid() {
   pgrep -f "node $SCRIPT_DIR/server.js" 2>/dev/null | head -1
 }
 
-check_native_dependencies() {
+check_runtime_dependencies() {
   local check_rc=0
-  "$NODE" "$SCRIPT_DIR/scripts/check-native-deps.js" || check_rc=$?
+  "$NODE" "$SCRIPT_DIR/scripts/check-runtime-deps.js" || check_rc=$?
   if [ "$check_rc" -eq 0 ]; then
     return 0
   fi
@@ -62,7 +62,7 @@ check_native_dependencies() {
     echo "better-sqlite3 native binding is unavailable — rebuilding it once..."
     if (cd "$SCRIPT_DIR" && env PATH="$(dirname "$NODE"):$PATH" npm rebuild better-sqlite3 --foreground-scripts 2>&1); then
       check_rc=0
-      "$NODE" "$SCRIPT_DIR/scripts/check-native-deps.js" || check_rc=$?
+      "$NODE" "$SCRIPT_DIR/scripts/check-runtime-deps.js" || check_rc=$?
       [ "$check_rc" -eq 0 ] && return 0
     fi
   fi
@@ -74,9 +74,10 @@ do_start() {
     echo "MultiCC is already running (PID $(get_pid))"
     return 1
   fi
-  echo "Verifying native dependencies..."
-  if ! check_native_dependencies; then
-    echo "Native dependency verification failed — MultiCC was not started."
+  echo "Verifying runtime dependencies..."
+  if ! check_runtime_dependencies; then
+    echo "Runtime dependency verification failed — MultiCC was not started."
+    echo "Run './multicc update' to repair missing or outdated packages."
     return 1
   fi
   echo "Starting MultiCC..."
@@ -172,13 +173,16 @@ do_update() {
     return 1
   fi
 
-  # Repair a half-installed native addon even when git is already current. This
-  # catches installs where lifecycle scripts were skipped and avoids returning
-  # "already up to date" while CC-Switch import is still broken.
-  echo "Verifying current native dependencies..."
-  if ! check_native_dependencies; then
-    echo "Native dependency verification failed — update was not started."
-    return 1
+  # Repair incomplete installs even when git is already current. This covers
+  # both native bindings and the split-out cli-provider-router package, so an
+  # interrupted v1 upgrade can recover by simply rerunning `./multicc update`.
+  echo "Verifying current runtime dependencies..."
+  if ! check_runtime_dependencies; then
+    echo "Runtime dependencies are incomplete or outdated — running npm install..."
+    if ! npm install 2>&1 || ! check_runtime_dependencies; then
+      echo "Runtime dependency repair failed — update was not started."
+      return 1
+    fi
   fi
 
   # ── Resolve the release channel ──────────────────────────────────────
@@ -360,9 +364,9 @@ do_update() {
     fi
   fi
 
-  echo "Verifying native dependencies..."
-  if ! check_native_dependencies; then
-    echo "Native dependency verification failed — server was not restarted."
+  echo "Verifying runtime dependencies..."
+  if ! check_runtime_dependencies; then
+    echo "Runtime dependency verification failed — server was not restarted."
     echo "Run the repair command shown above, then re-run './multicc update'."
     return 1
   fi
