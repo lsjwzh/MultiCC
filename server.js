@@ -32,7 +32,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { createUploadSuite, persistChatUpload, sendUploadError } = require('./src/upload-middleware');
 const chokidar = require('chokidar');
 const cron = require('node-cron');
@@ -146,6 +146,8 @@ const {
   isDispatchPlaceholderTarget,
 } = require('./src/dispatch/markers');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
+const { createLivenessRuntime } = require('./src/liveness/runtime');
+const { createProcessProbe } = require('./src/liveness/process-probe');
 const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
@@ -1631,9 +1633,53 @@ const {
   resetRoleTokenUsage,
   seedTokenUsageFromHistory,
 } = tokenUsageRuntime;
+
+// Session liveness: fuse cli-provider-router onActivity events, the host's own
+// streaming flags / turn heartbeat, and an on-demand process probe so the UI can
+// tell "working" (producing / waiting on the model) from "idle" and "stalled".
+// chatStreamStatus is a lazy closure — chatStream is required further below.
+const livenessProcessProbe = createProcessProbe({
+  execFile,
+  statMtimeMs: p => { try { return fs.statSync(p).mtimeMs; } catch (_) { return null; } },
+});
+// Best-effort resolve a codex session's rollout file (for the growth signal).
+function livenessRolloutPath(rec) {
+  try {
+    if (!rec || rec.cli !== 'codex' || !rec.cliSessionId) return null;
+    const home = rec.provider
+      ? path.join(providers.CODEX_HOMES_DIR, rec.provider)
+      : path.join(os.homedir(), '.codex');
+    const dir = path.join(home, 'sessions');
+    if (!fs.existsSync(dir)) return null;
+    const stack = [dir];
+    while (stack.length) {
+      const d = stack.pop();
+      let entries;
+      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
+      for (const e of entries) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) stack.push(p);
+        else if (e.isFile() && e.name.includes(rec.cliSessionId) && e.name.endsWith('.jsonl')) return p;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+const livenessRuntime = createLivenessRuntime({
+  records: persistedSessions,
+  chatSessions,
+  chatStreamStatus: id => { try { return chatStream.status(id); } catch (_) { return null; } },
+  probeSession: async (sessionId, sig) => {
+    const rec = persistedSessions.get(sessionId);
+    const pid = sig && Number.isInteger(sig.pid) ? sig.pid : null;
+    return livenessProcessProbe.probe(pid, livenessRolloutPath(rec));
+  },
+});
+
 providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['claude'],
   onUsageObserved: recordUsageObserved,
+  onActivity: e => livenessRuntime.recordProxyActivity(e),
 });
 app.use(express.json({ limit: '50mb' }));
 
@@ -1643,6 +1689,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
   getPort: () => PORT,
   onUsageObserved: recordUsageObserved,
+  onActivity: e => livenessRuntime.recordProxyActivity(e),
 });
 
 // Session query, dashboard, workspace and classify-admin routes share one
@@ -2792,6 +2839,16 @@ app.post('/api/sessions/:id/notes', (req, res) => {
   workspaceBroadcast(from.dirId, { type: 'note_pending', sessionId: to.id, count: pendingNotesFor(to.id).length });
   res.json(note);
 });
+
+// Session liveness: working (producing / awaiting model) vs idle vs stalled.
+// ?probe=0 skips the process-level lsof/rollout check for a cheap event-only read.
+app.get('/api/sessions/:id/liveness', asyncHandler(async (req, res) => {
+  const s = persistedSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  const wantProbe = req.query.probe !== '0';
+  const v = await livenessRuntime.assess(req.params.id, { probe: wantProbe });
+  res.json(v);
+}));
 
 // Inbox + outbox for a session.
 app.get('/api/sessions/:id/notes', (req, res) => {
