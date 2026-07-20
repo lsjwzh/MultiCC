@@ -122,11 +122,12 @@
       updateAttachArea();
       if (paths.length) text += ' ' + paths.join(' ');
 
-      addUserMessage(text);
+      const clientMsgId = newClientMsgId();
+      addUserMessage(text, clientMsgId);
       clearInput();
       debug('state', `send() — WS ▶ user_message (${text.length} chars)${goalOptions ? ' [goal]' : ''}`);
       try {
-        const payload = { type: 'user_message', text, clientMsgId: newClientMsgId() };
+        const payload = { type: 'user_message', text, clientMsgId };
         if (goalOptions) {
           payload.goal = true;
           payload.goalLimits = goalOptions.goalLimits || {};

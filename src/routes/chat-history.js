@@ -70,6 +70,26 @@ function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
 }
 
+function publicCommittedMessage(message) {
+  if (!message || message.role !== 'user' || !message.id) return null;
+  const projected = {
+    id: String(message.id).slice(0, 160),
+    role: 'user',
+    content: String(message.content || ''),
+    ts: Number.isFinite(Number(message.ts)) ? Number(message.ts) : null,
+  };
+  if (typeof message.clientMsgId === 'string' && message.clientMsgId) {
+    projected.clientMsgId = message.clientMsgId.slice(0, 160);
+  }
+  if (Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
+    projected.bgToolUseIds = message.bgToolUseIds
+      .filter(value => typeof value === 'string' && value)
+      .slice(0, 64)
+      .map(value => value.slice(0, 160));
+  }
+  return Object.freeze(projected);
+}
+
 function createChatHistoryRuntime(rawDeps) {
   const deps = assertChatHistoryDeps(rawDeps);
   const logger = deps.logger || console;
@@ -130,11 +150,17 @@ function createChatHistoryRuntime(rawDeps) {
 
       const message = event.message;
       if (message) {
+        const committedMessage = publicCommittedMessage(message);
         deps.chatBroadcast(event.sessionId, {
           type: 'chat_msg_meta',
           id: message.id,
           role: message.role,
           ts: message.ts,
+          clientMsgId: message.clientMsgId || null,
+          // Backward-compatible expansion: older clients consume only the
+          // metadata above, while multi-window clients can render the committed
+          // message immediately instead of waiting for a reconnect page.
+          message: committedMessage || undefined,
         });
         if (!event.deduplicated && message.role === 'assistant' && !message._interim
             && !message.cancelled && !message.partial && !message.error) {
@@ -435,4 +461,5 @@ module.exports = {
   DEFAULT_INCREMENTAL_SAVE_DELAY_MS,
   DEFAULT_MEMORY_DISTILL_BATCH,
   createChatHistoryRuntime,
+  publicCommittedMessage,
 };
