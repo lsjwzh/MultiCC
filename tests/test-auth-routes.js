@@ -21,6 +21,7 @@ function buildHarness(overrides = {}) {
     metrics: [],
     ...overrides,
   };
+  let issuedDownloadTarget = null;
   const authSecurity = {
     createCookie: () => 'FRESHCOOKIE',
     verifyCookie: value => value === 'GOODCOOKIE',
@@ -28,6 +29,16 @@ function buildHarness(overrides = {}) {
     issueWsTicket: (wsPath) => {
       if (wsPath === '/bad') throw new Error('invalid path');
       return { ticket: 'TICKET', path: wsPath };
+    },
+    issueDownloadTicket: (target) => {
+      issuedDownloadTarget = target;
+      return { ticket: 'DOWNLOAD_TICKET', expiresAt: 12345, target };
+    },
+    verifyDownloadTicket: (ticket, target) => {
+      if (ticket !== 'DOWNLOAD_TICKET' || !issuedDownloadTarget) return false;
+      const parsed = new URL(target, 'http://multicc.local');
+      parsed.searchParams.delete('download_ticket');
+      return `${parsed.pathname}?${parsed.searchParams.toString()}` === issuedDownloadTarget;
     },
   };
   const app = express();
@@ -252,6 +263,60 @@ test('ws-ticket: issues a no-store ticket, or 400 on invalid path', async () => 
     });
     assert.equal(res.status, 400);
     assert.equal((await res.json()).error, 'invalid WebSocket path');
+  } finally { await h.close(); }
+});
+
+test('download-ticket: header-auth exchange opens only the bound download target', async () => {
+  const h = await buildHarness({ accessToken: 'sekret', local: false });
+  try {
+    const issued = await raw(h.base, '/api/auth/download-ticket', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-access-token': 'sekret',
+      },
+      body: JSON.stringify({ path: '/tmp/report one.pdf', inline: true }),
+    });
+    assert.equal(issued.status, 200);
+    assert.equal(issued.headers.get('cache-control'), 'no-store');
+    const body = await issued.json();
+    assert.equal(body.ticket, 'DOWNLOAD_TICKET');
+    assert.equal(body.target, '/api/download?path=%2Ftmp%2Freport+one.pdf&inline=1');
+    assert.equal(body.target.includes('sekret'), false);
+
+    let opened = await raw(h.base, `${body.target}&download_ticket=${body.ticket}`, {
+      headers: { accept: 'application/octet-stream' },
+    });
+    assert.equal(opened.status, 200);
+
+    opened = await raw(h.base, `/api/download?path=${encodeURIComponent('/tmp/other.pdf')}&inline=1&download_ticket=${body.ticket}`, {
+      headers: { accept: 'application/octet-stream' },
+    });
+    assert.equal(opened.status, 403);
+
+    opened = await raw(h.base, `/api/download?path=${encodeURIComponent('/tmp/report one.pdf')}&inline=1&token=sekret`, {
+      headers: { accept: 'application/octet-stream' },
+    });
+    assert.equal(opened.status, 403);
+  } finally { await h.close(); }
+});
+
+test('download-ticket rejects missing paths and unauthenticated exchange', async () => {
+  const h = await buildHarness({ accessToken: 'sekret', local: false });
+  try {
+    let res = await raw(h.base, '/api/auth/download-ticket', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-access-token': 'sekret' },
+      body: '{}',
+    });
+    assert.equal(res.status, 400);
+
+    res = await raw(h.base, '/api/auth/download-ticket', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '/tmp/report.pdf' }),
+    });
+    assert.equal(res.status, 403);
   } finally { await h.close(); }
 });
 
