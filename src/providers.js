@@ -233,6 +233,39 @@ function stripModelSuffix(m) {
   return String(m || '').replace(/\[[^\]]*\]$/, '').trim();
 }
 
+// ── Codex Official (ChatGPT OAuth login) model catalog ───────────────────────
+// The Official codex provider has no config.toml `model` and cc-switch supplies
+// no model list, so its picker would otherwise be empty. The authoritative set
+// is the codex CLI's own cached catalog (~/.codex/models_cache.json, refreshed
+// by the CLI itself), whose entries carry visibility + priority. We surface the
+// visibility:"list" slugs in priority order. [CODEX_OFFICIAL_MODELS_FALLBACK] is
+// the curated baseline used when that cache is absent (mirrors codex client
+// 0.144.x, July 2026) so the picker is never empty on a fresh install.
+const CODEX_OFFICIAL_MODELS_FALLBACK = Object.freeze([
+  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.3-codex-spark',
+]);
+let _codexModelsCache = { path: null, mtime: 0, models: null };
+function readCodexOfficialModels(cachePath) {
+  const file = cachePath || path.join(os.homedir(), '.codex', 'models_cache.json');
+  try {
+    const st = fs.statSync(file);
+    if (_codexModelsCache.path === file && _codexModelsCache.mtime === st.mtimeMs && _codexModelsCache.models) {
+      return _codexModelsCache.models;
+    }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const entries = parsed && Array.isArray(parsed.models) ? parsed.models : [];
+    const visible = entries
+      .filter(m => m && m.visibility === 'list' && typeof m.slug === 'string')
+      .sort((a, b) => (a.priority == null ? 99 : a.priority) - (b.priority == null ? 99 : b.priority))
+      .map(m => m.slug);
+    const models = visible.length ? visible : [...CODEX_OFFICIAL_MODELS_FALLBACK];
+    _codexModelsCache = { path: file, mtime: st.mtimeMs, models };
+    return models;
+  } catch (_) {
+    return [...CODEX_OFFICIAL_MODELS_FALLBACK];
+  }
+}
+
 // PATCH-time guard: can this per-session model value work on that provider?
 // Mirrors resolveSessionWireModel's spawn-time rule (tier alias or a served
 // model), and additionally covers official/default-login providers — the spawn
@@ -241,15 +274,28 @@ function stripModelSuffix(m) {
 // api.anthropic.com. Used by the session PATCH to auto-replace stale models
 // when switching provider (the AI-config dialog always submits provider+model
 // together, which skips the model-snapshot branch).
-function modelValidForProvider(appType, providerId, model) {
+//
+// `summaryOverride` (test-only) lets a caller pass a pre-resolved provider
+// summary so the decision can be exercised without the file-backed store.
+function modelValidForProvider(appType, providerId, model, summaryOverride) {
   if (!model) return true; // 默认 → provider/global default, always resolvable
   const bare = stripModelSuffix(model);
   const isTier = ALIAS_TIER_REGEX.test(model);
-  const p = providerId ? getProviderSummary(appType, providerId) : null;
+  const p = summaryOverride !== undefined
+    ? summaryOverride
+    : (providerId ? getProviderSummary(appType, providerId) : null);
   if (appType === 'claude' && (!p || p.isOfficial)) {
     // Default login or an official/OAuth provider entry: only real Anthropic
     // models exist there.
     return isTier || /^claude-/i.test(bare);
+  }
+  if (!p) return true; // unknown codex/default target — don't second-guess
+  if (p.isOfficial) {
+    // Codex Official (ChatGPT OAuth) login: the plan can access OpenAI models
+    // beyond the curated picker list (e.g. hidden tiers like gpt-5.4), so never
+    // reject on the basis of the visible modelOptions set. This preserves the
+    // pre-catalog accept-all behaviour for the official login.
+    return true;
   }
   if (!p) return true; // unknown codex/default target — don't second-guess
   if (isTier) {
@@ -340,7 +386,8 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
 }
 
 // Public-safe summary — never leaks a full token (only masked).
-function summarize(p) {
+// opts.codexCachePath (test-only) overrides the codex models cache location.
+function summarize(p, opts = {}) {
   const cfg = parseConfig(p.settingsConfig);
   let baseUrl = '', model = '', token = '', modelOptions = [], aliasOnly = false, aliasMap = {};
   if (p.appType === 'claude') {
@@ -385,6 +432,13 @@ function summarize(p) {
       if (v && !seen.has(v)) { seen.add(v); ordered.push(v); }
     }
     modelOptions = ordered;
+    if (!ordered.length && !baseUrl) {
+      // Official codex (ChatGPT OAuth) login: no config.toml `model` and cc-switch
+      // supplies no list, so the picker would be empty. Fall back to the codex
+      // CLI's own cached model catalog. Never overrides a provider's own declared
+      // models (ordered is non-empty in that case).
+      modelOptions = readCodexOfficialModels(opts.codexCachePath);
+    }
   }
   return {
     id: p.id,
@@ -1164,6 +1218,9 @@ module.exports = {
   codexProviderProxyable,
   resolveSessionWireModel,
   modelValidForProvider,
+  readCodexOfficialModels,
+  CODEX_OFFICIAL_MODELS_FALLBACK,
+  summarize,
   getProviderUsageStats,
   readDailyWindows,
   CLAUDE_ROUTING_KEYS,
