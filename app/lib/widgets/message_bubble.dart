@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
+import '../services/download_ticket_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import 'tool_card.dart';
@@ -468,19 +469,18 @@ final _localImgRe = RegExp(
   r'^(?:file:///|/(?:tmp|Users|home|var|private|opt|Volumes|mnt|root|data)/|[A-Za-z]:[\\/])',
 );
 
-/// Build the full HTTP url for a local-filesystem image, routed through the
-/// multicc server's `/api/download?inline=1` endpoint (with token if set).
-String? _localImageUrl(String rawPath) {
+/// Build the request for a local-filesystem image routed through the multicc
+/// server. Authentication stays in the header and never enters the image URL.
+MulticcDownloadRequest? _localImageRequest(String rawPath) {
   final s = SettingsService.current;
   if (s == null) return null;
   final p = rawPath.replaceFirst(RegExp(r'^file://'), '');
-  var url = s.buildHttpUrl(
-    '/api/download?path=${Uri.encodeQueryComponent(p)}&inline=1',
+  return buildMulticcDownloadRequest(
+    host: s.host,
+    path: p,
+    accessToken: s.token,
+    inline: true,
   );
-  if (s.token.isNotEmpty) {
-    url += '&token=${Uri.encodeQueryComponent(s.token)}';
-  }
-  return url;
 }
 
 class _MarkdownContent extends StatelessWidget {
@@ -498,13 +498,15 @@ class _MarkdownContent extends StatelessWidget {
           sizedImageBuilder: (config) {
             final raw = config.uri.toString();
             final isLocal = _localImgRe.hasMatch(raw);
-            final url = isLocal ? _localImageUrl(raw) : raw;
+            final localRequest = isLocal ? _localImageRequest(raw) : null;
+            final url = isLocal ? localRequest?.uri.toString() : raw;
             if (url == null || url.isEmpty) {
               return _ImageErrorNote(name: config.alt ?? raw);
             }
             return _InlineImage(
               url: url,
               name: config.alt ?? (isLocal ? raw : 'image'),
+              headers: localRequest?.headers ?? const {},
             );
           },
           styleSheet: MarkdownStyleSheet(
@@ -622,7 +624,12 @@ class _SystemBubble extends StatelessWidget {
 class _InlineImage extends StatelessWidget {
   final String url;
   final String name;
-  const _InlineImage({required this.url, required this.name});
+  final Map<String, String> headers;
+  const _InlineImage({
+    required this.url,
+    required this.name,
+    this.headers = const {},
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -631,7 +638,11 @@ class _InlineImage extends StatelessWidget {
       child: GestureDetector(
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => _ImageZoomScreen(url: url, name: name),
+            builder: (_) => _ImageZoomScreen(
+              url: url,
+              name: name,
+              headers: headers,
+            ),
             fullscreenDialog: true,
           ),
         ),
@@ -641,6 +652,7 @@ class _InlineImage extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
             child: Image.network(
               url,
+              headers: headers,
               fit: BoxFit.contain,
               gaplessPlayback: true,
               loadingBuilder: (ctx, child, progress) => progress == null
@@ -708,7 +720,12 @@ class _ImageErrorNote extends StatelessWidget {
 class _ImageZoomScreen extends StatefulWidget {
   final String url;
   final String name;
-  const _ImageZoomScreen({required this.url, required this.name});
+  final Map<String, String> headers;
+  const _ImageZoomScreen({
+    required this.url,
+    required this.name,
+    required this.headers,
+  });
 
   @override
   State<_ImageZoomScreen> createState() => _ImageZoomScreenState();
@@ -751,6 +768,7 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
             boundaryMargin: const EdgeInsets.all(double.infinity),
             child: Image.network(
               widget.url,
+              headers: widget.headers,
               fit: BoxFit.contain,
               loadingBuilder: (ctx, child, progress) => progress == null
                   ? child
