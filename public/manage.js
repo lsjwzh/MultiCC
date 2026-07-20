@@ -2196,6 +2196,7 @@ async function loadProviders() {
 let _globalUsage = null;
 let _byRoleData = null;
 let _guWindow = 'month';
+let _guMetric = 'fresh';
 
 async function loadGlobalUsage(force) {
   const body = document.getElementById('global-usage-body');
@@ -2216,11 +2217,19 @@ async function loadGlobalUsage(force) {
 }
 
 function setGuWindow(w) { _guWindow = w; renderGlobalUsage(); }
+function setGuMetric(metric) {
+  _guMetric = metric === 'inclusive' ? 'inclusive' : 'fresh';
+  renderGlobalUsage();
+}
 
 function renderGuTrend() {
-  // The primary trend is real new work, not cache reads replayed into a model's
-  // context. Older servers lack byDayFresh, so retain a compatibility fallback.
-  const byDay = (_globalUsage && (_globalUsage.byDayFresh || _globalUsage.byDay)) || {};
+  const fresh = _guMetric === 'fresh';
+  // Older servers lack byDayFresh. Keep their inclusive data visible and label
+  // the fallback honestly instead of presenting it as fresh usage.
+  const hasFreshTrend = !!(_globalUsage && _globalUsage.byDayFresh);
+  const byDay = (_globalUsage && (fresh && hasFreshTrend
+    ? _globalUsage.byDayFresh
+    : _globalUsage.byDay)) || {};
   const days = Object.keys(byDay).sort().slice(-14);
   if (!days.length) return '';
   const totals = days.map(d => Object.values(byDay[d]).reduce((a, b) => a + b, 0));
@@ -2233,9 +2242,9 @@ function renderGuTrend() {
       <span style="width:56px;text-align:right">${formatTokens(totals[i])}</span>
     </div>`;
   }).join('');
-  const scope = _globalUsage && _globalUsage.byDayFresh
-    ? '新鲜 token/天（输入+输出；缓存不重复计入）'
-    : '含缓存总 token/天（兼容旧服务）';
+  const scope = fresh && hasFreshTrend
+    ? '新鲜 token/天（输入+输出）'
+    : `含缓存 token/天${fresh ? '（旧服务兼容回退）' : ''}`;
   return `<div style="margin-top:12px"><div style="font-size:11px;color:var(--faint);margin-bottom:6px">近 ${days.length} 个有活动的日子（${scope}）</div>${bars}</div>`;
 }
 
@@ -2245,9 +2254,18 @@ function renderGlobalUsage() {
   document.querySelectorAll('#gu-tabs .gu-tab').forEach(b => {
     b.classList.toggle('btn-green', b.dataset.w === _guWindow);
   });
+  document.querySelectorAll('#gu-metric-tabs .gu-metric-tab').forEach(b => {
+    b.classList.toggle('btn-green', b.dataset.metric === _guMetric);
+  });
   const w = _globalUsage.windows[_guWindow] || {};
   const rows = Object.entries(w).map(([model, b]) => ({
-    model, ...b, total: b.inputTokens + b.outputTokens + b.cacheWrite + b.cacheRead,
+    model,
+    ...b,
+    freshTotal: b.inputTokens + b.outputTokens,
+    inclusiveTotal: b.inputTokens + b.outputTokens + b.cacheWrite + b.cacheRead,
+    total: _guMetric === 'inclusive'
+      ? b.inputTokens + b.outputTokens + b.cacheWrite + b.cacheRead
+      : b.inputTokens + b.outputTokens,
   })).sort((a, b) => b.total - a.total);
   if (!rows.length) { body.innerHTML = '<span style="color:var(--faint);font-size:13px">该时段暂无数据</span>'; return; }
   const ft = formatTokens;
@@ -2265,19 +2283,21 @@ function renderGlobalUsage() {
     </tr>`;
   }).join('');
   const fresh = tin + tout, grand = tin + tout + tcw + tcr;
+  const selectedTotal = _guMetric === 'inclusive' ? grand : fresh;
+  const selectedLabel = _guMetric === 'inclusive' ? '含缓存总计' : '新鲜总计';
   const gen = _globalUsage.generatedAt ? new Date(_globalUsage.generatedAt).toLocaleTimeString() : '';
   body.innerHTML = `
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="color:var(--faint);font-size:11px">
-        <th style="text-align:left;padding:4px 8px">模型</th><th style="text-align:right;padding:4px 8px">输入</th><th style="text-align:right;padding:4px 8px">输出</th><th style="text-align:right;padding:4px 8px">缓存写</th><th style="text-align:right;padding:4px 8px">缓存读</th><th style="text-align:right;padding:4px 8px">总计</th>
+        <th style="text-align:left;padding:4px 8px">模型</th><th style="text-align:right;padding:4px 8px">新鲜输入</th><th style="text-align:right;padding:4px 8px">输出</th><th style="text-align:right;padding:4px 8px">缓存写</th><th style="text-align:right;padding:4px 8px">缓存读</th><th style="text-align:right;padding:4px 8px">${selectedLabel}</th>
       </tr></thead>
       <tbody>${trh}</tbody>
       <tfoot><tr style="border-top:1px solid var(--line);font-weight:600">
-        <td style="text-align:left;padding:6px 8px">合计</td><td style="text-align:right;padding:6px 8px">${ft(tin)}</td><td style="text-align:right;padding:6px 8px">${ft(tout)}</td><td style="text-align:right;padding:6px 8px">${ft(tcw)}</td><td style="text-align:right;padding:6px 8px">${ft(tcr)}</td><td style="text-align:right;padding:6px 8px">${ft(grand)}</td>
+        <td style="text-align:left;padding:6px 8px">合计</td><td style="text-align:right;padding:6px 8px">${ft(tin)}</td><td style="text-align:right;padding:6px 8px">${ft(tout)}</td><td style="text-align:right;padding:6px 8px">${ft(tcw)}</td><td style="text-align:right;padding:6px 8px">${ft(tcr)}</td><td style="text-align:right;padding:6px 8px">${ft(selectedTotal)}</td>
       </tr></tfoot>
     </table>
     <div style="margin-top:8px;font-size:12px;color:var(--muted)">
-      新鲜 token（输入+输出，反映真实工作量）：<b style="color:var(--text)">${ft(fresh)}</b> · 含缓存总量：${ft(grand)} · ${tmsg} 次响应${gen ? ` · 扫描于 ${gen}` : ''}
+      当前口径（${selectedLabel}）：<b style="color:var(--text)">${ft(selectedTotal)}</b> · 新鲜：${ft(fresh)} · 含缓存：${ft(grand)} · ${tmsg} 次响应${gen ? ` · 扫描于 ${gen}` : ''}
     </div>
     ${renderGuTrend()}`;
 }
