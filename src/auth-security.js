@@ -43,6 +43,27 @@ function normalizeWsPath(value) {
   }
 }
 
+function normalizeDownloadTarget(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = new URL(value, 'http://multicc.local');
+    if (parsed.origin !== 'http://multicc.local' || parsed.pathname !== '/api/download') return null;
+    const allowed = new Set(['path', 'inline', 'download_ticket']);
+    for (const key of parsed.searchParams.keys()) {
+      if (!allowed.has(key)) return null;
+    }
+    const paths = parsed.searchParams.getAll('path');
+    const inlineValues = parsed.searchParams.getAll('inline');
+    if (paths.length !== 1 || !paths[0] || paths[0].includes('\0') || inlineValues.length > 1) return null;
+    if (inlineValues.length === 1 && inlineValues[0] !== '1') return null;
+    const query = new URLSearchParams({ path: paths[0] });
+    if (inlineValues[0] === '1') query.set('inline', '1');
+    return `/api/download?${query.toString()}`;
+  } catch (_) {
+    return null;
+  }
+}
+
 function createAuthSecurity({
   getSecret,
   now = () => Date.now(),
@@ -53,6 +74,7 @@ function createAuthSecurity({
 } = {}) {
   if (typeof getSecret !== 'function') throw new TypeError('createAuthSecurity requires getSecret()');
   const tickets = new Map();
+  const downloadTickets = new Map();
 
   function secret() {
     const value = getSecret();
@@ -99,7 +121,14 @@ function createAuthSecurity({
     for (const [hash, record] of tickets) {
       if (record.expiresAt <= current) tickets.delete(hash);
     }
-    while (tickets.size >= maxTickets) tickets.delete(tickets.keys().next().value);
+    for (const [hash, record] of downloadTickets) {
+      if (record.expiresAt <= current) downloadTickets.delete(hash);
+    }
+    while (tickets.size + downloadTickets.size >= maxTickets) {
+      const wsKey = tickets.keys().next().value;
+      if (wsKey !== undefined) tickets.delete(wsKey);
+      else downloadTickets.delete(downloadTickets.keys().next().value);
+    }
   }
 
   function issueWsTicket(pathname, metadata = {}) {
@@ -125,14 +154,44 @@ function createAuthSecurity({
     return { ...record.metadata, path: record.path, expiresAt: record.expiresAt };
   }
 
+  function issueDownloadTicket(target, metadata = {}) {
+    const scope = normalizeDownloadTarget(target);
+    if (!scope) throw new TypeError('invalid download ticket target');
+    pruneTickets();
+    const ticket = randomBytes(24).toString('base64url');
+    const hash = crypto.createHash('sha256').update(ticket).digest('base64url');
+    const expiresAt = now() + ticketTtlMs;
+    downloadTickets.set(hash, { target: scope, expiresAt, metadata: { ...metadata } });
+    return { ticket, expiresAt, target: scope };
+  }
+
+  // Download clients may make a small number of range/retry requests while
+  // opening a file. Keep the opaque capability reusable only for its short TTL;
+  // unlike the WebSocket ticket it is narrowly bound to one canonical target.
+  function verifyDownloadTicket(ticket, target) {
+    if (typeof ticket !== 'string' || !ticket) return false;
+    const scope = normalizeDownloadTarget(target);
+    if (!scope) return false;
+    const hash = crypto.createHash('sha256').update(ticket).digest('base64url');
+    const record = downloadTickets.get(hash);
+    if (!record) return false;
+    if (record.expiresAt <= now()) {
+      downloadTickets.delete(hash);
+      return false;
+    }
+    return record.target === scope;
+  }
+
   return {
     createCookie,
     verifyCookie,
     verifyAccessToken,
     issueWsTicket,
     consumeWsTicket,
+    issueDownloadTicket,
+    verifyDownloadTicket,
     pruneTickets,
-    ticketCount: () => tickets.size,
+    ticketCount: () => tickets.size + downloadTickets.size,
   };
 }
 
@@ -145,4 +204,5 @@ module.exports = {
   normalizeRedirect,
   escapeHtmlAttribute,
   normalizeWsPath,
+  normalizeDownloadTarget,
 };
