@@ -1,10 +1,16 @@
-import 'package:flutter/material.dart';
+import 'dart:math';
 
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
+import '../i18n.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 
 /// Show the worktree diff for a session against its base branch. Works for any
-/// session with changes (no conflict required) — mirrors the web "查看 Diff".
+/// session with changes (no conflict required) - mirrors the web "View Diff".
+/// Codex-style: collapsible summary header + file list + per-file detail with
+/// an AI change summary panel.
 Future<void> showSessionDiffDialog(
   BuildContext context, {
   required SettingsService settings,
@@ -29,6 +35,15 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
   Map<String, dynamic>? _data;
   String? _error;
   bool _loading = true;
+  bool _filesExpanded = true;
+  int _visibleCount = 20;
+
+  // Detail view: the selected file entry (a Map from the files list), null =
+  // list view.
+  Map<String, dynamic>? _selectedFile;
+
+  // Shared AI summary cache across detail navigations: path -> summary text.
+  final Map<String, String> _summaryCache = {};
 
   @override
   void initState() {
@@ -38,9 +53,8 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
 
   Future<void> _load() async {
     try {
-      final res = await SessionService(
-        settings: widget.settings,
-      ).fetchDiff(widget.sessionId);
+      final res = await SessionService(settings: widget.settings)
+          .fetchDiffFiles(widget.sessionId);
       if (!mounted) return;
       if (res['ok'] == false) {
         setState(() {
@@ -64,25 +78,23 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
 
   String _subtitle() {
     final d = _data;
-    if (d == null) return '加载中…';
+    if (d == null) return t('loading');
     final parts = <String>[];
     final branch = d['branch']?.toString();
     final base = d['baseBranch']?.toString();
     if (branch != null && branch.isNotEmpty) {
-      parts.add('$branch → ${base ?? ''}');
+      parts.add('$branch -> ${base ?? ''}');
     }
     final ms = d['mergeState'];
     final ahead = ms is Map ? (ms['ahead'] as num?)?.toInt() ?? 0 : 0;
     parts.add('$ahead 个提交领先');
     if (ms is Map && ms['dirty'] == true) parts.add('含未提交改动');
-    if (d['truncated'] == true) parts.add('已截断到 1MB');
+    if (d['truncated'] == true) parts.add('已截断');
     return parts.join(' · ');
   }
 
   @override
   Widget build(BuildContext context) {
-    final diff = _data?['diff']?.toString() ?? '';
-    final stat = (_data?['stat']?.toString() ?? '').trim();
     return Dialog(
       backgroundColor: const Color(0xFF070809),
       insetPadding: const EdgeInsets.all(12),
@@ -92,72 +104,54 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Diff · ${widget.sessionId}',
-                          style: const TextStyle(
-                            color: Color(0xFFf2f4f7),
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          _error != null ? '错误：$_error' : _subtitle(),
-                          style: const TextStyle(
-                            color: Color(0xFF8a909b),
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
-                  ),
-                ],
-              ),
+            if (_selectedFile == null) _listHeader() else _detailHeader(),
+            Expanded(
+              child: _selectedFile == null ? _listBody() : _detailBody(),
             ),
-            if (stat.isNotEmpty)
-              Container(
-                constraints: const BoxConstraints(maxHeight: 110),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: const BoxDecoration(
-                  color: Color(0xFF0f1115),
-                  border: Border.symmetric(
-                    horizontal: BorderSide(color: Color(0xFF20242b)),
-                  ),
-                ),
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    stat,
-                    style: const TextStyle(
-                      color: Color(0xFF8a909b),
-                      fontFamily: 'monospace',
-                      fontSize: 11,
-                      height: 1.45,
-                    ),
-                  ),
-                ),
-              ),
-            Expanded(child: _body(diff)),
           ],
         ),
       ),
     );
   }
 
-  Widget _body(String diff) {
+  // -- List view ----------------------------------------------------------
+
+  Widget _listHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Diff · ${widget.sessionId}',
+                  style: const TextStyle(
+                    color: Color(0xFFf2f4f7),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  _error != null ? '错误：$_error' : _subtitle(),
+                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _listBody() {
     if (_loading) {
       return const Center(
         child: SizedBox(
@@ -179,12 +173,628 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
         ),
       );
     }
-    if (diff.trim().isEmpty) {
+    final files = (_data?['files'] as List? ?? []);
+    if (files.isEmpty) {
       return const Center(
-        child: Text(
-          '（无变更）',
-          style: TextStyle(color: Color(0xFF5b616c)),
+        child: Text('（无变更）', style: TextStyle(color: Color(0xFF5b616c))),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _summaryBar(),
+        if (_filesExpanded) Expanded(child: _fileListView(files)),
+      ],
+    );
+  }
+
+  Widget _summaryBar() {
+    final d = _data!;
+    final totalFiles = (d['totalFiles'] as num?)?.toInt() ??
+        ((d['files'] as List?)?.length ?? 0);
+    final add = (d['totalAdditions'] as num?)?.toInt() ?? 0;
+    final del = (d['totalDeletions'] as num?)?.toInt() ?? 0;
+    return InkWell(
+      onTap: () => setState(() => _filesExpanded = !_filesExpanded),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: const BoxDecoration(
+          color: Color(0xFF0f1115),
+          border: Border.symmetric(
+            horizontal: BorderSide(color: Color(0xFF20242b)),
+          ),
         ),
+        child: Row(
+          children: [
+            RichText(
+              text: TextSpan(
+                children: [
+                  TextSpan(
+                    text: t('diffChangedFiles', {'0': '$totalFiles'}),
+                    style: const TextStyle(
+                      color: Color(0xFFf2f4f7),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const TextSpan(text: '    '),
+                  TextSpan(
+                    text: '+$add',
+                    style: const TextStyle(
+                      color: Color(0xFF7ee787),
+                      fontSize: 13,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  const TextSpan(text: '  '),
+                  TextSpan(
+                    text: '−$del',
+                    style: const TextStyle(
+                      color: Color(0xFFffb3ae),
+                      fontSize: 13,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Spacer(),
+            AnimatedRotation(
+              turns: _filesExpanded ? 0.0 : -0.25,
+              duration: const Duration(milliseconds: 150),
+              child: const Icon(
+                Icons.expand_more,
+                color: Color(0xFF8a909b),
+                size: 18,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _fileListView(List files) {
+    final visible = files.take(_visibleCount).toList();
+    final remaining = files.length - visible.length;
+    return ListView.separated(
+      itemCount: visible.length + (remaining > 0 ? 1 : 0),
+      separatorBuilder: (_, __) => const Divider(
+        color: Color(0xFF20242b),
+        height: 1,
+        indent: 16,
+        endIndent: 16,
+      ),
+      itemBuilder: (ctx, i) {
+        if (i == visible.length) {
+          return InkWell(
+            onTap: () => setState(() => _visibleCount = files.length),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Center(
+                child: Text(
+                  t('diffViewMoreFiles', {'0': '$remaining'}),
+                  style: const TextStyle(color: Color(0xFF6aa3ff), fontSize: 12),
+                ),
+              ),
+            ),
+          );
+        }
+        final f = (visible[i] as Map).cast<String, dynamic>();
+        return _fileRow(f);
+      },
+    );
+  }
+
+  Widget _fileRow(Map<String, dynamic> f) {
+    final path = f['path']?.toString() ?? '';
+    final status = f['status']?.toString() ?? 'M';
+    final add = (f['additions'] as num?)?.toInt() ?? 0;
+    final del = (f['deletions'] as num?)?.toInt() ?? 0;
+    final binary = f['binary'] == true;
+    return InkWell(
+      onTap: () => setState(() => _selectedFile = f),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            _statusBadge(status),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Tooltip(
+                message: path,
+                child: RichText(
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  text: TextSpan(
+                    children: _pathSpans(path),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (binary)
+              const Text(
+                'binary',
+                style: TextStyle(color: Color(0xFF5b616c), fontSize: 11),
+              )
+            else ...[
+              Text(
+                '+$add',
+                style: const TextStyle(
+                  color: Color(0xFF7ee787),
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '−$del',
+                style: const TextStyle(
+                  color: Color(0xFFffb3ae),
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+            const SizedBox(width: 6),
+            const Icon(
+              Icons.chevron_right,
+              color: Color(0xFF5b616c),
+              size: 16,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statusBadge(String s) {
+    final fg = _statusColor(s);
+    final bg = _statusBg(s);
+    return Container(
+      width: 18,
+      height: 18,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: fg, width: 1),
+      ),
+      child: Text(
+        s,
+        style: TextStyle(
+          color: fg,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          fontFamily: 'monospace',
+        ),
+      ),
+    );
+  }
+
+  Color _statusColor(String s) {
+    switch (s) {
+      case 'A':
+        return const Color(0xFF7ee787);
+      case 'D':
+        return const Color(0xFFffb3ae);
+      case 'R':
+        return const Color(0xFFd2a8ff);
+      case 'M':
+      default:
+        return const Color(0xFF6aa3ff);
+    }
+  }
+
+  Color _statusBg(String s) {
+    switch (s) {
+      case 'A':
+        return const Color(0x227ee787);
+      case 'D':
+        return const Color(0x22ffb3ae);
+      case 'R':
+        return const Color(0x22d2a8ff);
+      case 'M':
+      default:
+        return const Color(0x226aa3ff);
+    }
+  }
+
+  List<TextSpan> _pathSpans(String path) {
+    final idx = path.lastIndexOf('/');
+    if (idx < 0) {
+      return [
+        TextSpan(text: path, style: const TextStyle(color: Color(0xFFf2f4f7))),
+      ];
+    }
+    final dir = path.substring(0, idx + 1);
+    final base = path.substring(idx + 1);
+    return [
+      TextSpan(text: dir, style: const TextStyle(color: Color(0xFF5b616c))),
+      TextSpan(text: base, style: const TextStyle(color: Color(0xFFf2f4f7))),
+    ];
+  }
+
+  // -- Detail view --------------------------------------------------------
+
+  Widget _detailHeader() {
+    final f = _selectedFile!;
+    final path = f['path']?.toString() ?? '';
+    final add = (f['additions'] as num?)?.toInt() ?? 0;
+    final del = (f['deletions'] as num?)?.toInt() ?? 0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 10),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: () => setState(() => _selectedFile = null),
+            icon: const Icon(Icons.arrow_back, color: Color(0xFF8a909b), size: 20),
+            tooltip: t('diffBackToList'),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  t('diffBackToList'),
+                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        path,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFFf2f4f7),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '+$add',
+                      style: const TextStyle(
+                        color: Color(0xFF7ee787),
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '−$del',
+                      style: const TextStyle(
+                        color: Color(0xFFffb3ae),
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailBody() {
+    final f = _selectedFile!;
+    return _FileDiffView(
+      settings: widget.settings,
+      sessionId: widget.sessionId,
+      path: f['path']?.toString() ?? '',
+      status: f['status']?.toString() ?? 'M',
+      additions: (f['additions'] as num?)?.toInt() ?? 0,
+      deletions: (f['deletions'] as num?)?.toInt() ?? 0,
+      summaryCache: _summaryCache,
+    );
+  }
+}
+
+/// Per-file detail view: loads the patch, shows an AI change summary panel at
+/// the top (auto-started, cancellable on dispose/navigation), and the colored
+/// patch below. Summary results are cached in [summaryCache] (shared by the
+/// parent) so reopening a file is instant.
+class _FileDiffView extends StatefulWidget {
+  final SettingsService settings;
+  final String sessionId;
+  final String path;
+  final String status;
+  final int additions;
+  final int deletions;
+  final Map<String, String> summaryCache;
+
+  const _FileDiffView({
+    required this.settings,
+    required this.sessionId,
+    required this.path,
+    required this.status,
+    required this.additions,
+    required this.deletions,
+    required this.summaryCache,
+  });
+
+  @override
+  State<_FileDiffView> createState() => _FileDiffViewState();
+}
+
+class _FileDiffViewState extends State<_FileDiffView> {
+  String? _patch;
+  bool _patchLoading = true;
+  String? _patchError;
+
+  String? _summary;
+  bool _summaryLoading = false;
+  String? _summaryError;
+
+  http.Client? _summaryClient;
+  String? _summaryTaskId;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPatch();
+  }
+
+  @override
+  void dispose() {
+    _cancelSummary();
+    super.dispose();
+  }
+
+  Future<void> _loadPatch() async {
+    try {
+      final res = await SessionService(settings: widget.settings)
+          .fetchFileDiff(widget.sessionId, widget.path);
+      if (!mounted) return;
+      if (res['ok'] == false) {
+        setState(() {
+          _patchError = res['error']?.toString() ?? '加载失败';
+          _patchLoading = false;
+        });
+      } else {
+        setState(() {
+          _patch = res['patch']?.toString() ?? '';
+          _patchLoading = false;
+        });
+        _maybeStartSummary();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _patchError = '$e';
+        _patchLoading = false;
+      });
+    }
+  }
+
+  void _maybeStartSummary() {
+    final cached = widget.summaryCache[widget.path];
+    if (cached != null) {
+      setState(() {
+        _summary = cached;
+        _summaryLoading = false;
+        _summaryError = null;
+      });
+      return;
+    }
+    _startSummary();
+  }
+
+  String _makeTaskId() {
+    return 'diffsum_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1 << 32)}';
+  }
+
+  String _buildPrompt(String patch) {
+    final truncated = patch.length > 24000;
+    final p = truncated ? patch.substring(0, 24000) : patch;
+    final tail = truncated ? '\n(diff 过长已截断)' : '';
+    return '你是一个代码审查助手。请用中文简要总结以下 git diff 中单个文件的改动（文件：${widget.path}，状态：${widget.status}）。要求：1) 一两句话说明这个文件改了什么、为什么；2) 用 2-4 条要点列出关键改动；3) 若发现潜在风险或值得注意的点，最后一行列出，没有则不列。总输出控制在 200 字以内，纯文本，不要用 markdown 代码块。diff 内容如下：\n\n$p$tail';
+  }
+
+  Future<void> _startSummary() async {
+    setState(() {
+      _summaryLoading = true;
+      _summaryError = null;
+      _summary = null;
+    });
+    final client = http.Client();
+    _summaryClient = client;
+    final taskId = _makeTaskId();
+    _summaryTaskId = taskId;
+    final prompt = _buildPrompt(_patch ?? '');
+    try {
+      final res = await SessionService(settings: widget.settings).enqueueAux(
+        id: taskId,
+        type: 'diff_summary',
+        prompt: prompt,
+        meta: {'sessionName': widget.sessionId, 'path': widget.path},
+        client: client,
+      );
+      if (!mounted) return;
+      if (res['ok'] == true) {
+        final summary = res['result']?.toString() ?? '';
+        widget.summaryCache[widget.path] = summary;
+        setState(() {
+          _summary = summary;
+          _summaryLoading = false;
+        });
+      } else {
+        setState(() {
+          _summaryError = res['error']?.toString() ?? t('diffSummaryFailed');
+          _summaryLoading = false;
+        });
+      }
+    } on http.ClientException {
+      // Cancelled by dispose/navigation: silent.
+      if (!mounted) return;
+      setState(() {
+        _summaryLoading = false;
+      });
+    } catch (e) {
+      // Timeout/network failure: the server-side aux task may still be
+      // running — cancel it best-effort so it doesn't keep the queue busy.
+      SessionService(settings: widget.settings).cancelAux(taskId);
+      if (!mounted) return;
+      setState(() {
+        _summaryError = '$e';
+        _summaryLoading = false;
+      });
+    } finally {
+      // Close on every completion path (success/error/timeout). On the
+      // cancelled path _cancelSummary already closed it — close() twice is
+      // harmless, and this prevents leaking the underlying HttpClient.
+      try {
+        client.close();
+      } catch (_) {}
+      if (identical(_summaryClient, client)) {
+        _summaryClient = null;
+        _summaryTaskId = null;
+      }
+    }
+  }
+
+  void _cancelSummary() {
+    final c = _summaryClient;
+    final tid = _summaryTaskId;
+    _summaryClient = null;
+    _summaryTaskId = null;
+    if (c != null) {
+      try {
+        c.close();
+      } catch (_) {}
+    }
+    if (tid != null) {
+      // Fire-and-forget; best-effort cancel.
+      SessionService(settings: widget.settings).cancelAux(tid);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!_patchLoading && _patchError == null) _summaryPanel(),
+        Expanded(child: _patchArea()),
+      ],
+    );
+  }
+
+  Widget _summaryPanel() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0f1115),
+        border: Border.all(color: const Color(0xFF20242b)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.auto_awesome, size: 14, color: Color(0xFFd2a8ff)),
+              const SizedBox(width: 6),
+              Text(
+                t('diffAiSummary'),
+                style: const TextStyle(
+                  color: Color(0xFFf2f4f7),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _summaryBody(),
+        ],
+      ),
+    );
+  }
+
+  Widget _summaryBody() {
+    if (_summaryLoading) {
+      return Row(
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            t('diffSummarizing'),
+            style: const TextStyle(color: Color(0xFF8a909b), fontSize: 12),
+          ),
+        ],
+      );
+    }
+    if (_summary != null) {
+      return SelectableText(
+        _summary!,
+        style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 12, height: 1.5),
+      );
+    }
+    if (_summaryError != null) {
+      return Row(
+        children: [
+          Expanded(
+            child: Text(
+              '${t('diffSummaryFailed')}：$_summaryError',
+              style: const TextStyle(color: Color(0xFFffb3ae), fontSize: 12),
+            ),
+          ),
+          TextButton(
+            onPressed: _startSummary,
+            child: Text(t('retry')),
+          ),
+        ],
+      );
+    }
+    return const SizedBox.shrink();
+  }
+
+  Widget _patchArea() {
+    if (_patchLoading) {
+      return const Center(
+        child: SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    if (_patchError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            '加载 Diff 失败：$_patchError',
+            style: const TextStyle(color: Color(0xFFffb3ae)),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    final patch = _patch ?? '';
+    if (patch.trim().isEmpty) {
+      return const Center(
+        child: Text('（无变更）', style: TextStyle(color: Color(0xFF5b616c))),
       );
     }
     return SingleChildScrollView(
@@ -192,7 +802,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: SelectableText.rich(
-          TextSpan(children: diffSpans(diff)),
+          TextSpan(children: diffSpans(patch)),
           style: const TextStyle(
             color: Color(0xFFe7eaee),
             fontFamily: 'monospace',

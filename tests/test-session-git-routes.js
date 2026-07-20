@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createSessionGitRuntime, LOADING_MERGE_STATE } = require('../src/routes/session-git');
+const { createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles } = require('../src/routes/session-git');
 
 function createFakeApp() {
   const routes = new Map();
@@ -99,7 +99,7 @@ function createFixture(overrides = {}) {
   };
 }
 
-test('mountRoutes installs the six legacy routes once per app', () => {
+test('mountRoutes installs the eight routes once per app', () => {
   const fixture = createFixture();
   fixture.runtime.mountRoutes(fixture.app);
   assert.deepEqual(Object.keys(fixture.runtime).sort(), [
@@ -108,6 +108,8 @@ test('mountRoutes installs the six legacy routes once per app', () => {
   assert.deepEqual([...fixture.app.routes.keys()].sort(), [
     'GET /api/git/log',
     'GET /api/sessions/:id/diff',
+    'GET /api/sessions/:id/diff/file',
+    'GET /api/sessions/:id/diff/files',
     'GET /api/sessions/:id/merge-status',
     'POST /api/sessions/:id/merge',
     'POST /api/sessions/:id/rebase',
@@ -123,7 +125,9 @@ test('production host delegates the complete Git route surface through narrow po
   assert.match(server, /sessionGitRuntime\.mountRoutes\(app\)/);
   assert.doesNotMatch(server, /function\s+(?:sessionWorktreeActive|sessionSyncGate|autoSyncSiblingWorktrees)\b/);
   for (const route of [
-    '/api/sessions/:id/merge-status', '/api/sessions/:id/diff', '/api/git/log',
+    '/api/sessions/:id/merge-status', '/api/sessions/:id/diff',
+    '/api/sessions/:id/diff/files', '/api/sessions/:id/diff/file',
+    '/api/git/log',
     '/api/sessions/:id/merge', '/api/sessions/:id/sync', '/api/sessions/:id/rebase',
   ]) {
     assert.equal(server.includes(route), false, `${route} is no longer inline in the host`);
@@ -448,4 +452,229 @@ test('route lookups preserve legacy 404/400 DTOs', async () => {
   });
   assert.equal(noWorktree.statusCode, 400);
   assert.deepEqual(noWorktree.body, { error: '该会话没有 worktree，无需合并' });
+});
+
+test('parseDiffFiles handles M/A/D, binary, rename, spaces and non-ASCII paths', () => {
+  const numstat = [
+    '10\t5\tsrc/foo.js',
+    '-\t-\tsrc/binary.png',
+    '20\t3\t',
+    'old/path.js',
+    'new/path.js',
+    '1\t1\tsrc/my file.js',
+    '2\t2\t中文/路径.js',
+  ].join('\0') + '\0';
+  const nameStatus = [
+    'M', 'src/foo.js',
+    'A', 'src/binary.png',
+    'R100', 'old/path.js', 'new/path.js',
+    'M', 'src/my file.js',
+    'D', '中文/路径.js',
+  ].join('\0') + '\0';
+  const files = parseDiffFiles(numstat, nameStatus);
+  assert.equal(files.length, 5);
+  assert.deepEqual(files[0], {
+    path: 'src/foo.js', oldPath: null, status: 'M',
+    additions: 10, deletions: 5, binary: false,
+  });
+  assert.deepEqual(files[1], {
+    path: 'src/binary.png', oldPath: null, status: 'A',
+    additions: 0, deletions: 0, binary: true,
+  });
+  assert.deepEqual(files[2], {
+    path: 'new/path.js', oldPath: 'old/path.js', status: 'R',
+    additions: 20, deletions: 3, binary: false,
+  });
+  assert.deepEqual(files[3], {
+    path: 'src/my file.js', oldPath: null, status: 'M',
+    additions: 1, deletions: 1, binary: false,
+  });
+  assert.deepEqual(files[4], {
+    path: '中文/路径.js', oldPath: null, status: 'D',
+    additions: 2, deletions: 2, binary: false,
+  });
+});
+
+test('parseDiffFiles returns empty array for empty input and falls back to M for missing status', () => {
+  assert.deepEqual(parseDiffFiles('', ''), []);
+  assert.deepEqual(parseDiffFiles('1\t1\tonly.js\0', ''), [
+    { path: 'only.js', oldPath: null, status: 'M', additions: 1, deletions: 1, binary: false },
+  ]);
+});
+
+test('diff/files aggregates numstat and name-status into a bounded file list', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args.includes('--numstat')) {
+          return ['10\t5\tsrc/foo.js', '-\t-\tsrc/binary.png'].join('\0') + '\0';
+        }
+        if (args.includes('--name-status')) {
+          return ['M', 'src/foo.js', 'A', 'src/binary.png'].join('\0') + '\0';
+        }
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
+    params: { id: 's1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.baseBranch, 'main');
+  assert.equal(response.body.branch, 'multicc/s1');
+  assert.equal(response.body.totalFiles, 2);
+  assert.equal(response.body.totalAdditions, 10);
+  assert.equal(response.body.totalDeletions, 5);
+  assert.equal(response.body.truncated, false);
+  assert.equal(response.body.error, null);
+  assert.deepEqual(response.body.files, [
+    { path: 'src/foo.js', oldPath: null, status: 'M', additions: 10, deletions: 5, binary: false },
+    { path: 'src/binary.png', oldPath: null, status: 'A', additions: 0, deletions: 0, binary: true },
+  ]);
+  assert.deepEqual(fixture.calls.run[0].args,
+    ['-c', 'core.quotepath=false', 'diff', '--numstat', '--no-color', '-z', 'main']);
+  assert.deepEqual(fixture.calls.run[1].args,
+    ['-c', 'core.quotepath=false', 'diff', '--name-status', '--no-color', '-z', 'main']);
+});
+
+test('diff/files truncates at 500 files but reports the full total', async () => {
+  const numstatEntries = [];
+  const nameStatusEntries = [];
+  for (let i = 0; i < 501; i++) {
+    numstatEntries.push(`1\t1\tfile${i}.js`);
+    nameStatusEntries.push('M', `file${i}.js`);
+  }
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args) => {
+        if (args.includes('--numstat')) return numstatEntries.join('\0') + '\0';
+        if (args.includes('--name-status')) return nameStatusEntries.join('\0') + '\0';
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
+    params: { id: 's1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.totalFiles, 501);
+  assert.equal(response.body.files.length, 500);
+  assert.equal(response.body.truncated, true);
+  assert.equal(response.body.totalAdditions, 501);
+  assert.equal(response.body.totalDeletions, 501);
+});
+
+test('diff/files preserves missing-worktree error and maps git errors', async () => {
+  const missing = createFixture({ existsSync: () => false });
+  const missingResponse = await invoke(missing.app.routes.get('GET /api/sessions/:id/diff/files'), {
+    params: { id: 's1' },
+  });
+  assert.equal(missingResponse.statusCode, 400);
+  assert.deepEqual(missingResponse.body, { error: 'worktree missing' });
+
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args) => {
+        if (args.includes('--numstat')) throw new Error('git failed');
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
+    params: { id: 's1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.error, 'git failed');
+  assert.deepEqual(response.body.files, []);
+  assert.equal(response.body.totalFiles, 0);
+});
+
+test('diff routes return 500 instead of hanging when gitBaseBranch rejects', async () => {
+  const fixture = createFixture({
+    directories: new Map([['d1', { id: 'd1', path: '/repo', baseBranch: null }]]),
+    implementations: {
+      gitBaseBranch: async () => { throw new Error('no remote HEAD'); },
+    },
+  });
+  for (const [routeName, query] of [
+    ['GET /api/sessions/:id/diff', {}],
+    ['GET /api/sessions/:id/diff/files', {}],
+    ['GET /api/sessions/:id/diff/file', { path: 'src/foo.js' }],
+  ]) {
+    const response = await invoke(fixture.app.routes.get(routeName), {
+      params: { id: 's1' }, query,
+    });
+    assert.equal(response.statusCode, 500, `${routeName} returns 500`);
+    assert.equal(response.body.error, 'no remote HEAD', `${routeName} surfaces error text`);
+    assert.equal(fixture.calls.run.length, 0, `${routeName} does not invoke gitRunQueued`);
+  }
+});
+
+test('diff/file validates path, separates args with --, and truncates large patches', async () => {
+  const fixture = createFixture();
+  const noPath = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' },
+  });
+  assert.equal(noPath.statusCode, 400);
+  assert.match(noPath.body.error, /path required/);
+
+  const dashed = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: '-evil' },
+  });
+  assert.equal(dashed.statusCode, 400);
+  assert.match(dashed.body.error, /must not start/);
+
+  const longPath = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'a'.repeat(501) },
+  });
+  assert.equal(longPath.statusCode, 400);
+
+  const missing = createFixture({ existsSync: () => false });
+  const missingResponse = await invoke(missing.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/foo.js' },
+  });
+  assert.equal(missingResponse.statusCode, 400);
+  assert.deepEqual(missingResponse.body, { error: 'worktree missing' });
+
+  const patchFixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        patchFixture.calls.run.push({ repo, args, options });
+        return 'diff --git a/foo b/foo\n+hello';
+      },
+    },
+  });
+  const response = await invoke(patchFixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/foo.js' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.path, 'src/foo.js');
+  assert.equal(response.body.patch, 'diff --git a/foo b/foo\n+hello');
+  assert.equal(response.body.truncated, false);
+  assert.equal(response.body.error, null);
+  assert.deepEqual(patchFixture.calls.run[0].args,
+    ['diff', '--no-color', 'main', '--', 'src/foo.js']);
+
+  const largeFixture = createFixture({
+    implementations: {
+      gitRunQueued: async () => 'x'.repeat(256 * 1024 + 100),
+    },
+  });
+  const large = await invoke(largeFixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/big.js' },
+  });
+  assert.equal(large.body.truncated, true);
+  assert.equal(large.body.patch.length, 256 * 1024);
+
+  const errorFixture = createFixture({
+    implementations: {
+      gitRunQueued: async () => { throw new Error('diff failed'); },
+    },
+  });
+  const errored = await invoke(errorFixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/foo.js' },
+  });
+  assert.equal(errored.body.patch, '');
+  assert.equal(errored.body.error, 'diff failed');
 });
