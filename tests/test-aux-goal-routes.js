@@ -108,6 +108,7 @@ test('mounts the complete Aux and Goal REST surface', () => {
     'GET /api/aux/history',
     'GET /api/aux/status',
     'GET /api/settings/goal',
+    'POST /api/aux/cancel',
     'POST /api/aux/config',
     'POST /api/aux/enqueue',
     'POST /api/goal/precheck',
@@ -285,7 +286,7 @@ test('Aux routes preserve history limiting, enqueue validation and response shap
   assert.equal(res.statusCode, 400);
   assert.deepEqual(res.body, { error: 'prompt required' });
   res = await invoke(app, 'POST', '/api/aux/enqueue', { body: { prompt: 'ping' } });
-  assert.deepEqual(res.body, { ok: true, result: 'aux-result' });
+  assert.deepEqual(res.body, { ok: true, result: 'aux-result', taskId: 'task-4' });
   assert.equal(runtime.auxQueue.getStatus().queueDepth, 0);
 });
 
@@ -300,7 +301,7 @@ test('Aux failures never expose provider secrets or filesystem paths', async () 
   const res = await invoke(harness.app, 'POST', '/api/aux/enqueue', {
     body: { prompt: 'safe user prompt' },
   });
-  assert.deepEqual(res.body, { ok: false, error: 'aux failed' });
+  assert.deepEqual(res.body, { ok: false, error: 'aux failed', taskId: 'task-0' });
   assert.deepEqual(observedErrors, ['aux failed']);
   assert.equal(harness.runtime.auxQueue.health.lastFailMsg, 'aux failed');
   assert.equal(harness.chat.at(-1).message.content, '[ERROR] aux failed');
@@ -347,4 +348,73 @@ test('Goal routes preserve settings DTO and downgrade scores below threshold', a
   assert.equal(res.body.score, 70);
   assert.match(res.body.issues[0], /低于设定阈值 80/);
   assert.equal(res.body.revised, 'better');
+});
+
+test('enqueue with valid id echoes taskId in both success and failure responses', async () => {
+  const successHarness = createHarness();
+  const successRes = await invoke(successHarness.app, 'POST', '/api/aux/enqueue', {
+    body: { prompt: 'ping', id: 'my-task-id' },
+  });
+  assert.equal(successRes.body.ok, true);
+  assert.equal(successRes.body.taskId, 'my-task-id');
+
+  const failHarness = createHarness({
+    executeAuxHttp: async () => { throw new Error('fail'); },
+  });
+  const failRes = await invoke(failHarness.app, 'POST', '/api/aux/enqueue', {
+    body: { prompt: 'ping', id: 'fail-task-id' },
+  });
+  assert.equal(failRes.body.ok, false);
+  assert.equal(failRes.body.taskId, 'fail-task-id');
+  assert.equal(failRes.body.error, 'fail');
+});
+
+test('enqueue with invalid id falls back to server-generated taskId', async () => {
+  const { app } = createHarness();
+  let res = await invoke(app, 'POST', '/api/aux/enqueue', {
+    body: { prompt: 'ping', id: 'has spaces' },
+  });
+  assert.equal(res.body.ok, true);
+  assert.equal(typeof res.body.taskId, 'string');
+  assert.notEqual(res.body.taskId, 'has spaces');
+
+  res = await invoke(app, 'POST', '/api/aux/enqueue', {
+    body: { prompt: 'ping', id: '   ' },
+  });
+  assert.equal(res.body.ok, true);
+  assert.equal(typeof res.body.taskId, 'string');
+  assert.ok(res.body.taskId.trim().length > 0);
+});
+
+test('POST /api/aux/cancel returns 400 for missing id and 200 for any provided id', async () => {
+  const { app } = createHarness();
+  let res = await invoke(app, 'POST', '/api/aux/cancel', { body: {} });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { ok: false, error: 'id required' });
+
+  res = await invoke(app, 'POST', '/api/aux/cancel', { body: { id: 'unknown' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, { ok: true });
+
+  res = await invoke(app, 'POST', '/api/aux/cancel', { body: { id: 'unknown' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, { ok: true });
+});
+
+test('POST /api/aux/cancel cancels an in-flight task by id', async () => {
+  let rejectTransport;
+  const harness = createHarness({
+    crypto: { randomUUID: () => 'cancel-test-id' },
+    executeAuxHttp: () => new Promise((resolve, reject) => { rejectTransport = reject; }),
+  });
+  const pending = harness.runtime.auxQueue.enqueue({ type: 'manual', prompt: 'cancel me', meta: {} });
+  pending.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+
+  const res = await invoke(harness.app, 'POST', '/api/aux/cancel', { body: { id: 'cancel-test-id' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, { ok: true });
+
+  rejectTransport(new Error('provider failed after cancel'));
+  await assert.rejects(pending, error => error && error.cancelled === true);
 });

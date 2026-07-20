@@ -525,12 +525,25 @@ function mountAuxGoalRoutes(app, dependencies) {
   app.post('/api/aux/enqueue', (req, res) => {
     const { type, prompt, meta } = req.body || {};
     if (!prompt) return res.status(400).json({ error: 'prompt required' });
-    auxQueue.enqueue({ type: type || 'manual', prompt, meta: meta || {} })
-      .then(result => res.json({ ok: true, result: result.text }))
+    const rawId = req.body && req.body.id;
+    const trimmedId = typeof rawId === 'string' ? rawId.trim() : '';
+    const validId = /^[A-Za-z0-9_-]+$/.test(trimmedId) && trimmedId.length >= 1 && trimmedId.length <= 80
+      ? trimmedId : '';
+    const taskId = validId || crypto.randomUUID();
+    auxQueue.enqueue({ id: taskId, type: type || 'manual', prompt, meta: meta || {} })
+      .then(result => res.json({ ok: true, result: result.text, taskId }))
       .catch(error => res.json({
         ok: false,
         error: error && error.cancelled ? 'cancelled' : safeAuxErrorMessage(error),
+        taskId,
       }));
+  });
+
+  app.post('/api/aux/cancel', (req, res) => {
+    const id = req.body && req.body.id;
+    if (!id) return res.status(400).json({ ok: false, error: 'id required' });
+    auxQueue.cancel(String(id));
+    return res.json({ ok: true });
   });
 
   app.get('/api/aux/config', (req, res) => {
