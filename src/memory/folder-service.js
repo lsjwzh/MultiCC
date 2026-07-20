@@ -1,9 +1,19 @@
 'use strict';
 
+// Per-session injection caps (chars of folder content surfaced into each
+// session's system prompt). These are the per-session CONTEXT COST dials —
+// raising them bloats every session's prompt. Keep modest.
 const SESSION_MEM_CAP = 5000;
 const SHARED_MEM_CAP = 4000;
-const SESSION_CURATED_MEM_CAP = 2200;
-const SHARED_CURATED_MEM_CAP = 2200;
+// Curated STORE caps: the total size of the atomic add/replace/remove
+// short-fact store (MEMORY.md via the /memory/action API). Independent of the
+// injection caps above — a large store is cheap on disk; only SESSION/SHARED
+// _MEM_CAP of it surfaces per session (readMemoryFolder truncates with a
+// 节选 marker). Raised from 2200 → 128k so a project can grow a real shared
+// knowledge base without hitting "memory would exceed limit" on every add.
+const CURATED_MEM_CAP_128K = 128 * 1024; // 131072 chars
+const SESSION_CURATED_MEM_CAP = CURATED_MEM_CAP_128K;
+const SHARED_CURATED_MEM_CAP = CURATED_MEM_CAP_128K;
 
 function assertDependencies(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('[folder-memory] dependencies are required');
