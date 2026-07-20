@@ -151,32 +151,36 @@
         if (!total) return null;
         const line = doc.createElement('div');
         line.className = 'msg-usage';
-        let tooltip = `本条消息 token 用量\n合计 ${number(total)}\n`;
+        let tooltip = '本条消息 token 用量（非会话累计）\n';
         if (main) {
           tooltip += `— 主 — 输入 ${number(main.input)} 输出 ${number(main.output)} 缓存读 ${number(main.cacheRead)} 缓存写 ${number(main.cacheWrite)}\n`;
         }
         if (sub) {
-          tooltip += `— 辅 合计 — 输入 ${number(sub.input)} 输出 ${number(sub.output)} 缓存读 ${number(sub.cacheRead)} 缓存写 ${number(sub.cacheWrite)}\n`;
+          tooltip += `— 辅 — 输入 ${number(sub.input)} 输出 ${number(sub.output)} 缓存读 ${number(sub.cacheRead)} 缓存写 ${number(sub.cacheWrite)}\n`;
           for (const provider of (roleBreakdown.subByProvider || [])) {
             tooltip += `    · ${provider.name || provider.providerId} / ${provider.model || '?'}: ↑入 ${number(provider.inputTokens)} ↓出 ${number(provider.outputTokens)}\n`;
           }
-          tooltip += `省主模型 ≈ ${number(sub.total)}（子任务代劳）\n`;
         }
         line.title = tooltip.trim();
         metric(line, 'u-in', `↑入 ${number(totals.input)}`);
         metric(line, 'u-out', `↓出 ${number(totals.output)}`);
         if (totals.cacheRead) metric(line, 'u-cache', `♻读 ${number(totals.cacheRead)}`);
         if (totals.cacheWrite) metric(line, 'u-cache', `♻写 ${number(totals.cacheWrite)}`);
-        if (main && sub) metric(line, 'u-role', `主 ${number(main.total)} · 辅 ${number(sub.total)}`, `主 ${number(main.total)} · 辅 ${number(sub.total)}`);
-        else if (main) metric(line, 'u-role', `主 ${number(main.total)}`, '仅主循环');
-        if (sub) metric(line, 'u-saved', `↺省主 ${short(sub.total)}`, '子任务替主模型处理的 token 量（四桶总额，未走主模型）');
+        if (main) metric(
+          line, 'u-role', `主 ↑${short(main.input)} ↓${short(main.output)}`,
+          `本条消息主循环：输入 ${number(main.input)} / 输出 ${number(main.output)}`,
+        );
+        if (sub) metric(
+          line, 'u-role', `辅 ↑${short(sub.input)} ↓${short(sub.output)}`,
+          `本条消息子任务：输入 ${number(sub.input)} / 输出 ${number(sub.output)}`,
+        );
         return line;
       }
 
       if (input + output + cacheRead + cacheWrite === 0) return null;
       const line = doc.createElement('div');
       line.className = 'msg-usage';
-      line.title = `本条消息 token 用量\n输入 ${number(input)}\n输出 ${number(output)}\n缓存读 ${number(cacheRead)}\n缓存写 ${number(cacheWrite)}\n合计 ${number(input + output + cacheRead + cacheWrite)}`;
+      line.title = `本条消息 token 用量（非会话累计）\n输入 ${number(input)}\n输出 ${number(output)}\n缓存读 ${number(cacheRead)}\n缓存写 ${number(cacheWrite)}`;
       metric(line, 'u-in', `↑入 ${number(input)}`);
       metric(line, 'u-out', `↓出 ${number(output)}`);
       if (cacheRead) metric(line, 'u-cache', `♻读 ${number(cacheRead)}`);

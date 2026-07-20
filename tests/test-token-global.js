@@ -32,14 +32,69 @@ function tokenRow(timestamp, total, last) {
   }, timestamp);
 }
 
-function rollout(meta, rows, model = 'gpt-test') {
+function rollout(meta, rows, model = 'gpt-test', metaTimestamp = `${DAY}T03:59:00.000Z`) {
   return [
-    row('session_meta', meta, `${DAY}T03:59:00.000Z`),
+    row('session_meta', meta, metaTimestamp),
     row('turn_context', { model }, `${DAY}T03:59:01.000Z`),
     ...rows,
     '',
   ].join('\n');
 }
+
+test('fork initialization replay advances the baseline without counting inherited history', async () => {
+  await withFixture(async ({ projectsDir, codexDir }) => {
+    const started = `${DAY}T04:00:00.000Z`;
+    write(codexDir, 'fork.jsonl', rollout(
+      { id: 'fork-thread', forked_from_id: 'parent', thread_source: 'subagent' },
+      [
+        // Codex reserializes the parent's cumulative history immediately when
+        // creating a fork. These rows are baselines, not three child calls.
+        tokenRow(started, usage(1_000, 600, 200), usage(100, 60, 20)),
+        tokenRow(`${DAY}T04:00:00.001Z`, usage(1_020, 610, 204), usage(20, 10, 4)),
+        tokenRow(`${DAY}T04:00:00.080Z`, usage(1_050, 620, 210), usage(30, 10, 6)),
+        // The first real child response arrives after a normal request gap.
+        tokenRow(`${DAY}T04:00:08.000Z`, usage(1_080, 630, 216), usage(30, 10, 6)),
+      ],
+      'gpt-test',
+      started,
+    ));
+
+    const result = await _compute({ projectsDir, codexDir, now: new Date(`${DAY}T12:00:00Z`) });
+    assert.deepEqual(bucket(result), {
+      inputTokens: 20,
+      outputTokens: 6,
+      cacheWrite: 0,
+      cacheRead: 10,
+      msgs: 1,
+    });
+    assert.equal(result.responses, 1);
+    assert.equal(result.byDay[DAY]['gpt-test'], 36);
+    assert.equal(result.byDayFresh[DAY]['gpt-test'], 26);
+  });
+});
+
+test('a derived rollout with normal response spacing is not mistaken for fork replay', async () => {
+  await withFixture(async ({ projectsDir, codexDir }) => {
+    const started = `${DAY}T04:00:00.000Z`;
+    write(codexDir, 'fork.jsonl', rollout(
+      { id: 'fork-thread', parent_thread_id: 'parent' },
+      [
+        tokenRow(started, usage(1_000, 600, 200), usage(20, 5, 4)),
+        tokenRow(`${DAY}T04:00:01.000Z`, usage(1_030, 610, 206), usage(30, 10, 6)),
+      ],
+      'gpt-test',
+      started,
+    ));
+    const result = await _compute({ projectsDir, codexDir, now: new Date(`${DAY}T12:00:00Z`) });
+    assert.deepEqual(bucket(result), {
+      inputTokens: 35,
+      outputTokens: 10,
+      cacheWrite: 0,
+      cacheRead: 15,
+      msgs: 2,
+    });
+  });
+});
 
 function write(root, relative, text) {
   const target = path.join(root, relative);
@@ -319,6 +374,7 @@ test('re-scanning the same files is deterministic and does not accumulate again'
     const second = await _compute(options);
     assert.deepEqual(second.windows, first.windows);
     assert.deepEqual(second.byDay, first.byDay);
+    assert.deepEqual(second.byDayFresh, first.byDayFresh);
     assert.equal(second.responses, first.responses);
     assert.equal(second.scannedFiles, first.scannedFiles);
   });
