@@ -251,6 +251,31 @@
       bar.classList.add('show');
     }
 
+    // Persistent transport-level liveness pill in the chat header. `verdict` is
+    // the JSON from GET /api/sessions/:id/liveness. A falsy verdict hides it.
+    function renderLiveness(verdict) {
+      const pill = doc.getElementById('liveness-pill');
+      if (!pill) return;
+      if (!verdict || !verdict.state) { pill.style.display = 'none'; return; }
+      const disp = livenessDisplay(verdict.state);
+      const dotEl = doc.getElementById('liveness-pill-dot');
+      const labelEl = doc.getElementById('liveness-pill-label');
+      let label = translate(disp.labelKey);
+      // Show the silent duration on a stalled/quiet turn so "stuck for 3m" reads
+      // at a glance instead of a bare state word.
+      const silentMs = Number(verdict.silentMs);
+      if ((verdict.state === 'stalled' || verdict.state === 'working') && Number.isFinite(silentMs) && silentMs >= 5000) {
+        label += ` · ${fmtDuration(silentMs)}`;
+      }
+      if (labelEl) labelEl.textContent = label;
+      if (dotEl) {
+        dotEl.classList.remove('lv-working', 'lv-idle', 'lv-stalled', 'lv-unknown');
+        dotEl.classList.add(`lv-${disp.dot}`);
+      }
+      pill.title = verdict.reason ? `liveness: ${verdict.state} (${verdict.reason})` : `liveness: ${verdict.state}`;
+      pill.style.display = '';
+    }
+
     function danmakuElements() {
       return {
         panel: doc.getElementById('danmaku-panel'), head: doc.getElementById('danmaku-head'),
@@ -631,6 +656,7 @@
       attachUsageLine,
       classifyDisplay,
       renderAuxClassify,
+      renderLiveness,
       pushDanmaku,
       danmakuOnDisconnect,
       toggleDanmakuCollapse,
@@ -649,7 +675,20 @@
     });
   }
 
-  const api = Object.freeze({ createLiveUi, accumulateLiveUsage, fmtDuration, bindHeaderMoreMenu });
+  // Pure liveness-state → display descriptor. Mirrors classifyDisplay but for the
+  // transport-level liveness verdict (working / idle / stalled) from
+  // GET /api/sessions/:id/liveness. Kept module-level and translate-free so it is
+  // unit-testable; the label is localized at render time.
+  function livenessDisplay(state) {
+    switch (state) {
+      case 'working': return { tint: 'running', dot: 'working', labelKey: 'livenessWorking' };
+      case 'stalled': return { tint: 'error', dot: 'stalled', labelKey: 'livenessStalled' };
+      case 'idle': return { tint: 'idle', dot: 'idle', labelKey: 'livenessIdle' };
+      default: return { tint: 'idle', dot: 'unknown', labelKey: 'livenessUnknown' };
+    }
+  }
+
+  const api = Object.freeze({ createLiveUi, accumulateLiveUsage, fmtDuration, bindHeaderMoreMenu, livenessDisplay });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCChatLiveUi = api;
 })(typeof window !== 'undefined' ? window : globalThis);
