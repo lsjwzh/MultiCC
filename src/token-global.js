@@ -21,6 +21,13 @@ const path = require('path');
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const CODEX_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const CACHE_TTL_MS = 120 * 1000;
+// A forked Codex rollout is initialized by serializing the parent's event
+// history into the child file. Those inherited token_count rows are emitted in
+// one compressed prefix (normally a few milliseconds), while a real model
+// response takes seconds. Keep this deliberately narrow: only a derived file,
+// only its initial prefix, only when at least two token snapshots are adjacent.
+const CODEX_FORK_REPLAY_GAP_MS = 100;
+const CODEX_FORK_REPLAY_START_MS = 100;
 
 let cache = null;          // { generatedAt, data }
 let inFlight = null;       // shared promise so concurrent requests scan once
@@ -62,7 +69,7 @@ async function listJsonl(dir) {
 }
 
 // Bucket one record into every window it belongs to, plus the per-day trend.
-function record(windows, byDay, W, dk, model, i, o, cw, cr) {
+function record(windows, byDay, byDayFresh, W, dk, model, i, o, cw, cr) {
   addInto(windows.all, model, i, o, cw, cr);
   // Week and month are independent windows: a Monday-start week can cross a
   // month boundary.  Future-dated records remain visible in all/byDay for
@@ -72,6 +79,8 @@ function record(windows, byDay, W, dk, model, i, o, cw, cr) {
   if (dk === W.today) addInto(windows.today, model, i, o, cw, cr);
   const day = byDay[dk] || (byDay[dk] = {});
   day[model] = (day[model] || 0) + i + o + cw + cr;
+  const freshDay = byDayFresh[dk] || (byDayFresh[dk] = {});
+  freshDay[model] = (freshDay[model] || 0) + i + o;
 }
 
 // Codex (the codex CLI) keeps its own transcripts under ~/.codex/sessions as a
@@ -132,17 +141,21 @@ function completeCodexLastUsage(info, total) {
   return last;
 }
 
-function recordCodexUsage(windows, byDay, W, timestamp, model, usage) {
+function recordCodexUsage(windows, byDay, byDayFresh, W, timestamp, model, usage) {
   if (usage.fresh + usage.output + usage.cached <= 0) return 0;
   const at = new Date(timestamp);
   if (!Number.isFinite(at.getTime())) return 0;
-  record(windows, byDay, W, localDateKey(at), model, usage.fresh, usage.output, 0, usage.cached);
+  record(
+    windows, byDay, byDayFresh, W, localDateKey(at), model,
+    usage.fresh, usage.output, 0, usage.cached,
+  );
   return usage.output > 0 ? 1 : 0;
 }
 
 function parseCodexRollout(text, sourceOrder = 0) {
   let meta = {};
   let hasMeta = false;
+  let metaTimestamp = NaN;
   let model = 'codex';
   const events = [];
   let eventOrder = 0;
@@ -161,6 +174,7 @@ function parseCodexRollout(text, sourceOrder = 0) {
       // the last one would collapse independent child agents into the parent.
       if (!hasMeta) {
         meta = p && typeof p === 'object' ? p : {};
+        metaTimestamp = new Date(d.timestamp).getTime();
         hasMeta = true;
       }
       continue;
@@ -173,6 +187,7 @@ function parseCodexRollout(text, sourceOrder = 0) {
     if (!current || !Number.isFinite(timestamp)) continue;
     events.push({
       timestamp: d.timestamp,
+      timestampMs: timestamp,
       model,
       current,
       last: completeCodexLastUsage(info, current),
@@ -183,19 +198,39 @@ function parseCodexRollout(text, sourceOrder = 0) {
   return Object.freeze({
     meta,
     derived: isDerivedCodexRollout(meta),
+    metaTimestamp,
     events,
     sourceOrder,
   });
 }
 
-function scanCodexFragments(fragments, windows, byDay, W) {
+function codexForkReplayPrefixLength(fragment) {
+  if (!fragment.derived || fragment.events.length < 2
+      || !Number.isFinite(fragment.metaTimestamp)) return 0;
+  const first = fragment.events[0];
+  if (first.timestampMs < fragment.metaTimestamp
+      || first.timestampMs - fragment.metaTimestamp > CODEX_FORK_REPLAY_START_MS) return 0;
+  let length = 1;
+  while (length < fragment.events.length) {
+    const previous = fragment.events[length - 1].timestampMs;
+    const current = fragment.events[length].timestampMs;
+    if (current < previous || current - previous > CODEX_FORK_REPLAY_GAP_MS) break;
+    length += 1;
+  }
+  return length >= 2 ? length : 0;
+}
+
+function scanCodexFragments(fragments, windows, byDay, byDayFresh, W) {
   const ordered = [...fragments].sort((left, right) => left.sourceOrder - right.sourceOrder);
   const derived = ordered.some(fragment => fragment.derived);
   let highWater = null;              // accepted cumulative { fresh, cached, output }
   let responses = 0;
 
   for (const fragment of ordered) {
-    for (const event of fragment.events) {
+    const replayPrefixLength = codexForkReplayPrefixLength(fragment);
+    for (let index = 0; index < fragment.events.length; index += 1) {
+      const event = fragment.events[index];
+      const replayed = index < replayPrefixLength;
       const cur = event.current;
 
       if (!highWater) {
@@ -203,9 +238,9 @@ function scanCodexFragments(fragments, windows, byDay, W) {
         // is real usage. A derived rollout inherits its parent's counters:
         // only Codex's complete per-request last usage is safe to attribute.
         const initial = derived ? event.last : cur;
-        if (initial) {
+        if (initial && !replayed) {
           responses += recordCodexUsage(
-            windows, byDay, W, event.timestamp, event.model, initial,
+            windows, byDay, byDayFresh, W, event.timestamp, event.model, initial,
           );
         }
         highWater = { ...cur };
@@ -224,20 +259,22 @@ function scanCodexFragments(fragments, windows, byDay, W) {
         output: cur.output - highWater.output,
       };
       highWater = { ...cur };
-      responses += recordCodexUsage(
-        windows, byDay, W, event.timestamp, event.model, delta,
-      );
+      if (!replayed) {
+        responses += recordCodexUsage(
+          windows, byDay, byDayFresh, W, event.timestamp, event.model, delta,
+        );
+      }
     }
   }
 
   return responses;
 }
 
-function scanCodexRollout(text, windows, byDay, W) {
-  return scanCodexFragments([parseCodexRollout(text)], windows, byDay, W);
+function scanCodexRollout(text, windows, byDay, W, byDayFresh = {}) {
+  return scanCodexFragments([parseCodexRollout(text)], windows, byDay, byDayFresh, W);
 }
 
-async function addCodexInto(windows, byDay, W, codexDir = CODEX_DIR) {
+async function addCodexInto(windows, byDay, byDayFresh, W, codexDir = CODEX_DIR) {
   const files = (await listJsonl(codexDir)).sort();
   const groups = new Map();
   let sourceOrder = 0;
@@ -256,7 +293,7 @@ async function addCodexInto(windows, byDay, W, codexDir = CODEX_DIR) {
   }
   let responses = 0;
   for (const fragments of groups.values()) {
-    responses += scanCodexFragments(fragments, windows, byDay, W);
+    responses += scanCodexFragments(fragments, windows, byDay, byDayFresh, W);
   }
   return { files: files.length, responses };
 }
@@ -267,6 +304,7 @@ async function compute({ projectsDir = PROJECTS_DIR, codexDir = CODEX_DIR, now =
   const seen = new Set();
   const windows = { today: {}, week: {}, month: {}, all: {} };
   const byDay = {};                  // dateKey -> { model -> total }
+  const byDayFresh = {};             // dateKey -> { model -> input + output }
   let responses = 0;
 
   for (const fp of files) {
@@ -292,11 +330,11 @@ async function compute({ projectsDir = PROJECTS_DIR, codexDir = CODEX_DIR, now =
       seen.add(key);
       responses++;
       const model = m.model || 'unknown';
-      record(windows, byDay, W, localDateKey(new Date(ts)), model, i, o, cw, cr);
+      record(windows, byDay, byDayFresh, W, localDateKey(new Date(ts)), model, i, o, cw, cr);
     }
   }
 
-  const codex = await addCodexInto(windows, byDay, W, codexDir);
+  const codex = await addCodexInto(windows, byDay, byDayFresh, W, codexDir);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -305,6 +343,7 @@ async function compute({ projectsDir = PROJECTS_DIR, codexDir = CODEX_DIR, now =
     responses: responses + codex.responses,
     windows,
     byDay,   // { 'YYYY-MM-DD': { model: totalTokens } }
+    byDayFresh, // same shape, excluding cache read/write
   };
 }
 
