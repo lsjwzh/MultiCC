@@ -5824,10 +5824,24 @@ function handleChatWs(ws, req, urlObj) {
     }
   }
 
-  // If a stream is in progress, replay buffered events so reconnected client catches up
+  // If a stream is in progress, replay buffered events so reconnected client
+  // catches up. This is a synchronous burst of up to streamReplay.length
+  // (capped at 500) frames — it must bypass the backpressure MESSAGE-count cap
+  // via sendImmediate(), or the burst trips queue_overflow → 1013 close → the
+  // client reconnects → re-floods → infinite reconnect loop (the bug that hit
+  // long streaming turns). sendImmediate still honours the byte cap + congestion
+  // timer, so a genuinely slow client is still protected. Falls back to sendWs
+  // if backpressure isn't installed (defensive; it always is here).
   if (cs.isStreaming && cs.streamReplay.length > 0) {
+    const bp = ws._multiccBackpressure;
     for (const evt of cs.streamReplay) {
-      try { sendWs(ws, evt); } catch (_) {}
+      try {
+        if (bp && typeof bp.sendImmediate === 'function') {
+          bp.sendImmediate(JSON.stringify(createWsEnvelope(evt)));
+        } else {
+          sendWs(ws, evt);
+        }
+      } catch (_) {}
     }
   }
 
