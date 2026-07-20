@@ -571,5 +571,11 @@
   "activityWaiting": "Waiting for user input",
   "activityCompleted": "Completed",
   "activityError": "Error",
-  "activityIdle": "Idle"
+  "activityIdle": "Idle",
+  "diffChangedFiles": "Changed {0} files",
+  "diffViewMoreFiles": "View {0} more files",
+  "diffAiSummary": "AI change summary",
+  "diffSummarizing": "Summarizing...",
+  "diffSummaryFailed": "Summary failed",
+  "diffBackToList": "Back to file list"
 }
