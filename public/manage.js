@@ -2218,7 +2218,9 @@ async function loadGlobalUsage(force) {
 function setGuWindow(w) { _guWindow = w; renderGlobalUsage(); }
 
 function renderGuTrend() {
-  const byDay = (_globalUsage && _globalUsage.byDay) || {};
+  // The primary trend is real new work, not cache reads replayed into a model's
+  // context. Older servers lack byDayFresh, so retain a compatibility fallback.
+  const byDay = (_globalUsage && (_globalUsage.byDayFresh || _globalUsage.byDay)) || {};
   const days = Object.keys(byDay).sort().slice(-14);
   if (!days.length) return '';
   const totals = days.map(d => Object.values(byDay[d]).reduce((a, b) => a + b, 0));
@@ -2231,7 +2233,10 @@ function renderGuTrend() {
       <span style="width:56px;text-align:right">${formatTokens(totals[i])}</span>
     </div>`;
   }).join('');
-  return `<div style="margin-top:12px"><div style="font-size:11px;color:var(--faint);margin-bottom:6px">近 ${days.length} 个有活动的日子（含缓存总 token/天）</div>${bars}</div>`;
+  const scope = _globalUsage && _globalUsage.byDayFresh
+    ? '新鲜 token/天（输入+输出；缓存不重复计入）'
+    : '含缓存总 token/天（兼容旧服务）';
+  return `<div style="margin-top:12px"><div style="font-size:11px;color:var(--faint);margin-bottom:6px">近 ${days.length} 个有活动的日子（${scope}）</div>${bars}</div>`;
 }
 
 function renderGlobalUsage() {
