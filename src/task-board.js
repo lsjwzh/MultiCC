@@ -9,7 +9,7 @@
 //   {
 //     modules: { <moduleId>: { id, name, source:'ai'|'directory'|'classify', dirId, createdAt, updatedAt } },
 //     tasks:   { <taskId>:   { id, moduleId, title, status:'active'|'done'|'archived',
-//                              areas:[], createdAt, updatedAt,
+//                              areas:[], createdAt, updatedAt, classification?:{},
 //                              refs:[{ sessionId, dirId, userMsgId, assistantMsgId, ts, excerpt }] } }
 //   }
 // A ref is one chat turn (user message + assistant reply) tagged onto the task;
@@ -22,6 +22,15 @@ const MAX_TASKS_IN_PROMPT = 50;
 const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
 const CLASSIFY_PENDING_MODULE_NAME = '待归类';
+const PENDING_TASK_TITLE = '新任务';
+const CLASSIFICATION_STATES = new Set([
+  'waiting_reply', 'pending', 'running', 'retry_wait', 'failed',
+]);
+
+function safeClassificationError(value) {
+  const code = typeof value === 'string' ? value.slice(0, 80) : '';
+  return !code || /^[a-z0-9_:-]+$/i.test(code) ? code : 'classification_failed';
+}
 
 function createEmptyBoard() {
   return { modules: {}, tasks: {} };
@@ -60,7 +69,7 @@ function normalizeBoard(raw) {
   const tasks = raw.tasks && typeof raw.tasks === 'object' ? raw.tasks : {};
   for (const [id, t] of Object.entries(tasks)) {
     if (!t || typeof t !== 'object' || typeof t.title !== 'string' || !t.title.trim()) continue;
-    board.tasks[id] = {
+    const task = {
       id,
       moduleId: typeof t.moduleId === 'string' ? t.moduleId : null,
       title: t.title.trim().slice(0, MAX_TITLE_LEN),
@@ -81,6 +90,19 @@ function normalizeBoard(raw) {
           })).slice(-MAX_REFS_PER_TASK)
         : [],
     };
+    const c = t.classification && typeof t.classification === 'object' ? t.classification : null;
+    const isPendingModule = board.modules[task.moduleId]?.source === 'classify';
+    if (c || isPendingModule) {
+      task.classification = {
+        state: CLASSIFICATION_STATES.has(c?.state) ? c.state : 'pending',
+        attempts: Math.max(0, Math.floor(Number(c?.attempts) || 0)),
+        lastAttemptAt: Number(c?.lastAttemptAt) || 0,
+        nextRetryAt: Number(c?.nextRetryAt) || 0,
+        lastError: safeClassificationError(c?.lastError),
+        seed: typeof c?.seed === 'string' ? c.seed.slice(0, 1200) : '',
+      };
+    }
+    board.tasks[id] = task;
   }
   return board;
 }
@@ -106,7 +128,7 @@ function buildTagSystemPrompt() {
 function buildTagUserPrompt({ board, sessionLabel, dirLabel, userText, replyText }) {
   const moduleLines = Object.values(board.modules).map(m => `- ${m.name}`);
   const taskList = Object.values(board.tasks)
-    .filter(t => t.status !== 'archived')
+    .filter(t => t.status !== 'archived' && !t.classification)
     .sort((a, b) => taskLastTs(b) - taskLastTs(a))
     .slice(0, MAX_TASKS_IN_PROMPT)
     .map(t => {
@@ -151,7 +173,7 @@ function buildBackfillSystemPrompt() {
 function buildBackfillUserPrompt({ board, sessionLabel, dirLabel, turns }) {
   const moduleLines = Object.values(board.modules).map(m => `- ${m.name}`);
   const taskList = Object.values(board.tasks)
-    .filter(t => t.status !== 'archived')
+    .filter(t => t.status !== 'archived' && !t.classification)
     .sort((a, b) => taskLastTs(b) - taskLastTs(a))
     .slice(0, MAX_TASKS_IN_PROMPT)
     .map(t => {
@@ -387,13 +409,18 @@ function taskLastTs(task) {
 function addRefToTask(task, ref, now) {
   const existing = task.refs.find(r =>
     (ref.assistantMsgId && r.assistantMsgId === ref.assistantMsgId) ||
-    (ref.userMsgId && r.userMsgId === ref.userMsgId));
+    (ref.userMsgId && r.userMsgId === ref.userMsgId) ||
+    (ref.userMsgId && !r.userMsgId && !r.assistantMsgId && r.sessionId === ref.sessionId));
   if (existing) {
     let changed = false;
     // An immediate in-flight card initially has only the user id. Upgrade that
     // same ref at turn end instead of adding a duplicate row.
     if (!existing.assistantMsgId && ref.assistantMsgId) {
       existing.assistantMsgId = ref.assistantMsgId;
+      changed = true;
+    }
+    if (!existing.userMsgId && ref.userMsgId) {
+      existing.userMsgId = ref.userMsgId;
       changed = true;
     }
     if (!existing.dirId && ref.dirId) { existing.dirId = ref.dirId; changed = true; }
@@ -419,6 +446,105 @@ function addRefToTask(task, ref, now) {
   // A done task that receives new conversation is live again.
   if (task.status === 'done') task.status = 'active';
   return true;
+}
+
+// Create the durable card shown immediately after a board-level send. It is
+// intentionally unique even though every card starts with the same visible
+// title; title-based aggregation would otherwise collapse unrelated sends.
+function createPendingTask(board, { dirId = null, sessionId, seed = '', now = Date.now() }) {
+  if (!sessionId) return null;
+  let mod = Object.values(board.modules).find(m =>
+    m.source === 'classify' && m.name === CLASSIFY_PENDING_MODULE_NAME
+      && (m.dirId || null) === (dirId || null));
+  if (!mod) {
+    mod = {
+      id: newId('mod'), name: CLASSIFY_PENDING_MODULE_NAME, source: 'classify',
+      dirId: dirId || null, createdAt: now, updatedAt: now,
+    };
+    board.modules[mod.id] = mod;
+  }
+  const text = String(seed || '').trim();
+  const task = {
+    id: newId('tsk'), moduleId: mod.id, title: PENDING_TASK_TITLE,
+    status: 'active', areas: [], createdAt: now, updatedAt: now,
+    refs: [{
+      sessionId, dirId: dirId || null, userMsgId: null, assistantMsgId: null,
+      ts: now, excerpt: text.slice(0, 200),
+    }],
+    classification: {
+      state: 'waiting_reply', attempts: 0, lastAttemptAt: 0,
+      nextRetryAt: now + 60_000, lastError: '', seed: text.slice(0, 1200),
+    },
+  };
+  board.tasks[task.id] = task;
+  mod.updatedAt = now;
+  return task;
+}
+
+function deleteEmptyModule(board, moduleId) {
+  if (!moduleId || !board.modules[moduleId]) return;
+  if (!Object.values(board.tasks).some(t => t.moduleId === moduleId)) delete board.modules[moduleId];
+}
+
+// Converge a placeholder/classify card in place. If the classifier explicitly
+// selects an existing task, merge into that task and delete only the placeholder.
+// Returns a structured result so callers can notify both changed ids.
+function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.now()) {
+  const pending = board.tasks[pendingTaskId];
+  if (!pending) return { ok: false, error: 'task_not_found' };
+  const title = String(entry?.title || '').trim().slice(0, MAX_TITLE_LEN);
+  const explicitCandidate = entry?.id && entry.id !== 'new' && entry.id !== pendingTaskId
+    ? board.tasks[entry.id] : null;
+  const explicitTarget = explicitCandidate && !explicitCandidate.classification ? explicitCandidate : null;
+  const explicitModule = explicitTarget?.moduleId ? board.modules[explicitTarget.moduleId] : null;
+  const moduleName = String(entry?.module || explicitModule?.name || '').trim().slice(0, MAX_MODULE_LEN);
+  if ((!title && !explicitTarget) || !moduleName || moduleName === CLASSIFY_PENDING_MODULE_NAME) {
+    return { ok: false, error: 'invalid_classification' };
+  }
+
+  const dirId = taskDirId(board, pending) || ref?.dirId || null;
+  let mod = explicitModule || findModuleByName(board, moduleName, dirId);
+  if (!mod || mod.source === 'classify') {
+    mod = {
+      id: newId('mod'), name: moduleName, source: 'ai', dirId,
+      createdAt: now, updatedAt: now,
+    };
+    board.modules[mod.id] = mod;
+  }
+
+  let target = explicitTarget;
+  if (!target && title) {
+    const matched = findTaskByTitle(board, mod.id, title, { dirId, similar: true });
+    if (matched && matched.id !== pendingTaskId && !matched.classification) target = matched;
+  }
+
+  const oldModuleId = pending.moduleId;
+  if (target && target.id !== pendingTaskId) {
+    for (const pendingRef of pending.refs) addRefToTask(target, pendingRef, now);
+    if (ref) addRefToTask(target, ref, now);
+    for (const area of entry?.areas || []) {
+      const clean = typeof area === 'string' ? area.trim().slice(0, 80) : '';
+      if (clean && !target.areas.includes(clean) && target.areas.length < MAX_AREAS_PER_TASK) target.areas.push(clean);
+    }
+    target.updatedAt = now;
+    if (target.status === 'done') target.status = 'active';
+    delete board.tasks[pendingTaskId];
+    deleteEmptyModule(board, oldModuleId);
+    return { ok: true, taskId: target.id, removedTaskId: pendingTaskId, touched: [target.id, pendingTaskId] };
+  }
+
+  pending.title = title || pending.title;
+  pending.moduleId = mod.id;
+  pending.updatedAt = now;
+  for (const area of entry?.areas || []) {
+    const clean = typeof area === 'string' ? area.trim().slice(0, 80) : '';
+    if (clean && !pending.areas.includes(clean) && pending.areas.length < MAX_AREAS_PER_TASK) pending.areas.push(clean);
+  }
+  if (ref) addRefToTask(pending, ref, now);
+  delete pending.classification;
+  mod.updatedAt = now;
+  deleteEmptyModule(board, oldModuleId);
+  return { ok: true, taskId: pending.id, removedTaskId: null, touched: [pending.id] };
 }
 
 // Apply a parsed tag result to the board. Returns the ids of tasks that
@@ -584,6 +710,13 @@ function buildBoardDto(board, getSessionRunState) {
       lastTs: taskLastTs(t),
       createdAt: t.createdAt,
       runState: aggregateTaskRunState(sessionIds, getSessionRunState),
+      classification: t.classification ? {
+        state: t.classification.state,
+        attempts: t.classification.attempts || 0,
+        lastAttemptAt: t.classification.lastAttemptAt || 0,
+        nextRetryAt: t.classification.nextRetryAt || 0,
+        lastError: safeClassificationError(t.classification.lastError),
+      } : null,
     };
   }).sort((a, b) => b.lastTs - a.lastTs);
   const countByModule = new Map();
@@ -607,6 +740,7 @@ module.exports = {
   MAX_TAGS_PER_TURN,
   MAX_REFS_PER_TASK,
   CLASSIFY_PENDING_MODULE_NAME,
+  PENDING_TASK_TITLE,
   createEmptyBoard,
   normalizeBoard,
   buildTagSystemPrompt,
@@ -618,6 +752,8 @@ module.exports = {
   applyTagResult,
   applyBackfillResult,
   addRefToTask,
+  createPendingTask,
+  applyTaskClassification,
   canonicalTaskTitle,
   taskTitleSimilarity,
   findModuleByName,

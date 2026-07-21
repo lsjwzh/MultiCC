@@ -509,6 +509,11 @@
     .tb-dim{color:var(--muted);font-weight:400;font-size:11px}
     .tb-mod{padding:6px 14px;font-size:12px;color:var(--text);cursor:pointer;display:flex;justify-content:space-between;border-top:1px solid var(--line);user-select:none}
     .tb-mod:hover{background:var(--panel)}
+    .tb-mod-actions,.tb-task-meta{display:flex;align-items:center;gap:7px}
+    .tb-class-state{font-size:10px;padding:1px 6px;border-radius:9px;color:var(--muted);background:var(--panel);white-space:nowrap}
+    .tb-class-state.running{color:var(--codex)}
+    .tb-class-state.failed{color:var(--danger)}
+    .tb-reclassify,.tb-reclassify-all{padding:1px 6px!important;font-size:10px!important;white-space:nowrap}
     .tb-task{display:grid;grid-template-columns:8px 1fr auto;gap:8px;align-items:center;padding:5px 14px 5px 24px;border-top:1px solid var(--line);cursor:pointer;font-size:12px;color:var(--text)}
     .tb-task:hover{background:var(--panel)}
     .tb-task .tb-dot{width:7px;height:7px;border-radius:50%;background:var(--codex)}

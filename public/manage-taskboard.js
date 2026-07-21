@@ -28,6 +28,25 @@ function _tbTimeAgo(ts) {
   return `${Math.floor(s / 86400)}天前`;
 }
 
+function _tbClassificationHtml(task) {
+  const c = task && task.classification;
+  if (!c) return '';
+  const labels = {
+    waiting_reply: '等待回复', pending: '待归类', running: '归类中',
+    retry_wait: '等待重试', failed: '归类失败',
+  };
+  if (c.state === 'retry_wait' && c.nextRetryAt) {
+    const mins = Math.max(1, Math.ceil((c.nextRetryAt - Date.now()) / 60000));
+    labels.retry_wait = `${mins}分钟后重试`;
+  }
+  const title = c.lastError ? ` title="${_tbEsc(c.lastError)}"` : '';
+  const retryable = c.state !== 'running';
+  return `<span class="tb-class-state ${_tbEsc(c.state)}"${title}>${_tbEsc(labels[c.state] || '待归类')}</span>`
+    + (retryable
+      ? `<button class="btn btn-sm tb-reclassify" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(task.id)}')">重新归类</button>`
+      : '');
+}
+
 async function refreshTaskBoard(force) {
   if (!force && Date.now() - _tbFetchedAt < 3000) return;   // debounce bursts
   try {
@@ -86,10 +105,13 @@ function renderTaskBoardSection(dirId, opts) {
   for (const mod of mods) {
     const list = byModule.get(mod.id);
     const collapsed = _tbCollapsed.has(mod.id);
+    const batch = mod.source === 'classify'
+      ? `<button class="btn btn-sm tb-reclassify-all" onclick="reclassifyPendingTaskBoard(event,'${_tbEsc(dirId)}')">全部重新归类</button>`
+      : '';
     rowsHtml.push(`
       <div class="tb-mod" onclick="toggleTaskBoardModule('${_tbEsc(mod.id)}')">
         <span>${collapsed ? '▸' : '▾'} <b>${_tbEsc(mod.name)}</b> · ${list.length}</span>
-        <span class="tb-dim">${_tbEsc(_tbTimeAgo(mod.lastTs))}</span>
+        <span class="tb-mod-actions">${batch}<span class="tb-dim">${_tbEsc(_tbTimeAgo(mod.lastTs))}</span></span>
       </div>`);
     if (collapsed) continue;
     for (const t of list) {
@@ -99,7 +121,7 @@ function renderTaskBoardSection(dirId, opts) {
         <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
           <span class="tb-icon">${icon}</span>
           <span class="tb-title">${_tbEsc(t.title)}</span>
-          <span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span>
+          <span class="tb-task-meta">${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
         </div>`);
     }
   }
@@ -112,7 +134,7 @@ function renderTaskBoardSection(dirId, opts) {
       <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
         <span class="tb-icon">${icon}</span>
         <span class="tb-title">${_tbEsc(t.title)}</span>
-        <span class="tb-dim">${t.refCount}轮</span>
+        <span class="tb-task-meta">${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
       </div>`);
   }
   const body = rowsHtml.length
@@ -329,9 +351,9 @@ function syncTaskBoardDirComposer(dirId, visible) {
         });
         const d = await r.json();
         if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
-        _tbShowGatheringFloat();
-        setTimeout(() => refreshTaskBoard(true), 1500);
-        return `已路由到「${d.targetLabel}」`;
+        if (d.taskId) _tbPendingTaskIds = [d.taskId];
+        await refreshTaskBoard(true);
+        return `已创建「新任务」并路由到「${d.targetLabel}」`;
       },
     });
   }
@@ -435,6 +457,9 @@ function renderTaskBoardDetail(d) {
         <span class="tb-d-title">${_tbEsc(t.title)}</span>
         <span class="tb-badge${t.status === 'active' ? ' on' : ''}">${t.status === 'active' ? '进行中' : t.status === 'done' ? '已完成' : '已归档'}</span>
         <span class="tb-d-actions">
+          ${t.classification
+            ? `<button class="btn btn-sm" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(t.id)}')"${t.classification.state === 'running' ? ' disabled' : ''}>🔄 重新归类</button>`
+            : ''}
           ${t.status === 'active'
             ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done')">✅ 完成</button>`
             : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active')">♻️ 重开</button>`}
@@ -467,6 +492,45 @@ async function setTaskBoardStatus(taskId, status) {
     refreshTaskBoard(true);
   } catch (e) {
     if (typeof showToast === 'function') showToast(`操作失败：${e.message}`, true);
+  }
+}
+
+async function reclassifyTaskBoardTask(ev, taskId) {
+  if (ev) ev.stopPropagation();
+  const btn = ev && ev.currentTarget;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/reclassify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+    if (typeof showToast === 'function') showToast('已加入重新归类队列');
+    await refreshTaskBoard(true);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast(`重新归类失败：${e.message}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function reclassifyPendingTaskBoard(ev, dirId) {
+  if (ev) ev.stopPropagation();
+  const btn = ev && ev.currentTarget;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/task-board/reclassify-pending', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dirId }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+    if (typeof showToast === 'function') showToast(`已加入 ${d.queued} 个任务，跳过 ${d.skipped} 个`);
+    await refreshTaskBoard(true);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast(`批量归类失败：${e.message}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
