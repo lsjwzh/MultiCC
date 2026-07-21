@@ -261,7 +261,9 @@
           activeProgressTurnId = String(message.turnId || 'active');
           liveUi.pushDanmaku('progress', formatProgressHeartbeat(message), `turn:${activeProgressTurnId}`);
           break;
-        case 'background_tasks': break;
+        case 'background_tasks':
+          liveUi.reconcileDanmakuTasks?.((message.tasks || []).map(t => t && (t.id || t.task_id)).filter(Boolean));
+          break;
         case 'chat_msg_meta':
           handleCommittedMessage(message);
           break;
@@ -281,6 +283,7 @@
             host.stopTitleAnimation?.();
             host.updateUI?.();
           }
+          liveUi.settleTurnScopedDanmaku?.();
           finishTurnProgress('done', '本轮已结束');
           break;
         case 'notify': {
@@ -307,6 +310,7 @@
           finishStreaming();
           host.stopTitleAnimation?.();
           host.updateUI?.();
+          liveUi.settleTurnScopedDanmaku?.();
           finishTurnProgress('fail', '本轮执行失败');
           break;
         default: break;
