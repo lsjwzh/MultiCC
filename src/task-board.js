@@ -7,7 +7,7 @@
 //
 // Board shape (persisted as plain JSON via atomicWriteJson):
 //   {
-//     modules: { <moduleId>: { id, name, source:'ai'|'directory', dirId, createdAt, updatedAt } },
+//     modules: { <moduleId>: { id, name, source:'ai'|'directory'|'classify', dirId, createdAt, updatedAt } },
 //     tasks:   { <taskId>:   { id, moduleId, title, status:'active'|'done'|'archived',
 //                              areas:[], createdAt, updatedAt,
 //                              refs:[{ sessionId, dirId, userMsgId, assistantMsgId, ts, excerpt }] } }
@@ -37,7 +37,7 @@ function normalizeBoard(raw) {
     board.modules[id] = {
       id,
       name: m.name.trim().slice(0, MAX_MODULE_LEN),
-      source: m.source === 'directory' ? 'directory' : 'ai',
+      source: ['directory', 'classify'].includes(m.source) ? m.source : 'ai',
       dirId: typeof m.dirId === 'string' ? m.dirId : null,
       createdAt: Number(m.createdAt) || 0,
       updatedAt: Number(m.updatedAt) || 0,
@@ -82,7 +82,7 @@ function buildTagSystemPrompt() {
     '',
     '规则：',
     '1. 一轮对话可归入多个任务（最多3个），也可以不归入任何任务：闲聊、寒暄、状态询问、纯知识问答输出 {"tasks":[]}。',
-    '2. 优先归入现有任务：延续同一目标/同一代码区域 → id 用现有任务id（此时 title/module 可省略）。',
+    '2. 优先归入现有任务：延续同一目标/同一代码区域，或只是标题措辞不同但实际工作同类 → 必须复用现有任务id（此时 title/module 可省略），不要重复建卡。',
     '3. 确属新工作才建新任务：id 填 "new"，title ≤20字、概括任务目标（如「实现任务板后端」），不要写成本轮动作（如「回答了问题」）。',
     '4. module 是任务的上层分组，按子系统/目录聚合（例：「服务端」「前端 UI」「移动 App」「发布运维」「文档」）。优先复用现有模块名，确实不匹配才新建。',
     '5. areas 列本轮涉及的代码路径/文件/功能区（≤5项），没有就给空数组。',
@@ -128,7 +128,7 @@ function buildBackfillSystemPrompt() {
     '规则：',
     '1. turns 列出属于该任务的轮次编号（整数，来自输入）。一个轮次可属于多个任务；闲聊、寒暄、状态询问轮次不要归入任何任务。',
     '2. 相邻多轮做同一件事 → 归成一个任务，不要一轮一个任务。整个会话通常归出 1-5 个任务。',
-    '3. 优先归入现有任务（id 用现有任务id，title/module 可省略）；确属新工作才 id:"new"。',
+    '3. 优先归入现有任务：目标/代码区域相同，或只是标题措辞不同但实际工作同类时，必须复用现有任务id（title/module 可省略）；确属新工作才 id:"new"。',
     '4. title ≤20字、概括任务目标；module 按子系统/目录聚合（例：「服务端」「前端 UI」「移动 App」「发布运维」「文档」），优先复用现有模块名。',
     '5. areas 列该任务涉及的代码路径/文件/功能区（≤5项）。',
   ].join('\n');
@@ -249,25 +249,114 @@ function parseTagResult(text) {
 // ── Aggregation ─────────────────────────────────────────────────────────────
 
 function normalizeName(s) {
-  return String(s || '').toLowerCase().replace(/[\s·。，,.:：;；\-_/]+/g, '');
+  return String(s || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
-function findModuleByName(board, name) {
+// Task titles are short, so exact strings are too brittle ("删除 [tiktok] …"
+// vs "清理 tiktok …") while unconstrained fuzzy matching is too risky. Keep
+// the action intent as a canonical family, remove connective noise, then use a
+// deliberately high similarity threshold. Opposite actions such as 删除/恢复
+// remain different because only words in the same family collapse together.
+const TASK_ACTION_FAMILIES = [
+  ['建设', ['实现', '设计', '开发', '构建', '新增', '添加', '接入', '集成', '支持']],
+  ['修复', ['修复', '解决', '排查', '诊断']],
+  ['优化', ['优化', '完善', '改进', '重构', '升级', '更新', '改造', '切换']],
+  ['删除', ['删除', '清理', '移除', '废弃']],
+  ['恢复', ['恢复', '还原', '保留']],
+  ['启用', ['启用', '开启']],
+  ['停用', ['停用', '关闭', '禁用']],
+  ['验证', ['验证', '测试', '审计', '检查']],
+  ['研究', ['研究', '分析', '调研']],
+];
+
+function canonicalTaskTitle(title) {
+  let key = normalizeName(title).replace(/[的和与及]/g, '');
+  for (const [family, words] of TASK_ACTION_FAMILIES) {
+    const word = words.find(w => key.startsWith(w));
+    if (word) {
+      key = family + key.slice(word.length);
+      break;
+    }
+  }
+  return key;
+}
+
+function bigramDice(a, b) {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const counts = (s) => {
+    const out = new Map();
+    for (let i = 0; i < s.length - 1; i++) {
+      const gram = s.slice(i, i + 2);
+      out.set(gram, (out.get(gram) || 0) + 1);
+    }
+    return out;
+  };
+  const aa = counts(a);
+  const bb = counts(b);
+  let overlap = 0;
+  for (const [gram, count] of aa) overlap += Math.min(count, bb.get(gram) || 0);
+  return (2 * overlap) / ((a.length - 1) + (b.length - 1));
+}
+
+function taskTitleSimilarity(a, b) {
+  const aa = canonicalTaskTitle(a);
+  const bb = canonicalTaskTitle(b);
+  if (!aa || !bb) return 0;
+  if (aa === bb) return 1;
+  const actionOf = key => TASK_ACTION_FAMILIES.find(([family]) => key.startsWith(family))?.[0] || null;
+  const actionA = actionOf(aa);
+  const actionB = actionOf(bb);
+  if (actionA && actionB && actionA !== actionB) return 0;
+  const shorter = aa.length <= bb.length ? aa : bb;
+  const longer = aa.length > bb.length ? aa : bb;
+  if (shorter.length >= 6 && longer.includes(shorter) && shorter.length / longer.length >= 0.72) {
+    return shorter.length / longer.length;
+  }
+  return bigramDice(aa, bb);
+}
+
+function findModuleByName(board, name, dirId = null) {
   const key = normalizeName(name);
   if (!key) return null;
   for (const m of Object.values(board.modules)) {
+    if (dirId && m.dirId && m.dirId !== dirId) continue;
     if (normalizeName(m.name) === key) return m;
   }
   return null;
 }
 
-function findTaskByTitle(board, moduleId, title) {
-  const key = normalizeName(title);
+function taskDirId(board, task) {
+  const modDir = task.moduleId ? board.modules[task.moduleId]?.dirId : null;
+  if (modDir) return modDir;
+  return task.refs.find(r => r.dirId)?.dirId || null;
+}
+
+function findTaskByTitle(board, moduleId, title, { dirId = null, similar = false } = {}) {
+  const key = canonicalTaskTitle(title);
   if (!key) return null;
+  let best = null;
+  let bestScore = 0;
   for (const t of Object.values(board.tasks)) {
-    if (t.moduleId === moduleId && normalizeName(t.title) === key) return t;
+    if (t.status === 'archived') continue;
+    const sameModule = !!moduleId && t.moduleId === moduleId;
+    const sameDir = !!dirId && taskDirId(board, t) === dirId;
+    if (!sameModule && !sameDir) continue;
+    const score = taskTitleSimilarity(t.title, title);
+    const threshold = similar ? 0.78 : 1;
+    if (score < threshold) continue;
+    // Prefer the requested module, then the closest title, then the freshest.
+    const rank = score + (sameModule ? 2 : 0);
+    const bestRank = bestScore + (best && moduleId && best.moduleId === moduleId ? 2 : 0);
+    if (!best || rank > bestRank || (rank === bestRank && taskLastTs(t) > taskLastTs(best))) {
+      best = t;
+      bestScore = score;
+    }
   }
-  return null;
+  return best;
 }
 
 function newId(prefix) {
@@ -279,13 +368,30 @@ function taskLastTs(task) {
   return Math.max(last || 0, task.updatedAt || 0, task.createdAt || 0);
 }
 
-// Attach one turn ref to a task; dedup on the assistant message id (or the
-// user message id when the turn had no persisted assistant message).
+// Attach one turn ref to a task; dedup on either message id so an in-flight
+// user-only ref can be enriched with its final assistant message in place.
 function addRefToTask(task, ref, now) {
-  const dupe = task.refs.some(r =>
+  const existing = task.refs.find(r =>
     (ref.assistantMsgId && r.assistantMsgId === ref.assistantMsgId) ||
-    (!ref.assistantMsgId && ref.userMsgId && r.userMsgId === ref.userMsgId));
-  if (dupe) return false;
+    (ref.userMsgId && r.userMsgId === ref.userMsgId));
+  if (existing) {
+    let changed = false;
+    // An immediate in-flight card initially has only the user id. Upgrade that
+    // same ref at turn end instead of adding a duplicate row.
+    if (!existing.assistantMsgId && ref.assistantMsgId) {
+      existing.assistantMsgId = ref.assistantMsgId;
+      changed = true;
+    }
+    if (!existing.dirId && ref.dirId) { existing.dirId = ref.dirId; changed = true; }
+    if (ref.ts && ref.ts > (existing.ts || 0)) { existing.ts = ref.ts; changed = true; }
+    if (ref.excerpt && ref.excerpt !== existing.excerpt) {
+      existing.excerpt = String(ref.excerpt).slice(0, 200);
+      changed = true;
+    }
+    if (changed) task.updatedAt = now;
+    if (task.status === 'done') { task.status = 'active'; changed = true; }
+    return changed;
+  }
   task.refs.push({
     sessionId: ref.sessionId,
     dirId: ref.dirId || null,
@@ -303,21 +409,28 @@ function addRefToTask(task, ref, now) {
 
 // Apply a parsed tag result to the board. Returns the ids of tasks that
 // changed (created or got a new ref / new areas). Mutates `board`.
-function applyTagResult(board, entries, ref, now = Date.now()) {
+function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
   const touched = new Set();
   for (const e of (entries || []).slice(0, MAX_TAGS_PER_TURN)) {
     let task = e.id && e.id !== 'new' ? board.tasks[e.id] : null;
     if (!task) {
       const modName = (e.module || '').trim() || (ref.dirLabel || '未分组');
-      let mod = findModuleByName(board, modName);
-      if (!mod) {
+      let mod = findModuleByName(board, modName, ref.dirId || null);
+      task = findTaskByTitle(board, mod?.id || null, e.title, {
+        dirId: ref.dirId || null,
+        similar: options.mergeSimilar !== false,
+      });
+      const taskMod = task?.moduleId ? board.modules[task.moduleId] : null;
+      const needsRealModule = task && taskMod?.source === 'classify'
+        && options.moduleSource !== 'classify' && !!(e.module || '').trim();
+      if (!mod && (!task || needsRealModule)) {
         mod = {
-          id: newId('mod'), name: modName.slice(0, MAX_MODULE_LEN), source: 'ai',
+          id: newId('mod'), name: modName.slice(0, MAX_MODULE_LEN),
+          source: options.moduleSource === 'classify' ? 'classify' : 'ai',
           dirId: ref.dirId || null, createdAt: now, updatedAt: now,
         };
         board.modules[mod.id] = mod;
       }
-      task = findTaskByTitle(board, mod.id, e.title);
       if (!task) {
         if (!e.title) continue;   // an unknown id with no title is unusable
         task = {
@@ -326,8 +439,17 @@ function applyTagResult(board, entries, ref, now = Date.now()) {
         };
         board.tasks[task.id] = task;
         touched.add(task.id);
+      } else if (mod && task.moduleId !== mod.id) {
+        const oldMod = task.moduleId ? board.modules[task.moduleId] : null;
+        // The immediate classifier can only put a card in 待归类. Once the
+        // richer turn-end tag arrives, move that same card into its real module.
+        if (oldMod?.source === 'classify' && mod.source !== 'classify') {
+          task.moduleId = mod.id;
+          touched.add(task.id);
+          if (!Object.values(board.tasks).some(t => t.moduleId === oldMod.id)) delete board.modules[oldMod.id];
+        }
       }
-      mod.updatedAt = now;
+      if (mod) mod.updatedAt = now;
     }
     for (const a of e.areas || []) {
       if (!task.areas.includes(a) && task.areas.length < MAX_AREAS_PER_TASK) {
@@ -474,6 +596,8 @@ module.exports = {
   applyTagResult,
   applyBackfillResult,
   addRefToTask,
+  canonicalTaskTitle,
+  taskTitleSimilarity,
   findModuleByName,
   findTaskByTitle,
   taskLastTs,

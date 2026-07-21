@@ -76,6 +76,42 @@ test('applyTagResult reuses module by normalized name and task by title', () => 
   assert.equal(Object.values(board.tasks)[0].refs.length, 2);
 });
 
+test('task title canonicalization merges same intent but preserves opposite actions', () => {
+  assert.equal(
+    core.canonicalTaskTitle('删除 [TikTok] 会话 和 WorkTree'),
+    core.canonicalTaskTitle('清理 tiktok 会话与 worktree'),
+  );
+  assert.ok(core.taskTitleSimilarity('实现达人营销全流程管理系统后端', '设计达人营销全流程管理系统核心后端') >= 0.78);
+  assert.ok(core.taskTitleSimilarity('删除 tiktok 会话', '恢复 tiktok 会话') < 0.78);
+  assert.equal(core.taskTitleSimilarity('删除 tiktok 会话及其全部 worktree 和分支', '恢复 tiktok 会话及其全部 worktree 和分支'), 0);
+});
+
+test('applyTagResult merges similar tasks across modules in one directory only', () => {
+  const board = core.createEmptyBoard();
+  core.applyTagResult(board, [
+    { id: 'new', title: '删除 [tiktok] 会话和 worktree', module: '发布运维', areas: [] },
+  ], mkRef(), 1);
+  core.applyTagResult(board, [
+    { id: 'new', title: '清理 tiktok 会话与 worktree', module: '会话管理', areas: [] },
+  ], mkRef({ sessionId: 's2', userMsgId: 'mu2', assistantMsgId: 'ma2' }), 2);
+  assert.equal(Object.keys(board.tasks).length, 1);
+  assert.deepEqual(Object.values(board.tasks)[0].refs.map(r => r.sessionId), ['s1', 's2']);
+
+  core.applyTagResult(board, [
+    { id: 'new', title: '删除 tiktok 会话和 worktree', module: '发布运维', areas: [] },
+  ], mkRef({ dirId: 'd2', sessionId: 'other', userMsgId: 'mu3', assistantMsgId: 'ma3' }), 3);
+  assert.equal(Object.keys(board.tasks).length, 2);
+});
+
+test('addRefToTask upgrades an in-flight user ref with the final assistant id', () => {
+  const task = { status: 'active', updatedAt: 1, refs: [] };
+  assert.equal(core.addRefToTask(task, mkRef({ assistantMsgId: null, ts: 10 }), 10), true);
+  assert.equal(core.addRefToTask(task, mkRef({ assistantMsgId: 'ma-final', ts: 20 }), 20), true);
+  assert.equal(task.refs.length, 1);
+  assert.equal(task.refs[0].assistantMsgId, 'ma-final');
+  assert.equal(task.refs[0].ts, 20);
+});
+
 test('applyTagResult routes by existing id and dedups refs by assistant msg id', () => {
   const board = core.createEmptyBoard();
   const [tid] = core.applyTagResult(board, [{ id: 'new', title: 'T', module: 'M', areas: [] }], mkRef(), 1);
@@ -171,7 +207,7 @@ test('pickRouteTarget prefers the most recent ref session that is routable', () 
   const board = core.createEmptyBoard();
   const [tid] = core.applyTagResult(board, [{ id: 'new', title: 'T', module: 'M', areas: [] }],
     mkRef({ sessionId: 'old', assistantMsgId: 'a1' }), 1);
-  core.applyTagResult(board, [{ id: tid }], mkRef({ sessionId: 'newer', assistantMsgId: 'a2' }), 2);
+  core.applyTagResult(board, [{ id: tid }], mkRef({ sessionId: 'newer', userMsgId: 'u2', assistantMsgId: 'a2' }), 2);
   const records = mkRecords({
     old: { kind: 'chat', dirId: 'd1' },
     newer: { kind: 'chat', dirId: 'd1' },
@@ -285,6 +321,7 @@ function mkRuntime(overrides = {}) {
     isLocalRequest: () => true,
     atomicWriteJson: (f, value) => fs.writeFileSync(f, JSON.stringify(value)),
     isSystemInjected: () => false,
+    getSessionRunState: () => 'idle',
     logger: { log: () => {} },
     ...overrides,
   };
@@ -312,6 +349,85 @@ test('onTurnEnd enqueues a task_tag aux call and applies the parsed result', asy
   assert.equal(Object.keys(saved.tasks).length, 1);
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0].payload.type, 'task_board_update');
+});
+
+test('onClassifyGoal creates immediately, anchors the current user and merges peer sessions', () => {
+  const histories = {
+    'sess-1': [
+      { id: 'u-old', role: 'user', content: '旧任务', ts: 1 },
+      { id: 'a-old', role: 'assistant', content: '旧任务完成', ts: 2 },
+      { id: 'u-live', role: 'user', content: '删除 [tiktok] 会话和 worktree', ts: 3 },
+      { id: 'a-live', role: 'assistant', content: '正在核对', ts: 4, _interim: true },
+    ],
+    'sess-2': [
+      { id: 'u-peer', role: 'user', content: '清理 tiktok 会话与 worktree', ts: 5 },
+    ],
+  };
+  const records = new Map([
+    ['sess-1', { id: 'sess-1', kind: 'chat', dirId: 'dir-1', label: '工程师1' }],
+    ['sess-2', { id: 'sess-2', kind: 'chat', dirId: 'dir-1', label: '工程师2' }],
+  ]);
+  const { runtime, broadcasts } = mkRuntime({ records, loadHistory: sid => histories[sid] || [] });
+
+  runtime.onClassifyGoal('sess-1', '删除 [tiktok] 会话和 worktree', 'planning', {
+    currentUserText: '删除 [tiktok] 会话和 worktree',
+  });
+  runtime.onClassifyGoal('sess-2', '清理 tiktok 会话与 worktree', 'planning', {
+    currentUserText: '清理 tiktok 会话与 worktree',
+  });
+
+  const tasks = Object.values(runtime.getBoard().tasks);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].status, 'active');
+  assert.deepEqual(tasks[0].refs.map(r => r.userMsgId), ['u-live', 'u-peer']);
+  assert.deepEqual(tasks[0].refs.map(r => r.assistantMsgId), [null, null]);
+  assert.equal(broadcasts[0].payload.kind, 'created');
+  assert.equal(broadcasts[1].payload.kind, undefined);
+});
+
+test('turn-end tagging enriches and rehomes the immediate card instead of duplicating it', async () => {
+  let history = [
+    { id: 'u-live', role: 'user', content: '删除 [tiktok] 会话和 worktree', ts: 10 },
+  ];
+  const { runtime, resolveAux } = mkRuntime({ loadHistory: () => history });
+  runtime.onClassifyGoal('sess-1', '删除 [tiktok] 会话和 worktree', 'planning', {
+    currentUserText: '删除 [tiktok] 会话和 worktree',
+  });
+  const taskId = Object.keys(runtime.getBoard().tasks)[0];
+  assert.equal(runtime.getBoard().modules[runtime.getBoard().tasks[taskId].moduleId].source, 'classify');
+
+  history = [
+    history[0],
+    { id: 'a-final', role: 'assistant', content: '已经删除所有目标会话，并清理对应 worktree；同时核对分支与会话记录均已移除。', ts: 20 },
+  ];
+  runtime.onTurnEnd({
+    currentUserText: '删除 [tiktok] 会话和 worktree',
+    currentAssistantText: '已经删除所有目标会话，并清理对应 worktree；同时核对分支与会话记录均已移除。',
+  }, 'sess-1');
+  resolveAux({
+    text: '{"tasks":[{"id":"new","title":"清理 tiktok 会话与 worktree","module":"发布运维","areas":["worktree"]}]}',
+    cancelled: false,
+  });
+  await new Promise(r => setImmediate(r));
+
+  const board = runtime.getBoard();
+  assert.equal(Object.keys(board.tasks).length, 1);
+  assert.equal(board.tasks[taskId].refs.length, 1);
+  assert.equal(board.tasks[taskId].refs[0].assistantMsgId, 'a-final');
+  assert.equal(board.modules[board.tasks[taskId].moduleId].name, '发布运维');
+  assert.equal(Object.values(board.modules).some(m => m.source === 'classify'), false);
+});
+
+test('streaming classify path creates or merges the task-board card before returning', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(source, /function recordTaskBoardGoal[\s\S]*?taskBoardRuntime\.onClassifyGoal/);
+  const start = source.indexOf('function applyClassifyResult(');
+  const end = source.indexOf('\nfunction scanAndReclassify()', start);
+  const body = source.slice(start, end);
+  const streaming = body.indexOf('if (cs && cs.isStreaming)');
+  const create = body.indexOf('recordTaskBoardGoal(', streaming);
+  const earlyReturn = body.indexOf('\n    return;', streaming);
+  assert.ok(streaming >= 0 && create > streaming && earlyReturn > create);
 });
 
 test('onTurnEnd skips aux/gateway sessions, short replies and injected turns', () => {
