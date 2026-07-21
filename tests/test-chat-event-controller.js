@@ -360,6 +360,44 @@ test('live UI progress refreshes one stable row until the terminal update', () =
   assert.equal(body.children[0].className, 'dm-row dm-done');
 });
 
+function makeDanmakuUi() {
+  const { document, ids } = fakeDocument();
+  for (const id of [
+    'danmaku-panel', 'danmaku-head', 'danmaku-body', 'danmaku-title',
+    'danmaku-count', 'danmaku-dot', 'danmaku-collapse-btn',
+  ]) ids.set(id, new FakeElement('div'));
+  let timerId = 0;
+  const liveUi = liveUiApi.createLiveUi({
+    document,
+    messagesEl: new FakeElement('div'),
+    setTimeout: () => ++timerId,
+    clearTimeout() {},
+  });
+  return { liveUi, body: ids.get('danmaku-body') };
+}
+
+test('danmaku keeps a confirmed background task across turn end, then settles it when it leaves the active set', () => {
+  const { liveUi, body } = makeDanmakuUi();
+  liveUi.pushDanmaku('start', '子任务 A', 'task-1');
+  assert.equal(body.children[0].className, 'dm-row dm-start');
+  // A background_tasks snapshot lists it: confirm it is a real background task.
+  liveUi.reconcileDanmakuTasks(['task-1']);
+  // The turn ends but a confirmed background task legitimately keeps spinning.
+  liveUi.settleTurnScopedDanmaku();
+  assert.equal(body.children[0].className, 'dm-row dm-start');
+  // A later snapshot no longer lists it (finished): settle even if monitor_done was lost.
+  liveUi.reconcileDanmakuTasks([]);
+  assert.equal(body.children[0].className, 'dm-row dm-stale');
+});
+
+test('turn end settles a spinner never confirmed as a background task (misclassified sync tool)', () => {
+  const { liveUi, body } = makeDanmakuUi();
+  liveUi.pushDanmaku('start', 'Merge worktree branch back to main via API', 'task-sync');
+  assert.equal(body.children[0].className, 'dm-row dm-start');
+  liveUi.settleTurnScopedDanmaku();
+  assert.equal(body.children[0].className, 'dm-row dm-stale');
+});
+
 test('chat host loads new controllers before chat and reaches the 3000-line budget', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
   const chat = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
