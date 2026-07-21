@@ -9,7 +9,7 @@ const ALLOWED_KEYS = new Set([
   'sessionId', 'cli', 'providerId', 'model',
   'roleKind', 'agentRole', 'routeName',
 ]);
-const SUPPORTED_CLIS = new Set(['claude', 'codex', 'opencode', 'zcode']);
+const SUPPORTED_CLIS = new Set(['claude', 'codex', 'opencode', 'zcode', 'qoder']);
 const ROLE_KINDS = new Set(['main', 'sub', 'aux']);
 const AGENT_ROLES = new Set(['default', 'worker', 'explorer', 'custom']);
 

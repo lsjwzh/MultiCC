@@ -388,6 +388,7 @@ const CLI_META = {
   codex: { label: 'Codex', color: '#2ea043' },
   opencode: { label: 'OpenCode', color: '#388bfd' },
   zcode: { label: 'ZCode', color: '#a371f7' },
+  qoder: { label: 'Qoder CN', color: '#ff8a3d' },
 };
 
 function applyCliUi(cli) {
@@ -1483,12 +1484,14 @@ function showAIConfigPicker(config) {
 function updateModelBtn() {
   if (!modelBtn) return;
   const shown = _sessionEffectiveModel || _sessionModel;
-  const provider = (_sessionProvider ? providerShortName(_sessionProvider) : '')
-    || _sessionProviderDisplayName
-    || tt('default');
+  const provider = _sessionCli === 'qoder'
+    ? 'Qoder CN'
+    : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
+      || _sessionProviderDisplayName
+      || tt('default'));
   const model = shown ? modelDisplayName(shown, _sessionProvider) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
-  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent
+  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent
     ? `Agent ${_sessionAgent}`
     : '';
   modelBtn.textContent = `🧠 ${[provider, model, effort, agent].filter(Boolean).join(' | ')}`;
@@ -1520,7 +1523,7 @@ async function loadSessionModel() {
     _sessionSubagent = info.subagent || null;
     _sessionAgent = info.agent || '';
     updateSubagentPill();
-    if (_sessionProvider) await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
+    if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
     updateProviderBtn();
     _sessionModel = info.model || '';
     _sessionEffectiveModel = info.effectiveModel || info.model || '';
@@ -1538,7 +1541,9 @@ async function loadSessionModel() {
 modelBtn?.addEventListener('click', async () => {
   // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
   await loadSessionModel();
-  await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude', { loading: true });
+  if (_sessionCli !== 'qoder') {
+    await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude', { loading: true });
+  }
   const picked = await showAIConfigPicker({
     provider: _sessionProvider,
     model: _sessionModel,
@@ -1552,7 +1557,7 @@ modelBtn?.addEventListener('click', async () => {
       provider: picked.provider,
       model: picked.model,
       effort: picked.effort,
-      ...((_sessionCli === 'claude' || _sessionCli === 'opencode') ? { agent: picked.agent } : {}),
+      ...((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') ? { agent: picked.agent } : {}),
       ...((_sessionCli === 'claude' || _sessionCli === 'codex') ? { subagent: picked.subagent } : {}),
     });
     _sessionProvider = data.provider || '';
@@ -1566,7 +1571,7 @@ modelBtn?.addEventListener('click', async () => {
     updateModelBtn();
     const _savedModel = _sessionEffectiveModel || _sessionModel;
     const savedParts = [providerShortName(_sessionProvider), _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
-    if ((_sessionCli === 'claude' || _sessionCli === 'opencode') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
+    if ((_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
     addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
   } catch (e) {
     addSystemMsg('AI 配置保存失败：' + e.message);

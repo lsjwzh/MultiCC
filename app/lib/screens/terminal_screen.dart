@@ -31,7 +31,10 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void initState() {
     super.initState();
-    _svc = TerminalService(settings: widget.settings, sessionId: widget.session.id);
+    _svc = TerminalService(
+      settings: widget.settings,
+      sessionId: widget.session.id,
+    );
     _svc.onStateChange.listen((s) {
       if (mounted) setState(() => _connState = s);
     });
@@ -49,8 +52,10 @@ class _TerminalScreenState extends State<TerminalScreen> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF0f1115),
-        title: const Text('合并 worktree',
-            style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7))),
+        title: const Text(
+          '合并 worktree',
+          style: TextStyle(fontSize: 15, color: Color(0xFFf2f4f7)),
+        ),
         content: const Text(
           '把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。',
           style: TextStyle(color: Color(0xFFe7eaee)),
@@ -62,8 +67,13 @@ class _TerminalScreenState extends State<TerminalScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('合并',
-                style: TextStyle(color: Color(0xFF6aa3ff), fontWeight: FontWeight.w600)),
+            child: const Text(
+              '合并',
+              style: TextStyle(
+                color: Color(0xFF6aa3ff),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),
@@ -72,10 +82,12 @@ class _TerminalScreenState extends State<TerminalScreen> {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在合并 worktree...')));
     try {
-      final result = await SessionService(settings: widget.settings)
-          .mergeSession(widget.session.id);
+      final result = await SessionService(
+        settings: widget.settings,
+      ).mergeSession(widget.session.id);
       final hasConflict =
-          result['conflicts'] is List && (result['conflicts'] as List).isNotEmpty;
+          result['conflicts'] is List &&
+          (result['conflicts'] as List).isNotEmpty;
       String msg;
       if (result['ok'] == true) {
         msg = result['merged'] == true
@@ -180,12 +192,20 @@ class _TerminalAppBar extends StatelessWidget {
         border: Border(bottom: BorderSide(color: Color(0xFF20242b))),
       ),
       padding: EdgeInsets.fromLTRB(
-        12, MediaQuery.of(context).padding.top + 4, 12, 4),
+        12,
+        MediaQuery.of(context).padding.top + 4,
+        12,
+        4,
+      ),
       child: Row(
         children: [
           GestureDetector(
             onTap: () => Navigator.of(context).pop(),
-            child: const Icon(Icons.arrow_back_rounded, color: Color(0xFFe7eaee), size: 20),
+            child: const Icon(
+              Icons.arrow_back_rounded,
+              color: Color(0xFFe7eaee),
+              size: 20,
+            ),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -199,7 +219,9 @@ class _TerminalAppBar extends StatelessWidget {
                     const SizedBox(width: 6),
                     Flexible(
                       child: Text(
-                        session.label?.isNotEmpty == true ? session.label! : session.id,
+                        session.label?.isNotEmpty == true
+                            ? session.label!
+                            : session.id,
                         style: const TextStyle(
                           color: Color(0xFFf2f4f7),
                           fontWeight: FontWeight.w600,
@@ -214,15 +236,29 @@ class _TerminalAppBar extends StatelessWidget {
                 Row(
                   children: [
                     Container(
-                      width: 6, height: 6,
-                      decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: dotColor,
+                        shape: BoxShape.circle,
+                      ),
                     ),
                     const SizedBox(width: 5),
-                    Text(stateLabel, style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11)),
+                    Text(
+                      stateLabel,
+                      style: const TextStyle(
+                        color: Color(0xFF8a909b),
+                        fontSize: 11,
+                      ),
+                    ),
                     const SizedBox(width: 8),
                     Text(
                       session.shortCwd,
-                      style: const TextStyle(color: Color(0xFF454b54), fontSize: 11, fontFamily: 'monospace'),
+                      style: const TextStyle(
+                        color: Color(0xFF454b54),
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
@@ -236,7 +272,11 @@ class _TerminalAppBar extends StatelessWidget {
               onTap: () => _openMemoFromTerminal(context, session.id),
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 6),
-                child: Icon(Icons.sticky_note_2_outlined, color: Color(0xFFe7eaee), size: 20),
+                child: Icon(
+                  Icons.sticky_note_2_outlined,
+                  color: Color(0xFFe7eaee),
+                  size: 20,
+                ),
               ),
             ),
           ),
@@ -246,14 +286,22 @@ class _TerminalAppBar extends StatelessWidget {
               onTap: onMerge,
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 6),
-                child: Icon(Icons.merge_type, color: Color(0xFFe7eaee), size: 20),
+                child: Icon(
+                  Icons.merge_type,
+                  color: Color(0xFFe7eaee),
+                  size: 20,
+                ),
               ),
             ),
           ),
           if (connState == TerminalConnectionState.disconnected)
             GestureDetector(
               onTap: onReconnect,
-              child: const Icon(Icons.refresh_rounded, color: Color(0xFF6aa3ff), size: 20),
+              child: const Icon(
+                Icons.refresh_rounded,
+                color: Color(0xFF6aa3ff),
+                size: 20,
+              ),
             ),
         ],
       ),
@@ -266,22 +314,28 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
   final mgr = Provider.of<SessionManager>(context, listen: false);
   Session? s;
   for (final x in mgr.sessions) {
-    if (x.id == sessionId) { s = x; break; }
+    if (x.id == sessionId) {
+      s = x;
+      break;
+    }
   }
   if (s == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Session 信息未加载')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Session 信息未加载')));
     return;
   }
   Directory? d;
   for (final x in mgr.directories) {
-    if (x.id == s.dirId) { d = x; break; }
+    if (x.id == s.dirId) {
+      d = x;
+      break;
+    }
   }
   if (d == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('找不到对应Fleet')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('找不到对应Fleet')));
     return;
   }
   Navigator.push(
@@ -298,6 +352,7 @@ Widget _cliBadge(SessionCli cli) {
     SessionCli.codex => const Color(0xFF7fd49a),
     SessionCli.opencode => const Color(0xFFa78bfa),
     SessionCli.zcode => const Color(0xFF38bdf8),
+    SessionCli.qoder => const Color(0xFFff9a5c),
   };
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -306,7 +361,10 @@ Widget _cliBadge(SessionCli cli) {
       border: Border.all(color: color.withOpacity(0.4)),
       borderRadius: BorderRadius.circular(4),
     ),
-    child: Text(cli.name, style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.w700)),
+    child: Text(
+      cli.name,
+      style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.w700),
+    ),
   );
 }
 
@@ -327,9 +385,18 @@ class _MobileKeyBar extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            _Key('Ctrl+C', () => terminal.keyInput(TerminalKey.keyC, ctrl: true)),
-            _Key('Ctrl+D', () => terminal.keyInput(TerminalKey.keyD, ctrl: true)),
-            _Key('Ctrl+Z', () => terminal.keyInput(TerminalKey.keyZ, ctrl: true)),
+            _Key(
+              'Ctrl+C',
+              () => terminal.keyInput(TerminalKey.keyC, ctrl: true),
+            ),
+            _Key(
+              'Ctrl+D',
+              () => terminal.keyInput(TerminalKey.keyD, ctrl: true),
+            ),
+            _Key(
+              'Ctrl+Z',
+              () => terminal.keyInput(TerminalKey.keyZ, ctrl: true),
+            ),
             _Key('Tab', () => terminal.keyInput(TerminalKey.tab)),
             _Key('Esc', () => terminal.keyInput(TerminalKey.escape)),
             _Key('↑', () => terminal.keyInput(TerminalKey.arrowUp)),

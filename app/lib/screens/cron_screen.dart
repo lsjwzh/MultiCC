@@ -18,7 +18,9 @@ class CronScreen extends StatefulWidget {
 
 class _CronScreenState extends State<CronScreen> {
   late final ManageService _manage = ManageService(settings: widget.settings);
-  late final SessionService _sessions = SessionService(settings: widget.settings);
+  late final SessionService _sessions = SessionService(
+    settings: widget.settings,
+  );
 
   List<CronTask> _tasks = [];
   List<Directory> _dirs = [];
@@ -73,9 +75,11 @@ class _CronScreenState extends State<CronScreen> {
   Future<void> _runNow(CronTask t) async {
     try {
       final r = await _manage.runCronTask(t.id);
-      _snack(r['ok'] == true
-          ? '已触发：${t.name}${r['sessionId'] != null ? ' → 会话已启动' : ''}'
-          : '触发失败：${r['error'] ?? '未知错误'}');
+      _snack(
+        r['ok'] == true
+            ? '已触发：${t.name}${r['sessionId'] != null ? ' → 会话已启动' : ''}'
+            : '触发失败：${r['error'] ?? '未知错误'}',
+      );
       await _refresh();
     } catch (e) {
       _snack('触发失败：$e');
@@ -90,11 +94,13 @@ class _CronScreenState extends State<CronScreen> {
         content: Text('确定删除「${t.name}」？此操作不可撤销。'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消', style: TextStyle(color: AppColors.muted))),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消', style: TextStyle(color: AppColors.muted)),
+          ),
           TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('删除', style: TextStyle(color: AppColors.danger))),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除', style: TextStyle(color: AppColors.danger)),
+          ),
         ],
       ),
     );
@@ -117,12 +123,9 @@ class _CronScreenState extends State<CronScreen> {
       isScrollControlled: true,
       backgroundColor: AppColors.panel,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (_) => _CronEditor(
-        manage: _manage,
-        dirs: _dirs,
-        task: task,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
+      builder: (_) => _CronEditor(manage: _manage, dirs: _dirs, task: task),
     );
     if (saved == true) await _refresh();
   }
@@ -148,35 +151,39 @@ class _CronScreenState extends State<CronScreen> {
         label: const Text('新建'),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.accent),
+            )
           : _error != null
-              ? _ErrorView(message: _error!, onRetry: _refresh)
-              : RefreshIndicator(
-                  color: AppColors.accent,
-                  backgroundColor: AppColors.panel,
-                  onRefresh: _refresh,
-                  child: _tasks.isEmpty
-                      ? ListView(children: const [
-                          SizedBox(height: 120),
-                          _EmptyView(
-                            icon: Icons.alarm_off_rounded,
-                            title: '暂无定时任务',
-                            subtitle: '点右下角「新建」，到点会自动唤起Fleet里的会话执行你写的指令。',
-                          ),
-                        ])
-                      : ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-                          itemCount: _tasks.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 10),
-                          itemBuilder: (_, i) => _CronCard(
-                            task: _tasks[i],
-                            onToggle: () => _toggle(_tasks[i]),
-                            onRun: () => _runNow(_tasks[i]),
-                            onEdit: () => _openEditor(task: _tasks[i]),
-                            onDelete: () => _delete(_tasks[i]),
-                          ),
+          ? _ErrorView(message: _error!, onRetry: _refresh)
+          : RefreshIndicator(
+              color: AppColors.accent,
+              backgroundColor: AppColors.panel,
+              onRefresh: _refresh,
+              child: _tasks.isEmpty
+                  ? ListView(
+                      children: const [
+                        SizedBox(height: 120),
+                        _EmptyView(
+                          icon: Icons.alarm_off_rounded,
+                          title: '暂无定时任务',
+                          subtitle: '点右下角「新建」，到点会自动唤起Fleet里的会话执行你写的指令。',
                         ),
-                ),
+                      ],
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
+                      itemCount: _tasks.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (_, i) => _CronCard(
+                        task: _tasks[i],
+                        onToggle: () => _toggle(_tasks[i]),
+                        onRun: () => _runNow(_tasks[i]),
+                        onEdit: () => _openEditor(task: _tasks[i]),
+                        onDelete: () => _delete(_tasks[i]),
+                      ),
+                    ),
+            ),
     );
   }
 }
@@ -213,7 +220,11 @@ class _CronCard extends StatelessWidget {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.panel,
-        border: Border.all(color: task.enabled ? AppColors.line : AppColors.line.withValues(alpha: 0.5)),
+        border: Border.all(
+          color: task.enabled
+              ? AppColors.line
+              : AppColors.line.withValues(alpha: 0.5),
+        ),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -225,7 +236,9 @@ class _CronCard extends StatelessWidget {
                 child: Text(
                   task.name,
                   style: TextStyle(
-                    color: task.enabled ? AppColors.textBright : AppColors.muted,
+                    color: task.enabled
+                        ? AppColors.textBright
+                        : AppColors.muted,
                     fontWeight: FontWeight.w700,
                     fontSize: 15,
                   ),
@@ -236,48 +249,77 @@ class _CronCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 2),
-          Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
-            _Chip(icon: Icons.folder_outlined, text: task.dirName),
-            _Chip(icon: Icons.schedule_rounded, text: task.cron, mono: true),
-            _Chip(icon: Icons.terminal_rounded, text: task.cli),
-          ]),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _Chip(icon: Icons.folder_outlined, text: task.dirName),
+              _Chip(icon: Icons.schedule_rounded, text: task.cron, mono: true),
+              _Chip(icon: Icons.terminal_rounded, text: task.cli),
+            ],
+          ),
           const SizedBox(height: 8),
           Text(
             task.prompt,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: AppColors.muted, fontSize: 12.5, height: 1.4),
+            style: const TextStyle(
+              color: AppColors.muted,
+              fontSize: 12.5,
+              height: 1.4,
+            ),
           ),
           const SizedBox(height: 8),
-          Row(children: [
-            Icon(Icons.circle, size: 8, color: statusColor),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                '下次 ${_fmtTs(task.nextRunAt)} · 上次 ${_fmtTs(task.lastRunAt)} · 已运行 ${task.runCount} 次'
-                '${task.lastError.isNotEmpty ? ' · ${task.lastError}' : ''}',
-                style: const TextStyle(color: AppColors.faint, fontSize: 11),
-                overflow: TextOverflow.ellipsis,
+          Row(
+            children: [
+              Icon(Icons.circle, size: 8, color: statusColor),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '下次 ${_fmtTs(task.nextRunAt)} · 上次 ${_fmtTs(task.lastRunAt)} · 已运行 ${task.runCount} 次'
+                  '${task.lastError.isNotEmpty ? ' · ${task.lastError}' : ''}',
+                  style: const TextStyle(color: AppColors.faint, fontSize: 11),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-            ),
-          ]),
+            ],
+          ),
           const Divider(height: 18, color: AppColors.line),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton.icon(
                 onPressed: onRun,
-                icon: const Icon(Icons.play_arrow_rounded, size: 18, color: AppColors.accent),
-                label: const Text('立即运行', style: TextStyle(color: AppColors.accent, fontSize: 13)),
+                icon: const Icon(
+                  Icons.play_arrow_rounded,
+                  size: 18,
+                  color: AppColors.accent,
+                ),
+                label: const Text(
+                  '立即运行',
+                  style: TextStyle(color: AppColors.accent, fontSize: 13),
+                ),
               ),
               TextButton.icon(
                 onPressed: onEdit,
-                icon: const Icon(Icons.edit_outlined, size: 17, color: AppColors.blue),
-                label: const Text('编辑', style: TextStyle(color: AppColors.blue, fontSize: 13)),
+                icon: const Icon(
+                  Icons.edit_outlined,
+                  size: 17,
+                  color: AppColors.blue,
+                ),
+                label: const Text(
+                  '编辑',
+                  style: TextStyle(color: AppColors.blue, fontSize: 13),
+                ),
               ),
               IconButton(
                 onPressed: onDelete,
-                icon: const Icon(Icons.delete_outline_rounded, size: 19, color: AppColors.danger),
+                icon: const Icon(
+                  Icons.delete_outline_rounded,
+                  size: 19,
+                  color: AppColors.danger,
+                ),
                 tooltip: '删除',
               ),
             ],
@@ -302,16 +344,21 @@ class _Chip extends StatelessWidget {
         borderRadius: BorderRadius.circular(7),
         border: Border.all(color: AppColors.line),
       ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 12, color: AppColors.faint),
-        const SizedBox(width: 4),
-        Text(text,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: AppColors.faint),
+          const SizedBox(width: 4),
+          Text(
+            text,
             style: TextStyle(
               color: AppColors.muted,
               fontSize: 11.5,
               fontFamily: mono ? 'monospace' : null,
-            )),
-      ]),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -355,7 +402,9 @@ class _CronEditorState extends State<_CronEditor> {
     _cli = t?.cli ?? 'claude';
     // Default to the task's dir if it still exists, else the first directory.
     final ids = widget.dirs.map((d) => d.id).toSet();
-    _dirId = (t != null && ids.contains(t.dirId)) ? t.dirId : widget.dirs.first.id;
+    _dirId = (t != null && ids.contains(t.dirId))
+        ? t.dirId
+        : widget.dirs.first.id;
   }
 
   @override
@@ -382,10 +431,21 @@ class _CronEditorState extends State<_CronEditor> {
     try {
       if (widget.task == null) {
         await widget.manage.createCronTask(
-            name: name, dirId: _dirId, prompt: prompt, cron: cron, cli: _cli);
+          name: name,
+          dirId: _dirId,
+          prompt: prompt,
+          cron: cron,
+          cli: _cli,
+        );
       } else {
-        await widget.manage.updateCronTask(widget.task!.id,
-            name: name, dirId: _dirId, prompt: prompt, cron: cron, cli: _cli);
+        await widget.manage.updateCronTask(
+          widget.task!.id,
+          name: name,
+          dirId: _dirId,
+          prompt: prompt,
+          cron: cron,
+          cli: _cli,
+        );
       }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -414,12 +474,19 @@ class _CronEditorState extends State<_CronEditor> {
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 14),
                 decoration: BoxDecoration(
-                    color: AppColors.line, borderRadius: BorderRadius.circular(2)),
+                  color: AppColors.line,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
             ),
-            Text(widget.task == null ? '新建定时任务' : '编辑定时任务',
-                style: const TextStyle(
-                    color: AppColors.textBright, fontSize: 16, fontWeight: FontWeight.w700)),
+            Text(
+              widget.task == null ? '新建定时任务' : '编辑定时任务',
+              style: const TextStyle(
+                color: AppColors.textBright,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
             const SizedBox(height: 16),
             const _FieldLabel('任务名'),
             _input(_name, hint: '例如：每天早报'),
@@ -439,7 +506,10 @@ class _CronEditorState extends State<_CronEditor> {
                   dropdownColor: AppColors.panel2,
                   style: const TextStyle(color: AppColors.text, fontSize: 14),
                   items: widget.dirs
-                      .map((d) => DropdownMenuItem(value: d.id, child: Text(d.name)))
+                      .map(
+                        (d) =>
+                            DropdownMenuItem(value: d.id, child: Text(d.name)),
+                      )
                       .toList(),
                   onChanged: (v) => setState(() => _dirId = v ?? _dirId),
                 ),
@@ -447,15 +517,17 @@ class _CronEditorState extends State<_CronEditor> {
             ),
             const SizedBox(height: 14),
             const _FieldLabel('CLI'),
-            Row(children: [
-              _cliChoice('claude', 'Claude'),
-              const SizedBox(width: 8),
-              _cliChoice('codex', 'Codex'),
-              const SizedBox(width: 8),
-              _cliChoice('opencode', 'OpenCode'),
-              const SizedBox(width: 8),
-              _cliChoice('zcode', 'ZCode'),
-            ]),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _cliChoice('claude', 'Claude'),
+                _cliChoice('codex', 'Codex'),
+                _cliChoice('opencode', 'OpenCode'),
+                _cliChoice('zcode', 'ZCode'),
+                _cliChoice('qoder', 'Qoder CN'),
+              ],
+            ),
             const SizedBox(height: 14),
             const _FieldLabel('cron 表达式（分 时 日 月 周）'),
             _input(_cron, mono: true, hint: '0 9 * * *'),
@@ -464,13 +536,18 @@ class _CronEditorState extends State<_CronEditor> {
               spacing: 6,
               runSpacing: 6,
               children: _presets
-                  .map((p) => ActionChip(
-                        label: Text(p.value, style: const TextStyle(fontSize: 11.5)),
-                        backgroundColor: AppColors.panel2,
-                        side: const BorderSide(color: AppColors.line),
-                        labelStyle: const TextStyle(color: AppColors.muted),
-                        onPressed: () => setState(() => _cron.text = p.key),
-                      ))
+                  .map(
+                    (p) => ActionChip(
+                      label: Text(
+                        p.value,
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                      backgroundColor: AppColors.panel2,
+                      side: const BorderSide(color: AppColors.line),
+                      labelStyle: const TextStyle(color: AppColors.muted),
+                      onPressed: () => setState(() => _cron.text = p.key),
+                    ),
+                  )
                   .toList(),
             ),
             const SizedBox(height: 14),
@@ -478,7 +555,10 @@ class _CronEditorState extends State<_CronEditor> {
             _input(_prompt, hint: '完整指令，到点会原样发给会话', maxLines: 5),
             if (_err != null) ...[
               const SizedBox(height: 10),
-              Text(_err!, style: const TextStyle(color: AppColors.danger, fontSize: 12.5)),
+              Text(
+                _err!,
+                style: const TextStyle(color: AppColors.danger, fontSize: 12.5),
+              ),
             ],
             const SizedBox(height: 18),
             SizedBox(
@@ -490,7 +570,10 @@ class _CronEditorState extends State<_CronEditor> {
                         width: 20,
                         height: 20,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Color(0xFF04110f)))
+                          strokeWidth: 2,
+                          color: Color(0xFF04110f),
+                        ),
+                      )
                     : Text(widget.task == null ? '创建' : '保存'),
               ),
             ),
@@ -509,39 +592,56 @@ class _CronEditorState extends State<_CronEditor> {
           padding: const EdgeInsets.symmetric(vertical: 11),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: sel ? AppColors.accentDark.withValues(alpha: 0.18) : AppColors.panel2,
+            color: sel
+                ? AppColors.accentDark.withValues(alpha: 0.18)
+                : AppColors.panel2,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(color: sel ? AppColors.accent : AppColors.line),
           ),
-          child: Text(label,
-              style: TextStyle(
-                  color: sel ? AppColors.accent : AppColors.muted,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13.5)),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: sel ? AppColors.accent : AppColors.muted,
+              fontWeight: FontWeight.w600,
+              fontSize: 13.5,
+            ),
+          ),
         ),
       ),
     );
   }
 
-  Widget _input(TextEditingController c,
-      {String? hint, int maxLines = 1, bool mono = false}) {
+  Widget _input(
+    TextEditingController c, {
+    String? hint,
+    int maxLines = 1,
+    bool mono = false,
+  }) {
     return TextField(
       controller: c,
       maxLines: maxLines,
       style: TextStyle(
-          color: AppColors.text, fontSize: 14, fontFamily: mono ? 'monospace' : null),
+        color: AppColors.text,
+        fontSize: 14,
+        fontFamily: mono ? 'monospace' : null,
+      ),
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: AppColors.faint, fontSize: 13),
         filled: true,
         fillColor: AppColors.panel2,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 12,
+        ),
         enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: AppColors.line)),
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.line),
+        ),
         focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: AppColors.accent)),
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.accent),
+        ),
       ),
     );
   }
@@ -552,11 +652,16 @@ class _FieldLabel extends StatelessWidget {
   const _FieldLabel(this.text);
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 6, left: 2),
-        child: Text(text,
-            style: const TextStyle(
-                color: AppColors.muted, fontSize: 12.5, fontWeight: FontWeight.w500)),
-      );
+    padding: const EdgeInsets.only(bottom: 6, left: 2),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: AppColors.muted,
+        fontSize: 12.5,
+        fontWeight: FontWeight.w500,
+      ),
+    ),
+  );
 }
 
 // ── Shared small views ───────────────────────────────────────────────────────
@@ -565,27 +670,41 @@ class _EmptyView extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  const _EmptyView(
-      {required this.icon, required this.title, required this.subtitle});
+  const _EmptyView({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
   @override
   Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 40),
-          child: Column(
-            children: [
-              Icon(icon, size: 46, color: AppColors.faint),
-              const SizedBox(height: 14),
-              Text(title,
-                  style: const TextStyle(
-                      color: AppColors.muted, fontSize: 15, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 8),
-              Text(subtitle,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: AppColors.faint, fontSize: 12.5, height: 1.5)),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 40),
+      child: Column(
+        children: [
+          Icon(icon, size: 46, color: AppColors.faint),
+          const SizedBox(height: 14),
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppColors.muted,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-        ),
-      );
+          const SizedBox(height: 8),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: AppColors.faint,
+              fontSize: 12.5,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _ErrorView extends StatelessWidget {
@@ -594,25 +713,32 @@ class _ErrorView extends StatelessWidget {
   const _ErrorView({required this.message, required this.onRetry});
   @override
   Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.cloud_off_rounded, size: 42, color: AppColors.faint),
-              const SizedBox(height: 14),
-              Text('加载失败\n$message',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: AppColors.muted, fontSize: 13, height: 1.5)),
-              const SizedBox(height: 16),
-              OutlinedButton(
-                onPressed: onRetry,
-                style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: AppColors.lineStrong)),
-                child: const Text('重试', style: TextStyle(color: AppColors.accent)),
-              ),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.cloud_off_rounded, size: 42, color: AppColors.faint),
+          const SizedBox(height: 14),
+          Text(
+            '加载失败\n$message',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: AppColors.muted,
+              fontSize: 13,
+              height: 1.5,
+            ),
           ),
-        ),
-      );
+          const SizedBox(height: 16),
+          OutlinedButton(
+            onPressed: onRetry,
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: AppColors.lineStrong),
+            ),
+            child: const Text('重试', style: TextStyle(color: AppColors.accent)),
+          ),
+        ],
+      ),
+    ),
+  );
 }

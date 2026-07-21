@@ -53,6 +53,7 @@ try {
     CODEX_CMD: '/custom/codex',
     OPENCODE_CMD: '/custom/opencode',
     ZCODE_CMD: '/custom/zcode',
+    QODER_CMD: '/custom/qoderclicn',
   };
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: false,
@@ -64,6 +65,7 @@ try {
     codex: '/custom/codex',
     opencode: '/custom/opencode',
     zcode: '/custom/zcode',
+    qoder: '/custom/qoderclicn',
   }, 'explicit command overrides are returned verbatim');
 
   const missingFs = {
@@ -78,7 +80,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude', codex: 'codex', opencode: 'opencode', zcode: 'zcode',
+    claude: 'claude', codex: 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn',
   }, 'POSIX fallback names remain stable when no executable exists');
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: true,
@@ -87,7 +89,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude.exe', codex: 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe',
+    claude: 'claude.exe', codex: 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe',
   }, 'Windows fallback names remain stable when no executable exists');
 
   const source = fs.readFileSync(require.resolve('../src/cli-adapters/commands'), 'utf8');

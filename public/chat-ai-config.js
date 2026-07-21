@@ -32,6 +32,15 @@
     Object.freeze({ value: 'high', label: 'High' }),
     Object.freeze({ value: 'max', label: 'Max' }),
   ]);
+  const QODER_REASONING_OPTIONS = Object.freeze([
+    Object.freeze({ value: '', label: 'Default', desc: 'Follow Qoder CN settings' }),
+    Object.freeze({ value: 'low', label: 'Low' }),
+    Object.freeze({ value: 'medium', label: 'Medium' }),
+    Object.freeze({ value: 'high', label: 'High' }),
+    Object.freeze({ value: 'xhigh', label: 'Extra high' }),
+    Object.freeze({ value: 'max', label: 'Max' }),
+  ]);
+  const QODER_MODEL_OPTIONS = Object.freeze(['', 'auto', 'ultimate', 'performance', 'efficient', 'lite']);
 
   function defaultEffort(cli) {
     if (cli === 'codex') return 'xhigh';
@@ -42,6 +51,7 @@
   function effortOptions(cli) {
     if (cli === 'codex') return CODEX_REASONING_OPTIONS;
     if (cli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
+    if (cli === 'qoder') return QODER_REASONING_OPTIONS;
     if (cli === 'claude') return EFFORT_OPTIONS;
     return [];
   }
@@ -49,6 +59,7 @@
   function effortLabel(cli) {
     if (cli === 'codex') return 'Reasoning Level';
     if (cli === 'opencode') return 'Variant';
+    if (cli === 'qoder') return 'Reasoning Effort';
     return 'Effort';
   }
 
@@ -56,7 +67,7 @@
     const value = effort || defaultEffort(cli);
     if (cli === 'zcode') return '';
     if (cli === 'opencode') return value ? `Variant ${value}` : '';
-    if (cli === 'codex') {
+    if (cli === 'codex' || cli === 'qoder') {
       return ({
         xhigh: 'Extra high', low: 'Low', medium: 'Medium', high: 'High',
         max: 'Max', ultra: 'Ultra',
@@ -130,6 +141,7 @@
     if (state && state.cli === 'claude') {
       return (state.claudeModelOptions || []).map(option => option.value);
     }
+    if (state && state.cli === 'qoder') return [...QODER_MODEL_OPTIONS, '__custom__'];
     return ['', '__custom__'];
   }
 
@@ -157,9 +169,18 @@
         ? formatter(value, map[value])
         : `${value}${map[value].name ? ` · ${map[value].name}` : ''} · ${map[value].model}`;
     }
-    if (value === '') return state && state.cli === 'codex'
-      ? '默认（跟随 Provider）'
-      : translate(state, 'default');
+    if (value === '') {
+      if (state && state.cli === 'codex') return '默认（跟随 Provider）';
+      if (state && state.cli === 'qoder') return '默认（跟随 Qoder CN 设置）';
+      return translate(state, 'default');
+    }
+    if (state && state.cli === 'qoder') {
+      return ({
+        auto: 'Auto（智能路由）', ultimate: 'Ultimate（极致）',
+        performance: 'Performance（性能）', efficient: 'Efficient（经济）',
+        lite: 'Lite（轻量）',
+      })[value] || (value === '__custom__' ? translate(state, 'custom') : value);
+    }
     const named = (state && state.claudeModelOptions || []).find(option => option.value === value);
     if (named) return named.labelKey ? translate(state, named.labelKey) : named.label;
     if (value === '__custom__') return translate(state, 'custom');
@@ -299,6 +320,7 @@
     const document = documentOf(state);
     const cli = state.cli || 'claude';
     const choicesForEffort = effortOptions(cli);
+    const supportsProvider = cli !== 'qoder';
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -306,9 +328,11 @@
       box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:94vw;color:#c9d1d9;';
       box.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">Provider、Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。</div>
-        <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
-        <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
+        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。' : 'Qoder CN 使用自身账号与 BYOK 配置。'}</div>
+        <div id="ai-provider-section">
+          <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
+          <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
+        </div>
         <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Model</label>
         <select id="ai-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:8px;"></select>
         <input id="ai-model-custom" type="text" placeholder="模型 ID" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;">
@@ -318,7 +342,7 @@
         </div>
         <div id="ai-agent-section">
           <div style="height:1px;background:#30363d;margin:4px 0 14px;"></div>
-          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cli === 'claude' ? 'Claude Code' : 'OpenCode'} Agent</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cli === 'claude' ? 'Claude Code' : cli === 'opencode' ? 'OpenCode' : 'Qoder CN'} Agent</div>
           <div style="font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
           <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
           <datalist id="ai-agent-list">${cli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
@@ -341,6 +365,7 @@
       document.body.appendChild(overlay);
 
       const providerSelect = box.querySelector('#ai-provider');
+      const providerSection = box.querySelector('#ai-provider-section');
       const modelSelect = box.querySelector('#ai-model');
       const customModel = box.querySelector('#ai-model-custom');
       const effortSelect = box.querySelector('#ai-effort');
@@ -359,11 +384,13 @@
         providerSelect.appendChild(option);
       }
       providerSelect.value = config.provider || '';
+      providerSection.style.display = supportsProvider ? '' : 'none';
+      if (!supportsProvider) providerSelect.value = '';
 
       effortSection.style.display = choicesForEffort.length ? '' : 'none';
-      agentSection.style.display = cli === 'claude' || cli === 'opencode' ? '' : 'none';
+      agentSection.style.display = cli === 'claude' || cli === 'opencode' || cli === 'qoder' ? '' : 'none';
       subSection.style.display = cli === 'claude' || cli === 'codex' ? '' : 'none';
-      agentInput.value = cli === 'claude' || cli === 'opencode' ? (config.agent || '') : '';
+      agentInput.value = cli === 'claude' || cli === 'opencode' || cli === 'qoder' ? (config.agent || '') : '';
       for (const choice of choicesForEffort) {
         const option = document.createElement('option');
         option.value = choice.value;
@@ -475,7 +502,7 @@
           provider: providerSelect.value,
           model: selectedModel,
           effort: effortSelect.value,
-          agent: cli === 'claude' || cli === 'opencode' ? agentInput.value.trim() : null,
+          agent: cli === 'claude' || cli === 'opencode' || cli === 'qoder' ? agentInput.value.trim() : null,
           subagent: (cli === 'claude' || cli === 'codex') && childProviderId && childModel
             ? { providerId: childProviderId, model: childModel }
             : null,

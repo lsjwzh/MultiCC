@@ -175,6 +175,21 @@ function resolveZcode(context) {
   return findExecutableOnPath('zcode', context) || (isWindows ? 'zcode.exe' : 'zcode');
 }
 
+function resolveQoder(context) {
+  const { isWindows, env, homeDir } = context;
+  if (env.QODER_CMD) return env.QODER_CMD;
+  if (env.QODERCN_CMD) return env.QODERCN_CMD;
+  const directHit = firstRunnable([
+    '/opt/homebrew/bin/qoderclicn',
+    '/usr/local/bin/qoderclicn',
+    path.join(homeDir, '.local', 'bin', 'qoderclicn'),
+    path.join(homeDir, '.qoder', 'bin', 'qoderclicn'),
+    path.join(homeDir, '.qoder-cn', 'bin', 'qoderclicn'),
+  ], context);
+  if (directHit) return directHit;
+  return findExecutableOnPath('qoderclicn', context) || (isWindows ? 'qoderclicn.exe' : 'qoderclicn');
+}
+
 function resolveCliCommands(options = {}) {
   const context = createContext(options);
   return {
@@ -182,6 +197,7 @@ function resolveCliCommands(options = {}) {
     codex: resolveCodex(context),
     opencode: resolveOpencode(context),
     zcode: resolveZcode(context),
+    qoder: resolveQoder(context),
   };
 }
 

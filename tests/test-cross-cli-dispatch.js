@@ -403,9 +403,9 @@ function validEffortForCli(cli, effort) {
   // ════════════════════════════════════════════════════════════════════
   hdr('Tier1 — 结构/API 边界验证（20 用例）');
 
-  // ── T1.1: 四种合法 CLI 各创建 chat session ──
-  hdr('T1.1 四种合法 CLI 创建会话');
-  const legalCLIs = ['claude', 'codex', 'opencode', 'zcode'];
+  // ── T1.1: 所有合法 CLI 各创建 chat session ──
+  hdr('T1.1 所有合法 CLI 创建会话');
+  const legalCLIs = ['claude', 'codex', 'opencode', 'zcode', 'qoder'];
   const createdSessions = {}; // cli → { id }
   for (const cli of legalCLIs) {
     const res = await createSession(dirId, cli, 'chat');
