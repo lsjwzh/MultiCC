@@ -109,6 +109,7 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
     'a relay-controlled model must not borrow the local Claude default');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', reportedModel: 'runtime' }), 'claude-user');
   assert.equal(policy.effectiveSessionModel({ cli: 'codex', reportedModel: 'gpt-runtime' }), 'gpt-runtime');
+  assert.equal(policy.effectiveSessionModel({ cli: 'qoder', reportedModel: 'performance' }), 'performance');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws', model: 'explicit' }), 'explicit');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws' }), 'claude-user');
   assert.equal(policy.effectiveSessionModel(null), null);
@@ -136,15 +137,20 @@ test('effort, agent and disconnect policies preserve each CLI contract', t => {
   assert.equal(policy.validEffortForCli('claude', 'ultra'), false);
   assert.equal(policy.validEffortForCli('opencode', 'minimal'), true);
   assert.equal(policy.validEffortForCli('zcode', 'low'), false);
+  assert.equal(policy.validEffortForCli('qoder', 'xhigh'), true);
+  assert.equal(policy.validEffortForCli('qoder', 'ultracode'), false);
   assert.equal(policy.cliEffortLevel({ effort: 'ultracode' }), 'xhigh');
   assert.equal(policy.codexReasoningLevel({ effort: 'ultra' }), 'ultra');
   assert.equal(policy.codexReasoningConfigArg({ effort: 'high' }), 'model_reasoning_effort="high"');
   assert.equal(policy.codexModelConfigArg({ model: ' gpt-5 ' }), 'model="gpt-5"');
   assert.equal(policy.effectiveSessionEffort({ cli: 'opencode', effort: 'minimal' }), 'minimal');
   assert.equal(policy.effectiveSessionEffort({ cli: 'zcode', effort: 'high' }), null);
+  assert.equal(policy.effectiveSessionEffort({ cli: 'qoder', effort: 'high' }), 'high');
+  assert.equal(policy.effectiveSessionEffort({ cli: 'qoder' }), null);
   assert.equal(policy.normalizeCliAgent('claude', ' reviewer-1 '), 'reviewer-1');
   assert.equal(policy.normalizeCliAgent('codex', 'reviewer'), undefined);
   assert.equal(policy.normalizeCliAgent('opencode', '../unsafe'), undefined);
+  assert.equal(policy.normalizeCliAgent('qoder', 'reviewer'), 'reviewer');
   assert.equal(policy.normalizeCliAgent('claude', ''), null);
   assert.equal(policy.isGlm52Session({ model: 'XOPGLM52' }), true);
   assert.equal(policy.isCodexResponseCompletedDisconnect(

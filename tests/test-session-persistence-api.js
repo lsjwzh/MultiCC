@@ -22,7 +22,7 @@ const failureMarker = path.join(dataDir, 'inject-session-save-failure');
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(projectDir, { recursive: true });
 fs.mkdirSync(binDir, { recursive: true });
-for (const cli of ['claude', 'codex', 'opencode', 'zcode']) {
+for (const cli of ['claude', 'codex', 'opencode', 'zcode', 'qoderclicn']) {
   const file = path.join(binDir, cli);
   fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 }

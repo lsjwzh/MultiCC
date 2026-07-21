@@ -342,7 +342,7 @@
 
       const title = document.createElement('div');
       title.style.cssText = 'font-size:15px;color:#f2f4f7;font-weight:600;margin-bottom:14px;';
-      const CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode' };
+      const CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN' };
       title.textContent = `新建 ${CLI_LABELS[cli] || cli} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
       box.appendChild(title);
 

@@ -140,6 +140,7 @@ void main() {
             codexSessions: 1,
             opencodeSessions: 0,
             zcodeSessions: 0,
+            qoderSessions: 0,
             pushState: DirectoryPushState(hasRemote: true, ahead: 1, dirty: 2),
             running: false,
             recentEventLabels: ['🔄 Agent 同步：main'],

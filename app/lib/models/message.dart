@@ -123,7 +123,9 @@ class ChatMessage {
       usage = json['usage'] is Map
           ? MessageUsage.fromJson(json['usage'] as Map<String, dynamic>)
           : null,
-      id = (json['id']?.toString().isNotEmpty ?? false) ? json['id'].toString() : null,
+      id = (json['id']?.toString().isNotEmpty ?? false)
+          ? json['id'].toString()
+          : null,
       durationMs = (json['durationMs'] as num?)?.toInt();
 
   static List<ToolCall> _parseHistoryTools(dynamic tools) {
@@ -143,24 +145,32 @@ class ChatMessage {
 }
 
 /// Which CLI binary this session drives.
-enum SessionCli { claude, codex, opencode, zcode }
+enum SessionCli { claude, codex, opencode, zcode, qoder }
 
 /// Interactive TUI terminal, or stream-json chat.
 enum SessionKind { terminal, chat }
 
 SessionCli? tryParseCli(String? s) {
   switch (s) {
-    case 'claude': return SessionCli.claude;
-    case 'codex': return SessionCli.codex;
-    case 'opencode': return SessionCli.opencode;
-    case 'zcode': return SessionCli.zcode;
-    default: return null;
+    case 'claude':
+      return SessionCli.claude;
+    case 'codex':
+      return SessionCli.codex;
+    case 'opencode':
+      return SessionCli.opencode;
+    case 'zcode':
+      return SessionCli.zcode;
+    case 'qoder':
+      return SessionCli.qoder;
+    default:
+      return null;
   }
 }
 
 SessionCli parseCli(String? s) {
   return tryParseCli(s) ?? SessionCli.claude;
 }
+
 SessionKind _parseKind(String? s) =>
     s == 'chat' ? SessionKind.chat : SessionKind.terminal;
 
@@ -169,11 +179,13 @@ extension SessionCliX on SessionCli {
     SessionCli.codex => 'codex',
     SessionCli.opencode => 'opencode',
     SessionCli.zcode => 'zcode',
+    SessionCli.qoder => 'qoder',
     SessionCli.claude => 'claude',
   };
 
   /// Provider pool this CLI maps to. codex has its own pool;
   /// claude/opencode/zcode share the Anthropic-compatible 'claude' pool.
+  /// Qoder CN owns its account/BYOK settings and does not expose a MultiCC pool.
   String get appType => this == SessionCli.codex ? 'codex' : 'claude';
 
   /// Human-readable label for UI display.
@@ -182,10 +194,16 @@ extension SessionCliX on SessionCli {
     SessionCli.codex => 'Codex',
     SessionCli.opencode => 'OpenCode',
     SessionCli.zcode => 'ZCode',
+    SessionCli.qoder => 'Qoder CN',
   };
 
-  bool get supportsAgent => this == SessionCli.claude || this == SessionCli.opencode;
-  bool get supportsSubagent => this == SessionCli.claude || this == SessionCli.codex;
+  bool get supportsProvider => this != SessionCli.qoder;
+  bool get supportsAgent =>
+      this == SessionCli.claude ||
+      this == SessionCli.opencode ||
+      this == SessionCli.qoder;
+  bool get supportsSubagent =>
+      this == SessionCli.claude || this == SessionCli.codex;
   bool get supportsEffort => this != SessionCli.zcode;
 
   String get effortFieldLabel => switch (this) {
@@ -193,6 +211,7 @@ extension SessionCliX on SessionCli {
     SessionCli.codex => 'Reasoning Level',
     SessionCli.opencode => 'Variant',
     SessionCli.zcode => '',
+    SessionCli.qoder => 'Reasoning Effort',
   };
 
   String get defaultEffort => switch (this) {
@@ -200,13 +219,36 @@ extension SessionCliX on SessionCli {
     SessionCli.codex => 'xhigh',
     SessionCli.opencode => '',
     SessionCli.zcode => '',
+    SessionCli.qoder => '',
   };
 
   List<String> get effortOptions => switch (this) {
-    SessionCli.claude => const ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    SessionCli.codex => const ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    SessionCli.opencode => const ['', 'minimal', 'low', 'medium', 'high', 'max'],
+    SessionCli.claude => const [
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultracode',
+    ],
+    SessionCli.codex => const [
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ],
+    SessionCli.opencode => const [
+      '',
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'max',
+    ],
     SessionCli.zcode => const [],
+    SessionCli.qoder => const ['', 'low', 'medium', 'high', 'xhigh', 'max'],
   };
 }
 
@@ -225,6 +267,17 @@ const kClaudeModelOptions = <MapEntry<String, String>>[
   MapEntry('claude-haiku-4-5-20251001', 'Haiku 4.5'),
 ];
 
+/// Stable Qoder CN routing tiers. Concrete model availability remains owned by
+/// the signed-in Qoder account and can still be entered through “Custom”.
+const kQoderModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 Qoder CN 设置）'),
+  MapEntry('auto', 'Auto（智能路由）'),
+  MapEntry('ultimate', 'Ultimate（极致）'),
+  MapEntry('performance', 'Performance（性能）'),
+  MapEntry('efficient', 'Efficient（经济）'),
+  MapEntry('lite', 'Lite（轻量）'),
+];
+
 String claudeModelShortName(String? model) {
   if (model == null || model.isEmpty) return '默认';
   for (final e in kClaudeModelOptions) {
@@ -234,7 +287,13 @@ String claudeModelShortName(String? model) {
 }
 
 String modelShortNameForCli(SessionCli cli, String? model) {
-  return cli == SessionCli.claude ? claudeModelShortName(model) : (model ?? '');
+  if (cli == SessionCli.claude) return claudeModelShortName(model);
+  if (cli == SessionCli.qoder) {
+    for (final option in kQoderModelOptions) {
+      if (option.key == (model ?? '')) return option.value;
+    }
+  }
+  return model ?? '';
 }
 
 /// Display name for a session's model. For an alias-mapped relay, prefer the
@@ -264,7 +323,9 @@ String effortShortNameForCli(SessionCli cli, String? effort) {
   if (!cli.supportsEffort) return '';
   final v = (effort == null || effort.isEmpty) ? cli.defaultEffort : effort;
   if (cli == SessionCli.opencode && v.isEmpty) return 'Default';
-  if (cli == SessionCli.codex || cli == SessionCli.opencode) {
+  if (cli == SessionCli.codex ||
+      cli == SessionCli.opencode ||
+      cli == SessionCli.qoder) {
     switch (v) {
       case 'minimal':
         return 'Minimal';
@@ -305,11 +366,13 @@ class SessionSubagent {
       : const SessionSubagent();
 
   Map<String, dynamic> toJson() => {
-        'providerId': providerId ?? '',
-        'model': model ?? '',
-      };
+    'providerId': providerId ?? '',
+    'model': model ?? '',
+  };
 
-  bool get isEmpty => (providerId == null || providerId == '') && (model == null || model == '');
+  bool get isEmpty =>
+      (providerId == null || providerId == '') &&
+      (model == null || model == '');
 }
 
 class SessionCliState {
@@ -363,13 +426,13 @@ class CliHandoff {
   });
 
   factory CliHandoff.fromJson(Map<dynamic, dynamic> json) => CliHandoff(
-        id: json['id']?.toString(),
-        fromCli: parseCli(json['fromCli']?.toString()),
-        toCli: parseCli(json['toCli']?.toString()),
-        status: json['status']?.toString() ?? '',
-        reason: json['reason']?.toString(),
-        reusedTarget: json['reusedTarget'] == true,
-      );
+    id: json['id']?.toString(),
+    fromCli: parseCli(json['fromCli']?.toString()),
+    toCli: parseCli(json['toCli']?.toString()),
+    status: json['status']?.toString() ?? '',
+    reason: json['reason']?.toString(),
+    reusedTarget: json['reusedTarget'] == true,
+  );
 }
 
 Map<SessionCli, SessionCliState> parseCliStates(dynamic json) {
@@ -442,7 +505,9 @@ class SessionCliConfig {
       effort: json['effort']?.toString(),
       effectiveEffort: json['effectiveEffort']?.toString(),
       agent: json['agent']?.toString(),
-      subagent: json['subagent'] == null ? null : SessionSubagent.fromJson(json['subagent']),
+      subagent: json['subagent'] == null
+          ? null
+          : SessionSubagent.fromJson(json['subagent']),
       changed: json['changed'] == true,
       reusedTarget: json['reusedTarget'] == true,
     );
@@ -464,11 +529,13 @@ class Session {
   effectiveEffort; // concrete effort / reasoning level used for display
   final String? rolePrompt;
   final String? provider; // cc-switch provider id; null = default login
-  final SessionSubagent? subagent; // Task-tool subagent provider+model override (claude-proxy)
+  final SessionSubagent?
+  subagent; // Task-tool subagent provider+model override (claude-proxy)
   final String? agent; // Native --agent for Claude/OpenCode.
   final Map<SessionCli, SessionCliState> cliStates;
   final CliHandoff? pendingCliHandoff;
-  final bool? streaming; // per-session stream mode (claude chat defaults true; server 2ad82ec)
+  final bool?
+  streaming; // per-session stream mode (claude chat defaults true; server 2ad82ec)
   final String cwd;
   final DateTime createdAt;
   final bool active;
@@ -518,7 +585,9 @@ class Session {
       effectiveEffort: json['effectiveEffort']?.toString(),
       rolePrompt: json['rolePrompt']?.toString(),
       provider: json['provider']?.toString(),
-      subagent: json['subagent'] == null ? null : SessionSubagent.fromJson(json['subagent']),
+      subagent: json['subagent'] == null
+          ? null
+          : SessionSubagent.fromJson(json['subagent']),
       agent: json['agent']?.toString(),
       cliStates: parseCliStates(json['cliStates']),
       pendingCliHandoff: json['pendingCliHandoff'] is Map
@@ -565,6 +634,8 @@ class Directory {
   final int opencodeChatCount;
   final int zcodeTerminalCount;
   final int zcodeChatCount;
+  final int qoderTerminalCount;
+  final int qoderChatCount;
   final DirectoryPushState? pushState;
 
   Directory({
@@ -580,6 +651,8 @@ class Directory {
     this.opencodeChatCount = 0,
     this.zcodeTerminalCount = 0,
     this.zcodeChatCount = 0,
+    this.qoderTerminalCount = 0,
+    this.qoderChatCount = 0,
     this.pushState,
   });
 
@@ -596,10 +669,13 @@ class Directory {
       claudeChatCount: (counts['claude_chat'] as num?)?.toInt() ?? 0,
       codexTerminalCount: (counts['codex_terminal'] as num?)?.toInt() ?? 0,
       codexChatCount: (counts['codex_chat'] as num?)?.toInt() ?? 0,
-      opencodeTerminalCount: (counts['opencode_terminal'] as num?)?.toInt() ?? 0,
+      opencodeTerminalCount:
+          (counts['opencode_terminal'] as num?)?.toInt() ?? 0,
       opencodeChatCount: (counts['opencode_chat'] as num?)?.toInt() ?? 0,
       zcodeTerminalCount: (counts['zcode_terminal'] as num?)?.toInt() ?? 0,
       zcodeChatCount: (counts['zcode_chat'] as num?)?.toInt() ?? 0,
+      qoderTerminalCount: (counts['qoder_terminal'] as num?)?.toInt() ?? 0,
+      qoderChatCount: (counts['qoder_chat'] as num?)?.toInt() ?? 0,
       pushState: json['pushState'] is Map
           ? DirectoryPushState.fromJson(
               (json['pushState'] as Map).cast<String, dynamic>(),
@@ -616,7 +692,9 @@ class Directory {
       opencodeTerminalCount +
       opencodeChatCount +
       zcodeTerminalCount +
-      zcodeChatCount;
+      zcodeChatCount +
+      qoderTerminalCount +
+      qoderChatCount;
 }
 
 class DirectoryPushState {

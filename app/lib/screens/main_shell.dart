@@ -1335,19 +1335,20 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   Future<void> _createSession(SessionCli cli, SessionKind kind) async {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
-    final appType = cli.appType;
     List<Map<String, dynamic>> providers = [];
     String? defaultProviderId;
     try {
-      final d = await ManageService(
-        settings: widget.settings,
-      ).fetchProviders(appType);
-      providers = (d['providers'] as List? ?? [])
-          .map((e) => (e as Map).cast<String, dynamic>())
-          .toList();
-      final defaults = d['defaults'];
-      if (defaults is Map && defaults[cli.name] != null) {
-        defaultProviderId = defaults[cli.name].toString();
+      if (cli.supportsProvider) {
+        final d = await ManageService(
+          settings: widget.settings,
+        ).fetchProviders(cli.appType);
+        providers = (d['providers'] as List? ?? [])
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList();
+        final defaults = d['defaults'];
+        if (defaults is Map && defaults[cli.name] != null) {
+          defaultProviderId = defaults[cli.name].toString();
+        }
       }
     } catch (_) {}
     if (!mounted) return;
@@ -1611,6 +1612,22 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                               SessionKind.chat,
                             ),
                           ),
+                          AddSessionChip(
+                            label: '+ Qoder Term',
+                            color: AppColors.qoder,
+                            onTap: () => _createSession(
+                              SessionCli.qoder,
+                              SessionKind.terminal,
+                            ),
+                          ),
+                          AddSessionChip(
+                            label: '+ Qoder Chat',
+                            color: AppColors.qoder,
+                            onTap: () => _createSession(
+                              SessionCli.qoder,
+                              SessionKind.chat,
+                            ),
+                          ),
                         ],
                       ),
                       EventTimeline(
@@ -1727,6 +1744,30 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                             title: t('zCodeChats'),
                             color: AppColors.zcode,
                             sessions: groups['zcode_chat']!,
+                            mgr: widget.mgr,
+                            settings: widget.settings,
+                            statuses: workspace.statuses,
+                            pendingNotes: workspace.pendingNotes,
+                            providers: _providers,
+                            onOpen: _openSession,
+                          ),
+                        if (groups['qoder_terminal']!.isNotEmpty)
+                          _SessionGroup(
+                            title: t('qoderTerminals'),
+                            color: AppColors.qoder,
+                            sessions: groups['qoder_terminal']!,
+                            mgr: widget.mgr,
+                            settings: widget.settings,
+                            statuses: workspace.statuses,
+                            pendingNotes: workspace.pendingNotes,
+                            providers: _providers,
+                            onOpen: _openSession,
+                          ),
+                        if (groups['qoder_chat']!.isNotEmpty)
+                          _SessionGroup(
+                            title: t('qoderChats'),
+                            color: AppColors.qoder,
+                            sessions: groups['qoder_chat']!,
                             mgr: widget.mgr,
                             settings: widget.settings,
                             statuses: workspace.statuses,

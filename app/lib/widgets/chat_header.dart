@@ -137,9 +137,9 @@ class ChatHeader extends StatelessWidget {
                         ),
                       ],
                     ],
-                    ),
                   ),
                 ),
+              ),
               const Spacer(),
               // Manual reconnect
               _HeaderBtn(
@@ -739,6 +739,7 @@ class _ChatCliBadge extends StatelessWidget {
       SessionCli.codex => const Color(0xFF7fd49a),
       SessionCli.opencode => const Color(0xFFa78bfa),
       SessionCli.zcode => const Color(0xFF38bdf8),
+      SessionCli.qoder => const Color(0xFFff9a5c),
     };
     return Tooltip(
       message: '切换会话 CLI',

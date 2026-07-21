@@ -241,8 +241,7 @@ function createSessionAdminRuntime(rawDeps) {
 
   function legacySessionDetailPresenter({ record, runtime }) {
     const cli = record.cli || 'claude';
-    const isClaudeChat = cli !== 'codex' && cli !== 'opencode' && cli !== 'zcode'
-      && record.kind !== 'terminal';
+    const isClaudeChat = cli === 'claude' && record.kind !== 'terminal';
     return {
       id: record.id,
       cwd: runtime.cwd,

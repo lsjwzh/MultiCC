@@ -6,11 +6,13 @@ const { createClaudeAdapter } = require('./claude');
 const { createCodexAdapter } = require('./codex');
 const { createOpencodeAdapter } = require('./opencode');
 const { createZcodeAdapter } = require('./zcode');
+const { createQoderAdapter } = require('./qoder');
 
 function createCliAdapters(deps) {
   const commands = resolveCliCommands({ isWindows: deps.isWindows });
   console.log(`[multicc] Using claude: ${commands.claude}`);
   console.log(`[multicc] Using codex: ${commands.codex}`);
+  console.log(`[multicc] Using qoder: ${commands.qoder}`);
 
   const registry = createCliProviderRegistry([
     createClaudeAdapter({
@@ -37,6 +39,7 @@ function createCliAdapters(deps) {
     }),
     createOpencodeAdapter({ cmd: commands.opencode }),
     createZcodeAdapter({ cmd: commands.zcode }),
+    createQoderAdapter({ cmd: commands.qoder }),
   ]);
 
   return { commands, registry };

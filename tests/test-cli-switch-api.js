@@ -21,6 +21,7 @@ fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
 
 let server;
+let stderr = '';
 let passed = 0;
 let failed = 0;
 function ok(condition, name, detail = '') {
@@ -65,10 +66,13 @@ function cleanup() {
 (async () => {
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot },
+    env: {
+      ...process.env,
+      PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot,
+      QODER_CMD: '/usr/bin/true',
+    },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
-  let stderr = '';
   server.stderr.on('data', chunk => { stderr += chunk.toString(); });
   await waitForServer();
   console.log('\nCross-CLI API integration tests');
@@ -149,6 +153,22 @@ function cleanup() {
   ok(response.data.effort === 'high' && response.data.agent === 'build',
     'OpenCode-specific variant and agent survive a CLI round trip');
 
+  response = await api('POST', `/api/sessions/${sessionId}/switch-cli`, { cli: 'qoder' });
+  ok(response.status === 200 && response.data.cli === 'qoder', 'OpenCode → Qoder CN switch');
+  response = await api('PATCH', `/api/sessions/${sessionId}`, {
+    model: 'performance', effort: 'xhigh', agent: 'reviewer',
+  });
+  ok(response.status === 200 && response.data.model === 'performance'
+    && response.data.effort === 'xhigh' && response.data.agent === 'reviewer',
+  'Qoder CN model, reasoning effort, and native agent are persisted');
+  response = await api('PATCH', `/api/sessions/${sessionId}`, { provider: 'relay' });
+  ok(response.status === 400 && /invalid provider/.test(response.data.error || ''),
+    'Qoder CN rejects MultiCC provider routing');
+
+  response = await api('POST', `/api/sessions/${sessionId}/switch-cli`, { cli: 'opencode' });
+  ok(response.status === 200 && response.data.effort === 'high' && response.data.agent === 'build',
+    'Qoder CN → OpenCode restores the OpenCode-specific settings');
+
   response = await api('POST', `/api/sessions/${sessionId}/fork`, { includeMemory: false });
   ok(response.status === 200 && response.data.sessionId, 'fork created');
   ok(!JSON.stringify(response.data).includes('transcript'), 'fork response does not expose checkpoint transcript');
@@ -164,7 +184,8 @@ function cleanup() {
   const sessionDocument = JSON.parse(fs.readFileSync(path.join(dataRoot, 'sessions.json'), 'utf8'));
   const records = Array.isArray(sessionDocument) ? sessionDocument : sessionDocument.data;
   const persisted = records.find(item => item.id === sessionId);
-  ok(!!persisted?.cliStates?.claude && !!persisted?.cliStates?.codex && !!persisted?.cliStates?.opencode,
+  ok(!!persisted?.cliStates?.claude && !!persisted?.cliStates?.codex
+    && !!persisted?.cliStates?.opencode && !!persisted?.cliStates?.qoder,
     'all visited CLI states persisted');
   ok(!!persisted?.pendingCliHandoff?.checkpoint?.git?.head, 'checkpoint persists Git HEAD');
 

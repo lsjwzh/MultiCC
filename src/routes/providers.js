@@ -222,6 +222,9 @@ function createProviderRoutes(rawDeps) {
 
   function validProviderId(cli, id) {
     if (id == null || id === '') return { ok: true, value: null };
+    // Qoder CN owns authentication/BYOK configuration in ~/.qoder-cn and does
+    // not consume MultiCC's Claude/Codex provider store.
+    if (cli === 'qoder') return { ok: false };
     const appType = cli === 'codex' ? 'codex' : 'claude';
     if (!deps.providerRouterRuntime.getProviderSummary(appType, String(id))) return { ok: false };
     return { ok: true, value: String(id) };
