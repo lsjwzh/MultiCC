@@ -80,18 +80,28 @@ function createTaskBoardRuntime(deps) {
   // the same session (mirrors runClassifyNow's cancelClassifyFor pattern).
   const pendingTagBySession = new Map();
 
-  // Resolve the just-persisted turn's message ids from the history tail: the
-  // last non-interim assistant message and the nearest user message before it.
-  function resolveTurnRefs(history) {
-    let asstIdx = -1;
+  // Resolve the current turn even while it is still streaming. Looking for the
+  // last committed assistant first is wrong mid-turn: it pairs the previous
+  // turn instead of the current user message. Anchor on currentUserText (or the
+  // latest user as a fallback), then accept only an assistant after that user.
+  function resolveTurnRefs(history, currentUserText = '') {
+    const wanted = String(currentUserText || '').trim();
+    let userIdx = -1;
     for (let i = history.length - 1; i >= 0; i--) {
       const m = history[i];
-      if (m && m.role === 'assistant' && !m._interim && !m.error) { asstIdx = i; break; }
+      if (!m || m.role !== 'user') continue;
+      if (!wanted || core.messageText(m).trim() === wanted) { userIdx = i; break; }
     }
-    let userIdx = -1;
-    for (let i = (asstIdx === -1 ? history.length : asstIdx) - 1; i >= 0; i--) {
+    if (userIdx === -1 && wanted) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i]?.role === 'user') { userIdx = i; break; }
+      }
+    }
+    let asstIdx = -1;
+    for (let i = userIdx + 1; userIdx !== -1 && i < history.length; i++) {
       const m = history[i];
-      if (m && m.role === 'user') { userIdx = i; break; }
+      if (m?.role === 'user') break;
+      if (m?.role === 'assistant' && !m._interim && !m.error) asstIdx = i;
     }
     return {
       userMsg: userIdx === -1 ? null : history[userIdx],
@@ -111,7 +121,7 @@ function createTaskBoardRuntime(deps) {
       if (isSystemInjected(userText)) return;
 
       const history = loadHistory(sessionName) || [];
-      const { userMsg, assistantMsg } = resolveTurnRefs(history);
+      const { userMsg, assistantMsg } = resolveTurnRefs(history, userText);
       if (!userMsg && !assistantMsg) return;
       const now = Date.now();
       const ref = {
@@ -181,13 +191,14 @@ function createTaskBoardRuntime(deps) {
   }
 
   // ── classify 识别出 goal 时立即创建/更新任务 ─────────────────────────
-  function onClassifyGoal(sessionName, goal, phase) {
+  function onClassifyGoal(sessionName, goal, phase, turn = {}) {
     try {
       const rec = records.get(sessionName);
       if (!rec || rec.type === 'aux' || rec.type === 'gateway') return;
 
       const history = loadHistory(sessionName) || [];
-      const { userMsg, assistantMsg } = resolveTurnRefs(history);
+      const currentUserText = String(turn.currentUserText || '').trim();
+      const { userMsg, assistantMsg } = resolveTurnRefs(history, currentUserText);
       if (!userMsg && !assistantMsg) return;
 
       const now = Date.now();
@@ -201,29 +212,15 @@ function createTaskBoardRuntime(deps) {
         excerpt: goal, // 用 goal 作为摘要
       };
 
-      // 查找或创建任务：用 goal 作为 title 的归一化 key
-      const moduleId = rec.dirId || '_default';
-      let module = board.modules[moduleId];
-      if (!module) {
-        module = { id: moduleId, name: rec.dirId || '默认', source: 'classify', dirId: rec.dirId, createdAt: now, updatedAt: now };
-        board.modules[moduleId] = module;
-      }
-
-      // 查找同名任务（goal 相同视为同一任务）
-      let task = Object.values(board.tasks).find(t => t.moduleId === moduleId && t.title === goal);
-      if (!task) {
-        const taskId = crypto.randomUUID();
-        task = { id: taskId, moduleId, title: goal, status: 'open', areas: [], refs: [], createdAt: now, updatedAt: now };
-        board.tasks[taskId] = task;
-      }
-
-      // 添加 ref（去重）
-      if (core.addRefToTask(task, ref, now)) {
-        task.updatedAt = now;
-        module.updatedAt = now;
+      const beforeIds = new Set(Object.keys(board.tasks));
+      const touched = core.applyTagResult(board, [{
+        id: 'new', title: goal, module: '待归类', areas: [],
+      }], ref, now, { moduleSource: 'classify', mergeSimilar: true });
+      if (touched.length) {
         save();
-        notify(ref.dirId, [task.id], 'created');
-        logger.log(`[multicc/taskboard] onClassifyGoal: created/updated task "${goal}" for ${sessionName}`);
+        const created = touched.filter(id => !beforeIds.has(id));
+        notify(ref.dirId, touched, created.length ? 'created' : undefined);
+        logger.log(`[multicc/taskboard] onClassifyGoal: ${created.length ? 'created' : 'merged'} task "${goal}" for ${sessionName} phase=${phase || '?'}`);
       }
     } catch (e) {
       logger.log(`[multicc/taskboard] onClassifyGoal error: ${e?.message || e}`);
