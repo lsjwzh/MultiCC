@@ -197,16 +197,16 @@ test('normalizeBoard drops malformed entries and survives garbage', () => {
   assert.equal(board.tasks.t1.status, 'active');
 });
 
-test('normalizeBoard migrates legacy classify module names to 未分类', () => {
+test('normalizeBoard migrates legacy classify module names to 待归类', () => {
   const dirId = '56783e84-80bb-49d2-89d4-6b412cdc9617';
   const board = core.normalizeBoard({
     modules: {
       legacyUuid: { name: dirId.slice(0, 20), source: 'classify', dirId },
-      legacyPending: { name: '待归类', source: 'classify', dirId: 'dir-2' },
+      legacyUnclassified: { name: '未分类', source: 'classify', dirId: 'dir-2' },
     },
   });
-  assert.equal(board.modules.legacyUuid.name, core.UNCLASSIFIED_MODULE_NAME);
-  assert.equal(board.modules.legacyPending.name, core.UNCLASSIFIED_MODULE_NAME);
+  assert.equal(board.modules.legacyUuid.name, core.CLASSIFY_PENDING_MODULE_NAME);
+  assert.equal(board.modules.legacyUnclassified.name, core.CLASSIFY_PENDING_MODULE_NAME);
 });
 
 // ── routing ─────────────────────────────────────────────────────────────────
@@ -391,7 +391,7 @@ test('onClassifyGoal creates immediately, anchors the current user and merges pe
   const tasks = Object.values(runtime.getBoard().tasks);
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].status, 'active');
-  assert.equal(runtime.getBoard().modules[tasks[0].moduleId].name, '未分类');
+  assert.equal(runtime.getBoard().modules[tasks[0].moduleId].name, '待归类');
   assert.deepEqual(tasks[0].refs.map(r => r.userMsgId), ['u-live', 'u-peer']);
   assert.deepEqual(tasks[0].refs.map(r => r.assistantMsgId), [null, null]);
   assert.equal(broadcasts[0].payload.kind, 'created');
