@@ -22,6 +22,7 @@ const core = require('../task-board');
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
   'workspaceBroadcast', 'isLocalRequest', 'atomicWriteJson', 'isSystemInjected',
+  'getSessionRunState',
 ];
 
 function assertTaskBoardDeps(deps) {
@@ -38,6 +39,7 @@ function createTaskBoardRuntime(deps) {
   const {
     file, auxQueue, records, loadHistory, dispatchToSession,
     workspaceBroadcast, isLocalRequest, atomicWriteJson, isSystemInjected,
+    getSessionRunState,
   } = deps;
   const logger = deps.logger || console;
   // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
@@ -65,8 +67,12 @@ function createTaskBoardRuntime(deps) {
     catch (e) { logger.log(`[multicc/taskboard] save failed: ${e.message}`); }
   }
 
-  function notify(dirId, taskIds) {
-    try { workspaceBroadcast(dirId || null, { type: 'task_board_update', taskIds }); }
+  function notify(dirId, taskIds, kind) {
+    // Always broadcast to metaClients (dirId=null) so meta.html always gets updates.
+    // kind='created' signals a new task was just tagged, for归拢中→定位 animation.
+    const payload = { type: 'task_board_update', taskIds };
+    if (kind) payload.kind = kind;
+    try { workspaceBroadcast(null, payload); }
     catch (_) {}
   }
 
@@ -155,10 +161,12 @@ function createTaskBoardRuntime(deps) {
         if (!result || result.cancelled) return;
         const parsed = core.parseTagResult(result.text);
         if (!parsed.tasks.length) return;
+        const beforeIds = new Set(Object.keys(board.tasks));
         const touched = core.applyTagResult(board, parsed.tasks, ref, Date.now());
         if (touched.length) {
           save();
-          notify(ref.dirId, touched);
+          const created = touched.filter(id => !beforeIds.has(id));
+          notify(ref.dirId, touched, created.length ? 'created' : undefined);
         }
       }).catch(e => {
         if (pendingTagBySession.get(sessionName) === taskId) pendingTagBySession.delete(sessionName);
@@ -276,11 +284,11 @@ function createTaskBoardRuntime(deps) {
   // ── REST ──────────────────────────────────────────────────────────────────
 
   function taskDto(task) {
-    return core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }).tasks[0];
+    return core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
   }
 
   function handleBoard(req, res) {
-    const dto = core.buildBoardDto(board);
+    const dto = core.buildBoardDto(board, getSessionRunState);
     const labels = {};
     for (const t of dto.tasks) {
       for (const sid of t.sessionIds) {
