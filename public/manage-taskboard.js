@@ -121,7 +121,232 @@ function toggleTaskBoardModule(modId) {
   }
 }
 
+// ── Composer (chat-parity input: attach/paste, voice, goal) ─────────────────
+// One factory used by both the board-tab composer (dir-level routing) and the
+// task-detail composer (task-level routing). Fire-and-forget by design: no
+// streaming/cancel state — a sent message is sent.
+//
+// Feature parity with the chat composer:
+//   attach/paste → POST /api/upload (FormData 'file') → absolute path appended
+//   to the message text (same convention the chat composer uses);
+//   voice → MediaRecorder → POST /api/voice/stt → transcript into the input;
+//   goal → goal:true + goalLimits{maxRounds,maxBudget}, note prepended
+//   server-side via buildGoalLimitNote (byte-equal to chat's goal mode).
+
+function createTbComposer(host, opts) {
+  host.innerHTML = `
+    <div class="tb-compose">
+      <div class="tb-chiprow" style="display:none"></div>
+      <textarea class="tb-input" placeholder="${_tbEsc(opts.placeholder || '输入消息…（支持粘贴图片/文件，Enter 发送，Shift+Enter 换行）')}"></textarea>
+      <div class="tb-goalrow" style="display:none">
+        <span class="tb-dim">🎯 Goal 模式</span>
+        <label class="tb-dim">轮次上限 <input type="number" class="tb-goal-rounds" value="200" min="0" max="200"></label>
+        <label class="tb-dim">token 预算 <input type="number" class="tb-goal-budget" step="1000" min="0" placeholder="不限"></label>
+      </div>
+      <div class="tb-compose-row">
+        <button class="btn btn-sm tb-attach-btn" title="上传图片/文件">📎</button>
+        <button class="btn btn-sm tb-mic-btn" title="语音输入">🎙</button>
+        <button class="btn btn-sm tb-goal-btn" title="以 Goal 模式发送（自主任务，带轮次/预算上限）">🎯</button>
+        <select class="tb-target"></select>
+        <button class="btn btn-sm tb-send-btn">🚀 发送</button>
+        <span class="tb-result"></span>
+      </div>
+      ${opts.hint ? `<div class="tb-dim" style="margin-top:4px">${_tbEsc(opts.hint)}</div>` : ''}
+      <input type="file" multiple hidden class="tb-file-input">
+    </div>`;
+  const $q = (sel) => host.querySelector(sel);
+  const input = $q('.tb-input');
+  const chiprow = $q('.tb-chiprow');
+  const targetSel = $q('.tb-target');
+  const sendBtn = $q('.tb-send-btn');
+  const micBtn = $q('.tb-mic-btn');
+  const goalBtn = $q('.tb-goal-btn');
+  const goalRow = $q('.tb-goalrow');
+  const fileInput = $q('.tb-file-input');
+  const resultEl = $q('.tb-result');
+
+  const setResult = (text, cls) => { resultEl.textContent = text || ''; resultEl.className = 'tb-result' + (cls ? ' ' + cls : ''); };
+
+  // Attachments — upload immediately, keep the returned path on a chip.
+  async function uploadFile(file) {
+    const chip = document.createElement('span');
+    chip.className = 'tb-fchip';
+    chip.textContent = `⏳ ${file.name || '文件'}`;
+    chiprow.style.display = '';
+    chiprow.appendChild(chip);
+    try {
+      const fd = new FormData();
+      fd.append('file', file, file.name || 'pasted');
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok || !d.path) throw new Error(d.error || r.status);
+      chip.dataset.path = d.path;
+      chip.textContent = `📄 ${d.name || file.name}`;
+      const x = document.createElement('span');
+      x.className = 'tb-fchip-x';
+      x.textContent = ' ✕';
+      x.onclick = () => { chip.remove(); if (!chiprow.children.length) chiprow.style.display = 'none'; };
+      chip.appendChild(x);
+    } catch (e) {
+      chip.textContent = `⚠️ ${file.name || '文件'} 上传失败`;
+      setTimeout(() => { chip.remove(); if (!chiprow.children.length) chiprow.style.display = 'none'; }, 3000);
+    }
+  }
+  $q('.tb-attach-btn').onclick = () => fileInput.click();
+  fileInput.onchange = () => { for (const f of fileInput.files) uploadFile(f); fileInput.value = ''; };
+  input.addEventListener('paste', (e) => {
+    const files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length) { e.preventDefault(); for (const f of files) uploadFile(f); }
+  });
+
+  // Voice — simplest press-to-toggle MediaRecorder → one-shot STT.
+  let recorder = null;
+  let recChunks = [];
+  micBtn.onclick = async () => {
+    if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (_) { setResult('无法访问麦克风', 'err'); return; }
+    recChunks = [];
+    const mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus' : undefined;
+    try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (_) { stream.getTracks().forEach(t => t.stop()); setResult('浏览器不支持录音', 'err'); return; }
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      micBtn.classList.remove('rec');
+      const blob = new Blob(recChunks, { type: 'audio/webm' });
+      if (!blob.size) return;
+      setResult('转写中…');
+      try {
+        const fd = new FormData();
+        fd.append('file', blob, 'recording.webm');
+        const r = await fetch('/api/voice/stt', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok || !d.text) throw new Error(d.error || '无转写结果');
+        input.value = input.value ? `${input.value} ${d.text.trim()}` : d.text.trim();
+        input.focus();
+        setResult('');
+      } catch (e) { setResult(`转写失败：${e.message}`, 'err'); }
+    };
+    recorder.start();
+    micBtn.classList.add('rec');
+    setResult('录音中，点 🎙 结束…');
+  };
+
+  // Goal toggle — show the limits row while armed.
+  goalBtn.onclick = () => {
+    const on = goalBtn.classList.toggle('on');
+    goalRow.style.display = on ? '' : 'none';
+  };
+
+  async function doSend() {
+    let text = input.value.trim();
+    const paths = [...chiprow.querySelectorAll('.tb-fchip[data-path]')].map(c => c.dataset.path);
+    if (paths.length) text = (text ? text + ' ' : '') + paths.join(' ');
+    if (!text) { setResult('请输入内容', 'err'); return; }
+    const payload = { text };
+    if (targetSel.value) payload.target = targetSel.value;
+    if (goalBtn.classList.contains('on')) {
+      payload.goal = true;
+      payload.goalLimits = {};
+      const rounds = $q('.tb-goal-rounds').value;
+      const budget = $q('.tb-goal-budget').value;
+      if (rounds !== '') payload.goalLimits.maxRounds = rounds;
+      if (budget !== '') payload.goalLimits.maxBudget = budget;
+    }
+    sendBtn.disabled = true;
+    setResult('路由中…');
+    try {
+      const okText = await opts.submit(payload);
+      setResult(okText || '已发送', 'ok');
+      input.value = '';
+      chiprow.innerHTML = '';
+      chiprow.style.display = 'none';
+    } catch (e) { setResult(String(e.message || e), 'err'); }
+    finally { sendBtn.disabled = false; }
+  }
+  sendBtn.onclick = doSend;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); doSend(); }
+  });
+
+  return {
+    setTargets(options) {
+      const prev = targetSel.value;
+      targetSel.innerHTML = '<option value="">🎯 自动路由</option>'
+        + options.map(o => `<option value="${_tbEsc(o.id)}">${_tbEsc(o.label || o.id)}</option>`).join('');
+      if ([...targetSel.options].some(o => o.value === prev)) targetSel.value = prev;
+    },
+    reset() { input.value = ''; chiprow.innerHTML = ''; chiprow.style.display = 'none'; setResult(''); },
+    focus() { input.focus(); },
+  };
+}
+
+// Board-tab composer (dir-level routing) — lives in the static #tb-dir-composer
+// container so WS-driven re-renders of #dir-detail-body never wipe its state.
+let _tbDirComposer = null;
+let _tbDirComposerDirId = null;
+
+function _tbDirTargets(dirId) {
+  if (typeof _cachedSessions === 'undefined' || !_cachedSessions) return [];
+  return _cachedSessions
+    .filter(s => s.dirId === dirId && s.kind === 'chat' && s.type !== 'aux')
+    .map(s => ({ id: s.id, label: s.label || s.id }));
+}
+
+function syncTaskBoardDirComposer(dirId, visible) {
+  const host = document.getElementById('tb-dir-composer');
+  if (!host) return;
+  host.style.display = visible ? '' : 'none';
+  if (!visible) return;
+  _tbDirComposerDirId = dirId;
+  if (!_tbDirComposer) {
+    _tbDirComposer = createTbComposer(host, {
+      placeholder: '向该 Fleet 派发消息…（不接入任何会话，自动路由到最近活跃的会话；AI 会把这轮对话归档到对应任务）',
+      submit: async (payload) => {
+        const r = await fetch('/api/task-board/send', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, dirId: _tbDirComposerDirId }),
+        });
+        const d = await r.json();
+        if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+        setTimeout(() => refreshTaskBoard(true), 1500);
+        return `已路由到「${d.targetLabel}」`;
+      },
+    });
+  }
+  _tbDirComposer.setTargets(_tbDirTargets(dirId));
+}
+
 // ── Task detail modal (stacked above dir-detail) ────────────────────────────
+
+let _tbTaskComposer = null;
+let _tbTaskComposerTaskId = null;
+
+function _tbEnsureTaskComposer(task) {
+  const host = document.getElementById('tb-task-composer');
+  if (!host) return;
+  if (!_tbTaskComposer) {
+    _tbTaskComposer = createTbComposer(host, {
+      placeholder: '向该任务派发后续消息…（自动路由到合适的会话，回复完成后自动归档回本任务）',
+      submit: async (payload) => {
+        const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(_tbTaskComposerTaskId)}/send`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+        setTimeout(() => refreshTaskBoard(true), 1500);
+        return `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
+      },
+    });
+  }
+  if (_tbTaskComposerTaskId !== task.id) _tbTaskComposer.reset();
+  _tbTaskComposerTaskId = task.id;
+  const labels = _tbBoard.sessionLabels || {};
+  _tbTaskComposer.setTargets(task.sessionIds.map(sid => ({ id: sid, label: labels[sid] || sid })));
+}
 
 function openTaskBoardDetail(taskId) {
   if (event) event.stopPropagation();
@@ -156,11 +381,9 @@ async function loadTaskBoardDetail(taskId, silent) {
   const content = document.getElementById('tb-detail-content');
   if (!content) return;
   const prevScroll = content.querySelector('.tb-msgs')?.scrollTop;
-  const prevInput = content.querySelector('#tb-input')?.value;
   renderTaskBoardDetail(d);
   const msgsBox = content.querySelector('.tb-msgs');
   if (msgsBox) msgsBox.scrollTop = prevScroll != null ? prevScroll : msgsBox.scrollHeight;
-  if (prevInput) content.querySelector('#tb-input').value = prevInput;
 }
 
 function renderTaskBoardDetail(d) {
@@ -186,9 +409,6 @@ function renderTaskBoardDetail(d) {
       </div>`;
   }).join('') || '<div class="tb-empty">该任务还没有关联对话。</div>';
 
-  const targetOptions = ['<option value="">🎯 自动路由</option>']
-    .concat(t.sessionIds.map(sid => `<option value="${_tbEsc(sid)}">${_tbEsc(labels[sid] || sid)}</option>`)).join('');
-
   content.innerHTML = `
     <div class="tb-d-head">
       <div class="tb-dim">${_tbEsc(mod ? mod.name : '未分组')} ›</div>
@@ -204,19 +424,15 @@ function renderTaskBoardDetail(d) {
       </div>
       <div class="tb-chips">${chips}</div>
     </div>
-    <div class="tb-msgs">${msgs}</div>
-    <div class="tb-compose">
-      <textarea id="tb-input" placeholder="向该任务派发后续消息…（不接入任何会话，发送时自动路由到合适的会话）"></textarea>
-      <div class="tb-compose-row">
-        <select id="tb-target">${targetOptions}</select>
-        <button class="btn btn-sm" id="tb-send" onclick="sendTaskBoardMessage('${_tbEsc(t.id)}')">🚀 发送</button>
-        <span class="tb-result" id="tb-result"></span>
-      </div>
-    </div>`;
+    <div class="tb-msgs">${msgs}</div>`;
 
   // Message bodies as textContent (never trust chat text as HTML).
   const bodies = content.querySelectorAll('.tb-msg-body');
   (d.items || []).forEach((it, i) => { if (bodies[i]) bodies[i].textContent = it.text || '（空）'; });
+
+  // Composer lives outside the re-rendered content, so refreshes never wipe
+  // a half-typed message or an in-progress recording.
+  _tbEnsureTaskComposer(t);
 }
 
 async function setTaskBoardStatus(taskId, status) {
@@ -232,34 +448,6 @@ async function setTaskBoardStatus(taskId, status) {
     refreshTaskBoard(true);
   } catch (e) {
     if (typeof showToast === 'function') showToast(`操作失败：${e.message}`, true);
-  }
-}
-
-async function sendTaskBoardMessage(taskId) {
-  const input = document.getElementById('tb-input');
-  const resultEl = document.getElementById('tb-result');
-  const btn = document.getElementById('tb-send');
-  const text = (input?.value || '').trim();
-  if (!text) { if (resultEl) { resultEl.textContent = '请输入内容'; resultEl.className = 'tb-result err'; } return; }
-  if (btn) btn.disabled = true;
-  if (resultEl) { resultEl.textContent = '路由中…'; resultEl.className = 'tb-result'; }
-  try {
-    const target = document.getElementById('tb-target')?.value || undefined;
-    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/send`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, target }),
-    });
-    const d = await r.json();
-    if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
-    if (resultEl) {
-      resultEl.textContent = `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
-      resultEl.className = 'tb-result ok';
-    }
-    if (input) input.value = '';
-    setTimeout(() => refreshTaskBoard(true), 1500);
-  } catch (e) {
-    if (resultEl) { resultEl.textContent = String(e.message); resultEl.className = 'tb-result err'; }
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 

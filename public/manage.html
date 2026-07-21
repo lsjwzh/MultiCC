@@ -539,6 +539,15 @@
     .tb-result{font-size:11.5px;color:var(--muted)}
     .tb-result.ok{color:var(--codex)}
     .tb-result.err{color:var(--danger)}
+    .tb-compose-row .btn.tb-mic-btn.rec{color:var(--danger);border-color:var(--danger);animation:tbRecPulse 1.2s infinite}
+    @keyframes tbRecPulse{0%,100%{opacity:1}50%{opacity:.45}}
+    .tb-compose-row .btn.tb-goal-btn.on{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
+    .tb-chiprow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+    .tb-fchip{font-size:11px;padding:2px 8px;border-radius:9px;background:var(--panel-2);color:var(--text);border:1px solid var(--line)}
+    .tb-fchip-x{cursor:pointer;color:var(--muted)}
+    .tb-fchip-x:hover{color:var(--danger)}
+    .tb-goalrow{display:flex;gap:14px;align-items:center;margin:6px 0 2px;flex-wrap:wrap}
+    .tb-goalrow input{width:90px;background:var(--well);color:var(--text);border:1px solid var(--line-strong);border-radius:6px;padding:3px 6px;font-size:11.5px}
   </style>
 </head>
 <body data-view="overview">
@@ -1638,6 +1647,7 @@
         <button class="btn" onclick="closeDirectoryDetail()">关闭</button>
       </div>
       <div id="dir-detail-body" style="flex:1;overflow:auto;padding:16px 18px;"></div>
+      <div id="tb-dir-composer" style="display:none;padding:0 18px;"></div>
     </div>
   </div>
 
@@ -1648,6 +1658,7 @@
         <button class="btn" onclick="closeTaskBoardDetail()">关闭</button>
       </div>
       <div id="tb-detail-content"></div>
+      <div id="tb-task-composer" style="padding:0 18px;"></div>
     </div>
   </div>
 
