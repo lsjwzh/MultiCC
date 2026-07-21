@@ -22,6 +22,30 @@ test('task detail session links use the encoded chat navigation contract', () =>
   assert.doesNotMatch(source, /sessionChatUrl\([^)]*\)[^\n]*(?:token|cwd)=/);
 });
 
+test('task board UI keeps pending modules first and sorts tasks by last activity', () => {
+  const modules = [
+    { id: 'z', name: 'Beta', source: 'ai' },
+    { id: 'p', name: '待归类', source: 'classify' },
+    { id: 'a', name: 'Alpha', source: 'ai' },
+  ];
+  const tasks = [
+    { id: 'old', title: '旧任务', lastTs: 10 },
+    { id: 'new', title: '新任务', lastTs: 30 },
+    { id: 'middle', title: '中间任务', lastTs: 20 },
+  ];
+  assert.deepEqual(taskBoardUi.sortModules(modules).map(m => m.id), ['p', 'a', 'z']);
+  assert.deepEqual(taskBoardUi.sortTasks(tasks).map(t => t.id), ['new', 'middle', 'old']);
+  assert.deepEqual(modules.map(m => m.id), ['z', 'p', 'a']);
+  assert.deepEqual(tasks.map(t => t.id), ['old', 'new', 'middle']);
+
+  const manageSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  const metaSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
+  for (const source of [manageSource, metaSource]) {
+    assert.match(source, /MultiCCTaskBoardUi\.sortModules/);
+    assert.match(source, /MultiCCTaskBoardUi\.sortTasks/);
+  }
+});
+
 // ── parseTagResult ──────────────────────────────────────────────────────────
 
 test('parseTagResult accepts clean JSON and sanitizes entries', () => {
