@@ -435,15 +435,19 @@ function renderTaskBoardDetail(d) {
   const mod = _tbBoard.modules.find(m => m.id === t.moduleId);
   const labels = _tbBoard.sessionLabels || {};
 
-  const chips = t.sessionIds.map(sid => `<span class="tb-chip">🖥 ${_tbEsc(labels[sid] || sid)}</span>`)
+  const chips = t.sessionIds.map(sid => {
+    const href = window.MultiCCTaskBoardUi.sessionChatUrl(sid);
+    return `<a class="tb-chip tb-session-link" href="${_tbEsc(href)}" target="_blank" rel="noopener noreferrer" title="在新标签打开对应会话">🖥 ${_tbEsc(labels[sid] || sid)} ↗</a>`;
+  })
     .concat((t.areas || []).map(a => `<span class="tb-chip">${_tbEsc(a)}</span>`)).join('');
 
   const msgs = (d.items || []).map(it => {
     const time = it.ts ? new Date(it.ts).toLocaleString('zh-CN', { hour12: false }) : '?';
+    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId);
     return `
       <div class="tb-msg ${it.role}">
         <div class="tb-msg-head">
-          <span class="tb-msg-sess">${_tbEsc(it.sessionLabel || it.sessionId)}</span>
+          <a class="tb-msg-sess tb-session-link" href="${_tbEsc(sessionHref)}" target="_blank" rel="noopener noreferrer" title="在新标签打开对应会话">${_tbEsc(it.sessionLabel || it.sessionId)} ↗</a>
           <span>${_tbEsc(time)}</span>
           <span class="tb-msg-role-${it.role}">${it.role === 'user' ? '👤 用户' : '🤖 助手'}</span>
           ${it.lost ? '<span style="color:var(--danger)">（原消息已清理，仅存摘要）</span>' : ''}
