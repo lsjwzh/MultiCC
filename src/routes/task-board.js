@@ -180,6 +180,56 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
+  // ── classify 识别出 goal 时立即创建/更新任务 ─────────────────────────
+  function onClassifyGoal(sessionName, goal, phase) {
+    try {
+      const rec = records.get(sessionName);
+      if (!rec || rec.type === 'aux' || rec.type === 'gateway') return;
+
+      const history = loadHistory(sessionName) || [];
+      const { userMsg, assistantMsg } = resolveTurnRefs(history);
+      if (!userMsg && !assistantMsg) return;
+
+      const now = Date.now();
+      const ref = {
+        sessionId: sessionName,
+        dirId: rec.dirId || null,
+        dirLabel: null,
+        userMsgId: userMsg?.id || null,
+        assistantMsgId: assistantMsg?.id || null,
+        ts: assistantMsg?.ts || userMsg?.ts || now,
+        excerpt: goal, // 用 goal 作为摘要
+      };
+
+      // 查找或创建任务：用 goal 作为 title 的归一化 key
+      const moduleId = rec.dirId || '_default';
+      let module = board.modules[moduleId];
+      if (!module) {
+        module = { id: moduleId, name: rec.dirId || '默认', source: 'classify', dirId: rec.dirId, createdAt: now, updatedAt: now };
+        board.modules[moduleId] = module;
+      }
+
+      // 查找同名任务（goal 相同视为同一任务）
+      let task = Object.values(board.tasks).find(t => t.moduleId === moduleId && t.title === goal);
+      if (!task) {
+        const taskId = crypto.randomUUID();
+        task = { id: taskId, moduleId, title: goal, status: 'open', areas: [], refs: [], createdAt: now, updatedAt: now };
+        board.tasks[taskId] = task;
+      }
+
+      // 添加 ref（去重）
+      if (core.addRefToTask(task, ref, now)) {
+        task.updatedAt = now;
+        module.updatedAt = now;
+        save();
+        notify(ref.dirId, [task.id], 'created');
+        logger.log(`[multicc/taskboard] onClassifyGoal: created/updated task "${goal}" for ${sessionName}`);
+      }
+    } catch (e) {
+      logger.log(`[multicc/taskboard] onClassifyGoal error: ${e?.message || e}`);
+    }
+  }
+
   // ── Backfill (scan existing chat history into the board) ─────────────────
 
   // Pair user→assistant turns from a history array, skipping system-injected
@@ -424,6 +474,7 @@ function createTaskBoardRuntime(deps) {
   return Object.freeze({
     mountRoutes,
     onTurnEnd,
+    onClassifyGoal,
     // test/introspection surface
     getBoard: () => board,
     save,
