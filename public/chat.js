@@ -120,6 +120,7 @@ const _params = new URLSearchParams(location.search);
 const _providerCatalog = window.MultiCCProviderCatalog;
 let _cwd = _params.get('cwd') || '';
 const _sessionName = _params.get('session') || '';  // dashboard session name
+const _targetMessageId = window.MultiCCChatMessageFocus.readTargetMessageId(location.search);
 const _hasNativeBridge = typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge;
 function tt(key, params) { return (window.t || ((k) => k))(key, params); }
 
@@ -495,6 +496,26 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   attachForkButton,
   warn: (...args) => console.warn(...args),
 });
+const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusController({
+  targetId: _targetMessageId,
+  findById: id => chatHistoryView.findById(id),
+  async fetchAround(messageId) {
+    const url = withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/history?around=${encodeURIComponent(messageId)}&limit=31`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  },
+  mergeMessages(messages, page) {
+    const inserted = chatHistoryView.prependMessages(messages);
+    // The around window becomes the pagination anchor. Existing newer DOM is
+    // intentionally retained, while subsequent "older" loads continue before
+    // this window instead of using the former latest-page cursor.
+    chatHistoryStore.reset();
+    chatHistoryStore.acceptHistory({ messages, hasMore: !!page.hasMore }, chatHistoryView.visibleIds());
+    return inserted;
+  },
+  onError: error => dbg('history', `message focus failed: ${error.message}`),
+});
 let _loadingOlderSentinel = null; // DOM node inserted at top while loading, also scroll anchor
 let _wasConnected = false;       // true once we've successfully opened at least one WS
 let _isDisconnected = false;
@@ -842,6 +863,14 @@ function applyHistoryPlan(plan) {
     updateUI();
   }
 
+  if (chatMessageFocus.shouldHoldBottom()) {
+    chatMessageFocus.ensureFocused().then(found => {
+      if (found) return;
+      forceScrollToBottom();
+      setTimeout(() => autofillHistory(4), 0);
+    });
+    return;
+  }
   forceScrollToBottom();
   setTimeout(() => autofillHistory(4), 0);
 }

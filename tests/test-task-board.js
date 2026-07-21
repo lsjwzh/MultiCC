@@ -15,11 +15,19 @@ test('task detail session links use the encoded chat navigation contract', () =>
     taskBoardUi.sessionChatUrl('session one&中文'),
     '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87',
   );
+  assert.equal(
+    taskBoardUi.sessionChatUrl('session one&中文', 'msg/1?x'),
+    '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87&message=msg%2F1%3Fx',
+  );
   assert.equal(taskBoardUi.sessionChatUrl(''), null);
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
   assert.match(source, /<script src="task-board-ui\.js"><\/script>/);
   assert.match(source, /t\.sessionIds\.map[\s\S]*?sessionChatUrl\(sid\)[\s\S]*?target="_blank"/);
-  assert.match(source, /sessionChatUrl\(it\.sessionId\)[\s\S]*?td-sess td-session-link/);
+  assert.match(source, /sessionChatUrl\(it\.sessionId, it\.messageId\)/);
+  assert.match(source, /td-msg-link/);
+  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  assert.match(manage, /sessionChatUrl\(it\.sessionId, it\.messageId\)/);
+  assert.match(manage, /tb-msg-link/);
   assert.doesNotMatch(source, /sessionChatUrl\([^)]*\)[^\n]*(?:token|cwd)=/);
 });
 
@@ -60,17 +68,19 @@ test('manage task detail renders clickable session links in chips and message ro
       },
       items: [{
         sessionId: 'session one&中文', sessionLabel: '会话一', role: 'user',
-        ts: 1, text: '检查跳转'
+        messageId: 'msg/1?x', ts: 1, text: '检查跳转'
       }]
     });
   `, context);
 
-  const expected = '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87';
+  const sessionUrl = '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87';
+  const messageUrl = sessionUrl + '&amp;message=msg%2F1%3Fx';
   assert.equal((content.innerHTML.match(/<a /g) || []).length, 2);
-  assert.equal((content.innerHTML.match(new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length, 2);
+  assert.match(content.innerHTML, new RegExp(sessionUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(content.innerHTML, new RegExp(messageUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.equal((content.innerHTML.match(/target="_blank"/g) || []).length, 2);
   assert.match(content.innerHTML, /tb-chip tb-session-link/);
-  assert.match(content.innerHTML, /tb-msg-sess tb-session-link/);
+  assert.match(content.innerHTML, /tb-msg user tb-msg-link/);
 });
 
 test('task board UI keeps pending modules first and sorts tasks by last activity', () => {
@@ -350,7 +360,7 @@ function mkRecords(entries) {
   return new Map(Object.entries(entries));
 }
 
-test('pickRouteTarget prefers the most recent ref session that is routable', () => {
+test('pickRouteTarget keeps affinity with an available prior participant', () => {
   const board = core.createEmptyBoard();
   const [tid] = core.applyTagResult(board, [{ id: 'new', title: 'T', module: 'M', areas: [] }],
     mkRef({ sessionId: 'old', assistantMsgId: 'a1' }), 1);
@@ -362,7 +372,7 @@ test('pickRouteTarget prefers the most recent ref session that is routable', () 
   assert.equal(core.pickRouteTarget(board, board.tasks[tid], records, null), 'newer');
 });
 
-test('pickRouteTarget skips aux/gateway/terminal/ephemeral and falls back to module dir', () => {
+test('pickRouteTarget skips invalid candidates and selects a relevant session in the module dir', () => {
   const board = core.createEmptyBoard();
   const [tid] = core.applyTagResult(board, [{ id: 'new', title: 'T', module: 'M', areas: [] }],
     mkRef({ sessionId: 'gone', dirId: 'd1' }), 1);
@@ -371,9 +381,9 @@ test('pickRouteTarget skips aux/gateway/terminal/ephemeral and falls back to mod
     term1: { kind: 'term', dirId: 'd1' },
     eph: { kind: 'chat', ephemeral: true, dirId: 'd1' },
     otherdir: { kind: 'chat', dirId: 'd2' },
-    good: { kind: 'chat', dirId: 'd1' },
+    good: { kind: 'chat', dirId: 'd1', label: '前端任务工程师' },
   });
-  assert.equal(core.pickRouteTarget(board, board.tasks[tid], records, null), 'good');
+  assert.equal(core.pickRouteTarget(board, board.tasks[tid], records, null, { queryText: '前端任务' }), 'good');
 });
 
 test('pickRouteTarget honors an explicit valid target and returns null when nothing fits', () => {
@@ -384,17 +394,17 @@ test('pickRouteTarget honors an explicit valid target and returns null when noth
   assert.equal(core.pickRouteTarget(board, board.tasks[tid], mkRecords({}), null), null);
 });
 
-test('pickDirTarget picks the most recently active routable session in the dir', () => {
+test('pickDirTarget uses recency only to break equal relevance scores', () => {
   const records = mkRecords({
-    stale: { kind: 'chat', dirId: 'd1', lastActivity: '2026-07-01T00:00:00Z' },
-    fresh: { kind: 'chat', dirId: 'd1', lastActivity: '2026-07-20T00:00:00Z' },
-    otherdir: { kind: 'chat', dirId: 'd2', lastActivity: '2026-07-21T00:00:00Z' },
+    stale: { kind: 'chat', dirId: 'd1', label: '前端消息', lastActivity: '2026-07-01T00:00:00Z' },
+    fresh: { kind: 'chat', dirId: 'd1', label: '前端消息', lastActivity: '2026-07-20T00:00:00Z' },
+    otherdir: { kind: 'chat', dirId: 'd2', label: '前端消息', lastActivity: '2026-07-21T00:00:00Z' },
     __aux__: { kind: 'chat', type: 'aux', dirId: 'd1', lastActivity: '2026-07-21T00:00:00Z' },
   });
-  assert.equal(core.pickDirTarget(records, 'd1', null), 'fresh');
+  assert.equal(core.pickDirTarget(records, 'd1', null, { queryText: '前端消息' }), 'fresh');
   assert.equal(core.pickDirTarget(records, 'd1', 'stale'), 'stale');   // explicit wins
   assert.equal(core.pickDirTarget(records, 'd3', null), null);
-  assert.equal(core.pickDirTarget(records, null, null), 'otherdir');   // no dir filter → global latest
+  assert.equal(core.pickDirTarget(records, null, null, { queryText: '前端消息' }), 'otherdir');
 });
 
 // ── routed-message marker ───────────────────────────────────────────────────
@@ -469,6 +479,7 @@ function mkRuntime(overrides = {}) {
     atomicWriteJson: (f, value) => fs.writeFileSync(f, JSON.stringify(value)),
     isSystemInjected: () => false,
     getSessionRunState: () => 'idle',
+    isSessionBusy: () => false,
     logger: { log: () => {} },
     ...overrides,
   };
@@ -625,6 +636,18 @@ test('streaming classify path creates or merges the task-board card before retur
   assert.ok(streaming >= 0 && create > streaming && earlyReturn > create);
 });
 
+test('host task-board dispatch rejects busy targets before durable admission', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(source, /function taskBoardSessionBusy\(sid\)[\s\S]*?chatTurnPreparationRuntime\.snapshot\(sid\)[\s\S]*?orchestrationChatBusy\(sid\)/);
+  assert.match(source, /createTaskBoardRuntime\([\s\S]*?isSessionBusy: taskBoardSessionBusy/);
+  const start = source.indexOf('async function dispatchToSession(');
+  const end = source.indexOf('\n// ── Dispatch ↔', start);
+  const body = source.slice(start, end);
+  const guard = body.indexOf('opts.requireIdle && taskBoardSessionBusy(chatId)');
+  const admission = body.indexOf('orchestrationRuntime.admitDispatch(');
+  assert.ok(guard >= 0 && admission > guard);
+});
+
 test('onTurnEnd skips aux/gateway sessions, short replies and injected turns', () => {
   const { runtime, auxCalls, deps } = mkRuntime();
   runtime.onTurnEnd({ currentUserText: 'x', currentAssistantText: '短' }, 'sess-1');
@@ -697,8 +720,10 @@ test('REST: board, messages, send and status flow', async () => {
   routes.get('GET /api/task-board/tasks/:taskId/messages')({ params: { taskId: tid } }, msgRes);
   assert.equal(msgRes.body.items.length, 2);
   assert.equal(msgRes.body.items[0].role, 'user');
+  assert.equal(msgRes.body.items[0].messageId, 'mu1');
   assert.equal(msgRes.body.items[0].sessionLabel, '工程师1');
   assert.equal(msgRes.body.items[1].role, 'assistant');
+  assert.equal(msgRes.body.items[1].messageId, 'ma1');
 
   const missRes = res();
   routes.get('GET /api/task-board/tasks/:taskId/messages')({ params: { taskId: 'nope' } }, missRes);
@@ -713,6 +738,7 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(dispatches.length, 1);
   assert.match(dispatches[0].message, /tb:/);
   assert.match(dispatches[0].opts.idempotencyKey, /^taskboard:/);
+  assert.equal(dispatches[0].opts.requireIdle, true);
 
   const stRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/status')(
@@ -803,6 +829,9 @@ test('backfill refuses non-local, unhealthy aux and concurrent runs', async () =
 
 test('goal-flagged sends prepend the goal note; board-level send routes by dir', async () => {
   const { runtime, dispatches } = mkRuntime({
+    records: new Map([
+      ['sess-1', { id: 'sess-1', kind: 'chat', dirId: 'dir-1', label: '项目整体推进工程师' }],
+    ]),
     resolveGoalLimits: (o) => ({ maxRounds: Number(o?.maxRounds) || 200, maxBudget: Number(o?.maxBudget) || 0 }),
     buildGoalLimitNote: (l) => `[Goal 模式限制]\nrounds=${l.maxRounds}\n[限制结束]\n\n`,
   });
@@ -846,7 +875,7 @@ test('goal flag is ignored gracefully when goal helpers are not wired', async ()
   runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
   const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
   routes.get('POST /api/task-board/send')(
-    { body: { dirId: 'dir-1', text: 'hi', goal: true, goalLimits: { maxRounds: 5 } } }, r);
+    { body: { dirId: 'dir-1', target: 'sess-1', text: 'hi', goal: true, goalLimits: { maxRounds: 5 } } }, r);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r.body.ok, true);
   assert.match(dispatches[0].message, /^【任务：新任务｜tb:[A-Za-z0-9_-]+】\nhi$/);
@@ -854,7 +883,12 @@ test('goal flag is ignored gracefully when goal helpers are not wired', async ()
 
 test('board placeholder is classified into the same card at turn end', async () => {
   let history = [];
-  const { runtime, dispatches, resolveAux } = mkRuntime({ loadHistory: () => history });
+  const { runtime, dispatches, resolveAux } = mkRuntime({
+    loadHistory: () => history,
+    records: new Map([
+      ['sess-1', { id: 'sess-1', kind: 'chat', dirId: 'dir-1', label: '任务板重新归类工程师' }],
+    ]),
+  });
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
   const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
@@ -985,9 +1019,54 @@ test('failed board dispatch rolls back its placeholder and empty pending module'
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
   const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
-  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: '不会成功的任务' } }, r);
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', target: 'sess-1', text: '不会成功的任务' } }, r);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r.code, 502);
+  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
+});
+
+test('task send rejects an explicit busy target and a selection-to-dispatch race', async () => {
+  let busyChecks = 0;
+  const { runtime, dispatches } = mkRuntime({ isSessionBusy: () => ++busyChecks >= 2 });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const task = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '修复任务跳转', now: 1,
+  });
+  const reply = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+
+  const race = reply();
+  routes.get('/api/task-board/tasks/:taskId/send')({
+    params: { taskId: task.id }, body: { text: '继续修复跳转' },
+  }, race);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(race.code, 409);
+  assert.equal(race.body.error, 'target_busy');
+  assert.equal(dispatches.length, 0);
+
+  const explicit = reply();
+  routes.get('/api/task-board/tasks/:taskId/send')({
+    params: { taskId: task.id }, body: { text: '继续', target: 'sess-1' },
+  }, explicit);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(explicit.code, 409);
+  assert.equal(explicit.body.error, 'target_busy');
+  assert.equal(dispatches.length, 0);
+});
+
+test('last-moment busy rejection returns 409 and rolls back board placeholder', async () => {
+  const { runtime } = mkRuntime({
+    dispatchToSession: async () => ({ ok: false, error: 'target_busy', code: 'target_busy' }),
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/send')({
+    body: { dirId: 'dir-1', target: 'sess-1', text: '修复前端消息跳转' },
+  }, r);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.code, 409);
+  assert.equal(r.body.error, 'target_busy');
   assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
 });
 

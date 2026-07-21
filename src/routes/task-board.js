@@ -23,7 +23,7 @@ const core = require('../task-board');
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
   'workspaceBroadcast', 'isLocalRequest', 'atomicWriteJson', 'isSystemInjected',
-  'getSessionRunState',
+  'getSessionRunState', 'isSessionBusy',
 ];
 
 function assertTaskBoardDeps(deps) {
@@ -40,7 +40,7 @@ function createTaskBoardRuntime(deps) {
   const {
     file, auxQueue, records, loadHistory, dispatchToSession,
     workspaceBroadcast, isLocalRequest, atomicWriteJson, isSystemInjected,
-    getSessionRunState,
+    getSessionRunState, isSessionBusy,
   } = deps;
   const logger = deps.logger || console;
   // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
@@ -621,14 +621,16 @@ function createTaskBoardRuntime(deps) {
       const am = ref.assistantMsgId ? history.find(m => m && m.id === ref.assistantMsgId) : null;
       if (um) {
         items.push({ sessionId: ref.sessionId, sessionLabel: label, role: 'user',
+                     messageId: um.id || ref.userMsgId || null,
                      ts: um.ts || ref.ts, text: core.messageText(um).slice(0, 4000) });
       } else if (ref.excerpt) {
         // The message may have been trimmed out of history — keep the excerpt.
         items.push({ sessionId: ref.sessionId, sessionLabel: label, role: 'user',
-                     ts: ref.ts, text: ref.excerpt, lost: true });
+                     messageId: null, ts: ref.ts, text: ref.excerpt, lost: true });
       }
       if (am) {
         items.push({ sessionId: ref.sessionId, sessionLabel: label, role: 'assistant',
+                     messageId: am.id || ref.assistantMsgId || null,
                      ts: am.ts || ref.ts, text: core.messageText(am).slice(0, 4000) });
       }
     }
@@ -643,13 +645,24 @@ function createTaskBoardRuntime(deps) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const explicit = String(req.body?.target || '').trim() || null;
-    const target = core.pickRouteTarget(board, task, records, explicit);
-    if (!target) return res.status(409).json({ error: 'no_route_target', note: '没有可路由的会话：该任务还没有参与会话，且模块目录下无可用 chat 会话' });
+    if (explicit && isSessionBusy(explicit)) {
+      return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
+    }
+    const target = core.pickRouteTarget(board, task, records, explicit, {
+      queryText: text,
+      isAvailable: sid => !isSessionBusy(sid),
+    });
+    if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '没有空闲且与该任务相关的可路由会话' });
+    if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
     const message = goalNoteFor(req.body) + core.buildRoutedMessage(task, text);
     const result = await dispatchToSession(target, message, {
       idempotencyKey: `taskboard:${task.id}:${crypto.randomUUID()}`,
+      requireIdle: true,
     });
-    if (!result.ok) return res.status(502).json({ error: result.error || 'dispatch_failed' });
+    if (!result.ok) {
+      const busy = result.code === 'target_busy' || result.error === 'target_busy';
+      return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
+    }
     res.json({
       ok: true,
       target,
@@ -660,7 +673,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   // Board-level composer: reserve a visible card first, then route to the
-  // explicit target or the most recently active chat session in the directory.
+  // explicit idle target or the most relevant idle chat session in the directory.
   // The marker lets turn-end classification converge that same card in place.
   async function handleBoardSend(req, res) {
     if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
@@ -668,8 +681,15 @@ function createTaskBoardRuntime(deps) {
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const dirId = String(req.body?.dirId || '').trim() || null;
     const explicit = String(req.body?.target || '').trim() || null;
-    const target = core.pickDirTarget(records, dirId, explicit);
-    if (!target) return res.status(409).json({ error: 'no_route_target', note: '该目录下没有可路由的 chat 会话' });
+    if (explicit && isSessionBusy(explicit)) {
+      return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
+    }
+    const target = core.pickDirTarget(records, dirId, explicit, {
+      queryText: text,
+      isAvailable: sid => !isSessionBusy(sid),
+    });
+    if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '该 Fleet 下没有空闲且与消息相关的 chat 会话' });
+    if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
     const pending = core.createPendingTask(board, { dirId, sessionId: target, seed: text });
     save();
     notify(dirId, [pending.id], 'created');
@@ -677,6 +697,7 @@ function createTaskBoardRuntime(deps) {
     try {
       result = await dispatchToSession(target, goalNoteFor(req.body) + core.buildRoutedMessage(pending, text), {
         idempotencyKey: `taskboard:${pending.id}:${crypto.randomUUID()}`,
+        requireIdle: true,
       });
     } catch (e) {
       result = { ok: false, error: e?.message || 'dispatch_failed' };
@@ -687,7 +708,8 @@ function createTaskBoardRuntime(deps) {
       if (!Object.values(board.tasks).some(t => t.moduleId === moduleId)) delete board.modules[moduleId];
       save();
       notify(dirId, [pending.id]);
-      return res.status(502).json({ error: result.error || 'dispatch_failed' });
+      const busy = result.code === 'target_busy' || result.error === 'target_busy';
+      return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
     }
     res.json({
       ok: true,
