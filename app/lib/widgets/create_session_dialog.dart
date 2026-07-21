@@ -1,4 +1,8 @@
-// 新建会话对话框（角色预设 + provider→model 联动）。自 main_shell.dart 抽出。
+// 新建会话对话框（角色预设 + provider->model 联动）。自 main_shell.dart 抽出。
+//
+// 形态：两个 kind 按钮（+ Chat / + Terminal）在 main_shell 里触发本对话框，
+// 对话框内部用 CLI 下拉让用户挑选底层 CLI（claude/codex/opencode/zcode/qoder），
+// 并按新 CLI 的 appType 重新拉取 provider 池、重建模型/effort/agent 区段。
 
 import 'package:flutter/material.dart';
 
@@ -6,13 +10,15 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../models/agent_preset.dart';
 import '../services/settings_service.dart';
+import '../services/manage_service.dart';
 import '../theme.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
 
-// ── New-session dialog with role presets + provider→model linkage ───────────
+// ── New-session dialog with role presets + provider->model linkage ───────────
 
 class CreateSessionResult {
+  final SessionCli cli;
   final String? label;
   final String? rolePrompt;
   final String? provider;
@@ -20,6 +26,7 @@ class CreateSessionResult {
   final String? effort;
   final String? agent;
   CreateSessionResult({
+    required this.cli,
     this.label,
     this.rolePrompt,
     this.provider,
@@ -30,18 +37,20 @@ class CreateSessionResult {
 }
 
 class CreateSessionDialog extends StatefulWidget {
-  final SessionCli cli;
   final SessionKind kind;
+  final SessionCli? defaultCli;
   final List<Map<String, dynamic>> providers;
   final String? defaultProviderId;
+  final Map<SessionCli, bool> cliAvailability;
   final SettingsService settings;
 
   const CreateSessionDialog({
     super.key,
-    required this.cli,
     required this.kind,
+    this.defaultCli,
     required this.providers,
     this.defaultProviderId,
+    this.cliAvailability = const {},
     required this.settings,
   });
 
@@ -57,24 +66,41 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   AgentPresetIndex? _presetIndex;
   bool _loadingPresets = false;
 
+  /// Picked CLI drives every other section (provider pool, model list, effort
+  /// options, agent field). Initialised from [widget.defaultCli] (or Claude as
+  /// the safest default) and rebuilt on every CLI change.
+  late SessionCli _pickedCli;
+
+  /// Mutable provider pool for the current [_pickedCli]. Re-fetched from the
+  /// server when the CLI changes (codex -> 'codex' appType, others -> 'claude');
+  /// qoder skips the pool entirely (BYOK).
+  List<Map<String, dynamic>> _providers = const [];
+  String? _defaultProviderId;
+
   String? _pickedProvider; // null or '' = default; id = that provider
   String? _pickedModel;
   late String _pickedEffort;
   bool _customModel = false;
   final _customModelCtrl = TextEditingController();
 
-  bool get _isClaude => widget.cli == SessionCli.claude;
-  bool get _isQoder => widget.cli == SessionCli.qoder;
-  String get _defaultEffort => widget.cli.defaultEffort;
+  bool get _isClaude => _pickedCli == SessionCli.claude;
+  bool get _isQoder => _pickedCli == SessionCli.qoder;
+  String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
-      widget.defaultProviderId != null &&
-      widget.defaultProviderId!.isNotEmpty &&
-      widget.providers.any((p) => p['id'] == widget.defaultProviderId);
+      _defaultProviderId != null &&
+      _defaultProviderId!.isNotEmpty &&
+      _providers.any((p) => p['id'] == _defaultProviderId);
   String get _effectiveProviderId {
     final picked = _pickedProvider;
     if (picked != null && picked.isNotEmpty) return picked;
-    return widget.defaultProviderId ?? '';
+    return _defaultProviderId ?? '';
   }
+
+  /// A CLI is selectable when the host reports it available. Unknown entries
+  /// (empty availability map, e.g. cold start with no sessions to probe) fall
+  /// back to available so the user is never blocked from creating a session.
+  bool _cliAvailable(SessionCli cli) =>
+      widget.cliAvailability[cli] ?? true;
 
   @override
   void initState() {
@@ -83,7 +109,20 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _roleCtrl = TextEditingController();
     _agentCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
-    if (_hasConcreteDefaultProvider) _pickedProvider = widget.defaultProviderId;
+    _pickedCli = widget.defaultCli ?? SessionCli.claude;
+    // If the requested default CLI isn't installed on this host, fall back to
+    // the first available one (or keep Claude when nothing is known).
+    if (!_cliAvailable(_pickedCli)) {
+      for (final cli in SessionCli.values) {
+        if (_cliAvailable(cli)) {
+          _pickedCli = cli;
+          break;
+        }
+      }
+    }
+    _providers = widget.providers;
+    _defaultProviderId = widget.defaultProviderId;
+    if (_hasConcreteDefaultProvider) _pickedProvider = _defaultProviderId;
     _pickedEffort = _defaultEffort;
     _loadPresets();
     final opts = _currentModelOptions;
@@ -115,14 +154,14 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (_isQoder) return kQoderModelOptions;
     Map<String, dynamic>? prov;
     final providerId = _effectiveProviderId;
-    for (final p in widget.providers) {
+    for (final p in _providers) {
       if (p['id'] == providerId) {
         prov = p;
         break;
       }
     }
     // Alias-mapped relays (e.g. iFlytek): expose the tiers directly, each option
-    // reading "opus → claude-opus-4-8 (GLM5.2)". The tier key is the value — the
+    // reading "opus -> claude-opus-4-8 (GLM5.2)". The tier key is the value - the
     // server honors session.model === opus/sonnet/haiku/fable as a wire model.
     final map = prov?['aliasMap'];
     if (map is Map) {
@@ -136,7 +175,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           tiers.add(
             MapEntry(
               t,
-              '$t → $m${(name != null && name.isNotEmpty) ? ' ($name)' : ''}',
+              '$t -> $m${(name != null && name.isNotEmpty) ? ' ($name)' : ''}',
             ),
           );
         }
@@ -160,20 +199,19 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
 
   String _providerIdForPresetDefault(AgentPreset preset) {
     final declared = preset.defaultProviderId ?? '';
-    if (declared.isNotEmpty &&
-        widget.providers.any((p) => p['id'] == declared)) {
+    if (declared.isNotEmpty && _providers.any((p) => p['id'] == declared)) {
       return declared;
     }
     final key = preset.defaultProviderKey.toLowerCase();
     final model = preset.defaultModel;
     if (key == 'xf-maas-coding') {
-      for (final p in widget.providers) {
+      for (final p in _providers) {
         final opts = (p['modelOptions'] as List? ?? [])
             .map((e) => e.toString())
             .toList();
         if (model.isNotEmpty && opts.contains(model)) return p['id'] as String;
       }
-      for (final p in widget.providers) {
+      for (final p in _providers) {
         final name = (p['name'] ?? '').toString().toLowerCase();
         if (name.contains('讯飞') ||
             name.contains('xf') ||
@@ -183,7 +221,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       }
     }
     if (key == 'openai-codex') {
-      for (final p in widget.providers) {
+      for (final p in _providers) {
         final name = (p['name'] ?? '').toString().toLowerCase();
         if (name.contains('openai') ||
             name.contains('codex 官方') ||
@@ -191,7 +229,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           return p['id'] as String;
         }
       }
-      for (final p in widget.providers) {
+      for (final p in _providers) {
         final opts = (p['modelOptions'] as List? ?? [])
             .map((e) => e.toString())
             .toList();
@@ -202,8 +240,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   }
 
   void _applyPresetDefaults(AgentPreset preset) {
+    // Preset only applies when it targets the CLI the user has currently
+    // picked (not the original widget.cli the dialog opened with).
     final presetCli = parseCli(preset.defaultCli.trim().toLowerCase());
-    if (presetCli != widget.cli) return;
+    if (presetCli != _pickedCli) return;
 
     final providerId = _providerIdForPresetDefault(preset);
     if (providerId.isNotEmpty) _pickedProvider = providerId;
@@ -223,7 +263,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     }
 
     final effort = preset.defaultEffort;
-    final validEfforts = widget.cli.effortOptions;
+    final validEfforts = _pickedCli.effortOptions;
     if (validEfforts.contains(effort)) _pickedEffort = effort;
   }
 
@@ -294,7 +334,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       final opts = _currentModelOptions;
       final prevModel = _customModel ? null : _pickedModel;
       if (prevModel != null && opts.any((e) => e.key == prevModel)) {
-        // Current model exists in new provider's list — keep it
+        // Current model exists in new provider's list - keep it
         _customModel = false;
       } else if (opts.isNotEmpty && opts.first.key.isNotEmpty) {
         _pickedModel = opts.first.key;
@@ -304,6 +344,64 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
         _customModel = false;
       }
     });
+  }
+
+  /// Re-fetch the provider pool for the newly picked CLI and reset the
+  /// dependent fields (provider / model / effort) to sensible defaults for
+  /// that CLI. Qoder skips the pool entirely (BYOK) but still seeds the model
+  /// from its static option list.
+  Future<void> _onCliChanged(SessionCli cli) async {
+    if (cli == _pickedCli) return;
+    // Optimistic reset: clear all dependent state so the UI reflects the new
+    // CLI immediately. The old provider pool is dropped (it belongs to the
+    // previous CLI's appType) and refilled below.
+    setState(() {
+      _pickedCli = cli;
+      _pickedEffort = _defaultEffort;
+      _pickedProvider = null;
+      _pickedModel = null;
+      _customModel = false;
+      _customModelCtrl.clear();
+      _providers = const [];
+      _defaultProviderId = null;
+    });
+    if (!cli.supportsProvider) {
+      // Qoder owns its account/BYOK; no provider pool to fetch. Seed the model
+      // from the static option list (kQoderModelOptions).
+      if (!mounted) return;
+      setState(() {
+        final opts = _currentModelOptions;
+        _pickedModel = opts.isNotEmpty ? opts.first.key : null;
+      });
+      return;
+    }
+    try {
+      final d = await ManageService(
+        settings: widget.settings,
+      ).fetchProviders(cli.appType);
+      if (!mounted) return;
+      final providers = (d['providers'] as List? ?? [])
+          .map((e) => (e as Map).cast<String, dynamic>())
+          .toList();
+      String? defaultProviderId;
+      final defaults = d['defaults'];
+      if (defaults is Map && defaults[cli.name] != null) {
+        defaultProviderId = defaults[cli.name].toString();
+      }
+      setState(() {
+        _providers = providers;
+        _defaultProviderId = defaultProviderId;
+        if (defaultProviderId != null &&
+            defaultProviderId.isNotEmpty &&
+            providers.any((p) => p['id'] == defaultProviderId)) {
+          _pickedProvider = defaultProviderId;
+        }
+        final opts = _currentModelOptions;
+        _pickedModel = opts.isNotEmpty ? opts.first.key : null;
+      });
+    } catch (_) {
+      // Leave the optimistic empty state in place on failure.
+    }
   }
 
   void _submit() {
@@ -318,6 +416,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           : null;
     }
     final result = CreateSessionResult(
+      cli: _pickedCli,
       label: _nameCtrl.text.trim().isNotEmpty ? _nameCtrl.text.trim() : null,
       rolePrompt: _roleCtrl.text.trim().isNotEmpty
           ? _roleCtrl.text.trim()
@@ -327,7 +426,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           : null,
       model: model,
       effort: _pickedEffort,
-      agent: widget.cli.supportsAgent && _agentCtrl.text.trim().isNotEmpty
+      agent: _pickedCli.supportsAgent && _agentCtrl.text.trim().isNotEmpty
           ? _agentCtrl.text.trim()
           : null,
     );
@@ -341,7 +440,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       backgroundColor: const Color(0xFF0f1115),
       title: Text(
         t('createSessionTitle', {
-          'cli': widget.cli.displayName,
+          'cli': _pickedCli.displayName,
           'kind': widget.kind == SessionKind.chat ? 'Chat' : 'Terminal',
         }),
         style: const TextStyle(color: Color(0xFFf2f4f7), fontSize: 16),
@@ -361,6 +460,40 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               controller: _nameCtrl,
               style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
               decoration: sheetInputDecoration(hint: t('optionalAutoName')),
+            ),
+            const SizedBox(height: 12),
+            // ── CLI picker (drives provider pool + model/effort/agent) ──
+            Text(
+              t('cliLabel'),
+              style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+            ),
+            const SizedBox(height: 4),
+            DropdownButtonFormField<SessionCli>(
+              value: _pickedCli,
+              dropdownColor: const Color(0xFF0f1115),
+              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+              decoration: sheetInputDecoration(),
+              items: SessionCli.values
+                  .map(
+                    (cli) => DropdownMenuItem<SessionCli>(
+                      value: cli,
+                      enabled: _cliAvailable(cli),
+                      child: Text(
+                        _cliAvailable(cli)
+                            ? cli.displayName
+                            : '${cli.displayName}${t('cliNotInstalledSuffix')}',
+                        style: TextStyle(
+                          color: _cliAvailable(cli)
+                              ? const Color(0xFFe7eaee)
+                              : const Color(0xFF5b616c),
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) {
+                if (v != null) _onCliChanged(v);
+              },
             ),
             const SizedBox(height: 12),
             // ── Role prompt with preset picker ──
@@ -400,7 +533,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               ),
             ),
             const SizedBox(height: 12),
-            if (widget.cli.supportsProvider) ...[
+            if (_pickedCli.supportsProvider) ...[
               // ── Provider ──
               const Text(
                 'Provider',
@@ -421,11 +554,11 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                         style: const TextStyle(color: Color(0xFFe7eaee)),
                       ),
                     ),
-                  ...widget.providers.map(
+                  ..._providers.map(
                     (p) => DropdownMenuItem(
                       value: p['id'] as String,
                       child: Text(
-                        '${p['id'] == widget.defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
+                        '${p['id'] == _defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
                         '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
                         '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
                         style: const TextStyle(color: Color(0xFFe7eaee)),
@@ -498,10 +631,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 autofocus: true,
               ),
             ],
-            if (widget.cli.supportsEffort) ...[
+            if (_pickedCli.supportsEffort) ...[
               const SizedBox(height: 12),
               Text(
-                widget.cli.effortFieldLabel,
+                _pickedCli.effortFieldLabel,
                 style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
               ),
               const SizedBox(height: 4),
@@ -510,13 +643,16 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 dropdownColor: const Color(0xFF0f1115),
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(),
-                items: widget.cli.effortOptions
+                items: _pickedCli.effortOptions
                     .map(
                       (e) => DropdownMenuItem(
                         value: e,
                         child: Text(
-                          _isClaude ? e : effortShortNameForCli(widget.cli, e),
-                          style: const TextStyle(color: Color(0xFFe7eaee)),
+                          _isClaude
+                              ? e
+                              : effortShortNameForCli(_pickedCli, e),
+                          style:
+                              const TextStyle(color: Color(0xFFe7eaee)),
                         ),
                       ),
                     )
@@ -525,10 +661,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                     setState(() => _pickedEffort = v ?? _defaultEffort),
               ),
             ],
-            if (widget.cli.supportsAgent) ...[
+            if (_pickedCli.supportsAgent) ...[
               const SizedBox(height: 12),
               Text(
-                '${widget.cli.displayName} Agent',
+                '${_pickedCli.displayName} Agent',
                 style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
               ),
               const SizedBox(height: 4),
@@ -537,7 +673,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 maxLength: 80,
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(
-                  hint: widget.cli == SessionCli.opencode
+                  hint: _pickedCli == SessionCli.opencode
                       ? t('agentBuildHint')
                       : t('agentNameHint'),
                 ).copyWith(counterText: ''),
