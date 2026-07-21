@@ -170,6 +170,12 @@ class _ChatSheetState extends State<_ChatSheet>
   late final AnimationController _anim;
   bool _collapsing = false;
 
+  // Deep-link focus captured once from the SessionManager when this sheet
+  // mounts (task-board "jump to message"). Forwarded to ChatView; null for a
+  // normal open -> ChatView's focus path stays dormant.
+  bool _focusCaptured = false;
+  String? _focusMessageId;
+
   static const double _snapHalf =
       0.9; // default opened height (matches fleet panel)
   static const double _dismissBelow = 0.5; // drag below this → collapse home
@@ -187,6 +193,21 @@ class _ChatSheetState extends State<_ChatSheet>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _anim.animateTo(_snapHalf, curve: Curves.easeOutCubic);
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Capture the pending deep-link focus once (the SessionManager stashed it
+    // just before activating this session). didChangeDependencies is the safe
+    // place to read providers; the guard makes it a one-shot so a later
+    // dependency change never re-consumes a (now empty) stash.
+    if (!_focusCaptured) {
+      _focusCaptured = true;
+      _focusMessageId = context
+          .read<SessionManager>()
+          .consumeFocusMessage(widget.provider.sessionName);
+    }
   }
 
   @override
@@ -290,6 +311,7 @@ class _ChatSheetState extends State<_ChatSheet>
                             child: ChatView(
                               settings: widget.settings,
                               onCollapse: _collapse,
+                              focusMessageId: _focusMessageId,
                             ),
                           ),
                         ),
@@ -1343,12 +1365,15 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   }
 
   /// Open a session by id (called from the task-board detail sheet when a
-  /// session chip is tapped). Looks the session up in the loaded list; a chat
-  /// opens inline over the fleet panel, a terminal pushes its screen. A session
-  /// referenced by a task but no longer loaded surfaces a SnackBar. The detail
-  /// sheet pops itself before calling this, so the fleet panel is the top layer
-  /// and its context/mgr are still live.
-  void _openSessionById(String sessionId) {
+  /// session chip is tapped, or when a message is tapped to deep-link into the
+  /// chat). Looks the session up in the loaded list; a chat opens inline over
+  /// the fleet panel, a terminal pushes its screen. A [focusMessageId]
+  /// deep-links a chat session to that message (scroll + highlight); it is
+  /// ignored for terminals and when null. A session referenced by a task but no
+  /// longer loaded surfaces a SnackBar. The detail sheet pops itself before
+  /// calling this, so the fleet panel is the top layer and its context/mgr are
+  /// still live.
+  void _openSessionById(String sessionId, {String? focusMessageId}) {
     Session? match;
     for (final s in widget.mgr.sessions) {
       if (s.id == sessionId) {
@@ -1363,7 +1388,13 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
       );
       return;
     }
-    _openSession(match);
+    if (focusMessageId != null &&
+        focusMessageId.isNotEmpty &&
+        match.isChat) {
+      widget.mgr.openSessionWithFocus(match, focusMessageId: focusMessageId);
+    } else {
+      _openSession(match);
+    }
   }
 
   Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {
@@ -1742,6 +1773,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                       TaskBoardView(
                         settings: widget.settings,
                         dirId: widget.dirId,
+                        mgr: widget.mgr,
                         onTaskCount: (n) {
                           if (_taskCount != n) {
                             setState(() => _taskCount = n);

@@ -17,6 +17,21 @@ class LocalOnlyException implements Exception {
   String toString() => message ?? 'local-only';
 }
 
+/// Thrown by the task-board dispatch endpoints (POST .../send) when the server
+/// rejects the route: 409 (no idle/relevant target, or the chosen session is
+/// busy) carries a human-readable `note` from the server; 503 (aux-AI
+/// unhealthy) and 400 (empty text) carry only an `error` code, so `note` is
+/// left empty and the UI maps the `code` to a localized message. 403 still
+/// surfaces as [LocalOnlyException] (the dispatch endpoints are localhost-only).
+class BoardRouteException implements Exception {
+  final String code;
+  final String note;
+  const BoardRouteException(this.code, this.note);
+
+  @override
+  String toString() => note.isEmpty ? code : note;
+}
+
 /// Thin REST client for the server-side management endpoints that the web
 /// dashboard (manage.html) exposes: scheduled tasks (cron), agent resources
 /// (skills / Claude history), temp-upload cache, token usage, access-token,
@@ -747,6 +762,90 @@ class ManageService {
                 {if (dirId != null && dirId.isNotEmpty) 'dirId': dirId}))
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  // ── Task-board dispatch (派发) ─────────────────────────────────────────────
+  // POST /api/task-board/send (dir-level) and POST /api/task-board/tasks/:id/send
+  // (task-level) route a message to an idle, relevant chat session. Both are
+  // localhost-only (403 -> LocalOnlyException). A 409 carries the server's
+  // human note (no idle target / target busy); 503 means the aux-AI is
+  // unhealthy; 400 empty_text is a backstop the UI also guards client-side.
+
+  /// Converts a dispatch-endpoint failure into the right exception type. 409/400
+  /// become [BoardRouteException] (note from the server when present); 503
+  /// becomes a code-only [BoardRouteException] the UI localizes; 403 stays
+  /// [LocalOnlyException]; anything else falls through to [_throw].
+  Never _throwBoardSend(http.Response res) {
+    if (res.statusCode == 403) throw const LocalOnlyException();
+    if (res.statusCode == 503) {
+      throw const BoardRouteException('aux_unhealthy', '');
+    }
+    if (res.statusCode == 409 || res.statusCode == 400) {
+      var code = res.statusCode == 400 ? 'bad_request' : 'route_failed';
+      var note = '';
+      try {
+        final j = jsonDecode(res.body);
+        if (j is Map) {
+          code = (j['error'] ?? code).toString();
+          note = (j['note'] ?? '').toString();
+        }
+      } catch (_) {}
+      throw BoardRouteException(code, note);
+    }
+    _throw(res);
+  }
+
+  /// POST /api/task-board/send -> route [text] to an idle chat session in
+  /// [dirId], creating a pending task. Returns `{ok, taskId, target,
+  /// targetLabel, ...}`. Throws [LocalOnlyException] / [BoardRouteException].
+  Future<Map<String, dynamic>> sendToBoard(
+    String dirId, {
+    required String text,
+    String? target,
+    bool goal = false,
+    Map<String, dynamic>? goalLimits,
+  }) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/task-board/send')),
+            headers: _headers,
+            body: jsonEncode({
+              'text': text,
+              'dirId': dirId,
+              if (target != null && target.isNotEmpty) 'target': target,
+              if (goal) 'goal': true,
+              if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
+            }))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) _throwBoardSend(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// POST `/api/task-board/tasks/:taskId/send` -> route [text] to an idle
+  /// session relevant to [taskId]. Returns `{ok, target, targetLabel, ...}`.
+  /// Throws [LocalOnlyException] / [BoardRouteException].
+  Future<Map<String, dynamic>> sendToTask(
+    String taskId, {
+    required String text,
+    String? target,
+    bool goal = false,
+    Map<String, dynamic>? goalLimits,
+  }) async {
+    final res = await http
+        .post(
+            Uri.parse(_url(
+                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/send')),
+            headers: _headers,
+            body: jsonEncode({
+              'text': text,
+              if (target != null && target.isNotEmpty) 'target': target,
+              if (goal) 'goal': true,
+              if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
+            }))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) _throwBoardSend(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
         .cast<String, dynamic>();
   }

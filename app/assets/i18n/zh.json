@@ -47,6 +47,7 @@
   "moreActions": "更多操作",
 
   "renameSession": "改名",
+  "merge": "合并",
   "mergeWorktree": "合并 worktree",
   "mergeWorktreeReady": "合并 worktree（有未提交改动，可合并回 {base}）",
   "viewDiff": "查看 Diff",
@@ -621,5 +622,23 @@
   "tbRetryInMinutes": "{m}分钟后重试",
   "tbMsgLost": "消息已丢失",
   "tbSessionNotFound": "找不到该会话",
-  "tbMessages": "消息流"
+  "tbMessages": "消息流",
+  "messageNotFound": "消息未找到",
+
+  "boardSend": "发送",
+  "boardTarget": "目标会话",
+  "boardAutoRoute": "🎯 自动路由",
+  "boardGoalMode": "Goal 模式",
+  "boardAttach": "添加附件",
+  "boardVoice": "语音输入",
+  "boardUploading": "上传中…",
+  "boardNoIdleSession": "无空闲会话",
+  "boardEmptyText": "请输入内容",
+  "boardAuxUnhealthy": "AI 助手不健康，暂无法派发",
+  "boardRouteFailed": "派发失败",
+  "boardDispatching": "路由中…",
+  "boardSent": "已发送",
+  "boardRoutedTo": "已路由到「{target}」",
+  "boardComposerHint": "向该 Fleet 派发消息…（自动路由到空闲且最相关的会话）",
+  "boardTaskComposerHint": "向该任务派发后续消息…（自动路由到合适的会话，回复自动归档回本任务）"
 }
