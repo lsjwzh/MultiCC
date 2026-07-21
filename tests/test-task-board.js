@@ -7,6 +7,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const core = require('../src/task-board');
 const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
+const taskBoardUi = require('../public/task-board-ui');
+
+test('task detail session links use the encoded chat navigation contract', () => {
+  assert.equal(
+    taskBoardUi.sessionChatUrl('session one&中文'),
+    '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87',
+  );
+  assert.equal(taskBoardUi.sessionChatUrl(''), null);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
+  assert.match(source, /<script src="task-board-ui\.js"><\/script>/);
+  assert.match(source, /t\.sessionIds\.map[\s\S]*?sessionChatUrl\(sid\)[\s\S]*?target="_blank"/);
+  assert.match(source, /sessionChatUrl\(it\.sessionId\)[\s\S]*?td-sess td-session-link/);
+  assert.doesNotMatch(source, /sessionChatUrl\([^)]*\)[^\n]*(?:token|cwd)=/);
+});
 
 // ── parseTagResult ──────────────────────────────────────────────────────────
 
