@@ -5,6 +5,7 @@ const test = require('node:test');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const core = require('../src/task-board');
 const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
 const taskBoardUi = require('../public/task-board-ui');
@@ -20,6 +21,56 @@ test('task detail session links use the encoded chat navigation contract', () =>
   assert.match(source, /t\.sessionIds\.map[\s\S]*?sessionChatUrl\(sid\)[\s\S]*?target="_blank"/);
   assert.match(source, /sessionChatUrl\(it\.sessionId\)[\s\S]*?td-sess td-session-link/);
   assert.doesNotMatch(source, /sessionChatUrl\([^)]*\)[^\n]*(?:token|cwd)=/);
+});
+
+test('manage task detail renders clickable session links in chips and message rows', async () => {
+  const content = {
+    innerHTML: '',
+    querySelectorAll: () => [],
+    querySelector: () => null,
+  };
+  const context = vm.createContext({
+    console,
+    window: { MultiCCTaskBoardUi: taskBoardUi },
+    document: {
+      getElementById: id => id === 'tb-detail-content' ? content : null,
+      createElement: () => ({}),
+      body: { appendChild: () => {} },
+      head: { appendChild: () => {} },
+    },
+    fetch: async () => ({ json: async () => ({ ok: false }) }),
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    Date,
+  });
+  const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  vm.runInContext(source, context);
+  vm.runInContext(`
+    _tbBoard = {
+      modules: [{ id: 'mod-1', name: '前端 UI' }],
+      tasks: [],
+      sessionLabels: { 'session one&中文': '会话一' }
+    };
+    renderTaskBoardDetail({
+      task: {
+        id: 'task-1', moduleId: 'mod-1', title: '跳转修复', status: 'active',
+        sessionIds: ['session one&中文'], areas: [], classification: null
+      },
+      items: [{
+        sessionId: 'session one&中文', sessionLabel: '会话一', role: 'user',
+        ts: 1, text: '检查跳转'
+      }]
+    });
+  `, context);
+
+  const expected = '/chat.html?session=session+one%26%E4%B8%AD%E6%96%87';
+  assert.equal((content.innerHTML.match(/<a /g) || []).length, 2);
+  assert.equal((content.innerHTML.match(new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length, 2);
+  assert.equal((content.innerHTML.match(/target="_blank"/g) || []).length, 2);
+  assert.match(content.innerHTML, /tb-chip tb-session-link/);
+  assert.match(content.innerHTML, /tb-msg-sess tb-session-link/);
 });
 
 test('task board UI keeps pending modules first and sorts tasks by last activity', () => {
