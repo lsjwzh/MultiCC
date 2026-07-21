@@ -126,6 +126,48 @@ test('addRefToTask upgrades an in-flight user ref with the final assistant id', 
   assert.equal(task.refs[0].ts, 20);
 });
 
+test('pending tasks are unique placeholders and converge in place after classification', () => {
+  const board = core.createEmptyBoard();
+  const first = core.createPendingTask(board, {
+    dirId: 'd1', sessionId: 's1', seed: '实现任务板手动重试', now: 10,
+  });
+  const second = core.createPendingTask(board, {
+    dirId: 'd1', sessionId: 's1', seed: '修复另一件事', now: 11,
+  });
+  assert.notEqual(first.id, second.id);
+  assert.equal(Object.keys(board.modules).length, 1);
+  assert.equal(first.title, '新任务');
+  assert.equal(first.classification.state, 'waiting_reply');
+
+  const result = core.applyTaskClassification(board, first.id, {
+    id: first.id, title: '完善任务归类', module: '任务板', areas: ['src/task-board.js'],
+  }, mkRef({ userMsgId: 'u-live', assistantMsgId: 'a-live' }), 20);
+  assert.equal(result.ok, true);
+  assert.equal(result.taskId, first.id);
+  assert.equal(board.tasks[first.id].title, '完善任务归类');
+  assert.equal(board.modules[board.tasks[first.id].moduleId].name, '任务板');
+  assert.equal(board.tasks[first.id].classification, undefined);
+  assert.equal(Object.keys(board.tasks).length, 2);
+});
+
+test('pending classification can merge into an existing task without duplicates', () => {
+  const board = core.createEmptyBoard();
+  const [existingId] = core.applyTagResult(board, [
+    { id: 'new', title: '修复登录', module: '前端 UI', areas: [] },
+  ], mkRef({ userMsgId: 'u-old', assistantMsgId: 'a-old' }), 1);
+  const pending = core.createPendingTask(board, {
+    dirId: 'd1', sessionId: 's1', seed: '继续修复登录', now: 2,
+  });
+  const result = core.applyTaskClassification(board, pending.id, {
+    id: existingId, title: '', module: '', areas: ['public/login.js'],
+  }, mkRef({ userMsgId: 'u-new', assistantMsgId: 'a-new' }), 3);
+  assert.equal(result.ok, true);
+  assert.equal(result.taskId, existingId);
+  assert.equal(board.tasks[pending.id], undefined);
+  assert.equal(Object.keys(board.tasks).length, 1);
+  assert.deepEqual(board.tasks[existingId].refs.map(r => r.userMsgId), ['u-old', 'u-new']);
+});
+
 test('applyTagResult routes by existing id and dedups refs by assistant msg id', () => {
   const board = core.createEmptyBoard();
   const [tid] = core.applyTagResult(board, [{ id: 'new', title: 'T', module: 'M', areas: [] }], mkRef(), 1);
@@ -201,7 +243,10 @@ test('normalizeBoard drops malformed entries and survives garbage', () => {
   const board = core.normalizeBoard({
     modules: { m1: { name: '服务端' }, bad: { nope: 1 } },
     tasks: {
-      t1: { title: 'T', moduleId: 'm1', refs: [{ sessionId: 's1', ts: 5 }, { bad: true }] },
+      t1: {
+        title: 'T', moduleId: 'm1', refs: [{ sessionId: 's1', ts: 5 }, { bad: true }],
+        classification: { state: 'failed', lastError: '/tmp/private token=secret' },
+      },
       bad: { refs: [] },
     },
   });
@@ -209,6 +254,7 @@ test('normalizeBoard drops malformed entries and survives garbage', () => {
   assert.deepEqual(Object.keys(board.tasks), ['t1']);
   assert.equal(board.tasks.t1.refs.length, 1);
   assert.equal(board.tasks.t1.status, 'active');
+  assert.equal(board.tasks.t1.classification.lastError, 'classification_failed');
 });
 
 test('normalizeBoard migrates legacy classify module names to 待归类', () => {
@@ -501,8 +547,10 @@ test('REST: board, messages, send and status flow', async () => {
     'GET /api/task-board/tasks/:taskId/messages',
     'POST /api/task-board/tasks/:taskId/send',
     'POST /api/task-board/tasks/:taskId/status',
+    'POST /api/task-board/tasks/:taskId/reclassify',
     'POST /api/task-board/send',
     'POST /api/task-board/backfill',
+    'POST /api/task-board/reclassify-pending',
   ]);
 
   // seed one task with a ref
@@ -657,8 +705,12 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
   await new Promise(rr => setImmediate(rr));
   assert.equal(r2.body.ok, true);
   assert.equal(r2.body.target, 'sess-1');
-  assert.equal(dispatches[1].message, '整体推进一下');   // no marker, no note
-  assert.match(dispatches[1].opts.idempotencyKey, /^taskboard:dir:/);
+  assert.ok(r2.body.taskId);
+  assert.match(dispatches[1].message, new RegExp(`^【任务：新任务｜tb:${r2.body.taskId}】\\n整体推进一下$`));
+  assert.match(dispatches[1].opts.idempotencyKey, new RegExp(`^taskboard:${r2.body.taskId}:`));
+  const pending = runtime.getBoard().tasks[r2.body.taskId];
+  assert.equal(pending.title, '新任务');
+  assert.equal(pending.classification.state, 'waiting_reply');
 
   const r3 = res();
   routes.get('POST /api/task-board/send')({ body: { dirId: 'nope', text: 'x' } }, r3);
@@ -675,7 +727,117 @@ test('goal flag is ignored gracefully when goal helpers are not wired', async ()
     { body: { dirId: 'dir-1', text: 'hi', goal: true, goalLimits: { maxRounds: 5 } } }, r);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r.body.ok, true);
-  assert.equal(dispatches[0].message, 'hi');
+  assert.match(dispatches[0].message, /^【任务：新任务｜tb:[A-Za-z0-9_-]+】\nhi$/);
+});
+
+test('board placeholder is classified into the same card at turn end', async () => {
+  let history = [];
+  const { runtime, dispatches, resolveAux } = mkRuntime({ loadHistory: () => history });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('POST /api/task-board/send')({ body: { dirId: 'dir-1', text: '增加手动重新归类按钮' } }, r);
+  await new Promise(rr => setImmediate(rr));
+  const taskId = r.body.taskId;
+  const routed = dispatches[0].message;
+  history = [
+    { id: 'u-new', role: 'user', content: routed, ts: 30 },
+    { id: 'a-new', role: 'assistant', content: '已经完成按钮、接口以及失败重试状态的实现。', ts: 40 },
+  ];
+  runtime.onTurnEnd({
+    currentUserText: routed,
+    currentAssistantText: '已经完成按钮、接口以及失败重试状态的实现。',
+  }, 'sess-1');
+  resolveAux({
+    cancelled: false,
+    text: `{"tasks":[{"id":"${taskId}","title":"任务重新归类","module":"任务板","areas":["src/routes/task-board.js"]}]}`,
+  });
+  await new Promise(rr => setImmediate(rr));
+  const tasks = Object.values(runtime.getBoard().tasks);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].id, taskId);
+  assert.equal(tasks[0].title, '任务重新归类');
+  assert.equal(tasks[0].classification, undefined);
+  assert.equal(tasks[0].refs.length, 1);
+  assert.equal(tasks[0].refs[0].assistantMsgId, 'a-new');
+});
+
+test('manual reclassify retries a failed pending card and exposes batch route', async () => {
+  const history = [
+    { id: 'u1', role: 'user', content: '实现重试', ts: 1 },
+    { id: 'a1', role: 'assistant', content: '已经完成详细实现内容。', ts: 2 },
+  ];
+  const { runtime, auxCalls, resolveAux } = mkRuntime({ loadHistory: () => history });
+  const pending = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '实现重试', now: 1,
+  });
+  pending.refs[0].userMsgId = 'u1';
+  pending.refs[0].assistantMsgId = 'a1';
+  pending.classification.state = 'failed';
+  pending.classification.attempts = 5;
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const res = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+
+  const single = res();
+  routes.get('POST /api/task-board/tasks/:taskId/reclassify')({ params: { taskId: pending.id }, body: {} }, single);
+  assert.equal(single.body.ok, true);
+  assert.equal(auxCalls.length, 1);
+  assert.equal(pending.classification.state, 'running');
+  assert.equal(pending.classification.attempts, 1);
+  resolveAux({ cancelled: false, text: '{"tasks":[]}' });
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(pending.classification.state, 'retry_wait');
+  assert.ok(pending.classification.nextRetryAt > Date.now());
+
+  const batch = res();
+  routes.get('POST /api/task-board/reclassify-pending')({ body: { dirId: 'dir-1' } }, batch);
+  assert.equal(batch.body.ok, true);
+  assert.equal(batch.body.queued, 1);
+});
+
+test('automatic pending scan retries with a cap instead of spinning forever', async () => {
+  const history = [
+    { id: 'u1', role: 'user', content: '需要自动归类', ts: 1 },
+    { id: 'a1', role: 'assistant', content: '已经完成这项任务的完整实现。', ts: 2 },
+  ];
+  const { runtime, resolveAux } = mkRuntime({ loadHistory: () => history });
+  const pending = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '需要自动归类', now: 1,
+  });
+  pending.refs[0].userMsgId = 'u1';
+  pending.refs[0].assistantMsgId = 'a1';
+  pending.classification.state = 'pending';
+
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    pending.classification.nextRetryAt = 0;
+    assert.equal(runtime.scanPendingClassifications(), 1);
+    resolveAux({ cancelled: false, text: '{"tasks":[]}' });
+    await new Promise(rr => setImmediate(rr));
+    assert.equal(pending.classification.attempts, attempt);
+  }
+  assert.equal(pending.classification.state, 'failed');
+  assert.equal(pending.classification.nextRetryAt, 0);
+  assert.equal(runtime.scanPendingClassifications(), 0);
+});
+
+test('manual classification can use the submitted task text before a reply exists', async () => {
+  const { runtime, auxCalls, resolveAux } = mkRuntime({ loadHistory: () => [] });
+  const pending = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '先实现一个归类按钮', now: 1,
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('POST /api/task-board/tasks/:taskId/reclassify')({ params: { taskId: pending.id }, body: {} }, r);
+  assert.equal(r.body.ok, true);
+  assert.match(auxCalls[0].prompt, /尚无助手回复/);
+  resolveAux({
+    cancelled: false,
+    text: `{"tasks":[{"id":"${pending.id}","title":"实现归类按钮","module":"任务板","areas":[]}]}`,
+  });
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(runtime.getBoard().tasks[pending.id].title, '实现归类按钮');
 });
 
 test('send refuses non-local requests and empty text', async () => {
@@ -686,6 +848,25 @@ test('send refuses non-local requests and empty text', async () => {
   routes.get('/api/task-board/tasks/:taskId/send')({ params: { taskId: 'x' }, body: { text: 'hi' } }, r);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r.code, 403);
+  const retry = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/tasks/:taskId/reclassify')({ params: { taskId: 'x' }, body: {} }, retry);
+  assert.equal(retry.code, 403);
+  const batch = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/reclassify-pending')({ body: {} }, batch);
+  assert.equal(batch.code, 403);
+});
+
+test('failed board dispatch rolls back its placeholder and empty pending module', async () => {
+  const { runtime } = mkRuntime({
+    dispatchToSession: async () => ({ ok: false, error: 'dispatch_failed' }),
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: '不会成功的任务' } }, r);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r.code, 502);
+  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
 });
 
 test('board persists across runtime restarts', () => {
