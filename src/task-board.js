@@ -303,6 +303,7 @@ function buildBoardDto(board) {
     areas: t.areas,
     refCount: t.refs.length,
     sessionIds: [...new Set(t.refs.map(r => r.sessionId))],
+    dirIds: [...new Set(t.refs.map(r => r.dirId).filter(Boolean))],
     lastTs: taskLastTs(t),
     createdAt: t.createdAt,
   })).sort((a, b) => b.lastTs - a.lastTs);
