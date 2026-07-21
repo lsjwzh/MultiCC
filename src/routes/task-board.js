@@ -136,7 +136,9 @@ function createTaskBoardRuntime(deps) {
       }
 
       // AI tagging needs a substantive reply to judge from.
-      if (replyText.length < 30) return;
+      // Tool-heavy turns (Read/Edit/Bash) are substantive even with short text.
+      const hasTools = assistantMsg && Array.isArray(assistantMsg.toolCalls) && assistantMsg.toolCalls.length > 0;
+      if (replyText.length < 30 && !hasTools) return;
       if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) return;
 
       const prior = pendingTagBySession.get(sessionName);
