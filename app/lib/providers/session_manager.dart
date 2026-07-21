@@ -494,6 +494,17 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     return config;
   }
 
+  // ── CLI install (thin forward to SessionService) ──────────────────────────
+
+  Future<Map<String, dynamic>> fetchCliInstallSpecs() =>
+      _sessionService.fetchCliInstallSpecs();
+
+  Future<Map<String, dynamic>> installCli(String cli) =>
+      _sessionService.installCli(cli);
+
+  Future<Map<String, dynamic>> fetchCliInstallStatus(String jobId) =>
+      _sessionService.fetchCliInstallStatus(jobId);
+
   // ── Directory + session creation ──────────────────────────────────────────
 
   Future<Directory> createDirectory({

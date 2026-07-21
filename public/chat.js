@@ -1361,7 +1361,39 @@ startLivenessPolling();
 
 /* ── Cross-CLI switch (one logical chat, independent native sessions) ── */
 function showCliSwitchPicker(current, states, availability) {
-  return chatLiveUi.showCliSwitchPicker(current, states, availability, CLI_META);
+  return chatLiveUi.showCliSwitchPicker(current, states, availability, CLI_META, {
+    fetchSpecs: async () => {
+      try {
+        const res = await fetch(withToken('/api/cli/install-specs'));
+        const data = await res.json();
+        return (data && data.ok && data.specs) ? data.specs : (data && data.specs) || {};
+      } catch (_) { return {}; }
+    },
+    installCli: async cli => {
+      try {
+        const res = await fetch(withToken(`/api/cli/${encodeURIComponent(cli)}/install`), { method: 'POST' });
+        const data = await res.json();
+        // 200 已安装: 直接当完成
+        if (res.ok && data && data.alreadyInstalled) {
+          return { alreadyInstalled: true, availability: data.availability };
+        }
+        // 202 新任务 / 409 已有 running 任务: 都返回 jobId 由弹窗接管轮询
+        if ((res.status === 202 || res.status === 409) && data && data.jobId) {
+          return { jobId: data.jobId };
+        }
+        return { error: (data && data.error) || `安装请求失败 (HTTP ${res.status})` };
+      } catch (e) { return { error: (e && e.message) || '安装请求失败' }; }
+    },
+    pollInstall: async jobId => {
+      try {
+        const res = await fetch(withToken(`/api/cli/install-status/${encodeURIComponent(jobId)}`));
+        const data = await res.json();
+        // 200 -> {ok,job,availability}; 404 -> {ok:false,error}; 透传给弹窗判定终态
+        return data || { ok: false, job: null };
+      } catch (_) { return { ok: false, job: null, transient: true }; }
+    },
+    onAvailabilityChange: cli => { _cliAvailability[cli] = { available: true }; },
+  });
 }
 
 cliBtn?.addEventListener('click', async () => {
