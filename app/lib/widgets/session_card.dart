@@ -137,14 +137,6 @@ class SessionCard extends StatelessWidget {
                       const SizedBox(width: 6),
                     ],
                     MiniBadge(label: session.cli.name, color: cliColor),
-                    const SizedBox(width: 6),
-                    MiniBadge(
-                      label: session.kind.name,
-                      color: const Color(0xFF8a909b),
-                      icon: session.isChat
-                          ? Icons.chat_bubble_outline_rounded
-                          : Icons.terminal_rounded,
-                    ),
                     if (live != null && live.status != 'idle') ...[
                       const SizedBox(width: 6),
                       Text(

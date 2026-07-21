@@ -32,7 +32,7 @@ class HomeTaskScroller extends StatefulWidget {
 }
 
 class _HomeTaskScrollerState extends State<HomeTaskScroller> {
-  static const double _rowH = 46;
+  static const double _rowH = 56;
   static const int _maxVisible = 3;
   static const Duration _dwell = Duration(seconds: 5);
 
@@ -210,9 +210,18 @@ class _TaskProgressCard extends StatelessWidget {
         ? wbStatusLabel(live.status)
         : (task.active ? '运行中' : '空闲');
     final runtime = runTimeText(live);
-    final activityText = runtime.isNotEmpty
-        ? '⏱ $runtime'
-        : (task.active ? '⚙️ 正在运行' : '🕘 ${_relativeTime(task.lastActivity)}');
+    // Activity text aligns to the web fleet scroller priority:
+    // current file -> summary -> status/runtime text.
+    final activityText = live?.currentFile != null &&
+            live!.currentFile!.isNotEmpty
+        ? '📝 ${live.currentFile!.split('/').last}'
+        : (live?.summary?.isNotEmpty == true
+            ? '🗒 ${live!.summary}'
+            : (runtime.isNotEmpty
+                ? '⏱ $runtime'
+                : (task.active
+                    ? '⚙️ 正在运行'
+                    : '🕘 ${_relativeTime(task.lastActivity)}')));
 
     return InkWell(
       onTap: onTap,
@@ -263,10 +272,6 @@ class _TaskProgressCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            if (classifyBadge(live?.classifyState) != null) ...[
-              classifyChip(live),
-              const SizedBox(width: 8),
-            ],
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
@@ -284,11 +289,13 @@ class _TaskProgressCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            Text(
-              activityText,
-              style: const TextStyle(color: AppColors.muted, fontSize: 11),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            Flexible(
+              child: Text(
+                activityText,
+                style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ],
         ),
