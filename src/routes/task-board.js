@@ -40,6 +40,18 @@ function createTaskBoardRuntime(deps) {
     workspaceBroadcast, isLocalRequest, atomicWriteJson, isSystemInjected,
   } = deps;
   const logger = deps.logger || console;
+  // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
+  // send gets the same "[Goal 模式限制]…" note text-prepended that the chat
+  // composer's goal mode produces — dispatch is text-only, so text parity is
+  // full parity (message-composer just prepends the note as a context layer).
+  const resolveGoalLimits = typeof deps.resolveGoalLimits === 'function' ? deps.resolveGoalLimits : null;
+  const buildGoalLimitNote = typeof deps.buildGoalLimitNote === 'function' ? deps.buildGoalLimitNote : null;
+
+  function goalNoteFor(body) {
+    if (!body || !body.goal || !resolveGoalLimits || !buildGoalLimitNote) return '';
+    try { return buildGoalLimitNote(resolveGoalLimits(body.goalLimits)) || ''; }
+    catch (_) { return ''; }
+  }
 
   let board;
   try {
@@ -321,9 +333,33 @@ function createTaskBoardRuntime(deps) {
     const explicit = String(req.body?.target || '').trim() || null;
     const target = core.pickRouteTarget(board, task, records, explicit);
     if (!target) return res.status(409).json({ error: 'no_route_target', note: '没有可路由的会话：该任务还没有参与会话，且模块目录下无可用 chat 会话' });
-    const message = core.buildRoutedMessage(task, text);
+    const message = goalNoteFor(req.body) + core.buildRoutedMessage(task, text);
     const result = await dispatchToSession(target, message, {
       idempotencyKey: `taskboard:${task.id}:${crypto.randomUUID()}`,
+    });
+    if (!result.ok) return res.status(502).json({ error: result.error || 'dispatch_failed' });
+    res.json({
+      ok: true,
+      target,
+      targetLabel: records.get(target)?.label || target,
+      chatId: result.chatId,
+      operationId: result.operationId || null,
+    });
+  }
+
+  // Board-level composer: not bound to any task. Routes to the explicit
+  // target or the most recently active chat session in the directory; the
+  // resulting turn gets archived onto tasks by the normal turn-end tagger.
+  async function handleBoardSend(req, res) {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'empty_text' });
+    const dirId = String(req.body?.dirId || '').trim() || null;
+    const explicit = String(req.body?.target || '').trim() || null;
+    const target = core.pickDirTarget(records, dirId, explicit);
+    if (!target) return res.status(409).json({ error: 'no_route_target', note: '该目录下没有可路由的 chat 会话' });
+    const result = await dispatchToSession(target, goalNoteFor(req.body) + text, {
+      idempotencyKey: `taskboard:dir:${crypto.randomUUID()}`,
     });
     if (!result.ok) return res.status(502).json({ error: result.error || 'dispatch_failed' });
     res.json({
@@ -361,6 +397,12 @@ function createTaskBoardRuntime(deps) {
       });
     });
     app.post('/api/task-board/tasks/:taskId/status', handleStatus);
+    app.post('/api/task-board/send', (req, res) => {
+      handleBoardSend(req, res).catch(e => {
+        logger.log(`[multicc/taskboard] board send failed: ${e?.message || e}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
+      });
+    });
     app.post('/api/task-board/backfill', (req, res) => {
       handleBackfill(req, res).catch(e => {
         logger.log(`[multicc/taskboard] backfill failed: ${e?.message || e}`);
