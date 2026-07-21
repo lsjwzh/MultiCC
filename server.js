@@ -3194,6 +3194,19 @@ const taskBoardRuntime = createTaskBoardRuntime({
   isLocalRequest,
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
+  getSessionRunState: sid => {
+    const rec = persistedSessions.get(sid);
+    if (!rec) return null;
+    const ts = rec.taskState;
+    const cls = ts?.classifyState;
+    // classifyState: D(done) / C(completed) / W(waiting) / E(error) / A/P(active) / B(terminal) / null
+    // Map to task board run-state: running / waiting / done / error / idle
+    if (cls === 'W') return 'waiting';
+    if (cls === 'E') return 'error';
+    if (cls === 'D' || cls === 'C') return 'done';
+    if (cls === 'A' || cls === 'P' || rec.active) return 'running';
+    return 'idle';
+  },
   resolveGoalLimits,
   buildGoalLimitNote,
   logger: console,
