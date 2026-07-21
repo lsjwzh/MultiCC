@@ -345,7 +345,7 @@ function syncTaskBoardDirComposer(dirId, visible) {
   _tbDirComposerDirId = dirId;
   if (!_tbDirComposer) {
     _tbDirComposer = createTbComposer(host, {
-      placeholder: '向该 Fleet 派发消息…（不接入任何会话，自动路由到最近活跃的会话；AI 会把这轮对话归档到对应任务）',
+      placeholder: '向该 Fleet 派发消息…（仅路由到空闲且最相关的会话；AI 会把这轮对话归档到对应任务）',
       submit: async (payload) => {
         const r = await fetch('/api/task-board/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -443,17 +443,17 @@ function renderTaskBoardDetail(d) {
 
   const msgs = (d.items || []).map(it => {
     const time = it.ts ? new Date(it.ts).toLocaleString('zh-CN', { hour12: false }) : '?';
-    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId);
+    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId, it.messageId);
     return `
-      <div class="tb-msg ${it.role}">
+      <a class="tb-msg ${it.role} tb-msg-link" href="${_tbEsc(sessionHref)}" target="_blank" rel="noopener noreferrer" title="打开会话并定位到这条消息">
         <div class="tb-msg-head">
-          <a class="tb-msg-sess tb-session-link" href="${_tbEsc(sessionHref)}" target="_blank" rel="noopener noreferrer" title="在新标签打开对应会话">${_tbEsc(it.sessionLabel || it.sessionId)} ↗</a>
+          <span class="tb-msg-sess">${_tbEsc(it.sessionLabel || it.sessionId)} ↗</span>
           <span>${_tbEsc(time)}</span>
           <span class="tb-msg-role-${it.role}">${it.role === 'user' ? '👤 用户' : '🤖 助手'}</span>
           ${it.lost ? '<span style="color:var(--danger)">（原消息已清理，仅存摘要）</span>' : ''}
         </div>
         <div class="tb-msg-body"></div>
-      </div>`;
+      </a>`;
   }).join('') || '<div class="tb-empty">该任务还没有关联对话。</div>';
 
   content.innerHTML = `

@@ -272,6 +272,16 @@
       overflow-wrap: break-word;
       position: relative;
     }
+    .msg.msg-jump-target {
+      outline: 2px solid #d29922;
+      outline-offset: 3px;
+      box-shadow: 0 0 0 5px rgba(210, 153, 34, .18);
+      animation: msg-jump-pulse .8s ease-out 2;
+    }
+    @keyframes msg-jump-pulse {
+      0% { box-shadow: 0 0 0 2px rgba(210, 153, 34, .55); }
+      100% { box-shadow: 0 0 0 10px rgba(210, 153, 34, 0); }
+    }
     /* Per-message delete: hidden until hover; faintly visible on touch devices
        (no hover) so the affordance isn't lost on mobile. */
     .msg-del {
@@ -2012,6 +2022,7 @@
   <script src="chat-transport.js"></script>
   <script src="chat-history-store.js"></script>
   <script src="chat-history-view.js"></script>
+  <script src="chat-message-focus.js"></script>
   <script src="chat-scroll-controller.js"></script>
   <script src="memo-controller.js"></script>
   <script src="chat-notifications.js"></script>

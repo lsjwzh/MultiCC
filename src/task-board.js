@@ -610,51 +610,150 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
 }
 
 // ── Panel-input routing ─────────────────────────────────────────────────────
-// The task panel's composer is not attached to any session; the backend picks
-// a target for it: explicit override → most recent session that worked on the
-// task → any chat session in the task's module directory.
+// The task panel's composer is not attached to any session. Automatic routing
+// is fail-closed: only an available, semantically relevant session in the
+// task/directory may be selected. Activity time is only a final tie-breaker.
 
 function isRoutableRecord(rec) {
   return !!rec && rec.kind === 'chat' && rec.type !== 'aux' && rec.type !== 'gateway' && !rec.ephemeral;
 }
 
-// Directory-level routing for the board composer (no task context): explicit
-// override → most recently active routable chat session in the directory.
 function recordActivityMs(rec) {
   const v = rec && (rec.lastActivity || rec.createdAt);
   const ms = typeof v === 'number' ? v : Date.parse(v || '');
   return Number.isFinite(ms) ? ms : 0;
 }
 
-function pickDirTarget(records, dirId, explicitTarget) {
-  if (explicitTarget && isRoutableRecord(records.get(explicitTarget))) return explicitTarget;
-  let best = null;
-  let bestMs = -1;
-  for (const [sid, rec] of records) {
-    if (!isRoutableRecord(rec)) continue;
-    if (dirId && rec.dirId !== dirId) continue;
-    const ms = recordActivityMs(rec);
-    if (ms > bestMs) { bestMs = ms; best = sid; }
+const ROUTING_STOP_TERMS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'into', 'task', 'session',
+  '任务', '会话', '功能', '项目', '代码', '处理', '相关', '进行', '支持', '实现', '修复', '优化',
+]);
+
+// Conservative terms only: task metadata and a whitelisted session profile.
+// Han bigrams let a short role such as "前端" match a longer task title.
+function routingTerms(value) {
+  const text = String(value || '').normalize('NFKC').toLowerCase().slice(0, 1200);
+  const out = new Set();
+  const chunks = text.match(/[\p{Script=Han}]+|[a-z0-9]+/gu) || [];
+  for (const chunk of chunks) {
+    if (/^[a-z0-9]+$/.test(chunk)) {
+      if (chunk.length >= 2 && !ROUTING_STOP_TERMS.has(chunk)) out.add(chunk);
+      continue;
+    }
+    if (chunk.length >= 2 && chunk.length <= 16 && !ROUTING_STOP_TERMS.has(chunk)) out.add(chunk);
+    for (let i = 0; i < chunk.length - 1; i++) {
+      const gram = chunk.slice(i, i + 2);
+      if (!ROUTING_STOP_TERMS.has(gram)) out.add(gram);
+    }
   }
-  return best;
+  return out;
 }
 
-function pickRouteTarget(board, task, records, explicitTarget) {
-  if (explicitTarget && isRoutableRecord(records.get(explicitTarget))) return explicitTarget;
-  const seen = new Set();
-  for (let i = task.refs.length - 1; i >= 0; i--) {
-    const sid = task.refs[i].sessionId;
-    if (seen.has(sid)) continue;
-    seen.add(sid);
-    if (isRoutableRecord(records.get(sid))) return sid;
+function addWeightedTerms(target, value, weight) {
+  for (const term of routingTerms(value)) target.set(term, (target.get(term) || 0) + weight);
+}
+
+function buildRoutingContext({ board = null, task = null, queryText = '' } = {}) {
+  const terms = new Map();
+  addWeightedTerms(terms, queryText, 7);
+  if (task) {
+    addWeightedTerms(terms, task.title, 6);
+    for (const area of Array.isArray(task.areas) ? task.areas : []) addWeightedTerms(terms, area, 7);
+    const mod = task.moduleId && board?.modules ? board.modules[task.moduleId] : null;
+    if (mod) addWeightedTerms(terms, mod.name, 5);
   }
-  const mod = task.moduleId ? board.modules[task.moduleId] : null;
-  for (const [sid, rec] of records) {
-    if (!isRoutableRecord(rec)) continue;
-    if (mod && mod.dirId && rec.dirId !== mod.dirId) continue;
-    return sid;
+  return terms;
+}
+
+function buildSessionRoutingProfile(rec) {
+  const terms = new Map();
+  if (!rec || typeof rec !== 'object') return terms;
+  addWeightedTerms(terms, rec.label, 7);
+  addWeightedTerms(terms, rec.rolePrompt, 5);
+  if (typeof rec.agent === 'string') addWeightedTerms(terms, rec.agent, 6);
+  else if (rec.agent && typeof rec.agent === 'object') {
+    // Never stringify the full agent/provider object: it may gain credentials.
+    for (const key of ['name', 'label', 'role', 'description']) addWeightedTerms(terms, rec.agent[key], 6);
   }
-  return null;
+  const state = rec.taskState && typeof rec.taskState === 'object' ? rec.taskState : null;
+  if (state) {
+    addWeightedTerms(terms, state.goal, 5);
+    addWeightedTerms(terms, state.summary, 3);
+    addWeightedTerms(terms, state.lastSummary, 3);
+  }
+  return terms;
+}
+
+function routingRelevanceScore(contextTerms, rec) {
+  const profile = buildSessionRoutingProfile(rec);
+  let score = 0;
+  for (const [term, contextWeight] of contextTerms || []) {
+    const profileWeight = profile.get(term);
+    if (profileWeight) score += contextWeight * profileWeight;
+  }
+  return score;
+}
+
+function recordAppearsAvailable(rec, sid, options = {}) {
+  try {
+    if (typeof options.isAvailable === 'function') return !!options.isAvailable(sid, rec);
+    if (typeof options.isBusy === 'function') return !options.isBusy(sid, rec);
+  } catch (_) {
+    return false;
+  }
+  if (!rec || rec.active === true || rec.busy === true) return false;
+  const state = String(rec.runState || rec.status || rec.taskState?.runState || '').toLowerCase();
+  if (['active', 'busy', 'running', 'thinking', 'editing', 'working', 'starting'].includes(state)) return false;
+  return !['A', 'P'].includes(rec.taskState?.classifyState);
+}
+
+function rankRoutingCandidates(records, {
+  dirId = null,
+  contextTerms = new Map(),
+  affinitySessionIds = new Set(),
+  options = {},
+} = {}) {
+  const ranked = [];
+  for (const [sid, rec] of records || []) {
+    if (!isRoutableRecord(rec) || !recordAppearsAvailable(rec, sid, options)) continue;
+    if (dirId && rec.dirId !== dirId) continue;
+    const score = routingRelevanceScore(contextTerms, rec) + (affinitySessionIds.has(sid) ? 24 : 0);
+    if (score <= 0) continue;
+    ranked.push({ sid, score, activity: recordActivityMs(rec) });
+  }
+  ranked.sort((a, b) => b.score - a.score
+    || b.activity - a.activity
+    || (a.sid < b.sid ? -1 : a.sid > b.sid ? 1 : 0));
+  return ranked;
+}
+
+function explicitRoutingTarget(records, explicitTarget, options) {
+  if (!explicitTarget) return null;
+  const rec = records.get(explicitTarget);
+  return isRoutableRecord(rec) && recordAppearsAvailable(rec, explicitTarget, options)
+    ? explicitTarget : null;
+}
+
+function pickDirTarget(records, dirId, explicitTarget, options = {}) {
+  if (explicitTarget) return explicitRoutingTarget(records, explicitTarget, options);
+  const ranked = rankRoutingCandidates(records, {
+    dirId,
+    contextTerms: buildRoutingContext({ queryText: options.queryText }),
+    options,
+  });
+  return ranked[0]?.sid || null;
+}
+
+function pickRouteTarget(board, task, records, explicitTarget, options = {}) {
+  if (explicitTarget) return explicitRoutingTarget(records, explicitTarget, options);
+  const affinitySessionIds = new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean));
+  const ranked = rankRoutingCandidates(records, {
+    dirId: taskDirId(board, task),
+    contextTerms: buildRoutingContext({ board, task, queryText: options.queryText }),
+    affinitySessionIds,
+    options,
+  });
+  return ranked[0]?.sid || null;
 }
 
 // Routed messages carry a marker so the turn-end tagger can deterministically
@@ -762,6 +861,12 @@ module.exports = {
   pickRouteTarget,
   pickDirTarget,
   isRoutableRecord,
+  routingTerms,
+  buildRoutingContext,
+  buildSessionRoutingProfile,
+  routingRelevanceScore,
+  recordAppearsAvailable,
+  rankRoutingCandidates,
   buildRoutedMessage,
   extractTaskMarker,
   messageText,
