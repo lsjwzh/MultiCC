@@ -44,6 +44,7 @@
   "moreActions": "More",
 
   "renameSession": "Rename",
+  "merge": "Merge",
   "mergeWorktree": "Merge Worktree",
   "mergeWorktreeReady": "Merge Worktree（uncommitted changes, ready to merge into {base}）",
   "viewDiff": "View Diff",
@@ -619,5 +620,23 @@
   "tbRetryInMinutes": "retry in {m}m",
   "tbMsgLost": "Message lost",
   "tbSessionNotFound": "Session not found",
-  "tbMessages": "Messages"
+  "tbMessages": "Messages",
+  "messageNotFound": "Message not found",
+
+  "boardSend": "Send",
+  "boardTarget": "Target session",
+  "boardAutoRoute": "🎯 Auto route",
+  "boardGoalMode": "Goal mode",
+  "boardAttach": "Attach file",
+  "boardVoice": "Voice input",
+  "boardUploading": "Uploading...",
+  "boardNoIdleSession": "No idle sessions",
+  "boardEmptyText": "Please enter content",
+  "boardAuxUnhealthy": "AI assistant unhealthy; cannot dispatch now",
+  "boardRouteFailed": "Dispatch failed",
+  "boardDispatching": "Routing...",
+  "boardSent": "Sent",
+  "boardRoutedTo": "Routed to \"{target}\"",
+  "boardComposerHint": "Dispatch to this Fleet... (auto-routes to the most relevant idle session)",
+  "boardTaskComposerHint": "Dispatch to this task... (auto-routes; replies are filed back to this task)"
 }

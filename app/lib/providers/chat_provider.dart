@@ -5,6 +5,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
 import '../services/notification_service.dart';
+import '../services/session_service.dart';
 import '../services/settings_service.dart';
 
 bool _isRecoverableCodexReconnectErrorText(String text) {
@@ -591,6 +592,10 @@ class ChatProvider extends ChangeNotifier {
   bool get historyHasMore => _historyHasMore;
   bool get historyLoading => _historyLoading;
   bool get historyExhausted => _historyExhausted;
+  /// True once the initial `chat_history` page has been applied (or a focus
+  /// load has replaced the transcript). The chat screen waits on this before
+  /// resolving a deep-link focus so it knows the message list is populated.
+  bool get historyApplied => _historyApplied;
 
   /// Number of NEW messages received while the user was scrolled up reading
   /// history (drives the "↓ N new" pill). Reset when the user jumps to bottom.
@@ -661,6 +666,43 @@ class ChatProvider extends ChangeNotifier {
     } finally {
       _historyLoading = false;
       notifyListeners();
+    }
+  }
+
+  /// Deep-link focus: fetch the history window centered on [messageId] and
+  /// replace the visible transcript with it. Returns true when the target
+  /// message was found and is now in the transcript; false if the server
+  /// reports it not found (e.g. trimmed) or the fetch failed - in which case
+  /// the existing transcript is left untouched. Resets the lazy-pagination
+  /// cursor so scroll-up can still fetch older pages adjacent to the window.
+  Future<bool> loadHistoryAround(String messageId) async {
+    try {
+      final page = await SessionService(settings: settings)
+          .fetchHistoryAround(sessionName, messageId);
+      if (!page.found) return false;
+      final parsed = page.messages
+          .map((m) {
+            try {
+              return ChatMessage.fromHistory(m);
+            } catch (_) {
+              return null;
+            }
+          })
+          .whereType<ChatMessage>()
+          .toList();
+      _messages
+        ..clear()
+        ..addAll(parsed);
+      _currentMsg = null;
+      _activeTools.clear();
+      _oldestLoadedMsgId = _firstLoadedMsgId();
+      _historyHasMore = page.hasMore;
+      _historyExhausted = !page.hasMore;
+      _historyApplied = true;
+      notifyListeners();
+      return parsed.any((m) => m.id == messageId);
+    } catch (_) {
+      return false;
     }
   }
 
