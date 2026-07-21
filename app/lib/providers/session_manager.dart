@@ -345,6 +345,30 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     return groups;
   }
 
+  /// Returns sessions scoped to a directory, split by kind only
+  /// (`{chat: [...], terminal: [...]}`) - aligned to the web fleet's new
+  /// kind-only grouping. `kind` defaults to terminal when absent. Each group is
+  /// sorted by last interaction (live workspace activity wins, then REST
+  /// lastActivity, then createdAt) newest-first, mirroring
+  /// [sessionLastInteractionAt] / [_lastInteractionAt].
+  Map<String, List<Session>> sessionsByKind(String dirId) {
+    final chats = <Session>[];
+    final terminals = <Session>[];
+    for (final s in _sessions) {
+      if (s.dirId != dirId) continue;
+      if (s.isChat) {
+        chats.add(s);
+      } else {
+        terminals.add(s);
+      }
+    }
+    int cmp(Session a, Session b) =>
+        _lastInteractionAt(b).compareTo(_lastInteractionAt(a));
+    chats.sort(cmp);
+    terminals.sort(cmp);
+    return {'chat': chats, 'terminal': terminals};
+  }
+
   /// The special `__aux__` session (voice refine / intent classifier), if loaded.
   Session? get auxSession {
     for (final s in _sessions) {

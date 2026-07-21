@@ -60,6 +60,7 @@ class _MainShellState extends State<MainShell> {
       source: mgr,
       readDirectoryIds: () => mgr.directories.map((dir) => dir.id),
       onNotify: mgr.handleWorkspaceNotify,
+      onSessionCliChanged: () => mgr.loadDashboard(),
       onDirectorySnapshot: (dirId, snapshot) {
         mgr.applyWorkspaceSnapshot(dirId, snapshot.statuses);
       },
@@ -1332,23 +1333,37 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
     }
   }
 
-  Future<void> _createSession(SessionCli cli, SessionKind kind) async {
+  Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
+    final initialCli = defaultCli ?? SessionCli.claude;
     List<Map<String, dynamic>> providers = [];
     String? defaultProviderId;
     try {
-      if (cli.supportsProvider) {
+      if (initialCli.supportsProvider) {
         final d = await ManageService(
           settings: widget.settings,
-        ).fetchProviders(cli.appType);
+        ).fetchProviders(initialCli.appType);
         providers = (d['providers'] as List? ?? [])
             .map((e) => (e as Map).cast<String, dynamic>())
             .toList();
         final defaults = d['defaults'];
-        if (defaults is Map && defaults[cli.name] != null) {
-          defaultProviderId = defaults[cli.name].toString();
+        if (defaults is Map && defaults[initialCli.name] != null) {
+          defaultProviderId = defaults[initialCli.name].toString();
         }
+      }
+    } catch (_) {}
+
+    // Probe host-level CLI availability through any existing session's config
+    // (cliAvailability is keyed by host, not session, so any id works). With no
+    // sessions yet the dialog falls back to "all installed" so the user is
+    // never blocked from creating their first session.
+    Map<SessionCli, bool> cliAvailability = const {};
+    try {
+      final sessions = widget.mgr.sessions;
+      if (sessions.isNotEmpty) {
+        final config = await widget.mgr.fetchSessionCliConfig(sessions.first.id);
+        cliAvailability = config.cliAvailability;
       }
     } catch (_) {}
     if (!mounted) return;
@@ -1356,10 +1371,11 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
     final result = await showDialog<CreateSessionResult>(
       context: context,
       builder: (ctx) => CreateSessionDialog(
-        cli: cli,
+        defaultCli: initialCli,
         kind: kind,
         providers: providers,
         defaultProviderId: defaultProviderId,
+        cliAvailability: cliAvailability,
         settings: widget.settings,
       ),
     );
@@ -1368,7 +1384,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
     try {
       final s = await widget.mgr.createSessionInDir(
         dirId: widget.dirId,
-        cli: cli,
+        cli: result.cli,
         kind: kind,
         label: result.label,
         model: result.model,
@@ -1463,7 +1479,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
           builder: (context, _) {
             final workspace = _workspace.value;
             final dir = _dir;
-            final groups = widget.mgr.sessionsByCliKind(dir.id);
+            final groups = widget.mgr.sessionsByKind(dir.id);
             final hasSessions = dir.totalSessions > 0;
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1544,88 +1560,54 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
                     children: [
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
+                      // Two kind buttons drive the create-session dialog; the
+                      // CLI itself is picked inside the dialog via a dropdown
+                      // (so all 5 CLIs × 2 kinds are reachable from 2 buttons).
+                      Row(
                         children: [
-                          AddSessionChip(
-                            label: '+ Claude Term',
-                            color: AppColors.claude,
-                            onTap: () => _createSession(
-                              SessionCli.claude,
-                              SessionKind.terminal,
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: () =>
+                                  _createSession(SessionKind.chat),
+                              icon: const Icon(
+                                Icons.chat_bubble_outline_rounded,
+                                size: 16,
+                              ),
+                              label: Text(t('newChatSession')),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: AppColors.claude
+                                    .withValues(alpha: 0.16),
+                                foregroundColor: AppColors.claude,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
                             ),
                           ),
-                          AddSessionChip(
-                            label: '+ Claude Chat',
-                            color: AppColors.claude,
-                            onTap: () => _createSession(
-                              SessionCli.claude,
-                              SessionKind.chat,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ Codex Term',
-                            color: AppColors.codex,
-                            onTap: () => _createSession(
-                              SessionCli.codex,
-                              SessionKind.terminal,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ Codex Chat',
-                            color: AppColors.codex,
-                            onTap: () => _createSession(
-                              SessionCli.codex,
-                              SessionKind.chat,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ OpenCode Term',
-                            color: AppColors.opencode,
-                            onTap: () => _createSession(
-                              SessionCli.opencode,
-                              SessionKind.terminal,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ OpenCode Chat',
-                            color: AppColors.opencode,
-                            onTap: () => _createSession(
-                              SessionCli.opencode,
-                              SessionKind.chat,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ ZCode Term',
-                            color: AppColors.zcode,
-                            onTap: () => _createSession(
-                              SessionCli.zcode,
-                              SessionKind.terminal,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ ZCode Chat',
-                            color: AppColors.zcode,
-                            onTap: () => _createSession(
-                              SessionCli.zcode,
-                              SessionKind.chat,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ Qoder Term',
-                            color: AppColors.qoder,
-                            onTap: () => _createSession(
-                              SessionCli.qoder,
-                              SessionKind.terminal,
-                            ),
-                          ),
-                          AddSessionChip(
-                            label: '+ Qoder Chat',
-                            color: AppColors.qoder,
-                            onTap: () => _createSession(
-                              SessionCli.qoder,
-                              SessionKind.chat,
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: () =>
+                                  _createSession(SessionKind.terminal),
+                              icon: const Icon(
+                                Icons.terminal_rounded,
+                                size: 16,
+                              ),
+                              label: Text(t('newTerminalSession')),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: AppColors.accent
+                                    .withValues(alpha: 0.16),
+                                foregroundColor: AppColors.accent,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
                             ),
                           ),
                         ],
@@ -1660,9 +1642,9 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                         )
                       else ...[
                         _SessionGroup(
-                          title: t('claudeTerminals'),
-                          color: AppColors.claude,
-                          sessions: groups['claude_terminal']!,
+                          title: t('chats'),
+                          color: AppColors.muted,
+                          sessions: groups['chat']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
                           statuses: workspace.statuses,
@@ -1671,9 +1653,9 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                           onOpen: _openSession,
                         ),
                         _SessionGroup(
-                          title: t('claudeChats'),
-                          color: AppColors.claude,
-                          sessions: groups['claude_chat']!,
+                          title: t('terminals'),
+                          color: AppColors.muted,
+                          sessions: groups['terminal']!,
                           mgr: widget.mgr,
                           settings: widget.settings,
                           statuses: workspace.statuses,
@@ -1681,100 +1663,6 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                           providers: _providers,
                           onOpen: _openSession,
                         ),
-                        _SessionGroup(
-                          title: t('codexTerminals'),
-                          color: AppColors.codex,
-                          sessions: groups['codex_terminal']!,
-                          mgr: widget.mgr,
-                          settings: widget.settings,
-                          statuses: workspace.statuses,
-                          pendingNotes: workspace.pendingNotes,
-                          providers: _providers,
-                          onOpen: _openSession,
-                        ),
-                        _SessionGroup(
-                          title: t('codexChats'),
-                          color: AppColors.codex,
-                          sessions: groups['codex_chat']!,
-                          mgr: widget.mgr,
-                          settings: widget.settings,
-                          statuses: workspace.statuses,
-                          pendingNotes: workspace.pendingNotes,
-                          providers: _providers,
-                          onOpen: _openSession,
-                        ),
-                        if (groups['opencode_terminal']!.isNotEmpty)
-                          _SessionGroup(
-                            title: t('openCodeTerminals'),
-                            color: AppColors.opencode,
-                            sessions: groups['opencode_terminal']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: workspace.statuses,
-                            pendingNotes: workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: _openSession,
-                          ),
-                        if (groups['opencode_chat']!.isNotEmpty)
-                          _SessionGroup(
-                            title: t('openCodeChats'),
-                            color: AppColors.opencode,
-                            sessions: groups['opencode_chat']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: workspace.statuses,
-                            pendingNotes: workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: _openSession,
-                          ),
-                        if (groups['zcode_terminal']!.isNotEmpty)
-                          _SessionGroup(
-                            title: t('zCodeTerminals'),
-                            color: AppColors.zcode,
-                            sessions: groups['zcode_terminal']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: workspace.statuses,
-                            pendingNotes: workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: _openSession,
-                          ),
-                        if (groups['zcode_chat']!.isNotEmpty)
-                          _SessionGroup(
-                            title: t('zCodeChats'),
-                            color: AppColors.zcode,
-                            sessions: groups['zcode_chat']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: workspace.statuses,
-                            pendingNotes: workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: _openSession,
-                          ),
-                        if (groups['qoder_terminal']!.isNotEmpty)
-                          _SessionGroup(
-                            title: t('qoderTerminals'),
-                            color: AppColors.qoder,
-                            sessions: groups['qoder_terminal']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: workspace.statuses,
-                            pendingNotes: workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: _openSession,
-                          ),
-                        if (groups['qoder_chat']!.isNotEmpty)
-                          _SessionGroup(
-                            title: t('qoderChats'),
-                            color: AppColors.qoder,
-                            sessions: groups['qoder_chat']!,
-                            mgr: widget.mgr,
-                            settings: widget.settings,
-                            statuses: workspace.statuses,
-                            pendingNotes: workspace.pendingNotes,
-                            providers: _providers,
-                            onOpen: _openSession,
-                          ),
                       ],
                     ],
                   ),

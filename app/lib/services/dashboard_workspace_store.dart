@@ -86,6 +86,7 @@ class DashboardWorkspaceStore {
 
   DirectoryWorkspaceSnapshotListener? _onDirectorySnapshot;
   void Function(String sessionId, String state, String message)? _onNotify;
+  VoidCallback? _onSessionCliChanged;
 
   DashboardWorkspaceStore({
     required this.settings,
@@ -108,15 +109,18 @@ class DashboardWorkspaceStore {
     required DirectoryWorkspaceSnapshotListener onDirectorySnapshot,
     required void Function(String sessionId, String state, String message)
     onNotify,
+    VoidCallback? onSessionCliChanged,
   }) {
     if (_disposed) return;
     _onDirectorySnapshot = onDirectorySnapshot;
     _onNotify = onNotify;
+    _onSessionCliChanged = onSessionCliChanged;
   }
 
   void clearCallbacks() {
     _onDirectorySnapshot = null;
     _onNotify = null;
+    _onSessionCliChanged = null;
   }
 
   /// Reconcile live connections with the current dashboard directory list.
@@ -157,6 +161,10 @@ class DashboardWorkspaceStore {
       if (_disposed || !identical(_entries[dirId], entry)) return;
       _onNotify?.call(sessionId, state, message);
     };
+    service.onSessionCliChanged = () {
+      if (_disposed || !identical(_entries[dirId], entry)) return;
+      _onSessionCliChanged?.call();
+    };
     service.addListener(listener);
     entry = _WorkspaceEntry(
       service: service,
@@ -178,6 +186,7 @@ class DashboardWorkspaceStore {
     final entry = _entries.remove(dirId);
     if (entry == null) return;
     entry.service.onNotify = null;
+    entry.service.onSessionCliChanged = null;
     entry.service.removeListener(entry.listener);
     entry.service.dispose();
     entry.snapshot.dispose();

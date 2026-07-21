@@ -38,6 +38,7 @@ class DashboardWorkspaceCoordinator {
     required DashboardDirectoryIdsReader readDirectoryIds,
     required DirectoryWorkspaceSnapshotListener onDirectorySnapshot,
     required DashboardWorkspaceNotificationSink onNotify,
+    VoidCallback? onSessionCliChanged,
   }) {
     if (_disposed) return;
 
@@ -53,6 +54,7 @@ class DashboardWorkspaceCoordinator {
     store.configureCallbacks(
       onDirectorySnapshot: onDirectorySnapshot,
       onNotify: onNotify,
+      onSessionCliChanged: onSessionCliChanged,
     );
     _reconcileDirectories();
     if (replacingBinding) {

@@ -21,11 +21,6 @@ class DirectoryCardViewModel {
   final String path;
   final int totalSessions;
   final int activeSessions;
-  final int claudeSessions;
-  final int codexSessions;
-  final int opencodeSessions;
-  final int zcodeSessions;
-  final int qoderSessions;
   final DirectoryPushState? pushState;
   final bool running;
   final List<String> recentEventLabels;
@@ -37,11 +32,6 @@ class DirectoryCardViewModel {
     required this.path,
     required this.totalSessions,
     required this.activeSessions,
-    required this.claudeSessions,
-    required this.codexSessions,
-    required this.opencodeSessions,
-    required this.zcodeSessions,
-    required this.qoderSessions,
     required this.pushState,
     required this.running,
     required this.recentEventLabels,
@@ -70,12 +60,6 @@ class DirectoryCardViewModel {
       path: directory.path,
       totalSessions: directory.totalSessions,
       activeSessions: scopedSessions.where((session) => session.active).length,
-      claudeSessions: directory.claudeTerminalCount + directory.claudeChatCount,
-      codexSessions: directory.codexTerminalCount + directory.codexChatCount,
-      opencodeSessions:
-          directory.opencodeTerminalCount + directory.opencodeChatCount,
-      zcodeSessions: directory.zcodeTerminalCount + directory.zcodeChatCount,
-      qoderSessions: directory.qoderTerminalCount + directory.qoderChatCount,
       pushState: directory.pushState,
       running: statuses.values.any((status) => busy.contains(status.status)),
       recentEventLabels: List.unmodifiable(
@@ -113,6 +97,7 @@ class DirectoryCardViewModel {
         who: session.label?.isNotEmpty == true ? session.label! : session.id,
         summary: summary,
         timestamp: timestamp,
+        model: _modelDisplay(session),
       );
     }
 
@@ -142,7 +127,19 @@ class DirectoryCardViewModel {
       who: latest.label?.isNotEmpty == true ? latest.label! : latest.id,
       summary: summary,
       timestamp: timestamp,
+      model: _modelDisplay(latest),
     );
+  }
+
+  /// Short model name for the most-recent session, for the directory preview.
+  /// Provider alias maps aren't available at the view-model layer, so this uses
+  /// the CLI's built-in shortener (still readable, e.g. claude-opus -> Opus).
+  static String _modelDisplay(Session s) {
+    final raw = s.effectiveModel?.isNotEmpty == true
+        ? s.effectiveModel
+        : (s.model?.isNotEmpty == true ? s.model : null);
+    if (raw == null) return '';
+    return modelDisplayName(s.cli, raw);
   }
 }
 
@@ -151,11 +148,13 @@ class DirectoryTaskPreview {
   final String who;
   final String summary;
   final int timestamp;
+  final String model;
 
   const DirectoryTaskPreview({
     required this.who,
     required this.summary,
     required this.timestamp,
+    this.model = '',
   });
 }
 
@@ -501,40 +500,14 @@ class DirectoryCard extends StatelessWidget {
                             label: t('active'),
                             value: view.activeSessions.toString(),
                           ),
-                          ProjectStatPill(
-                            label: 'Claude',
-                            value: view.claudeSessions.toString(),
-                            color: AppColors.claude,
-                          ),
-                          ProjectStatPill(
-                            label: 'Codex',
-                            value: view.codexSessions.toString(),
-                            color: AppColors.codex,
-                          ),
-                          if (view.opencodeSessions > 0)
-                            ProjectStatPill(
-                              label: 'OpenCode',
-                              value: view.opencodeSessions.toString(),
-                              color: AppColors.opencode,
-                            ),
-                          if (view.zcodeSessions > 0)
-                            ProjectStatPill(
-                              label: 'ZCode',
-                              value: view.zcodeSessions.toString(),
-                              color: AppColors.zcode,
-                            ),
-                          if (view.qoderSessions > 0)
-                            ProjectStatPill(
-                              label: 'Qoder CN',
-                              value: view.qoderSessions.toString(),
-                              color: AppColors.qoder,
-                            ),
                         ],
                       ),
                       const SizedBox(height: 12),
                       _DirectoryPreview(
                         recentEventLabels: view.recentEventLabels,
                         latestTask: view.latestTask,
+                        running: view.running,
+                        onOpen: callbacks.onOpen,
                       ),
                       const SizedBox(height: 10),
                       Row(
@@ -575,14 +548,20 @@ class DirectoryCard extends StatelessWidget {
 class _DirectoryPreview extends StatelessWidget {
   final List<String> recentEventLabels;
   final DirectoryTaskPreview? latestTask;
+  final bool running;
+  final VoidCallback? onOpen;
 
   const _DirectoryPreview({
     required this.recentEventLabels,
     required this.latestTask,
+    required this.running,
+    this.onOpen,
   });
 
   @override
   Widget build(BuildContext context) {
+    final task = latestTask;
+    final showMeta = running || (task?.model.isNotEmpty ?? false);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -622,8 +601,8 @@ class _DirectoryPreview extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         SizedBox(
-          height: 34,
-          child: latestTask == null
+          height: showMeta ? 52 : 34,
+          child: task == null
               ? Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
@@ -647,15 +626,102 @@ class _DirectoryPreview extends StatelessWidget {
                     ),
                     borderRadius: BorderRadius.circular(7),
                   ),
-                  child: Text(
-                    '🗒 ${latestTask!.who}  ${latestTask!.summary}',
-                    style: const TextStyle(
-                      color: Color(0xFF7fe6da),
-                      fontSize: 11,
-                      height: 1.2,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '🗒 ${task.who}  ${task.summary}',
+                              style: const TextStyle(
+                                color: Color(0xFF7fe6da),
+                                fontSize: 11,
+                                height: 1.2,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (showMeta) ...[
+                              const SizedBox(height: 3),
+                              Row(
+                                children: [
+                                  if (running) ...[
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 5,
+                                        vertical: 1,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF7fd49a)
+                                            .withValues(alpha: 0.15),
+                                        border: Border.all(
+                                          color: const Color(0xFF7fd49a)
+                                              .withValues(alpha: 0.4),
+                                        ),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 5,
+                                            height: 5,
+                                            decoration: const BoxDecoration(
+                                              color: Color(0xFF7fd49a),
+                                              shape: BoxShape.circle,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            t('running'),
+                                            style: const TextStyle(
+                                              color: Color(0xFF7fd49a),
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  if (task.model.isNotEmpty)
+                                    Flexible(
+                                      child: Text(
+                                        task.model,
+                                        style: const TextStyle(
+                                          color: Color(0xFF22ab9c),
+                                          fontSize: 10,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      if (onOpen != null)
+                        IconButton(
+                          tooltip: t('open'),
+                          icon: const Icon(
+                            Icons.open_in_new_rounded,
+                            size: 16,
+                            color: AppColors.muted,
+                          ),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 30,
+                            minHeight: 30,
+                          ),
+                          onPressed: onOpen,
+                        ),
+                    ],
                   ),
                 ),
         ),
