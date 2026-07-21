@@ -5558,6 +5558,18 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
     },
     env: childEnv,
     onBackgroundEvent: (evt) => backgroundTaskRuntime.handleEvent(sessionName, cs, evt),
+    // Never idle-kill a warm process that still owns live background work (that
+    // would murder the running task); on any exit, reap open shadows so a lost
+    // completion can't leave the UI spinning. See background-task-runtime.
+    isBackgroundActive: () => backgroundTaskRuntime.hasLiveBackgroundTasks(sessionName),
+    onExit: () => {
+      try {
+        const reaped = backgroundTaskRuntime.reapSessionShadows(sessionName, { reason: 'stream_exit' });
+        if (reaped > 0) console.log(`[multicc/chat] [${sessionName}] stream exited; reaped ${reaped} background task(s)`);
+      } catch (error) {
+        logger.warn('bg_reap_on_exit_failed', { sessionId: sessionName, error: error.message });
+      }
+    },
   });
 
   // An in-flight turn (if any) was already interrupted at the top of
@@ -5829,6 +5841,13 @@ function handleChatWs(ws, req, urlObj) {
       } catch (_) {}
     }
   }
+
+  // On (re)connect, push the authoritative live background-task set so the
+  // frontend can settle any danmaku spinner whose one-shot `monitor_done` was
+  // lost during a disconnect (it never enters streamReplay).
+  try {
+    sendWs(ws, { type: 'background_tasks', tasks: backgroundTaskRuntime.listActiveBackgroundTasks(sessionName) });
+  } catch (_) {}
 
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
