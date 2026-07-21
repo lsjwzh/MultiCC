@@ -58,8 +58,10 @@ function _tbTasksForDir(dirId) {
 }
 
 // Synchronous section HTML for renderDirectoryDetailBody (data from cache;
-// openDirectoryDetail triggers the async refresh).
-function renderTaskBoardSection(dirId) {
+// openDirectoryDetail triggers the async refresh). With {tabbed:true} the
+// board fills its own tab, so the section chrome (border + "任务板" head that
+// would duplicate the tab label) is dropped.
+function renderTaskBoardSection(dirId, opts) {
   const tasks = _tbTasksForDir(dirId);
   const rowsHtml = [];
   const byModule = new Map();
@@ -99,6 +101,11 @@ function renderTaskBoardSection(dirId) {
   const body = rowsHtml.length
     ? rowsHtml.join('')
     : '<div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div>';
+  if (opts && opts.tabbed) {
+    const stat = tasks.length
+      ? `<div class="tb-stat">${mods.length || 1} 模块 · ${tasks.length} 任务</div>` : '';
+    return `<div class="tb-section tb-tabbed">${stat}${body}</div>`;
+  }
   return `
     <div class="tb-section">
       <div class="tb-section-head">📋 任务板 <span class="tb-dim">${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : ''}</span></div>

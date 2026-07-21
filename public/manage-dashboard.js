@@ -1490,11 +1490,30 @@ function updateDirDetailPush(dirId) {
   btn.title = title;
   btn.onclick = (e) => { e.stopPropagation(); pushDirectory(dirId); };
 }
+// Detail modal content tab: classic sessions view vs task board. Remembered
+// across re-renders/openings so WS-driven redraws don't yank the user back.
+let _dirDetailTab = 'sessions';   // 'sessions' | 'taskboard'
+function switchDirDetailTab(tab) {
+  _dirDetailTab = tab === 'taskboard' ? 'taskboard' : 'sessions';
+  if (_detailDirId) renderDirectoryDetailBody(_detailDirId);
+}
 function renderDirectoryDetailBody(dirId) {
   const body = document.getElementById('dir-detail-body');
   if (!body) return;
-  const taskBoard = typeof renderTaskBoardSection === 'function' ? renderTaskBoardSection(dirId) : '';
-  body.innerHTML = taskBoard + renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId));
+  const hasBoard = typeof renderTaskBoardSection === 'function';
+  let tabs = '';
+  if (hasBoard) {
+    const taskCount = typeof _tbTasksForDir === 'function' ? _tbTasksForDir(dirId).length : 0;
+    tabs = `
+      <div class="dd-tabs">
+        <button class="dd-tab${_dirDetailTab === 'sessions' ? ' on' : ''}" onclick="switchDirDetailTab('sessions')">🖥 会话</button>
+        <button class="dd-tab${_dirDetailTab === 'taskboard' ? ' on' : ''}" onclick="switchDirDetailTab('taskboard')">📋 任务板${taskCount ? ` (${taskCount})` : ''}</button>
+      </div>`;
+  }
+  const content = (hasBoard && _dirDetailTab === 'taskboard')
+    ? renderTaskBoardSection(dirId, { tabbed: true })
+    : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId));
+  body.innerHTML = tabs + content;
 }
 function closeDirectoryDetail() {
   _detailDirId = null;

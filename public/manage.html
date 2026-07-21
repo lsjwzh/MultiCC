@@ -492,8 +492,19 @@
       .modal-card{max-width:calc(100vw - 24px)}
     }
 
+    /* ── Dir-detail modal content tabs (sessions vs task board) ── */
+    .dd-tabs{display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:0}
+    .dd-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-size:13px;font-weight:600;padding:6px 12px 8px;cursor:pointer;border-radius:0}
+    .dd-tab:hover{color:var(--text)}
+    .dd-tab.on{color:var(--text);border-bottom-color:var(--accent)}
+
     /* ── Task board (dir-detail modal section + stacked detail modal) ── */
     .tb-section{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:16px;background:var(--bg-soft)}
+    .tb-section.tb-tabbed{border:none;border-radius:0;background:none;margin-bottom:0}
+    .tb-section.tb-tabbed .tb-mod{border-top:none;border-bottom:1px solid var(--line);border-radius:8px 8px 0 0;background:var(--panel)}
+    .tb-section.tb-tabbed .tb-mod:not(:first-child){margin-top:10px}
+    .tb-section.tb-tabbed .tb-task{border-top:none;border-bottom:1px solid var(--line)}
+    .tb-stat{font-size:11px;color:var(--muted);margin-bottom:10px}
     .tb-section-head{padding:8px 14px;background:var(--panel);font-size:12.5px;font-weight:650;color:var(--text);display:flex;justify-content:space-between;align-items:center}
     .tb-dim{color:var(--muted);font-weight:400;font-size:11px}
     .tb-mod{padding:6px 14px;font-size:12px;color:var(--text);cursor:pointer;display:flex;justify-content:space-between;border-top:1px solid var(--line);user-select:none}
