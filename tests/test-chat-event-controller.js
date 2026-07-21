@@ -50,7 +50,10 @@ class FakeElement {
     this.parentNode.children = this.parentNode.children.filter(child => child !== this);
     this.parentNode = null;
   }
-  addEventListener() {}
+  addEventListener(type, handler) {
+    if (type === 'click') (this._onClick = this._onClick || []).push(handler);
+  }
+  click() { for (const fn of this._onClick || []) fn({ stopPropagation() {} }); }
   focus() {}
   select() {}
   querySelector(selector) {
@@ -360,7 +363,7 @@ test('live UI progress refreshes one stable row until the terminal update', () =
   assert.equal(body.children[0].className, 'dm-row dm-done');
 });
 
-function makeDanmakuUi() {
+function makeDanmakuUi(extra = {}) {
   const { document, ids } = fakeDocument();
   for (const id of [
     'danmaku-panel', 'danmaku-head', 'danmaku-body', 'danmaku-title',
@@ -372,6 +375,7 @@ function makeDanmakuUi() {
     messagesEl: new FakeElement('div'),
     setTimeout: () => ++timerId,
     clearTimeout() {},
+    ...extra,
   });
   return { liveUi, body: ids.get('danmaku-body') };
 }
@@ -388,6 +392,19 @@ test('danmaku keeps a confirmed background task across turn end, then settles it
   // A later snapshot no longer lists it (finished): settle even if monitor_done was lost.
   liveUi.reconcileDanmakuTasks([]);
   assert.equal(body.children[0].className, 'dm-row dm-stale');
+});
+
+test('the danmaku ✕ button removes the row and asks the host to cancel the task', () => {
+  const dismissed = [];
+  const { liveUi, body } = makeDanmakuUi({ onDanmakuDismiss: id => dismissed.push(id) });
+  liveUi.pushDanmaku('start', '卡住的后台任务', 'task-9');
+  assert.equal(body.children.length, 1);
+  const row = body.children[0];
+  const closeBtn = row.querySelector('.dm-close');
+  assert.ok(closeBtn, 'row carries a ✕ dismiss button');
+  closeBtn.click();
+  assert.equal(body.children.length, 0, 'clicking ✕ removes the row');
+  assert.deepEqual(dismissed, ['task-9'], 'host is asked to cancel the underlying task id');
 });
 
 test('turn end settles a spinner never confirmed as a background task (misclassified sync tool)', () => {
