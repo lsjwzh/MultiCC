@@ -65,6 +65,8 @@ async function openConfig(page, expectedCli) {
     effortLabel: document.querySelector('#ai-effort-label')?.textContent.trim(),
     effortVisible: getComputedStyle(document.querySelector('#ai-effort-section')).display !== 'none',
     effortValues: [...document.querySelectorAll('#ai-effort option')].map(option => option.value),
+    providerVisible: getComputedStyle(document.querySelector('#ai-provider-section')).display !== 'none',
+    modelValues: [...document.querySelectorAll('#ai-model option')].map(option => option.value),
     agentVisible: getComputedStyle(document.querySelector('#ai-agent-section')).display !== 'none',
     subagentVisible: getComputedStyle(document.querySelector('#ai-sub-section')).display !== 'none',
     subagentPillVisible: getComputedStyle(document.querySelector('#subagent-pill')).display !== 'none',
@@ -102,7 +104,7 @@ async function cleanup() {
       PORT: String(PORT), ACCESS_TOKEN: TOKEN,
       MULTICC_DATA_DIR: dataRoot,
       CLAUDE_CMD: '/usr/bin/true', CODEX_CMD: '/usr/bin/true', OPENCODE_CMD: '/usr/bin/true',
-      ZCODE_CMD: missingZcode,
+      ZCODE_CMD: missingZcode, QODER_CMD: '/usr/bin/true',
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -159,6 +161,17 @@ async function cleanup() {
   ui = await openConfig(page, 'Codex');
   if (ui.agentVisible || !ui.subagentVisible || ui.effortLabel !== 'Reasoning Level') {
     throw new Error(`Codex controls mismatch: ${JSON.stringify(ui)}`);
+  }
+  await closeConfig(page);
+
+  console.log('  checking Qoder CN controls');
+  await api('POST', `/api/sessions/${session.id}/switch-cli`, { cli: 'qoder' });
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+  ui = await openConfig(page, 'Qoder CN');
+  if (ui.providerVisible || !ui.agentVisible || ui.subagentVisible || ui.subagentPillVisible
+      || ui.effortLabel !== 'Reasoning Effort' || !ui.effortValues.includes('xhigh')
+      || !ui.modelValues.includes('auto') || !ui.modelValues.includes('performance')) {
+    throw new Error(`Qoder CN controls mismatch: ${JSON.stringify(ui)}`);
   }
 
   console.log('CLI-specific UI controls and missing-CLI guard passed');

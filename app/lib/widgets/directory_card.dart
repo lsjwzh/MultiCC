@@ -25,6 +25,7 @@ class DirectoryCardViewModel {
   final int codexSessions;
   final int opencodeSessions;
   final int zcodeSessions;
+  final int qoderSessions;
   final DirectoryPushState? pushState;
   final bool running;
   final List<String> recentEventLabels;
@@ -40,6 +41,7 @@ class DirectoryCardViewModel {
     required this.codexSessions,
     required this.opencodeSessions,
     required this.zcodeSessions,
+    required this.qoderSessions,
     required this.pushState,
     required this.running,
     required this.recentEventLabels,
@@ -73,6 +75,7 @@ class DirectoryCardViewModel {
       opencodeSessions:
           directory.opencodeTerminalCount + directory.opencodeChatCount,
       zcodeSessions: directory.zcodeTerminalCount + directory.zcodeChatCount,
+      qoderSessions: directory.qoderTerminalCount + directory.qoderChatCount,
       pushState: directory.pushState,
       running: statuses.values.any((status) => busy.contains(status.status)),
       recentEventLabels: List.unmodifiable(
@@ -519,6 +522,12 @@ class DirectoryCard extends StatelessWidget {
                               label: 'ZCode',
                               value: view.zcodeSessions.toString(),
                               color: AppColors.zcode,
+                            ),
+                          if (view.qoderSessions > 0)
+                            ProjectStatPill(
+                              label: 'Qoder CN',
+                              value: view.qoderSessions.toString(),
+                              color: AppColors.qoder,
                             ),
                         ],
                       ),

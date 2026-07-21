@@ -1352,7 +1352,7 @@ function sessionIdPrefixForDirectory(dir) {
 
 function allocateSessionId(dir, cli, kind) {
   const prefix = sessionIdPrefixForDirectory(dir);
-  const cliPart = ['claude', 'codex', 'opencode', 'zcode'].includes(cli) ? cli : 'claude';
+  const cliPart = SUPPORTED_CHAT_CLIS.includes(cli) ? cli : 'claude';
   const kindPart = kind === 'chat' ? 'chat' : 'term';
   const stem = `${prefix}-${cliPart}-${kindPart}`;
   let maxSeq = 0;
@@ -1411,10 +1411,10 @@ async function createSession(id) {
   // launch), which may carry ANTHROPIC_* routing vars leaked from the shell that
   // started multicc. For claude sessions, explicitly blank every routing key the
   // chosen provider does NOT set, so an inherited value can't override the
-  // provider choice (same intent as buildChildEnv for chat). Real values from
-  // the provider override these blanks since they're applied in the same map.
+  // Provider config wins; blanks block inherited Claude
+  // routing.
   const termEnv = { ...provEnv.env };
-  if ((persisted.cli || 'claude') !== 'codex') {
+  if ((persisted.cli || 'claude') !== 'codex' && persisted.cli !== 'qoder') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
       if (!(k in termEnv)) termEnv[k] = '';
     }
@@ -1538,7 +1538,7 @@ async function createSession(id) {
         console.log(`[multicc] Session ${id} exited (tmux session gone)`);
         cleanupPushMonitor(id);
         if (session.captureTimer) { clearInterval(session.captureTimer); session.captureTimer = null; }
-        const cliLabel = session.cli === 'codex' ? 'Codex' : 'Claude Code';
+        const cliLabel = session.cli === 'qoder' ? 'Qoder CN' : session.cli === 'codex' ? 'Codex' : 'Claude Code';
         const exitMsg = `\r\n\x1b[33m[${cliLabel} process exited]\x1b[0m\r\n`;
         broadcastTo(session.clients, { type: 'exit', data: exitMsg });
         await stopOutputCapture(session);
@@ -1795,7 +1795,7 @@ app.use(createMemoModule({
 // { ok:true, id, session, reused? } or { ok:false, error }.
 async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
-  if (!['claude', 'codex', 'opencode', 'zcode'].includes(cli)) return { ok: false, error: 'cli must be claude, codex, opencode or zcode' };
+  if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
   // Model can be set for both Claude and Codex sessions. Claude terminal mode
   // interpolates it into a shell command, so keep the charset tight; Codex uses
@@ -1844,7 +1844,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     label,
     model: model || null, // null = follow default/provider model
     effort: sessionEffort || null, // null = follow Claude Code/provider default
-    agent: sessionAgent || null, // Claude/OpenCode native --agent; unsupported CLIs keep null
+    agent: sessionAgent || null, // Claude/OpenCode/Qoder native --agent; unsupported CLIs keep null
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     autoCommit: true,      // default: auto-commit & merge after task completion
     autoDispatch: false,   // default: do NOT inject dispatch context prompt unless user opts in
@@ -5146,11 +5146,11 @@ function runChatTurn(sessionName, text, opts = {}) {
       MULTICC_DIR_ID: persisted.dirId || '',
       MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
     });
-    providers.applyClaudeProxyEnv(childEnv, {
-      providerId: persisted.provider, sessionId: sessionName,
-      subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
-      officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
-    });
+    if (persisted.cli !== 'qoder') providers.applyClaudeProxyEnv(childEnv, {
+        providerId: persisted.provider, sessionId: sessionName,
+        subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
+        officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
+      });
     if (persisted.cli === 'codex') {
       providers.applyCodexProxyConfig(childEnv, {
         providerId: persisted.provider, sessionId: sessionName,
@@ -6034,9 +6034,9 @@ wss.on('connection', async (ws, req) => {
     try {
       session = await createSession(sessionId);
     } catch (err) {
-      const cliLabel = (persisted.cli === 'codex') ? 'codex' : 'claude';
+      const cliLabel = persisted.cli || 'claude';
       const msg = `Failed to launch ${cliLabel}: ${err.message}\r\n` +
-        `Make sure "${cliLabel}" is installed and available in PATH.\r\n` +
+        `Make sure "${cliLabel === 'qoder' ? 'qoderclicn' : cliLabel}" is installed and available in PATH.\r\n` +
         `You can also set the ${cliLabel.toUpperCase()}_CMD environment variable.\r\n`;
       sendWs(ws, { type: 'error', data: msg });
       ws.close();

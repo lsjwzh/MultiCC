@@ -879,6 +879,9 @@ function showNewSessionMenu(ev, dirId) {
     { sep: true },
     { label: '+ ZCode Chat', onclick: () => newSessionInDir(dirId, 'zcode', 'chat') },
     { label: '+ ZCode Terminal', onclick: () => newSessionInDir(dirId, 'zcode', 'terminal') },
+    { sep: true },
+    { label: '+ Qoder CN Chat', onclick: () => newSessionInDir(dirId, 'qoder', 'chat') },
+    { label: '+ Qoder CN Terminal', onclick: () => newSessionInDir(dirId, 'qoder', 'terminal') },
   ]);
 }
 
@@ -1618,7 +1621,7 @@ function renderSessionRow(s) {
   // CLI marker: groups are now kind-only (chat/terminal), so each card shows its
   // own CLI chip. Unknown CLIs fall back to a neutral 'other' style.
   const cli = (s.cli || 'claude').toLowerCase();
-  const cliClass = ['claude', 'codex', 'opencode', 'zcode'].includes(cli) ? cli : 'other';
+  const cliClass = ['claude', 'codex', 'opencode', 'zcode', 'qoder'].includes(cli) ? cli : 'other';
   const monStatus = _sessionStatus.get(s.id);
   const mon = monitors.get(s.id);
   let statusText = tt('idle'), statusCls = '';

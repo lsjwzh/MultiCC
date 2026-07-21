@@ -50,6 +50,11 @@ test('effort policy is deterministic for every supported CLI', () => {
   assert.equal(ai.effortShortName('codex', 'xhigh'), 'Extra high');
   assert.equal(ai.effortShortName('opencode', 'high'), 'Variant high');
   assert.equal(ai.effortShortName('zcode', 'high'), '');
+  assert.equal(ai.defaultEffort('qoder'), '');
+  assert.equal(ai.effortLabel('qoder'), 'Reasoning Effort');
+  assert.equal(ai.effortShortName('qoder', 'xhigh'), 'Extra high');
+  assert.deepEqual(ai.effortOptions('qoder').map(item => item.value),
+    ['', 'low', 'medium', 'high', 'xhigh', 'max']);
   assert.deepEqual(ai.effortOptions('claude').map(item => item.value),
     ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 });
@@ -81,6 +86,12 @@ test('plain provider models and CLI fallback choices never retain a stale provid
   assert.deepEqual(ai.buildModelChoices('', noProvider), ['', 'claude-opus-4-8', '__custom__']);
   const codex = state({ providers: [], defaults: {}, cli: 'codex' });
   assert.deepEqual(ai.buildModelChoices('', codex), ['', '__custom__']);
+
+  const qoder = state({ providers: [], defaults: {}, cli: 'qoder' });
+  assert.deepEqual(ai.buildModelChoices('', qoder),
+    ['', 'auto', 'ultimate', 'performance', 'efficient', 'lite', '__custom__']);
+  assert.equal(ai.modelChoiceLabel('', '', qoder), '默认（跟随 Qoder CN 设置）');
+  assert.equal(ai.modelChoiceLabel('performance', '', qoder), 'Performance（性能）');
 });
 
 test('provider and session transport use MultiCCApi with token-free relative URLs', async () => {

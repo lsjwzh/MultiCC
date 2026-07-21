@@ -75,7 +75,7 @@ function createHarness(overrides = {}) {
     saveBestEffort: source => effects.push(`save:${source}`),
     cliAvailabilitySummary: () => overrides.availability || {
       claude: { available: true }, codex: { available: true },
-      opencode: { available: true }, zcode: { available: true },
+      opencode: { available: true }, zcode: { available: true }, qoder: { available: true },
     },
     sessionProviderName: value => value.provider ? `name:${value.provider}` : null,
     effectiveSessionModel: value => value.model || 'effective-default',
@@ -156,7 +156,7 @@ test('route validation preserves missing, system, terminal and unsupported respo
   harness = createHarness();
   res = await harness.invoke({ body: { cli: 'unknown' } });
   assert.equal(res.statusCode, 400);
-  assert.match(res.body.error, /claude, codex, opencode, zcode/);
+  assert.match(res.body.error, /claude, codex, opencode, zcode, qoder/);
 });
 
 test('same CLI is a transactional no-op while unavailable and busy targets fail before switching', async () => {

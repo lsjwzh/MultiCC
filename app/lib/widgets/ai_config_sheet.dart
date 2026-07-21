@@ -73,14 +73,17 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   bool get _isClaude => widget.cli == SessionCli.claude;
   bool get _isCodex => widget.cli == SessionCli.codex;
+  bool get _isQoder => widget.cli == SessionCli.qoder;
   String get _defaultEffort => widget.cli.defaultEffort;
 
   @override
   void initState() {
     super.initState();
-    _provider = widget.provider;
-    _model = _normalizeModel(widget.provider, widget.model);
-    _effort = _validEfforts.contains(widget.effort) ? widget.effort : _defaultEffort;
+    _provider = widget.cli.supportsProvider ? widget.provider : '';
+    _model = _normalizeModel(_provider, widget.model);
+    _effort = _validEfforts.contains(widget.effort)
+        ? widget.effort
+        : _defaultEffort;
     final known = _modelChoices(_provider).contains(_model);
     _customModel = _model.isNotEmpty && !known;
     _customCtrl = TextEditingController(text: _customModel ? _model : '');
@@ -89,9 +92,13 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     _subProvider = widget.subProviderId ?? '';
     _subModel = _normalizeModel(_subProvider, widget.subModel ?? '');
     final subKnown =
-        _subProvider.isNotEmpty && _modelChoices(_subProvider).contains(_subModel);
-    _customSubModel = _subProvider.isNotEmpty && _subModel.isNotEmpty && !subKnown;
-    _subCustomCtrl = TextEditingController(text: _customSubModel ? _subModel : '');
+        _subProvider.isNotEmpty &&
+        _modelChoices(_subProvider).contains(_subModel);
+    _customSubModel =
+        _subProvider.isNotEmpty && _subModel.isNotEmpty && !subKnown;
+    _subCustomCtrl = TextEditingController(
+      text: _customSubModel ? _subModel : '',
+    );
   }
 
   @override
@@ -112,6 +119,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   String _providerName(String id) {
+    if (_isQoder) return 'Qoder CN';
     if (id.isEmpty) return '默认登录';
     final p = _providerMap(id);
     return p?['name']?.toString() ?? id;
@@ -134,6 +142,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   List<String> _modelChoices(String provider) {
+    if (_isQoder) {
+      return kQoderModelOptions.map((option) => option.key).toList();
+    }
     // Alias-mapped relays: offer the tiers directly (opus/sonnet/haiku/fable) so
     // each option can read "alias → wire model (display name)".
     final tiers = _aliasTiers(provider);
@@ -160,7 +171,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   String _modelLabel(String model) {
-    if (model.isEmpty) return '默认 / 跟随 Provider';
+    if (model.isEmpty) {
+      return _isQoder ? '默认 / 跟随 Qoder CN 设置' : '默认 / 跟随 Provider';
+    }
     return modelShortNameForCli(widget.cli, model);
   }
 
@@ -190,7 +203,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   String _effortDescription(String value) {
-    if (value.isEmpty) return 'Default — Follow the selected model/provider';
+    if (value.isEmpty) {
+      return _isQoder
+          ? 'Default — Follow Qoder CN settings'
+          : 'Default — Follow the selected model/provider';
+    }
     if (!_isClaude) {
       switch (value) {
         case 'minimal':
@@ -279,8 +296,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     final subModelValue = _customSubModel
         ? '__custom__'
         : (subModelChoices.contains(_subModel)
-            ? _subModel
-            : (subModelChoices.isNotEmpty ? subModelChoices.first : ''));
+              ? _subModel
+              : (subModelChoices.isNotEmpty ? subModelChoices.first : ''));
     return SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.only(
@@ -294,7 +311,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'AI 配置（Provider / Model${widget.cli.supportsEffort ? ' / ${widget.cli.effortFieldLabel}' : ''}）',
+              'AI 配置（${widget.cli.supportsProvider ? 'Provider / ' : ''}Model${widget.cli.supportsEffort ? ' / ${widget.cli.effortFieldLabel}' : ''}）',
               style: const TextStyle(
                 color: AppColors.text,
                 fontSize: 15,
@@ -302,32 +319,40 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               ),
             ),
             const SizedBox(height: 14),
-            const Text(
-              'Provider',
-              style: TextStyle(color: AppColors.faint, fontSize: 12),
-            ),
-            const SizedBox(height: 5),
-            DropdownButtonFormField<String>(
-              value: _provider,
-              dropdownColor: AppColors.panel,
-              decoration: _sheetInputDecoration(),
-              style: const TextStyle(color: AppColors.text, fontSize: 13),
-              items: [
-                const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
-                if (includeCurrentProvider)
-                  DropdownMenuItem(value: _provider, child: Text(_provider)),
-                ...widget.providers.map(
-                  (p) => DropdownMenuItem(
-                    value: p['id']?.toString() ?? '',
-                    child: Text(
-                      '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+            if (widget.cli.supportsProvider) ...[
+              const Text(
+                'Provider',
+                style: TextStyle(color: AppColors.faint, fontSize: 12),
+              ),
+              const SizedBox(height: 5),
+              DropdownButtonFormField<String>(
+                value: _provider,
+                dropdownColor: AppColors.panel,
+                decoration: _sheetInputDecoration(),
+                style: const TextStyle(color: AppColors.text, fontSize: 13),
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
+                  if (includeCurrentProvider)
+                    DropdownMenuItem(value: _provider, child: Text(_provider)),
+                  ...widget.providers.map(
+                    (p) => DropdownMenuItem(
+                      value: p['id']?.toString() ?? '',
+                      child: Text(
+                        '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                      ),
                     ),
                   ),
-                ),
-              ],
-              onChanged: _onProviderChanged,
-            ),
-            const SizedBox(height: 12),
+                ],
+                onChanged: _onProviderChanged,
+              ),
+              const SizedBox(height: 12),
+            ] else ...[
+              const Text(
+                'Qoder CN 使用自身账号 / BYOK 配置',
+                style: TextStyle(color: AppColors.faint, fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+            ],
             const Text(
               'Model',
               style: TextStyle(color: AppColors.faint, fontSize: 12),
@@ -386,14 +411,16 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 decoration: _sheetInputDecoration(),
                 style: const TextStyle(color: AppColors.text, fontSize: 13),
                 items: _validEfforts
-                    .map((e) => DropdownMenuItem(
-                          value: e,
-                          child: Text(
-                            _effortDescription(e),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ))
+                    .map(
+                      (e) => DropdownMenuItem(
+                        value: e,
+                        child: Text(
+                          _effortDescription(e),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
                     .toList(),
                 onChanged: (v) => setState(() => _effort = v ?? _defaultEffort),
               ),
@@ -403,7 +430,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               Text(
                 '${widget.cli.displayName} Agent',
                 style: const TextStyle(
-                    color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w600),
+                  color: AppColors.text,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 5),
               TextField(
@@ -425,9 +455,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   const Text(
                     '子任务 (subagent)',
                     style: TextStyle(
-                        color: AppColors.text,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600),
+                      color: AppColors.text,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -439,8 +470,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 ],
               ),
               const SizedBox(height: 10),
-              const Text('子任务 Provider',
-                  style: TextStyle(color: AppColors.faint, fontSize: 12)),
+              const Text(
+                '子任务 Provider',
+                style: TextStyle(color: AppColors.faint, fontSize: 12),
+              ),
               const SizedBox(height: 5),
               DropdownButtonFormField<String>(
                 value: _subProvider,
@@ -452,20 +485,22 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   ...widget.providers
                       .where((p) => !(_isCodex && p['isOfficial'] == true))
                       .map(
-                    (p) => DropdownMenuItem(
-                      value: p['id']?.toString() ?? '',
-                      child: Text(
-                        '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                        (p) => DropdownMenuItem(
+                          value: p['id']?.toString() ?? '',
+                          child: Text(
+                            '${p['name'] ?? p['id']}${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
                 ],
                 onChanged: _onSubProviderChanged,
               ),
               if (_subProvider.isNotEmpty) ...[
                 const SizedBox(height: 12),
-                const Text('子任务 Model',
-                    style: TextStyle(color: AppColors.faint, fontSize: 12)),
+                const Text(
+                  '子任务 Model',
+                  style: TextStyle(color: AppColors.faint, fontSize: 12),
+                ),
                 const SizedBox(height: 5),
                 DropdownButtonFormField<String>(
                   value: subModelValue,
@@ -480,7 +515,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                       ),
                     ),
                     const DropdownMenuItem(
-                        value: '__custom__', child: Text('自定义…')),
+                      value: '__custom__',
+                      child: Text('自定义…'),
+                    ),
                   ],
                   onChanged: (v) {
                     setState(() {
@@ -495,9 +532,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                     controller: _subCustomCtrl,
                     autofocus: true,
                     style: const TextStyle(
-                        color: AppColors.text,
-                        fontSize: 13,
-                        fontFamily: 'monospace'),
+                      color: AppColors.text,
+                      fontSize: 13,
+                      fontFamily: 'monospace',
+                    ),
                     decoration: _sheetInputDecoration(hint: '模型 ID'),
                   ),
                 ],
@@ -540,8 +578,9 @@ Future<void> openAIConfigSheet(
     }
   }
   if (found == null) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(t('sessionNotLoaded'))));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(t('sessionNotLoaded'))));
     return;
   }
   final sess = found;
@@ -560,10 +599,13 @@ Future<void> openAIConfigSheet(
   } catch (_) {}
   List<Map<String, dynamic>> providers = const [];
   try {
-    final appType = runtime.cli.appType;
-    final d = await ManageService(settings: settings).fetchProviders(appType);
-    providers =
-        (d['providers'] as List? ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+    if (runtime.cli.supportsProvider) {
+      final appType = runtime.cli.appType;
+      final d = await ManageService(settings: settings).fetchProviders(appType);
+      providers = (d['providers'] as List? ?? [])
+          .map((e) => (e as Map).cast<String, dynamic>())
+          .toList();
+    }
   } catch (_) {}
   if (!context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
@@ -572,13 +614,17 @@ Future<void> openAIConfigSheet(
     isScrollControlled: true,
     backgroundColor: AppColors.panel,
     shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+    ),
     builder: (_) => AIConfigSheet(
       cli: runtime.cli,
       providers: providers,
       provider: runtime.provider ?? '',
       model: runtime.model ?? '',
-      effort: runtime.effectiveEffort ?? runtime.effort ?? runtime.cli.defaultEffort,
+      effort:
+          runtime.effectiveEffort ??
+          runtime.effort ??
+          runtime.cli.defaultEffort,
       subProviderId: runtime.subagent?.providerId,
       subModel: runtime.subagent?.model,
       agent: runtime.agent,
@@ -597,9 +643,9 @@ Future<void> openAIConfigSheet(
     );
     final summary = [picked.providerLabel, picked.modelLabel];
     if (picked.effortLabel.isNotEmpty) summary.add(picked.effortLabel);
-    messenger.showSnackBar(SnackBar(
-      content: Text('✓ AI 配置已保存：${summary.join(' | ')}，下一轮对话生效'),
-    ));
+    messenger.showSnackBar(
+      SnackBar(content: Text('✓ AI 配置已保存：${summary.join(' | ')}，下一轮对话生效')),
+    );
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('AI 配置保存失败：$e')));
   }
@@ -648,11 +694,14 @@ Future<String?> showRolePromptEditor(
 class RolePromptEditorDialog extends StatefulWidget {
   final String current;
   final SettingsService? settings;
-  const RolePromptEditorDialog({super.key, required this.current, this.settings});
+  const RolePromptEditorDialog({
+    super.key,
+    required this.current,
+    this.settings,
+  });
 
   @override
-  State<RolePromptEditorDialog> createState() =>
-      RolePromptEditorDialogState();
+  State<RolePromptEditorDialog> createState() => RolePromptEditorDialogState();
 }
 
 class RolePromptEditorDialogState extends State<RolePromptEditorDialog> {

@@ -329,6 +329,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       'opencode_chat': [],
       'zcode_terminal': [],
       'zcode_chat': [],
+      'qoder_terminal': [],
+      'qoder_chat': [],
     };
     for (final s in _sessions) {
       if (s.dirId != dirId) continue;

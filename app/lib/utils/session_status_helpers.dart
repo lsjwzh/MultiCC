@@ -14,6 +14,7 @@ Color cliBrandColor(SessionCli cli) => switch (cli) {
   SessionCli.codex => AppColors.codex,
   SessionCli.opencode => AppColors.opencode,
   SessionCli.zcode => AppColors.zcode,
+  SessionCli.qoder => AppColors.qoder,
 };
 
 // Workspace status board: map a live agent status to a colour / label.
@@ -136,13 +137,29 @@ Widget classifyChip(SessionStatus? live, {bool showLabel = true}) {
 ({Color color, String label, String emoji})? livenessBadge(String? state) {
   switch (state) {
     case 'working':
-      return (color: const Color(0xFF56d364), label: t('livenessWorking'), emoji: '🟢');
+      return (
+        color: const Color(0xFF56d364),
+        label: t('livenessWorking'),
+        emoji: '🟢',
+      );
     case 'idle':
-      return (color: const Color(0xFFe3b341), label: t('livenessIdle'), emoji: '🟡');
+      return (
+        color: const Color(0xFFe3b341),
+        label: t('livenessIdle'),
+        emoji: '🟡',
+      );
     case 'stalled':
-      return (color: const Color(0xFFf85149), label: t('livenessStalled'), emoji: '🔴');
+      return (
+        color: const Color(0xFFf85149),
+        label: t('livenessStalled'),
+        emoji: '🔴',
+      );
     case 'unknown':
-      return (color: const Color(0xFF8a909b), label: t('livenessUnknown'), emoji: '⚪');
+      return (
+        color: const Color(0xFF8a909b),
+        label: t('livenessUnknown'),
+        emoji: '⚪',
+      );
     default:
       return null;
   }
@@ -171,7 +188,11 @@ Widget livenessChip(Map<String, dynamic>? verdict) {
     ),
     child: Text(
       '${b.emoji} $label',
-      style: TextStyle(color: b.color, fontSize: 9.5, fontWeight: FontWeight.w700),
+      style: TextStyle(
+        color: b.color,
+        fontSize: 9.5,
+        fontWeight: FontWeight.w700,
+      ),
     ),
   );
   return (reason != null && reason.isNotEmpty)
