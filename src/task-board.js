@@ -21,9 +21,21 @@ const MAX_REFS_PER_TASK = 500;
 const MAX_TASKS_IN_PROMPT = 50;
 const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
+const UNCLASSIFIED_MODULE_NAME = '未分类';
 
 function createEmptyBoard() {
   return { modules: {}, tasks: {} };
+}
+
+function normalizeModuleName(module) {
+  const name = module.name.trim().slice(0, MAX_MODULE_LEN);
+  const dirId = typeof module.dirId === 'string' ? module.dirId.trim() : '';
+  const isLegacyDirName = module.source === 'classify'
+    && dirId.length >= 12 && name.length >= 12 && dirId.startsWith(name);
+  if (module.source === 'classify' && (name === '待归类' || isLegacyDirName)) {
+    return UNCLASSIFIED_MODULE_NAME;
+  }
+  return name;
 }
 
 // Load-time validation: keep only well-formed entries so one corrupt record
@@ -34,11 +46,13 @@ function normalizeBoard(raw) {
   const modules = raw.modules && typeof raw.modules === 'object' ? raw.modules : {};
   for (const [id, m] of Object.entries(modules)) {
     if (!m || typeof m !== 'object' || typeof m.name !== 'string' || !m.name.trim()) continue;
+    const source = ['directory', 'classify'].includes(m.source) ? m.source : 'ai';
+    const dirId = typeof m.dirId === 'string' ? m.dirId : null;
     board.modules[id] = {
       id,
-      name: m.name.trim().slice(0, MAX_MODULE_LEN),
-      source: ['directory', 'classify'].includes(m.source) ? m.source : 'ai',
-      dirId: typeof m.dirId === 'string' ? m.dirId : null,
+      name: normalizeModuleName({ ...m, source, dirId }),
+      source,
+      dirId,
       createdAt: Number(m.createdAt) || 0,
       updatedAt: Number(m.updatedAt) || 0,
     };
@@ -423,6 +437,12 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
       const taskMod = task?.moduleId ? board.modules[task.moduleId] : null;
       const needsRealModule = task && taskMod?.source === 'classify'
         && options.moduleSource !== 'classify' && !!(e.module || '').trim();
+      if (!mod && task && taskMod?.source === 'classify' && options.moduleSource === 'classify') {
+        taskMod.name = modName.slice(0, MAX_MODULE_LEN);
+        taskMod.updatedAt = now;
+        mod = taskMod;
+        touched.add(task.id);
+      }
       if (!mod && (!task || needsRealModule)) {
         mod = {
           id: newId('mod'), name: modName.slice(0, MAX_MODULE_LEN),
@@ -441,9 +461,10 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
         touched.add(task.id);
       } else if (mod && task.moduleId !== mod.id) {
         const oldMod = task.moduleId ? board.modules[task.moduleId] : null;
-        // The immediate classifier can only put a card in 待归类. Once the
-        // richer turn-end tag arrives, move that same card into its real module.
-        if (oldMod?.source === 'classify' && mod.source !== 'classify') {
+        // Classify cards first converge on one 未分类 module per directory;
+        // the richer turn-end tag can then move that same card to its real module.
+        if (oldMod?.source === 'classify'
+          && (mod.source !== 'classify' || options.moduleSource === 'classify')) {
           task.moduleId = mod.id;
           touched.add(task.id);
           if (!Object.values(board.tasks).some(t => t.moduleId === oldMod.id)) delete board.modules[oldMod.id];
@@ -585,6 +606,7 @@ function buildBoardDto(board, getSessionRunState) {
 module.exports = {
   MAX_TAGS_PER_TURN,
   MAX_REFS_PER_TASK,
+  UNCLASSIFIED_MODULE_NAME,
   createEmptyBoard,
   normalizeBoard,
   buildTagSystemPrompt,
