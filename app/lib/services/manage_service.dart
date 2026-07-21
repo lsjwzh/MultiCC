@@ -2,7 +2,20 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
+import '../models/task_board.dart';
 import 'settings_service.dart';
+
+/// Thrown by task-board write endpoints (status / reclassify /
+/// reclassify-pending) when the server rejects a non-localhost caller with
+/// 403. The host machine owns those mutations; a remote phone must surface
+/// "该操作仅本机可用" instead of a generic HTTP error.
+class LocalOnlyException implements Exception {
+  final String? message;
+  const LocalOnlyException([this.message]);
+
+  @override
+  String toString() => message ?? 'local-only';
+}
 
 /// Thin REST client for the server-side management endpoints that the web
 /// dashboard (manage.html) exposes: scheduled tasks (cron), agent resources
@@ -33,6 +46,15 @@ class ManageService {
 
   Never _throw(http.Response res) =>
       throw Exception(_tryParseError(res.body) ?? 'HTTP ${res.statusCode}');
+
+  /// Write endpoints that mutate the task board are localhost-only on the
+  /// server: a remote phone gets 403. Convert that into a [LocalOnlyException]
+  /// so the UI can surface "仅本机可用"; any other failure falls through to
+  /// the generic [_throw].
+  void _throwWrite(http.Response res) {
+    if (res.statusCode == 403) throw const LocalOnlyException();
+    _throw(res);
+  }
 
   // ── Cron (定时任务) ─────────────────────────────────────────────────────────
 
@@ -651,5 +673,81 @@ class ManageService {
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  // ── Task board (AI-tagged module->task tree) ───────────────────────────────
+  // Mirrors /api/task-board/* (see src/routes/task-board.js). Read endpoints are
+  // open to any authenticated client; writes (status / reclassify /
+  // reclassify-pending) are localhost-only and surface [LocalOnlyException] on
+  // 403 so a remote phone shows "仅本机可用".
+
+  /// GET /api/task-board -> { ok, modules, tasks, sessionLabels, backfill }.
+  Future<TaskBoard> fetchTaskBoard() async {
+    final res = await http
+        .get(Uri.parse(_url('/api/task-board')), headers: _headers)
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode != 200) _throw(res);
+    return TaskBoard.fromJson(
+        (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>());
+  }
+
+  /// GET `/api/task-board/tasks/<taskId>/messages` -> cross-session conversation
+  /// trail (user/assistant pairs), oldest first.
+  Future<List<TaskMessage>> fetchTaskMessages(String taskId) async {
+    final res = await http
+        .get(
+            Uri.parse(_url(
+                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/messages')),
+            headers: _headers)
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode != 200) _throw(res);
+    final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map;
+    final items = j['items'] as List? ?? const [];
+    return items
+        .map((e) => TaskMessage.fromJson((e as Map).cast<String, dynamic>()))
+        .toList();
+  }
+
+  /// POST .../status body {status}. `status` ∈ active | done | archived.
+  /// localhost-only; throws [LocalOnlyException] on 403.
+  Future<void> setTaskStatus(String taskId, String status) async {
+    final res = await http
+        .post(
+            Uri.parse(_url(
+                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/status')),
+            headers: _headers,
+            body: jsonEncode({'status': status}))
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) _throwWrite(res);
+  }
+
+  /// POST .../reclassify -> re-queue this task's classification.
+  /// localhost-only; throws [LocalOnlyException] on 403.
+  Future<Map<String, dynamic>> reclassifyTask(String taskId) async {
+    final res = await http
+        .post(
+            Uri.parse(_url(
+                '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/reclassify')),
+            headers: _headers,
+            body: '{}')
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// POST /api/task-board/reclassify-pending body {dirId?} -> re-queue every
+  /// still-pending task, optionally scoped to one directory. localhost-only;
+  /// throws [LocalOnlyException] on 403. Returns {ok, queued, skipped}.
+  Future<Map<String, dynamic>> reclassifyPending({String? dirId}) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/task-board/reclassify-pending')),
+            headers: _headers,
+            body: jsonEncode(
+                {if (dirId != null && dirId.isNotEmpty) 'dirId': dirId}))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 }
