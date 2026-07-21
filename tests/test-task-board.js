@@ -201,6 +201,19 @@ test('pickRouteTarget honors an explicit valid target and returns null when noth
   assert.equal(core.pickRouteTarget(board, board.tasks[tid], mkRecords({}), null), null);
 });
 
+test('pickDirTarget picks the most recently active routable session in the dir', () => {
+  const records = mkRecords({
+    stale: { kind: 'chat', dirId: 'd1', lastActivity: '2026-07-01T00:00:00Z' },
+    fresh: { kind: 'chat', dirId: 'd1', lastActivity: '2026-07-20T00:00:00Z' },
+    otherdir: { kind: 'chat', dirId: 'd2', lastActivity: '2026-07-21T00:00:00Z' },
+    __aux__: { kind: 'chat', type: 'aux', dirId: 'd1', lastActivity: '2026-07-21T00:00:00Z' },
+  });
+  assert.equal(core.pickDirTarget(records, 'd1', null), 'fresh');
+  assert.equal(core.pickDirTarget(records, 'd1', 'stale'), 'stale');   // explicit wins
+  assert.equal(core.pickDirTarget(records, 'd3', null), null);
+  assert.equal(core.pickDirTarget(records, null, null), 'otherdir');   // no dir filter → global latest
+});
+
 // ── routed-message marker ───────────────────────────────────────────────────
 
 test('routed message marker round-trips through extractTaskMarker', () => {
@@ -345,6 +358,7 @@ test('REST: board, messages, send and status flow', async () => {
     'GET /api/task-board/tasks/:taskId/messages',
     'POST /api/task-board/tasks/:taskId/send',
     'POST /api/task-board/tasks/:taskId/status',
+    'POST /api/task-board/send',
     'POST /api/task-board/backfill',
   ]);
 
@@ -472,6 +486,53 @@ test('backfill refuses non-local, unhealthy aux and concurrent runs', async () =
   routes.get('/api/task-board/backfill')({ body: {} }, r3);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r3.code, 409);
+});
+
+test('goal-flagged sends prepend the goal note; board-level send routes by dir', async () => {
+  const { runtime, dispatches } = mkRuntime({
+    resolveGoalLimits: (o) => ({ maxRounds: Number(o?.maxRounds) || 200, maxBudget: Number(o?.maxBudget) || 0 }),
+    buildGoalLimitNote: (l) => `[Goal 模式限制]\nrounds=${l.maxRounds}\n[限制结束]\n\n`,
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const res = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+
+  core.applyTagResult(runtime.getBoard(), [{ id: 'new', title: 'T', module: 'M', areas: [] }],
+    { sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'mu1', assistantMsgId: 'ma1', ts: 20, excerpt: 'x' }, 20);
+  const tid = Object.keys(runtime.getBoard().tasks)[0];
+
+  const r1 = res();
+  routes.get('POST /api/task-board/tasks/:taskId/send')(
+    { params: { taskId: tid }, body: { text: '继续', goal: true, goalLimits: { maxRounds: '50' } } }, r1);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r1.body.ok, true);
+  assert.match(dispatches[0].message, /^\[Goal 模式限制\]\nrounds=50\n\[限制结束\]\n\n【任务：T｜tb:/);
+
+  const r2 = res();
+  routes.get('POST /api/task-board/send')(
+    { body: { dirId: 'dir-1', text: '整体推进一下' } }, r2);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r2.body.ok, true);
+  assert.equal(r2.body.target, 'sess-1');
+  assert.equal(dispatches[1].message, '整体推进一下');   // no marker, no note
+  assert.match(dispatches[1].opts.idempotencyKey, /^taskboard:dir:/);
+
+  const r3 = res();
+  routes.get('POST /api/task-board/send')({ body: { dirId: 'nope', text: 'x' } }, r3);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r3.code, 409);
+});
+
+test('goal flag is ignored gracefully when goal helpers are not wired', async () => {
+  const { runtime, dispatches } = mkRuntime();
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('POST /api/task-board/send')(
+    { body: { dirId: 'dir-1', text: 'hi', goal: true, goalLimits: { maxRounds: 5 } } }, r);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r.body.ok, true);
+  assert.equal(dispatches[0].message, 'hi');
 });
 
 test('send refuses non-local requests and empty text', async () => {
