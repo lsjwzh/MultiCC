@@ -1,9 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 import '../i18n.dart';
 import '../models/task_board.dart';
+import '../providers/session_manager.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -28,19 +35,26 @@ class TaskBoardView extends StatefulWidget {
   final SettingsService settings;
   final String dirId;
 
+  /// Session manager - used by the dir-level composer to build the target
+  /// dropdown (idle chat sessions in [dirId]) and to read live busy status.
+  final SessionManager mgr;
+
   /// Fires after each successful refresh with the count of tasks visible for
   /// [dirId], so the host tab can show "任务板(N)". Null = no badge update.
   final ValueChanged<int>? onTaskCount;
 
-  /// Opens (or switches to) the session identified by [sessionId]. Wired by the
-  /// host fleet sheet to SessionManager.openSession + switchToSession (chat) or
-  /// a pushed TerminalScreen (terminal). Null = session jumping disabled.
-  final void Function(String sessionId)? onOpenSession;
+  /// Opens (or switches to) the session identified by [sessionId], optionally
+  /// deep-linking the chat to [focusMessageId] (chat sessions only). Wired by
+  /// the host fleet sheet to SessionManager.openSessionWithFocus (chat + focus)
+  /// or openSession + switchToSession / a pushed TerminalScreen. Null = session
+  /// jumping disabled.
+  final void Function(String sessionId, {String? focusMessageId})? onOpenSession;
 
   const TaskBoardView({
     super.key,
     required this.settings,
     required this.dirId,
+    required this.mgr,
     this.onTaskCount,
     this.onOpenSession,
   });
@@ -201,6 +215,27 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     return modules;
   }
 
+  /// Idle chat sessions in this directory, for the composer's target dropdown.
+  /// A session is busy when its live workspace status is thinking / editing /
+  /// running; sessions without a live status yet are treated as idle (the
+  /// server re-checks busyness on dispatch and returns 409 if wrong). Aux and
+  /// terminal sessions are excluded. Mirrors the web `_tbDirTargets`.
+  List<({String id, String label})> _idleChatTargets() {
+    final labels = _board?.sessionLabels ?? const <String, String>{};
+    const busy = {'thinking', 'editing', 'running'};
+    final out = <({String id, String label})>[];
+    for (final s in widget.mgr.sessions) {
+      if (s.dirId != widget.dirId) continue;
+      if (!s.isChat || s.isAux) continue;
+      final st = widget.mgr.liveStatus(s.id);
+      if (st != null && busy.contains(st.status)) continue;
+      final label = labels[s.id] ??
+          (s.label?.isNotEmpty == true ? s.label! : s.id);
+      out.add((id: s.id, label: label));
+    }
+    return out;
+  }
+
   Future<void> _reclassifyPending() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
@@ -227,8 +262,30 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     }
   }
 
+  /// Dir-level dispatch callback for the board composer. Routes [text] to an
+  /// idle chat session in this directory (server creates a pending task), then
+  /// refreshes the board so the new task appears. Throws on failure so the
+  /// composer can surface the right SnackBar.
+  Future<Map<String, dynamic>?> _sendToBoard(
+    String text, {
+    String? target,
+    bool goal = false,
+    Map<String, dynamic>? goalLimits,
+  }) async {
+    final r = await ManageService(settings: widget.settings).sendToBoard(
+      widget.dirId,
+      text: text,
+      target: target,
+      goal: goal,
+      goalLimits: goalLimits,
+    );
+    await _refresh(silent: true);
+    return r;
+  }
+
   void _openDetail(TaskBoardTask task) {
     final labels = _board?.sessionLabels ?? const <String, String>{};
+    final targets = _idleChatTargets();
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -240,6 +297,7 @@ class _TaskBoardViewState extends State<TaskBoardView> {
         settings: widget.settings,
         task: task,
         sessionLabels: labels,
+        targets: targets,
         onOpenSession: widget.onOpenSession,
         onChanged: () => _refresh(silent: true),
       ),
@@ -255,6 +313,18 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     );
   }
 
+  /// Dir-level composer pinned to the bottom of the board view. The composer
+  /// owns its text/attach/voice/goal state; [onSend] routes through
+  /// [_sendToBoard] and refreshes the board on success.
+  Widget _buildDirComposer(List<({String id, String label})> targets) {
+    return _BoardComposer(
+      settings: widget.settings,
+      targets: targets,
+      hint: t('boardComposerHint'),
+      onSend: _sendToBoard,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -265,14 +335,25 @@ class _TaskBoardViewState extends State<TaskBoardView> {
         ),
       );
     }
+    final targets = _idleChatTargets();
     final board = _board;
     if (board == null) {
-      return _BoardEmpty(text: _error ?? t('noTasks'));
+      return Column(
+        children: [
+          Expanded(child: _BoardEmpty(text: _error ?? t('noTasks'))),
+          _buildDirComposer(targets),
+        ],
+      );
     }
 
     final tasks = _tasksForDir(widget.dirId, board);
     if (tasks.isEmpty) {
-      return _BoardEmpty(text: t('noTasksHint'));
+      return Column(
+        children: [
+          Expanded(child: _BoardEmpty(text: t('noTasksHint'))),
+          _buildDirComposer(targets),
+        ],
+      );
     }
 
     // Group tasks by module, keep only modules that have tasks here, and carry
@@ -291,72 +372,79 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     final showFloat =
         _gathering || (board.backfill?.running ?? false);
 
-    return Stack(
+    return Column(
       children: [
-        ListView(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
-          children: [
-            // 顶部统计行：『<模块数> 模块 · <任务数> 任务  🔄』
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
+        Expanded(
+          child: Stack(
+            children: [
+              ListView(
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
                 children: [
-                  Text(
-                    t('taskBoardStat', {
-                      'modules': '${mods.isEmpty ? 1 : mods.length}',
-                      'tasks': '${tasks.length}',
-                    }),
-                    style:
-                        const TextStyle(color: AppColors.muted, fontSize: 12),
+                  // 顶部统计行：『<模块数> 模块 · <任务数> 任务  🔄』
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      children: [
+                        Text(
+                          t('taskBoardStat', {
+                            'modules': '${mods.isEmpty ? 1 : mods.length}',
+                            'tasks': '${tasks.length}',
+                          }),
+                          style: const TextStyle(
+                              color: AppColors.muted, fontSize: 12),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          tooltip: t('refresh'),
+                          onPressed: _refreshing ? null : () => _refresh(),
+                          icon: _refreshing
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                )
+                              : const Icon(Icons.refresh_rounded,
+                                  size: 18, color: AppColors.muted),
+                          constraints: const BoxConstraints(
+                              minWidth: 32, minHeight: 32),
+                          padding: EdgeInsets.zero,
+                        ),
+                      ],
+                    ),
                   ),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: t('refresh'),
-                    onPressed: _refreshing ? null : () => _refresh(),
-                    icon: _refreshing
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child:
-                                CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh_rounded,
-                            size: 18, color: AppColors.muted),
-                    constraints: const BoxConstraints(
-                        minWidth: 32, minHeight: 32),
-                    padding: EdgeInsets.zero,
-                  ),
+                  for (final mod in mods) ...[
+                    _ModuleRow(
+                      module: mod,
+                      collapsed: _collapsed.contains(mod.id),
+                      onToggle: () => setState(() {
+                        if (_collapsed.contains(mod.id)) {
+                          _collapsed.remove(mod.id);
+                        } else {
+                          _collapsed.add(mod.id);
+                        }
+                      }),
+                      onReclassifyAll:
+                          mod.isPending ? _reclassifyPending : null,
+                    ),
+                    if (!_collapsed.contains(mod.id))
+                      for (final task in _sortTasks(byModule[mod.id]!))
+                        _buildTaskRow(task),
+                  ],
+                  if (orphans.isNotEmpty)
+                    for (final task in orphans) _buildTaskRow(task),
                 ],
               ),
-            ),
-            for (final mod in mods) ...[
-              _ModuleRow(
-                module: mod,
-                collapsed: _collapsed.contains(mod.id),
-                onToggle: () => setState(() {
-                  if (_collapsed.contains(mod.id)) {
-                    _collapsed.remove(mod.id);
-                  } else {
-                    _collapsed.add(mod.id);
-                  }
-                }),
-                onReclassifyAll:
-                    mod.isPending ? _reclassifyPending : null,
-              ),
-              if (!_collapsed.contains(mod.id))
-                for (final task in _sortTasks(byModule[mod.id]!))
-                  _buildTaskRow(task),
+              if (showFloat)
+                const Positioned(
+                  right: 16,
+                  bottom: 16,
+                  child: _GatheringFloat(),
+                ),
             ],
-            if (orphans.isNotEmpty)
-              for (final task in orphans) _buildTaskRow(task),
-          ],
-        ),
-        if (showFloat)
-          const Positioned(
-            right: 16,
-            bottom: 16,
-            child: _GatheringFloat(),
           ),
+        ),
+        _buildDirComposer(targets),
       ],
     );
   }
@@ -673,13 +761,15 @@ class _TaskDetailSheet extends StatefulWidget {
   final SettingsService settings;
   final TaskBoardTask task;
   final Map<String, String> sessionLabels;
-  final void Function(String sessionId)? onOpenSession;
+  final List<({String id, String label})> targets;
+  final void Function(String sessionId, {String? focusMessageId})? onOpenSession;
   final VoidCallback onChanged;
 
   const _TaskDetailSheet({
     required this.settings,
     required this.task,
     required this.sessionLabels,
+    required this.targets,
     required this.onChanged,
     this.onOpenSession,
   });
@@ -791,12 +881,46 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
   }
 
+  /// Task-level dispatch callback for the detail-sheet composer. Routes [text]
+  /// to an idle session relevant to this task, then reloads the message trail
+  /// and notifies the parent to refresh the board. Throws on failure so the
+  /// composer can surface the right SnackBar.
+  Future<Map<String, dynamic>?> _sendToTask(
+    String text, {
+    String? target,
+    bool goal = false,
+    Map<String, dynamic>? goalLimits,
+  }) async {
+    final r = await ManageService(settings: widget.settings).sendToTask(
+      widget.task.id,
+      text: text,
+      target: target,
+      goal: goal,
+      goalLimits: goalLimits,
+    );
+    await _loadMessages();
+    widget.onChanged();
+    return r;
+  }
+
   void _jumpToSession(String sid) {
     // Close this detail sheet first, then hand off to the fleet sheet's opener
     // (which uses its own context / mgr and outlives this modal route).
     final open = widget.onOpenSession;
     Navigator.of(context).pop();
     if (open != null) open(sid);
+  }
+
+  /// Deep-link: close this detail sheet, then open the message's session with
+  /// a focus on that message so the chat scrolls to + highlights it. Only
+  /// called for non-lost messages that carry a persisted id (see _messageRow's
+  /// canJump guard) - lost / id-less messages are never tappable.
+  void _jumpToMessage(TaskMessage m) {
+    final open = widget.onOpenSession;
+    final mid = m.messageId;
+    if (open == null || mid == null || mid.isEmpty) return;
+    Navigator.of(context).pop();
+    open(m.sessionId, focusMessageId: mid);
   }
 
   ({String label, Color color, String emoji}) _runStateInfo(
@@ -968,6 +1092,13 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
             ),
             Expanded(child: _messagesBody()),
             const Divider(height: 1, color: AppColors.line),
+            _BoardComposer(
+              settings: widget.settings,
+              targets: widget.targets,
+              hint: t('boardTaskComposerHint'),
+              onSend: _sendToTask,
+            ),
+            const Divider(height: 1, color: AppColors.line),
             _actions(canReclassify: canReclassify),
           ],
         ),
@@ -1046,32 +1177,55 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
     final isUser = m.role == 'user';
     final roleColor = isUser ? AppColors.blue : AppColors.codex;
+    // A message is deep-linkable only when it carries a persisted id and an
+    // opener is wired. Lost / id-less messages render greyed and non-tappable
+    // (per spec: "lost==true 或 messageId 为空的消息不可点").
+    final canJump = widget.onOpenSession != null &&
+        m.messageId != null &&
+        m.messageId!.isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Text(isUser ? '👤' : '🤖', style: const TextStyle(fontSize: 11)),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                label,
-                style: TextStyle(
-                  color: roleColor,
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
-                  fontFamily: 'monospace',
+        // The header (role + session label + time + ↗) is the tap target. The
+        // body stays SelectableText so text selection never fights the jump tap.
+        // An underlined label + open-in-new icon signal that the row is tappable.
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: canJump ? () => _jumpToMessage(m) : null,
+          child: Row(
+            children: [
+              Text(isUser ? '👤' : '🤖', style: const TextStyle(fontSize: 11)),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: canJump ? roleColor : AppColors.faint,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'monospace',
+                    decoration: canJump ? TextDecoration.underline : null,
+                    decorationColor: roleColor,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              _timeAgo(m.ts),
-              style: const TextStyle(color: AppColors.faint, fontSize: 9.5),
-            ),
-          ],
+              const SizedBox(width: 6),
+              Text(
+                _timeAgo(m.ts),
+                style: const TextStyle(color: AppColors.faint, fontSize: 9.5),
+              ),
+              if (canJump) ...[
+                const SizedBox(width: 4),
+                const Icon(
+                  Icons.open_in_new_rounded,
+                  size: 11,
+                  color: AppColors.muted,
+                ),
+              ],
+            ],
+          ),
         ),
         const SizedBox(height: 3),
         SelectableText(
@@ -1331,6 +1485,591 @@ class _ActionButton extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── Board composer (dispatch) ───────────────────────────────────────────────
+
+/// Shared composer for dispatching a message into the task board. Used by the
+/// dir-level board view (auto-route within a Fleet) and the task detail sheet
+/// (route to a session relevant to one task). Owns its text / attachment /
+/// voice / goal / target state; the parent supplies [onSend] (which calls the
+/// right service method + refresh) and the list of idle chat [targets].
+///
+/// Feature parity with the chat composer (input_bar.dart) and the web
+/// createTbComposer: attach -> POST /api/upload -> path appended to text;
+/// voice -> record -> POST /api/voice/stt -> transcript into the input;
+/// goal -> goal:true + goalLimits{maxRounds,maxBudget}; target dropdown
+/// (empty value = 🎯 自动路由).
+class _BoardComposer extends StatefulWidget {
+  final SettingsService settings;
+
+  /// Routes [text] to the board / task. Returns the server response (for the
+  /// success SnackBar) or throws on failure so the composer can surface the
+  /// right SnackBar (LocalOnlyException / BoardRouteException / other).
+  final Future<Map<String, dynamic>?> Function(
+    String text, {
+    String? target,
+    bool goal,
+    Map<String, dynamic>? goalLimits,
+  }) onSend;
+
+  final List<({String id, String label})> targets;
+  final String? hint;
+
+  const _BoardComposer({
+    required this.settings,
+    required this.onSend,
+    required this.targets,
+    this.hint,
+  });
+
+  @override
+  State<_BoardComposer> createState() => _BoardComposerState();
+}
+
+class _BoardComposerState extends State<_BoardComposer> {
+  final _ctrl = TextEditingController();
+  final _focusNode = FocusNode();
+  bool _hasText = false;
+
+  // Attachments: list of {path, name} from server upload
+  final List<Map<String, String>> _attachments = [];
+  bool _uploading = false;
+
+  // Voice recording
+  final _recorder = AudioRecorder();
+  bool _isRecording = false;
+  bool _isTranscribing = false;
+
+  // Goal mode + per-send limits
+  bool _goal = false;
+  final _roundsCtrl = TextEditingController(text: '200');
+  final _budgetCtrl = TextEditingController();
+
+  // Target session ('' = auto-route)
+  String _target = '';
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl.addListener(() {
+      final has = _ctrl.text.trim().isNotEmpty;
+      if (has != _hasText) setState(() => _hasText = has);
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _BoardComposer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The targets list is rebuilt each parent rebuild (idle sessions change as
+    // status ticks arrive). If the selected target is no longer offered (it
+    // became busy), fall back to auto-route so the dropdown never holds a
+    // value absent from its items (which would assert).
+    if (_target.isNotEmpty &&
+        !widget.targets.any((tg) => tg.id == _target)) {
+      _target = '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _focusNode.dispose();
+    _roundsCtrl.dispose();
+    _budgetCtrl.dispose();
+    _recorder.dispose();
+    super.dispose();
+  }
+
+  // ── File attachment (mirrors input_bar._pickAndUpload) ──
+
+  Future<void> _pickAndUpload() async {
+    final result = await FilePicker.platform.pickFiles(withData: true);
+    if (result == null || result.files.isEmpty) return;
+    final file = result.files.first;
+    if (file.bytes == null) return;
+
+    setState(() => _uploading = true);
+    try {
+      final uri = Uri.parse(widget.settings.buildHttpUrl('/api/upload'));
+      final req = http.MultipartRequest('POST', uri);
+      if (widget.settings.token.isNotEmpty) {
+        req.headers['X-Access-Token'] = widget.settings.token;
+      }
+      req.files.add(http.MultipartFile.fromBytes(
+        'file',
+        file.bytes!,
+        filename: file.name,
+        contentType: MediaType('application', 'octet-stream'),
+      ));
+      final res = await req.send().timeout(const Duration(seconds: 30));
+      final body = await res.stream.bytesToString();
+      if (res.statusCode == 200) {
+        final json = jsonDecode(body) as Map<String, dynamic>;
+        setState(() {
+          _attachments.add({
+            'path': json['path'] as String,
+            'name': json['name'] as String? ?? file.name,
+          });
+        });
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${t('boardAttach')}: ${res.statusCode}')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${t('boardAttach')}: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  // ── Voice recording (mirrors input_bar, simplified: no AI refine panel) ──
+
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      await _stopAndTranscribe();
+    } else {
+      await _startRecording();
+    }
+  }
+
+  Future<void> _startRecording() async {
+    if (!await _recorder.hasPermission()) return;
+    final dir = await getTemporaryDirectory();
+    final filePath =
+        '${dir.path}/multicc_board_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    await _recorder.start(
+      const RecordConfig(
+          encoder: AudioEncoder.aacLc, numChannels: 1, sampleRate: 16000),
+      path: filePath,
+    );
+    setState(() => _isRecording = true);
+  }
+
+  Future<void> _stopAndTranscribe() async {
+    final path = await _recorder.stop();
+    setState(() {
+      _isRecording = false;
+      _isTranscribing = true;
+    });
+
+    if (path == null) {
+      if (mounted) setState(() => _isTranscribing = false);
+      return;
+    }
+
+    try {
+      final uri = Uri.parse(widget.settings.buildHttpUrl('/api/voice/stt'));
+      final req = http.MultipartRequest('POST', uri);
+      if (widget.settings.token.isNotEmpty) {
+        req.headers['X-Access-Token'] = widget.settings.token;
+      }
+      req.files.add(await http.MultipartFile.fromPath(
+        'file',
+        path,
+        contentType: MediaType('audio', 'mp4'),
+      ));
+      final res = await req.send().timeout(const Duration(seconds: 60));
+      final body = await res.stream.bytesToString();
+      if (res.statusCode == 200) {
+        final json = jsonDecode(body) as Map<String, dynamic>;
+        final text = (json['text'] as String? ?? '').trim();
+        if (text.isNotEmpty && mounted) {
+          final current = _ctrl.text;
+          _ctrl.text = current.isEmpty ? text : '$current $text';
+          _ctrl.selection =
+              TextSelection.collapsed(offset: _ctrl.text.length);
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${t('boardVoice')}: ${res.statusCode}')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${t('boardVoice')}: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isTranscribing = false);
+    }
+  }
+
+  // ── Send ──
+
+  Future<void> _doSend() async {
+    var text = _ctrl.text.trim();
+    // Append attachment paths (same convention as the chat composer).
+    if (_attachments.isNotEmpty) {
+      final paths = _attachments.map((a) => a['path']!).join(' ');
+      text = text.isEmpty ? paths : '$text $paths';
+    }
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(t('boardEmptyText'))));
+      return;
+    }
+    Map<String, dynamic>? goalLimits;
+    if (_goal) {
+      goalLimits = <String, dynamic>{};
+      final r = int.tryParse(_roundsCtrl.text.trim());
+      if (r != null) goalLimits['maxRounds'] = r;
+      final b = int.tryParse(_budgetCtrl.text.trim());
+      if (b != null) goalLimits['maxBudget'] = b;
+    }
+    setState(() => _sending = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final r = await widget.onSend(
+        text,
+        target: _target.isNotEmpty ? _target : null,
+        goal: _goal,
+        goalLimits: goalLimits,
+      );
+      // Success: clear text + attachments.
+      _ctrl.clear();
+      setState(() {
+        _hasText = false;
+        _attachments.clear();
+      });
+      final label = r?['targetLabel']?.toString();
+      messenger.showSnackBar(SnackBar(
+        content: Text(label != null && label.isNotEmpty
+            ? t('boardRoutedTo', {'target': label})
+            : t('boardSent')),
+      ));
+    } on LocalOnlyException {
+      messenger.showSnackBar(SnackBar(content: Text(t('localOnly'))));
+    } on BoardRouteException catch (e) {
+      // 409 carries the server's note; 503 / 400 carry only a code the UI
+      // localizes.
+      final msg = e.note.isNotEmpty
+          ? e.note
+          : e.code == 'aux_unhealthy'
+              ? t('boardAuxUnhealthy')
+              : e.code == 'empty_text'
+                  ? t('boardEmptyText')
+                  : t('boardRouteFailed');
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('$e')));
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canSend = (_hasText || _attachments.isNotEmpty) &&
+        !_sending &&
+        !_uploading &&
+        !_isTranscribing;
+    final viewInsets = MediaQuery.of(context).viewInsets;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.panel,
+        border: Border(top: BorderSide(color: AppColors.line)),
+      ),
+      padding: EdgeInsets.fromLTRB(10, 8, 10, 8 + viewInsets.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Goal limits row (only when goal armed).
+          if (_goal)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                      child: _numField(
+                          _roundsCtrl, t('roundLimit'), '200')),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: _numField(
+                          _budgetCtrl, t('tokenBudget'), t('unlimited'))),
+                ],
+              ),
+            ),
+          // Attachment chips.
+          if (_attachments.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: _attachments.asMap().entries.map((e) {
+                  final idx = e.key;
+                  final att = e.value;
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppColors.panel2,
+                      border: Border.all(color: AppColors.line),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.attach_file,
+                            size: 12, color: AppColors.muted),
+                        const SizedBox(width: 4),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 120),
+                          child: Text(
+                            att['name']!,
+                            style: const TextStyle(
+                                color: AppColors.text, fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        GestureDetector(
+                          onTap: () =>
+                              setState(() => _attachments.removeAt(idx)),
+                          child: const Icon(Icons.close,
+                              size: 12, color: AppColors.muted),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          // Controls row: target dropdown + goal toggle.
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              children: [
+                Expanded(child: _targetDropdown()),
+                if (widget.targets.isEmpty) ...[
+                  const SizedBox(width: 8),
+                  Text(t('boardNoIdleSession'),
+                      style: const TextStyle(
+                          color: AppColors.faint, fontSize: 10.5)),
+                ],
+                const SizedBox(width: 8),
+                Text('🎯 ${t('boardGoalMode')}',
+                    style: const TextStyle(
+                        color: AppColors.muted, fontSize: 11)),
+                SizedBox(
+                  height: 28,
+                  child: Switch(
+                    value: _goal,
+                    onChanged:
+                        _sending ? null : (v) => setState(() => _goal = v),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Input row.
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              _ComposerBtn(
+                onTap: (!_uploading && !_sending) ? _pickAndUpload : null,
+                icon: _uploading
+                    ? Icons.hourglass_top_rounded
+                    : Icons.attach_file_rounded,
+                color: AppColors.muted,
+              ),
+              const SizedBox(width: 4),
+              _ComposerBtn(
+                onTap:
+                    (!_isTranscribing && !_sending) ? _toggleRecording : null,
+                icon: _isTranscribing
+                    ? Icons.hourglass_top_rounded
+                    : _isRecording
+                        ? Icons.stop_circle_rounded
+                        : Icons.mic_rounded,
+                color: _isRecording ? AppColors.danger : AppColors.muted,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Container(
+                  constraints: const BoxConstraints(maxHeight: 100),
+                  decoration: BoxDecoration(
+                    color: AppColors.bg,
+                    border: Border.all(
+                      color: _isRecording
+                          ? AppColors.danger
+                          : _focusNode.hasFocus
+                              ? AppColors.blue
+                              : AppColors.line,
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: TextField(
+                    controller: _ctrl,
+                    focusNode: _focusNode,
+                    maxLines: null,
+                    textInputAction: TextInputAction.newline,
+                    style: const TextStyle(
+                        color: AppColors.text, fontSize: 14, height: 1.4),
+                    decoration: InputDecoration(
+                      hintText: _isRecording
+                          ? t('recording')
+                          : _isTranscribing
+                              ? t('transcribing')
+                              : (widget.hint ?? t('typeMessage')),
+                      hintStyle: TextStyle(
+                        color: _isRecording
+                            ? AppColors.danger
+                            : AppColors.faint,
+                        fontSize: 13,
+                      ),
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                    ),
+                    onSubmitted: canSend ? (_) => _doSend() : null,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              _SendBtn(
+                onTap: canSend ? _doSend : null,
+                sending: _sending,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _targetDropdown() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppColors.panel2,
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DropdownButton<String>(
+        value: _target,
+        isExpanded: true,
+        underline: const SizedBox.shrink(),
+        style: const TextStyle(color: AppColors.text, fontSize: 12),
+        dropdownColor: AppColors.panel2,
+        items: [
+          DropdownMenuItem(value: '', child: Text(t('boardAutoRoute'))),
+          for (final tg in widget.targets)
+            DropdownMenuItem(value: tg.id, child: Text(tg.label)),
+        ],
+        onChanged: _sending ? null : (v) => setState(() => _target = v ?? ''),
+      ),
+    );
+  }
+
+  Widget _numField(
+      TextEditingController ctrl, String label, String hint) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label,
+            style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.number,
+          style: const TextStyle(color: AppColors.text, fontSize: 14),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(color: AppColors.faint, fontSize: 13),
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            filled: true,
+            fillColor: AppColors.bg,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.line),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.line),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.blue),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ComposerBtn extends StatelessWidget {
+  final VoidCallback? onTap;
+  final IconData icon;
+  final Color color;
+
+  const _ComposerBtn(
+      {required this.onTap, required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 34,
+        height: 40,
+        alignment: Alignment.center,
+        child: Icon(icon,
+            color: onTap != null ? color : AppColors.faint, size: 20),
+      ),
+    );
+  }
+}
+
+class _SendBtn extends StatelessWidget {
+  final VoidCallback? onTap;
+  final bool sending;
+
+  const _SendBtn({required this.onTap, required this.sending});
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: enabled ? AppColors.accentDark : AppColors.panel2,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: sending
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+              )
+            : Icon(Icons.send_rounded,
+                color: enabled ? Colors.white : AppColors.faint, size: 20),
       ),
     );
   }
