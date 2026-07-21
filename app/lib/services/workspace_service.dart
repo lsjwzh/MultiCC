@@ -118,6 +118,11 @@ class WorkspaceService extends ChangeNotifier {
   /// actually notify is decided by [SessionManager].
   void Function(String sessionId, String state, String message)? onNotify;
 
+  /// Fired when a session's CLI is switched (server `session_cli_changed`).
+  /// Lets the dashboard reload its session list immediately so the fleet
+  /// grouping updates without waiting for the 5s REST poll.
+  void Function()? onSessionCliChanged;
+
   WorkspaceService({
     required this.settings,
     required this.dirId,
@@ -317,6 +322,11 @@ class WorkspaceService extends ChangeNotifier {
         );
         notifyListeners();
       }
+    } else if (type == 'session_cli_changed') {
+      // A session's CLI was switched. The grouping (chat/terminal buckets, CLI
+      // chips) comes from the REST session list, not this socket - so ask the
+      // host to reload it immediately instead of waiting for the 5s poll.
+      onSessionCliChanged?.call();
     } else if (type == 'notify') {
       final id = msg['sessionId'];
       if (id is String) {
