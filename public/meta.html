@@ -99,6 +99,8 @@
   .td-session-link:hover { color: #79c0ff; text-decoration: underline; }
   .td-msgs { flex: 1; overflow-y: auto; padding: 10px 14px; }
   .td-msg { margin-bottom: 10px; border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
+  .td-msg-link { display: block; color: inherit; text-decoration: none; cursor: pointer; }
+  .td-msg-link:hover { border-color: #58a6ff; }
   .td-msg-head { padding: 4px 10px; background: #161b22; font-size: 11px; color: #8b949e;
                  display: flex; gap: 8px; align-items: center; }
   .td-msg-head .td-sess { color: #58a6ff; font-weight: 600; }
@@ -448,12 +450,14 @@ function renderTaskDetail(d) {
     msgs.innerHTML = '<div class="td-placeholder">该任务还没有关联对话。</div>';
   }
   for (const it of d.items) {
-    const card = document.createElement('div'); card.className = `td-msg ${it.role}`;
+    const card = document.createElement('a'); card.className = `td-msg ${it.role} td-msg-link`;
     const headEl = document.createElement('div'); headEl.className = 'td-msg-head';
     const time = it.ts ? new Date(it.ts).toLocaleString('zh-CN', { hour12: false }) : '?';
-    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId);
+    const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId, it.messageId);
+    card.href = sessionHref; card.target = '_blank'; card.rel = 'noopener noreferrer';
+    card.title = '打开会话并定位到这条消息';
     headEl.innerHTML = `
-      <a class="td-sess td-session-link" href="${esc(sessionHref)}" target="_blank" rel="noopener noreferrer" title="打开对应会话">${esc(it.sessionLabel || it.sessionId)} ↗</a>
+      <span class="td-sess">${esc(it.sessionLabel || it.sessionId)} ↗</span>
       <span>${esc(time)}</span>
       <span class="td-role-${it.role}">${it.role === 'user' ? '👤 用户' : '🤖 助手'}</span>
       ${it.lost ? '<span style="color:#f85149">（原消息已清理，仅存摘要）</span>' : ''}`;
@@ -469,7 +473,7 @@ function renderTaskDetail(d) {
     .concat(t.sessionIds.map(sid =>
       `<option value="${esc(sid)}">${esc(tb.sessionLabels?.[sid] || sid)}</option>`)).join('');
   compose.innerHTML = `
-    <textarea id="td-input" placeholder="向该任务派发后续消息…（不接入任何会话，发送时自动路由到 fleet 下合适的会话）"></textarea>
+    <textarea id="td-input" placeholder="向该任务派发后续消息…（仅路由到空闲且最相关的会话）"></textarea>
     <div class="td-compose-row">
       <select id="td-target">${targetOptions}</select>
       <button id="td-send">🚀 发送</button>

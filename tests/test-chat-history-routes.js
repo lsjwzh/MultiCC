@@ -245,6 +245,59 @@ test('HTTP pagination projects the full history before slicing a page', () => {
     'read-time projection never mutates the durable record');
 });
 
+test('HTTP around pagination locates an exact id in projected history without changing legacy pages', () => {
+  const fx = fixture({
+    initial: { s1: [
+      { id: 'm1', role: 'user', content: 'one', ts: 100 },
+      { id: 'm2', role: 'assistant', content: 'two', ts: 100 },
+      { id: 'm3', role: 'user', content: 'three', ts: 100 },
+      { id: 'm4', role: 'assistant', content: 'four', ts: 100 },
+      { id: 'm5', role: 'user', content: 'five', ts: 100 },
+    ] },
+    deps: {
+      projectMessages(sessionId, messages) {
+        return messages.map(message => ({ ...message, projectedFor: sessionId }));
+      },
+    },
+  });
+  const app = createFakeApp();
+  fx.runtime.mountRoutes(app);
+
+  let res = createResponse();
+  app.routes.get('GET /api/sessions/:id/history')({
+    params: { id: 's1' }, query: { around: 'm3', limit: '3' },
+  }, res);
+  assert.deepEqual(res.body, {
+    messages: [
+      { id: 'm2', role: 'assistant', content: 'two', ts: 100, projectedFor: 's1' },
+      { id: 'm3', role: 'user', content: 'three', ts: 100, projectedFor: 's1' },
+      { id: 'm4', role: 'assistant', content: 'four', ts: 100, projectedFor: 's1' },
+    ],
+    hasMore: true,
+    found: true,
+    hasNewer: true,
+  });
+
+  res = createResponse();
+  app.routes.get('GET /api/sessions/:id/history')({
+    params: { id: 's1' }, query: { around: 'does-not-exist', limit: '3' },
+  }, res);
+  assert.deepEqual(res.body, {
+    messages: [], hasMore: false, found: false, hasNewer: false,
+  });
+
+  res = createResponse();
+  app.routes.get('GET /api/sessions/:id/history')({
+    params: { id: 's1' }, query: { limit: '1' },
+  }, res);
+  assert.deepEqual(res.body, {
+    messages: [
+      { id: 'm5', role: 'user', content: 'five', ts: 100, projectedFor: 's1' },
+    ],
+    hasMore: true,
+  });
+});
+
 test('HTTP delete persistence failure reaches the terminal safe boundary without a false broadcast', () => {
   const fx = fixture({ initial: { s1: [{ id: 'm1', role: 'user', content: 'one' }] } });
   const app = createFakeApp();
