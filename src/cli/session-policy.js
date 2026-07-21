@@ -7,6 +7,7 @@ const path = require('node:path');
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const OPENCODE_VARIANTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
+const QODER_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
 
 function assertProviderDependencies(options) {
@@ -39,6 +40,7 @@ function createSessionPolicy(options) {
 
   function effectiveSessionModel(session) {
     if (!session) return null;
+    if (session.cli === 'qoder') return session.model || session.reportedModel || null;
     const appType = session.cli === 'codex' ? 'codex' : 'claude';
     if (session.model) {
       const providerId = session.provider;
@@ -122,6 +124,7 @@ function createSessionPolicy(options) {
     if (cli === 'codex') return CODEX_REASONING_LEVELS.has(effort);
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
     if (cli === 'zcode') return false;
+    if (cli === 'qoder') return QODER_REASONING_LEVELS.has(effort);
     return EFFORT_LEVELS.has(effort);
   }
 
@@ -134,6 +137,11 @@ function createSessionPolicy(options) {
   function codexReasoningLevel(session) {
     const effort = normalizeEffort(session?.effort);
     return effort && CODEX_REASONING_LEVELS.has(effort) ? effort : null;
+  }
+
+  function qoderEffortLevel(session) {
+    const effort = normalizeEffort(session?.effort);
+    return effort && QODER_REASONING_LEVELS.has(effort) ? effort : null;
   }
 
   function codexReasoningConfigArg(session) {
@@ -179,6 +187,7 @@ function createSessionPolicy(options) {
       return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;
     }
     if (cli === 'zcode') return null;
+    if (cli === 'qoder') return qoderEffortLevel(session);
     const effort = normalizeEffort(session.effort);
     return effort && EFFORT_LEVELS.has(effort) ? effort : claudeDefaultEffort();
   }
@@ -190,7 +199,7 @@ function createSessionPolicy(options) {
   function normalizeCliAgent(cli, value) {
     const agent = value == null ? '' : String(value).trim();
     if (!agent) return null;
-    if (!['claude', 'opencode'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
+    if (!['claude', 'opencode', 'qoder'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
     return agent;
   }
 
@@ -229,6 +238,7 @@ function createSessionPolicy(options) {
     validEffortForCli,
     cliEffortLevel,
     codexReasoningLevel,
+    qoderEffortLevel,
     codexReasoningConfigArg,
     codexModelConfigArg,
     claudeDefaultEffort,

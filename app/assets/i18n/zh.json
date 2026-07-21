@@ -60,6 +60,8 @@
   "openCodeChats": "OPENCODE CHATS",
   "zCodeTerminals": "ZCODE TERMINALS",
   "zCodeChats": "ZCODE CHATS",
+  "qoderTerminals": "QODER CN TERMINALS",
+  "qoderChats": "QODER CN CHATS",
 
   "noSessions": "还没有会话",
   "mergeReadyLabel": "有未提交改动，可合并回 {base}",

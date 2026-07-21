@@ -26,6 +26,7 @@ class AppColors {
   static const codex = Color(0xFF7fd49a); // Codex brand
   static const opencode = Color(0xFFa78bfa); // OpenCode brand (violet)
   static const zcode = Color(0xFF38bdf8); // ZCode brand (sky blue)
+  static const qoder = Color(0xFFff9a5c); // Qoder CN brand (orange)
   static const amber = Color(0xFFe3b341);
   static const danger = Color(0xFFff6b63);
 }
@@ -50,7 +51,10 @@ ThemeData buildAppTheme() {
     dialogTheme: const DialogThemeData(
       backgroundColor: AppColors.panel,
       titleTextStyle: TextStyle(
-          color: AppColors.textBright, fontSize: 16, fontWeight: FontWeight.w600),
+        color: AppColors.textBright,
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+      ),
       contentTextStyle: TextStyle(color: AppColors.muted, fontSize: 14),
     ),
     appBarTheme: const AppBarTheme(
@@ -73,9 +77,13 @@ ThemeData buildAppTheme() {
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith(
-          (s) => s.contains(WidgetState.selected) ? const Color(0xFF04110f) : AppColors.muted),
+        (s) => s.contains(WidgetState.selected)
+            ? const Color(0xFF04110f)
+            : AppColors.muted,
+      ),
       trackColor: WidgetStateProperty.resolveWith(
-          (s) => s.contains(WidgetState.selected) ? accent : AppColors.line),
+        (s) => s.contains(WidgetState.selected) ? accent : AppColors.line,
+      ),
     ),
   );
 }

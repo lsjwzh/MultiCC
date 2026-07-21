@@ -10,7 +10,6 @@ import '../theme.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
 
-
 // ── New-session dialog with role presets + provider→model linkage ───────────
 
 class CreateSessionResult {
@@ -65,6 +64,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   final _customModelCtrl = TextEditingController();
 
   bool get _isClaude => widget.cli == SessionCli.claude;
+  bool get _isQoder => widget.cli == SessionCli.qoder;
   String get _defaultEffort => widget.cli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
       widget.defaultProviderId != null &&
@@ -112,6 +112,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// Mirrors web rebuildModelOptions(): provider modelOptions if available,
   /// else CLAUDE_MODEL_OPTIONS for Claude only (empty list for Codex).
   List<MapEntry<String, String>> get _currentModelOptions {
+    if (_isQoder) return kQoderModelOptions;
     Map<String, dynamic>? prov;
     final providerId = _effectiveProviderId;
     for (final p in widget.providers) {
@@ -157,7 +158,6 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     return _isClaude ? kClaudeModelOptions : const [];
   }
 
-
   String _providerIdForPresetDefault(AgentPreset preset) {
     final declared = preset.defaultProviderId ?? '';
     if (declared.isNotEmpty &&
@@ -175,7 +175,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       }
       for (final p in widget.providers) {
         final name = (p['name'] ?? '').toString().toLowerCase();
-        if (name.contains('讯飞') || name.contains('xf') || name.contains('maas')) {
+        if (name.contains('讯飞') ||
+            name.contains('xf') ||
+            name.contains('maas')) {
           return p['id'] as String;
         }
       }
@@ -183,7 +185,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (key == 'openai-codex') {
       for (final p in widget.providers) {
         final name = (p['name'] ?? '').toString().toLowerCase();
-        if (name.contains('openai') || name.contains('codex 官方') || name.contains('官方')) {
+        if (name.contains('openai') ||
+            name.contains('codex 官方') ||
+            name.contains('官方')) {
           return p['id'] as String;
         }
       }
@@ -275,9 +279,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(t('roleLoadFailed', {'error': '$e'}))));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('roleLoadFailed', {'error': '$e'}))),
+      );
     }
   }
 
@@ -364,7 +368,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               children: [
                 Text(
                   t('rolePrompt'),
-                  style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                  style: const TextStyle(
+                    color: Color(0xFF8a909b),
+                    fontSize: 11,
+                  ),
                 ),
                 const Spacer(),
                 TextButton.icon(
@@ -393,40 +400,47 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               ),
             ),
             const SizedBox(height: 12),
-            // ── Provider ──
-            const Text(
-              'Provider',
-              style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              value: _pickedProvider ?? '',
-              dropdownColor: const Color(0xFF0f1115),
-              style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
-              decoration: sheetInputDecoration(),
-              items: [
-                if (!_hasConcreteDefaultProvider)
-                  DropdownMenuItem(
-                    value: '',
-                    child: Text(
-                      t('defaultLogin'),
-                      style: const TextStyle(color: Color(0xFFe7eaee)),
+            if (widget.cli.supportsProvider) ...[
+              // ── Provider ──
+              const Text(
+                'Provider',
+                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              ),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<String>(
+                value: _pickedProvider ?? '',
+                dropdownColor: const Color(0xFF0f1115),
+                style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
+                decoration: sheetInputDecoration(),
+                items: [
+                  if (!_hasConcreteDefaultProvider)
+                    DropdownMenuItem(
+                      value: '',
+                      child: Text(
+                        t('defaultLogin'),
+                        style: const TextStyle(color: Color(0xFFe7eaee)),
+                      ),
+                    ),
+                  ...widget.providers.map(
+                    (p) => DropdownMenuItem(
+                      value: p['id'] as String,
+                      child: Text(
+                        '${p['id'] == widget.defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
+                        '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
+                        '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
+                        style: const TextStyle(color: Color(0xFFe7eaee)),
+                      ),
                     ),
                   ),
-                ...widget.providers.map(
-                  (p) => DropdownMenuItem(
-                    value: p['id'] as String,
-                    child: Text(
-                      '${p['id'] == widget.defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
-                      '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
-                      '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
-                      style: const TextStyle(color: Color(0xFFe7eaee)),
-                    ),
-                  ),
-                ),
-              ],
-              onChanged: _onProviderChanged,
-            ),
+                ],
+                onChanged: _onProviderChanged,
+              ),
+            ] else ...[
+              const Text(
+                'Qoder CN 使用自身账号 / BYOK 配置',
+                style: TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+              ),
+            ],
             // ── Model (linked to provider) ──
             const SizedBox(height: 12),
             Text(
@@ -477,6 +491,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 decoration: sheetInputDecoration(
                   hint: _isClaude
                       ? t('claudeModelIdHint')
+                      : _isQoder
+                      ? 'Qoder 模型或分级 ID'
                       : t('codexModelIdHint'),
                 ),
                 autofocus: true,
@@ -495,15 +511,18 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 style: const TextStyle(color: Color(0xFFe7eaee), fontSize: 13),
                 decoration: sheetInputDecoration(),
                 items: widget.cli.effortOptions
-                    .map((e) => DropdownMenuItem(
-                          value: e,
-                          child: Text(
-                            _isClaude ? e : effortShortNameForCli(widget.cli, e),
-                            style: const TextStyle(color: Color(0xFFe7eaee)),
-                          ),
-                        ))
+                    .map(
+                      (e) => DropdownMenuItem(
+                        value: e,
+                        child: Text(
+                          _isClaude ? e : effortShortNameForCli(widget.cli, e),
+                          style: const TextStyle(color: Color(0xFFe7eaee)),
+                        ),
+                      ),
+                    )
                     .toList(),
-                onChanged: (v) => setState(() => _pickedEffort = v ?? _defaultEffort),
+                onChanged: (v) =>
+                    setState(() => _pickedEffort = v ?? _defaultEffort),
               ),
             ],
             if (widget.cli.supportsAgent) ...[

@@ -6,8 +6,8 @@ import 'package:multicc_app/widgets/ai_config_sheet.dart';
 import 'package:multicc_app/widgets/cli_switch_sheet.dart';
 
 Widget _host(Widget child) => MaterialApp(
-      home: Scaffold(body: SizedBox(width: 360, height: 740, child: child)),
-    );
+  home: Scaffold(body: SizedBox(width: 360, height: 740, child: child)),
+);
 
 AIConfigSheet _configSheet(SessionCli cli) => AIConfigSheet(
   cli: cli,
@@ -38,6 +38,12 @@ void main() {
       expect(SessionCli.zcode.supportsSubagent, isFalse);
       expect(SessionCli.zcode.supportsEffort, isFalse);
       expect(SessionCli.zcode.effortOptions, isEmpty);
+
+      expect(SessionCli.qoder.supportsProvider, isFalse);
+      expect(SessionCli.qoder.supportsAgent, isTrue);
+      expect(SessionCli.qoder.supportsSubagent, isFalse);
+      expect(SessionCli.qoder.effortFieldLabel, 'Reasoning Effort');
+      expect(SessionCli.qoder.effortOptions, contains('xhigh'));
     });
 
     test('parses CLI state, availability and native agent fields', () {
@@ -70,25 +76,31 @@ void main() {
         'cliAvailability': {
           'claude': {'available': true},
           'codex': {'available': false},
+          'qoder': {'available': true},
         },
         'subagent': {'providerId': 'p1', 'model': 'worker-model'},
       });
       expect(config.cliStates[SessionCli.codex]?.hasNativeSession, isTrue);
       expect(config.cliAvailability[SessionCli.claude], isTrue);
       expect(config.cliAvailability[SessionCli.codex], isFalse);
+      expect(config.cliAvailability[SessionCli.qoder], isTrue);
       expect(config.subagent?.model, 'worker-model');
     });
   });
 
   group('AI config capability UI', () {
-    testWidgets('Claude shows native agent and subagent routing', (tester) async {
+    testWidgets('Claude shows native agent and subagent routing', (
+      tester,
+    ) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.claude)));
       expect(find.text('Claude Agent'), findsOneWidget);
       expect(find.text('子任务 (subagent)'), findsOneWidget);
       expect(find.text('Effort'), findsOneWidget);
     });
 
-    testWidgets('Codex shows subagent routing without native agent', (tester) async {
+    testWidgets('Codex shows subagent routing without native agent', (
+      tester,
+    ) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.codex)));
       expect(find.text('Codex Agent'), findsNothing);
       expect(find.text('子任务 (subagent)'), findsOneWidget);
@@ -110,28 +122,48 @@ void main() {
       expect(find.text('Reasoning Level'), findsNothing);
       expect(find.text('Variant'), findsNothing);
     });
-  });
 
-  testWidgets('CLI switch sheet reports resume state and disables missing CLI', (tester) async {
-    const config = SessionCliConfig(
-      cli: SessionCli.claude,
-      cliStates: {SessionCli.codex: SessionCliState(hasNativeSession: true)},
-      cliAvailability: {
-        SessionCli.claude: true,
-        SessionCli.codex: true,
-        SessionCli.opencode: true,
-        SessionCli.zcode: false,
+    testWidgets(
+      'Qoder uses its own account and exposes model, effort, and agent',
+      (tester) async {
+        await tester.pumpWidget(_host(_configSheet(SessionCli.qoder)));
+        expect(find.text('Provider'), findsNothing);
+        expect(find.text('Qoder CN 使用自身账号 / BYOK 配置'), findsOneWidget);
+        expect(find.text('Qoder CN Agent'), findsOneWidget);
+        expect(find.text('Reasoning Effort'), findsOneWidget);
+        expect(find.text('子任务 (subagent)'), findsNothing);
       },
     );
-    await tester.pumpWidget(_host(const CliSwitchSheet(config: config)));
-
-    expect(find.textContaining('可恢复上次原生会话'), findsOneWidget);
-    expect(find.text('未安装或不可执行'), findsOneWidget);
-
-    final zcode = tester.widget<InkWell>(find.byKey(const Key('cli-switch-option-zcode')));
-    expect(zcode.onTap, isNull);
-
-    final submit = tester.widget<FilledButton>(find.byKey(const Key('cli-switch-submit')));
-    expect(submit.onPressed, isNull);
   });
+
+  testWidgets(
+    'CLI switch sheet reports resume state and disables missing CLI',
+    (tester) async {
+      const config = SessionCliConfig(
+        cli: SessionCli.claude,
+        cliStates: {SessionCli.codex: SessionCliState(hasNativeSession: true)},
+        cliAvailability: {
+          SessionCli.claude: true,
+          SessionCli.codex: true,
+          SessionCli.opencode: true,
+          SessionCli.zcode: false,
+          SessionCli.qoder: true,
+        },
+      );
+      await tester.pumpWidget(_host(const CliSwitchSheet(config: config)));
+
+      expect(find.textContaining('可恢复上次原生会话'), findsOneWidget);
+      expect(find.text('未安装或不可执行'), findsOneWidget);
+
+      final zcode = tester.widget<InkWell>(
+        find.byKey(const Key('cli-switch-option-zcode')),
+      );
+      expect(zcode.onTap, isNull);
+
+      final submit = tester.widget<FilledButton>(
+        find.byKey(const Key('cli-switch-submit')),
+      );
+      expect(submit.onPressed, isNull);
+    },
+  );
 }

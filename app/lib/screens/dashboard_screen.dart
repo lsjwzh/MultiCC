@@ -72,19 +72,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? _ErrorView(error: _error!, onRetry: _refresh)
-              : RefreshIndicator(
-                  onRefresh: _refresh,
-                  child: ListView(
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      _statsCard(),
-                      const SizedBox(height: 12),
-                      _sectionTitle('会话 (${_sessions.length})'),
-                      ..._sessions.map(_sessionTile),
-                    ],
-                  ),
-                ),
+          ? _ErrorView(error: _error!, onRetry: _refresh)
+          : RefreshIndicator(
+              onRefresh: _refresh,
+              child: ListView(
+                padding: const EdgeInsets.all(12),
+                children: [
+                  _statsCard(),
+                  const SizedBox(height: 12),
+                  _sectionTitle('会话 (${_sessions.length})'),
+                  ..._sessions.map(_sessionTile),
+                ],
+              ),
+            ),
     );
   }
 
@@ -116,11 +116,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             spacing: 10,
             runSpacing: 6,
             children: [
-              ...byCli.entries.map((e) => _chip(
+              ...byCli.entries.map(
+                (e) => _chip(
                   switch (e.key) {
                     'codex' => 'Codex',
                     'opencode' => 'OpenCode',
                     'zcode' => 'ZCode',
+                    'qoder' => 'Qoder CN',
                     _ => 'Claude',
                   },
                   '${e.value}',
@@ -128,10 +130,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     'codex' => AppColors.codex,
                     'opencode' => AppColors.opencode,
                     'zcode' => AppColors.zcode,
+                    'qoder' => AppColors.qoder,
                     _ => AppColors.claude,
-                  })),
-              ...byKind.entries.map((e) => _chip(
-                  e.key == 'chat' ? 'Chat' : 'Term', '${e.value}', AppColors.blue)),
+                  },
+                ),
+              ),
+              ...byKind.entries.map(
+                (e) => _chip(
+                  e.key == 'chat' ? 'Chat' : 'Term',
+                  '${e.value}',
+                  AppColors.blue,
+                ),
+              ),
             ],
           ),
         ],
@@ -143,10 +153,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 11)),
-        Text(value,
-            style: TextStyle(
-                color: valueColor, fontSize: 22, fontWeight: FontWeight.w600)),
+        Text(
+          label,
+          style: const TextStyle(color: AppColors.muted, fontSize: 11),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            color: valueColor,
+            fontSize: 22,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
       ],
     );
   }
@@ -159,17 +177,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
         borderRadius: BorderRadius.circular(6),
         border: Border.all(color: c.withValues(alpha: 0.3)),
       ),
-      child: Text('$label $value',
-          style: TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w500)),
+      child: Text(
+        '$label $value',
+        style: TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w500),
+      ),
     );
   }
 
   Widget _sectionTitle(String t) => Padding(
-        padding: const EdgeInsets.only(top: 8, bottom: 6),
-        child: Text(t,
-            style:
-                const TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
-      );
+    padding: const EdgeInsets.only(top: 8, bottom: 6),
+    child: Text(
+      t,
+      style: const TextStyle(
+        color: AppColors.muted,
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+  );
 
   Widget? _dashboardClassifyChip(String? cls) {
     if (cls == null || cls.isEmpty) return null;
@@ -217,8 +242,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         borderRadius: BorderRadius.circular(5),
         border: Border.all(color: c.withValues(alpha: 0.3)),
       ),
-      child: Text('$emoji $label',
-          style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w600)),
+      child: Text(
+        '$emoji $label',
+        style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w600),
+      ),
     );
   }
 
@@ -228,6 +255,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'codex' => 'Codex',
       'opencode' => 'OpenCode',
       'zcode' => 'ZCode',
+      'qoder' => 'Qoder CN',
       _ => 'Claude',
     };
     final kind = (s['kind'] ?? 'terminal') == 'chat' ? 'Chat' : 'Term';
@@ -253,38 +281,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
             height: 8,
             margin: const EdgeInsets.only(right: 10),
             decoration: BoxDecoration(
-                color: dot,
-                shape: BoxShape.circle,
-                boxShadow: active
-                    ? [BoxShadow(color: dot.withValues(alpha: 0.6), blurRadius: 6)]
-                    : null),
+              color: dot,
+              shape: BoxShape.circle,
+              boxShadow: active
+                  ? [
+                      BoxShadow(
+                        color: dot.withValues(alpha: 0.6),
+                        blurRadius: 6,
+                      ),
+                    ]
+                  : null,
+            ),
           ),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label,
-                    style: const TextStyle(
-                        color: AppColors.text, fontSize: 14),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+                Text(
+                  label,
+                  style: const TextStyle(color: AppColors.text, fontSize: 14),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 const SizedBox(height: 2),
-                Text('$cli · $kind${active ? ' · 活跃' : ''}',
-                    style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                Text(
+                  '$cli · $kind${active ? ' · 活跃' : ''}',
+                  style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                ),
                 if (goal != null && goal.isNotEmpty) ...[
                   const SizedBox(height: 2),
-                  Text(goal,
-                      style: const TextStyle(color: AppColors.faint, fontSize: 11),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
+                  Text(
+                    goal,
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 11,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ],
               ],
             ),
           ),
-          if (chip != null) ...[
-            const SizedBox(width: 8),
-            chip,
-          ],
+          if (chip != null) ...[const SizedBox(width: 8), chip],
         ],
       ),
     );
@@ -298,24 +337,26 @@ class _ErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline, color: AppColors.danger, size: 40),
-              const SizedBox(height: 12),
-              Text('加载失败：$error',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: AppColors.muted, fontSize: 13)),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('重试'),
-              ),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline, color: AppColors.danger, size: 40),
+          const SizedBox(height: 12),
+          Text(
+            '加载失败：$error',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.muted, fontSize: 13),
           ),
-        ),
-      );
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('重试'),
+          ),
+        ],
+      ),
+    ),
+  );
 }

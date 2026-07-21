@@ -273,13 +273,13 @@ MultiCC is the only project in this list that is a **self-hosted server** rather
 | Mode | UI | Backend |
 |------|----|---------|
 | **Terminal** (`/`) | Full `xterm.js` — scrollback, colors, input, resize | `tmux` session, `pipe-pane` + named FIFO for reliable output |
-| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews, in-place CLI switching | Claude Code, Codex, OpenCode, or ZCode — events normalized over WebSocket |
+| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews, in-place CLI switching | Claude Code, Codex, OpenCode, ZCode, or Qoder CN — events normalized over WebSocket |
 
 Both modes share the same session registry, auth, and notifications. Reconnect replays the last 500 stream events so you never see a half-empty conversation.
 
 ### Multi-provider support
 
-Each session picks its own CLI (`claude`, `codex`, `opencode`, or `zcode`) and an optional provider — one session can use the official Claude subscription while another routes through DeepSeek via a custom endpoint.
+Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, or `qoder`). Claude/Codex/OpenCode/ZCode can use MultiCC provider routing; Qoder CN keeps its own signed-in account or BYOK configuration.
 
 | CLI | Terminal mode | Chat mode | Provider isolation |
 |-----|---------------|-----------|--------------------|
@@ -287,6 +287,9 @@ Each session picks its own CLI (`claude`, `codex`, `opencode`, or `zcode`) and a
 | **Codex** | `codex` / `codex resume <id>` inside `tmux` | `codex exec --json` | Per-provider `CODEX_HOME` under `~/.multicc/codex-homes`; local proxy for non-OpenAI endpoints |
 | **OpenCode** | `opencode --session <id>` inside `tmux` | `opencode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
 | **ZCode** | `zcode --session <id>` inside `tmux` | `zcode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
+| **Qoder CN** | `qoderclicn --resume <id>` inside `tmux` | `qoderclicn -p --output-format stream-json` | Uses Qoder's own login/BYOK settings; native session id, model tier, reasoning effort, and agent retained per logical chat |
+
+For Qoder CN, install the official CLI (`curl -fsSL https://qoder.cn/install | bash`), then run `qoderclicn` once to sign in or set `QODERCN_PERSONAL_ACCESS_TOKEN`. MultiCC auto-detects the `qoderclicn` executable and deliberately leaves Qoder account/BYOK management to Qoder itself. See the [Qoder CN quick start](https://docs.qoder.cn/cli/qoder-cli-cn-get-started-quickly).
 
 - Providers are managed from `/manage` or the provider API — create, edit, import from `cc-switch`, set per-CLI defaults.
 - **Per-session model selection**: each session can override the provider's default model; the chat UI shows a model picker with provider-specific options.
@@ -303,7 +306,7 @@ Each session picks its own CLI (`claude`, `codex`, `opencode`, or `zcode`) and a
 - **Git worktree isolation.** Each normal session runs in `<repo>/.multicc-worktrees/<sessionId>` on branch `multicc/<sessionId>`. Parallel agents edit safely; merge/sync APIs move changes between session branches and the base branch.
 - **Agent Commander.** Every new directory is seeded with an Agent Commander chat session — a fleet conductor that can coordinate specialized sibling sessions. Comes with role presets for common agent profiles.
 - **Cross-session dispatch.** Any chat session can emit `<<dispatch target="SESSION_ID">...</dispatch>>`; MultiCC runs the task on the target session and injects the result back. IM bridges use the same mechanism with explicit confirmation.
-- **In-place cross-CLI handoff.** A chat can switch among Claude, Codex, OpenCode, and ZCode without changing its logical session or worktree. Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
+- **In-place cross-CLI handoff.** A chat can switch among Claude, Codex, OpenCode, ZCode, and Qoder CN without changing its logical session or worktree. Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
 - **Passive inter-agent notes.** Sessions leave notes for siblings in the same directory; notes are prepended to the target agent's next chat turn.
 - **Syntax-gated merges.** Merge is rejected if a session's changes introduce JS syntax errors — broken code can't reach the base branch.
 - **Auto-commit + auto-sync.** Sessions auto-commit before merging; sibling worktrees auto-sync after a merge so everyone stays current.
@@ -594,6 +597,7 @@ All settings are environment variables in `.env`. Voice and TTS settings hot-rel
 | `CLAUDE_CHAT_DISALLOWED_TOOLS` | `AskUserQuestion` | Comma-separated tools disabled in chat mode |
 | `CODEX_CMD` | *(auto-detected)* | Override path to `codex` binary |
 | `CODEX_ARGS` | *(none)* | Extra args passed to every `codex` spawn |
+| `QODER_CMD` | *(auto-detected)* | Override path to the Qoder CN `qoderclicn` binary (`QODERCN_CMD` is also accepted) |
 
 ### Providers
 
