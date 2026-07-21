@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -73,28 +74,46 @@ function createHarness(overrides = {}) {
     chatBroadcast: (_id, event) => effects.push(`chat:${event.type}`),
     workspaceBroadcast: (_dirId, event) => effects.push(`workspace:${event.type}`),
     saveBestEffort: source => effects.push(`save:${source}`),
-    cliAvailabilitySummary: () => overrides.availability || {
+    cliAvailabilitySummary: overrides.cliAvailabilitySummary || (() => overrides.availability || {
       claude: { available: true }, codex: { available: true },
       opencode: { available: true }, zcode: { available: true }, qoder: { available: true },
-    },
+    }),
     sessionProviderName: value => value.provider ? `name:${value.provider}` : null,
     effectiveSessionModel: value => value.model || 'effective-default',
     effectiveSessionEffort: value => value.effort || 'effective-default',
     serializeSubagent: value => value,
     clock: () => 1000,
     handoffIdFactory: () => 'handoff_fixed',
+    installSpecs: overrides.installSpecs,
+    spawnProcess: overrides.spawnProcess,
   });
   const app = {
-    route: null,
-    post(route, handler) { this.route = { route, handler }; },
+    routes: {},
+    post(route, handler) { this.routes[`POST ${route}`] = handler; },
+    get(route, handler) { this.routes[`GET ${route}`] = handler; },
   };
   runtime.mountRoutes(app, handler => handler);
   async function invoke({ id = 's1', body = {} } = {}) {
     const res = createResponse();
-    await app.route.handler({ params: { id }, body }, res);
+    await app.routes['POST /api/sessions/:id/switch-cli']({ params: { id }, body }, res);
     return res;
   }
-  return { runtime, session, records, chat, effects, app, invoke };
+  async function invokeSpecs() {
+    const res = createResponse();
+    await app.routes['GET /api/cli/install-specs']({ params: {}, body: {} }, res);
+    return res;
+  }
+  async function invokeInstall(cli) {
+    const res = createResponse();
+    await app.routes['POST /api/cli/:cli/install']({ params: { cli }, body: {} }, res);
+    return res;
+  }
+  async function invokeStatus(jobId) {
+    const res = createResponse();
+    await app.routes['GET /api/cli/install-status/:jobId']({ params: { jobId }, body: {} }, res);
+    return res;
+  }
+  return { runtime, session, records, chat, effects, app, invoke, invokeSpecs, invokeInstall, invokeStatus };
 }
 
 test('dependency boundary fails closed before registering a route', () => {
@@ -231,4 +250,135 @@ test('production composition mounts one runtime route and keeps only bounded exp
   assert.match(source, /const consumePendingCliHandoff = cliSwitchRuntime\.consumePendingCliHandoff/);
   assert.doesNotMatch(source, /function\s+performCliSwitch\s*\(/);
   assert.doesNotMatch(source, /app\.post\(['"]\/api\/sessions\/:id\/switch-cli/);
+});
+
+test('install-specs returns the static official command table', async () => {
+  const { invokeSpecs } = createHarness();
+  const res = await invokeSpecs();
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.deepEqual(res.body.specs, {
+    claude: { auto: true, command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
+    codex: { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
+    opencode: { auto: true, command: 'npm install -g opencode-ai', display: 'npm install -g opencode-ai' },
+    qoder: { auto: true, command: 'curl -fsSL https://qoder.cn/install | bash', display: 'curl -fsSL https://qoder.cn/install | bash' },
+    zcode: { auto: false, manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)' },
+  });
+});
+
+test('install rejects an unsupported cli with 400', async () => {
+  const { invokeInstall } = createHarness();
+  const res = await invokeInstall('nope');
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { ok: false, error: 'unsupported cli' });
+});
+
+test('install short-circuits to alreadyInstalled when the cli is available', async () => {
+  const { invokeInstall } = createHarness();
+  const res = await invokeInstall('codex');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.alreadyInstalled, true);
+  assert.equal(res.body.availability.codex.available, true);
+});
+
+test('install returns manual instructions for zcode when it is not available', async () => {
+  const { invokeInstall } = createHarness({ availability: { zcode: { available: false } } });
+  const res = await invokeInstall('zcode');
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.ok, false);
+  assert.equal(res.body.manual, true);
+  assert.match(res.body.error, /ZCode/);
+});
+
+test('install transitions running -> done via a fake spawn that exits 0 and re-checks availability', async () => {
+  let available = false;
+  let proc = null;
+  const fakeSpawn = () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliAvailabilitySummary: () => ({
+      claude: { available: true }, codex: { available: available },
+      opencode: { available: false }, zcode: { available: false }, qoder: { available: false },
+    }),
+  });
+  let res = await harness.invokeInstall('codex');
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.cli, 'codex');
+  assert.equal(res.body.command, 'npm install -g @openai/codex');
+  const jobId = res.body.jobId;
+  // running before exit, stdout 已被环形缓冲收录
+  res = await harness.invokeStatus(jobId);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.job.status, 'running');
+  assert.equal(res.body.job.cli, 'codex');
+  proc.stdout.emit('data', 'installing codex\n');
+  // 翻转可用性后 exit 0 -> done
+  available = true;
+  proc.emit('exit', 0, null);
+  res = await harness.invokeStatus(jobId);
+  assert.equal(res.body.job.status, 'done');
+  assert.equal(res.body.job.exitCode, 0);
+  assert.equal(res.body.job.error, null);
+  assert.equal(res.body.availability.codex.available, true);
+  assert.equal(res.body.job.logTail.includes('installing codex'), true);
+});
+
+test('install exit non-zero marks the job as error', async () => {
+  let proc = null;
+  const fakeSpawn = () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    availability: { codex: { available: false } },
+  });
+  let res = await harness.invokeInstall('codex');
+  assert.equal(res.statusCode, 202);
+  const jobId = res.body.jobId;
+  proc.emit('exit', 1, null);
+  res = await harness.invokeStatus(jobId);
+  assert.equal(res.body.job.status, 'error');
+  assert.equal(res.body.job.exitCode, 1);
+  assert.match(res.body.job.error, /退出码|失败/);
+});
+
+test('install returns 409 while a job for the same cli is still running', async () => {
+  const fakeSpawn = () => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    return ee;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    availability: { codex: { available: false } },
+  });
+  let res = await harness.invokeInstall('codex');
+  assert.equal(res.statusCode, 202);
+  const firstJobId = res.body.jobId;
+  res = await harness.invokeInstall('codex');
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.ok, false);
+  assert.equal(res.body.running, true);
+  assert.equal(res.body.jobId, firstJobId);
+});
+
+test('install-status returns 404 for an unknown job id', async () => {
+  const { invokeStatus } = createHarness();
+  const res = await invokeStatus('does-not-exist');
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.body, { ok: false, error: 'job not found' });
 });

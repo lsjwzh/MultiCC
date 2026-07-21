@@ -644,8 +644,19 @@
       });
     }
 
-    function showCliSwitchPicker(current, states, availability, cliMeta) {
+    function showCliSwitchPicker(current, states, availability, cliMeta, hooks) {
+      const hk = hooks || {};
+      const hasHooks = !!(hk.fetchSpecs && hk.installCli && hk.pollInstall);
       return new Promise(resolve => {
+        // 本地可用性快照: 安装完成后就地更新, 既刷新 option 文案也放行确认切换
+        const availLocal = Object.assign({}, availability || {});
+        const optionMap = {};
+        let specs = null;            // {<cli>:{auto,command?,display?,manual?}}
+        let specsLoading = false;
+        let installJob = null;       // {cli, jobId, status, logTail, error, command}
+        let pollTimer = null;
+        let closed = false;          // 弹窗关闭后阻止 in-flight 安装/轮询回调再排定时器
+
         const overlay = doc.createElement('div');
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
         const box = doc.createElement('div');
@@ -660,11 +671,13 @@
         select.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#c9d1d9;font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
         for (const [value, meta] of Object.entries(cliMeta || {})) {
           const sessionState = states && states[value];
-          const installed = availability?.[value]?.available !== false;
+          const installed = availLocal[value]?.available !== false;
           const option = doc.createElement('option');
           option.value = value;
-          option.disabled = !installed && value !== current;
+          // hooks 缺省时退化为旧行为: 未安装 option 禁用; 有 hooks 时可选, 文案仍带 "· 未安装"
+          option.disabled = !installed && value !== current && !hasHooks;
           option.textContent = `${meta.label}${value === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+          optionMap[value] = option;
           select.appendChild(option);
         }
         select.value = current;
@@ -678,15 +691,6 @@
         const resetText = doc.createElement('span');
         resetText.textContent = '重新开始目标 CLI（仅在切换后无法继续时勾选，当前任务信息会保留）';
         resetRow.append(reset, resetText);
-        const updateInfo = () => {
-          const sessionState = states && states[select.value];
-          const label = cliMeta?.[select.value]?.label || select.value;
-          targetInfo.textContent = sessionState?.hasNativeSession
-            ? `将继续 ${label} 上次的对话，并带上切换后新增的内容。`
-            : `将打开新的 ${label} 对话，并带上当前任务信息。`;
-        };
-        select.addEventListener('change', updateInfo);
-        updateInfo();
         const warning = doc.createElement('div');
         warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
         warning.textContent = '请在当前回复结束后切换。如果无法继续，请勾选上面的“重新开始”后再试。';
@@ -699,13 +703,234 @@
         ok.textContent = '确认切换';
         ok.style.cssText = 'background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:13px;padding:7px 15px;cursor:pointer;';
         actions.append(cancel, ok);
+
+        const stopPolling = () => { if (pollTimer) { clearTimer(pollTimer); pollTimer = null; } };
+        const isInstalled = cli => availLocal[cli]?.available !== false
+          || (installJob && installJob.cli === cli && installJob.status === 'done');
+        const setOkEnabled = on => {
+          ok.disabled = !on;
+          ok.style.opacity = on ? '1' : '0.55';
+          ok.style.cursor = on ? 'pointer' : 'not-allowed';
+        };
+        const refreshOptionLabel = cli => {
+          const option = optionMap[cli];
+          if (!option) return;
+          const meta = cliMeta?.[cli];
+          const sessionState = states && states[cli];
+          const installed = isInstalled(cli);
+          option.textContent = `${meta.label}${cli === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+        };
+
+        // 渲染进行中/完成/失败状态的安装面板(写入 targetInfo)
+        const renderInstallState = () => {
+          const job = installJob;
+          const meta = cliMeta?.[job.cli];
+          const label = meta?.label || job.cli;
+          if (job.status === 'done') {
+            setOkEnabled(true);
+            const done = doc.createElement('div');
+            done.style.cssText = 'color:#3fb950;';
+            done.textContent = `安装完成, 可以切换到 ${label}。`;
+            targetInfo.appendChild(done);
+            return;
+          }
+          if (job.status === 'error') {
+            setOkEnabled(false);
+            const err = doc.createElement('div');
+            err.style.cssText = 'color:#f85149;white-space:pre-wrap;margin-bottom:6px;';
+            err.textContent = job.error || '安装失败。';
+            targetInfo.appendChild(err);
+            const spec = specs?.[job.cli];
+            const cmdText = spec?.display || spec?.command || job.command || '';
+            if (cmdText) {
+              const cmd = doc.createElement('div');
+              cmd.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;margin-bottom:6px;word-break:break-all;';
+              cmd.textContent = cmdText;
+              targetInfo.appendChild(cmd);
+            }
+            const retry = doc.createElement('button');
+            retry.textContent = '重试';
+            retry.style.cssText = 'background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:5px 11px;cursor:pointer;';
+            retry.addEventListener('click', () => startInstall(job.cli));
+            targetInfo.appendChild(retry);
+            return;
+          }
+          // running: spinner + 状态 + 最近 logTail
+          setOkEnabled(false);
+          const row = doc.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+          const spinner = doc.createElement('span');
+          spinner.textContent = '⏳';
+          const status = doc.createElement('span');
+          status.style.cssText = 'color:#c9d1d9;';
+          status.textContent = '安装中...';
+          row.append(spinner, status);
+          targetInfo.appendChild(row);
+          if (job.logTail) {
+            const log = doc.createElement('div');
+            log.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;max-height:120px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;';
+            log.textContent = job.logTail;
+            targetInfo.appendChild(log);
+            log.scrollTop = log.scrollHeight;
+          }
+        };
+
+        const updateInfo = () => {
+          targetInfo.textContent = '';
+          const cli = select.value;
+          const meta = cliMeta?.[cli];
+          const label = meta?.label || cli;
+          // 有进行中/已完成/失败的安装任务: 优先展示其状态面板(done 也显示"安装完成, 可以切换")
+          if (installJob && installJob.cli === cli) {
+            renderInstallState();
+            return;
+          }
+          if (isInstalled(cli)) {
+            const sessionState = states && states[cli];
+            targetInfo.textContent = sessionState?.hasNativeSession
+              ? `将继续 ${label} 上次的对话，并带上切换后新增的内容。`
+              : `将打开新的 ${label} 对话，并带上当前任务信息。`;
+            setOkEnabled(true);
+            return;
+          }
+          // 未安装: 暂不允许确认切换
+          setOkEnabled(false);
+          if (!hasHooks) {
+            targetInfo.textContent = `${label} 未安装。`;
+            return;
+          }
+          if (specsLoading) {
+            targetInfo.textContent = '正在加载安装信息...';
+            return;
+          }
+          const spec = specs?.[cli];
+          if (!spec) {
+            targetInfo.textContent = `${label} 暂无可用的安装信息。`;
+            return;
+          }
+          if (spec.auto === false) {
+            const manual = doc.createElement('div');
+            manual.style.cssText = 'white-space:pre-wrap;color:#c9d1d9;';
+            manual.textContent = spec.manual || '需要手动安装。';
+            targetInfo.appendChild(manual);
+            return;
+          }
+          // auto: 一键安装按钮 + 将执行的命令
+          const row = doc.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:10px;';
+          const btn = doc.createElement('button');
+          btn.textContent = '一键安装';
+          btn.style.cssText = 'background:#1f6feb;border:1px solid #388bfd;border-radius:6px;color:#fff;font-size:12px;padding:6px 12px;cursor:pointer;white-space:nowrap;';
+          const cmd = doc.createElement('div');
+          cmd.style.cssText = 'flex:1;min-width:0;font-family:ui-monospace,monospace;color:#8b949e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+          const cmdText = spec.display || spec.command || '';
+          cmd.textContent = cmdText;
+          cmd.title = cmdText;
+          row.append(btn, cmd);
+          targetInfo.appendChild(row);
+          btn.addEventListener('click', () => startInstall(cli));
+        };
+
+        const startInstall = async cli => {
+          if (!hasHooks) return;
+          installJob = { cli, jobId: null, status: 'running', logTail: '', error: null, command: '' };
+          updateInfo();
+          try {
+            const res = await hk.installCli(cli);
+            if (closed) return;
+            if (res && res.alreadyInstalled) {
+              installJob = { cli, jobId: null, status: 'done', logTail: '', error: null, command: '' };
+              availLocal[cli] = { available: true };
+              if (hk.onAvailabilityChange) { try { hk.onAvailabilityChange(cli); } catch (_) {} }
+              refreshOptionLabel(cli);
+              stopPolling();
+              updateInfo();
+              return;
+            }
+            if (res && res.jobId) {
+              // 202 新任务 / 409 已有 running 任务: 都拿 jobId 直接接管轮询
+              installJob = { cli, jobId: res.jobId, status: 'running', logTail: '', error: null, command: '' };
+              startPolling(cli);
+              updateInfo();
+              return;
+            }
+            installJob = { cli, jobId: null, status: 'error', logTail: '', error: (res && res.error) || '安装失败。', command: '' };
+            updateInfo();
+          } catch (e) {
+            installJob = { cli, jobId: null, status: 'error', logTail: '', error: (e && e.message) || '安装失败。', command: '' };
+            updateInfo();
+          }
+        };
+
+        const startPolling = cli => {
+          stopPolling();
+          const tick = async () => {
+            const job = installJob;
+            if (!job || job.cli !== cli || !job.jobId) return;
+            try {
+              const res = await hk.pollInstall(job.jobId);
+              if (closed) return;
+              if (res && res.transient) { pollTimer = setTimer(tick, 2000); return; }
+              const j = res && res.job;
+              if (!j) {
+                // 404/未知 jobId: 终态, 当失败处理, 不再轮询
+                installJob = { cli, jobId: job.jobId, status: 'error', logTail: job.logTail || '', error: (res && res.error) || '安装任务已失效。', command: job.command || '' };
+                stopPolling();
+                updateInfo();
+                return;
+              }
+              installJob = {
+                cli, jobId: job.jobId,
+                status: j.status || 'running',
+                logTail: j.logTail || job.logTail || '',
+                error: j.error || null,
+                command: j.command || job.command || '',
+              };
+              if (installJob.status === 'done') {
+                availLocal[cli] = { available: true };
+                if (hk.onAvailabilityChange) { try { hk.onAvailabilityChange(cli); } catch (_) {} }
+                refreshOptionLabel(cli);
+                stopPolling();
+                updateInfo();
+                return;
+              }
+              if (installJob.status === 'error') {
+                stopPolling();
+                updateInfo();
+                return;
+              }
+              updateInfo();
+              pollTimer = setTimer(tick, 2000);
+            } catch (_) {
+              // 瞬时网络错误: 继续轮询, 不打断
+              if (closed) return;
+              pollTimer = setTimer(tick, 2000);
+            }
+          };
+          pollTimer = setTimer(tick, 2000);
+        };
+
+        select.addEventListener('change', updateInfo);
+        updateInfo();
         box.append(title, description, select, targetInfo, resetRow, warning, actions);
         overlay.appendChild(box);
         doc.body.appendChild(overlay);
-        const close = value => { overlay.remove(); resolve(value); };
+        // 弹窗关闭(取消/确认/遮罩)一律停轮询; 置 closed 阻断 in-flight 回调重排
+        const close = value => { closed = true; stopPolling(); overlay.remove(); resolve(value); };
         cancel.addEventListener('click', () => close(null));
-        ok.addEventListener('click', () => close({ cli: select.value, fresh: reset.checked }));
+        ok.addEventListener('click', () => { if (ok.disabled) return; close({ cli: select.value, fresh: reset.checked }); });
         overlay.addEventListener('click', event => { if (event.target === overlay) close(null); });
+
+        // 打开弹窗即拉取安装规格; 仅在 hooks 可用时
+        if (hasHooks) {
+          specsLoading = true;
+          Promise.resolve().then(() => hk.fetchSpecs()).then(res => {
+            specs = (res && res.specs) ? res.specs : res;
+          }).catch(() => { specs = null; }).then(() => {
+            specsLoading = false;
+            if (doc.body.contains(overlay)) updateInfo();
+          });
+        }
       });
     }
 
