@@ -3194,6 +3194,8 @@ const taskBoardRuntime = createTaskBoardRuntime({
   isLocalRequest,
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
+  resolveGoalLimits,
+  buildGoalLimitNote,
   logger: console,
 });
 taskBoardRuntime.mountRoutes(app);

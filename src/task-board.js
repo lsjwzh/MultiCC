@@ -349,6 +349,27 @@ function isRoutableRecord(rec) {
   return !!rec && rec.kind === 'chat' && rec.type !== 'aux' && rec.type !== 'gateway' && !rec.ephemeral;
 }
 
+// Directory-level routing for the board composer (no task context): explicit
+// override → most recently active routable chat session in the directory.
+function recordActivityMs(rec) {
+  const v = rec && (rec.lastActivity || rec.createdAt);
+  const ms = typeof v === 'number' ? v : Date.parse(v || '');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function pickDirTarget(records, dirId, explicitTarget) {
+  if (explicitTarget && isRoutableRecord(records.get(explicitTarget))) return explicitTarget;
+  let best = null;
+  let bestMs = -1;
+  for (const [sid, rec] of records) {
+    if (!isRoutableRecord(rec)) continue;
+    if (dirId && rec.dirId !== dirId) continue;
+    const ms = recordActivityMs(rec);
+    if (ms > bestMs) { bestMs = ms; best = sid; }
+  }
+  return best;
+}
+
 function pickRouteTarget(board, task, records, explicitTarget) {
   if (explicitTarget && isRoutableRecord(records.get(explicitTarget))) return explicitTarget;
   const seen = new Set();
@@ -440,6 +461,7 @@ module.exports = {
   findTaskByTitle,
   taskLastTs,
   pickRouteTarget,
+  pickDirTarget,
   isRoutableRecord,
   buildRoutedMessage,
   extractTaskMarker,

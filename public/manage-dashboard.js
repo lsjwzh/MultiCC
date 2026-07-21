@@ -1510,10 +1510,14 @@ function renderDirectoryDetailBody(dirId) {
         <button class="dd-tab${_dirDetailTab === 'taskboard' ? ' on' : ''}" onclick="switchDirDetailTab('taskboard')">📋 任务板${taskCount ? ` (${taskCount})` : ''}</button>
       </div>`;
   }
-  const content = (hasBoard && _dirDetailTab === 'taskboard')
+  const boardTabActive = hasBoard && _dirDetailTab === 'taskboard';
+  const content = boardTabActive
     ? renderTaskBoardSection(dirId, { tabbed: true })
     : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId));
   body.innerHTML = tabs + content;
+  // The board composer sits outside this re-rendered body (static container in
+  // the modal) so typed text/recording survive WS-driven redraws.
+  if (typeof syncTaskBoardDirComposer === 'function') syncTaskBoardDirComposer(dirId, boardTabActive);
 }
 function closeDirectoryDetail() {
   _detailDirId = null;
