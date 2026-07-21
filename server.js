@@ -104,6 +104,7 @@ const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { mountVoiceRoutes } = require('./src/routes/voice');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
+const { createTaskBoardRuntime } = require('./src/routes/task-board');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -3180,6 +3181,23 @@ const {
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
 
+// Task board: AI-tagged module→task view over chat turns (fleet panel).
+// Late-bound wrappers because loadChatHistory / workspaceBroadcast /
+// isSystemInjectedMsg are composed later in this file.
+const taskBoardRuntime = createTaskBoardRuntime({
+  file: MULTICC_PATHS.taskBoardFile,
+  auxQueue,
+  records: persistedSessions,
+  loadHistory: sessionId => loadChatHistory(sessionId),
+  dispatchToSession: (target, message, opts) => dispatchToSession(target, message, opts),
+  workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
+  isLocalRequest,
+  atomicWriteJson,
+  isSystemInjected: msg => isSystemInjectedMsg(msg),
+  logger: console,
+});
+taskBoardRuntime.mountRoutes(app);
+
 // Skill-sync owns converter/link state, its watcher and its periodic timer.
 // The host supplies only the process/session ports needed by detached AI conversion.
 const skillSyncRuntime = createSkillSyncRuntime({
@@ -4344,6 +4362,7 @@ function runClassifyNow(cs, sessionName) {
 function classifyTurnEnd(cs, sessionName) {
   cancelClassify(cs);
   runClassifyNow(cs, sessionName);
+  taskBoardRuntime.onTurnEnd(cs, sessionName);
 }
 // to know "what task is running" and "what's the current status" WHILE the
 // agent is still working. This does exactly that:
