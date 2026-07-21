@@ -158,6 +158,109 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
+  // ── Backfill (scan existing chat history into the board) ─────────────────
+
+  // Pair user→assistant turns from a history array, skipping system-injected
+  // user messages and interim/error assistant messages. Returns the last
+  // `limit` pairs in chronological order.
+  function extractTurnPairs(history, limit) {
+    const pairs = [];
+    let pendingUser = null;
+    for (const m of history) {
+      if (!m || !m.role) continue;
+      if (m.role === 'user') {
+        const text = core.messageText(m).trim();
+        if (!text || isSystemInjected(text)) { pendingUser = null; continue; }
+        pendingUser = m;
+      } else if (m.role === 'assistant') {
+        if (m._interim || m.error) continue;
+        const text = core.messageText(m).trim();
+        if (!text || !pendingUser) continue;
+        pairs.push({ userMsg: pendingUser, assistantMsg: m });
+        pendingUser = null;
+      }
+    }
+    return pairs.slice(-limit);
+  }
+
+  // Backfill state — one run at a time; progress readable via GET board route.
+  const backfillState = { running: false, queued: 0, done: 0, startedAt: null };
+
+  function backfillSession(sessionId, rec, turnLimit) {
+    const history = loadHistory(sessionId) || [];
+    const pairs = extractTurnPairs(history, turnLimit);
+    if (!pairs.length) return null;
+    const turns = pairs.map((p, i) => ({
+      n: i + 1,
+      user: core.messageText(p.userMsg),
+      reply: core.messageText(p.assistantMsg),
+    }));
+    const refByTurn = new Map(pairs.map((p, i) => [i + 1, {
+      sessionId,
+      dirId: rec.dirId || null,
+      dirLabel: null,
+      userMsgId: p.userMsg.id || null,
+      assistantMsgId: p.assistantMsg.id || null,
+      ts: p.assistantMsg.ts || p.userMsg.ts || Date.now(),
+      excerpt: core.messageText(p.userMsg).trim().slice(0, 140),
+    }]));
+    return auxQueue.enqueue({
+      type: 'task_backfill',
+      systemPrompt: core.buildBackfillSystemPrompt(),
+      prompt: core.buildBackfillUserPrompt({
+        board, sessionLabel: rec.label || sessionId, dirLabel: null, turns,
+      }),
+      meta: { sessionName: sessionId, sessionId: rec.id || sessionId },
+    }).then(result => {
+      if (!result || result.cancelled) return { sessionId, tagged: 0 };
+      const parsed = core.parseBackfillResult(result.text);
+      const touched = core.applyBackfillResult(board, parsed.tasks, refByTurn, Date.now());
+      if (touched.length) {
+        save();
+        notify(rec.dirId || null, touched);
+      }
+      return { sessionId, tagged: touched.length };
+    });
+  }
+
+  async function handleBackfill(req, res) {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
+    if (backfillState.running) {
+      return res.status(409).json({ error: 'backfill_running', state: { ...backfillState } });
+    }
+    if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
+      return res.status(503).json({ error: 'aux_unhealthy' });
+    }
+    const dirId = String(req.body?.dirId || '').trim() || null;
+    const turnLimit = Math.min(Math.max(Number(req.body?.turnLimit) || 12, 1), 30);
+    const candidates = [];
+    for (const [sid, rec] of records) {
+      if (!rec || rec.kind !== 'chat') continue;
+      if (rec.type === 'aux' || rec.type === 'gateway' || rec.ephemeral) continue;
+      if (dirId && rec.dirId !== dirId) continue;
+      candidates.push([sid, rec]);
+    }
+    backfillState.running = true;
+    backfillState.queued = 0;
+    backfillState.done = 0;
+    backfillState.startedAt = Date.now();
+    const jobs = [];
+    for (const [sid, rec] of candidates) {
+      try {
+        const job = backfillSession(sid, rec, turnLimit);
+        if (job) {
+          backfillState.queued++;
+          jobs.push(job.then(r => { backfillState.done++; return r; })
+            .catch(e => { backfillState.done++; return { sessionId: sid, error: e?.message || String(e) }; }));
+        }
+      } catch (e) {
+        logger.log(`[multicc/taskboard] backfill enqueue failed for ${sid}: ${e?.message || e}`);
+      }
+    }
+    Promise.allSettled(jobs).then(() => { backfillState.running = false; });
+    res.json({ ok: true, queued: backfillState.queued, note: `已入队 ${backfillState.queued} 个会话的历史归档（aux 串行处理，完成后任务板自动刷新）` });
+  }
+
   // ── REST ──────────────────────────────────────────────────────────────────
 
   function taskDto(task) {
@@ -172,7 +275,7 @@ function createTaskBoardRuntime(deps) {
         if (!(sid in labels)) labels[sid] = records.get(sid)?.label || sid;
       }
     }
-    res.json({ ok: true, ...dto, sessionLabels: labels });
+    res.json({ ok: true, ...dto, sessionLabels: labels, backfill: { ...backfillState } });
   }
 
   function handleMessages(req, res) {
@@ -258,6 +361,12 @@ function createTaskBoardRuntime(deps) {
       });
     });
     app.post('/api/task-board/tasks/:taskId/status', handleStatus);
+    app.post('/api/task-board/backfill', (req, res) => {
+      handleBackfill(req, res).catch(e => {
+        logger.log(`[multicc/taskboard] backfill failed: ${e?.message || e}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
+      });
+    });
   }
 
   return Object.freeze({

@@ -114,6 +114,104 @@ function buildTagUserPrompt({ board, sessionLabel, dirLabel, userText, replyText
   ].join('\n');
 }
 
+// ── Backfill prompts (one aux call per session, whole recent history) ───────
+// Unlike per-turn tagging, backfill sees numbered turns and assigns each task
+// the turn numbers that belong to it, so one call archives a whole session.
+
+function buildBackfillSystemPrompt() {
+  return [
+    '你是 multicc 的任务归档器。multicc 同时运行多个 AI 会话，现在要把一个会话的历史对话批量归档到「模块-任务」两级任务板上。',
+    '输入包含：现有模块与任务清单、该会话的编号轮次列表（每轮=用户消息+助手回复摘要）。',
+    '输出严格 JSON（不要 markdown 围栏、不要任何解释文字）：',
+    '{"tasks":[{"id":"现有任务id或new","title":"任务标题","module":"模块名","areas":["代码路径或功能区域"],"turns":[轮次编号]}]}',
+    '',
+    '规则：',
+    '1. turns 列出属于该任务的轮次编号（整数，来自输入）。一个轮次可属于多个任务；闲聊、寒暄、状态询问轮次不要归入任何任务。',
+    '2. 相邻多轮做同一件事 → 归成一个任务，不要一轮一个任务。整个会话通常归出 1-5 个任务。',
+    '3. 优先归入现有任务（id 用现有任务id，title/module 可省略）；确属新工作才 id:"new"。',
+    '4. title ≤20字、概括任务目标；module 按子系统/目录聚合（例：「服务端」「前端 UI」「移动 App」「发布运维」「文档」），优先复用现有模块名。',
+    '5. areas 列该任务涉及的代码路径/文件/功能区（≤5项）。',
+  ].join('\n');
+}
+
+function buildBackfillUserPrompt({ board, sessionLabel, dirLabel, turns }) {
+  const moduleLines = Object.values(board.modules).map(m => `- ${m.name}`);
+  const taskList = Object.values(board.tasks)
+    .filter(t => t.status !== 'archived')
+    .sort((a, b) => taskLastTs(b) - taskLastTs(a))
+    .slice(0, MAX_TASKS_IN_PROMPT)
+    .map(t => {
+      const mod = board.modules[t.moduleId];
+      return `- ${t.id} | ${mod ? mod.name : '?'} | ${t.title}`;
+    });
+  const turnLines = turns.map(t => [
+    `【轮次 ${t.n}】`,
+    `用户：${String(t.user || '').slice(0, 500)}`,
+    `助手：${String(t.reply || '').slice(0, 700)}`,
+  ].join('\n'));
+  return [
+    '【现有模块】',
+    moduleLines.length ? moduleLines.join('\n') : '（空）',
+    '',
+    '【现有任务】（id | 模块 | 标题）',
+    taskList.length ? taskList.join('\n') : '（空）',
+    '',
+    `【会话】${sessionLabel || '?'}${dirLabel ? `（目录：${dirLabel}）` : ''}，共 ${turns.length} 轮：`,
+    turnLines.join('\n\n'),
+    '',
+    '请输出 JSON。',
+  ].join('\n');
+}
+
+function parseBackfillResult(text) {
+  let clean = String(text || '');
+  const thinkEnd = clean.indexOf('<｜end▁of▁thinking｜>');
+  if (thinkEnd !== -1) clean = clean.slice(thinkEnd + '<｜end▁of▁thinking｜>'.length);
+  clean = clean.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<\/?think>/g, '');
+  clean = clean.replace(/```(?:json)?/gi, '').trim();
+  let parsed = null;
+  try { parsed = JSON.parse(clean); } catch (_) {
+    const start = clean.indexOf('{');
+    const end = clean.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      try { parsed = JSON.parse(clean.slice(start, end + 1)); } catch (_) { parsed = null; }
+    }
+  }
+  const list = parsed && Array.isArray(parsed.tasks) ? parsed.tasks : [];
+  const tasks = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const id = typeof e.id === 'string' ? e.id.trim() : '';
+    const title = typeof e.title === 'string' ? e.title.trim().slice(0, MAX_TITLE_LEN) : '';
+    const module = typeof e.module === 'string' ? e.module.trim().slice(0, MAX_MODULE_LEN) : '';
+    const areas = Array.isArray(e.areas)
+      ? e.areas.filter(a => typeof a === 'string' && a.trim()).map(a => a.trim().slice(0, 80)).slice(0, 5)
+      : [];
+    const turns = Array.isArray(e.turns)
+      ? [...new Set(e.turns.map(n => Number(n)).filter(n => Number.isInteger(n) && n >= 0))]
+      : [];
+    if ((!id && !title) || !turns.length) continue;
+    tasks.push({ id, title, module, areas, turns });
+    if (tasks.length >= 8) break;
+  }
+  return { tasks };
+}
+
+// Apply a backfill verdict: for each entry, attach every listed turn's ref.
+// Reuses applyTagResult per turn — title/module normalization dedups the task
+// across turns, addRefToTask dedups refs across repeated backfills.
+function applyBackfillResult(board, entries, refByTurn, now = Date.now()) {
+  const touched = new Set();
+  for (const e of entries || []) {
+    for (const n of e.turns || []) {
+      const ref = refByTurn.get(n);
+      if (!ref) continue;
+      for (const id of applyTagResult(board, [e], ref, now)) touched.add(id);
+    }
+  }
+  return [...touched];
+}
+
 // ── AI output parsing (two-stage tolerant, mirrors classify/goal parsers) ───
 
 function parseTagResult(text) {
@@ -331,8 +429,12 @@ module.exports = {
   normalizeBoard,
   buildTagSystemPrompt,
   buildTagUserPrompt,
+  buildBackfillSystemPrompt,
+  buildBackfillUserPrompt,
   parseTagResult,
+  parseBackfillResult,
   applyTagResult,
+  applyBackfillResult,
   addRefToTask,
   findModuleByName,
   findTaskByTitle,
