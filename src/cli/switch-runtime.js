@@ -1,6 +1,41 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const os = require('node:os');
+const path = require('node:path');
+
+// 官方 CLI 安装命令表(单一事实源, 三端共用 API 契约)。display 同 command。
+// 静态表无用户输入拼接, 命令直接喂给 bash -c。
+const OFFICIAL_INSTALL_SPECS = Object.freeze({
+  claude: {
+    auto: true,
+    command: 'npm install -g @anthropic-ai/claude-code',
+    display: 'npm install -g @anthropic-ai/claude-code',
+  },
+  codex: {
+    auto: true,
+    command: 'npm install -g @openai/codex',
+    display: 'npm install -g @openai/codex',
+  },
+  opencode: {
+    auto: true,
+    command: 'npm install -g opencode-ai',
+    display: 'npm install -g opencode-ai',
+  },
+  qoder: {
+    auto: true,
+    command: 'curl -fsSL https://qoder.cn/install | bash',
+    display: 'curl -fsSL https://qoder.cn/install | bash',
+  },
+  zcode: {
+    auto: false,
+    manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)',
+  },
+});
+
+const INSTALL_TIMEOUT_MS = 8 * 60 * 1000;
+const INSTALL_LOG_TAIL = 12 * 1024; // 环形 buffer 保留尾部约 12KB
+const INSTALL_JOB_CAPACITY = 50;
 
 function cliHandoffSummary(session) {
   const handoff = session && session.pendingCliHandoff;
@@ -54,6 +89,143 @@ function createCliSwitchRuntime(options) {
   const clock = options.clock || Date.now;
   const handoffIdFactory = options.handoffIdFactory
     || (() => `handoff_${crypto.randomBytes(8).toString('hex')}`);
+  // specs/spawn 可由测试注入; 缺省用本文件常量与 lazy require 的 spawn。
+  const installSpecs = options.installSpecs || OFFICIAL_INSTALL_SPECS;
+  const spawnProcessOverride = options.spawnProcess;
+  // 安装任务表(模块内, 容量上限 50; 每个 runtime 实例独立, 便于测试隔离)。
+  const installJobs = new Map();
+
+  function resolveSpawn() {
+    if (typeof spawnProcessOverride === 'function') return spawnProcessOverride;
+    return require('node:child_process').spawn;
+  }
+
+  function makeInstallJobId() {
+    return `cli-install_${crypto.randomBytes(8).toString('hex')}`;
+  }
+
+  // 环形日志缓冲: 保留尾部约 12KB(stdout+stderr 合并)。
+  function createLogRing(cap = INSTALL_LOG_TAIL) {
+    let buf = '';
+    return {
+      push(text) {
+        if (text == null) return;
+        buf += String(text);
+        if (buf.length > cap * 2) buf = buf.slice(-cap);
+      },
+      tail() {
+        return buf.length > cap ? buf.slice(-cap) : buf;
+      },
+    };
+  }
+
+  function findRunningInstallJob(cli) {
+    for (const job of installJobs.values()) {
+      if (job.cli === cli && job.status === 'running') return job;
+    }
+    return null;
+  }
+
+  function serializeInstallJob(job) {
+    return {
+      id: job.id,
+      cli: job.cli,
+      status: job.status,
+      command: job.command,
+      startedAt: job.startedAt,
+      endedAt: job.endedAt,
+      exitCode: job.exitCode,
+      error: job.error,
+      logTail: job._log.tail(),
+    };
+  }
+
+  // spawn 的 PATH 追加常见二进制目录(homebrew/local/user-local)。
+  function buildInstallEnv() {
+    const extra = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin')];
+    return { ...process.env, PATH: [process.env.PATH, ...extra].filter(Boolean).join(':') };
+  }
+
+  function launchInstallJob(cli) {
+    const spec = installSpecs[cli];
+    const command = spec.command;
+    const jobId = makeInstallJobId();
+    const startedAt = new Date(clock()).toISOString();
+    const log = createLogRing();
+    const job = {
+      id: jobId, cli, status: 'running', command, startedAt,
+      endedAt: null, exitCode: null, error: null, _log: log, _timer: null,
+    };
+    if (installJobs.size >= INSTALL_JOB_CAPACITY) {
+      const oldest = installJobs.keys().next().value;
+      if (oldest) installJobs.delete(oldest);
+    }
+    installJobs.set(jobId, job);
+
+    const spawn = resolveSpawn();
+    const env = buildInstallEnv();
+    let proc;
+    try {
+      // 命令全来自静态表, 无用户输入拼接; 仅用 async spawn, 禁止同步子进程调用。
+      proc = spawn('bash', ['-c', command], { env });
+    } catch (err) {
+      job.status = 'error';
+      job.endedAt = new Date(clock()).toISOString();
+      job.error = `安装进程启动失败: ${err && err.message || err}`;
+      return job;
+    }
+
+    function clearTimer() {
+      if (job._timer) { clearTimeout(job._timer); job._timer = null; }
+    }
+
+    const timer = setTimeout(() => {
+      if (job.status !== 'running') return;
+      try { proc.kill('SIGKILL'); } catch (_) {}
+      job.status = 'error';
+      job.endedAt = new Date(clock()).toISOString();
+      job.error = '安装超时';
+    }, INSTALL_TIMEOUT_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+    job._timer = timer;
+
+    if (proc.stdout && typeof proc.stdout.on === 'function') {
+      proc.stdout.on('data', (d) => log.push(d));
+    }
+    if (proc.stderr && typeof proc.stderr.on === 'function') {
+      proc.stderr.on('data', (d) => log.push(d));
+    }
+    proc.on('error', (err) => {
+      if (job.status !== 'running') return;
+      clearTimer();
+      job.status = 'error';
+      job.endedAt = new Date(clock()).toISOString();
+      job.error = `安装进程异常: ${err && err.message || err}`;
+    });
+    proc.on('exit', (code, signal) => {
+      if (job.status !== 'running') return;
+      clearTimer();
+      job.endedAt = new Date(clock()).toISOString();
+      job.exitCode = code == null ? null : code;
+      if (code === 0) {
+        // exit0 后复查可用性; PATH 仍找不到 -> error(中文文案)。
+        const avail = options.cliAvailabilitySummary();
+        if (avail && avail[cli] && avail[cli].available) {
+          job.status = 'done';
+        } else {
+          job.status = 'error';
+          job.error = '安装已完成, 但未在 PATH 找到可执行文件, 请重开终端或手动配置 PATH';
+        }
+      } else {
+        job.status = 'error';
+        job.error = signal
+          ? `安装失败, 信号 ${signal}`
+          : `安装失败, 退出码 ${code}`;
+      }
+    });
+
+    return job;
+  }
 
   function cliSwitchDefaults(cli) {
     const providerDefaults = options.getProviderDefaults() || {};
@@ -209,6 +381,7 @@ function createCliSwitchRuntime(options) {
 
   function mountRoutes(app, asyncHandler) {
     if (!app || typeof app.post !== 'function') throw new TypeError('[cli-switch-runtime] app.post is required');
+    if (typeof app.get !== 'function') throw new TypeError('[cli-switch-runtime] app.get is required');
     if (typeof asyncHandler !== 'function') throw new TypeError('[cli-switch-runtime] asyncHandler is required');
     app.post('/api/sessions/:id/switch-cli', asyncHandler(async (req, res) => {
       const session = records.get(req.params.id);
@@ -269,6 +442,48 @@ function createCliSwitchRuntime(options) {
         subagent: options.serializeSubagent(session.subagent),
       });
     }));
+
+    app.get('/api/cli/install-specs', asyncHandler(async (req, res) => {
+      return res.json({ ok: true, specs: installSpecs });
+    }));
+
+    app.post('/api/cli/:cli/install', asyncHandler(async (req, res) => {
+      const cli = String((req.params && req.params.cli) || '').trim().toLowerCase();
+      if (!supportedClis.includes(cli)) {
+        return res.status(400).json({ ok: false, error: 'unsupported cli' });
+      }
+      const availability = options.cliAvailabilitySummary();
+      if (availability && availability[cli] && availability[cli].available) {
+        return res.json({ ok: true, alreadyInstalled: true, availability: { [cli]: availability[cli] } });
+      }
+      const spec = installSpecs[cli];
+      if (!spec) {
+        return res.status(400).json({ ok: false, error: 'unsupported cli' });
+      }
+      if (spec.auto === false) {
+        return res.status(400).json({ ok: false, manual: true, error: spec.manual });
+      }
+      const running = findRunningInstallJob(cli);
+      if (running) {
+        return res.status(409).json({ ok: false, running: true, jobId: running.id });
+      }
+      const job = launchInstallJob(cli);
+      return res.status(202).json({ ok: true, jobId: job.id, cli: job.cli, command: job.command });
+    }));
+
+    app.get('/api/cli/install-status/:jobId', asyncHandler(async (req, res) => {
+      const jobId = String((req.params && req.params.jobId) || '');
+      const job = installJobs.get(jobId);
+      if (!job) {
+        return res.status(404).json({ ok: false, error: 'job not found' });
+      }
+      const availability = options.cliAvailabilitySummary();
+      return res.json({
+        ok: true,
+        job: serializeInstallJob(job),
+        availability: { [job.cli]: availability[job.cli] || { available: false } },
+      });
+    }));
   }
 
   return Object.freeze({
@@ -281,4 +496,4 @@ function createCliSwitchRuntime(options) {
   });
 }
 
-module.exports = { cliHandoffSummary, createCliSwitchRuntime };
+module.exports = { cliHandoffSummary, createCliSwitchRuntime, OFFICIAL_INSTALL_SPECS };

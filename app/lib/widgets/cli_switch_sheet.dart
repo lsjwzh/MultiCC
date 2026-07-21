@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -13,10 +15,29 @@ class CliSwitchRequest {
   const CliSwitchRequest({required this.cli, required this.fresh});
 }
 
+/// Per-CLI install progress tracked inside the switch sheet. [phase] is one of
+/// `installing` / `done` / `error`; [timer] drives the 2s status poll and is
+/// cancelled on a terminal phase or in [State.dispose].
+class _CliInstallState {
+  final String jobId;
+  final String phase;
+  final String? error;
+  Timer? timer;
+
+  _CliInstallState({required this.jobId, required this.phase, this.error});
+}
+
 class CliSwitchSheet extends StatefulWidget {
   final SessionCliConfig config;
+  final Map<String, dynamic>? specs;
+  final String? sessionId;
 
-  const CliSwitchSheet({super.key, required this.config});
+  const CliSwitchSheet({
+    super.key,
+    required this.config,
+    this.specs,
+    this.sessionId,
+  });
 
   @override
   State<CliSwitchSheet> createState() => _CliSwitchSheetState();
@@ -26,26 +47,244 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
   late SessionCli _target;
   bool _fresh = false;
 
+  /// Mutable copy of [widget.config] so a finished install can refresh the
+  /// availability map in place without rebuilding the sheet from the caller.
+  late SessionCliConfig _config;
+
+  /// Per-CLI install state. Absent = no install attempt for this CLI yet.
+  final Map<SessionCli, _CliInstallState> _installs = {};
+
   @override
   void initState() {
     super.initState();
     _target = widget.config.cli;
+    _config = widget.config;
   }
 
-  bool _available(SessionCli cli) => widget.config.cliAvailability[cli] ?? cli == widget.config.cli;
+  bool _available(SessionCli cli) =>
+      _config.cliAvailability[cli] ?? cli == _config.cli;
+
+  Map<String, dynamic>? _specFor(SessionCli cli) {
+    final specs = widget.specs;
+    if (specs == null) return null;
+    final s = specs[cli.name];
+    return s is Map<String, dynamic> ? s : null;
+  }
 
   String _description(SessionCli cli) {
-    if (!_available(cli)) return '未安装或不可执行';
-    if (cli == widget.config.cli) return '当前使用';
-    if (widget.config.cliStates[cli]?.hasNativeSession == true) {
+    final install = _installs[cli];
+    if (install != null) {
+      if (install.phase == 'installing') return '正在安装…(通常1-2分钟)';
+      if (install.phase == 'done') return '安装完成, 可切换';
+      if (install.phase == 'error') return install.error ?? '安装失败';
+    }
+    if (!_available(cli)) {
+      final spec = _specFor(cli);
+      // auto!=true -> show the manual instructions; otherwise keep the default.
+      if (spec != null && spec['auto'] != true) {
+        final manual = spec['manual'];
+        if (manual is String && manual.isNotEmpty) return manual;
+      }
+      return '未安装或不可执行';
+    }
+    if (cli == _config.cli) return '当前使用';
+    if (_config.cliStates[cli]?.hasNativeSession == true) {
       return '可恢复上次原生会话，并接收本次上下文交接';
     }
     return '将创建新的原生会话，并接收当前任务信息';
   }
 
+  Color _descriptionColor(SessionCli cli, bool available) {
+    if (_installs[cli]?.phase == 'error') return AppColors.danger;
+    return available ? AppColors.muted : AppColors.faint;
+  }
+
+  Widget? _trailing(SessionCli cli) {
+    final install = _installs[cli];
+    if (install != null) {
+      if (install.phase == 'installing') {
+        return const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        );
+      }
+      if (install.phase == 'error') {
+        return _installButton('重试', () => _startInstall(cli));
+      }
+      return null;
+    }
+    // Uninstalled + auto install supported -> show the install button.
+    if (!_available(cli)) {
+      final spec = _specFor(cli);
+      if (spec != null && spec['auto'] == true) {
+        return _installButton('安装', () => _startInstall(cli));
+      }
+    }
+    return null;
+  }
+
+  Widget _installButton(String label, VoidCallback onPressed) {
+    return TextButton(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        minimumSize: const Size(40, 28),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  // ── Install flow ──────────────────────────────────────────────────────────
+
+  Future<void> _startInstall(SessionCli cli) async {
+    // Refuse a duplicate trigger while this CLI is already installing.
+    if (_installs[cli]?.phase == 'installing') return;
+    _installs[cli]?.timer?.cancel();
+    final manager = context.read<SessionManager>();
+    final sessionId = widget.sessionId;
+    setState(() {
+      _installs[cli] = _CliInstallState(jobId: '', phase: 'installing');
+    });
+    try {
+      final res = await manager.installCli(cli.name);
+      if (!mounted) return;
+      final jobId = res['jobId']?.toString();
+      if (jobId != null && jobId.isNotEmpty) {
+        // 202 started or 409 already-running: attach and poll.
+        setState(() {
+          _installs[cli] = _CliInstallState(jobId: jobId, phase: 'installing');
+        });
+        _pollInstall(cli, manager, sessionId);
+        return;
+      }
+      // No jobId: 200 already-installed or 400 unsupported/manual.
+      final statusCode = res['statusCode'];
+      if (statusCode == 200 || res['alreadyInstalled'] == true) {
+        await _finishInstall(cli, manager, sessionId);
+      } else {
+        final error = res['error']?.toString();
+        setState(() {
+          _installs[cli] = _CliInstallState(
+            jobId: '',
+            phase: 'error',
+            error: error?.isNotEmpty == true ? error : '安装失败',
+          );
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _installs[cli] = _CliInstallState(
+          jobId: '',
+          phase: 'error',
+          error: '安装失败：$e',
+        );
+      });
+    }
+  }
+
+  void _pollInstall(SessionCli cli, SessionManager manager, String? sessionId) {
+    final install = _installs[cli];
+    if (install == null || install.jobId.isEmpty) return;
+    install.timer = Timer.periodic(const Duration(seconds: 2), (t) async {
+      // Stop if the sheet is gone or a different install took over this CLI.
+      if (!mounted || _installs[cli]?.jobId != install.jobId) {
+        t.cancel();
+        return;
+      }
+      try {
+        final res = await manager.fetchCliInstallStatus(install.jobId);
+        if (!mounted || _installs[cli]?.jobId != install.jobId) {
+          t.cancel();
+          return;
+        }
+        final job = res['job'];
+        final status = job is Map ? job['status']?.toString() : null;
+        if (status == 'done') {
+          t.cancel();
+          await _finishInstall(cli, manager, sessionId);
+        } else if (status == 'error') {
+          t.cancel();
+          final error = job is Map ? job['error']?.toString() : null;
+          setState(() {
+            _installs[cli] = _CliInstallState(
+              jobId: install.jobId,
+              phase: 'error',
+              error: error?.isNotEmpty == true ? error : '安装失败',
+            );
+          });
+        }
+        // status == 'running' (or unknown) -> keep polling.
+      } catch (_) {
+        // Transient network error: keep polling, don't abort the install.
+      }
+    });
+  }
+
+  Future<void> _finishInstall(
+    SessionCli cli,
+    SessionManager manager,
+    String? sessionId,
+  ) async {
+    // Refresh config to pick up the new availability; on failure optimistically
+    // mark this CLI available since the install job itself reported done.
+    SessionCliConfig? fresh;
+    if (sessionId != null && sessionId.isNotEmpty) {
+      try {
+        fresh = await manager.fetchSessionCliConfig(sessionId);
+      } catch (_) {
+        fresh = null;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _config = fresh ?? _patchAvailability(_config, cli, true);
+      _installs[cli] = _CliInstallState(
+        jobId: _installs[cli]?.jobId ?? '',
+        phase: 'done',
+      );
+    });
+  }
+
+  /// Optimistically mark [cli] available when the post-install config refresh
+  /// failed but the install job itself reported done.
+  SessionCliConfig _patchAvailability(
+    SessionCliConfig cfg,
+    SessionCli cli,
+    bool available,
+  ) {
+    return SessionCliConfig(
+      cli: cfg.cli,
+      cliStates: cfg.cliStates,
+      cliAvailability: {...cfg.cliAvailability, cli: available},
+      pendingCliHandoff: cfg.pendingCliHandoff,
+      provider: cfg.provider,
+      providerName: cfg.providerName,
+      model: cfg.model,
+      effectiveModel: cfg.effectiveModel,
+      effort: cfg.effort,
+      effectiveEffort: cfg.effectiveEffort,
+      agent: cfg.agent,
+      subagent: cfg.subagent,
+      changed: cfg.changed,
+      reusedTarget: cfg.reusedTarget,
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final s in _installs.values) {
+      s.timer?.cancel();
+    }
+    _installs.clear();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final canSubmit = _available(_target) && (_target != widget.config.cli || _fresh);
+    final canSubmit = _available(_target) && (_target != _config.cli || _fresh);
     return SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.only(
@@ -117,6 +356,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
     final available = _available(cli);
     final selected = cli == _target;
     final color = cliBrandColor(cli);
+    final trailing = _trailing(cli);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: InkWell(
@@ -156,13 +396,14 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
                     Text(
                       _description(cli),
                       style: TextStyle(
-                        color: available ? AppColors.muted : AppColors.faint,
+                        color: _descriptionColor(cli, available),
                         fontSize: 11,
                       ),
                     ),
                   ],
                 ),
               ),
+              if (trailing != null) trailing,
             ],
           ),
         ),
@@ -183,6 +424,18 @@ Future<void> openCliSwitchSheet(BuildContext context, {required String sessionId
   }
   if (!context.mounted) return;
 
+  // Best-effort install-specs fetch: on failure fall back to null so the sheet
+  // degrades to the original "未安装或不可执行" wording with no install button.
+  Map<String, dynamic>? specs;
+  try {
+    final res = await manager.fetchCliInstallSpecs();
+    final s = res['specs'];
+    if (s is Map) specs = Map<String, dynamic>.from(s);
+  } catch (_) {
+    specs = null;
+  }
+  if (!context.mounted) return;
+
   final request = await showModalBottomSheet<CliSwitchRequest>(
     context: context,
     isScrollControlled: true,
@@ -190,7 +443,11 @@ Future<void> openCliSwitchSheet(BuildContext context, {required String sessionId
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
     ),
-    builder: (_) => CliSwitchSheet(config: config),
+    builder: (_) => CliSwitchSheet(
+      config: config,
+      specs: specs,
+      sessionId: sessionId,
+    ),
   );
   if (request == null || !context.mounted) return;
 
