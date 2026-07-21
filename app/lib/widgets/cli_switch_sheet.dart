@@ -22,9 +22,17 @@ class _CliInstallState {
   final String jobId;
   final String phase;
   final String? error;
+  final String? logTail;
+  final String? hint;
   Timer? timer;
 
-  _CliInstallState({required this.jobId, required this.phase, this.error});
+  _CliInstallState({
+    required this.jobId,
+    required this.phase,
+    this.error,
+    this.logTail,
+    this.hint,
+  });
 }
 
 class CliSwitchSheet extends StatefulWidget {
@@ -99,6 +107,50 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
     return available ? AppColors.muted : AppColors.faint;
   }
 
+  /// Extra detail lines under the description while an install runs or has
+  /// failed: an actionable hint (e.g. certificate / VPN advice) plus the
+  /// captured installer log tail. Without these the user only ever saw a bare
+  /// "exit code 1" and could not tell *why* the install failed.
+  List<Widget> _installDetails(SessionCli cli) {
+    final install = _installs[cli];
+    if (install == null) return const [];
+    final out = <Widget>[];
+    final hint = install.hint;
+    if (hint != null && hint.isNotEmpty) {
+      out.add(const SizedBox(height: 4));
+      out.add(Text(
+        hint,
+        style: const TextStyle(color: Color(0xFFe3b341), fontSize: 11, height: 1.4),
+      ));
+    }
+    final logTail = install.logTail;
+    if (logTail != null && logTail.isNotEmpty) {
+      out.add(const SizedBox(height: 4));
+      out.add(Container(
+        width: double.infinity,
+        constraints: const BoxConstraints(maxHeight: 120),
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0d1117),
+          border: Border.all(color: const Color(0xFF30363d)),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            logTail,
+            style: const TextStyle(
+              color: Color(0xFF8b949e),
+              fontFamily: 'monospace',
+              fontSize: 10,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ));
+    }
+    return out;
+  }
+
   Widget? _trailing(SessionCli cli) {
     final install = _installs[cli];
     if (install != null) {
@@ -170,6 +222,8 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
             jobId: '',
             phase: 'error',
             error: error?.isNotEmpty == true ? error : '安装失败',
+            logTail: res['logTail']?.toString(),
+            hint: res['hint']?.toString(),
           );
         });
       }
@@ -213,8 +267,25 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
               jobId: install.jobId,
               phase: 'error',
               error: error?.isNotEmpty == true ? error : '安装失败',
+              logTail: job is Map ? job['logTail']?.toString() : null,
+              hint: job is Map ? job['hint']?.toString() : null,
             );
           });
+        } else {
+          // running / unknown: surface the latest log tail so the user can see
+          // what the installer is doing (and why it may be failing).
+          final logTail = job is Map ? job['logTail']?.toString() : null;
+          final hint = job is Map ? job['hint']?.toString() : null;
+          if (logTail != null && logTail.isNotEmpty) {
+            setState(() {
+              _installs[cli] = _CliInstallState(
+                jobId: install.jobId,
+                phase: 'installing',
+                logTail: logTail,
+                hint: hint,
+              );
+            });
+          }
         }
         // status == 'running' (or unknown) -> keep polling.
       } catch (_) {
@@ -400,6 +471,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
                         fontSize: 11,
                       ),
                     ),
+                    ..._installDetails(cli),
                   ],
                 ),
               ),
