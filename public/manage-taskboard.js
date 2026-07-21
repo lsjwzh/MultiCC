@@ -80,9 +80,11 @@ function renderTaskBoardSection(dirId, opts) {
       </div>`);
     if (collapsed) continue;
     for (const t of list) {
+      const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
+      const clsRun = t.runState === 'running' ? ' running' : '';
       rowsHtml.push(`
-        <div class="tb-task${t.status === 'done' ? ' done' : ''}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-          <span class="tb-dot"></span>
+        <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
+          <span class="tb-icon">${icon}</span>
           <span class="tb-title">${_tbEsc(t.title)}</span>
           <span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span>
         </div>`);
@@ -91,9 +93,11 @@ function renderTaskBoardSection(dirId, opts) {
   // Orphans (module list pruned or filtered out) still need to be reachable.
   const seen = new Set(mods.map(m => m.id));
   for (const t of tasks.filter(x => !seen.has(x.moduleId))) {
+    const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
+    const clsRun = t.runState === 'running' ? ' running' : '';
     rowsHtml.push(`
-      <div class="tb-task${t.status === 'done' ? ' done' : ''}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-        <span class="tb-dot"></span>
+      <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
+        <span class="tb-icon">${icon}</span>
         <span class="tb-title">${_tbEsc(t.title)}</span>
         <span class="tb-dim">${t.refCount}轮</span>
       </div>`);
