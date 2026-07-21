@@ -413,19 +413,36 @@ function messageText(msg) {
   return '';
 }
 
-function buildBoardDto(board) {
-  const tasks = Object.values(board.tasks).map(t => ({
-    id: t.id,
-    moduleId: t.moduleId,
-    title: t.title,
-    status: t.status,
-    areas: t.areas,
-    refCount: t.refs.length,
-    sessionIds: [...new Set(t.refs.map(r => r.sessionId))],
-    dirIds: [...new Set(t.refs.map(r => r.dirId).filter(Boolean))],
-    lastTs: taskLastTs(t),
-    createdAt: t.createdAt,
-  })).sort((a, b) => b.lastTs - a.lastTs);
+// Aggregate classify run-state from a task's sessions: running > waiting > error > idle;
+// done only when all sessions are done. getSessionRunState(sid) → 'running'|'waiting'|'done'|'error'|'idle'|null.
+function aggregateTaskRunState(sessionIds, getSessionRunState) {
+  if (!getSessionRunState || !sessionIds.length) return 'idle';
+  const states = sessionIds.map(sid => getSessionRunState(sid)).filter(Boolean);
+  if (!states.length) return 'idle';
+  if (states.some(s => s === 'running')) return 'running';
+  if (states.some(s => s === 'waiting')) return 'waiting';
+  if (states.some(s => s === 'error')) return 'error';
+  if (states.every(s => s === 'done')) return 'done';
+  return 'idle';
+}
+
+function buildBoardDto(board, getSessionRunState) {
+  const tasks = Object.values(board.tasks).map(t => {
+    const sessionIds = [...new Set(t.refs.map(r => r.sessionId))];
+    return {
+      id: t.id,
+      moduleId: t.moduleId,
+      title: t.title,
+      status: t.status,
+      areas: t.areas,
+      refCount: t.refs.length,
+      sessionIds,
+      dirIds: [...new Set(t.refs.map(r => r.dirId).filter(Boolean))],
+      lastTs: taskLastTs(t),
+      createdAt: t.createdAt,
+      runState: aggregateTaskRunState(sessionIds, getSessionRunState),
+    };
+  }).sort((a, b) => b.lastTs - a.lastTs);
   const countByModule = new Map();
   const lastByModule = new Map();
   for (const t of tasks) {
