@@ -352,8 +352,8 @@ function renderTaskBoard() {
     box.innerHTML = '<div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div>';
     return;
   }
-  for (const mod of tb.modules) {
-    const tasks = visible.filter(t => t.moduleId === mod.id);
+  for (const mod of window.MultiCCTaskBoardUi.sortModules(tb.modules)) {
+    const tasks = window.MultiCCTaskBoardUi.sortTasks(visible.filter(t => t.moduleId === mod.id));
     if (!tasks.length) continue;
     const collapsed = collapsedMods.has(mod.id);
     const mrow = document.createElement('div'); mrow.className = 'tb-mod';
@@ -380,7 +380,9 @@ function renderTaskBoard() {
     }
   }
   // 孤儿任务（模块已不存在）兜底展示
-  const orphan = visible.filter(t => !tb.modules.some(m => m.id === t.moduleId));
+  const orphan = window.MultiCCTaskBoardUi.sortTasks(
+    visible.filter(t => !tb.modules.some(m => m.id === t.moduleId)),
+  );
   for (const t of orphan) {
     const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
     const clsRun = t.runState === 'running' ? ' running' : '';
