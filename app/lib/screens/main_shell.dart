@@ -21,6 +21,7 @@ import '../widgets/session_card.dart';
 import '../widgets/session_badges.dart';
 import '../widgets/home_task_scroller.dart';
 import '../widgets/kpi_tile.dart';
+import '../widgets/task_board_view.dart';
 import '../widgets/create_session_dialog.dart';
 import 'chat_screen.dart';
 import 'memo_screen.dart';
@@ -1286,6 +1287,14 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   late final ValueListenable<DirectoryWorkspaceSnapshot> _workspace;
   List<Map<String, dynamic>> _providers = const [];
 
+  // Tab selection for the fleet detail sheet: 0 = 会话 (sessions), 1 = 任务板
+  // (task board). Kept across setState / WS-driven rebuilds so a status tick
+  // never kicks the user off the board tab.
+  int _tab = 0;
+  // Filtered task count for the dir, reported by TaskBoardView after each
+  // refresh, so the tab badge can show "任务板(N)". Null until first report.
+  int? _taskCount;
+
   Directory get _dir {
     for (final d in widget.mgr.directories) {
       if (d.id == widget.dirId) return d;
@@ -1331,6 +1340,30 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
         ),
       );
     }
+  }
+
+  /// Open a session by id (called from the task-board detail sheet when a
+  /// session chip is tapped). Looks the session up in the loaded list; a chat
+  /// opens inline over the fleet panel, a terminal pushes its screen. A session
+  /// referenced by a task but no longer loaded surfaces a SnackBar. The detail
+  /// sheet pops itself before calling this, so the fleet panel is the top layer
+  /// and its context/mgr are still live.
+  void _openSessionById(String sessionId) {
+    Session? match;
+    for (final s in widget.mgr.sessions) {
+      if (s.id == sessionId) {
+        match = s;
+        break;
+      }
+    }
+    if (match == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('tbSessionNotFound'))),
+      );
+      return;
+    }
+    _openSession(match);
   }
 
   Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {
@@ -1464,6 +1497,42 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
     }
   }
 
+  /// Segmented tab bar for the fleet detail sheet: 会话 / 任务板(N).
+  /// The task-board count is reported by [TaskBoardView] after each refresh
+  /// (null until the first board load), so the badge pops in lazily rather
+  /// than blocking the sheet on an extra fetch.
+  Widget _buildTabBar() {
+    final taskLabel = _taskCount == null
+        ? t('taskBoard')
+        : '${t('taskBoard')}($_taskCount)';
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.panel,
+        border: Border(
+          bottom: BorderSide(color: AppColors.line, width: 1),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+      child: Row(
+        children: [
+          _FleetTabButton(
+            icon: Icons.dns_outlined,
+            label: t('sessions'),
+            selected: _tab == 0,
+            onTap: () => setState(() => _tab = 0),
+          ),
+          const SizedBox(width: 6),
+          _FleetTabButton(
+            icon: Icons.checklist_rounded,
+            label: taskLabel,
+            selected: _tab == 1,
+            onTap: () => setState(() => _tab = 1),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
@@ -1556,8 +1625,12 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                   ),
                 ),
                 const Divider(height: 1, color: AppColors.line),
+                _buildTabBar(),
                 Expanded(
-                  child: ListView(
+                  child: IndexedStack(
+                    index: _tab,
+                    children: [
+                      ListView(
                     padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
                     children: [
                       // Two kind buttons drive the create-session dialog; the
@@ -1666,10 +1739,71 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
                       ],
                     ],
                   ),
+                      TaskBoardView(
+                        settings: widget.settings,
+                        dirId: widget.dirId,
+                        onTaskCount: (n) {
+                          if (_taskCount != n) {
+                            setState(() => _taskCount = n);
+                          }
+                        },
+                        onOpenSession: _openSessionById,
+                      ),
+                    ],
+                  ),
                 ),
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _FleetTabButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _FleetTabButton({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = selected ? AppColors.accent : AppColors.muted;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent.withValues(alpha: 0.12) : null,
+          border: Border(
+            bottom: BorderSide(
+              color: selected ? AppColors.accent : Colors.transparent,
+              width: 2,
+            ),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ),
       ),
     );
