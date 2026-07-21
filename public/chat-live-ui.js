@@ -392,7 +392,7 @@
       textEl.className = 'dm-txt';
       textEl.textContent = text;
       rowEl.append(icon, textEl);
-      const row = { element: rowEl, icon, text: textEl, state: rowState, staleTimer: null };
+      const row = { element: rowEl, icon, text: textEl, state: rowState, staleTimer: null, confirmedBg: false };
       setDanmakuRowState(row, rowState);
       elements.body.prepend(rowEl);
       danmaku.rows.set(key, row);
@@ -403,6 +403,36 @@
       let changed = false;
       for (const row of danmaku.rows.values()) {
         if (row.state === 'start') { setDanmakuRowState(row, 'stale'); changed = true; }
+      }
+      if (changed) { refreshDanmakuMeta(); scheduleDanmakuHide(); }
+    }
+
+    // Reconcile spinning rows against the authoritative active-task set from the
+    // server's `background_tasks` snapshot. A task-keyed row seen in the snapshot
+    // is confirmed as a real background task; once it later drops out of the set
+    // (i.e. it finished) we settle it, so a lost `monitor_done` can't leave the
+    // spinner running forever.
+    function reconcileDanmakuTasks(activeTaskIds) {
+      const active = new Set((activeTaskIds || []).map(String));
+      let changed = false;
+      for (const [key, row] of danmaku.rows) {
+        if (!key.startsWith('t:')) continue;
+        const taskId = key.slice(2);
+        if (active.has(taskId)) { row.confirmedBg = true; continue; }
+        if (row.confirmedBg && row.state === 'start') { setDanmakuRowState(row, 'stale'); changed = true; }
+      }
+      if (changed) { refreshDanmakuMeta(); scheduleDanmakuHide(); }
+    }
+
+    // Called when a chat turn fully ends. Any row still spinning that was never
+    // confirmed as a real background task is a turn-scoped/synchronous tool (or
+    // one whose `monitor_done` was lost); settle it now instead of waiting out
+    // the 180s stale timer. Confirmed background tasks legitimately outlive the
+    // turn and are left untouched (they re-arm on their next progress event).
+    function settleTurnScopedDanmaku() {
+      let changed = false;
+      for (const row of danmaku.rows.values()) {
+        if (row.state === 'start' && !row.confirmedBg) { setDanmakuRowState(row, 'stale'); changed = true; }
       }
       if (changed) { refreshDanmakuMeta(); scheduleDanmakuHide(); }
     }
@@ -659,6 +689,8 @@
       renderLiveness,
       pushDanmaku,
       danmakuOnDisconnect,
+      reconcileDanmakuTasks,
+      settleTurnScopedDanmaku,
       toggleDanmakuCollapse,
       showThinking,
       hideThinking,
