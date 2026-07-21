@@ -31,7 +31,18 @@ const double _chatDesktopSidePadding = 16;
 class ChatView extends StatefulWidget {
   final SettingsService settings;
   final VoidCallback? onCollapse;
-  const ChatView({super.key, required this.settings, this.onCollapse});
+
+  /// Optional deep-link target: when non-null, the chat scrolls to + highlights
+  /// this message once history loads (task-board "jump to message" flow). Null
+  /// = normal open with zero behaviour change - the focus code paths are all
+  /// guarded on this being non-null.
+  final String? focusMessageId;
+  const ChatView({
+    super.key,
+    required this.settings,
+    this.onCollapse,
+    this.focusMessageId,
+  });
 
   @override
   State<ChatView> createState() => _ChatViewState();
@@ -48,6 +59,15 @@ class _ChatViewState extends State<ChatView> {
   // worktree first falls behind main (or falls further), not on every 5s poll.
   int _lastWarnedBehind = 0;
   bool _syncing = false;
+
+  // ── Deep-link focus (task-board "jump to message") ───────────────────────
+  // Resolved at most once, after the initial history page is applied. The fade
+  // is owned by _FocusHighlight; _highlightId only tells _MessageList which
+  // bubble to wrap + hand the focus GlobalKey to. When focusMessageId is null
+  // none of this ever arms (see the guard in build).
+  bool _focusAttempted = false;
+  String? _highlightId;
+  final GlobalKey _focusKey = GlobalKey();
 
   int _behindCount() => (_mergeStatus?['behind'] as num?)?.toInt() ?? 0;
   String _baseBranchName() => _mergeStatus?['baseBranch']?.toString() ?? 'main';
@@ -193,10 +213,69 @@ class _ChatViewState extends State<ChatView> {
     await _refreshMergeStatus(sessionId);
   }
 
+  // ── Deep-link focus resolution ────────────────────────────────────────────
+  // Called once (post-frame) after the initial history page is applied. If the
+  // target is already in the loaded transcript we just scroll+highlight;
+  // otherwise we fetch the around-window and replace the transcript, then
+  // scroll+highlight. Not-found / fetch-failure falls back to the normal bottom
+  // - the existing _scrollToBottom / streaming-append / _userScrolled logic in
+  // _MessageList is untouched and keeps working in every branch.
+  Future<void> _resolveFocus(ChatProvider provider) async {
+    final focusId = widget.focusMessageId;
+    if (focusId == null || focusId.isEmpty) return;
+    final alreadyPresent = provider.messages.any((m) => m.id == focusId);
+    if (!alreadyPresent) {
+      bool found = false;
+      try {
+        found = await provider.loadHistoryAround(focusId);
+      } catch (_) {
+        found = false;
+      }
+      if (!found) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(t('messageNotFound'))),
+        );
+        return; // fall back to normal bottom
+      }
+    }
+    if (!mounted) return;
+    setState(() => _highlightId = focusId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _focusKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.4,
+          duration: const Duration(milliseconds: 300),
+        );
+      }
+    });
+  }
+
+  void _clearHighlight() {
+    if (_highlightId != null) {
+      setState(() => _highlightId = null);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
     final mergeReady = _mergeStatus?['mergeReady'] == true;
+    // Deep-link focus: resolve once, after the initial history page is applied.
+    // Scheduled in a post-frame callback so the (async, setState-bearing)
+    // resolution never runs during build. focusMessageId==null -> the guard
+    // never arms, so the normal chat path is byte-for-byte unchanged.
+    if (widget.focusMessageId != null &&
+        !_focusAttempted &&
+        provider.historyApplied) {
+      _focusAttempted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _resolveFocus(provider);
+      });
+    }
     return Scaffold(
       backgroundColor: const Color(0xFF070809),
       body: SafeArea(
@@ -239,7 +318,14 @@ class _ChatViewState extends State<ChatView> {
                 syncing: _syncing,
                 onSync: () => _syncWorktree(provider.sessionName),
               ),
-            Expanded(child: _MessageList(scrollCtrl: _scrollCtrl)),
+            Expanded(
+              child: _MessageList(
+                scrollCtrl: _scrollCtrl,
+                highlightId: _highlightId,
+                focusKey: _focusKey,
+                onHighlightDone: _clearHighlight,
+              ),
+            ),
             const _CenteredChatLane(child: _CostBar()),
             if (mergeReady)
               _MergeReadyBanner(
@@ -1415,7 +1501,25 @@ class _TimeSeparator extends StatelessWidget {
 
 class _MessageList extends StatefulWidget {
   final ScrollController scrollCtrl;
-  const _MessageList({required this.scrollCtrl});
+
+  /// Message id to deep-link highlight (null = no highlight). Drives
+  /// _maybeHighlight in the itemBuilder.
+  final String? highlightId;
+
+  /// GlobalKey attached to the highlighted bubble so the host can
+  /// Scrollable.ensureVisible it.
+  final GlobalKey? focusKey;
+
+  /// Fired when the highlight fade finishes so the host clears highlightId
+  /// (the wrapper then unmounts, returning the bubble to its normal state).
+  final VoidCallback? onHighlightDone;
+
+  const _MessageList({
+    required this.scrollCtrl,
+    this.highlightId,
+    this.focusKey,
+    this.onHighlightDone,
+  });
 
   @override
   State<_MessageList> createState() => _MessageListState();
@@ -1487,6 +1591,11 @@ class _MessageListState extends State<_MessageList> {
   DateTime? _scrollSettlingUntil;
 
   void _scrollToBottom() {
+    // While a deep-link focus highlight is active, the focus owns the scroll
+    // position (Scrollable.ensureVisible on the target message) - don't fight
+    // it by yanking back to the bottom. No-op for the normal path, where
+    // highlightId is always null.
+    if (widget.highlightId != null) return;
     if (!widget.scrollCtrl.hasClients || _userScrolled) return;
     _scrollSettlingUntil = DateTime.now().add(
       const Duration(milliseconds: 350),
@@ -1500,6 +1609,22 @@ class _MessageListState extends State<_MessageList> {
         );
       }
     });
+  }
+
+  /// Wrap a bubble with the focus highlight (yellow, fading out over ~3.2s) and
+  /// the focus GlobalKey when it is the deep-link target. Non-target bubbles
+  /// pass through unchanged - so with no focus active (highlightId null) every
+  /// row is identical to the pre-focus code path.
+  Widget _maybeHighlight(Widget child, String? id) {
+    final hid = widget.highlightId;
+    if (id == null || id.isEmpty || hid == null || id != hid) return child;
+    return KeyedSubtree(
+      key: widget.focusKey,
+      child: _FocusHighlight(
+        onFadeComplete: widget.onHighlightDone,
+        child: child,
+      ),
+    );
   }
 
   @override
@@ -1544,12 +1669,14 @@ class _MessageListState extends State<_MessageList> {
                     prev == null ||
                     msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
                         _timeSeparatorGapMinutes;
-                if (!showTime) return MessageBubble(message: msg);
+                final bubble =
+                    _maybeHighlight(MessageBubble(message: msg), msg.id);
+                if (!showTime) return bubble;
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _TimeSeparator(time: msg.timestamp),
-                    MessageBubble(message: msg),
+                    bubble,
                   ],
                 );
               },
@@ -1700,6 +1827,63 @@ class _CostBar extends StatelessWidget {
         textAlign: TextAlign.center,
         style: const TextStyle(color: Color(0xFF5b616c), fontSize: 11),
       ),
+    );
+  }
+}
+
+/// Yellow highlight that fades out over ~3.2s, used by the deep-link focus to
+/// draw the eye to the target message. Owns its own animation; calls
+/// [onFadeComplete] when the fade finishes so the host can drop the highlight
+/// id (the _maybeHighlight wrapper then unmounts, leaving the bubble in its
+/// normal state - by then the opacity has already reached 0, so there is no
+/// visible jump).
+class _FocusHighlight extends StatefulWidget {
+  final Widget child;
+  final VoidCallback? onFadeComplete;
+  const _FocusHighlight({required this.child, this.onFadeComplete});
+
+  @override
+  State<_FocusHighlight> createState() => _FocusHighlightState();
+}
+
+class _FocusHighlightState extends State<_FocusHighlight>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3200),
+    );
+    _opacity = Tween<double>(begin: 0.45, end: 0.0).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
+    );
+    _ctrl.forward().then((_) {
+      if (mounted) widget.onFadeComplete?.call();
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _opacity,
+      builder: (_, child) => DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFE3B341).withValues(alpha: _opacity.value),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: child,
+      ),
+      child: widget.child,
     );
   }
 }

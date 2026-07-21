@@ -671,6 +671,38 @@ class SessionService {
     return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
   }
 
+  /// Fetch a window of history centered on [messageId] from
+  /// `GET /api/sessions/:id/history?around=<messageId>`. Used by the deep-link
+  /// focus flow (task-board message -> open chat scrolled to that message): the
+  /// server returns the page containing the target plus `found` / `hasMore` /
+  /// `hasNewer` flags. `found` is false when the message was trimmed from
+  /// history. The raw message maps reuse [ChatMessage.fromHistory] at the call
+  /// site, the same parser as [fetchHistory].
+  Future<({List<Map<String, dynamic>> messages, bool found, bool hasMore, bool hasNewer})>
+      fetchHistoryAround(String sessionId, String messageId) async {
+    final res = await http
+        .get(
+          Uri.parse(_url(
+            '/api/sessions/${Uri.encodeComponent(sessionId)}/history'
+            '?around=${Uri.encodeQueryComponent(messageId)}',
+          )),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final list = (data['messages'] as List? ?? []);
+    return (
+      messages: list.map((e) => (e as Map).cast<String, dynamic>()).toList(),
+      found: data['found'] == true,
+      hasMore: data['hasMore'] == true,
+      hasNewer: data['hasNewer'] == true,
+    );
+  }
+
   /// Create a read-only snapshot share of selected messages (by index into the
   /// session history). Returns the share record incl. `url`.
   Future<Map<String, dynamic>> shareMessages(

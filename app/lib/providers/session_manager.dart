@@ -41,6 +41,15 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  // ── Deep-link focus (task-board "jump to message") ─────────────────────────
+  // A pending focus is stashed when a chat is opened from a task-board message
+  // tap and consumed once by the freshly-mounted _ChatSheet, so the focus
+  // applies only to that open and never leaks to a later, unrelated one. The
+  // session-id guard prevents a stale focus (set for session A) from firing
+  // when session B's sheet mounts next.
+  String? _pendingFocusSessionId;
+  String? _pendingFocusMessageId;
+
   /// Session list from REST API.
   List<Session> _sessions = [];
   List<Session> get sessions => List.unmodifiable(_sessions);
@@ -461,6 +470,37 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       _providers[id]!.isActive = true;
     }
     notifyListeners();
+  }
+
+  /// Open [session]'s chat and request a deep-link focus on [focusMessageId]
+  /// (the chat scrolls to + highlights that message once its history loads).
+  /// A null / empty [focusMessageId] - or a non-chat session - behaves exactly
+  /// like a normal open (no focus stashed). Terminals ignore the focus.
+  void openSessionWithFocus(Session session, {String? focusMessageId}) {
+    if (focusMessageId != null &&
+        focusMessageId.isNotEmpty &&
+        session.isChat) {
+      _pendingFocusSessionId = session.id;
+      _pendingFocusMessageId = focusMessageId;
+    } else {
+      _pendingFocusSessionId = null;
+      _pendingFocusMessageId = null;
+    }
+    openSession(session);
+    switchToSession(session.id);
+  }
+
+  /// Consume the pending deep-link focus for [sessionId]. Returns the message
+  /// id to focus on, or null if there is no pending focus / it was meant for a
+  /// different session (guards against a stale focus leaking to the wrong
+  /// chat). Always clears the stash.
+  String? consumeFocusMessage(String sessionId) {
+    final match = _pendingFocusSessionId == sessionId &&
+        _pendingFocusMessageId != null;
+    final focus = match ? _pendingFocusMessageId : null;
+    _pendingFocusSessionId = null;
+    _pendingFocusMessageId = null;
+    return focus;
   }
 
   /// Go back to session list (no active session).
