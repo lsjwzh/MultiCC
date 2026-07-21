@@ -1124,14 +1124,10 @@ function handleGatewayControl(rawText) {
   return false;   // anything else → let the LLM handle (user may revise/add)
 }
 
-// Deliver a confirmed dispatch to its target session, creating an ephemeral chat
-// for terminal-only targets. Returns { ok, chatId } or { ok:false, error }.
+// Deliver a confirmed dispatch; terminal targets receive an ephemeral chat.
 async function dispatchToSession(targetId, message, opts = {}) {
   let v = validateDispatchTarget(targetId, opts.replyTo || null);
-  // On-demand ultracode worker creation: if the target matches *-ultra-NN but
-  // doesn't exist yet, auto-create it from the dispatcher's config. This replaces
-  // the old eager ensureUltracodeWorkers() — workers are born only when the LLM
-  // actually emits a <<dispatch>> marker naming them.
+  // Create matching *-ultra-NN workers on demand from the dispatcher's config.
   if (!v.ok) {
     const m = targetId.match(/-ultra-(\d{2})$/);
     if (m && opts.replyTo) {
@@ -1175,6 +1171,9 @@ async function dispatchToSession(targetId, message, opts = {}) {
     chatId = created.id;
   }
 
+  if (opts.requireIdle && taskBoardSessionBusy(chatId)) {
+    return { ok: false, error: 'target_busy', code: 'target_busy', chatId };
+  }
   const ownerSessionId = opts.replyTo || GATEWAY_ID;
   const admitted = await orchestrationRuntime.admitDispatch({
     ownerSessionId,
@@ -1196,9 +1195,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
     replyTo: opts.replyTo || null,
     createdAt: admitted.createdAt,
   });
-  // Track this pending dispatch on the dispatcher's currentTask so its card
-  // shows "等待 worker 回报" (waiting) instead of falling to idle while the
-  // worker runs. opts.replyTo is the dispatcher's session id.
+  // Keep the dispatcher's card waiting while its worker runs.
   if (opts.replyTo && !TERMINAL_DISPATCH_STATUS.has(admitted.status)) {
     addPendingDispatch(opts.replyTo, dispatchId, targetId);
   }
@@ -3182,8 +3179,10 @@ const {
 } = memoryRuntime;
 
 // Task board: AI-tagged module→task view over chat turns (fleet panel).
-// Late-bound wrappers because loadChatHistory / workspaceBroadcast /
-// isSystemInjectedMsg are composed later in this file.
+function taskBoardSessionBusy(sid) {
+  const prep = chatTurnPreparationRuntime.snapshot(sid);
+  return prep.phase !== 'idle' || !!chatSessions.get(sid)?.isStreaming || orchestrationChatBusy(sid) || !!defaultRepoActor.isLeased(sid);
+}
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
   auxQueue,
@@ -3194,17 +3193,18 @@ const taskBoardRuntime = createTaskBoardRuntime({
   isLocalRequest,
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
+  isSessionBusy: taskBoardSessionBusy,
   getSessionRunState: sid => {
     const rec = persistedSessions.get(sid);
     if (!rec) return null;
+    if (taskBoardSessionBusy(sid)) return 'running';
     const ts = rec.taskState;
     const cls = ts?.classifyState;
-    // classifyState: D(done) / C(completed) / W(waiting) / E(error) / A/P(active) / B(terminal) / null
-    // Map to task board run-state: running / waiting / done / error / idle
+    // Map D/C/W/E/A/P classify state to the task-board run state.
     if (cls === 'W') return 'waiting';
     if (cls === 'E') return 'error';
     if (cls === 'D' || cls === 'C') return 'done';
-    if (cls === 'A' || cls === 'P' || rec.active) return 'running';
+    if (cls === 'A' || cls === 'P') return 'running';
     return 'idle';
   },
   resolveGoalLimits,

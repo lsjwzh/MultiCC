@@ -1,11 +1,13 @@
 (function attachMultiCCTaskBoardUi(global) {
   'use strict';
 
-  function sessionChatUrl(sessionId) {
+  function sessionChatUrl(sessionId, messageId) {
     const id = String(sessionId || '').trim();
     if (!id) return null;
     const params = new URLSearchParams();
     params.set('session', id);
+    const target = String(messageId || '').trim();
+    if (target) params.set('message', target);
     return `/chat.html?${params.toString()}`;
   }
 

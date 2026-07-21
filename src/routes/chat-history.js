@@ -211,9 +211,29 @@ function createChatHistoryRuntime(rawDeps) {
     }
   }
 
-  function paginate(sessionId, { before, limit = historyPageSize } = {}) {
+  function paginate(sessionId, { before, around, limit = historyPageSize } = {}) {
     const messages = projectedMessages(sessionId);
     const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || historyPageSize));
+    if (around) {
+      const targetId = String(around).slice(0, 160);
+      const targetIndex = messages.findIndex(message => message.id === targetId);
+      if (targetIndex < 0) {
+        return Object.freeze({
+          messages: [], hasMore: false, before: null, found: false, hasNewer: false,
+        });
+      }
+      const halfWindow = Math.floor((pageSize - 1) / 2);
+      let start = Math.max(0, targetIndex - halfWindow);
+      const end = Math.min(messages.length, start + pageSize);
+      start = Math.max(0, end - pageSize);
+      return Object.freeze({
+        messages: messages.slice(start, end),
+        hasMore: start > 0,
+        before: start > 0 ? messages[start].id : null,
+        found: true,
+        hasNewer: end < messages.length,
+      });
+    }
     let end = messages.length;
     if (before) {
       const index = messages.findIndex(message => message.id === before);
@@ -417,9 +437,15 @@ function createChatHistoryRuntime(rawDeps) {
       try {
         const page = paginate(sessionId, {
           before: req.query.before && String(req.query.before),
+          around: req.query.around && String(req.query.around),
           limit: req.query.limit && String(req.query.limit),
         });
-        return res.json({ messages: page.messages, hasMore: page.hasMore });
+        const response = { messages: page.messages, hasMore: page.hasMore };
+        if (req.query.around) {
+          response.found = page.found === true;
+          response.hasNewer = page.hasNewer === true;
+        }
+        return res.json(response);
       } catch (error) {
         logFailure('chat_history_page_failed', error, sessionId);
         if (typeof next === 'function') return next(new Error('chat history operation failed'));
