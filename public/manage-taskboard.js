@@ -103,7 +103,7 @@ function renderTaskBoardSection(dirId, opts) {
     : '<div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div>';
   if (opts && opts.tabbed) {
     const stat = tasks.length
-      ? `<div class="tb-stat">${mods.length || 1} 模块 · ${tasks.length} 任务</div>` : '';
+      ? `<div class="tb-stat">${mods.length || 1} 模块 · ${tasks.length} 任务 <button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板" style="margin-left:8px">🔄</button></div>` : '';
     return `<div class="tb-section tb-tabbed">${stat}${body}</div>`;
   }
   return `
