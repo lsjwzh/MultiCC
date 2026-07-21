@@ -62,6 +62,62 @@ class SessionService {
     return SessionCliConfig.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
+  // ── CLI install (three-endpoint contract shared with web/CLI) ──────────────
+
+  /// Fetch install specs for all supported CLIs. Returns the parsed response
+  /// map `{ok, specs:{<cli>:{auto, command?, display?, manual?}}}`. On HTTP
+  /// error sets `ok: false` + `error` so callers can degrade gracefully.
+  Future<Map<String, dynamic>> fetchCliInstallSpecs() async {
+    final res = await http
+        .get(Uri.parse(_url('/api/cli/install-specs')), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= '${res.statusCode}';
+    }
+    return map;
+  }
+
+  /// Kick off an install for [cli]. Returns the whole parsed response map so
+  /// the caller can branch on status: 200 already-installed, 202 started
+  /// (jobId), 400 unsupported/manual, 409 already-running (jobId). The HTTP
+  /// statusCode is folded into the map as `statusCode` for that branching.
+  Future<Map<String, dynamic>> installCli(String cli) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/cli/$cli/install')), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    map['statusCode'] = res.statusCode;
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= _tryParseError(res.body) ?? '${res.statusCode}';
+    }
+    return map;
+  }
+
+  /// Poll the status of an install job. Returns `{ok, job:{id, cli, status,
+  /// command, startedAt, endedAt, exitCode, error, logTail}}` plus an
+  /// `availability` map (keyed by CLI name, each `{available}`). On HTTP
+  /// error (e.g. 404 unknown job) sets `ok: false` + `error`.
+  Future<Map<String, dynamic>> fetchCliInstallStatus(String jobId) async {
+    final res = await http
+        .get(
+          Uri.parse(_url('/api/cli/install-status/$jobId')),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 10));
+    final body = jsonDecode(res.body);
+    final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
+    if (res.statusCode >= 400) {
+      map['ok'] = false;
+      map['error'] ??= _tryParseError(res.body) ?? '${res.statusCode}';
+    }
+    return map;
+  }
+
   Future<void> deleteSession(String id) async {
     final res = await http
         .delete(Uri.parse(_url('/api/sessions/$id')), headers: _headers)
