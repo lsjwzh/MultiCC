@@ -72,6 +72,11 @@
   .tb-task.done .tb-title { color: #6e7681; text-decoration: line-through; }
   .tb-task .tb-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tb-task .tb-meta { color: #6e7681; font-size: 11px; white-space: nowrap; }
+  .tb-mod-actions, .tb-meta { display: flex; align-items: center; gap: 6px; }
+  .tb-class-state { font-size: 10px; padding: 1px 6px; border-radius: 9px; background: #21262d; color: #8b949e; }
+  .tb-class-state.running { color: #58a6ff; }
+  .tb-class-state.failed { color: #f85149; }
+  .tb-reclassify { padding: 1px 6px; font-size: 10px; background: #21262d; border-color: #30363d; }
   @keyframes tb-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .tb-task .tb-icon { font-size: 11px; line-height: 1; }
   .tb-task.running .tb-icon { animation: tb-blink 2s ease-in-out infinite; }
@@ -305,6 +310,40 @@ function scheduleTbRefresh(evt) {
   }, 400);
 }
 
+function classificationLabel(c) {
+  if (c?.state === 'retry_wait' && c.nextRetryAt) {
+    return `${Math.max(1, Math.ceil((c.nextRetryAt - Date.now()) / 60000))}分钟后重试`;
+  }
+  return ({ waiting_reply: '等待回复', pending: '待归类', running: '归类中',
+    retry_wait: '等待重试', failed: '归类失败' })[c?.state] || '待归类';
+}
+
+async function reclassifyTask(taskId, button) {
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/reclassify`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+    await fetchTaskBoard();
+  } catch (e) { alert('重新归类失败：' + e.message); }
+  finally { if (button) button.disabled = false; }
+}
+
+async function reclassifyAllPending(button) {
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch('/api/task-board/reclassify-pending', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+    await fetchTaskBoard();
+  } catch (e) { alert('批量归类失败：' + e.message); }
+  finally { if (button) button.disabled = false; }
+}
+
 function renderTaskBoard() {
   const box = $('taskboard'); box.innerHTML = '';
   const visible = tb.tasks.filter(t => t.status !== 'archived');
@@ -318,8 +357,10 @@ function renderTaskBoard() {
     if (!tasks.length) continue;
     const collapsed = collapsedMods.has(mod.id);
     const mrow = document.createElement('div'); mrow.className = 'tb-mod';
-    mrow.innerHTML = `<span>${collapsed ? '▸' : '▾'} <span class="tb-mod-name">${esc(mod.name)}</span> · ${tasks.length}</span><span>${esc(timeAgo(mod.lastTs))}</span>`;
+    mrow.innerHTML = `<span>${collapsed ? '▸' : '▾'} <span class="tb-mod-name">${esc(mod.name)}</span> · ${tasks.length}</span><span class="tb-mod-actions">${mod.source === 'classify' ? '<button class="tb-reclassify">全部重新归类</button>' : ''}<span>${esc(timeAgo(mod.lastTs))}</span></span>`;
     mrow.onclick = () => { collapsed ? collapsedMods.delete(mod.id) : collapsedMods.add(mod.id); renderTaskBoard(); };
+    const retryAll = mrow.querySelector('.tb-reclassify');
+    if (retryAll) retryAll.onclick = (e) => { e.stopPropagation(); reclassifyAllPending(retryAll); };
     box.appendChild(mrow);
     if (collapsed) continue;
     for (const t of tasks) {
@@ -327,11 +368,14 @@ function renderTaskBoard() {
       const clsRun = t.runState === 'running' ? ' running' : '';
       const row = document.createElement('div');
       row.className = 'tb-task' + (t.status === 'done' ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
+      const retryable = t.classification && t.classification.state !== 'running';
       row.innerHTML = `
         <span class="tb-icon">${icon}</span>
         <span class="tb-title">${esc(t.title)}</span>
-        <span class="tb-meta">${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span>`;
+        <span class="tb-meta">${t.classification ? `<span class="tb-class-state ${esc(t.classification.state)}" title="${esc(t.classification.lastError || '')}">${esc(classificationLabel(t.classification))}</span>` : ''}${retryable ? '<button class="tb-reclassify">重新归类</button>' : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
+      const retry = row.querySelector('.tb-reclassify');
+      if (retry) retry.onclick = (e) => { e.stopPropagation(); reclassifyTask(t.id, retry); };
       box.appendChild(row);
     }
   }
@@ -387,6 +431,7 @@ function renderTaskDetail(d) {
       <span class="td-title">${esc(t.title)}</span>
       <span class="td-badge ${t.status==='active'?'active':''}">${t.status==='active'?'进行中':t.status==='done'?'已完成':'已归档'}</span>
       <span class="td-actions">
+        ${t.classification ? `<button class="btn-sec" id="td-reclassify"${t.classification.state === 'running' ? ' disabled' : ''}>🔄 重新归类</button>` : ''}
         ${t.status === 'active'
           ? '<button class="btn-sec" id="td-done">✅ 标记完成</button>'
           : '<button class="btn-sec" id="td-reopen">♻️ 重开</button>'}
@@ -447,6 +492,8 @@ function renderTaskDetail(d) {
   const reopenBtn = panel.querySelector('#td-reopen');
   if (reopenBtn) reopenBtn.onclick = () => setStatus('active');
   panel.querySelector('#td-archive').onclick = () => { if (confirm('归档该任务？（从任务板隐藏，数据保留）')) setStatus('archived'); };
+  const reclassifyBtn = panel.querySelector('#td-reclassify');
+  if (reclassifyBtn) reclassifyBtn.onclick = () => reclassifyTask(t.id, reclassifyBtn);
 
   const sendBtn = panel.querySelector('#td-send');
   sendBtn.onclick = async () => {

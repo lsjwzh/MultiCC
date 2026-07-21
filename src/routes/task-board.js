@@ -2,7 +2,8 @@
 
 // Task board runtime — wires the pure core (src/task-board.js) to the host:
 // aux-queue tagging at turn end, atomic persistence, REST routes for the
-// fleet panel, and the panel composer's auto-routed dispatch.
+// fleet panel, the panel composer's auto-routed dispatch, and pending-card
+// classification retries.
 //
 // Host contract (all deps injected by server.js):
 //   file               — task_board.json path (from createPaths)
@@ -79,6 +80,9 @@ function createTaskBoardRuntime(deps) {
   // One in-flight tag per session: a newer turn supersedes the queued tag for
   // the same session (mirrors runClassifyNow's cancelClassifyFor pattern).
   const pendingTagBySession = new Map();
+  const pendingClassificationByTask = new Map();
+  const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+  const MAX_AUTO_ATTEMPTS = 5;
 
   // Resolve the current turn even while it is still streaming. Looking for the
   // last committed assistant first is wrong mid-turn: it pairs the previous
@@ -107,6 +111,214 @@ function createTaskBoardRuntime(deps) {
       userMsg: userIdx === -1 ? null : history[userIdx],
       assistantMsg: asstIdx === -1 ? null : history[asstIdx],
     };
+  }
+
+  function pendingTaskForRef(ref, markedTaskId = null) {
+    if (markedTaskId && board.tasks[markedTaskId]?.classification) return board.tasks[markedTaskId];
+    return Object.values(board.tasks).find(task => task.classification && task.refs.some(r =>
+      (ref.userMsgId && r.userMsgId === ref.userMsgId)
+        || (ref.assistantMsgId && r.assistantMsgId === ref.assistantMsgId))) || null;
+  }
+
+  function resolveTaskClassificationInput(task) {
+    let partial = null;
+    for (let ri = task.refs.length - 1; ri >= 0; ri--) {
+      const storedRef = task.refs[ri];
+      const history = loadHistory(storedRef.sessionId) || [];
+      let userIdx = storedRef.userMsgId
+        ? history.findIndex(m => m && m.id === storedRef.userMsgId) : -1;
+      if (userIdx === -1) {
+        for (let i = history.length - 1; i >= 0; i--) {
+          if (history[i]?.role === 'user'
+            && core.extractTaskMarker(core.messageText(history[i])) === task.id) {
+            userIdx = i;
+            break;
+          }
+        }
+      }
+      let assistantIdx = storedRef.assistantMsgId
+        ? history.findIndex(m => m && m.id === storedRef.assistantMsgId) : -1;
+      if (assistantIdx === -1 && userIdx !== -1) {
+        for (let i = userIdx + 1; i < history.length; i++) {
+          const m = history[i];
+          if (m?.role === 'user') break;
+          if (m?.role === 'assistant' && !m._interim && !m.error) assistantIdx = i;
+        }
+      }
+      const userMsg = userIdx === -1 ? null : history[userIdx];
+      const assistantMsg = assistantIdx === -1 ? null : history[assistantIdx];
+      const userText = core.messageText(userMsg).trim() || task.classification?.seed || storedRef.excerpt || '';
+      const replyText = core.messageText(assistantMsg).trim();
+      if (userText && !partial) {
+        partial = {
+          userText,
+          replyText: '',
+          ref: {
+            sessionId: storedRef.sessionId,
+            dirId: storedRef.dirId || records.get(storedRef.sessionId)?.dirId || null,
+            dirLabel: null,
+            userMsgId: userMsg?.id || storedRef.userMsgId || null,
+            assistantMsgId: storedRef.assistantMsgId || null,
+            ts: userMsg?.ts || storedRef.ts || Date.now(),
+            excerpt: (task.classification?.seed || storedRef.excerpt || userText).slice(0, 140),
+          },
+        };
+      }
+      if (userText && replyText) {
+        return {
+          userText,
+          replyText,
+          ref: {
+            sessionId: storedRef.sessionId,
+            dirId: storedRef.dirId || records.get(storedRef.sessionId)?.dirId || null,
+            dirLabel: null,
+            userMsgId: userMsg?.id || storedRef.userMsgId || null,
+            assistantMsgId: assistantMsg?.id || storedRef.assistantMsgId || null,
+            ts: assistantMsg?.ts || userMsg?.ts || storedRef.ts || Date.now(),
+            excerpt: (task.classification?.seed || storedRef.excerpt || userText).slice(0, 140),
+          },
+        };
+      }
+    }
+    return partial;
+  }
+
+  function saveClassificationState(task, patch) {
+    const previous = task.classification || {};
+    task.classification = {
+      state: 'pending', attempts: 0, lastAttemptAt: 0,
+      nextRetryAt: 0, lastError: '', seed: '',
+      ...previous,
+      ...patch,
+    };
+    task.updatedAt = Date.now();
+    save();
+    const mod = task.moduleId ? board.modules[task.moduleId] : null;
+    notify(mod?.dirId || task.refs.find(r => r.dirId)?.dirId || null, [task.id]);
+  }
+
+  function recordClassificationFailure(taskId, error) {
+    const task = board.tasks[taskId];
+    if (!task?.classification) return;
+    const attempts = task.classification.attempts || 0;
+    const exhausted = attempts >= MAX_AUTO_ATTEMPTS;
+    const delay = RETRY_DELAYS_MS[Math.min(Math.max(attempts - 1, 0), RETRY_DELAYS_MS.length - 1)];
+    saveClassificationState(task, {
+      state: exhausted ? 'failed' : 'retry_wait',
+      nextRetryAt: exhausted ? 0 : Date.now() + delay,
+      lastError: String(error || 'classification_failed').slice(0, 200),
+    });
+  }
+
+  function targetedTagPrompt(task, input) {
+    return [
+      core.buildTagUserPrompt({
+        board,
+        sessionLabel: records.get(input.ref.sessionId)?.label || input.ref.sessionId,
+        dirLabel: null,
+        userText: input.userText,
+        replyText: input.replyText,
+      }),
+      '',
+      '【本次要求】',
+      `这是用户已确认创建的任务，占位任务 id 为 ${task.id}。`,
+      `必须输出恰好一个任务；若属于现有任务可返回其 id，否则返回 id "${task.id}"。`,
+      '必须给出最终 title、module 和 areas，不能返回空 tasks。',
+    ].join('\n');
+  }
+
+  function queueTaskClassification(taskId, options = {}) {
+    const task = board.tasks[taskId];
+    if (!task?.classification) return { ok: false, error: 'not_pending' };
+    if (pendingClassificationByTask.has(taskId)) return { ok: false, error: 'classification_running' };
+    if (options.manual) task.classification.attempts = 0;
+
+    const input = options.input || resolveTaskClassificationInput(task);
+    if (!input?.userText) {
+      saveClassificationState(task, {
+        state: 'waiting_reply', nextRetryAt: Date.now() + 60_000,
+        lastError: '',
+      });
+      return { ok: false, error: 'waiting_reply' };
+    }
+    if (!input.replyText) input.replyText = '（尚无助手回复，仅根据用户提交的任务信息归类）';
+    if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
+      saveClassificationState(task, {
+        state: 'retry_wait', nextRetryAt: Date.now() + 60_000,
+        lastError: 'aux_unhealthy',
+      });
+      return { ok: false, error: 'aux_unhealthy' };
+    }
+
+    const jobId = crypto.randomUUID();
+    pendingClassificationByTask.set(taskId, jobId);
+    saveClassificationState(task, {
+      state: 'running',
+      attempts: (task.classification.attempts || 0) + 1,
+      lastAttemptAt: Date.now(),
+      nextRetryAt: 0,
+      lastError: '',
+    });
+
+    let promise;
+    try {
+      promise = auxQueue.enqueue({
+        id: jobId,
+        type: 'task_tag',
+        systemPrompt: core.buildTagSystemPrompt(),
+        prompt: targetedTagPrompt(task, input),
+        meta: { sessionName: input.ref.sessionId, sessionId: input.ref.sessionId, taskId },
+      });
+    } catch (e) {
+      pendingClassificationByTask.delete(taskId);
+      logger.log(`[multicc/taskboard] classify enqueue failed for ${taskId}: ${e?.message || e}`);
+      recordClassificationFailure(taskId, 'enqueue_failed');
+      return { ok: false, error: 'enqueue_failed' };
+    }
+
+    Promise.resolve(promise).then(result => {
+      if (pendingClassificationByTask.get(taskId) !== jobId) return;
+      pendingClassificationByTask.delete(taskId);
+      if (!result || result.cancelled) {
+        recordClassificationFailure(taskId, 'classification_cancelled');
+        return;
+      }
+      const parsed = core.parseTagResult(result.text);
+      const entry = parsed.tasks.find(t => t.id === taskId || (t.id && board.tasks[t.id])) || parsed.tasks[0];
+      if (!entry) {
+        recordClassificationFailure(taskId, 'empty_classification');
+        return;
+      }
+      const applied = core.applyTaskClassification(board, taskId, entry, input.ref, Date.now());
+      if (!applied.ok) {
+        recordClassificationFailure(taskId, applied.error);
+        return;
+      }
+      save();
+      notify(input.ref.dirId, applied.touched);
+    }).catch(e => {
+      if (pendingClassificationByTask.get(taskId) !== jobId) return;
+      pendingClassificationByTask.delete(taskId);
+      logger.log(`[multicc/taskboard] classify failed for ${taskId}: ${e?.message || e}`);
+      recordClassificationFailure(taskId, 'classification_failed');
+    });
+    return { ok: true, queued: true };
+  }
+
+  function scanPendingClassifications(now = Date.now()) {
+    let queued = 0;
+    for (const task of Object.values(board.tasks)) {
+      const c = task.classification;
+      if (!c || c.state === 'failed' || pendingClassificationByTask.has(task.id)) continue;
+      if (c.state === 'running') {
+        c.state = 'retry_wait';
+        c.nextRetryAt = now;
+      }
+      if (c.nextRetryAt && c.nextRetryAt > now) continue;
+      const result = queueTaskClassification(task.id);
+      if (result.ok) queued++;
+    }
+    return queued;
   }
 
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.
@@ -143,6 +355,12 @@ function createTaskBoardRuntime(deps) {
           save();
           notify(ref.dirId, [markedTaskId]);
         }
+      }
+
+      const pendingTask = pendingTaskForRef(ref, markedTaskId);
+      if (pendingTask) {
+        queueTaskClassification(pendingTask.id, { input: { userText, replyText, ref } });
+        return;
       }
 
       // AI tagging needs a substantive reply to judge from.
@@ -217,6 +435,15 @@ function createTaskBoardRuntime(deps) {
         id: 'new', title: goal, module: core.CLASSIFY_PENDING_MODULE_NAME, areas: [],
       }], ref, now, { moduleSource: 'classify', mergeSimilar: true });
       if (touched.length) {
+        for (const taskId of touched) {
+          const task = board.tasks[taskId];
+          if (task && board.modules[task.moduleId]?.source === 'classify') {
+            task.classification = {
+              state: 'waiting_reply', attempts: 0, lastAttemptAt: 0,
+              nextRetryAt: now + 60_000, lastError: '', seed: goal.slice(0, 1200),
+            };
+          }
+        }
         save();
         const created = touched.filter(id => !beforeIds.has(id));
         notify(ref.dirId, touched, created.length ? 'created' : undefined);
@@ -404,9 +631,9 @@ function createTaskBoardRuntime(deps) {
     });
   }
 
-  // Board-level composer: not bound to any task. Routes to the explicit
-  // target or the most recently active chat session in the directory; the
-  // resulting turn gets archived onto tasks by the normal turn-end tagger.
+  // Board-level composer: reserve a visible card first, then route to the
+  // explicit target or the most recently active chat session in the directory.
+  // The marker lets turn-end classification converge that same card in place.
   async function handleBoardSend(req, res) {
     if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     const text = String(req.body?.text || '').trim();
@@ -415,12 +642,28 @@ function createTaskBoardRuntime(deps) {
     const explicit = String(req.body?.target || '').trim() || null;
     const target = core.pickDirTarget(records, dirId, explicit);
     if (!target) return res.status(409).json({ error: 'no_route_target', note: '该目录下没有可路由的 chat 会话' });
-    const result = await dispatchToSession(target, goalNoteFor(req.body) + text, {
-      idempotencyKey: `taskboard:dir:${crypto.randomUUID()}`,
-    });
-    if (!result.ok) return res.status(502).json({ error: result.error || 'dispatch_failed' });
+    const pending = core.createPendingTask(board, { dirId, sessionId: target, seed: text });
+    save();
+    notify(dirId, [pending.id], 'created');
+    let result;
+    try {
+      result = await dispatchToSession(target, goalNoteFor(req.body) + core.buildRoutedMessage(pending, text), {
+        idempotencyKey: `taskboard:${pending.id}:${crypto.randomUUID()}`,
+      });
+    } catch (e) {
+      result = { ok: false, error: e?.message || 'dispatch_failed' };
+    }
+    if (!result.ok) {
+      const moduleId = pending.moduleId;
+      delete board.tasks[pending.id];
+      if (!Object.values(board.tasks).some(t => t.moduleId === moduleId)) delete board.modules[moduleId];
+      save();
+      notify(dirId, [pending.id]);
+      return res.status(502).json({ error: result.error || 'dispatch_failed' });
+    }
     res.json({
       ok: true,
+      taskId: pending.id,
       target,
       targetLabel: records.get(target)?.label || target,
       chatId: result.chatId,
@@ -444,6 +687,40 @@ function createTaskBoardRuntime(deps) {
     res.json({ ok: true, task: taskDto(task) });
   }
 
+  function handleReclassify(req, res) {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
+    const task = board.tasks[req.params.taskId];
+    if (!task) return res.status(404).json({ error: 'task_not_found' });
+    if (!task.classification) return res.status(409).json({ error: 'not_pending' });
+    const result = queueTaskClassification(task.id, { manual: true });
+    if (!result.ok) {
+      const status = result.error === 'aux_unhealthy' ? 503 : 409;
+      const note = result.error === 'waiting_reply' ? '任务仍在执行，回复完成后会自动归类' : null;
+      return res.status(status).json({ error: result.error, note });
+    }
+    res.json({ ok: true, queued: true, task: taskDto(task) });
+  }
+
+  function handleReclassifyPending(req, res) {
+    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
+    if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
+      return res.status(503).json({ error: 'aux_unhealthy' });
+    }
+    const dirId = String(req.body?.dirId || '').trim() || null;
+    let queued = 0;
+    let skipped = 0;
+    for (const task of Object.values(board.tasks)) {
+      if (!task.classification) continue;
+      const mod = task.moduleId ? board.modules[task.moduleId] : null;
+      const taskDirId = mod?.dirId || task.refs.find(r => r.dirId)?.dirId || null;
+      if (dirId && taskDirId !== dirId) continue;
+      const result = queueTaskClassification(task.id, { manual: true });
+      if (result.ok) queued++;
+      else skipped++;
+    }
+    res.json({ ok: true, queued, skipped });
+  }
+
   function mountRoutes(app) {
     app.get('/api/task-board', handleBoard);
     app.get('/api/task-board/tasks/:taskId/messages', handleMessages);
@@ -454,6 +731,7 @@ function createTaskBoardRuntime(deps) {
       });
     });
     app.post('/api/task-board/tasks/:taskId/status', handleStatus);
+    app.post('/api/task-board/tasks/:taskId/reclassify', handleReclassify);
     app.post('/api/task-board/send', (req, res) => {
       handleBoardSend(req, res).catch(e => {
         logger.log(`[multicc/taskboard] board send failed: ${e?.message || e}`);
@@ -466,12 +744,19 @@ function createTaskBoardRuntime(deps) {
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
     });
+    app.post('/api/task-board/reclassify-pending', handleReclassifyPending);
   }
+
+  const retryTimer = setInterval(() => scanPendingClassifications(), 60_000);
+  if (typeof retryTimer.unref === 'function') retryTimer.unref();
+  const startupTimer = setTimeout(() => scanPendingClassifications(), 1_000);
+  if (typeof startupTimer.unref === 'function') startupTimer.unref();
 
   return Object.freeze({
     mountRoutes,
     onTurnEnd,
     onClassifyGoal,
+    scanPendingClassifications,
     // test/introspection surface
     getBoard: () => board,
     save,
