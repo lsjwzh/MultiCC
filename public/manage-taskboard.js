@@ -13,6 +13,8 @@ let _tbFetchedAt = 0;
 let _tbTimer = null;
 const _tbCollapsed = new Set();     // module ids collapsed in the tree
 let _tbDetailTaskId = null;
+let _tbGatheringFloat = null;       // 归拢中浮窗 DOM
+let _tbPendingTaskIds = [];         // 等待定位的新任务 id
 
 const _tbEsc = (s) => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -40,12 +42,23 @@ async function refreshTaskBoard(force) {
       renderDirectoryDetailBody(_detailDirId);
     }
     if (_tbDetailTaskId) loadTaskBoardDetail(_tbDetailTaskId, true);
+    // 刷新后定位新任务（若有待定位的）
+    if (_tbPendingTaskIds.length) {
+      const tid = _tbPendingTaskIds[0];
+      _tbPendingTaskIds = [];
+      setTimeout(() => _tbScrollToTask(tid), 100);
+    }
   } catch (_) {}
 }
 
 // Debounced entry point for WS task_board_update events (manage.js).
-function onTaskBoardUpdate() {
+// evt = { type:'task_board_update', taskIds:[], kind?:'created' }
+function onTaskBoardUpdate(evt) {
   clearTimeout(_tbTimer);
+  if (evt && evt.kind === 'created' && evt.taskIds && evt.taskIds.length) {
+    _tbPendingTaskIds = evt.taskIds;
+    _tbHideGatheringFloat();
+  }
   _tbTimer = setTimeout(() => refreshTaskBoard(true), 400);
 }
 
@@ -80,9 +93,11 @@ function renderTaskBoardSection(dirId, opts) {
       </div>`);
     if (collapsed) continue;
     for (const t of list) {
+      const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
+      const clsRun = t.runState === 'running' ? ' running' : '';
       rowsHtml.push(`
-        <div class="tb-task${t.status === 'done' ? ' done' : ''}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-          <span class="tb-dot"></span>
+        <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
+          <span class="tb-icon">${icon}</span>
           <span class="tb-title">${_tbEsc(t.title)}</span>
           <span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span>
         </div>`);
@@ -91,9 +106,11 @@ function renderTaskBoardSection(dirId, opts) {
   // Orphans (module list pruned or filtered out) still need to be reachable.
   const seen = new Set(mods.map(m => m.id));
   for (const t of tasks.filter(x => !seen.has(x.moduleId))) {
+    const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
+    const clsRun = t.runState === 'running' ? ' running' : '';
     rowsHtml.push(`
-      <div class="tb-task${t.status === 'done' ? ' done' : ''}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-        <span class="tb-dot"></span>
+      <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
+        <span class="tb-icon">${icon}</span>
         <span class="tb-title">${_tbEsc(t.title)}</span>
         <span class="tb-dim">${t.refCount}轮</span>
       </div>`);
@@ -103,7 +120,7 @@ function renderTaskBoardSection(dirId, opts) {
     : '<div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div>';
   if (opts && opts.tabbed) {
     const stat = tasks.length
-      ? `<div class="tb-stat">${mods.length || 1} 模块 · ${tasks.length} 任务</div>` : '';
+      ? `<div class="tb-stat">${mods.length || 1} 模块 · ${tasks.length} 任务 <button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板" style="margin-left:8px">🔄</button></div>` : '';
     return `<div class="tb-section tb-tabbed">${stat}${body}</div>`;
   }
   return `
@@ -312,6 +329,7 @@ function syncTaskBoardDirComposer(dirId, visible) {
         });
         const d = await r.json();
         if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+        _tbShowGatheringFloat();
         setTimeout(() => refreshTaskBoard(true), 1500);
         return `已路由到「${d.targetLabel}」`;
       },
@@ -337,6 +355,7 @@ function _tbEnsureTaskComposer(task) {
         });
         const d = await r.json();
         if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
+        _tbShowGatheringFloat();
         setTimeout(() => refreshTaskBoard(true), 1500);
         return `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
       },
@@ -457,3 +476,40 @@ setInterval(() => {
   if (modalOpen || _tbDetailTaskId) refreshTaskBoard(true);
 }, 60000);
 refreshTaskBoard(true);
+
+// ── 归拢中浮窗 + 定位高亮 ─────────────────────────────────────────────────
+function _tbShowGatheringFloat() {
+  if (_tbGatheringFloat) return;
+  _tbGatheringFloat = document.createElement('div');
+  _tbGatheringFloat.style.cssText = 'position:fixed;bottom:20px;right:20px;background:rgba(0,0,0,0.85);color:#fff;padding:12px 18px;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+  _tbGatheringFloat.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">🔄</span> 任务归拢中…';
+  document.body.appendChild(_tbGatheringFloat);
+  const style = document.createElement('style');
+  style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+  document.head.appendChild(style);
+  // 1.5s 超时兜底
+  setTimeout(() => _tbHideGatheringFloat(), 1500);
+}
+
+function _tbHideGatheringFloat() {
+  if (_tbGatheringFloat) {
+    _tbGatheringFloat.remove();
+    _tbGatheringFloat = null;
+  }
+}
+
+function _tbScrollToTask(taskId) {
+  // dir-detail-body 是滚动容器（manage.html 的弹窗里）
+  const container = document.getElementById('dir-detail-body');
+  if (!container) return;
+  const allTasks = container.querySelectorAll('.tb-task');
+  for (const el of allTasks) {
+    if (el.textContent.includes(taskId) || el.onclick?.toString().includes(taskId)) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.style.outline = '2px solid #f9c74f';
+      el.style.outlineOffset = '2px';
+      setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 3000);
+      break;
+    }
+  }
+}
