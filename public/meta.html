@@ -72,6 +72,9 @@
   .tb-task.done .tb-title { color: #6e7681; text-decoration: line-through; }
   .tb-task .tb-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tb-task .tb-meta { color: #6e7681; font-size: 11px; white-space: nowrap; }
+  @keyframes tb-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .tb-task .tb-icon { font-size: 11px; line-height: 1; }
+  .tb-task.running .tb-icon { animation: tb-blink 2s ease-in-out infinite; }
   .tb-empty { padding: 10px 12px; color: #6e7681; font-size: 12px; }
 
   /* ── 任务详情列 ──────────────────────────────────────────── */
@@ -304,10 +307,12 @@ function renderTaskBoard() {
     box.appendChild(mrow);
     if (collapsed) continue;
     for (const t of tasks) {
+      const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
+      const clsRun = t.runState === 'running' ? ' running' : '';
       const row = document.createElement('div');
-      row.className = 'tb-task' + (t.status === 'done' ? ' done' : '') + (selectedTask === t.id ? ' selected' : '');
+      row.className = 'tb-task' + (t.status === 'done' ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
       row.innerHTML = `
-        <span class="tb-dot"></span>
+        <span class="tb-icon">${icon}</span>
         <span class="tb-title">${esc(t.title)}</span>
         <span class="tb-meta">${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span>`;
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
@@ -317,9 +322,11 @@ function renderTaskBoard() {
   // 孤儿任务（模块已不存在）兜底展示
   const orphan = visible.filter(t => !tb.modules.some(m => m.id === t.moduleId));
   for (const t of orphan) {
+    const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
+    const clsRun = t.runState === 'running' ? ' running' : '';
     const row = document.createElement('div');
-    row.className = 'tb-task' + (selectedTask === t.id ? ' selected' : '');
-    row.innerHTML = `<span class="tb-dot"></span><span class="tb-title">${esc(t.title)}</span><span class="tb-meta">${t.refCount}轮</span>`;
+    row.className = 'tb-task' + (selectedTask === t.id ? ' selected' : '') + clsRun;
+    row.innerHTML = `<span class="tb-icon">${icon}</span><span class="tb-title">${esc(t.title)}</span><span class="tb-meta">${t.refCount}轮</span>`;
     row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
     box.appendChild(row);
   }
