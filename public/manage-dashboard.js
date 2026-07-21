@@ -1461,6 +1461,7 @@ function openDirectoryDetail(dirId) {
   // Show git tree button
   const gitBtn = document.getElementById('dir-detail-git');
   if (gitBtn) gitBtn.style.display = '';
+  if (typeof refreshTaskBoard === 'function') refreshTaskBoard(true);
   renderDirectoryDetailBody(dirId);
   const m = document.getElementById('dir-detail-modal');
   if (m) m.classList.add('visible');
@@ -1492,7 +1493,8 @@ function updateDirDetailPush(dirId) {
 function renderDirectoryDetailBody(dirId) {
   const body = document.getElementById('dir-detail-body');
   if (!body) return;
-  body.innerHTML = renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId));
+  const taskBoard = typeof renderTaskBoardSection === 'function' ? renderTaskBoardSection(dirId) : '';
+  body.innerHTML = taskBoard + renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId));
 }
 function closeDirectoryDetail() {
   _detailDirId = null;

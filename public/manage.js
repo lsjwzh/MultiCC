@@ -562,6 +562,8 @@ async function connectWorkspace(dirId) {
       updateSessionClassifyDom(msg.sessionId);
       // Also refresh summary — classify goal changes often mean the summary line should update too
       updateSessionSummaryDom(msg.sessionId);
+    } else if (msg.type === 'task_board_update') {
+      if (typeof onTaskBoardUpdate === 'function') onTaskBoardUpdate();
     } else if (msg.type === 'session_cli_changed') {
       // CLI determines which group/card the session belongs to. Re-fetch the
       // compact dashboard data so the open management view re-groups it live.
