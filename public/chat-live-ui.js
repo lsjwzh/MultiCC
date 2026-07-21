@@ -94,6 +94,10 @@
     const debug = opts.debug || (() => {});
     const setTimer = opts.setTimeout || global.setTimeout.bind(global);
     const clearTimer = opts.clearTimeout || global.clearTimeout.bind(global);
+    // Optional host hook: when the user manually dismisses a background-task
+    // danmaku row, notify the host with its task id so it can (best-effort)
+    // request a real cancel. Absent → the ✕ button just clears the row locally.
+    const onDanmakuDismiss = opts.onDanmakuDismiss || null;
 
     const danmaku = {
       collapsed: false,
@@ -391,8 +395,17 @@
       const textEl = doc.createElement('span');
       textEl.className = 'dm-txt';
       textEl.textContent = text;
-      rowEl.append(icon, textEl);
-      const row = { element: rowEl, icon, text: textEl, state: rowState, staleTimer: null, confirmedBg: false };
+      // Manual dismiss: a ✕ the user can click to stop/hide a stuck row without
+      // waiting out the 180s stale timer. It also asks the host to cancel the
+      // underlying task when one is known.
+      const closeBtn = doc.createElement('button');
+      closeBtn.className = 'dm-close';
+      closeBtn.type = 'button';
+      closeBtn.textContent = '✕';
+      closeBtn.title = '停掉这条后台任务提示';
+      closeBtn.addEventListener('click', event => { event.stopPropagation(); dismissDanmakuRow(key); });
+      rowEl.append(icon, textEl, closeBtn);
+      const row = { element: rowEl, icon, text: textEl, key, state: rowState, staleTimer: null, confirmedBg: false };
       setDanmakuRowState(row, rowState);
       elements.body.prepend(rowEl);
       danmaku.rows.set(key, row);
@@ -405,6 +418,24 @@
         if (row.state === 'start') { setDanmakuRowState(row, 'stale'); changed = true; }
       }
       if (changed) { refreshDanmakuMeta(); scheduleDanmakuHide(); }
+    }
+
+    // User-initiated dismiss of a single danmaku row (the ✕ button). Clears its
+    // timers, removes it, and — if it is a task-keyed row — asks the host to
+    // cancel the underlying background task. Always local-safe: with no host
+    // hook it simply stops showing the row.
+    function dismissDanmakuRow(key) {
+      const row = danmaku.rows.get(key);
+      if (!row) return;
+      clearTimer(row.staleTimer);
+      row.staleTimer = null;
+      try { row.element.remove(); } catch (_) {}
+      danmaku.rows.delete(key);
+      if (typeof onDanmakuDismiss === 'function' && key.startsWith('t:')) {
+        try { onDanmakuDismiss(key.slice(2)); } catch (_) {}
+      }
+      refreshDanmakuMeta();
+      scheduleDanmakuHide();
     }
 
     // Reconcile spinning rows against the authoritative active-task set from the
@@ -691,6 +722,7 @@
       danmakuOnDisconnect,
       reconcileDanmakuTasks,
       settleTurnScopedDanmaku,
+      dismissDanmakuRow,
       toggleDanmakuCollapse,
       showThinking,
       hideThinking,

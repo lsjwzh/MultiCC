@@ -192,7 +192,9 @@ function createBackgroundTaskRuntime(deps = {}) {
       return false;
     }
     knownSessions.add(sessionName);
-    const shadow = { tail, lastProgressAt: Number.NEGATIVE_INFINITY };
+    // `description` is retained so a live-task snapshot (listActiveBackgroundTasks)
+    // and the reap path can label the task without re-reading the ledger.
+    const shadow = { tail, lastProgressAt: Number.NEGATIVE_INFINITY, description: description || '' };
     sessionShadows.set(String(taskId), shadow);
     tail.stdout.on('data', chunk => {
       // The raw tail line is only an activity signal. It is never sent to the
@@ -222,6 +224,71 @@ function createBackgroundTaskRuntime(deps = {}) {
     sessionShadows.delete(key);
     if (sessionShadows.size === 0) shadows.delete(sessionName);
     return true;
+  }
+
+  // A shadow that survives past its turn (i.e. is NOT a synchronous foreground
+  // Bash, which completes before the turn's `result`) represents genuine
+  // background work still in flight. The idle-reclaim guard uses this so a warm
+  // process is never killed out from under a running background task.
+  function isBackgroundShadow(sessionName, taskId) {
+    return !hasTimed(syncBashTasks, sessionName, taskId);
+  }
+
+  function hasLiveBackgroundTasks(sessionName) {
+    const sessionShadows = shadows.get(sessionName);
+    if (!sessionShadows || sessionShadows.size === 0) return false;
+    for (const taskId of sessionShadows.keys()) {
+      if (isBackgroundShadow(sessionName, taskId)) return true;
+    }
+    return false;
+  }
+
+  // Authoritative live-task snapshot for a (re)connecting client: the current
+  // set of background tasks the server still believes are running. The frontend
+  // reconciles its danmaku against this to settle any spinner whose terminal
+  // `monitor_done` was lost in transit.
+  function listActiveBackgroundTasks(sessionName) {
+    const sessionShadows = shadows.get(sessionName);
+    if (!sessionShadows || sessionShadows.size === 0) return [];
+    const out = [];
+    for (const [taskId, shadow] of sessionShadows) {
+      if (!isBackgroundShadow(sessionName, taskId)) continue;
+      out.push({ id: taskId, task_id: taskId, description: safeDescription(shadow.description) });
+    }
+    return out;
+  }
+
+  // Safety net for the case the completion event can never arrive: the host
+  // process died (idle-kill hard ceiling, crash, cancel, restart) while tasks
+  // were still open. For each surviving shadow we stop the tail, mark the ledger
+  // `interrupted`, and broadcast a synthetic `monitor_done(interrupted)` so the
+  // UI settles instead of spinning until the 180s stale timer. Idempotent: a
+  // second call finds no shadows and returns 0.
+  function reapSessionShadows(sessionName, opts = {}) {
+    const sessionShadows = shadows.get(sessionName);
+    if (!sessionShadows || sessionShadows.size === 0) return 0;
+    const reason = String(opts.reason || 'process_exit');
+    let reaped = 0;
+    for (const taskId of [...sessionShadows.keys()]) {
+      const background = isBackgroundShadow(sessionName, taskId);
+      const description = sessionShadows.get(taskId)?.description || '';
+      stopShadow(sessionName, taskId);
+      observe({
+        sessionId: sessionName,
+        taskId,
+        status: 'interrupted',
+        detail: { description, reason, error: `background task interrupted (${reason})` },
+      }, `task ledger reap ${taskId}`);
+      broadcast(sessionName, {
+        type: 'monitor_done',
+        task_id: taskId,
+        status: 'interrupted',
+        summary: safeDescription(description, '后台任务已中断'),
+        background,
+      });
+      reaped += 1;
+    }
+    return reaped;
   }
 
   function observe(observation, label) {
@@ -439,6 +506,9 @@ function createBackgroundTaskRuntime(deps = {}) {
     handleEvent,
     recordMainToolUseId,
     markTaskOutputAwaiting,
+    hasLiveBackgroundTasks,
+    listActiveBackgroundTasks,
+    reapSessionShadows,
     stopSession,
     stopAll,
   });

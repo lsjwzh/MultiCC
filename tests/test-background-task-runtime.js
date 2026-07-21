@@ -116,7 +116,9 @@ async function test(name, fn) {
   await test('public API is narrow and frozen', () => {
     const { runtime } = makeHarness();
     assert.deepStrictEqual(Object.keys(runtime).sort(), [
-      'handleEvent', 'markTaskOutputAwaiting', 'recordMainToolUseId', 'stopAll', 'stopSession',
+      'handleEvent', 'hasLiveBackgroundTasks', 'listActiveBackgroundTasks',
+      'markTaskOutputAwaiting', 'reapSessionShadows', 'recordMainToolUseId',
+      'stopAll', 'stopSession',
     ]);
     assert.strictEqual(Object.isFrozen(runtime), true);
   });
@@ -156,6 +158,49 @@ async function test(name, fn) {
     assert.deepStrictEqual(h.processes[0].args, [
       '-n', '+1', '-F', '/private/tmp/claude-501/-real-repo/native/tasks/task-fg.output',
     ]);
+  });
+
+  await test('live-task tracking distinguishes background work from foreground sync Bash', () => {
+    const h = makeHarness();
+    // Foreground sync Bash: tagged as sync-bash, must NOT count as live background.
+    h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'tool-fg', name: 'Bash', input: { command: 'echo hi' } }],
+    }, { subtype: 'task_started', task_id: 'task-fg', tool_use_id: 'tool-fg', session_id: 'native', description: 'fg' });
+    assert.strictEqual(h.runtime.hasLiveBackgroundTasks('s1'), false, 'sync bash is not background');
+    assert.deepStrictEqual(h.runtime.listActiveBackgroundTasks('s1'), []);
+    // A real background task (run_in_background) does count.
+    h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'tool-bg', name: 'Bash', input: { run_in_background: true } }],
+    }, { subtype: 'task_started', task_id: 'task-bg', tool_use_id: 'tool-bg', session_id: 'native', description: 'long build' });
+    assert.strictEqual(h.runtime.hasLiveBackgroundTasks('s1'), true);
+    const snapshot = h.runtime.listActiveBackgroundTasks('s1');
+    assert.deepStrictEqual(snapshot, [{ id: 'task-bg', task_id: 'task-bg', description: 'long build' }]);
+    assert.strictEqual(h.runtime.hasLiveBackgroundTasks('other-session'), false);
+  });
+
+  await test('reapSessionShadows settles orphaned tasks with interrupted ledger + monitor_done, and is idempotent', () => {
+    const h = makeHarness();
+    h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'tool-bg', name: 'Bash', input: { run_in_background: true } }],
+    }, { subtype: 'task_started', task_id: 'task-bg', tool_use_id: 'tool-bg', session_id: 'native', description: 'long build' });
+    h.broadcasts.length = 0;
+    h.observations.length = 0;
+    const reaped = h.runtime.reapSessionShadows('s1', { reason: 'stream_exit' });
+    assert.strictEqual(reaped, 1);
+    assert.strictEqual(h.processes[0].killed, true, 'shadow tail is killed');
+    const done = h.broadcasts.find(b => b.event.type === 'monitor_done');
+    assert.ok(done, 'a synthetic monitor_done is broadcast');
+    assert.strictEqual(done.event.status, 'interrupted');
+    assert.strictEqual(done.event.task_id, 'task-bg');
+    assert.strictEqual(done.event.background, true);
+    const ledger = h.observations.find(o => o.taskId === 'task-bg');
+    assert.strictEqual(ledger.status, 'interrupted');
+    // No live tasks remain, and a second reap is a no-op.
+    assert.strictEqual(h.runtime.hasLiveBackgroundTasks('s1'), false);
+    assert.strictEqual(h.runtime.reapSessionShadows('s1', { reason: 'stream_exit' }), 0);
   });
 
   await test('tail activity emits only a safe throttled progress description, never the raw line', () => {
