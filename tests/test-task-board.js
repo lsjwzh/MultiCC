@@ -482,6 +482,53 @@ test('onClassifyGoal creates immediately, anchors the current user and merges pe
   assert.equal(broadcasts[1].payload.kind, undefined);
 });
 
+test('onClassifyGoal reuses the marked placeholder instead of creating a duplicate task', () => {
+  const boardHistory = [];
+  const { runtime, broadcasts } = mkRuntime({ loadHistory: () => boardHistory });
+  const board = runtime.getBoard();
+  const pending = core.createPendingTask(board, {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '任务面板前端排序规则', now: 1,
+  });
+  const routed = core.buildRoutedMessage(pending, '任务面板前端排序规则');
+  boardHistory.push({ id: 'u-board', role: 'user', content: routed, ts: 10 });
+
+  runtime.onClassifyGoal('sess-1', '任务面板排序优化', 'planning', {
+    currentUserText: routed,
+  });
+
+  assert.deepEqual(Object.keys(board.tasks), [pending.id]);
+  assert.equal(board.tasks[pending.id].title, '任务面板排序优化');
+  assert.equal(board.tasks[pending.id].refs.length, 1);
+  assert.equal(board.tasks[pending.id].refs[0].userMsgId, 'u-board');
+  assert.equal(board.tasks[pending.id].classification.seed, '任务面板排序优化');
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0].payload.kind, undefined);
+});
+
+test('onClassifyGoal treats a marker on an existing task as identity, not a new title', () => {
+  const boardHistory = [];
+  const { runtime } = mkRuntime({ loadHistory: () => boardHistory });
+  const board = runtime.getBoard();
+  core.applyTagResult(board, [{
+    id: 'new', title: '任务面板排序优化', module: '前端 UI', areas: [],
+  }], {
+    sessionId: 'seed-session', dirId: 'dir-1', userMsgId: 'u-seed',
+    assistantMsgId: 'a-seed', ts: 1, excerpt: '任务面板排序优化',
+  }, 1);
+  const existing = Object.values(board.tasks)[0];
+  const routed = core.buildRoutedMessage(existing, '继续调整排序规则');
+  boardHistory.push({ id: 'u-followup', role: 'user', content: routed, ts: 20 });
+
+  runtime.onClassifyGoal('sess-1', '任务面板前端排序规则', 'planning', {
+    currentUserText: routed,
+  });
+
+  assert.deepEqual(Object.keys(board.tasks), [existing.id]);
+  assert.equal(board.tasks[existing.id].title, '任务面板排序优化');
+  assert.equal(board.tasks[existing.id].refs.length, 2);
+  assert.equal(board.tasks[existing.id].refs[1].userMsgId, 'u-followup');
+});
+
 test('turn-end tagging enriches and rehomes the immediate card instead of duplicating it', async () => {
   let history = [
     { id: 'u-live', role: 'user', content: '删除 [tiktok] 会话和 worktree', ts: 10 },

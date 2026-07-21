@@ -430,6 +430,34 @@ function createTaskBoardRuntime(deps) {
         excerpt: goal, // 用 goal 作为摘要
       };
 
+      // A board-routed turn already owns a durable card. The marker is the
+      // authoritative identity: reusing it avoids briefly creating a second
+      // semantically-equivalent card before turn-end task_tag can reconcile.
+      const markedTaskId = core.extractTaskMarker(currentUserText);
+      const markedTask = markedTaskId ? board.tasks[markedTaskId] : null;
+      if (markedTask) {
+        let changed = core.addRefToTask(markedTask, ref, now);
+        if (markedTask.classification) {
+          const nextTitle = String(goal || '').trim().slice(0, 40);
+          if (markedTask.title === core.PENDING_TASK_TITLE && nextTitle) {
+            markedTask.title = nextTitle;
+            changed = true;
+          }
+          markedTask.classification = {
+            state: 'waiting_reply', attempts: 0, lastAttemptAt: 0,
+            nextRetryAt: now + 60_000, lastError: '', seed: String(goal || '').slice(0, 1200),
+          };
+          markedTask.updatedAt = now;
+          changed = true;
+        }
+        if (changed) {
+          save();
+          notify(ref.dirId, [markedTask.id]);
+        }
+        logger.log(`[multicc/taskboard] onClassifyGoal: reused marked task ${markedTask.id} for ${sessionName} phase=${phase || '?'}`);
+        return;
+      }
+
       const beforeIds = new Set(Object.keys(board.tasks));
       const touched = core.applyTagResult(board, [{
         id: 'new', title: goal, module: core.CLASSIFY_PENDING_MODULE_NAME, areas: [],
