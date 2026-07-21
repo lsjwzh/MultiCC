@@ -3567,6 +3567,15 @@ function dispatchStateAction(result, ctx) {
   if (sessionName) setTaskState(sessionName, finalPhase ? { goal: finalGoal || '', phase: finalPhase } : { goal: finalGoal || '' });
   if (sessionId && finalGoal) setSessionSummary(sessionId, finalGoal);
 
+  // ── Task Board: classify 识别出 goal 就立即归档 ──────────────────────
+  if (finalGoal && finalGoal !== '新任务' && sessionName && !isInjectedOrJunkGoal(finalGoal)) {
+    try {
+      taskBoardRuntime.onClassifyGoal(sessionName, finalGoal, finalPhase);
+    } catch (e) {
+      console.log(`[multicc/taskboard] onClassifyGoal failed for ${sessionName}: ${e.message}`);
+    }
+  }
+
   // ── In-flight guard: turn 还在跑(isStreaming)时的 reclassify（通常来自 scan）只作观察 ──
   // 判定基于不完整回复，可能误判；inject/autoContinue/push 会干扰当前 turn。纯观察：
   // 不改 classifyState、不触发副作用，直接返回。turn 结束 classifyTurnEnd(isStreaming=false)
