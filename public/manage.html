@@ -236,8 +236,8 @@
 
     .sess-group{margin-top:14px} .sess-group:first-child{margin-top:0}
     .sess-group-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;font-weight:600}
-    .sess-group.claude .sess-group-label{color:var(--claude)}
-    .sess-group.codex .sess-group-label{color:var(--codex)}
+    .sess-group.chat .sess-group-label{color:var(--accent)}
+    .sess-group.terminal .sess-group-label{color:var(--blue)}
     .sess-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
     body.has-focus .sess-card-grid{grid-template-columns:1fr;gap:6px}
 
@@ -246,9 +246,12 @@
     .sess-row.focused{background:var(--accent-dim);border-color:var(--accent-line)}
     .sess-row-top,.sess-row-meta,.sess-row-bottom{display:flex;align-items:center;gap:6px;min-width:0}
     .sess-row-bottom{justify-content:space-between}
-    .cli-chip{flex-shrink:0;font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+    .cli-chip{flex-shrink:0;display:inline-block;vertical-align:middle;font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
     .cli-chip.claude{background:rgba(240,147,107,.16);color:var(--claude)}
     .cli-chip.codex{background:rgba(127,212,154,.16);color:var(--codex)}
+    .cli-chip.opencode{background:rgba(179,157,243,.16);color:var(--opencode)}
+    .cli-chip.zcode{background:rgba(91,184,255,.16);color:var(--zcode)}
+    .cli-chip.other{background:rgba(255,255,255,.07);color:var(--muted)}
     .kind-chip{flex-shrink:0;font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.06);color:var(--muted)}
     .sess-id{font-family:var(--mono);font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .sess-label{color:var(--muted);font-size:11px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}

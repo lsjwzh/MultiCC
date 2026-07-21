@@ -1049,38 +1049,29 @@ function showCronTasks(ev) {
   showPopoverMenu(ev.currentTarget, items);
 }
 
-// Session list grouped by (cli, kind). Reused by the focus-mode inline list and
-// the directory-detail modal.
+// Session list grouped by kind only (chat / terminal). CLI is no longer a
+// grouping axis — each card carries its own CLI chip (see renderSessionRow),
+// so mixed-CLI fleets stay readable inside two flat groups. Reused by the
+// focus-mode inline list and the directory-detail modal.
 function renderDirSessionGroups(dirSessions) {
-  const groups = {
-    claude_terminal: [], claude_chat: [],
-    codex_terminal: [], codex_chat: [],
-    opencode_terminal: [], opencode_chat: [],
-    zcode_terminal: [], zcode_chat: [],
-  };
+  const groups = { chat: [], terminal: [] };
   for (const s of dirSessions) {
-    const key = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;
-    if (groups[key]) groups[key].push(s);
+    const kind = (s.kind || 'terminal') === 'chat' ? 'chat' : 'terminal';
+    groups[kind].push(s);
   }
-  const renderGroup = (cli, kind, label) => {
-    const ss = groups[`${cli}_${kind}`];
+  const renderGroup = (kind, label) => {
+    const ss = groups[kind];
     if (!ss || !ss.length) return '';
     const rows = ss.map(s => renderSessionRow(s)).join('');
     return `
-      <div class="sess-group ${cli}">
+      <div class="sess-group ${kind}">
         <div class="sess-group-label">${label} (${ss.length})</div>
         <div class="sess-card-grid">${rows}</div>
       </div>`;
   };
   return [
-    renderGroup('claude', 'terminal', 'Claude Terminals'),
-    renderGroup('claude', 'chat', 'Claude Chats'),
-    renderGroup('codex',  'terminal', 'Codex Terminals'),
-    renderGroup('codex',  'chat', 'Codex Chats'),
-    renderGroup('opencode', 'terminal', 'OpenCode Terminals'),
-    renderGroup('opencode', 'chat', 'OpenCode Chats'),
-    renderGroup('zcode', 'terminal', 'ZCode Terminals'),
-    renderGroup('zcode', 'chat', 'ZCode Chats'),
+    renderGroup('chat', 'Chats'),
+    renderGroup('terminal', 'Terminals'),
   ].filter(Boolean).join('') || `<div class="dir-empty">${escapeHtml(tt('noSessions'))}</div>`;
 }
 
@@ -1624,6 +1615,10 @@ async function commitAllUncommitted() {
 
 function renderSessionRow(s) {
   const focusedClass = s.id === _focusedSessionId ? ' focused' : '';
+  // CLI marker: groups are now kind-only (chat/terminal), so each card shows its
+  // own CLI chip. Unknown CLIs fall back to a neutral 'other' style.
+  const cli = (s.cli || 'claude').toLowerCase();
+  const cliClass = ['claude', 'codex', 'opencode', 'zcode'].includes(cli) ? cli : 'other';
   const monStatus = _sessionStatus.get(s.id);
   const mon = monitors.get(s.id);
   let statusText = tt('idle'), statusCls = '';
@@ -1671,8 +1666,8 @@ function renderSessionRow(s) {
     : `<button class="btn-icon" onclick="event.stopPropagation(); openSessionNewTab('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">🔗</button>`;
 
   // Lean 2-line card: status is a colour dot (hover for text), the alias is the
-  // headline, and time/model sit in one muted line. cli/kind chips are dropped
-  // (the group header already says "Claude Chats"); #id, delete and the rest
+  // headline, and cli/time/model sit in one muted line. The CLI chip identifies
+  // the backing CLI now that groups are kind-only; #id, delete and the rest
   // live in the ⋯ menu / title attribute.
   return `
     <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
@@ -1681,7 +1676,8 @@ function renderSessionRow(s) {
       <div class="lean-main">
         <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
         <div class="lean-meta">
-          <span>${escapeHtml(formatRelative(sessionLastInteractionMs(s) || s.createdAt))}</span>
+          <span class="cli-chip ${cliClass}" title="CLI: ${escapeHtml(cli)}">${escapeHtml(cli)}</span>
+          <span class="sep">·</span><span>${escapeHtml(formatRelative(sessionLastInteractionMs(s) || s.createdAt))}</span>
           ${provName ? `<span class="sep">·</span><span class="provider-chip" title="Provider：${escapeHtml(s.provider || '')}">${escapeHtml(provName)}</span>` : ''}
           ${model ? `<span class="sep">·</span><span class="model" title="模型：${escapeHtml(s.effectiveModel || '')}">${escapeHtml(model)}</span>` : ''}
         </div>
