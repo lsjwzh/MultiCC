@@ -107,6 +107,42 @@ test('new conversation reactivates a done task', () => {
   assert.equal(board.tasks[tid].status, 'active');
 });
 
+// ── backfill parse / apply ──────────────────────────────────────────────────
+
+test('parseBackfillResult validates turn lists and drops entries without turns', () => {
+  const out = core.parseBackfillResult(JSON.stringify({ tasks: [
+    { id: 'new', title: '实现语音', module: '移动 App', areas: ['app/voice'], turns: [1, 2, 2, '3', -1, 'x'] },
+    { id: 'new', title: '没有轮次', module: 'M', areas: [], turns: [] },
+  ] }));
+  assert.equal(out.tasks.length, 1);
+  assert.deepEqual(out.tasks[0].turns, [1, 2, 3]);
+});
+
+test('applyBackfillResult attaches every listed turn and dedups the task by title', () => {
+  const board = core.createEmptyBoard();
+  const refByTurn = new Map([
+    [1, mkRef({ userMsgId: 'u1', assistantMsgId: 'a1', ts: 10 })],
+    [2, mkRef({ userMsgId: 'u2', assistantMsgId: 'a2', ts: 20 })],
+    [3, mkRef({ userMsgId: 'u3', assistantMsgId: 'a3', ts: 30 })],
+  ]);
+  const touched = core.applyBackfillResult(board, [
+    { id: 'new', title: '实现语音', module: '移动 App', areas: ['app/voice'], turns: [1, 3] },
+    { id: 'new', title: '修复构建', module: '发布运维', areas: [], turns: [2, 9] },   // turn 9 unknown → skipped
+  ], refByTurn, 100);
+  assert.equal(Object.keys(board.tasks).length, 2);
+  assert.equal(touched.length, 2);
+  const voice = Object.values(board.tasks).find(t => t.title === '实现语音');
+  assert.deepEqual(voice.refs.map(r => r.assistantMsgId), ['a1', 'a3']);
+  const build = Object.values(board.tasks).find(t => t.title === '修复构建');
+  assert.deepEqual(build.refs.map(r => r.assistantMsgId), ['a2']);
+  // Re-running the same backfill is a no-op (ref dedup).
+  const again = core.applyBackfillResult(board, [
+    { id: 'new', title: '实现语音', module: '移动 App', areas: [], turns: [1, 3] },
+  ], refByTurn, 200);
+  assert.deepEqual(again, []);
+  assert.equal(voice.refs.length, 2);
+});
+
 // ── normalizeBoard ──────────────────────────────────────────────────────────
 
 test('normalizeBoard drops malformed entries and survives garbage', () => {
@@ -309,6 +345,7 @@ test('REST: board, messages, send and status flow', async () => {
     'GET /api/task-board/tasks/:taskId/messages',
     'POST /api/task-board/tasks/:taskId/send',
     'POST /api/task-board/tasks/:taskId/status',
+    'POST /api/task-board/backfill',
   ]);
 
   // seed one task with a ref
@@ -360,6 +397,81 @@ test('REST: board, messages, send and status flow', async () => {
   routes.get('POST /api/task-board/tasks/:taskId/status')(
     { params: { taskId: tid }, body: { status: 'weird' } }, badRes);
   assert.equal(badRes.code, 400);
+});
+
+test('backfill scans dir sessions, tags turns via aux and reports progress', async () => {
+  const auxCalls = [];
+  const { runtime } = mkRuntime({
+    auxQueue: {
+      isUnhealthy: () => false,
+      cancel: () => {},
+      enqueue(task) {
+        auxCalls.push(task);
+        // Immediately resolve with a verdict putting turns 1+2 in one task.
+        return Promise.resolve({
+          cancelled: false,
+          text: '{"tasks":[{"id":"new","title":"历史任务","module":"服务端","areas":["src/x.js"],"turns":[1,2]}]}',
+        });
+      },
+    },
+    loadHistory: () => [
+      { id: 'u1', role: 'user', content: '做第一件事', ts: 10 },
+      { id: 'a1', role: 'assistant', content: '第一件事完成', ts: 20 },
+      { id: 'uSys', role: 'user', content: '[任务询问] 系统注入', ts: 25 },
+      { id: 'aSys', role: 'assistant', content: '注入回复', ts: 26 },
+      { id: 'u2', role: 'user', content: '继续第二步', ts: 30 },
+      { id: 'aInt', role: 'assistant', content: '临时', ts: 31, _interim: true },
+      { id: 'a2', role: 'assistant', content: '第二步完成', ts: 40 },
+    ],
+    isSystemInjected: (t) => t.startsWith('['),
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/backfill')({ body: { dirId: 'dir-1' } }, r);
+  await new Promise(rr => setTimeout(rr, 10));
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.queued, 1);
+  assert.equal(auxCalls.length, 1);
+  assert.equal(auxCalls[0].type, 'task_backfill');
+  assert.match(auxCalls[0].prompt, /【轮次 1】/);
+  assert.match(auxCalls[0].prompt, /【轮次 2】/);
+  assert.doesNotMatch(auxCalls[0].prompt, /系统注入/);
+  const board = runtime.getBoard();
+  const task = Object.values(board.tasks).find(t => t.title === '历史任务');
+  assert.ok(task);
+  assert.deepEqual(task.refs.map(x => x.assistantMsgId), ['a1', 'a2']);
+});
+
+test('backfill refuses non-local, unhealthy aux and concurrent runs', async () => {
+  let healthy = true;
+  const { runtime } = mkRuntime({
+    auxQueue: {
+      isUnhealthy: () => !healthy,
+      cancel: () => {},
+      enqueue: () => new Promise(() => {}),   // hangs → keeps backfill running
+    },
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const mk = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+
+  healthy = false;
+  const r1 = mk();
+  routes.get('/api/task-board/backfill')({ body: {} }, r1);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r1.code, 503);
+
+  healthy = true;
+  const r2 = mk();
+  routes.get('/api/task-board/backfill')({ body: {} }, r2);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r2.body.ok, true);
+
+  const r3 = mk();
+  routes.get('/api/task-board/backfill')({ body: {} }, r3);
+  await new Promise(rr => setImmediate(rr));
+  assert.equal(r3.code, 409);
 });
 
 test('send refuses non-local requests and empty text', async () => {
