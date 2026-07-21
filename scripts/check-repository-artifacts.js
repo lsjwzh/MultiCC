@@ -14,7 +14,7 @@ const RUNTIME_BASENAMES = new Set([
   'aux-config.json', 'goal-config.json', 'notes.json', 'push_subscriptions.json',
   'token_usage.json', 'token_daily.json', 'token_by_role.json', 'providers.json',
   'provider-defaults.json', 'voice_examples.json', 'whisper_vocab.json',
-  'tunnel-config.json', 'orchestration.json',
+  'tunnel-config.json', 'orchestration.json', 'task_board.json',
 ]);
 
 const HIGH_CONFIDENCE_SECRET_PATTERNS = [
