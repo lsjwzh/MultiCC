@@ -37,6 +37,13 @@ const { spawn } = require('child_process');
 const sessions = new Map();
 
 const DEFAULT_IDLE_MS = 10 * 60 * 1000; // kill a warm-but-unused process after 10min
+// Ceiling on how long a process may be HELD past idle purely because a
+// background task is still registered as live. A genuinely-working task keeps
+// refreshing this window (each background event resets idleHeldSince), so the
+// ceiling only bites a task that has been registered-but-silent for the whole
+// window — i.e. a leaked/stuck shadow. When it trips, the process is reclaimed
+// and the exit path reaps the shadows + surfaces `interrupted`.
+const DEFAULT_IDLE_MAX_HOLD_MS = 2 * 60 * 60 * 1000; // 2h
 
 function isAlive(name) {
   const s = sessions.get(name);
@@ -123,6 +130,12 @@ function onStdout(name, chunk) {
     if (s.onBackgroundEvent && evt.type === 'system' &&
         /^(task_started|task_progress|task_updated|task_notification|background_tasks_changed)$/.test(evt.subtype || '')) {
       try { s.onBackgroundEvent(evt); } catch (_) {}
+      // A live background signal = the task is genuinely progressing. Refresh the
+      // idle-hold clock so an actively-working task never trips the hard ceiling,
+      // and re-arm idle if the turn is over (so the 10-min window restarts from
+      // this activity rather than the last user turn).
+      s.idleHeldSince = 0;
+      if (!s.busy && s.queue.length === 0) armIdle(name);
     }
 
     // A `result` event marks the END of the current turn. The process stays
@@ -202,6 +215,7 @@ function pump(name) {
   }
   s.busy = true;
   s.current = next;
+  s.idleHeldSince = 0; // a real user turn is fresh activity; reset the hold clock
   clearIdle(s);
   try {
     s.proc.stdin.write(userMessageLine(next.text));
@@ -217,13 +231,30 @@ function armIdle(name) {
   const s = sessions.get(name);
   if (!s) return;
   clearIdle(s);
-  s.idleTimer = setTimeout(() => {
-    if (isAlive(name) && !s.busy && s.queue.length === 0) {
-      try { s.proc.stdin.end(); } catch (_) {}
-      // graceful close; context is recoverable via --resume on next send
-    }
-  }, s.idleMs || DEFAULT_IDLE_MS);
+  s.idleTimer = setTimeout(() => reclaimIfIdle(name), s.idleMs || DEFAULT_IDLE_MS);
   if (s.idleTimer.unref) s.idleTimer.unref();
+}
+
+// Idle-timer fire: reclaim the warm process ONLY if it is truly unused. A
+// process that still owns live background work must NOT be killed — doing so
+// murders the running task and orphans its shadow monitor (the root cause of
+// the "后台任务一直转圈" bug). While background work is live we hold the process
+// and re-check next window, bounded by idleMaxHoldMs so a permanently-silent
+// (leaked) task can't pin it forever.
+function reclaimIfIdle(name) {
+  const s = sessions.get(name);
+  if (!s) return;
+  if (!isAlive(name) || s.busy || s.queue.length > 0) return;
+  const bgActive = typeof s.isBackgroundActive === 'function' && s.isBackgroundActive();
+  if (bgActive) {
+    if (!s.idleHeldSince) s.idleHeldSince = Date.now();
+    const maxHold = s.idleMaxHoldMs || DEFAULT_IDLE_MAX_HOLD_MS;
+    if (Date.now() - s.idleHeldSince < maxHold) { armIdle(name); return; }
+    // ceiling exceeded → fall through and reclaim (exit path reaps + surfaces interrupted)
+  }
+  s.idleHeldSince = 0;
+  try { s.proc.stdin.end(); } catch (_) {}
+  // graceful close; context is recoverable via --resume on next send
 }
 
 function clearIdle(s) {
@@ -246,12 +277,14 @@ function ensure(name, cfg) {
       beforeSpawn: cfg.beforeSpawn || null,
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
+      idleMaxHoldMs: cfg.idleMaxHoldMs || DEFAULT_IDLE_MAX_HOLD_MS,
+      isBackgroundActive: cfg.isBackgroundActive || null,
       onExit: cfg.onExit || null,
       onNewSessionId: cfg.onNewSessionId || null,
       onBackgroundEvent: cfg.onBackgroundEvent || null,
       proc: null, started: false, busy: false,
       queue: [], current: null, lineBuf: '', stderrTail: '',
-      idleTimer: null,
+      idleTimer: null, idleHeldSince: 0,
     };
     s.started = cfg.resume === true;
     sessions.set(name, s);
@@ -262,6 +295,9 @@ function ensure(name, cfg) {
     if (cfg.env !== undefined) s.env = cfg.env;
     if (cfg.onNewSessionId !== undefined) s.onNewSessionId = cfg.onNewSessionId;
     if (cfg.onBackgroundEvent !== undefined) s.onBackgroundEvent = cfg.onBackgroundEvent;
+    if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
+    if (cfg.isBackgroundActive !== undefined) s.isBackgroundActive = cfg.isBackgroundActive;
+    if (cfg.idleMaxHoldMs !== undefined) s.idleMaxHoldMs = cfg.idleMaxHoldMs;
   }
   return s;
 }

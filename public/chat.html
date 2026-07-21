@@ -1658,6 +1658,14 @@
     .dm-row .dm-txt { flex: 1; min-width: 0; word-break: break-word; color: #c9d1d9; }
     .dm-row.dm-done .dm-txt, .dm-row.dm-fail .dm-txt, .dm-row.dm-stale .dm-txt { color: #8b949e; }
     .dm-row.dm-stale .dm-txt { opacity: .7; }
+    .dm-close {
+      flex: none; width: 16px; height: 16px; padding: 0; margin-top: 1px;
+      border: none; background: transparent; color: #6e7681; cursor: pointer;
+      font-size: 11px; line-height: 16px; border-radius: 4px; opacity: 0;
+      transition: opacity .12s, color .12s, background .12s;
+    }
+    .dm-row:hover .dm-close { opacity: 1; }
+    .dm-close:hover { color: #f0f6fc; background: rgba(255,255,255,.08); }
     .dm-ic { flex: none; width: 12px; text-align: center; margin-top: 1px; font-size: 11px; }
     .dm-row.dm-done .dm-ic { color: #3fb950; }
     .dm-row.dm-fail .dm-ic { color: #d29922; }
