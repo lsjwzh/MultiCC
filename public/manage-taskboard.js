@@ -101,9 +101,11 @@ function renderTaskBoardSection(dirId, opts) {
     if (!byModule.has(t.moduleId)) byModule.set(t.moduleId, []);
     byModule.get(t.moduleId).push(t);
   }
-  const mods = _tbBoard.modules.filter(m => byModule.has(m.id));
+  const mods = window.MultiCCTaskBoardUi.sortModules(
+    _tbBoard.modules.filter(m => byModule.has(m.id)),
+  );
   for (const mod of mods) {
-    const list = byModule.get(mod.id);
+    const list = window.MultiCCTaskBoardUi.sortTasks(byModule.get(mod.id));
     const collapsed = _tbCollapsed.has(mod.id);
     const batch = mod.source === 'classify'
       ? `<button class="btn btn-sm tb-reclassify-all" onclick="reclassifyPendingTaskBoard(event,'${_tbEsc(dirId)}')">全部重新归类</button>`
@@ -127,7 +129,7 @@ function renderTaskBoardSection(dirId, opts) {
   }
   // Orphans (module list pruned or filtered out) still need to be reachable.
   const seen = new Set(mods.map(m => m.id));
-  for (const t of tasks.filter(x => !seen.has(x.moduleId))) {
+  for (const t of window.MultiCCTaskBoardUi.sortTasks(tasks.filter(x => !seen.has(x.moduleId)))) {
     const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
     const clsRun = t.runState === 'running' ? ' running' : '';
     rowsHtml.push(`
