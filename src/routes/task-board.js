@@ -214,7 +214,7 @@ function createTaskBoardRuntime(deps) {
 
       const beforeIds = new Set(Object.keys(board.tasks));
       const touched = core.applyTagResult(board, [{
-        id: 'new', title: goal, module: core.UNCLASSIFIED_MODULE_NAME, areas: [],
+        id: 'new', title: goal, module: core.CLASSIFY_PENDING_MODULE_NAME, areas: [],
       }], ref, now, { moduleSource: 'classify', mergeSimilar: true });
       if (touched.length) {
         save();
