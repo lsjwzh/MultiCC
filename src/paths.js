@@ -81,6 +81,7 @@ function createPaths({ dataDir } = {}) {
     goalConfigFile: path.join(root, 'goal-config.json'),
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
+    taskBoardFile: path.join(root, 'task_board.json'),
     orchestrationFile: path.join(root, 'orchestration.json'),
     voiceExamplesFile: path.join(root, 'voice_examples.json'),
     whisperVocabFile: path.join(root, 'whisper_vocab.json'),
