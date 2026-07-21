@@ -157,7 +157,7 @@ async function connect() {
   ws.onmessage = (e) => {
     const d = JSON.parse(e.data);
     if (d.type === 'meta_snapshot') { ingestFleet(d.fleet); render(); }
-    else if (d.type === 'task_board_update') { scheduleTbRefresh(d.taskIds); }
+    else if (d.type === 'task_board_update') { scheduleTbRefresh(d); }
     else { ingestEvent(d); render(); pushEvent(d); }
   };
 }
@@ -264,6 +264,8 @@ let tb = { modules: [], tasks: [], sessionLabels: {} };
 let selectedTask = null;
 const collapsedMods = new Set();   // 全量重绘间记忆折叠态
 let tbTimer = null;
+let gatheringFloat = null;         // 归拢中浮窗
+let pendingTaskIds = [];           // 待定位任务
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -279,10 +281,21 @@ async function fetchTaskBoard() {
     const r = await fetch('/api/task-board');
     const d = await r.json();
     if (d && d.ok) { tb = d; renderTaskBoard(); }
+    // 刷新后定位待定位任务
+    if (pendingTaskIds.length) {
+      const tid = pendingTaskIds[0];
+      pendingTaskIds = [];
+      setTimeout(() => scrollToTask(tid), 100);
+    }
   } catch (_) {}
 }
-function scheduleTbRefresh(taskIds) {
+function scheduleTbRefresh(evt) {
   clearTimeout(tbTimer);
+  if (evt && evt.kind === 'created' && evt.taskIds && evt.taskIds.length) {
+    pendingTaskIds = evt.taskIds;
+    hideGatheringFloat();
+  }
+  const taskIds = evt?.taskIds;
   tbTimer = setTimeout(() => {
     fetchTaskBoard();
     if (selectedTask && (!taskIds || taskIds.includes(selectedTask))) loadTaskDetail(selectedTask, true);
@@ -446,10 +459,47 @@ function renderTaskDetail(d) {
       resultEl.textContent = `已路由到「${res.targetLabel}」，回复将自动归档回本任务`;
       resultEl.className = 'msg ok';
       input.value = '';
+      showGatheringFloat();
       setTimeout(fetchTaskBoard, 1500);
     } catch (e) { resultEl.textContent = String(e.message); resultEl.className = 'msg err'; }
     finally { sendBtn.disabled = false; }
   };
+}
+
+// ── 归拢中浮窗 + 定位 ──────────────────────────────────────────────────
+function showGatheringFloat() {
+  if (gatheringFloat) return;
+  gatheringFloat = document.createElement('div');
+  gatheringFloat.style.cssText = 'position:fixed;bottom:20px;right:20px;background:rgba(0,0,0,0.85);color:#fff;padding:12px 18px;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+  gatheringFloat.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">🔄</span> 任务归拢中…';
+  document.body.appendChild(gatheringFloat);
+  const style = document.createElement('style');
+  style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+  document.head.appendChild(style);
+  // 1.5s 超时兜底
+  setTimeout(() => hideGatheringFloat(), 1500);
+}
+
+function hideGatheringFloat() {
+  if (gatheringFloat) {
+    gatheringFloat.remove();
+    gatheringFloat = null;
+  }
+}
+
+function scrollToTask(taskId) {
+  const box = $('taskboard');
+  if (!box) return;
+  const allTasks = box.querySelectorAll('.tb-task');
+  for (const el of allTasks) {
+    if (el.textContent.includes(taskId) || el.onclick?.toString().includes(taskId)) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.style.outline = '2px solid #f9c74f';
+      el.style.outlineOffset = '2px';
+      setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 3000);
+      break;
+    }
+  }
 }
 
 connect();
