@@ -740,6 +740,18 @@
             err.style.cssText = 'color:#f85149;white-space:pre-wrap;margin-bottom:6px;';
             err.textContent = job.error || '安装失败。';
             targetInfo.appendChild(err);
+            if (job.hint) {
+              const hint = doc.createElement('div');
+              hint.style.cssText = 'color:#d29922;white-space:pre-wrap;margin-bottom:6px;';
+              hint.textContent = job.hint;
+              targetInfo.appendChild(hint);
+            }
+            if (job.logTail) {
+              const log = doc.createElement('div');
+              log.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin-bottom:6px;';
+              log.textContent = job.logTail;
+              targetInfo.appendChild(log);
+            }
             const spec = specs?.[job.cli];
             const cmdText = spec?.display || spec?.command || job.command || '';
             if (cmdText) {

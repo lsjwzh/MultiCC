@@ -119,6 +119,24 @@ function createCliSwitchRuntime(options) {
     };
   }
 
+  // 根据安装日志识别常见失败类别, 给出可操作的中文提示(证书/网络/缺依赖)。
+  // 安装命令本身正确, 但官方安装器内部的 HTTPS/解压/权限步骤会因用户本机环境
+  // (如 VPN/代理拦截 TLS) 失败; 仅给"退出码 N"用户无从排查, 故补 hint。
+  function classifyInstallHint(logTail) {
+    const text = String(logTail || '');
+    if (!text) return null;
+    if (/certificate|cert verification|\btls\b|\bssl\b|handshake/i.test(text)) {
+      return '安装程序的 HTTPS 请求证书校验失败，通常由 VPN / 网络代理 / 抓包工具拦截 HTTPS 引起。可尝试关闭 VPN/代理后重试，或在终端手动执行上面的命令。';
+    }
+    if (/No binary available|Failed to download|Could not resolve|connection (timed out|refused)|network is unreachable|temporary failure/i.test(text)) {
+      return '下载发布信息或二进制失败，多为网络不通或被代理拦截。可检查网络/代理后重试，或在终端手动执行上面的命令。';
+    }
+    if (/is required but not installed|Neither curl nor wget/i.test(text)) {
+      return '缺少安装所需的命令行工具（如 curl / unzip / tar）。请先安装相应工具后重试。';
+    }
+    return null;
+  }
+
   function findRunningInstallJob(cli) {
     for (const job of installJobs.values()) {
       if (job.cli === cli && job.status === 'running') return job;
@@ -136,6 +154,7 @@ function createCliSwitchRuntime(options) {
       endedAt: job.endedAt,
       exitCode: job.exitCode,
       error: job.error,
+      hint: classifyInstallHint(job._log.tail()),
       logTail: job._log.tail(),
     };
   }
