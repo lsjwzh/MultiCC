@@ -130,12 +130,14 @@ async function json(base, route, options) {
   const commanders = dirId => all.filter(session => session.dirId === dirId && session.type === 'commander');
   assert.equal(commanders('dir-empty').length, 1, 'empty Fleet receives a Commander');
   assert.deepEqual(commanders('dir-typed').map(session => session.id), ['typed-existing']);
-  assert.deepEqual(commanders('dir-legacy').map(session => session.id), ['legacy-existing']);
+  assert.equal(commanders('dir-legacy').length, 1, 'historical untyped session receives a fresh Commander');
+  assert.notEqual(commanders('dir-legacy')[0].id, 'legacy-existing');
   assert.equal(commanders('dir-fuzzy').length, 1, 'same-name ordinary chat does not get stamped');
   assert.notEqual(commanders('dir-fuzzy')[0].id, 'fuzzy-ordinary');
+  assert.equal(all.find(session => session.id === 'legacy-existing').type, null);
   assert.equal(all.find(session => session.id === 'fuzzy-ordinary').type, null);
   const persisted = readJson(createPaths({ dataDir: dataRoot }).sessionsFile, { legacyIsArray: true }).data;
-  for (const dirId of ['dir-empty', 'dir-fuzzy']) {
+  for (const dirId of ['dir-empty', 'dir-legacy', 'dir-fuzzy']) {
     const commander = commanders(dirId)[0];
     const durable = persisted.find(session => session.id === commander.id);
     assert.equal(commander.kind, 'chat');
@@ -153,7 +155,7 @@ async function json(base, route, options) {
   server = await startServer({ dataRoot });
   response = await json(server.base, '/api/sessions');
   assert.deepEqual(response.body.filter(session => session.type === 'commander').map(session => session.id).sort(), beforeRestartIds,
-    'startup compatibility migration is idempotent');
+    'startup migration is idempotent');
   await stopServer(server);
 
   // Persistence failure occurs after the real session service creates its Git

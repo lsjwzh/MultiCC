@@ -109,7 +109,6 @@ const {
   chooseCommanderRuntime, commanderDirectoryValidity,
   createCommanderMigration,
   createCommanderMigrationState,
-  isTrustedLegacyCommander,
 } = require('./src/commander-migration');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
@@ -936,17 +935,6 @@ commanderMigrationRunner = createCommanderMigration({
     providerDefaults,
     listProviders: cli => providers.listProviders(cli),
   }),
-  stampSession: (sessionId, directoryId) => sessionPersistence.mutate(
-    'startup.commander-migration-stamp', records => {
-      const record = records.get(sessionId);
-      if (!isTrustedLegacyCommander(record, directoryId)) {
-        const error = new Error('legacy commander evidence changed');
-        error.code = 'commander_legacy_changed';
-        throw error;
-      }
-      record.type = 'commander';
-      return record;
-    }),
   createSession: spec => createSessionRecord(spec),
   logger,
 });
