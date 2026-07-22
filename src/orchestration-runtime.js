@@ -425,7 +425,11 @@ function createOrchestrationRuntime({
         return acknowledgeDelivery(item);
       }
       if (isBusy(item.sessionId)) {
-        return outbox.fail(item.id, item.leaseToken, 'chat session is busy');
+        return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
+          // runTick itself is timer-paced; zero here keeps deterministic/manual
+          // ticks responsive without creating an internal retry loop.
+          delayMs: 0,
+        });
       }
       const descriptor = {
         item,

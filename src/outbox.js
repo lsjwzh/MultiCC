@@ -318,6 +318,31 @@ function createOutbox({
     });
   }
 
+  // Expected session contention is not a delivery failure. Release the lease
+  // without consuming the retry budget so a long-running Commander turn
+  // cannot dead-letter a safely queued task merely by remaining busy.
+  async function defer(id, leaseToken, reason = 'delivery deferred', { delayMs = baseBackoffMs } = {}) {
+    const delay = Number(delayMs);
+    if (!Number.isFinite(delay) || delay < 0) throw new TypeError('[outbox] defer delayMs must be non-negative');
+    return store.mutate(draft => {
+      const at = Number(now());
+      recoverExpiredDraft(draft, at);
+      const item = draft.outbox[id];
+      if (!item) return { ok: false, code: 'not_found' };
+      if (item.state !== 'leased'
+          || !timingSafeHashEqual(item.leaseTokenHash, leaseToken, cryptoImpl)) {
+        return { ok: false, code: 'lease_lost' };
+      }
+      item.lastError = errorText(reason);
+      item.updatedAt = at;
+      item.attempts = Math.max(0, item.attempts - 1);
+      clearLease(item);
+      item.state = 'pending';
+      item.availableAt = at + delay;
+      return { ok: true, deferred: true, availableAt: item.availableAt, item: publicItem(item) };
+    });
+  }
+
   async function recoverExpired() {
     return store.mutate(draft => recoverExpiredDraft(draft, Number(now())));
   }
@@ -343,6 +368,7 @@ function createOutbox({
     acknowledge,
     ack: acknowledge,
     fail,
+    defer,
     recoverExpired,
     list,
     get,

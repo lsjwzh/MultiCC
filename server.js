@@ -789,19 +789,13 @@ function pickCommanderProvider() {
   return { cli: 'claude', provider: null, model: null };   // fresh install: default OAuth login
 }
 
-// Seed the fleet's single Agent Commander chat session on directory registration
-// (session-domain logic, exposed to the directory domain via its session port).
-// The commander only dispatches (type='commander' keeps it out of every worker
-// target pool and gives it cross-fleet reach); its persona comes from the Agent
-// Commander preset (D6), editable per-session like any other role.
+// Seed one typed Agent Commander per directory; its role prompt comes from the preset.
 async function seedCommanderSession(dir) {
   const commander = agentCommanderPrompt();
   if (!commander) {
     console.warn('[multicc] Agent Commander preset not found; skipping seed sessions for new dir');
     return;
   }
-  // Idempotent: exactly one commander per fleet (D1). Skip if one already exists
-  // (guards re-registration and boot back-fill from racing in a duplicate).
   if ([...persistedSessions.values()].some(s => s.dirId === dir.id && s.type === 'commander')) return;
   const { cli, provider, model } = pickCommanderProvider();
   const r = await createSessionRecord({
@@ -816,21 +810,17 @@ async function seedCommanderSession(dir) {
   }
 }
 
-// A legacy commander is a pre-role session that a user (or the old seeder)
-// designated as the fleet's dispatcher by label alone: the seeder's
-// "🫡 Agent Commander", or a hand-named "指挥" / "Commander". Matching by role
-// label (not id) keeps the back-fill general — any fleet whose owner named a
-// session this way gets its commander protections on the next boot.
+// Compatibility recognizes only exact historical labels; runtime routing never
+// guesses labels and accepts only the persisted type='commander'.
 function isLegacyCommanderLabel(label) {
   const t = String(label || '').trim();
-  return /agent commander/i.test(t) || t === '指挥' || /^commander$/i.test(t);
+  return /^(?:🫡\s*)?agent commander$/i.test(t) || t === '指挥' || /^commander$/i.test(t);
 }
 
-// Boot back-fill: fleets created before the commander role existed carry legacy
-// label-based commander sessions with no type. Stamp exactly one per fleet
-// as type='commander' so it gains the role's protections (undeletable, kept out
-// of every worker pool, cross-fleet dispatch). Stamp-only — never creates a
-// session, so it can't spawn worktrees or race the register-time seed.
+// Boot migration:
+// - stamp one exact legacy label only when a typed Commander is absent;
+// - never create sessions or worktrees;
+// - persist the stable type used by runtime routing.
 function backfillCommanderTypes() {
   const byDir = new Map();
   for (const s of persistedSessions.values()) {
@@ -1108,7 +1098,7 @@ function pushToGateway(text, { persist = true } = {}) {
 }
 
 // A dispatch target must be a real, non-system session.
-function validateDispatchTarget(targetId, fromSessionId = null) {
+function validateDispatchTarget(targetId, fromSessionId = null, allowCommander = false) {
   const hint = fromSessionId ? `；${dispatchTargetHintFor(fromSessionId)}` : '';
   if (isDispatchPlaceholderTarget(targetId)) {
     return { ok: false, error: `「${targetId}」是占位符，不是真实 session id；请从可用目标 sessions 中选择一个真实 id${hint}` };
@@ -1116,7 +1106,7 @@ function validateDispatchTarget(targetId, fromSessionId = null) {
   const rec = persistedSessions.get(targetId);
   if (!rec) return { ok: false, error: `目标 session「${targetId}」不存在${hint}` };
   if (rec.type === 'aux' || rec.type === 'gateway') return { ok: false, error: `不能把任务分发给系统会话「${targetId}」` };
-  if (rec.type === 'commander') return { ok: false, error: `不能把任务分发给指挥官会话「${targetId}」；指挥只派活、不接活` };
+  if (rec.type === 'commander' && !allowCommander) return { ok: false, error: `不能把任务分发给指挥官会话「${targetId}」；只有任务面板自动路由可进入指挥队列` };
   return { ok: true, rec };
 }
 
@@ -1181,7 +1171,7 @@ function handleGatewayControl(rawText) {
 
 // Deliver a confirmed dispatch; terminal targets receive an ephemeral chat.
 async function dispatchToSession(targetId, message, opts = {}) {
-  let v = validateDispatchTarget(targetId, opts.replyTo || null);
+  let v = validateDispatchTarget(targetId, opts.replyTo || null, opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false);
   // Create matching *-ultra-NN workers on demand from the dispatcher's config.
   if (!v.ok) {
     const m = targetId.match(/-ultra-(\d{2})$/);
@@ -1200,7 +1190,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
             rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
             persistence: 'bestEffort', persistenceSource: 'runtime.dispatch-worker-create',
           });
-          if (created.ok) v = validateDispatchTarget(targetId, opts.replyTo || null);
+          if (created.ok) v = validateDispatchTarget(targetId, opts.replyTo || null, opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false);
         }
       }
     }
@@ -5535,7 +5525,7 @@ function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile,
   runChatTurn,
-  isBusy: orchestrationChatBusy,
+  isBusy: taskBoardSessionBusy,
   hasPersistedDelivery: persistedOrchestrationDelivery,
   deliverOutbox: deliverOrchestrationOutbox,
   probe: probeExplicitWait,
