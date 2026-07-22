@@ -656,11 +656,11 @@ test('onClassifyGoal treats a marker on an existing task as identity, not a new 
   assert.equal(board.tasks[existing.id].refs[1].userMsgId, 'u-followup');
 });
 
-test('turn-end tagging enriches and rehomes the immediate card instead of duplicating it', async () => {
+test('turn-end keeps the immediate card in 待归类 instead of auto-rehoming it (方案A)', async () => {
   let history = [
     { id: 'u-live', role: 'user', content: '删除 [tiktok] 会话和 worktree', ts: 10 },
   ];
-  const { runtime, resolveAux } = mkRuntime({ loadHistory: () => history });
+  const { runtime, auxCalls } = mkRuntime({ loadHistory: () => history });
   runtime.onClassifyGoal('sess-1', '删除 [tiktok] 会话和 worktree', 'planning', {
     currentUserText: '删除 [tiktok] 会话和 worktree',
   });
@@ -675,18 +675,18 @@ test('turn-end tagging enriches and rehomes the immediate card instead of duplic
     currentUserText: '删除 [tiktok] 会话和 worktree',
     currentAssistantText: '已经删除所有目标会话，并清理对应 worktree；同时核对分支与会话记录均已移除。',
   }, 'sess-1');
-  resolveAux({
-    text: '{"tasks":[{"id":"new","title":"清理 tiktok 会话与 worktree","module":"发布运维","areas":["worktree"]}]}',
-    cancelled: false,
-  });
   await new Promise(r => setImmediate(r));
 
   const board = runtime.getBoard();
+  // 方案A：turn-end 只把本轮 ref 挂到现有「待归类」卡片，不重复建卡、不自动搬到真实
+  // 模块，也不触发 aux 归类。归类改由用户手动点击。
+  assert.equal(auxCalls.length, 0);
   assert.equal(Object.keys(board.tasks).length, 1);
   assert.equal(board.tasks[taskId].refs.length, 1);
   assert.equal(board.tasks[taskId].refs[0].assistantMsgId, 'a-final');
-  assert.equal(board.modules[board.tasks[taskId].moduleId].name, '发布运维');
-  assert.equal(Object.values(board.modules).some(m => m.source === 'classify'), false);
+  assert.equal(board.modules[board.tasks[taskId].moduleId].source, 'classify');
+  assert.equal(board.modules[board.tasks[taskId].moduleId].name, '待归类');
+  assert.ok(board.tasks[taskId].classification, '卡片仍待归类（保留 classification 供手动按钮使用）');
 });
 
 test('streaming classify path creates or merges the task-board card before returning', () => {
@@ -1155,9 +1155,9 @@ test('goal flag is ignored gracefully when goal helpers are not wired', async ()
   assert.match(dispatches[0].message, /^【任务：新任务｜tb:[A-Za-z0-9_-]+】\nhi$/);
 });
 
-test('board placeholder is classified into the same card at turn end', async () => {
+test('board placeholder stays in 待归类 at turn end (方案A：仅手动归类)', async () => {
   let history = [];
-  const { runtime, dispatches, resolveAux } = mkRuntime({
+  const { runtime, dispatches, auxCalls } = mkRuntime({
     loadHistory: () => history,
     records: new Map([
       ['sess-1', { id: 'sess-1', kind: 'chat', dirId: 'dir-1', label: '任务板重新归类工程师' }],
@@ -1179,18 +1179,18 @@ test('board placeholder is classified into the same card at turn end', async () 
     currentUserText: routed,
     currentAssistantText: '已经完成按钮、接口以及失败重试状态的实现。',
   }, 'commander-1');
-  resolveAux({
-    cancelled: false,
-    text: `{"tasks":[{"id":"${taskId}","title":"任务重新归类","module":"任务板","areas":["src/routes/task-board.js"]}]}`,
-  });
   await new Promise(rr => setImmediate(rr));
-  const tasks = Object.values(runtime.getBoard().tasks);
+  const board = runtime.getBoard();
+  const tasks = Object.values(board.tasks);
+  // 方案A：turn-end 不再自动把占位卡归类进真实模块；卡片留在「待归类」、classification
+  // 仍在（等用户手动点「归类」），并收下本轮对话 ref，也不触发 aux。
+  assert.equal(auxCalls.length, 0);
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].id, taskId);
-  assert.equal(tasks[0].title, '任务重新归类');
-  assert.equal(tasks[0].classification, undefined);
-  assert.equal(tasks[0].refs.length, 1);
-  assert.equal(tasks[0].refs[0].assistantMsgId, 'a-new');
+  assert.equal(tasks[0].title, '新任务');
+  assert.ok(tasks[0].classification, '占位卡仍待归类');
+  assert.equal(board.modules[tasks[0].moduleId].source, 'classify');
+  assert.ok(tasks[0].refs.some(ref => ref.assistantMsgId === 'a-new'), '本轮 ref 已挂到占位卡');
 });
 
 test('manual reclassify retries a failed pending card and exposes batch route', async () => {
@@ -1227,29 +1227,27 @@ test('manual reclassify retries a failed pending card and exposes batch route', 
   assert.equal(batch.body.queued, 1);
 });
 
-test('automatic pending scan retries with a cap instead of spinning forever', async () => {
+test('automatic pending scan no longer auto-classifies (方案A：仅手动归类)', async () => {
   const history = [
     { id: 'u1', role: 'user', content: '需要自动归类', ts: 1 },
     { id: 'a1', role: 'assistant', content: '已经完成这项任务的完整实现。', ts: 2 },
   ];
-  const { runtime, resolveAux } = mkRuntime({ loadHistory: () => history });
+  const { runtime, auxCalls } = mkRuntime({ loadHistory: () => history });
   const pending = core.createPendingTask(runtime.getBoard(), {
     dirId: 'dir-1', sessionId: 'sess-1', seed: '需要自动归类', now: 1,
   });
   pending.refs[0].userMsgId = 'u1';
   pending.refs[0].assistantMsgId = 'a1';
   pending.classification.state = 'pending';
+  pending.classification.nextRetryAt = 0;
 
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    pending.classification.nextRetryAt = 0;
-    assert.equal(runtime.scanPendingClassifications(), 1);
-    resolveAux({ cancelled: false, text: '{"tasks":[]}' });
-    await new Promise(rr => setImmediate(rr));
-    assert.equal(pending.classification.attempts, attempt);
-  }
-  assert.equal(pending.classification.state, 'failed');
-  assert.equal(pending.classification.nextRetryAt, 0);
+  // 方案A：定时扫描不再触发自动归类——卡片原地停在「待归类」，attempts 不增长，
+  // 也不排队 aux 任务。用户手动点「归类」才会分类（见上方 manual reclassify 用例）。
   assert.equal(runtime.scanPendingClassifications(), 0);
+  assert.equal(auxCalls.length, 0);
+  assert.equal(pending.classification.attempts, 0);
+  assert.equal(pending.classification.state, 'pending');
+  assert.equal(Object.values(runtime.getBoard().modules).some(m => m.source === 'classify'), true);
 });
 
 test('manual classification can use the submitted task text before a reply exists', async () => {
