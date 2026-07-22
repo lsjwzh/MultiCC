@@ -182,6 +182,10 @@ function createOrchestrationRoutes(rawDeps) {
         const job = started.state || deps.detached.status(operation.externalId) || {};
         res.json({
           ok: true,
+          executionKind: 'detached_process',
+          workerDispatched: false,
+          dispatchEndpoint: `/api/sessions/${session.id}/dispatch`,
+          note: `已启动后台 shell 进程；这不会向 worker 会话派活。如需派活，请调用 POST /api/sessions/${session.id}/dispatch。`,
           taskId: operation.externalId,
           waitId: null,
           pid: job.pid || operation.pid || null,
