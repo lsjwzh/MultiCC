@@ -736,6 +736,42 @@ test('Funnel persistence compensation failure marks only a bounded degraded stat
   }
 });
 
+test('tunnel config exposes natapp/cpolar/sakurafrp providers with default schema', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-tunnel-providers-'));
+  const previousDataDir = process.env.MULTICC_DATA_DIR;
+  const modulePath = require.resolve('../src/tunnel');
+  process.env.MULTICC_DATA_DIR = dataDir;
+  delete require.cache[modulePath];
+  let tunnel;
+  try {
+    tunnel = require('../src/tunnel');
+    const status = tunnel.getStatus();
+    assert.deepEqual(status.config.natapp, {
+      enabled: false, url: '', authtoken: '', port: 3000, startCmd: 'natapp -authtoken={authtoken}',
+    });
+    assert.deepEqual(status.config.cpolar, {
+      enabled: false, url: '', authtoken: '', port: 3000, startCmd: 'cpolar http {port}',
+    });
+    assert.deepEqual(status.config.sakurafrp, {
+      enabled: false, url: '', authtoken: '', port: 3000, startCmd: 'frpc -f {authtoken}',
+    });
+    for (const name of ['natapp', 'cpolar', 'sakurafrp']) {
+      assert.equal(typeof status.availability[name], 'boolean', `availability.${name}`);
+      assert.ok(status.providers[name], `providers.${name} present`);
+      assert.equal(status.providers[name].checking, false, `providers.${name}.checking`);
+    }
+    // restartNow dispatches the new restarters via RESTARTERS; an unknown name
+    // is still rejected so the route surface is unchanged for foreign input.
+    assert.deepEqual(await tunnel.restartNow('nope'), { ok: false, error: 'unknown provider' });
+  } finally {
+    if (tunnel) tunnel.stop();
+    delete require.cache[modulePath];
+    if (previousDataDir === undefined) delete process.env.MULTICC_DATA_DIR;
+    else process.env.MULTICC_DATA_DIR = previousDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('tunnel config reports persistence and runtime rollback failures by safe stage', () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-host-write-config-comp-'));
   const previousDataDir = process.env.MULTICC_DATA_DIR;

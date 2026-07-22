@@ -339,6 +339,36 @@
       document.getElementById('tnl-ts-status').textContent = tnlFmtStatus(pr.tailscale || {}, c.tailscale);
       document.getElementById('tnl-ts-funnel').checked = !!c.tailscale.funnel;
       document.getElementById('tnl-ts-funnelport').value = c.tailscale.funnelPort || 3000;
+      // natapp (硬编码隧道)
+      const na = c.natapp || {};
+      document.getElementById('tnl-na-enabled').checked = !!na.enabled;
+      document.getElementById('tnl-na-url').value = na.url || '';
+      document.getElementById('tnl-na-authtoken').value = na.authtoken || '';
+      document.getElementById('tnl-na-port').value = na.port || 3000;
+      document.getElementById('tnl-na-startcmd').value = na.startCmd || '';
+      document.getElementById('tnl-na-status').textContent = tnlFmtStatus(pr.natapp || {}, na);
+      const naAvail = document.getElementById('tnl-na-avail');
+      if (naAvail) naAvail.textContent = av.natapp ? '· 已安装' : '· 未检测到 natapp';
+      // cpolar (硬编码隧道)
+      const cp = c.cpolar || {};
+      document.getElementById('tnl-cp-enabled').checked = !!cp.enabled;
+      document.getElementById('tnl-cp-url').value = cp.url || '';
+      document.getElementById('tnl-cp-authtoken').value = cp.authtoken || '';
+      document.getElementById('tnl-cp-port').value = cp.port || 3000;
+      document.getElementById('tnl-cp-startcmd').value = cp.startCmd || '';
+      document.getElementById('tnl-cp-status').textContent = tnlFmtStatus(pr.cpolar || {}, cp);
+      const cpAvail = document.getElementById('tnl-cp-avail');
+      if (cpAvail) cpAvail.textContent = av.cpolar ? '· 已安装' : '· 未检测到 cpolar';
+      // sakurafrp (硬编码隧道)
+      const sf = c.sakurafrp || {};
+      document.getElementById('tnl-sf-enabled').checked = !!sf.enabled;
+      document.getElementById('tnl-sf-url').value = sf.url || '';
+      document.getElementById('tnl-sf-authtoken').value = sf.authtoken || '';
+      document.getElementById('tnl-sf-port').value = sf.port || 3000;
+      document.getElementById('tnl-sf-startcmd').value = sf.startCmd || '';
+      document.getElementById('tnl-sf-status').textContent = tnlFmtStatus(pr.sakurafrp || {}, sf);
+      const sfAvail = document.getElementById('tnl-sf-avail');
+      if (sfAvail) sfAvail.textContent = av.sakurafrp ? '· 已安装' : '· 未检测到 sakurafrp';
       loadFunnelStatus();
       loadIpv6Status();
       // advanced
@@ -365,6 +395,41 @@
     };
     const fp = parseInt(document.getElementById('tnl-ts-funnelport').value, 10);
     if (Number.isFinite(fp) && fp > 0) body.tailscale.funnelPort = fp;
+    // natapp / cpolar / sakurafrp - 硬编码隧道，支持自定义启动命令。
+    // startCmd 留空时不放入 body，以免空串覆盖服务端默认模板（applyConfig 是浅 merge）。
+    body.natapp = {
+      enabled: document.getElementById('tnl-na-enabled').checked,
+      url: document.getElementById('tnl-na-url').value.trim(),
+      authtoken: document.getElementById('tnl-na-authtoken').value,
+    };
+    {
+      const p = parseInt(document.getElementById('tnl-na-port').value, 10);
+      if (Number.isFinite(p) && p > 0) body.natapp.port = p;
+      const sc = document.getElementById('tnl-na-startcmd').value.trim();
+      if (sc) body.natapp.startCmd = sc;
+    }
+    body.cpolar = {
+      enabled: document.getElementById('tnl-cp-enabled').checked,
+      url: document.getElementById('tnl-cp-url').value.trim(),
+      authtoken: document.getElementById('tnl-cp-authtoken').value,
+    };
+    {
+      const p = parseInt(document.getElementById('tnl-cp-port').value, 10);
+      if (Number.isFinite(p) && p > 0) body.cpolar.port = p;
+      const sc = document.getElementById('tnl-cp-startcmd').value.trim();
+      if (sc) body.cpolar.startCmd = sc;
+    }
+    body.sakurafrp = {
+      enabled: document.getElementById('tnl-sf-enabled').checked,
+      url: document.getElementById('tnl-sf-url').value.trim(),
+      authtoken: document.getElementById('tnl-sf-authtoken').value,
+    };
+    {
+      const p = parseInt(document.getElementById('tnl-sf-port').value, 10);
+      if (Number.isFinite(p) && p > 0) body.sakurafrp.port = p;
+      const sc = document.getElementById('tnl-sf-startcmd').value.trim();
+      if (sc) body.sakurafrp.startCmd = sc;
+    }
     const iv = numOr('tnl-interval'); if (iv) body.intervalSec = iv;
     const ft = numOr('tnl-failthreshold'); if (ft) body.failThreshold = ft;
     const cd = numOr('tnl-cooldown'); if (cd !== undefined) body.restartCooldownSec = cd;
@@ -383,7 +448,7 @@
   }
 
   async function restartTunnel(provider) {
-    const msgId = provider === 'phddns' ? 'tnl-ph-msg' : 'tnl-ts-msg';
+    const msgId = { phddns: 'tnl-ph-msg', tailscale: 'tnl-ts-msg', natapp: 'tnl-na-msg', cpolar: 'tnl-cp-msg', sakurafrp: 'tnl-sf-msg' }[provider];
     const msg = document.getElementById(msgId);
     if (msg) { msg.textContent = '正在重启…'; msg.className = 'status-text'; }
     try {
