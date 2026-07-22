@@ -119,9 +119,10 @@ const COMMANDER_BASE = [
   { id: 'aux', dirId: 'd1', type: 'aux' },
 ];
 
-test('commander receives no legacy dispatch targets', () => {
+test('commander (real-LLM dispatcher) sees same-dir workers, not commanders/aux/self', () => {
   const t = makeFactory(COMMANDER_BASE, {});
-  assert.deepEqual(t.dispatchableSessionsFor('cmd'), []);
+  const ids = t.dispatchableSessionsFor('cmd').map(s => s.id).sort();
+  assert.deepEqual(ids, ['w-a']);   // same-dir worker only; not w-b (d2), not cmd2/aux/self
 });
 
 test('a normal session never sees a commander peer as a dispatch target', () => {
@@ -142,27 +143,30 @@ test('a normal session stays in-directory', () => {
   assert.deepEqual(ids, ['w-a']);   // only same-dir worker; not w-b (d2), not any commander
 });
 
-test('commander gets no dispatch prompt even when autoDispatch is set', () => {
+test('commander gets the dispatch prompt without needing autoDispatch', () => {
   const t = makeFactory(COMMANDER_BASE, {});
-  assert.equal(t.buildDispatchContextPrompt('cmd'), '');
+  const p = t.buildDispatchContextPrompt('cmd');
+  assert.match(p, /指挥官/);
+  assert.match(p, /<<dispatch target=/);
+  assert.match(p, /可用目标 sessions: \[/);
 });
 
-test('commander target surface remains empty with raw terminals present', () => {
+test('commander target surface lists only same-dir workers', () => {
   const recs = [
     { id: 'cmd', dirId: 'd1', type: 'commander' },
     { id: 'w', dirId: 'd1', type: 'chat', kind: 'chat' },
-    { id: 'term', dirId: 'd2', type: 'chat', kind: 'terminal' },
+    { id: 'other', dirId: 'd2', type: 'chat', kind: 'chat' },   // other dir → excluded
   ];
   const t = makeFactory(recs, {});
   const ids = t.dispatchableSessionsFor('cmd').map(s => s.id);
-  assert.deepEqual(ids, []);
+  assert.deepEqual(ids, ['w']);
 });
 
-test('commander target surface remains empty with many sessions', () => {
+test('commander target surface caps at 30 same-dir sessions', () => {
   const many = [{ id: 'cmd', dirId: 'd1', type: 'commander' }];
-  for (let i = 0; i < 140; i++) many.push({ id: `p${i}`, dirId: `d${i % 5}`, type: 'chat' });
+  for (let i = 0; i < 140; i++) many.push({ id: `p${i}`, dirId: 'd1', type: 'chat' });
   const t = makeFactory(many, {});
-  assert.equal(t.dispatchableSessionsFor('cmd').length, 0);
+  assert.equal(t.dispatchableSessionsFor('cmd').length, 30);
 });
 
 test('createDispatchTargeting validates its deps', () => {
