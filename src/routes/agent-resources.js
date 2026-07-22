@@ -171,6 +171,7 @@ function createAgentResourcesRoutes(rawDeps) {
   }
 
   return Object.freeze({
+    agentCommanderPreset,
     agentCommanderPrompt,
     mountRoutes,
   });

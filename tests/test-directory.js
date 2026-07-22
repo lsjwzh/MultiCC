@@ -118,7 +118,8 @@ fs.mkdirSync(projA, { recursive: true });
   const listA = Array.isArray(r.j) ? r.j.find(d => d.id === dirA.id) : null;
   ok(r.status === 200 && !!listA, 'GET list contains registered dir');
   ok(listA && listA.counts && typeof listA.counts.claude_chat === 'number', 'list entry has session counts');
-  ok(listA && listA.counts.claude_chat >= 1, 'commander chat session auto-seeded on create');
+  ok(listA && Object.entries(listA.counts).some(([key, count]) => key.endsWith('_chat') && count >= 1),
+    'commander chat session auto-seeded on an available compatible CLI');
   ok(listA && listA.pushState && typeof listA.pushState === 'object', 'list entry has pushState');
   r = await api('GET', '/api/sessions');
   const commanders = Array.isArray(r.j)

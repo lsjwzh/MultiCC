@@ -117,6 +117,7 @@ test('preset cache and commander prompt preserve provider default resolution', a
   const current = fixture();
   assert.equal(current.service.agentCommanderPrompt(), 'command the fleet');
   assert.equal(current.reads(), 1);
+  assert.equal(current.service.agentCommanderPreset().id, AGENT_COMMANDER_PRESET_ID);
   assert.equal(current.service.agentCommanderPrompt(), 'command the fleet');
   assert.equal(current.reads(), 1);
   const commander = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
@@ -127,10 +128,13 @@ test('preset cache and commander prompt preserve provider default resolution', a
   assert.equal(xf.body.defaultProviderId, 'xf-model');
   assert.equal(xf.body.defaultProviderName, 'summary:xf-model');
   const server = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(server, /const commander = agentCommanderPrompt\(\);[\s\S]*createSessionRecord\(\{[\s\S]*rolePrompt: commander,/);
+  assert.match(server, /commanderPrompt: agentCommanderPrompt/);
+  assert.match(server, /createSession: spec => createSessionRecord\(spec\)/);
   assert.doesNotMatch(server, /r\.session\.rolePrompt = commander\.prompt/);
-  assert.equal(server.includes("return /^(?:🫡\\s*)?agent commander$/i.test(t) || t === '指挥' || /^commander$/i.test(t);"), true,
-    'legacy migration accepts exact historical labels, never arbitrary label substrings');
+  const migration = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'src', 'commander-migration.js'), 'utf8');
+  assert.match(migration, /isExactLegacyCommanderLabel\(record\.label\)[\s\S]*hasLegacyCommanderPromptSignature\(record\.rolePrompt\)/,
+    'legacy migration requires exact label plus prompt provenance, never a label alone');
 });
 
 test('preset list strips prompts while detail preserves them and returns legacy errors', async () => {

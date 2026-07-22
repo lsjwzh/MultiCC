@@ -25,6 +25,10 @@ assert.ok(stableAfter > stableBranch, 'stable updates must capture the new revis
 assert.ok(dependencyDiff > stableAfter, 'stable updates must install changed manifests before restart');
 assert.match(manager, /Runtime dependencies are incomplete or outdated — running npm install/);
 assert.match(manager, /scripts\/check-runtime-deps\.js/);
+assert.match(manager, /wait_for_ready\(\)/);
+assert.match(manager, /Waiting for startup migrations and readiness/);
+assert.ok(manager.indexOf('if ! wait_for_ready') > manager.indexOf('Restarting to apply update'),
+  'the real update path must verify Commander migration readiness after restart');
 
 const cprSpec = pkg.dependencies['cli-provider-router'];
 assert.match(cprSpec, /^https:\/\/github\.com\/lsjwzh\/cli-provider-router\/archive\/[0-9a-f]{40}\.tar\.gz$/);
