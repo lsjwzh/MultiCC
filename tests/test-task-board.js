@@ -475,7 +475,6 @@ function mkRuntime(overrides = {}) {
       return { ok: true, chatId: target, operationId: 'op-1', status: 'delivering' };
     },
     workspaceBroadcast: (dirId, payload) => broadcasts.push({ dirId, payload }),
-    isLocalRequest: () => true,
     atomicWriteJson: (f, value) => fs.writeFileSync(f, JSON.stringify(value)),
     isSystemInjected: () => false,
     getSessionRunState: () => 'idle',
@@ -796,7 +795,7 @@ test('backfill scans dir sessions, tags turns via aux and reports progress', asy
   assert.deepEqual(task.refs.map(x => x.assistantMsgId), ['a1', 'a2']);
 });
 
-test('backfill refuses non-local, unhealthy aux and concurrent runs', async () => {
+test('backfill reports unhealthy aux and concurrent runs', async () => {
   let healthy = true;
   const { runtime } = mkRuntime({
     auxQueue: {
@@ -996,20 +995,36 @@ test('manual classification can use the submitted task text before a reply exist
   assert.equal(runtime.getBoard().tasks[pending.id].title, '实现归类按钮');
 });
 
-test('send refuses non-local requests and empty text', async () => {
-  const { runtime } = mkRuntime({ isLocalRequest: () => false });
+test('authenticated task-board mutations do not depend on transport locality', async () => {
+  const { runtime } = mkRuntime();
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
-  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
-  routes.get('/api/task-board/tasks/:taskId/send')({ params: { taskId: 'x' }, body: { text: 'hi' } }, r);
+  const task = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '允许远程归档', now: 1,
+  });
+  const response = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+  const remoteRequest = { socket: { remoteAddress: '203.0.113.10' }, headers: { host: 'dashboard.example.com' } };
+
+  const status = response();
+  routes.get('/api/task-board/tasks/:taskId/status')({
+    ...remoteRequest, params: { taskId: task.id }, body: { status: 'archived' },
+  }, status);
+  assert.equal(status.code, 200);
+  assert.equal(status.body.task.status, 'archived');
+
+  const missingSend = response();
+  routes.get('/api/task-board/tasks/:taskId/send')({
+    ...remoteRequest, params: { taskId: 'missing' }, body: { text: 'hi' },
+  }, missingSend);
   await new Promise(rr => setImmediate(rr));
-  assert.equal(r.code, 403);
-  const retry = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
-  routes.get('/api/task-board/tasks/:taskId/reclassify')({ params: { taskId: 'x' }, body: {} }, retry);
-  assert.equal(retry.code, 403);
-  const batch = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
-  routes.get('/api/task-board/reclassify-pending')({ body: {} }, batch);
-  assert.equal(batch.code, 403);
+  assert.equal(missingSend.code, 404);
+  assert.equal(missingSend.body.error, 'task_not_found');
+
+  const retry = response();
+  routes.get('/api/task-board/tasks/:taskId/reclassify')({
+    ...remoteRequest, params: { taskId: 'missing' }, body: {},
+  }, retry);
+  assert.equal(retry.code, 404);
 });
 
 test('failed board dispatch rolls back its placeholder and empty pending module', async () => {
