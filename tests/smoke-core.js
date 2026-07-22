@@ -4,7 +4,7 @@
 /**
  * MultiCC Core Smoke Test Suite
  * ==============================
- * Covers the 14 confirmed core functions:
+ * Covers the confirmed core functions and release-blocking regressions:
  *
  *  A1 Chat mode          — POST /api/directories/:id/sessions, chat page loads
  *  A2 Terminal mode      — / page loads, terminal iframe present
@@ -12,6 +12,7 @@
  *  A4 Create/delete      — POST + DELETE sessions via API
  *  A5 Fork session       — POST /api/sessions/:id/fork
  *  A6 Share session      — POST /api/sessions/:id/share + /share/:token access
+ *  A7 Chat replay dedupe — persisted interim + cumulative reconnect + final
  *
  *  B1 Provider list      — GET /api/providers
  *  B2 Per-session CLI    — session creation with cli=codex
@@ -34,8 +35,10 @@ const https = require('https');
 const fs   = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
+const { buildReplayMessages } = require('../src/routes/chat-history');
 
 const BASE = process.env.MULTICC_URL || 'http://localhost:3000';
+const SMOKE_DIR = process.env.MULTICC_SMOKE_DIR || '/tmp/multicc-smoke-test';
 const SKIP_BROWSER = process.argv.includes('--no-browser');
 const TOKEN = process.env.MULTICC_TOKEN || '';
 
@@ -152,12 +155,12 @@ async function navTo(p, url) {
 // ── Helper: ensure a directory exists ─────────────────────────────────
 async function ensureDir(label) {
   // Directories API uses { name, path }
-  const res = await post('/api/directories', { name: label || 'Smoke Test', path: '/tmp/multicc-smoke-test' });
+  const res = await post('/api/directories', { name: label || 'Smoke Test', path: SMOKE_DIR });
   if (res.body && res.body.id) return res.body.id;
   // Maybe it already exists — list and find
   const r2 = await get('/api/directories');
   const dirs = Array.isArray(r2.body) ? r2.body : (r2.body.directories || []);
-  const dir = dirs.find(d => d.path === '/tmp/multicc-smoke-test');
+  const dir = dirs.find(d => d.path === SMOKE_DIR);
   if (dir) return dir.id;
   throw new Error(`Could not create directory: ${JSON.stringify(res.body).slice(0,200)}`);
 }
@@ -252,6 +255,96 @@ async function ensureDir(label) {
     if (!title.includes('MultiCC') && !title.includes('Chat')) throw new Error(`unexpected title: ${title}`);
   });
 
+  // A7: Release regression for the cumulative duplicate that appeared when a
+  // reconnect returned both a crash-safe interim and the newer live response.
+  // This is deterministic: it exercises the production server replay helper
+  // and the production browser history store/view without launching a real AI.
+  await browserTest('A7 流式回复重连不重复', async (p) => {
+    await navTo(p, `${BASE}/chat`);
+    const user = { id: 'release-user', role: 'user', content: 'release replay test' };
+    const replay = buildReplayMessages([
+      user,
+      {
+        id: 'release-interim', role: 'assistant', content: 'first batch',
+        _interim: true, ts: 10,
+      },
+    ], {
+      currentAssistantText: 'first batch plus second batch',
+      currentToolCalls: [{ id: 'release-tool', name: 'Bash', input: { command: 'true' } }],
+      isStreaming: true,
+      _resultSaved: false,
+    }, () => 20);
+
+    if (replay.length !== 2 || replay.filter(message => message.role === 'assistant').length !== 1) {
+      throw new Error('server replay did not collapse interim + cumulative live output');
+    }
+    if (replay[1].id !== 'release-interim' || replay[1].streaming !== true) {
+      throw new Error('server replay did not preserve the stable interim id');
+    }
+
+    const result = await p.evaluate(messages => {
+      const container = document.createElement('div');
+      const store = window.MultiCCChatHistoryStore.createHistoryStore();
+      const view = window.MultiCCChatHistoryView.createHistoryView({
+        document,
+        messagesEl: container,
+        safeMarkdown: { render: text => String(text) },
+      });
+
+      // The connected page already owns a live id-less assistant bubble when
+      // the socket drops. A reconnect must adopt this node when the server
+      // promotes the persisted interim to its stable id.
+      const initial = store.acceptHistory({ messages: [messages[0]], hasMore: false }, []);
+      let state = view.applyPlan(initial, {});
+      const live = view.createAssistantBubble(true);
+      view.renderCurrentText(live, 'first batch', { streaming: true });
+      state = view.applyPlan(store.acceptHistory({ messages, hasMore: false }, view.visibleIds()), {
+        currentElement: live,
+        lastUserElement: state.lastUserElement,
+      });
+
+      const afterReconnect = {
+        count: container.querySelectorAll('.msg.assistant').length,
+        id: state.streamingTail?.element?.dataset.msgId || '',
+        text: state.streamingTail?.element?.textContent || '',
+      };
+
+      // Final persistence uses a new durable id. It must retag the same current
+      // bubble, not append beside the interim representation.
+      const committed = view.commitMessage({
+        id: 'release-final', role: 'assistant',
+        content: 'first batch plus second batch plus final',
+      }, { currentElement: state.streamingTail?.element || null });
+      const finalPage = [messages[0], {
+        id: 'release-final', role: 'assistant',
+        content: 'first batch plus second batch plus final',
+      }];
+      view.applyPlan(store.acceptHistory({ messages: finalPage, hasMore: false }, view.visibleIds()), {
+        currentElement: null,
+        lastUserElement: committed.lastUserElement,
+      });
+
+      const assistants = Array.from(container.querySelectorAll('.msg.assistant'));
+      return {
+        afterReconnect,
+        finalCount: assistants.length,
+        finalIds: assistants.map(element => element.dataset.msgId || ''),
+        finalText: assistants.map(element => element.textContent || '').join('\n'),
+      };
+    }, replay);
+
+    if (result.afterReconnect.count !== 1
+        || result.afterReconnect.id !== 'release-interim'
+        || !result.afterReconnect.text.includes('second batch')) {
+      throw new Error(`reconnect produced duplicate/stale assistant: ${JSON.stringify(result.afterReconnect)}`);
+    }
+    if (result.finalCount !== 1
+        || result.finalIds[0] !== 'release-final'
+        || !result.finalText.includes('plus final')) {
+      throw new Error(`final commit produced duplicate/stale assistant: ${JSON.stringify(result)}`);
+    }
+  });
+
   // A2: Terminal 模式 (browser)
   await browserTest('A2 终端页面加载', async (p) => {
     await navTo(p, BASE + '/');
@@ -326,7 +419,7 @@ async function ensureDir(label) {
   {
     const res = await post('/api/cron', {
       name: 'smoke-test-' + Date.now(),
-      dirPath: '/tmp/multicc-smoke-test',
+      dirPath: SMOKE_DIR,
       cron: '0 3 * * 0', // Sunday 3am — won't actually fire
       prompt: 'echo smoke-test-ok'
     });
