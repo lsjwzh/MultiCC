@@ -701,6 +701,7 @@ test('host task-board dispatch rejects busy targets before durable admission', (
   assert.match(source, /validateDispatchTarget\(targetId, fromSessionId = null, allowCommander = false\)/);
   assert.match(source, /rec\.type === 'commander' && !allowCommander/);
   assert.match(source, /isBusy: taskBoardSessionBusy/);
+  assert.match(source, /replayRecoveredDispatchEffects:[^\n]+type === 'commander'[^\n]+maybeDispatchFromChatTurn/);
 });
 
 test('onTurnEnd skips aux/gateway sessions, short replies and injected turns', () => {
