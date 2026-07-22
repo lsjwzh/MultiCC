@@ -114,6 +114,35 @@ function testTunnel() {
   });
 }
 
+function testTunnelCliProviders() {
+  console.log('tunnel cli providers');
+  withTempDataDir(() => {
+    const clock = fakeTimers();
+    try {
+      const tunnel = freshRequire('../src/tunnel');
+      tunnel.init();
+      const status = tunnel.getStatus();
+      ok(status.config.natapp && status.config.natapp.enabled === false,
+        'natapp default config present and disabled');
+      ok(status.config.cpolar && status.config.cpolar.startCmd === 'cpolar http {port}',
+        'cpolar default startCmd template present');
+      ok(status.config.sakurafrp && status.config.sakurafrp.port === 3000,
+        'sakurafrp default port present');
+      ok(['natapp', 'cpolar', 'sakurafrp'].every(n => typeof status.availability[n] === 'boolean'),
+        'cli provider availability keys are booleans');
+      ok(['natapp', 'cpolar', 'sakurafrp'].every(n => status.providers[n] && status.providers[n].checking === false),
+        'cli provider runtime state present');
+
+      tunnel.applyConfig({ natapp: { enabled: true, url: 'https://example.invalid/' } });
+      ok(tunnel.getStatus().monitorRunning === true && clock.intervals.size === 1,
+        'enabling natapp starts exactly one monitor interval');
+      tunnel.stop();
+    } finally {
+      clock.restore();
+    }
+  });
+}
+
 function testWaitInjector() {
   console.log('wait-injector lifecycle');
   const clock = fakeTimers();
@@ -192,6 +221,7 @@ function testCron() {
 
 try {
   testTunnel();
+  testTunnelCliProviders();
   testWaitInjector();
   testCron();
   console.log(`\n== runtime lifecycle stops: ${pass} passed, ${fail} failed ==`);
