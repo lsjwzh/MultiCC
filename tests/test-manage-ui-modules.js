@@ -27,6 +27,7 @@ function fakeElement(id = '') {
     scrollHeight: 0,
     scrollTop: 0,
     appendChild(child) { this.children.push(child); this.firstChild = this.children[0] || null; return child; },
+    addEventListener() {},
     removeChild(child) { this.children = this.children.filter(item => item !== child); this.firstChild = this.children[0] || null; },
     replaceChildren(...children) {
       this.children = children.flatMap(child => child && child.__fragment ? child.children : [child]);

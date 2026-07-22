@@ -1,6 +1,6 @@
 'use strict';
 
-function createHealthHandlers({ isReady, uptime = () => process.uptime() } = {}) {
+function createHealthHandlers({ isReady, readinessDetails, uptime = () => process.uptime() } = {}) {
   if (typeof isReady !== 'function') throw new TypeError('createHealthHandlers requires isReady()');
   return {
     healthz(req, res) {
@@ -9,8 +9,14 @@ function createHealthHandlers({ isReady, uptime = () => process.uptime() } = {})
     },
     readyz(req, res) {
       const ready = !!isReady();
+      let checks;
+      if (typeof readinessDetails === 'function') {
+        try { checks = readinessDetails(); } catch (_) { checks = undefined; }
+      }
       res.set('Cache-Control', 'no-store');
-      res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready', requestId: req.id });
+      const body = { status: ready ? 'ready' : 'not_ready', requestId: req.id };
+      if (checks && typeof checks === 'object') body.checks = checks;
+      res.status(ready ? 200 : 503).json(body);
     },
   };
 }

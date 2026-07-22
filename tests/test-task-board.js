@@ -915,6 +915,40 @@ test('automatic routing fails closed without a same-directory typed Commander', 
   assert.equal(dispatches.length, 0);
 });
 
+test('automatic routing is unavailable until Commander migration finishes, while manual targeting is unchanged', async () => {
+  let migration = { ready: false, code: 'commander_migration_pending' };
+  const { runtime, dispatches } = mkRuntime({
+    getCommanderMigrationStatus: dirId => ({ ...migration, directoryId: dirId }),
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const response = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
+
+  const blocked = response();
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: '自动任务' } }, blocked);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(blocked.code, 503);
+  assert.equal(blocked.body.error, 'commander_migration_pending');
+  assert.equal(blocked.body.directoryId, 'dir-1');
+  assert.equal(dispatches.length, 0);
+  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
+
+  const manual = response();
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', target: 'sess-1', text: '手工任务' } }, manual);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(manual.code, 200);
+  assert.equal(manual.body.routingMode, 'manual');
+  assert.equal(dispatches.length, 1);
+
+  migration = { ready: true, code: null };
+  const automatic = response();
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: '迁移完成后自动任务' } }, automatic);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(automatic.code, 200);
+  assert.equal(automatic.body.target, 'commander-1');
+  assert.equal(dispatches.length, 2);
+});
+
 test('manual target remains an idle worker-only route', async () => {
   const commanderCalls = [];
   const workerCalls = [];

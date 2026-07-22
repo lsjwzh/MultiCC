@@ -352,7 +352,7 @@ async function showDiff(sessionId) {
     if (data.truncated) parts.push('已截断到 1MB');
     subEl.textContent = parts.join(' · ');
     statEl.textContent = (data.stat || '').trim() || '(无变更)';
-    contentEl.innerHTML = renderDiffLines(data.diff || '');
+    contentEl.replaceChildren(renderDiffLines(data.diff || ''));
     if (data.error) {
       const errLine = document.createElement('div');
       errLine.className = 'diff-line diff-del';
@@ -377,19 +377,24 @@ function showMergeConflictDiff(sessionId, data) {
   document.getElementById('diff-subtitle').textContent =
     `${conflicts.length} 个冲突文件 · 合并已 abort，基分支未改动${data.conflictDiffTruncated ? ' · Diff 已截断' : ''}`;
   document.getElementById('diff-stat').textContent = conflicts.join('\n') || '(未获取到冲突文件)';
-  document.getElementById('diff-content').innerHTML = renderDiffLines(data.conflictDiff || '');
+  document.getElementById('diff-content').replaceChildren(renderDiffLines(data.conflictDiff || ''));
   modal.style.display = 'flex';
 }
 
 function renderDiffLines(text) {
+  const fragment = document.createDocumentFragment();
   if (!text || !text.trim()) {
-    return '<div class="diff-line diff-meta" style="text-align:center;padding:24px;">（无变更）</div>';
+    const empty = document.createElement('div');
+    empty.className = 'diff-line diff-meta';
+    empty.style.cssText = 'text-align:center;padding:24px;';
+    empty.textContent = '（无变更）';
+    fragment.appendChild(empty);
+    return fragment;
   }
   const MAX_LINES = 5000;
   const lines = text.split('\n');
   const truncated = lines.length > MAX_LINES;
   const arr = truncated ? lines.slice(0, MAX_LINES) : lines;
-  const parts = [];
   for (const raw of arr) {
     let cls = 'diff-line';
     if (/^[+\- ]*(<<<<<<<|=======|>>>>>>>)/.test(raw)) {
@@ -399,13 +404,18 @@ function renderDiffLines(text) {
     } else if (raw.startsWith('@@')) cls += ' diff-hunk';
     else if (raw.startsWith('+')) cls += ' diff-add';
     else if (raw.startsWith('-')) cls += ' diff-del';
-    const safe = escapeHtml(raw);
-    parts.push(`<span class="${cls}">${safe || '&nbsp;'}</span>`);
+    const line = document.createElement('span');
+    line.className = cls;
+    line.textContent = raw || '\u00a0';
+    fragment.appendChild(line);
   }
   if (truncated) {
-    parts.push(`<span class="diff-line diff-meta">… 行数过多已截断（${lines.length - MAX_LINES} 行省略）</span>`);
+    const note = document.createElement('span');
+    note.className = 'diff-line diff-meta';
+    note.textContent = `… 行数过多已截断（${lines.length - MAX_LINES} 行省略）`;
+    fragment.appendChild(note);
   }
-  return parts.join('');
+  return fragment;
 }
 
 async function mergeSession(id) {
