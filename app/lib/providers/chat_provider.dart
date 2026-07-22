@@ -9,8 +9,11 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 
 bool _isRecoverableCodexReconnectErrorText(String text) {
-  return RegExp(r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(').hasMatch(text) &&
-      (text.contains('stream disconnected before completion') || text.contains('response.completed'));
+  return RegExp(
+        r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(',
+      ).hasMatch(text) &&
+      (text.contains('stream disconnected before completion') ||
+          text.contains('response.completed'));
 }
 
 class ChatProvider extends ChangeNotifier {
@@ -75,10 +78,6 @@ class ChatProvider extends ChangeNotifier {
   bool _historyExhausted = false;
   String? _oldestLoadedMsgId;
 
-  /// True once we've successfully connected at least once, so we can tell a
-  /// fresh first connect apart from a (service-driven) reconnect.
-  bool _hasConnectedOnce = false;
-
   /// When a resume/half-open reconnect is in flight, the next `chat_history`
   /// is a refresh that should REPLACE the on-screen transcript atomically
   /// (rather than the insert used on the very first load).
@@ -103,6 +102,7 @@ class ChatProvider extends ChangeNotifier {
   String get classifyGoal => _classifyGoal;
   String _classifyPhase = '';
   String get classifyPhase => _classifyPhase;
+
   /// Live classify-state letter (D/C/W/B/E/P) - drives the bar's tint.
   /// Server sends this as `classifyState` in the task_state event (the old
   /// `lifecycle` field was removed in 98c2674 / unified in 38bb6ce).
@@ -118,8 +118,8 @@ class ChatProvider extends ChangeNotifier {
     required this.sessionCwd,
     SessionCli initialCli = SessionCli.claude,
     this.onSessionConfigChanged,
-  })  : displayName = displayName ?? sessionName,
-        dirName = dirName ?? '' {
+  }) : displayName = displayName ?? sessionName,
+       dirName = dirName ?? '' {
     _cwd = sessionCwd;
     _cli = initialCli;
     _initService();
@@ -154,20 +154,6 @@ class ChatProvider extends ChangeNotifier {
         if (_connectionState == ChatConnectionState.connected) {
           _reconnectAttempt = 0;
           _statusText = 'Connected';
-          // ChatService reconnects on its own (heartbeat timeout / onDone /
-          // onError) WITHOUT going through our reconnect(), so `_historyApplied`
-          // would stay true and the server's authoritative `chat_history` sent
-          // on the new socket would be ignored — leaving the chat frozen on a
-          // stale, half-streamed bubble until a manual refresh. On any
-          // non-first connect, re-arm the history refresh so the next
-          // chat_history atomically replaces the transcript, catching up on
-          // anything that completed while we were disconnected. Matches the web
-          // client, which reloads authoritative history on reconnect.
-          if (_hasConnectedOnce) {
-            _historyApplied = false;
-            _replaceHistoryOnReconnect = true;
-          }
-          _hasConnectedOnce = true;
         }
         notifyListeners();
         break;
@@ -236,23 +222,25 @@ class ChatProvider extends ChangeNotifier {
         break;
 
       case 'chat_history':
-        if (!_historyApplied) {
-          _historyApplied = true;
-          final p = evt.payload as Map;
-          final history = p['messages'] as List;
-          final hasMore = p['hasMore'] == true;
-          if (_replaceHistoryOnReconnect) {
-            _replaceHistoryOnReconnect = false;
-            _replaceHistory(history);
-          } else {
-            _replayHistory(history);
-          }
-          // Seed lazy-pagination cursor + hasMore from this initial page.
-          _historyHasMore = hasMore;
-          _historyExhausted = !hasMore;
-          _oldestLoadedMsgId = _firstLoadedMsgId();
-          notifyListeners();
+        final p = evt.payload as Map;
+        final history = p['messages'] as List;
+        final hasMore = p['hasMore'] == true;
+        // Every socket receives one authoritative page. Process it even when
+        // it races ahead of the async `connected` callback: first connect
+        // appends into an empty view, every later page atomically reconciles.
+        final replace = _historyApplied || _replaceHistoryOnReconnect;
+        _historyApplied = true;
+        _replaceHistoryOnReconnect = false;
+        if (replace) {
+          _replaceHistory(history);
+        } else {
+          _replayHistory(history);
         }
+        // Seed lazy-pagination cursor + hasMore from this initial page.
+        _historyHasMore = hasMore;
+        _historyExhausted = !hasMore;
+        _oldestLoadedMsgId = _firstLoadedMsgId();
+        notifyListeners();
         break;
 
       case 'message_start':
@@ -275,6 +263,11 @@ class ChatProvider extends ChangeNotifier {
 
       case 'result':
         _onResult(evt.payload as Map<String, dynamic>);
+        break;
+
+      case 'stream_end':
+        _finishStreaming();
+        notifyListeners();
         break;
 
       case 'notify':
@@ -330,56 +323,61 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         break;
 
-      case 'chat_msg_meta': {
-        // Server saved a message and assigned its history id. Tag the newest
-        // still-un-id'd bubble of that role so its delete button goes live
-        // (matches web: tag last bubble of role that has no msgId yet).
-        final p = evt.payload as Map<String, dynamic>;
-        final id = p['id']?.toString();
-        final role = p['role']?.toString();
-        if (id != null && id.isNotEmpty && role != null) {
-          final wantUser = role == 'user';
-          for (var i = _messages.length - 1; i >= 0; i--) {
-            final m = _messages[i];
-            final isUser = m.role == MessageRole.user;
-            if (isUser == wantUser) {
-              if (m.id == null || m.id!.isEmpty) {
-                m.id = id;
-                notifyListeners();
+      case 'chat_msg_meta':
+        {
+          // Server saved a message and assigned its history id. Tag the newest
+          // still-un-id'd bubble of that role so its delete button goes live
+          // (matches web: tag last bubble of role that has no msgId yet).
+          final p = evt.payload as Map<String, dynamic>;
+          final id = p['id']?.toString();
+          final role = p['role']?.toString();
+          if (id != null && id.isNotEmpty && role != null) {
+            final wantUser = role == 'user';
+            for (var i = _messages.length - 1; i >= 0; i--) {
+              final m = _messages[i];
+              final isUser = m.role == MessageRole.user;
+              if (isUser == wantUser) {
+                if (m.id == null || m.id!.isEmpty) {
+                  m.id = id;
+                  notifyListeners();
+                }
+                break;
               }
-              break;
             }
           }
+          break;
         }
-        break;
-      }
 
-      case 'chat_msg_deleted': {
-        // Broadcast after a successful delete from any client. Idempotent:
-        // the initiator already removed it locally; this just syncs other
-        // clients (and is a no-op if the id is already gone).
-        final p = evt.payload as Map<String, dynamic>;
-        final id = p['id']?.toString();
-        if (id != null && id.isNotEmpty) removeMessageById(id);
-        break;
-      }
+      case 'chat_msg_deleted':
+        {
+          // Broadcast after a successful delete from any client. Idempotent:
+          // the initiator already removed it locally; this just syncs other
+          // clients (and is a no-op if the id is already gone).
+          final p = evt.payload as Map<String, dynamic>;
+          final id = p['id']?.toString();
+          if (id != null && id.isNotEmpty) removeMessageById(id);
+          break;
+        }
 
-      case 'task_state': {
-        // aux classify verdict for this session: {goal, phase, classifyState}.
-        // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
-        // renderAuxClassify.
-        final p = evt.payload as Map<String, dynamic>;
-        _classifyGoal = (p['goal'] ?? '').toString().trim();
-        _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
-        _classifyState = (p['classifyState'] ?? '').toString().toUpperCase();
-        notifyListeners();
-        break;
-      }
+      case 'task_state':
+        {
+          // aux classify verdict for this session: {goal, phase, classifyState}.
+          // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
+          // renderAuxClassify.
+          final p = evt.payload as Map<String, dynamic>;
+          _classifyGoal = (p['goal'] ?? '').toString().trim();
+          _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
+          _classifyState = (p['classifyState'] ?? '').toString().toUpperCase();
+          notifyListeners();
+          break;
+        }
 
       case 'role_token_stats':
         // Server pushes per-role token accounting after each turn:
         // payload.role = { main: {…}, sub: {…}|null, subByProvider: […] }
-        _lastRoleTokens = (evt.payload as Map<String, dynamic>)['role'] as Map<String, dynamic>?;
+        _lastRoleTokens =
+            (evt.payload as Map<String, dynamic>)['role']
+                as Map<String, dynamic>?;
         notifyListeners();
         break;
     }
@@ -464,7 +462,9 @@ class ChatProvider extends ChangeNotifier {
     // finishing streaming (because _finishStreaming() sets _currentMsg to null)
     if (_currentMsg != null) {
       if (msg['usage'] != null) {
-        _currentMsg!.usage = MessageUsage.fromJson(msg['usage'] as Map<String, dynamic>);
+        _currentMsg!.usage = MessageUsage.fromJson(
+          msg['usage'] as Map<String, dynamic>,
+        );
       }
 
       // Compute main-model tokens saved by offloading to sub-roles.
@@ -540,9 +540,6 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _replayHistory(List history) {
-    final insertIdx = _currentMsg != null
-        ? _messages.length - 1
-        : _messages.length;
     final parsed = history
         .map((m) {
           try {
@@ -553,7 +550,22 @@ class ChatProvider extends ChangeNotifier {
         })
         .whereType<ChatMessage>()
         .toList();
+    final liveTail = streamingAssistantTail(parsed);
+    // system_init may have created an empty local streaming bubble before the
+    // ordered chat_history frame arrives. Replace that placeholder with the
+    // authoritative cumulative tail instead of keeping both bubbles alive.
+    if (liveTail != null && _currentMsg != null) {
+      _messages.remove(_currentMsg);
+      _currentMsg = null;
+    }
+    final insertIdx = _currentMsg != null
+        ? _messages.length - 1
+        : _messages.length;
     _messages.insertAll(insertIdx, parsed);
+    if (liveTail != null) {
+      _currentMsg = liveTail;
+      _activeTools.clear();
+    }
     notifyListeners();
   }
 
@@ -575,7 +587,7 @@ class ChatProvider extends ChangeNotifier {
     _messages
       ..clear()
       ..addAll(parsed);
-    _currentMsg = null;
+    _currentMsg = streamingAssistantTail(parsed);
     _activeTools.clear();
     notifyListeners();
   }
@@ -592,6 +604,7 @@ class ChatProvider extends ChangeNotifier {
   bool get historyHasMore => _historyHasMore;
   bool get historyLoading => _historyLoading;
   bool get historyExhausted => _historyExhausted;
+
   /// True once the initial `chat_history` page has been applied (or a focus
   /// load has replaced the transcript). The chat screen waits on this before
   /// resolving a deep-link focus so it knows the message list is populated.
@@ -648,7 +661,10 @@ class ChatProvider extends ChangeNotifier {
     _historyLoading = true;
     notifyListeners();
     try {
-      final page = await _service.fetchHistoryPage(beforeId: cursor, limit: limit);
+      final page = await _service.fetchHistoryPage(
+        beforeId: cursor,
+        limit: limit,
+      );
       if (page.messages.isEmpty) {
         _historyExhausted = true;
         _historyHasMore = false;
@@ -677,8 +693,9 @@ class ChatProvider extends ChangeNotifier {
   /// cursor so scroll-up can still fetch older pages adjacent to the window.
   Future<bool> loadHistoryAround(String messageId) async {
     try {
-      final page = await SessionService(settings: settings)
-          .fetchHistoryAround(sessionName, messageId);
+      final page = await SessionService(
+        settings: settings,
+      ).fetchHistoryAround(sessionName, messageId);
       if (!page.found) return false;
       final parsed = page.messages
           .map((m) {
@@ -722,7 +739,11 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Public actions ─────────────────────────────────────────────────────────
 
-  void sendMessage(String text, {bool goal = false, Map<String, dynamic>? goalLimits}) {
+  void sendMessage(
+    String text, {
+    bool goal = false,
+    Map<String, dynamic>? goalLimits,
+  }) {
     final message = text.trim();
     if (message.isEmpty) return;
     final ok = _service.send(message, goal: goal, goalLimits: goalLimits);

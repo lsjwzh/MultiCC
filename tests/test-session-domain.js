@@ -221,6 +221,27 @@ test('chat history upserts one interim message and preserves its id', () => {
   assert.equal(final.messages.length, 1);
   assert.equal(final.messages[0].content, 'final');
   assert.equal(final.messages[0]._interim, undefined);
+  const stale = service.upsertInterim('s1', { content: 'final plus a late cumulative suffix' });
+  assert.equal(stale.ignored, true);
+  assert.equal(service.read('s1').length, 1);
+});
+
+test('chat history read migrates final-then-stale-interim duplicates', () => {
+  const store = new Map([['s1', [
+    { id: 'final-1', role: 'assistant', content: 'same cumulative reply', ts: 10 },
+    { id: 'interim-2', role: 'assistant', content: 'same cumulative reply plus a late suffix', ts: 15, _interim: true },
+  ]]]);
+  const service = createChatHistoryService({
+    history: {
+      read: id => store.get(id) || [],
+      write: (id, messages) => store.set(id, messages),
+      deleteSession: id => store.delete(id),
+      hasPersistedDelivery: () => false,
+    },
+    idFactory: () => 'unused',
+  });
+
+  assert.deepEqual(service.read('s1').map(message => message.id), ['final-1']);
 });
 
 test('chat history pagination fails closed for an unknown before cursor', () => {

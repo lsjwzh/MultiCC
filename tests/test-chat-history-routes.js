@@ -6,7 +6,37 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
-const { createChatHistoryRuntime } = require('../src/routes/chat-history');
+const { buildReplayMessages, createChatHistoryRuntime } = require('../src/routes/chat-history');
+
+test('reconnect promotes a persisted interim into the one live streaming tail', () => {
+  const messages = buildReplayMessages([{
+    id: 'interim-1', role: 'assistant', content: 'first batch', _interim: true, ts: 10,
+  }], {
+    currentAssistantText: 'first batch plus second batch',
+    currentToolCalls: [{ id: 'tool-1', name: 'Read' }],
+    isStreaming: true,
+    _resultSaved: false,
+  }, () => 20);
+
+  assert.equal(messages.length, 1);
+  assert.deepEqual(messages[0], {
+    id: 'interim-1', role: 'assistant', content: 'first batch plus second batch',
+    _interim: true, ts: 20, streaming: true,
+    tools: [{ id: 'tool-1', name: 'Read' }],
+  });
+});
+
+test('reconnect appends an id-less live tail only when no interim exists', () => {
+  const messages = buildReplayMessages([
+    { id: 'user-1', role: 'user', content: 'question' },
+  ], {
+    currentAssistantText: 'answer', currentToolCalls: [], isStreaming: true,
+  }, () => 30);
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].content, 'answer');
+  assert.equal(messages[1].streaming, true);
+  assert.equal(messages[1].id, undefined);
+});
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
