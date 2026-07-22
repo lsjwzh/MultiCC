@@ -170,6 +170,7 @@ function createCommanderMigration(options = {}) {
     commanderPreset,
     selectRuntime,
     createSession,
+    refreshSession,
     validateDirectory,
     validateSession,
   } = options;
@@ -220,8 +221,14 @@ function createCommanderMigration(options = {}) {
             status: 'failed', code: publicFailure(validity, 'commander_session_invalid'),
           });
         }
+        const prompt = typeof commanderPrompt === 'function' ? commanderPrompt() : null;
+        const needsRefresh = typeof prompt === 'string' && prompt.trim()
+          && typed[0].rolePrompt !== prompt;
+        if (needsRefresh && typeof refreshSession === 'function') {
+          await refreshSession(typed[0].id, directoryId, prompt);
+        }
         return report(directoryId, {
-          status: 'ready', action: 'existing', sessionId: typed[0].id,
+          status: 'ready', action: needsRefresh && typeof refreshSession === 'function' ? 'refreshed' : 'existing', sessionId: typed[0].id,
         });
       }
 

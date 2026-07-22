@@ -20,16 +20,16 @@ function dispatchableSessionsFor(sessionId) {
   const from = records.get(sessionId);
   if (!from || !from.dirId) return [];
   const fromCommander = from.type === 'commander';
+  // Commander never receives an LLM dispatch/tool prompt. Its routing decision
+  // is enforced by src/commander-router.js at the host boundary.
+  if (fromCommander) return [];
   return [...records.values()]
     .filter(s => s.id !== sessionId)
     // Never dispatch to a system/commander session: aux/gateway are internal,
     // commander only dispatches out (it is never a worker).
     .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
-    // Commander dispatches across every fleet (D5); everyone else stays in-directory.
-    .filter(s => fromCommander || s.dirId === from.dirId)
-    // Commander only hands work to real chat workers, never a raw terminal session.
-    .filter(s => !fromCommander || s.kind !== 'terminal')
-    .slice(0, fromCommander ? 100 : 30)
+    .filter(s => s.dirId === from.dirId)
+    .slice(0, 30)
     .map(s => {
       const activeChat = chatSessions.get(s.id);
       return {
@@ -46,11 +46,8 @@ function buildDispatchContextPrompt(sessionId) {
   const targets = dispatchableSessionsFor(sessionId);
   if (!targets.length) return '';
   const current = records.get(sessionId);
-  // Commander always gets the target list injected (that is its whole job — the
-  // live session ids can't live in a static role preset); everyone else must opt
-  // in via autoDispatch.
   const isCommander = current?.type === 'commander';
-  if (!current?.autoDispatch && !isCommander) return '';
+  if (isCommander || !current?.autoDispatch) return '';
   const ultra = normalizeEffort(current?.effort) === 'ultracode';
   const intro = ultra
     ? [

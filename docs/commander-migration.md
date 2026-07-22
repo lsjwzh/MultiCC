@@ -8,7 +8,8 @@ the relevant Fleet has completed this migration.
 ## Identity and idempotence rules
 
 The migration is idempotent. A Fleet with one non-ephemeral chat session whose
-`type` is already `commander` is left unchanged. Re-running an upgrade or
+`type` is already `commander` retains that session identity; its role prompt may
+be refreshed to the current router-only contract. Re-running an upgrade or
 restarting the service does not create another session.
 
 Stable metadata is the only Commander identity: the migration does not inspect

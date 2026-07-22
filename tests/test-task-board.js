@@ -150,12 +150,18 @@ test('task board UI exposes a stable Commander routing receipt label', () => {
     },
   }), '已交给 Commander · Agent Commander (commander-1)');
   assert.equal(taskBoardUi.taskRoutingLabel({
+    routing: {
+      mode: 'commander', targetSessionId: 'commander-1', targetLabel: '指挥',
+      workerSessionId: 'worker-3', workerLabel: '弹性 Worker 3', elasticWorkerCreated: true,
+    },
+  }), '已交给 Commander · 指挥 (commander-1) → 弹性 Worker 3 (worker-3) · 动态扩容');
+  assert.equal(taskBoardUi.taskRoutingLabel({
     routing: { mode: 'manual', targetSessionId: 'worker-1' },
   }), '');
   for (const file of ['public/manage-taskboard.js', 'public/meta.html']) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.match(source, /taskRoutingLabel/);
-    assert.match(source, /已交给 Commander/);
+    assert.match(source, /已由 Commander/);
   }
 });
 
@@ -516,7 +522,7 @@ function mkRuntime(overrides = {}) {
       },
     },
     records: new Map([
-      ['sess-1', { id: 'sess-1', kind: 'chat', dirId: 'dir-1', label: '工程师1' }],
+      ['sess-1', { id: 'sess-1', kind: 'chat', type: 'worker', dirId: 'dir-1', label: '工程师1' }],
       ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander' }],
     ]),
     loadHistory: () => [
@@ -526,6 +532,13 @@ function mkRuntime(overrides = {}) {
     dispatchToSession: async (target, message, opts) => {
       dispatches.push({ target, message, opts, route: opts.allowCommander ? 'commander' : 'manual' });
       return { ok: true, chatId: target, operationId: 'op-1', status: 'delivering' };
+    },
+    routeCommanderTask: async ({ commanderId, message, idempotencyKey }) => {
+      dispatches.push({ target: commanderId, message, opts: { idempotencyKey, oneWay: true }, route: 'commander' });
+      return {
+        ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
+        operationId: 'op-1', status: 'delivering', queued: false,
+      };
     },
     workspaceBroadcast: (dirId, payload) => broadcasts.push({ dirId, payload }),
     atomicWriteJson: (f, value) => fs.writeFileSync(f, JSON.stringify(value)),
@@ -701,7 +714,8 @@ test('host task-board dispatch rejects busy targets before durable admission', (
   assert.match(source, /validateDispatchTarget\(targetId, fromSessionId = null, allowCommander = false\)/);
   assert.match(source, /rec\.type === 'commander' && !allowCommander/);
   assert.match(source, /isBusy: taskBoardSessionBusy/);
-  assert.match(source, /replayRecoveredDispatchEffects:[^\n]+type === 'commander'[^\n]+maybeDispatchFromChatTurn/);
+  assert.match(source, /oneWay: !!opts\.oneWay/);
+  assert.match(source, /replayRecoveredDispatchEffects: \(\) => \{\}/);
 });
 
 test('onTurnEnd skips aux/gateway sessions, short replies and injected turns', () => {
@@ -795,10 +809,9 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(dispatches.length, 1);
   assert.equal(dispatches[0].route, 'commander');
   assert.match(dispatches[0].message, /tb:/);
-  assert.match(dispatches[0].message, /使用 dispatch 将任务交给合适的普通 worker/);
+  assert.match(dispatches[0].message, /Commander 单向路由任务/);
   assert.match(dispatches[0].opts.idempotencyKey, /^taskboard:/);
-  assert.equal(dispatches[0].opts.requireIdle, false);
-  assert.equal(dispatches[0].opts.queueIfBusy, true);
+  assert.equal(dispatches[0].opts.oneWay, true);
 
   const stRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/status')(
@@ -824,8 +837,12 @@ test('automatic board routing is Commander-first even with multiple active ordin
     records,
     isSessionBusy: sid => sid !== 'commander-1',
     dispatchToSession: async (target, message, opts) => {
-      (opts.allowCommander ? commanderCalls : workerCalls).push({ target, message, opts });
+      workerCalls.push({ target, message, opts });
       return { ok: true, chatId: target, operationId: 'op-command', status: 'admitted' };
+    },
+    routeCommanderTask: async request => {
+      commanderCalls.push(request);
+      return { ok: true, targetSessionId: 'worker-newest', targetLabel: '最近活跃 worker', operationId: 'op-command', status: 'admitted' };
     },
   });
   const routes = new Map();
@@ -840,10 +857,11 @@ test('automatic board routing is Commander-first even with multiple active ordin
   assert.equal(res.body.routingMode, 'commander');
   assert.equal(commanderCalls.length, 1);
   assert.equal(workerCalls.length, 0, 'task board must never bypass Commander');
-  assert.match(commanderCalls[0].message, /使用 dispatch 将任务交给合适的普通 worker/);
+  assert.match(commanderCalls[0].message, /Commander 单向路由任务/);
+  assert.equal(res.body.workerSessionId, 'worker-newest');
 });
 
-test('busy Commander is durably queued without falling through to a worker and survives refresh', async () => {
+test('Commander busy state is irrelevant; worker queue receipt survives refresh', async () => {
   const commanderCalls = [];
   const workerCalls = [];
   const records = new Map([
@@ -854,8 +872,15 @@ test('busy Commander is durably queued without falling through to a worker and s
     records,
     isSessionBusy: sid => sid === 'commander-1',
     dispatchToSession: async (target, message, opts) => {
-      (opts.allowCommander ? commanderCalls : workerCalls).push({ target, message, opts });
+      workerCalls.push({ target, message, opts });
       return { ok: true, chatId: target, operationId: 'op-queued', status: 'admitted' };
+    },
+    routeCommanderTask: async request => {
+      commanderCalls.push(request);
+      return {
+        ok: true, targetSessionId: 'worker-idle', targetLabel: '空闲 worker',
+        operationId: 'op-queued', status: 'queued', queued: true,
+      };
     },
   });
   const routes = new Map();
@@ -866,18 +891,18 @@ test('busy Commander is durably queued without falling through to a worker and s
 
   assert.equal(res.body.ok, true);
   assert.equal(res.body.queued, true);
-  assert.equal(commanderCalls[0].opts.requireIdle, false);
-  assert.equal(commanderCalls[0].opts.queueIfBusy, true);
+  assert.equal(commanderCalls[0].commanderId, 'commander-1');
   assert.equal(workerCalls.length, 0);
   const saved = JSON.parse(fs.readFileSync(fixture.file, 'utf8'));
   assert.deepEqual(saved.tasks[res.body.taskId].routing, {
     mode: 'commander', targetSessionId: 'commander-1', routedAt: saved.tasks[res.body.taskId].routing.routedAt,
-    operationId: 'op-queued', status: 'queued',
+    workerSessionId: 'worker-idle', operationId: 'op-queued', status: 'queued', oneWay: true,
   });
 
   const restarted = createTaskBoardRuntime(fixture.deps);
   const restored = restarted.getBoard().tasks[res.body.taskId];
   assert.equal(restored.routing.targetSessionId, 'commander-1');
+  assert.equal(restored.routing.workerSessionId, 'worker-idle');
   assert.equal(restored.routing.operationId, 'op-queued');
   const refreshRoutes = new Map();
   restarted.mountRoutes({ get: (p, h) => refreshRoutes.set(p, h), post: (p, h) => refreshRoutes.set(p, h) });
@@ -885,7 +910,8 @@ test('busy Commander is durably queued without falling through to a worker and s
   refreshRoutes.get('/api/task-board')({}, boardRes);
   const dto = boardRes.body.tasks.find(task => task.id === res.body.taskId);
   assert.equal(dto.routing.targetLabel, 'Agent Commander');
-  assert.equal(taskBoardUi.taskRoutingLabel(dto), '已交给 Commander · Agent Commander (commander-1)');
+  assert.equal(dto.routing.workerLabel, '空闲 worker');
+  assert.equal(taskBoardUi.taskRoutingLabel(dto), '已交给 Commander · Agent Commander (commander-1) → 空闲 worker (worker-idle)');
 });
 
 test('automatic routing fails closed without a same-directory typed Commander', async () => {
@@ -968,6 +994,33 @@ test('manual target remains an idle worker-only route', async () => {
   assert.equal(workerCalls[0].target, 'sess-1');
   assert.equal(workerCalls[0].opts.requireIdle, true);
   assert.equal(commanderCalls.length, 0);
+});
+
+test('Commander chat input uses the same card-first one-way route as the board composer', async () => {
+  const routed = [];
+  const { runtime } = mkRuntime({
+    routeCommanderTask: async request => {
+      routed.push(request);
+      return {
+        ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
+        operationId: 'op-chat-input', status: 'admitted', queued: false,
+      };
+    },
+  });
+  const result = await runtime.routeCommanderInput('commander-1', '实现新的路由入口', {
+    idempotencyKey: 'client-message-1',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.targetSessionId, 'sess-1');
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].commanderId, 'commander-1');
+  assert.equal(routed[0].idempotencyKey, 'client-message-1');
+  assert.match(routed[0].message, /Commander 单向路由任务/);
+  assert.match(routed[0].message, /｜tb:/);
+  const task = runtime.getBoard().tasks[result.taskId];
+  assert.equal(task.routing.targetSessionId, 'commander-1');
+  assert.equal(task.routing.workerSessionId, 'sess-1');
+  assert.equal(task.routing.oneWay, true);
 });
 
 test('backfill scans dir sessions, tags turns via aux and reports progress', async () => {
@@ -1067,7 +1120,7 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
     { params: { taskId: tid }, body: { text: '继续', goal: true, goalLimits: { maxRounds: '50' } } }, r1);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r1.body.ok, true);
-  assert.match(dispatches[0].message, /^\[Goal 模式限制\]\nrounds=50\n\[限制结束\]\n\n【任务面板自动路由】/);
+  assert.match(dispatches[0].message, /^\[Goal 模式限制\]\nrounds=50\n\[限制结束\]\n\n【Commander 单向路由任务】/);
   assert.match(dispatches[0].message, /【任务：T｜tb:/);
 
   const r2 = res();

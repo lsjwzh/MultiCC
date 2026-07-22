@@ -124,12 +124,17 @@ function normalizeTaskRouting(value) {
     targetSessionId,
     routedAt: Math.max(0, Number(value.routedAt) || 0),
   };
+  const workerSessionId = typeof value.workerSessionId === 'string'
+    ? value.workerSessionId.trim().slice(0, 200) : '';
   const operationId = typeof value.operationId === 'string'
     ? value.operationId.trim().slice(0, 200) : '';
   const status = typeof value.status === 'string' && /^[a-z0-9_-]{1,40}$/i.test(value.status)
     ? value.status : '';
+  if (workerSessionId) routing.workerSessionId = workerSessionId;
   if (operationId) routing.operationId = operationId;
   if (status) routing.status = status;
+  if (value.oneWay === true) routing.oneWay = true;
+  if (value.elasticWorkerCreated === true) routing.elasticWorkerCreated = true;
   return routing;
 }
 
@@ -822,10 +827,9 @@ function buildRoutedMessage(task, text) {
 function buildCommanderRoutedMessage(task, text) {
   const routed = buildRoutedMessage(task, text);
   return [
-    '【任务面板自动路由】',
-    '你是本 Fleet 的 Agent Commander。请根据任务语义和各会话职责，使用 dispatch 将任务交给合适的普通 worker；不要由你亲自实现。',
-    '不得把任务注入正在 running/busy/active 的普通会话；没有安全目标时请明确报告并等待，不得绕过本指挥链。',
-    `派发给 worker 时必须原样保留任务标记「｜tb:${task.id}】」，以便结果归档。`,
+    '【Commander 单向路由任务】',
+    '这是宿主路由器直接投递的执行任务。请在当前 worker 会话完成，不要再次分发。',
+    '结果保留在当前 worker 与任务卡中，不会自动回灌 Commander。',
     '',
     routed,
   ].join('\n');
