@@ -299,6 +299,7 @@ class ChatService {
         // button + thinking bubble while the web client has already ended.
         isStreaming = false;
         _cancelRequested = false;
+        _emit('stream_end', msg);
         break;
 
       case 'chat_msg_meta':

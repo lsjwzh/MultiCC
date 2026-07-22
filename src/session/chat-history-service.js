@@ -10,6 +10,13 @@ function stableTools(value) {
   return JSON.stringify(value || null);
 }
 
+function sameAssistantPayload(left, right) {
+  return !!left && !!right
+    && left.role === 'assistant' && right.role === 'assistant'
+    && left.content === right.content
+    && stableTools(left.tools) === stableTools(right.tools);
+}
+
 function cleanThinkingBlocks(message) {
   if (!message || !Array.isArray(message.content)) return message;
   message.content = message.content.filter((block) => !(
@@ -69,11 +76,32 @@ function createChatHistoryService({
 
   function normalize(source) {
     if (!Array.isArray(source)) return [];
-    return source.filter(item => item && typeof item === 'object').map((item) => {
+    const normalized = [];
+    for (const item of source.filter(item => item && typeof item === 'object')) {
       const message = cleanThinkingBlocks(jsonClone(item));
       if (message.role && !message.id) message.id = String(idFactory());
-      return message;
-    });
+      if (message.role === 'assistant' && !message._interim) {
+        while (normalized.at(-1)?.role === 'assistant' && normalized.at(-1)?._interim) {
+          normalized.pop();
+        }
+      } else if (message.role === 'assistant' && message._interim) {
+        const previous = normalized.at(-1);
+        if (previous?.role === 'assistant' && previous._interim) {
+          message.id = previous.id || message.id;
+          normalized[normalized.length - 1] = message;
+          continue;
+        }
+        // A new assistant turn cannot start without an intervening user
+        // message. Any interim immediately after a finalized assistant is a
+        // late timer write from that already-closed turn, even if its
+        // cumulative payload advanced after the final snapshot.
+        if (previous?.role === 'assistant' && !previous._interim) {
+          continue;
+        }
+      }
+      normalized.push(message);
+    }
+    return normalized;
   }
 
   function current(sessionId) {
@@ -149,8 +177,7 @@ function createChatHistoryService({
 
     if (message.role === 'assistant' && messages.length) {
       const previous = messages[messages.length - 1];
-      if (previous.role === 'assistant' && previous.content === message.content &&
-          stableTools(previous.tools) === stableTools(message.tools)) {
+      if (sameAssistantPayload(previous, message)) {
         if (message.usage) previous.usage = message.usage;
         if (message.cost != null) previous.cost = message.cost;
         if (message.durationMs != null) previous.durationMs = message.durationMs;
@@ -198,6 +225,20 @@ function createChatHistoryService({
     }
     message.role = 'assistant';
     message._interim = true;
+
+    // A final assistant at the tail proves the turn is already closed. With no
+    // intervening user message, every later interim belongs to that same turn;
+    // comparing only exact payloads misses a late, longer cumulative snapshot.
+    const latest = messages.at(-1);
+    if (latest?.role === 'assistant' && !latest._interim) {
+      return Object.freeze({
+        ignored: true,
+        replaced: false,
+        dropped: Object.freeze([]),
+        message: jsonClone(latest),
+        messages: jsonClone(messages),
+      });
+    }
 
     // Collapse a trailing run left by an older implementation into one entry.
     // Preserve the first visible interim id so an already-rendered bubble keeps

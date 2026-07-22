@@ -90,6 +90,36 @@ function publicCommittedMessage(message) {
   return Object.freeze(projected);
 }
 
+// Build the authoritative reconnect page without representing one live turn
+// twice. Incremental crash-safety persistence may already have placed a
+// trailing `_interim` assistant in the canonical page; in that case promote
+// that same stable-id message to the live streaming tail instead of appending
+// a second id-less copy containing the cumulative text again.
+function buildReplayMessages(pageMessages, state, now = Date.now) {
+  const messages = Array.isArray(pageMessages)
+    ? pageMessages.map(message => ({ ...message }))
+    : [];
+  const text = String(state?.currentAssistantText || '');
+  const tools = Array.isArray(state?.currentToolCalls) ? state.currentToolCalls : [];
+  const hasInProgress = !state?._resultSaved && !!(text || tools.length);
+  if (!hasInProgress) return messages;
+
+  const live = {
+    role: 'assistant',
+    content: text,
+    tools: tools.length ? tools : undefined,
+    ts: now(),
+    streaming: state?.isStreaming === true,
+  };
+  const last = messages[messages.length - 1];
+  if (last?.role === 'assistant' && last._interim) {
+    messages[messages.length - 1] = { ...last, ...live, id: last.id };
+  } else {
+    messages.push(live);
+  }
+  return messages;
+}
+
 function createChatHistoryRuntime(rawDeps) {
   const deps = assertChatHistoryDeps(rawDeps);
   const logger = deps.logger || console;
@@ -487,5 +517,6 @@ module.exports = {
   DEFAULT_INCREMENTAL_SAVE_DELAY_MS,
   DEFAULT_MEMORY_DISTILL_BATCH,
   createChatHistoryRuntime,
+  buildReplayMessages,
   publicCommittedMessage,
 };
