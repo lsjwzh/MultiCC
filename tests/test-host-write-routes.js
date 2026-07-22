@@ -340,6 +340,14 @@ test('tunnel settings validate public access and pass only normalized keys', asy
   assert.deepEqual(guarded.body, { error: '开启外网访问前必须先设置 ACCESS_TOKEN' });
   assert.equal(received, undefined);
 
+  const cliGuarded = await invoke(routes, '/api/settings/tunnel', {
+    local: true,
+    body: { sakurafrp: { enabled: true, url: 'https://sakura.example.test' } },
+  });
+  assert.equal(cliGuarded.statusCode, 400);
+  assert.deepEqual(cliGuarded.body, { error: '开启外网访问前必须先设置 ACCESS_TOKEN' });
+  assert.equal(received, undefined);
+
   state.accessToken = 'token';
   const response = await invoke(routes, '/api/settings/tunnel', {
     local: true,
@@ -360,6 +368,9 @@ test('tunnel settings validate public access and pass only normalized keys', asy
     body: {
       phddns: { enabled: true, url: '  https://p.example.test  ', ignored: 'drop' },
       tailscale: { enabled: true, url: ' https://t.example.test ', funnel: true, funnelPort: 3456 },
+      natapp: { enabled: false, url: ' https://n.example.test ', authtoken: ' nat-secret ', port: 3100, startCmd: ' natapp -authtoken={authtoken} ', ignored: 'drop' },
+      cpolar: { enabled: false, url: '', authtoken: '', port: 3200, startCmd: 'cpolar http {port}' },
+      sakurafrp: { enabled: true, url: ' https://sakura.example.test ', authtoken: ' sf-secret ', port: 3300, startCmd: 'frpc -f {authtoken}' },
       intervalSec: 40,
       failThreshold: 2,
       restartCooldownSec: 0,
@@ -370,6 +381,9 @@ test('tunnel settings validate public access and pass only normalized keys', asy
   assert.deepEqual(received, {
     phddns: { enabled: true, url: 'https://p.example.test' },
     tailscale: { enabled: true, url: 'https://t.example.test' },
+    natapp: { enabled: false, url: 'https://n.example.test', authtoken: 'nat-secret', port: 3100, startCmd: 'natapp -authtoken={authtoken}' },
+    cpolar: { enabled: false, url: '', authtoken: '', port: 3200, startCmd: 'cpolar http {port}' },
+    sakurafrp: { enabled: true, url: 'https://sakura.example.test', authtoken: 'sf-secret', port: 3300, startCmd: 'frpc -f {authtoken}' },
     intervalSec: 40,
     failThreshold: 2,
     restartCooldownSec: 0,
@@ -397,6 +411,11 @@ test('tunnel settings reject overflow and fractional guardrails before persisten
     { failThreshold: 101 },
     { restartCooldownSec: 86401 },
     { maxRestartsPerHour: 0 },
+    { sakurafrp: { url: 'not-a-url' } },
+    { sakurafrp: { port: 0 } },
+    { sakurafrp: { port: 3000.5 } },
+    { sakurafrp: { startCmd: 'frpc\nrm -rf /tmp/x' } },
+    { sakurafrp: { authtoken: 'bad\0token' } },
   ]) {
     const response = await invoke(routes, '/api/settings/tunnel', { body });
     assert.equal(response.statusCode, 400, JSON.stringify(body));
@@ -528,6 +547,22 @@ test('access-token writes durably before hot reload and refuses unsafe clearing'
   });
   assert.equal(guarded.statusCode, 400);
   assert.equal(state.accessToken, 'new-token');
+
+  const cliTunnel = createHarness({
+    tunnel: {
+      getStatus: () => ({ config: { sakurafrp: { enabled: true } } }),
+      applyConfig: update => update,
+      restartNow: async () => ({ ok: true }),
+      setFunnel: async () => ({ ok: true }),
+      funnelStatus: async () => '',
+    },
+  });
+  const cliGuarded = await invoke(cliTunnel.routes, '/api/settings/access-token', {
+    local: true,
+    body: { token: '' },
+  });
+  assert.equal(cliGuarded.statusCode, 400);
+  assert.equal(cliTunnel.state.accessToken, 'old-token');
 });
 
 test('access-token and boolean persistence failures leave live values unchanged', async () => {
@@ -763,6 +798,57 @@ test('tunnel config exposes natapp/cpolar/sakurafrp providers with default schem
     // restartNow dispatches the new restarters via RESTARTERS; an unknown name
     // is still rejected so the route surface is unchanged for foreign input.
     assert.deepEqual(await tunnel.restartNow('nope'), { ok: false, error: 'unknown provider' });
+  } finally {
+    if (tunnel) tunnel.stop();
+    delete require.cache[modulePath];
+    if (previousDataDir === undefined) delete process.env.MULTICC_DATA_DIR;
+    else process.env.MULTICC_DATA_DIR = previousDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('SakuraFrp settings round-trip through the HTTP boundary and durable reload', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-sakurafrp-roundtrip-'));
+  const previousDataDir = process.env.MULTICC_DATA_DIR;
+  const modulePath = require.resolve('../src/tunnel');
+  process.env.MULTICC_DATA_DIR = dataDir;
+  delete require.cache[modulePath];
+  let tunnel;
+  try {
+    tunnel = require('../src/tunnel');
+    const { routes } = createHarness({
+      tunnel,
+      getAccessToken: () => 'configured-access-token',
+    });
+    const expected = {
+      enabled: true,
+      url: 'https://sakura.example.test/manage',
+      authtoken: 'sakura-secret',
+      port: 3300,
+      startCmd: 'frpc -f {authtoken}',
+    };
+    const response = await invoke(routes, '/api/settings/tunnel', {
+      local: true,
+      body: { sakurafrp: { ...expected } },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.ok, true);
+    assert.deepEqual(response.body.config.sakurafrp, expected);
+    assert.deepEqual(tunnel.getStatus().config.sakurafrp, expected);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(dataDir, 'tunnel-config.json'), 'utf8')).sakurafrp,
+      expected,
+    );
+
+    tunnel.stop();
+    delete require.cache[modulePath];
+    tunnel = require('../src/tunnel');
+    tunnel.init();
+    assert.deepEqual(tunnel.getStatus().config.sakurafrp, expected);
+
+    const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-host-settings.js'), 'utf8');
+    assert.match(ui, /const d = await res\.json\(\)\.catch/);
+    assert.match(ui, /d\?\.error \|\| \('HTTP ' \+ res\.status\)/);
   } finally {
     if (tunnel) tunnel.stop();
     delete require.cache[modulePath];
