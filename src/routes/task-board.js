@@ -12,7 +12,6 @@
 //   loadHistory        — sessionId → message[] (deep copy)
 //   dispatchToSession  — (targetId, message, opts) → Promise<{ok,...}>
 //   workspaceBroadcast — (dirId, payload) → void (reaches /ws/meta clients)
-//   isLocalRequest     — req → bool (mutation gate, same as host-write)
 //   atomicWriteJson    — (file, value) → void
 //   isSystemInjected   — msgText → bool (skip recovery/nudge turns)
 
@@ -22,7 +21,7 @@ const core = require('../task-board');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
-  'workspaceBroadcast', 'isLocalRequest', 'atomicWriteJson', 'isSystemInjected',
+  'workspaceBroadcast', 'atomicWriteJson', 'isSystemInjected',
   'getSessionRunState', 'isSessionBusy',
 ];
 
@@ -39,7 +38,7 @@ function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
   const {
     file, auxQueue, records, loadHistory, dispatchToSession,
-    workspaceBroadcast, isLocalRequest, atomicWriteJson, isSystemInjected,
+    workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState, isSessionBusy,
   } = deps;
   const logger = deps.logger || console;
@@ -548,7 +547,6 @@ function createTaskBoardRuntime(deps) {
   }
 
   async function handleBackfill(req, res) {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     if (backfillState.running) {
       return res.status(409).json({ error: 'backfill_running', state: { ...backfillState } });
     }
@@ -586,6 +584,10 @@ function createTaskBoardRuntime(deps) {
   }
 
   // ── REST ──────────────────────────────────────────────────────────────────
+  // Authentication/authorization is owned by the app-level API gate, which is
+  // mounted before this runtime. Task-board mutations are ordinary product
+  // operations and must work for authenticated remote administrators; do not
+  // add a transport-locality check here.
 
   function taskDto(task) {
     return core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
@@ -639,7 +641,6 @@ function createTaskBoardRuntime(deps) {
   }
 
   async function handleSend(req, res) {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     const text = String(req.body?.text || '').trim();
@@ -676,7 +677,6 @@ function createTaskBoardRuntime(deps) {
   // explicit idle target or the most relevant idle chat session in the directory.
   // The marker lets turn-end classification converge that same card in place.
   async function handleBoardSend(req, res) {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const dirId = String(req.body?.dirId || '').trim() || null;
@@ -722,7 +722,6 @@ function createTaskBoardRuntime(deps) {
   }
 
   function handleStatus(req, res) {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     const status = String(req.body?.status || '');
@@ -738,7 +737,6 @@ function createTaskBoardRuntime(deps) {
   }
 
   function handleReclassify(req, res) {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     if (!task.classification) return res.status(409).json({ error: 'not_pending' });
@@ -752,7 +750,6 @@ function createTaskBoardRuntime(deps) {
   }
 
   function handleReclassifyPending(req, res) {
-    if (!isLocalRequest(req)) return res.status(403).json({ error: 'forbidden' });
     if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
       return res.status(503).json({ error: 'aux_unhealthy' });
     }
