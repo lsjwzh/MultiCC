@@ -775,28 +775,44 @@ for (const session of persistedSessions.values()) {
 // they are migrated over. saveDirectories() remains as a delegate for them.
 const { createDirectoryModule } = require('./src/directory');
 
-// Seed TWO default Agent Commander chat sessions for a newly-registered directory
-// (session-domain logic, exposed to the directory domain via its session port):
-// one under Claude, one under Codex — so every fleet has both CLI commanders.
+// D2: pick the commander's default CLI/provider — prefer a configured Claude
+// provider, then Codex, else fall back to Claude default login. model stays null
+// so the commander follows whatever model that provider defaults to (never a
+// hard-coded id, which would rot when the provider swaps models).
+// providerDefaults is a module-scope const initialised later in file order but
+// this runs only at request time (directory register), so it is always ready.
+function pickCommanderProvider() {
+  const claude = providers.listProviders('claude');
+  if (claude.length) return { cli: 'claude', provider: providerDefaults.claude || claude[0].id, model: null };
+  const codex = providers.listProviders('codex');
+  if (codex.length) return { cli: 'codex', provider: providerDefaults.codex || codex[0].id, model: null };
+  return { cli: 'claude', provider: null, model: null };   // fresh install: default OAuth login
+}
+
+// Seed the fleet's single Agent Commander chat session on directory registration
+// (session-domain logic, exposed to the directory domain via its session port).
+// The commander only dispatches (type='commander' keeps it out of every worker
+// target pool and gives it cross-fleet reach); its persona comes from the Agent
+// Commander preset (D6), editable per-session like any other role.
 async function seedCommanderSession(dir) {
   const commander = agentCommanderPrompt();
   if (!commander) {
     console.warn('[multicc] Agent Commander preset not found; skipping seed sessions for new dir');
     return;
   }
-  for (const cli of ['claude', 'codex']) {
-    const label = cli === 'codex' ? '🫡 Agent Commander (Codex)' : '🫡 Agent Commander';
-    const r = await createSessionRecord({
-      dir, cli, kind: 'chat', label,
-      persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
-    });
-    if (r.ok) {
-      r.session.rolePrompt = commander;
-      savePersistedSessionsBestEffort('directory.seed-commander-role');
-      appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
-    } else {
-      console.warn(`[multicc] seed ${cli} commander session failed for dir ${dir.id}: ${r.error}`);
-    }
+  // Idempotent: exactly one commander per fleet (D1). Skip if one already exists
+  // (guards re-registration and boot back-fill from racing in a duplicate).
+  if ([...persistedSessions.values()].some(s => s.dirId === dir.id && s.type === 'commander')) return;
+  const { cli, provider, model } = pickCommanderProvider();
+  const r = await createSessionRecord({
+    dir, cli, kind: 'chat', label: '🫡 Agent Commander',
+    type: 'commander', model, provider, rolePrompt: commander,
+    persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
+  });
+  if (r.ok) {
+    appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
+  } else {
+    console.warn(`[multicc] seed commander session failed for dir ${dir.id}: ${r.error}`);
   }
 }
 
