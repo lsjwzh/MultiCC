@@ -129,6 +129,8 @@ test('busy and rejected turns retry, then deliver after the session is available
   await runtime.tick();
   assert.equal(calls.length, 0);
   assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'pending');
+  assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).attempts, 0,
+    'expected busy contention must not consume the durable retry budget');
 
   busy = false;
   await runtime.tick();

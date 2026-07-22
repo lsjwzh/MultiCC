@@ -127,8 +127,10 @@ test('preset cache and commander prompt preserve provider default resolution', a
   assert.equal(xf.body.defaultProviderId, 'xf-model');
   assert.equal(xf.body.defaultProviderName, 'summary:xf-model');
   const server = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(server, /const commander = agentCommanderPrompt\(\);[\s\S]*r\.session\.rolePrompt = commander;/);
+  assert.match(server, /const commander = agentCommanderPrompt\(\);[\s\S]*createSessionRecord\(\{[\s\S]*rolePrompt: commander,/);
   assert.doesNotMatch(server, /r\.session\.rolePrompt = commander\.prompt/);
+  assert.equal(server.includes("return /^(?:🫡\\s*)?agent commander$/i.test(t) || t === '指挥' || /^commander$/i.test(t);"), true,
+    'legacy migration accepts exact historical labels, never arbitrary label substrings');
 });
 
 test('preset list strips prompts while detail preserves them and returns legacy errors', async () => {

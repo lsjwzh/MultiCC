@@ -136,7 +136,7 @@
     <section class="fleet" id="fleet"></section>
   </div>
   <section class="task-detail" id="task-detail">
-    <div class="td-placeholder">点击左侧「任务板」中的任务，查看它在各会话中的完整对话轨迹，<br>并可从下方输入框直接派发后续消息（自动路由到合适的会话）。</div>
+     <div class="td-placeholder">点击左侧「任务板」中的任务，查看它在各会话中的完整对话轨迹，<br>并可从下方输入框派发后续消息（自动路由会先交给 Agent Commander）。</div>
   </section>
   <aside>
     <h2>向会话派活 / 发消息</h2>
@@ -324,6 +324,11 @@ function classificationLabel(c) {
     retry_wait: '等待重试', failed: '归类失败' })[c?.state] || '待归类';
 }
 
+function taskRoutingHtml(task) {
+  const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
+  return label ? `<span class="tb-route-state">🫡 ${esc(label)}</span>` : '';
+}
+
 async function reclassifyTask(taskId, button) {
   if (button) button.disabled = true;
   try {
@@ -378,7 +383,7 @@ function renderTaskBoard() {
       row.innerHTML = `
         <span class="tb-icon">${display.icon}</span>
         <span class="tb-title">${esc(t.title)}</span>
-        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${t.classification ? `<span class="tb-class-state ${esc(t.classification.state)}" title="${esc(t.classification.lastError || '')}">${esc(classificationLabel(t.classification))}</span>` : ''}${retryable ? '<button class="tb-reclassify">重新归类</button>' : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
+        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}${t.classification ? `<span class="tb-class-state ${esc(t.classification.state)}" title="${esc(t.classification.lastError || '')}">${esc(classificationLabel(t.classification))}</span>` : ''}${retryable ? '<button class="tb-reclassify">重新归类</button>' : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
       const retry = row.querySelector('.tb-reclassify');
       if (retry) retry.onclick = (e) => { e.stopPropagation(); reclassifyTask(t.id, retry); };
@@ -394,7 +399,7 @@ function renderTaskBoard() {
     const clsRun = display.running ? ' running' : '';
     const row = document.createElement('div');
     row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
-    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title">${esc(t.title)}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span><span>${t.refCount}轮</span></span>`;
+    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title">${esc(t.title)}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}<span>${t.refCount}轮</span></span>`;
     row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
     box.appendChild(row);
   }
@@ -432,6 +437,8 @@ function renderTaskDetail(d) {
     const href = window.MultiCCTaskBoardUi.sessionChatUrl(sid);
     return `<a class="td-chip td-session-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="打开对应会话">🖥 ${esc(tb.sessionLabels?.[sid] || sid)} ↗</a>`;
   }).join('');
+  const routingLabel = window.MultiCCTaskBoardUi.taskRoutingLabel(t);
+  const routingChip = routingLabel ? `<span class="td-chip tb-route-state">🫡 ${esc(routingLabel)}</span>` : '';
   const areaChips = (t.areas || []).map(a => `<span class="td-chip">${esc(a)}</span>`).join('');
   head.innerHTML = `
     <div class="td-crumb">${esc(mod ? mod.name : '未分组')} ›</div>
@@ -446,7 +453,7 @@ function renderTaskDetail(d) {
         <button class="btn-sec" id="td-archive">🗄 归档</button>
       </span>
     </div>
-    <div class="td-chips">${sessChips}${areaChips}</div>`;
+    <div class="td-chips">${routingChip}${sessChips}${areaChips}</div>`;
   panel.appendChild(head);
 
   const msgs = document.createElement('div'); msgs.className = 'td-msgs';
@@ -473,11 +480,12 @@ function renderTaskDetail(d) {
   panel.appendChild(msgs);
 
   const compose = document.createElement('div'); compose.className = 'td-compose';
-  const targetOptions = ['<option value="">🎯 自动路由</option>']
-    .concat(t.sessionIds.map(sid =>
+  const commanderId = t.routing?.mode === 'commander' ? t.routing.targetSessionId : null;
+  const targetOptions = ['<option value="">🎯 自动路由（Commander-first）</option>']
+    .concat(t.sessionIds.filter(sid => sid !== commanderId).map(sid =>
       `<option value="${esc(sid)}">${esc(tb.sessionLabels?.[sid] || sid)}</option>`)).join('');
   compose.innerHTML = `
-    <textarea id="td-input" placeholder="向该任务派发后续消息…（仅路由到空闲且最相关的会话）"></textarea>
+    <textarea id="td-input" placeholder="向该任务派发后续消息…（自动路由先交给 Agent Commander）"></textarea>
     <div class="td-compose-row">
       <select id="td-target">${targetOptions}</select>
       <button id="td-send">🚀 发送</button>
@@ -519,7 +527,9 @@ function renderTaskDetail(d) {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text, target }) });
       const res = await r.json();
       if (!r.ok || !res.ok) throw new Error(res.note || res.error || r.status);
-      resultEl.textContent = `已路由到「${res.targetLabel}」，回复将自动归档回本任务`;
+      resultEl.textContent = res.routingMode === 'commander'
+        ? `已交给 Commander「${res.targetLabel}」${res.queued ? '（已安全排队）' : ''}`
+        : `已路由到「${res.targetLabel}」，回复将自动归档回本任务`;
       resultEl.className = 'msg ok';
       input.value = '';
       showGatheringFloat();

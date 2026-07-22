@@ -10,7 +10,7 @@
 //   auxQueue           — { enqueue, cancel, isUnhealthy } from mountAuxGoalRoutes
 //   records            — persistedSessions Map (sessionId → record)
 //   loadHistory        — sessionId → message[] (deep copy)
-//   dispatchToSession  — (targetId, message, opts) → Promise<{ok,...}>
+//   dispatchToSession  — durable dispatch; Commander access requires an internal flag
 //   workspaceBroadcast — (dirId, payload) → void (reaches /ws/meta clients)
 //   atomicWriteJson    — (file, value) → void
 //   isSystemInjected   — msgText → bool (skip recovery/nudge turns)
@@ -558,7 +558,7 @@ function createTaskBoardRuntime(deps) {
     const candidates = [];
     for (const [sid, rec] of records) {
       if (!rec || rec.kind !== 'chat') continue;
-      if (rec.type === 'aux' || rec.type === 'gateway' || rec.ephemeral) continue;
+      if (rec.type === 'aux' || rec.type === 'gateway' || rec.type === 'commander' || rec.ephemeral) continue;
       if (dirId && rec.dirId !== dirId) continue;
       candidates.push([sid, rec]);
     }
@@ -589,14 +589,35 @@ function createTaskBoardRuntime(deps) {
   // operations and must work for authenticated remote administrators; do not
   // add a transport-locality check here.
 
+  function commanderFailure(res, code) {
+    const notes = {
+      directory_required: '自动路由必须指定任务所属 Fleet',
+      commander_not_found: '该 Fleet 没有带稳定角色元数据的 Agent Commander，请先创建或修复 Commander 会话',
+      commander_ambiguous: '该 Fleet 存在多个 Agent Commander，无法安全确定唯一入口，请先修复角色配置',
+    };
+    return res.status(code === 'directory_required' ? 400 : 409).json({
+      error: code || 'commander_unavailable',
+      note: notes[code] || 'Agent Commander 当前不可用',
+    });
+  }
+
   function taskDto(task) {
-    return core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
+    const dto = core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
+    if (dto?.routing) {
+      dto.routing.targetLabel = records.get(dto.routing.targetSessionId)?.label || dto.routing.targetSessionId;
+    }
+    return dto;
   }
 
   function handleBoard(req, res) {
     const dto = core.buildBoardDto(board, getSessionRunState);
     const labels = {};
     for (const t of dto.tasks) {
+      if (t.routing) {
+        const sid = t.routing.targetSessionId;
+        labels[sid] = records.get(sid)?.label || sid;
+        t.routing.targetLabel = labels[sid];
+      }
       for (const sid of t.sessionIds) {
         if (!(sid in labels)) labels[sid] = records.get(sid)?.label || sid;
       }
@@ -646,58 +667,109 @@ function createTaskBoardRuntime(deps) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const explicit = String(req.body?.target || '').trim() || null;
-    if (explicit && isSessionBusy(explicit)) {
-      return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
+    let target;
+    let routeMode;
+    let wasBusy = false;
+    if (explicit) {
+      if (isSessionBusy(explicit)) {
+        return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
+      }
+      target = core.pickRouteTarget(board, task, records, explicit, {
+        queryText: text,
+        isAvailable: sid => !isSessionBusy(sid),
+      });
+      if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '指定会话不可路由或不属于任务所在 Fleet' });
+      if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
+      routeMode = 'manual';
+    } else {
+      const commander = core.resolveDirectoryCommander(records, core.taskDirId(board, task));
+      if (!commander.ok) return commanderFailure(res, commander.code);
+      target = commander.sessionId;
+      routeMode = 'commander';
+      wasBusy = isSessionBusy(target);
     }
-    const target = core.pickRouteTarget(board, task, records, explicit, {
-      queryText: text,
-      isAvailable: sid => !isSessionBusy(sid),
-    });
-    if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '没有空闲且与该任务相关的可路由会话' });
-    if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
-    const message = goalNoteFor(req.body) + core.buildRoutedMessage(task, text);
+    const routed = routeMode === 'commander'
+      ? core.buildCommanderRoutedMessage(task, text)
+      : core.buildRoutedMessage(task, text);
+    const message = goalNoteFor(req.body) + routed;
     const result = await dispatchToSession(target, message, {
       idempotencyKey: `taskboard:${task.id}:${crypto.randomUUID()}`,
-      requireIdle: true,
+      requireIdle: routeMode === 'manual',
+      queueIfBusy: routeMode === 'commander',
+      allowCommander: routeMode === 'commander',
     });
     if (!result.ok) {
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
       return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
     }
+    core.setTaskRouting(task, {
+      mode: routeMode,
+      targetSessionId: target,
+      operationId: result.operationId || '',
+      status: wasBusy ? 'queued' : (result.status || 'admitted'),
+      routedAt: Date.now(),
+    });
+    save();
+    notify(core.taskDirId(board, task), [task.id]);
     res.json({
       ok: true,
       target,
       targetLabel: records.get(target)?.label || target,
+      routingMode: routeMode,
+      commanderSessionId: routeMode === 'commander' ? target : null,
+      queued: routeMode === 'commander' && wasBusy,
       chatId: result.chatId,
       operationId: result.operationId || null,
     });
   }
 
-  // Board-level composer: reserve a visible card first, then route to the
-  // explicit idle target or the most relevant idle chat session in the directory.
+  // Board-level composer: reserve a visible card first, then route either to
+  // the explicitly selected idle worker or the directory's typed Commander.
   // The marker lets turn-end classification converge that same card in place.
   async function handleBoardSend(req, res) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const dirId = String(req.body?.dirId || '').trim() || null;
     const explicit = String(req.body?.target || '').trim() || null;
-    if (explicit && isSessionBusy(explicit)) {
-      return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
+    let target;
+    let routeMode;
+    let wasBusy = false;
+    if (explicit) {
+      if (isSessionBusy(explicit)) {
+        return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
+      }
+      target = core.pickDirTarget(records, dirId, explicit, {
+        queryText: text,
+        isAvailable: sid => !isSessionBusy(sid),
+      });
+      if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '指定会话不可路由或不属于该 Fleet' });
+      if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
+      routeMode = 'manual';
+    } else {
+      const commander = core.resolveDirectoryCommander(records, dirId);
+      if (!commander.ok) return commanderFailure(res, commander.code);
+      target = commander.sessionId;
+      routeMode = 'commander';
+      wasBusy = isSessionBusy(target);
     }
-    const target = core.pickDirTarget(records, dirId, explicit, {
-      queryText: text,
-      isAvailable: sid => !isSessionBusy(sid),
-    });
-    if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '该 Fleet 下没有空闲且与消息相关的 chat 会话' });
-    if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
     const pending = core.createPendingTask(board, { dirId, sessionId: target, seed: text });
+    const routedAt = Date.now();
+    core.setTaskRouting(pending, {
+      mode: routeMode, targetSessionId: target,
+      status: wasBusy ? 'queued' : 'admitted', routedAt,
+    });
     save();
     notify(dirId, [pending.id], 'created');
     let result;
     try {
-      result = await dispatchToSession(target, goalNoteFor(req.body) + core.buildRoutedMessage(pending, text), {
+      const routed = routeMode === 'commander'
+        ? core.buildCommanderRoutedMessage(pending, text)
+        : core.buildRoutedMessage(pending, text);
+      result = await dispatchToSession(target, goalNoteFor(req.body) + routed, {
         idempotencyKey: `taskboard:${pending.id}:${crypto.randomUUID()}`,
-        requireIdle: true,
+        requireIdle: routeMode === 'manual',
+        queueIfBusy: routeMode === 'commander',
+        allowCommander: routeMode === 'commander',
       });
     } catch (e) {
       result = { ok: false, error: e?.message || 'dispatch_failed' };
@@ -711,11 +783,23 @@ function createTaskBoardRuntime(deps) {
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
       return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
     }
+    core.setTaskRouting(pending, {
+      mode: routeMode,
+      targetSessionId: target,
+      operationId: result.operationId || '',
+      status: wasBusy ? 'queued' : (result.status || 'admitted'),
+      routedAt,
+    });
+    save();
+    notify(dirId, [pending.id]);
     res.json({
       ok: true,
       taskId: pending.id,
       target,
       targetLabel: records.get(target)?.label || target,
+      routingMode: routeMode,
+      commanderSessionId: routeMode === 'commander' ? target : null,
+      queued: routeMode === 'commander' && wasBusy,
       chatId: result.chatId,
       operationId: result.operationId || null,
     });
