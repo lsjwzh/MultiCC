@@ -19,6 +19,16 @@ const fs = require('fs');
 const crypto = require('crypto');
 const core = require('../task-board');
 
+// HTML-escape for embedding user/text into a receipt that is later rendered as
+// markdown in the chat window. Mirrors public/safe-markdown.js escapeHtml so the
+// raw user body shows verbatim (and can't break out of the <details>/<pre> fold
+// or inject markup). The front-end DOMPurify pass is the defense-in-depth backstop.
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
   'routeCommanderTask',
@@ -90,14 +100,27 @@ function createTaskBoardRuntime(deps) {
   // in-window too — same visibility as a chat-window (A path) dispatch. Still
   // one-way: this only states WHAT was dispatched and to WHOM; the worker's
   // result never flows back.
-  function writeCommanderDispatchReceipt(commanderId, task, result) {
+  function writeCommanderDispatchReceipt(commanderId, task, result, userText = '') {
     if (!appendChatMessage) return;
     try {
       const workerLabel = (result.targetLabel
         || records.get(result.targetSessionId)?.label
         || result.targetSessionId || '').toString();
       const elastic = result.elasticWorkerCreated ? '（已动态增加 worker）' : result.queued ? '（已排队）' : '';
-      const receipt = `📨 已把任务「${task.title}」派给 ${workerLabel}${elastic}。\n（单向派发，结果不回流指挥，进度见任务卡）`;
+      // Head line keeps the existing info (task title, worker, status, card entry).
+      // task.title/workerLabel are escaped too, so a title like "**x**" or "<b>"
+      // renders literally instead of hijacking the markdown layout.
+      const head = `📨 已把任务「${escapeHtml(task.title)}」派给 ${escapeHtml(workerLabel)}${elastic}。\n（单向派发，结果不回流指挥，进度见任务卡）`;
+      // The task title is only a generic label ("新任务" for a fresh card). The
+      // real trigger text lives in userText — show it verbatim in a collapsible
+      // <details> fold. <pre><code> preserves newlines/whitespace and the escaped
+      // body can't break the fold (</details> → &lt;/details&gt;) or run markup.
+      // marked treats the blank-line-separated <details>…</details> as a raw HTML
+      // block; DOMPurify keeps details/summary/pre/code (fail-closed → escapeHtml).
+      const raw = String(userText || '').trim();
+      const receipt = raw
+        ? `${head}\n\n<details><summary>触发派发的用户消息（点击展开）</summary>\n<pre><code>${escapeHtml(raw)}</code></pre>\n</details>`
+        : head;   // old records / no body → head only, unchanged
       const saved = appendChatMessage(commanderId, { role: 'assistant', content: receipt, ts: Date.now() });
       if (chatBroadcast) {
         chatBroadcast(commanderId, { type: 'assistant', message: { content: [{ type: 'text', text: receipt }], id: saved?.id } });
@@ -802,7 +825,7 @@ function createTaskBoardRuntime(deps) {
     });
     save();
     notify(core.taskDirId(board, task), [task.id]);
-    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, task, result);
+    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, task, result, text);
     res.json({
       ok: true,
       target,
@@ -888,7 +911,7 @@ function createTaskBoardRuntime(deps) {
     });
     save();
     notify(dirId, [pending.id]);
-    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, pending, result);
+    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, pending, result, text);
     res.json({
       ok: true,
       taskId: pending.id,
@@ -994,6 +1017,7 @@ function createTaskBoardRuntime(deps) {
     onTurnEnd,
     onClassifyGoal,
     scanPendingClassifications,
+    writeCommanderDispatchReceipt,   // exposed for tests (also called internally by handleSend/handleBoardSend)
     routeCommanderInput: async (commanderId, text, options = {}) => {
       const commander = records.get(commanderId);
       if (!commander || commander.type !== 'commander' || commander.kind !== 'chat') {

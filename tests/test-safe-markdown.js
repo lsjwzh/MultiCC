@@ -86,3 +86,21 @@ test('chat loads purifier and the shared boundary before host rendering', () => 
   assert.equal((VIEW.match(/\.innerHTML\s*=/g) || []).length, 1);
   assert.doesNotMatch(HTML, /cdn\.jsdelivr\.net\/npm\/dompurify/i);
 });
+
+// The Commander dispatch receipt (src/routes/task-board.js) folds the user's
+// trigger message into <details><summary>…<pre><code>escaped</code></pre>. That
+// only stays visible if the sanitizer keeps those structural tags — guard it so
+// a future FORBID_TAGS tweak can't silently strip the fold.
+test('sanitizer keeps the tags the dispatch-receipt fold depends on', () => {
+  for (const tag of ['details', 'summary', 'pre', 'code', 'blockquote']) {
+    assert.ok(!safeMarkdown.SANITIZE_CONFIG.FORBID_TAGS.includes(tag), `must not forbid ${tag}`);
+  }
+  assert.equal(safeMarkdown.SANITIZE_CONFIG.USE_PROFILES.html, true);
+});
+
+test('escapeHtml neutralizes fold-breaking and script payloads verbatim', () => {
+  assert.equal(safeMarkdown.escapeHtml('</details>'), '&lt;/details&gt;');
+  assert.equal(safeMarkdown.escapeHtml('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
+  assert.equal(safeMarkdown.escapeHtml('a & b < c > d'), 'a &amp; b &lt; c &gt; d');
+  assert.equal(safeMarkdown.escapeHtml('让工程师改 README'), '让工程师改 README');   // CJK/plain untouched
+});
