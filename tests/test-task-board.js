@@ -895,6 +895,34 @@ test('automatic board routing is Commander-first even with multiple active ordin
   assert.equal(res.body.workerSessionId, 'worker-newest');
 });
 
+test('panel-routed (B path) Commander dispatch leaves a one-way receipt in the commander history', async () => {
+  const appended = [];
+  const broadcasts = [];
+  const { runtime } = mkRuntime({
+    appendChatMessage: (sessionId, msg) => { const saved = { ...msg, id: `m-${appended.length}` }; appended.push({ sessionId, ...saved }); return saved; },
+    chatBroadcast: (sessionId, payload) => broadcasts.push({ sessionId, payload }),
+    routeCommanderTask: async () => ({
+      ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
+      operationId: 'op-1', status: 'admitted', queued: false,
+    }),
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const res = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: '让工程师改 README' } }, res);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(res.body.routingMode, 'commander');
+  // A receipt is written to the COMMANDER's own history (not the worker's).
+  const receipt = appended.find(m => m.sessionId === 'commander-1' && m.role === 'assistant');
+  assert.ok(receipt, 'commander history should carry a dispatch receipt');
+  assert.match(receipt.content, /已把任务/);
+  assert.match(receipt.content, /工程师1/);           // names the worker
+  assert.match(receipt.content, /结果不回流指挥/);      // stays one-way in wording
+  // And it is pushed live to the commander's window.
+  assert.ok(broadcasts.some(b => b.sessionId === 'commander-1' && b.payload.type === 'assistant'));
+});
+
 test('Commander busy state is irrelevant; worker queue receipt survives refresh', async () => {
   const commanderCalls = [];
   const workerCalls = [];
