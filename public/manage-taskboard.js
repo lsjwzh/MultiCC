@@ -117,26 +117,26 @@ function renderTaskBoardSection(dirId, opts) {
       </div>`);
     if (collapsed) continue;
     for (const t of list) {
-      const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
-      const clsRun = t.runState === 'running' ? ' running' : '';
+      const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
+      const clsRun = display.running ? ' running' : '';
       rowsHtml.push(`
-        <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-          <span class="tb-icon">${icon}</span>
+        <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
+          <span class="tb-icon">${display.icon}</span>
           <span class="tb-title">${_tbEsc(t.title)}</span>
-          <span class="tb-task-meta">${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
+          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
         </div>`);
     }
   }
   // Orphans (module list pruned or filtered out) still need to be reachable.
   const seen = new Set(mods.map(m => m.id));
   for (const t of window.MultiCCTaskBoardUi.sortTasks(tasks.filter(x => !seen.has(x.moduleId)))) {
-    const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
-    const clsRun = t.runState === 'running' ? ' running' : '';
+    const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
+    const clsRun = display.running ? ' running' : '';
     rowsHtml.push(`
-      <div class="tb-task${t.status === 'done' ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-        <span class="tb-icon">${icon}</span>
+      <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
+        <span class="tb-icon">${display.icon}</span>
         <span class="tb-title">${_tbEsc(t.title)}</span>
-        <span class="tb-task-meta">${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
+        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
       </div>`);
   }
   const body = rowsHtml.length
