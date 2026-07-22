@@ -1273,31 +1273,12 @@ bus.on('chat:dispatch-complete', (dispatchId, sessionName, finalText) => {
     .catch(error => console.error(`[multicc/dispatch] finalize ${dispatchId} failed: ${error.message}`));
 });
 
-// Cross-session dispatch is same-directory and non-system; durable result flow
-// returns through finalizeDispatch. Ultracode gets one cooldown-limited nudge
-// when it narrates dispatch intent without producing a marker or API dispatch.
-const lastDispatchOutAt = new Map();   // dispatcherId → ts of last real dispatch (marker or API)
-const lastUltraNudgeAt = new Map();    // dispatcherId → ts of last nudge
-const ULTRA_NUDGE_COOLDOWN_MS = 15 * 60 * 1000;
-const ULTRA_DISPATCH_INTENT_RE = /(分发|派发|派给|分派|指派|交给|dispatch)[^\n]{0,60}(ultra\s*worker|worker|子会话|兄弟会话)|(ultra\s*worker)[^\n]{0,60}(分发|派发|并行|执行)/i;
-function maybeNudgeUltracodeDispatch(dispatcherId, finalText) {
-  const rec = persistedSessions.get(dispatcherId);
-  if (!rec || normalizeEffort(rec.effort) !== 'ultracode') return;
-  if (!ULTRA_DISPATCH_INTENT_RE.test(finalText || '')) return;
-  const now = Date.now();
-  if (now - (lastDispatchOutAt.get(dispatcherId) || 0) < 10 * 60 * 1000) return;
-  if (now - (lastUltraNudgeAt.get(dispatcherId) || 0) < ULTRA_NUDGE_COOLDOWN_MS) return;
-  lastUltraNudgeAt.set(dispatcherId, now);
-  const hint = dispatchTargetHintFor(dispatcherId);
-  waitInjector.safeInject(dispatcherId,
-    '⚠️ 你提到要把任务分发给 worker，但这轮既没有输出 <<dispatch>> 标记、也没有调用 dispatch API —— worker session 实际上什么都没收到（run-detached 只是后台 shell 命令，不等于派活）。' +
-    '若要真正派活：target 必须逐字复制可用目标 sessions 里的真实 id，不要写 ...、worker session id 或 <目标会话id>。' +
-    `${hint}。` +
-    '可以在回复文本末尾输出 dispatch 标记，或 POST /api/sessions/$MULTICC_SESSION_ID/dispatch（JSON body 包含真实 target 和 message）。若你有意自己完成全部工作，忽略本提示继续即可。');
-}
+// Cross-session dispatch is driven only by structured evidence: a parsed
+// <<dispatch>> marker here, or the dispatch HTTP API. Assistant prose is never
+// interpreted as routing intent.
 function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   const markers = parseAllDispatchMarkers(finalText);
-  if (!markers.length) { maybeNudgeUltracodeDispatch(dispatcherId, finalText); return; }
+  if (!markers.length) return;
   const from = persistedSessions.get(dispatcherId);
   if (!from) return;
   // Commander dispatches ONE-WAY: it fires tasks at workers but their results
@@ -1306,24 +1287,23 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   // list). Every other session stays two-way (replyTo → results return).
   const oneWay = from.type === 'commander';
   const deliveries = [];
-  lastDispatchOutAt.set(dispatcherId, Date.now());
   const history = loadChatHistory(dispatcherId);
   const sourceMessage = [...history].reverse().find(entry => entry && entry.role === 'assistant');
   const sourceKey = sourceMessage?.id || crypto.createHash('sha256').update(String(finalText || '')).digest('hex').slice(0, 24);
   for (const [markerIndex, mk] of markers.entries()) {
     if (mk.target === dispatcherId) continue;                       // no self-dispatch
     const v = validateDispatchTarget(mk.target, dispatcherId);
-    if (!v.ok) { waitInjector.safeInject(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
+    if (!v.ok) { waitInjector.injectSystemMsg(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
     // Commander dispatches cross-fleet (D5); every other session is limited to its own directory.
-    if (v.rec.dirId !== from.dirId && from.type !== 'commander') { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
+    if (v.rec.dirId !== from.dirId && from.type !== 'commander') { waitInjector.injectSystemMsg(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
     deliveries.push(dispatchToSession(mk.target, mk.message, {
       replyTo: dispatcherId,
       oneWay,
       idempotencyKey: `marker:${dispatcherId}:${sourceKey}:${markerIndex}`,
     })
-      .then(r => { if (!r.ok) waitInjector.safeInject(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
-      .catch(e => waitInjector.safeInject(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`)));
+      .then(r => { if (!r.ok) waitInjector.injectSystemMsg(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
+      .catch(e => waitInjector.injectSystemMsg(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`)));
   }
   return Promise.all(deliveries);
 }
@@ -2864,7 +2844,6 @@ async function executeDispatchContract(fromId, body, options = {}) {
   if (!validation.ok) return { status: 400, error: validation.error, code: 'invalid_target' };
   if (validation.rec.dirId !== from.dirId) return { status: 400, error: '只能分发给同目录会话', code: 'cross_directory' };
   appendEvent(from.dirId, 'dispatch', `→ ${validation.rec.label || target}`, from.id);
-  lastDispatchOutAt.set(from.id, Date.now());
   try {
     const result = await dispatchToSession(target, message, {
       replyTo: from.id,
