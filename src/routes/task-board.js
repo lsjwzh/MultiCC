@@ -887,7 +887,13 @@ function createTaskBoardRuntime(deps) {
     const result = queueTaskClassification(task.id, { manual: true });
     if (!result.ok) {
       const status = result.error === 'aux_unhealthy' ? 503 : 409;
-      const note = result.error === 'missing_context' ? '任务缺少可用于归类的内容' : null;
+      // A card with no resolvable input can never be classified — tell the user
+      // it's a dead card they can delete, not just that content is "missing".
+      const note = result.error === 'missing_context'
+        ? '该任务卡没有可归类的对话内容（无有效会话引用），无法归类，可手动删除此卡'
+        : result.error === 'aux_unhealthy'
+        ? '归类服务（aux）暂不可用，请稍后重试'
+        : null;
       return res.status(status).json({ error: result.error, note });
     }
     res.json({ ok: true, queued: true, task: taskDto(task) });
