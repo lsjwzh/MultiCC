@@ -312,7 +312,10 @@ test('run-detached preserves cwd, idempotency, defaults, daemon and response DTO
     },
   });
   assert.deepEqual(started.response.body, {
-    ok: true, taskId: 'task1', waitId: null, pid: 99, logPath: '/tmp/log',
+    ok: true, executionKind: 'detached_process', workerDispatched: false,
+    dispatchEndpoint: '/api/sessions/s1/dispatch',
+    note: '已启动后台 shell 进程；这不会向 worker 会话派活。如需派活，请调用 POST /api/sessions/s1/dispatch。',
+    taskId: 'task1', waitId: null, pid: 99, logPath: '/tmp/log',
     intervalSec: 3, maxChecks: 360, daemon: true, operationId: 'op1',
     status: 'running', duplicate: true,
   });

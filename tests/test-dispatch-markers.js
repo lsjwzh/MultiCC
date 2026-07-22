@@ -8,6 +8,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   parseDispatchMarker,
   parseAllDispatchMarkers,
@@ -53,6 +55,17 @@ test('parseAllDispatchMarkers returns every marker in order', () => {
   assert.deepEqual(parseAllDispatchMarkers(''), []);
   // Incomplete markers are skipped (empty target/message).
   assert.deepEqual(parseAllDispatchMarkers('<<dispatch target="">x</dispatch>>'), []);
+});
+
+test('natural-language dispatch narration is inert without a structured marker', () => {
+  assert.deepEqual(parseAllDispatchMarkers('我已经把任务派给了 xxx worker，现在等它完成。'), []);
+  assert.deepEqual(parseAllDispatchMarkers('这是对 dispatch 和 worker 路由的历史复盘，不是执行指令。'), []);
+});
+
+test('chat host does not infer dispatch intent from assistant prose', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.doesNotMatch(source, /ULTRA_DISPATCH_INTENT_RE|maybeNudgeUltracodeDispatch|lastUltraNudgeAt/);
+  assert.match(source, /const markers = parseAllDispatchMarkers\(finalText\);\s*if \(!markers\.length\) return;/);
 });
 
 test('isDispatchPlaceholderTarget flags the ids the model must not use as targets', () => {
