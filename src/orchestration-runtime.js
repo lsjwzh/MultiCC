@@ -63,6 +63,7 @@ function createOrchestrationRuntime({
   probe = async () => { throw new Error('poll probe is not configured'); },
   detachedAdapter = null,
   recoverDispatchResult = async () => null,
+  replayRecoveredDispatchEffects = async () => {},
   now = Date.now,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -535,6 +536,7 @@ function createOrchestrationRuntime({
       try { recovered = await recoverDispatchResult(operation); }
       catch (error) { log(`[orchestration] dispatch ${operation.id} history recovery failed: ${error.message}`); }
       if (recovered && recovered.completed) {
+        await replayRecoveredDispatchEffects(operation, recovered);
         await operations.completeDispatch(operation.id, {
           status: 'completed',
           text: recovered.text || '',

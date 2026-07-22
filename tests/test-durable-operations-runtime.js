@@ -61,6 +61,7 @@ function buildRuntime(shared, overrides = {}) {
     deliverOutbox: overrides.deliverOutbox || null,
     detachedAdapter: overrides.detachedAdapter || null,
     recoverDispatchResult: overrides.recoverDispatchResult || (async () => null),
+    replayRecoveredDispatchEffects: overrides.replayRecoveredDispatchEffects || (async () => {}),
     setIntervalFn: () => ({ unref() {} }),
     clearIntervalFn: () => {},
     workerIntervalMs: 60_000,
@@ -198,6 +199,34 @@ test('restart recovers a persisted dispatch reply from history before emitting o
   assert.equal(shared.deliveries.filter(entry => entry.sessionId === 'worker-chat').length, 1);
   assert.equal(shared.deliveries.filter(entry => entry.sessionId === 'parent').length, 1);
   assert.match(shared.deliveries.find(entry => entry.sessionId === 'parent').text, /persisted worker reply/);
+  await rebuilt.stop();
+});
+
+test('restart replays recovered Commander fan-out before completing the parent dispatch', async t => {
+  const shared = dataFixture(t);
+  const first = buildRuntime(shared);
+  const admitted = await first.admitDispatch({
+    ownerSessionId: 'task-board', resultSessionId: 'task-board', idempotencyKey: 'commander-recovery',
+    spec: {
+      targetId: 'commander', chatId: 'commander-chat', message: 'route work',
+      replyTo: null, gateway: true,
+    },
+  });
+  await first.tick();
+
+  const marker = '<<dispatch target="worker">recovered work</dispatch>>';
+  let rebuilt;
+  const replayed = [];
+  rebuilt = buildRuntime(shared, {
+    recoverDispatchResult: async () => ({ completed: true, text: marker }),
+    replayRecoveredDispatchEffects: async (operation, recovered) => {
+      assert.equal((await rebuilt.operations.get(operation.id)).status, 'running');
+      replayed.push({ operationId: operation.id, text: recovered.text });
+    },
+  });
+  await rebuilt.start();
+  assert.deepEqual(replayed, [{ operationId: admitted.id, text: marker }]);
+  assert.equal((await rebuilt.operations.get(admitted.id)).status, 'completed');
   await rebuilt.stop();
 });
 
