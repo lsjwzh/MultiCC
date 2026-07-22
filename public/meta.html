@@ -485,7 +485,7 @@ function renderTaskDetail(d) {
     .concat(t.sessionIds.filter(sid => sid !== commanderId).map(sid =>
       `<option value="${esc(sid)}">${esc(tb.sessionLabels?.[sid] || sid)}</option>`)).join('');
   compose.innerHTML = `
-    <textarea id="td-input" placeholder="向该任务派发后续消息…（自动路由先交给 Agent Commander）"></textarea>
+        <textarea id="td-input" placeholder="向该任务派发后续消息…（Commander 单向路由到空闲 worker）"></textarea>
     <div class="td-compose-row">
       <select id="td-target">${targetOptions}</select>
       <button id="td-send">🚀 发送</button>
@@ -528,7 +528,7 @@ function renderTaskDetail(d) {
       const res = await r.json();
       if (!r.ok || !res.ok) throw new Error(res.note || res.error || r.status);
       resultEl.textContent = res.routingMode === 'commander'
-        ? `已交给 Commander「${res.targetLabel}」${res.queued ? '（已安全排队）' : ''}`
+        ? `已由 Commander「${res.targetLabel}」单向路由到「${res.workerLabel || res.workerSessionId}」${res.elasticWorkerCreated ? '（已动态增加 worker）' : res.queued ? '（已安全排队）' : ''}`
         : `已路由到「${res.targetLabel}」，回复将自动归档回本任务`;
       resultEl.className = 'msg ok';
       input.value = '';

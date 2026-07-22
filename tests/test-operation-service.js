@@ -123,6 +123,29 @@ test('dispatch request/result outboxes are atomic and duplicate results are payl
   );
 });
 
+test('one-way Commander dispatch completes durably without a result outbox', async t => {
+  const { store, service } = fixture(t);
+  const admitted = await service.admitDispatch({
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'one-way-1',
+    spec: {
+      targetId: 'worker', chatId: 'worker', message: 'implement',
+      replyTo: null, gateway: false, oneWay: true,
+    },
+  });
+  const completed = await service.completeDispatch(admitted.id, {
+    status: 'completed', text: 'done',
+  });
+  assert.equal(completed.ok, true);
+  const operation = await service.get(admitted.id);
+  const snapshot = await store.snapshot();
+  assert.equal(operation.status, 'completed');
+  assert.equal(operation.resultOutboxId, null);
+  assert.equal(snapshot.outbox[`operation:${admitted.id}:request`].payload.type, 'dispatch.request');
+  assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
+});
+
 test('task ledger records terminal output and interrupts only unproven active tasks', async t => {
   const { store, service } = fixture(t);
   await service.observeTask({

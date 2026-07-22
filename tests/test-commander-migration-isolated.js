@@ -8,6 +8,7 @@ const net = require('node:net');
 const { execFileSync, spawn } = require('node:child_process');
 const { assertTestDir, createPaths } = require('../src/paths');
 const { readJson, writeJsonAtomic } = require('../src/state-store');
+const { COMMANDER_ROUTER_PROMPT } = require('../src/routes/agent-resources');
 
 const ROOT = path.join(__dirname, '..');
 const LIVE_SERVERS = new Set();
@@ -144,11 +145,14 @@ async function json(base, route, options) {
     assert.equal(commander.cli, 'codex');
     assert.equal(commander.provider, null);
     assert.equal(commander.model, null);
-    assert.ok(commander.rolePrompt.length > 1000, 'new Commander carries complete role prompt');
+    assert.equal(commander.rolePrompt, COMMANDER_ROUTER_PROMPT, 'new Commander carries the router-only role prompt');
     assert.equal(fs.existsSync(durable.worktreePath), true);
     assert.equal(execFileSync('git', ['branch', '--list', durable.branch], {
       cwd: directories.find(directory => directory.id === dirId).path, encoding: 'utf8',
     }).trim().length > 0, true);
+  }
+  for (const commander of all.filter(session => session.type === 'commander')) {
+    assert.equal(commander.rolePrompt, COMMANDER_ROUTER_PROMPT, 'existing Commander is refreshed to router-only');
   }
   const beforeRestartIds = all.filter(session => session.type === 'commander').map(session => session.id).sort();
   await stopServer(server);

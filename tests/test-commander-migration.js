@@ -48,6 +48,7 @@ function harness(t, { directories: inputDirectories, records: inputRecords, fail
   const records = inputRecords || new Map();
   const state = createCommanderMigrationState();
   const creates = [];
+  const refreshes = [];
   const migration = createCommanderMigration({
     state,
     directories,
@@ -66,6 +67,14 @@ function harness(t, { directories: inputDirectories, records: inputRecords, fail
         ? [{ id: 'codex-good' }]
         : [{ id: 'claude-good' }],
     }),
+    refreshSession: (sessionId, directoryId, rolePrompt) => {
+      const record = records.get(sessionId);
+      assert.equal(record.dirId, directoryId);
+      assert.equal(record.type, 'commander');
+      record.rolePrompt = rolePrompt;
+      refreshes.push(sessionId);
+      return record;
+    },
     createSession: async spec => {
       creates.push(spec);
       if (spec.dir.id === failCreateFor) return { ok: false, code: 'commander_create_injected' };
@@ -77,7 +86,7 @@ function harness(t, { directories: inputDirectories, records: inputRecords, fail
     },
     logger: { info() {}, error() {} },
   });
-  return { ...first, directories, records, state, migration, creates };
+  return { ...first, directories, records, state, migration, creates, refreshes };
 }
 
 test('empty Fleet creates one normal typed Commander and repeated migration is idempotent', async t => {
@@ -99,15 +108,17 @@ test('empty Fleet creates one normal typed Commander and repeated migration is i
   assert.equal(second.results[0].action, 'existing');
 });
 
-test('an existing typed Commander is retained without creating another', async t => {
+test('an existing typed Commander is retained and refreshed to the router-only role', async t => {
   const fleet = makeTempFleet(t, 'dir-typed');
   const records = new Map([['typed', {
     id: 'typed', dirId: fleet.directory.id, kind: 'chat', type: 'commander', label: 'custom label',
   }]]);
   const h = harness(t, { directories: new Map([[fleet.directory.id, fleet.directory]]), records });
   const result = await h.migration.run();
-  assert.equal(result.results[0].action, 'existing');
+  assert.equal(result.results[0].action, 'refreshed');
   assert.equal(h.creates.length, 0);
+  assert.deepEqual(h.refreshes, ['typed']);
+  assert.match(records.get('typed').rolePrompt, /complete current role/);
 });
 
 test('all untyped historical and same-name sessions remain untouched while fresh Commanders are created', async t => {
@@ -198,6 +209,13 @@ test('a newly migrated Commander is identified by the task board and safely queu
       dispatches.push({ target, message, options });
       return { ok: true, operationId: 'queued-op', status: 'admitted' };
     },
+    routeCommanderTask: async ({ commanderId, message, idempotencyKey }) => {
+      dispatches.push({ target: commanderId, message, options: { idempotencyKey, oneWay: true } });
+      return {
+        ok: true, targetSessionId: 'elastic-worker', targetLabel: '弹性 Worker',
+        operationId: 'queued-op', status: 'admitted', queued: false, elasticWorkerCreated: true,
+      };
+    },
     workspaceBroadcast() {},
     atomicWriteJson: (file, value) => fs.writeFileSync(file, JSON.stringify(value)),
     isSystemInjected: () => false,
@@ -214,9 +232,9 @@ test('a newly migrated Commander is identified by the task board and safely queu
 
   assert.equal(response.code, 200);
   assert.equal(response.body.target, 'commander-dir-a');
-  assert.equal(response.body.queued, true);
+  assert.equal(response.body.queued, false);
+  assert.equal(response.body.workerSessionId, 'elastic-worker');
+  assert.equal(response.body.elasticWorkerCreated, true);
   assert.equal(dispatches.length, 1);
-  assert.equal(dispatches[0].options.allowCommander, true);
-  assert.equal(dispatches[0].options.queueIfBusy, true);
-  assert.equal(dispatches[0].options.requireIdle, false);
+  assert.equal(dispatches[0].options.oneWay, true);
 });

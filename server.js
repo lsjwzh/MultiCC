@@ -105,11 +105,8 @@ const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { mountVoiceRoutes } = require('./src/routes/voice');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board');
-const {
-  chooseCommanderRuntime, commanderDirectoryValidity,
-  createCommanderMigration,
-  createCommanderMigrationState,
-} = require('./src/commander-migration');
+const { createCommanderMigrationState } = require('./src/commander-migration');
+const { createCommanderMigrationHost, createCommanderRoutingHost, createCommanderIngress } = require('./src/commander-host-runtime');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -913,31 +910,6 @@ const directoryModule = createDirectoryModule({
 });
 const directories = directoryModule.repo.map();
 function saveDirectories() { directoryModule.repo.save(); }
-commanderMigrationRunner = createCommanderMigration({
-  state: commanderMigrationState,
-  directories,
-  records: persistedSessions,
-  commanderPrompt: agentCommanderPrompt,
-  commanderPreset: agentCommanderPreset,
-  validateDirectory: dir => commanderDirectoryValidity(dir, directories, {
-    exists: fs.existsSync,
-    isDirectory: value => fs.statSync(value).isDirectory(),
-    isHomeOrAbove,
-    realPathOf,
-  }),
-  validateSession: session => ({ valid: !!session.worktreePath && !!session.branch && fs.existsSync(session.worktreePath) && !invalidSessions.has(session.id), code: 'commander_session_invalid' }),
-  selectRuntime: (dir, preset) => chooseCommanderRuntime({
-    directory: dir,
-    records: persistedSessions,
-    preset,
-    supportedClis: SUPPORTED_CHAT_CLIS,
-    availability: cliAvailabilitySummary(),
-    providerDefaults,
-    listProviders: cli => providers.listProviders(cli),
-  }),
-  createSession: spec => createSessionRecord(spec),
-  logger,
-});
 if (_state.needsSave) {
   saveDirectories();
   sessionPersistence.mutate('startup.schema-migration', () => {});
@@ -1198,7 +1170,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
   if (opts.requireIdle && taskBoardSessionBusy(chatId)) {
     return { ok: false, error: 'target_busy', code: 'target_busy', chatId };
   }
-  const ownerSessionId = opts.replyTo || GATEWAY_ID;
+  const ownerSessionId = opts.ownerSessionId || opts.replyTo || GATEWAY_ID;
   const admitted = await orchestrationRuntime.admitDispatch({
     ownerSessionId,
     resultSessionId: ownerSessionId,
@@ -1209,7 +1181,8 @@ async function dispatchToSession(targetId, message, opts = {}) {
       chatId,
       message,
       replyTo: opts.replyTo || null,
-      gateway: !opts.replyTo,
+      gateway: !opts.replyTo && !opts.oneWay,
+      oneWay: !!opts.oneWay,
     },
   });
   const dispatchId = admitted.id;
@@ -1220,7 +1193,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
     createdAt: admitted.createdAt,
   });
   // Keep the dispatcher's card waiting while its worker runs.
-  if (opts.replyTo && !TERMINAL_DISPATCH_STATUS.has(admitted.status)) {
+  if (opts.replyTo && !opts.oneWay && !TERMINAL_DISPATCH_STATUS.has(admitted.status)) {
     addPendingDispatch(opts.replyTo, dispatchId, targetId);
   }
   return {
@@ -1327,6 +1300,7 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   if (!markers.length) { maybeNudgeUltracodeDispatch(dispatcherId, finalText); return; }
   const from = persistedSessions.get(dispatcherId);
   if (!from) return;
+  if (from.type === 'commander') return;
   const deliveries = [];
   lastDispatchOutAt.set(dispatcherId, Date.now());
   const history = loadChatHistory(dispatcherId);
@@ -1815,10 +1789,8 @@ app.use(createMemoModule({
 }).router);
 
 // Create + persist an isolated session record (its own git worktree + branch).
-// Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
-// to create/reuse a named session (e.g. ephemeral gateway chats). Returns
-// { ok:true, id, session, reused? } or { ok:false, error }.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, type = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+// Shared creation boundary; an explicit id creates or reuses a named session.
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, type = null, elasticWorker = false, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1890,6 +1862,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   };
   if (rp) session.rolePrompt = rp;
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
+  if (type === 'worker' && elasticWorker) session.elasticWorker = true;
   if (ephemeral) session.ephemeral = true;
   if (kind === 'chat') ensureCliStates(session);
   try {
@@ -3212,12 +3185,18 @@ function taskBoardSessionBusy(sid) {
   const prep = chatTurnPreparationRuntime.snapshot(sid);
   return prep.phase !== 'idle' || !!chatSessions.get(sid)?.isStreaming || orchestrationChatBusy(sid) || !!defaultRepoActor.isLeased(sid);
 }
+const commanderRouter = createCommanderRoutingHost({
+  records: persistedSessions, directories, isBusy: taskBoardSessionBusy,
+  sessionPersistence, createSessionRecord, dispatchToSession,
+  maxElasticWorkers: process.env.MULTICC_COMMANDER_MAX_ELASTIC_WORKERS, logger,
+});
 const taskBoardRuntime = createTaskBoardRuntime({
   file: MULTICC_PATHS.taskBoardFile,
   auxQueue,
   records: persistedSessions,
   loadHistory: sessionId => loadChatHistory(sessionId),
-  dispatchToSession: (target, message, opts) => dispatchToSession(target, message, opts),
+  dispatchToSession,
+  routeCommanderTask: commanderRouter.route,
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
@@ -3277,6 +3256,13 @@ const providerRoutes = createProviderRoutes({
   logger: console,
 });
 const { providerDefaults, validProviderId } = providerRoutes;
+commanderMigrationRunner = createCommanderMigrationHost({
+  state: commanderMigrationState, directories, records: persistedSessions,
+  commanderPrompt: agentCommanderPrompt, commanderPreset: agentCommanderPreset,
+  fs, isHomeOrAbove, realPathOf, invalidSessions,
+  supportedClis: SUPPORTED_CHAT_CLIS, cliAvailabilitySummary, providerDefaults, providers,
+  sessionPersistence, createSessionRecord, logger,
+});
 providerRoutes.mountCatalogRoutes(app);
 
 // Token APIs remain between the two Provider route phases so the established
@@ -4798,12 +4784,19 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   logger,
 });
 
+const commanderIngress = createCommanderIngress({
+  historyService: chatHistoryService, appendMessage: appendChatMessage,
+  broadcast: chatBroadcast, setStatus: setSessionStatus,
+  taskBoardRuntime, orchestrationRuntime, logger,
+});
+
 function runChatTurn(sessionName, text, opts = {}) {
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
     return false;
   }
+  if (persisted.type === 'commander') return commanderIngress.runTurn(sessionName, text, opts);
 
   // Normalize once at the host boundary. Native CLI session ids and provider
   // credentials stay outside the pure request; only proof of native history is
@@ -5508,7 +5501,7 @@ orchestrationRuntime = createOrchestrationRuntime({
   probe: probeExplicitWait,
   detachedAdapter: detached,
   recoverDispatchResult: recoverDispatchOperation,
-  replayRecoveredDispatchEffects: (operation, recovered) => persistedSessions.get(operation.spec.chatId)?.type === 'commander' ? maybeDispatchFromChatTurn(operation.spec.chatId, recovered.text) : undefined,
+  replayRecoveredDispatchEffects: () => {},
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
