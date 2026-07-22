@@ -41,6 +41,24 @@ function routePostTurn(input = {}) {
 
   const originDispatchId = clean(input.originDispatchId);
   if (originDispatchId) {
+    // A typed Commander is the one deliberate exception to the anti-fan-out
+    // rule below. Task-board automatic routing is the only host path allowed
+    // to dispatch into a Commander, whose entire job is to inspect its result
+    // for worker dispatch markers. Ordinary dispatched workers still return
+    // directly and can never cascade into another worker.
+    if (input.sessionType === 'commander') {
+      const markerEffectId = `commander-dispatch:${turnId}`;
+      if (turnId && !receipts.has(markerEffectId)) {
+        effects.push(Object.freeze({
+          type: 'inspect-dispatch-markers',
+          effectId: markerEffectId,
+          requiresDeliveryProof: false,
+          sessionId,
+          turnId,
+          finalText,
+        }));
+      }
+    }
     const effectId = `dispatch-return:${originDispatchId}`;
     if (!receipts.has(effectId)) {
       effects.push(deliveryEffect('complete-dispatch', effectId, {
@@ -49,8 +67,9 @@ function routePostTurn(input = {}) {
         finalText,
       }));
     }
-    // Origin dispatch always wins. A worker reply containing another marker is
-    // never routed through the normal marker scanner (anti-fan-out guard).
+    // Origin dispatch always owns the result return. Except for the typed
+    // Commander above, a worker reply containing another marker is never sent
+    // through the marker scanner (anti-fan-out guard).
     return Object.freeze({ route: 'dispatch-return', effects: Object.freeze(effects) });
   }
 
