@@ -221,15 +221,20 @@ test('chat history upserts one interim message and preserves its id', () => {
   assert.equal(final.messages.length, 1);
   assert.equal(final.messages[0].content, 'final');
   assert.equal(final.messages[0]._interim, undefined);
-  const stale = service.upsertInterim('s1', { content: 'final plus a late cumulative suffix' });
+  const stale = service.upsertInterim('s1', { content: 'final' });
   assert.equal(stale.ignored, true);
   assert.equal(service.read('s1').length, 1);
+
+  const continuation = service.upsertInterim('s1', { content: 'system continuation without a visible user message' });
+  assert.equal(continuation.ignored, undefined);
+  assert.equal(continuation.messages.length, 2);
+  assert.equal(continuation.messages[1]._interim, true);
 });
 
 test('chat history read migrates final-then-stale-interim duplicates', () => {
   const store = new Map([['s1', [
     { id: 'final-1', role: 'assistant', content: 'same cumulative reply', ts: 10 },
-    { id: 'interim-2', role: 'assistant', content: 'same cumulative reply plus a late suffix', ts: 15, _interim: true },
+    { id: 'interim-2', role: 'assistant', content: 'same cumulative reply', ts: 15, _interim: true },
   ]]]);
   const service = createChatHistoryService({
     history: {
@@ -242,6 +247,24 @@ test('chat history read migrates final-then-stale-interim duplicates', () => {
   });
 
   assert.deepEqual(service.read('s1').map(message => message.id), ['final-1']);
+});
+
+test('chat history preserves a different interim after a final for system continuation', () => {
+  const store = new Map([['s1', [
+    { id: 'final-1', role: 'assistant', content: 'finished visible turn', ts: 10 },
+    { id: 'interim-2', role: 'assistant', content: 'injected continuation', ts: 20, _interim: true },
+  ]]]);
+  const service = createChatHistoryService({
+    history: {
+      read: id => store.get(id) || [],
+      write: (id, messages) => store.set(id, messages),
+      deleteSession: id => store.delete(id),
+      hasPersistedDelivery: () => false,
+    },
+    idFactory: () => 'unused',
+  });
+
+  assert.deepEqual(service.read('s1').map(message => message.id), ['final-1', 'interim-2']);
 });
 
 test('chat history pagination fails closed for an unknown before cursor', () => {

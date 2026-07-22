@@ -91,11 +91,11 @@ function createChatHistoryService({
           normalized[normalized.length - 1] = message;
           continue;
         }
-        // A new assistant turn cannot start without an intervening user
-        // message. Any interim immediately after a finalized assistant is a
-        // late timer write from that already-closed turn, even if its
-        // cumulative payload advanced after the final snapshot.
-        if (previous?.role === 'assistant' && !previous._interim) {
+        // System continuations do not always persist a visible user message,
+        // so adjacency alone cannot prove that an interim belongs to the
+        // previous turn. Drop only a byte-equivalent late timer snapshot.
+        if (previous?.role === 'assistant' && !previous._interim
+            && sameAssistantPayload(previous, message)) {
           continue;
         }
       }
@@ -226,11 +226,12 @@ function createChatHistoryService({
     message.role = 'assistant';
     message._interim = true;
 
-    // A final assistant at the tail proves the turn is already closed. With no
-    // intervening user message, every later interim belongs to that same turn;
-    // comparing only exact payloads misses a late, longer cumulative snapshot.
+    // System continuations can start without a visible user history record.
+    // Ignore only the exact cumulative snapshot already made durable; a
+    // different interim may belong to a legitimate injected continuation.
     const latest = messages.at(-1);
-    if (latest?.role === 'assistant' && !latest._interim) {
+    if (latest?.role === 'assistant' && !latest._interim
+        && sameAssistantPayload(latest, message)) {
       return Object.freeze({
         ignored: true,
         replaced: false,
