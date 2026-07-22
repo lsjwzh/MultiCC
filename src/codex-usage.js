@@ -198,7 +198,7 @@ function summarizeHistoryUsage(messages) {
 
 function createCodexUsageHost(deps = {}) {
   for (const name of [
-    'loadHistory', 'reconcileRole', 'persistFinalAssistantResult',
+    'loadHistory', 'reconcileRole', 'clearIncrementalSave', 'persistFinalAssistantResult',
     'recordDurableTurnUsage', 'recordResultEvent', 'setSessionStatus',
   ]) {
     if (typeof deps[name] !== 'function') throw new TypeError(`Codex usage host missing: ${name}`);
@@ -208,6 +208,10 @@ function createCodexUsageHost(deps = {}) {
 
   function complete({ evt, cs, persisted, sessionName, turn, runner, forward }) {
     if (typeof forward !== 'function') throw new TypeError('Codex usage host missing: forward');
+    // Claude's result path already cancels this crash-safety timer. Codex must
+    // do the same before persisting its final message, otherwise the stale
+    // callback writes the cumulative answer again as `_interim` about 5s later.
+    deps.clearIncrementalSave(sessionName);
     cs.currentCost = evt.cost == null ? null : evt.cost;
     const normalized = normalizeCodexTurnUsage({
       usage: evt.usage || {},

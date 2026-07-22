@@ -129,7 +129,7 @@ const {
   getMemoryEntries,
   normalizeManualMemory,
 } = require('./src/memory/runtime');
-const { createChatHistoryRuntime } = require('./src/routes/chat-history');
+const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
 const { createSessionAdminRuntime } = require('./src/routes/session-admin');
@@ -3426,6 +3426,7 @@ const {
 const codexUsageHost = createCodexUsageHost({
   loadHistory: loadChatHistory,
   reconcileRole: reconcileCodexRoleUsage,
+  clearIncrementalSave: chatHistoryRuntime.clearIncrementalSave,
   persistFinalAssistantResult,
   recordDurableTurnUsage,
   recordResultEvent,
@@ -5801,26 +5802,12 @@ function handleChatWs(ws, req, urlObj) {
   // Replay saved history + in-progress assistant response (if any).
   // Send only the newest page over WS on connect; older messages are fetched
   // on demand via GET /history?before=<id> as the user scrolls up.
-  // Only append an in-progress copy when the turn's output has NOT yet been
-  // persisted. Between the `result` event (applyClaudeChatEvent saves it and
-  // sets _resultSaved) and finalizeStreamingTurn (which clears
-  // currentAssistantText), a reconnect would otherwise append a duplicate of
-  // the already-saved assistant message — two identical bubbles. Guarding on
-  // !_resultSaved closes that race (matches the "unsaved" intent below).
-  const hasInProgress = !cs._resultSaved && !!(cs.currentAssistantText || cs.currentToolCalls.length);
+  // The replay helper also recognizes the crash-safety `_interim` record. It
+  // promotes that stable-id entry to the one live streaming tail, rather than
+  // sending both the persisted first batch and a cumulative id-less copy.
   const canonicalPage = chatHistoryRuntime.paginate(sessionName, { limit: CHAT_HISTORY_PAGE });
   const page = { messages: canonicalPage.messages, hasMore: canonicalPage.hasMore };
-  const replayMessages = [...page.messages];
-  // Append unsaved in-progress response so reconnecting clients see current state
-  if (hasInProgress) {
-    replayMessages.push({
-      role: 'assistant',
-      content: cs.currentAssistantText,
-      tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-      ts: Date.now(),
-      streaming: cs.isStreaming || false,
-    });
-  }
+  const replayMessages = buildReplayMessages(page.messages, cs);
   // Include authoritative cumulative token usage from the persistent
   // accumulator so the frontend doesn't need to reconstruct it from the
   // rolling chat_history window (which trims old messages).
