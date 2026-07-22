@@ -42,6 +42,13 @@ function errorText(error) {
   return error && error.message ? error.message : String(error || 'unknown error');
 }
 
+// A git invocation whose captured output exceeded the Node maxBuffer cap. Such
+// failures must surface as a truncated placeholder, not a hard error, so the
+// caller (commit-diff / diff routes) mirrors the sibling route's behaviour.
+function isMaxBuffer(cause) {
+  return !!(cause && cause.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+}
+
 function blockedGitResult(error) {
   return {
     ok: false,
@@ -314,7 +321,7 @@ function createSessionGitRuntime(rawDeps) {
           truncated = true;
         }
       } catch (cause) {
-        if (cause && cause.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+        if (isMaxBuffer(cause)) {
           truncated = true;
           diff = '(diff exceeds 1MB cap — too large to display in browser)';
         } else {
@@ -492,19 +499,41 @@ function createSessionGitRuntime(rawDeps) {
           maxBuffer: maxDiffBytes + 16384,
         });
       } catch (cause) {
-        error = errorText(cause);
+        if (isMaxBuffer(cause)) {
+          truncated = true;
+          diff = '(diff exceeds 1MB cap — too large to display in browser)';
+        } else {
+          error = errorText(cause);
+        }
       }
       if (!diff) {
         // Empty show patch (common for merge commits) or a thrown error: fall
-        // back to an explicit parent->commit range diff.
+        // back to an explicit parent->commit range diff. Root commits have no
+        // parent, so verify hash~1 resolves first and return a clean empty
+        // diff instead of a fatal "bad revision" error.
+        let hasParent = true;
         try {
-          diff = await deps.gitRunQueued(repoPath, ['diff', '--patch', hash + '~1', hash], {
-            maxBuffer: maxDiffBytes + 16384,
+          await deps.gitRunQueued(repoPath, ['rev-parse', '--verify', '--quiet', hash + '~1'], {
+            maxBuffer: 4096,
           });
-        } catch (cause) {
-          error = errorText(cause);
+        } catch (_) {
+          hasParent = false;
         }
-        if (diff) error = null;
+        if (hasParent) {
+          try {
+            diff = await deps.gitRunQueued(repoPath, ['diff', '--patch', hash + '~1', hash], {
+              maxBuffer: maxDiffBytes + 16384,
+            });
+          } catch (cause) {
+            if (isMaxBuffer(cause)) {
+              truncated = true;
+              diff = '(diff exceeds 1MB cap — too large to display in browser)';
+            } else {
+              error = errorText(cause);
+            }
+          }
+          if (diff) error = null;
+        }
       }
       if (diff.length > maxDiffBytes) {
         diff = diff.slice(0, maxDiffBytes);
