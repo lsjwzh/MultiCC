@@ -13,7 +13,6 @@ const {
   chooseCommanderRuntime,
   createCommanderMigration,
   createCommanderMigrationState,
-  isTrustedLegacyCommander,
 } = require('../src/commander-migration');
 
 const LEGACY_PROMPT = [
@@ -49,7 +48,6 @@ function harness(t, { directories: inputDirectories, records: inputRecords, fail
   const records = inputRecords || new Map();
   const state = createCommanderMigrationState();
   const creates = [];
-  const stamps = [];
   const migration = createCommanderMigration({
     state,
     directories,
@@ -68,13 +66,6 @@ function harness(t, { directories: inputDirectories, records: inputRecords, fail
         ? [{ id: 'codex-good' }]
         : [{ id: 'claude-good' }],
     }),
-    stampSession: (sessionId, directoryId) => {
-      const record = records.get(sessionId);
-      assert.equal(isTrustedLegacyCommander(record, directoryId), true);
-      record.type = 'commander';
-      stamps.push(sessionId);
-      return record;
-    },
     createSession: async spec => {
       creates.push(spec);
       if (spec.dir.id === failCreateFor) return { ok: false, code: 'commander_create_injected' };
@@ -86,7 +77,7 @@ function harness(t, { directories: inputDirectories, records: inputRecords, fail
     },
     logger: { info() {}, error() {} },
   });
-  return { ...first, directories, records, state, migration, creates, stamps };
+  return { ...first, directories, records, state, migration, creates };
 }
 
 test('empty Fleet creates one normal typed Commander and repeated migration is idempotent', async t => {
@@ -108,7 +99,7 @@ test('empty Fleet creates one normal typed Commander and repeated migration is i
   assert.equal(second.results[0].action, 'existing');
 });
 
-test('an existing typed Commander is retained without create or stamp', async t => {
+test('an existing typed Commander is retained without creating another', async t => {
   const fleet = makeTempFleet(t, 'dir-typed');
   const records = new Map([['typed', {
     id: 'typed', dirId: fleet.directory.id, kind: 'chat', type: 'commander', label: 'custom label',
@@ -117,34 +108,33 @@ test('an existing typed Commander is retained without create or stamp', async t 
   const result = await h.migration.run();
   assert.equal(result.results[0].action, 'existing');
   assert.equal(h.creates.length, 0);
-  assert.equal(h.stamps.length, 0);
 });
 
-test('trusted legacy Commander is stamped in place but a same-name ordinary chat creates a new session', async t => {
-  const trustedFleet = makeTempFleet(t, 'dir-trusted');
-  const fuzzyFleet = makeTempFleet(t, 'dir-fuzzy');
+test('all untyped historical and same-name sessions remain untouched while fresh Commanders are created', async t => {
+  const historicalFleet = makeTempFleet(t, 'dir-historical');
+  const sameNameFleet = makeTempFleet(t, 'dir-same-name');
   const records = new Map([
     ['legacy', {
-      id: 'legacy', dirId: trustedFleet.directory.id, kind: 'chat', label: COMMANDER_LABEL,
+      id: 'legacy', dirId: historicalFleet.directory.id, kind: 'chat', label: COMMANDER_LABEL,
       rolePrompt: LEGACY_PROMPT,
     }],
     ['ordinary', {
-      id: 'ordinary', dirId: fuzzyFleet.directory.id, kind: 'chat', label: COMMANDER_LABEL,
+      id: 'ordinary', dirId: sameNameFleet.directory.id, kind: 'chat', label: COMMANDER_LABEL,
       rolePrompt: '你是普通工程师，不是指挥官。',
     }],
   ]);
   const directories = new Map([
-    [trustedFleet.directory.id, trustedFleet.directory],
-    [fuzzyFleet.directory.id, fuzzyFleet.directory],
+    [historicalFleet.directory.id, historicalFleet.directory],
+    [sameNameFleet.directory.id, sameNameFleet.directory],
   ]);
   const h = harness(t, { directories, records });
   const result = await h.migration.run();
   assert.equal(result.ready, true);
-  assert.deepEqual(h.stamps, ['legacy']);
-  assert.equal(records.get('legacy').type, 'commander');
+  assert.equal(records.get('legacy').type, undefined);
   assert.equal(records.get('ordinary').type, undefined);
-  assert.equal(h.creates.length, 1);
-  assert.equal(h.creates[0].dir.id, 'dir-fuzzy');
+  assert.deepEqual(h.creates.map(spec => spec.dir.id).sort(), ['dir-historical', 'dir-same-name']);
+  assert.equal(records.get('commander-dir-historical').type, 'commander');
+  assert.equal(records.get('commander-dir-same-name').type, 'commander');
 });
 
 test('multi-directory failure is isolated and reported with directoryId', async t => {
