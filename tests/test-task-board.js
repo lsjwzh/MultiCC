@@ -107,6 +107,42 @@ test('task board UI keeps pending modules first and sorts tasks by last activity
   }
 });
 
+test('task board display state follows classify runState for icon and status text', () => {
+  const cases = [
+    [{ status: 'active', runState: 'done' }, ['done', '✅', '已完成', true, false]],
+    [{ status: 'active', runState: 'running' }, ['running', '🟢', '进行中', false, true]],
+    [{ status: 'active', runState: 'waiting' }, ['waiting', '⏳', '等待中', false, false]],
+    [{ status: 'active', runState: 'error' }, ['error', '❌', '异常', false, false]],
+    [{ status: 'active', runState: 'idle' }, ['idle', '⚪', '待处理', false, false]],
+    [{ status: 'done', runState: 'running' }, ['done', '✅', '已完成', true, false]],
+    [{ status: 'archived', runState: 'done' }, ['archived', '🗄', '已归档', false, false]],
+  ];
+  for (const [task, expected] of cases) {
+    const display = taskBoardUi.taskDisplayState(task);
+    assert.deepEqual(
+      [display.key, display.icon, display.label, display.done, display.running],
+      expected,
+    );
+  }
+
+  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
+  for (const source of [manage, meta]) {
+    assert.match(source, /MultiCCTaskBoardUi\.taskDisplayState\(t\)/);
+    assert.match(source, /tb-run-state \$\{display\.key\}[\s\S]*?\$\{display\.label\}/);
+    assert.match(source, /tb-icon[^\n]*\$\{display\.icon\}/);
+  }
+
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const start = server.indexOf('getSessionRunState: sid =>');
+  const end = server.indexOf('\n  resolveGoalLimits,', start);
+  const runStateAdapter = server.slice(start, end);
+  assert.match(runStateAdapter, /classifyDisplay\(cls\)\.cardStatus/);
+  assert.match(runStateAdapter, /cls === 'A'[\s\S]*?return 'running'/);
+  assert.match(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
+  assert.doesNotMatch(runStateAdapter, /cls === 'D' \|\| cls === 'C'/);
+});
+
 // ── parseTagResult ──────────────────────────────────────────────────────────
 
 test('parseTagResult accepts clean JSON and sanitizes entries', () => {
