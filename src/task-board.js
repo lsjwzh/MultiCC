@@ -102,9 +102,43 @@ function normalizeBoard(raw) {
         seed: typeof c?.seed === 'string' ? c.seed.slice(0, 1200) : '',
       };
     }
+    const routing = normalizeTaskRouting(t.routing);
+    if (routing) task.routing = routing;
     board.tasks[id] = task;
   }
   return board;
+}
+
+// Persist only the small, public routing receipt needed by the task card.  In
+// particular, never copy a session record or dispatch payload into the board:
+// those may contain paths, prompts or provider credentials.
+function normalizeTaskRouting(value) {
+  if (!value || typeof value !== 'object') return null;
+  const mode = value.mode === 'commander' ? 'commander'
+    : value.mode === 'manual' ? 'manual' : null;
+  const targetSessionId = typeof value.targetSessionId === 'string'
+    ? value.targetSessionId.trim().slice(0, 200) : '';
+  if (!mode || !targetSessionId) return null;
+  const routing = {
+    mode,
+    targetSessionId,
+    routedAt: Math.max(0, Number(value.routedAt) || 0),
+  };
+  const operationId = typeof value.operationId === 'string'
+    ? value.operationId.trim().slice(0, 200) : '';
+  const status = typeof value.status === 'string' && /^[a-z0-9_-]{1,40}$/i.test(value.status)
+    ? value.status : '';
+  if (operationId) routing.operationId = operationId;
+  if (status) routing.status = status;
+  return routing;
+}
+
+function setTaskRouting(task, value) {
+  const routing = normalizeTaskRouting(value);
+  if (!task || !routing) return false;
+  task.routing = routing;
+  task.updatedAt = Math.max(task.updatedAt || 0, routing.routedAt || Date.now());
+  return true;
 }
 
 // ── AI tagging prompts ──────────────────────────────────────────────────────
@@ -527,6 +561,9 @@ function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.no
       if (clean && !target.areas.includes(clean) && target.areas.length < MAX_AREAS_PER_TASK) target.areas.push(clean);
     }
     target.updatedAt = now;
+    if (pending.routing && (!target.routing || pending.routing.routedAt >= target.routing.routedAt)) {
+      target.routing = pending.routing;
+    }
     if (target.status === 'done') target.status = 'active';
     delete board.tasks[pendingTaskId];
     deleteEmptyModule(board, oldModuleId);
@@ -611,11 +648,31 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
 
 // ── Panel-input routing ─────────────────────────────────────────────────────
 // The task panel's composer is not attached to any session. Automatic routing
-// is fail-closed: only an available, semantically relevant session in the
-// task/directory may be selected. Activity time is only a final tie-breaker.
+// resolves the directory's typed Commander below. These semantic worker
+// ranking helpers remain for explicit/manual routing and Commander-side use.
 
 function isRoutableRecord(rec) {
   return !!rec && rec.kind === 'chat' && rec.type !== 'aux' && rec.type !== 'gateway' && rec.type !== 'commander' && !rec.ephemeral;
+}
+
+// Automatic task-board routing has one authority boundary: the typed
+// commander owned by the same directory.  Runtime label guessing is
+// deliberately forbidden.  Older installations are migrated once at boot by
+// server.js (exact legacy labels -> type='commander'); if migration cannot
+// establish a single typed record, routing fails closed here.
+function resolveDirectoryCommander(records, dirId) {
+  const directoryId = typeof dirId === 'string' ? dirId.trim() : '';
+  if (!directoryId) return { ok: false, code: 'directory_required' };
+  const matches = [];
+  for (const [sessionId, rec] of records || []) {
+    if (!rec || rec.kind !== 'chat' || rec.type !== 'commander' || rec.ephemeral) continue;
+    if (rec.dirId !== directoryId) continue;
+    matches.push({ sessionId, record: rec });
+  }
+  matches.sort((a, b) => a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0);
+  if (!matches.length) return { ok: false, code: 'commander_not_found' };
+  if (matches.length > 1) return { ok: false, code: 'commander_ambiguous' };
+  return { ok: true, ...matches[0] };
 }
 
 function recordActivityMs(rec) {
@@ -762,6 +819,18 @@ function buildRoutedMessage(task, text) {
   return `【任务：${task.title}｜tb:${task.id}】\n${text}`;
 }
 
+function buildCommanderRoutedMessage(task, text) {
+  const routed = buildRoutedMessage(task, text);
+  return [
+    '【任务面板自动路由】',
+    '你是本 Fleet 的 Agent Commander。请根据任务语义和各会话职责，使用 dispatch 将任务交给合适的普通 worker；不要由你亲自实现。',
+    '不得把任务注入正在 running/busy/active 的普通会话；没有安全目标时请明确报告并等待，不得绕过本指挥链。',
+    `派发给 worker 时必须原样保留任务标记「｜tb:${task.id}】」，以便结果归档。`,
+    '',
+    routed,
+  ].join('\n');
+}
+
 function extractTaskMarker(text) {
   const m = /｜tb:([A-Za-z0-9_-]+)】/.exec(String(text || ''));
   return m ? m[1] : null;
@@ -816,6 +885,7 @@ function buildBoardDto(board, getSessionRunState) {
         nextRetryAt: t.classification.nextRetryAt || 0,
         lastError: safeClassificationError(t.classification.lastError),
       } : null,
+      routing: normalizeTaskRouting(t.routing),
     };
   }).sort((a, b) => b.lastTs - a.lastTs);
   const countByModule = new Map();
@@ -858,8 +928,10 @@ module.exports = {
   findModuleByName,
   findTaskByTitle,
   taskLastTs,
+  taskDirId,
   pickRouteTarget,
   pickDirTarget,
+  resolveDirectoryCommander,
   isRoutableRecord,
   routingTerms,
   buildRoutingContext,
@@ -868,7 +940,10 @@ module.exports = {
   recordAppearsAvailable,
   rankRoutingCandidates,
   buildRoutedMessage,
+  buildCommanderRoutedMessage,
   extractTaskMarker,
   messageText,
   buildBoardDto,
+  normalizeTaskRouting,
+  setTaskRouting,
 };

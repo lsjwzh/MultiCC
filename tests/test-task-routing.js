@@ -9,6 +9,7 @@ const {
   rankRoutingCandidates,
   routingRelevanceScore,
   routingTerms,
+  resolveDirectoryCommander,
 } = require('../src/task-board');
 
 function rec(overrides = {}) {
@@ -133,4 +134,36 @@ test('availability callback is authoritative and task affinity never bypasses it
     queryText: '前端消息跳转',
     isAvailable: available,
   }), 'idle');
+});
+
+test('automatic authority resolves exactly one typed Commander in the requested directory', () => {
+  const records = new Map([
+    ['active-worker', rec({ active: true, label: '最近活跃 worker' })],
+    ['label-only', rec({ label: '🫡 Agent Commander' })],
+    ['commander-web', rec({ type: 'commander', label: '任意显示名' })],
+    ['commander-other', rec({ type: 'commander', dirId: 'dir-other' })],
+  ]);
+  const resolved = resolveDirectoryCommander(records, 'dir-web');
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.sessionId, 'commander-web');
+});
+
+test('Commander resolution fails closed for missing, ambiguous and unscoped fleets', () => {
+  const labelOnly = new Map([
+    ['looks-like-commander', rec({ label: 'Agent Commander' })],
+  ]);
+  assert.deepEqual(resolveDirectoryCommander(labelOnly, 'dir-web'), {
+    ok: false, code: 'commander_not_found',
+  });
+  assert.deepEqual(resolveDirectoryCommander(labelOnly, null), {
+    ok: false, code: 'directory_required',
+  });
+
+  const duplicate = new Map([
+    ['commander-a', rec({ type: 'commander' })],
+    ['commander-b', rec({ type: 'commander' })],
+  ]);
+  assert.deepEqual(resolveDirectoryCommander(duplicate, 'dir-web'), {
+    ok: false, code: 'commander_ambiguous',
+  });
 });

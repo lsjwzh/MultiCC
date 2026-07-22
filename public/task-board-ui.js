@@ -45,7 +45,15 @@
     return { key: 'idle', icon: '⚪', label: '待处理', done: false, running: false };
   }
 
-  const api = Object.freeze({ sessionChatUrl, sortModules, sortTasks, taskDisplayState });
+  function taskRoutingLabel(task) {
+    const routing = task?.routing;
+    if (!routing || routing.mode !== 'commander' || !routing.targetSessionId) return '';
+    const id = routing.targetSessionId;
+    const label = routing.targetLabel || id;
+    return `已交给 Commander · ${label}${label === id ? '' : ` (${id})`}`;
+  }
+
+  const api = Object.freeze({ sessionChatUrl, sortModules, sortTasks, taskDisplayState, taskRoutingLabel });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCTaskBoardUi = api;
 })(typeof window !== 'undefined' ? window : globalThis);
