@@ -1348,6 +1348,7 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   if (!markers.length) { maybeNudgeUltracodeDispatch(dispatcherId, finalText); return; }
   const from = persistedSessions.get(dispatcherId);
   if (!from) return;
+  const deliveries = [];
   lastDispatchOutAt.set(dispatcherId, Date.now());
   const history = loadChatHistory(dispatcherId);
   const sourceMessage = [...history].reverse().find(entry => entry && entry.role === 'assistant');
@@ -1359,13 +1360,14 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
     // Commander dispatches cross-fleet (D5); every other session is limited to its own directory.
     if (v.rec.dirId !== from.dirId && from.type !== 'commander') { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
-    dispatchToSession(mk.target, mk.message, {
+    deliveries.push(dispatchToSession(mk.target, mk.message, {
       replyTo: dispatcherId,
       idempotencyKey: `marker:${dispatcherId}:${sourceKey}:${markerIndex}`,
     })
       .then(r => { if (!r.ok) waitInjector.safeInject(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
-      .catch(e => waitInjector.safeInject(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`));
+      .catch(e => waitInjector.safeInject(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`)));
   }
+  return Promise.all(deliveries);
 }
 
 // ── Session management ──
@@ -5531,16 +5533,13 @@ orchestrationRuntime = createOrchestrationRuntime({
   probe: probeExplicitWait,
   detachedAdapter: detached,
   recoverDispatchResult: recoverDispatchOperation,
+  replayRecoveredDispatchEffects: (operation, recovered) => persistedSessions.get(operation.spec.chatId)?.type === 'commander' ? maybeDispatchFromChatTurn(operation.spec.chatId, recovered.text) : undefined,
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
 
 waitInjector.init({
-  // All continuations route through runChatTurn → streaming sessions get the
-  // warm process (queued if busy), default sessions get a --resume turn.
-  // opts (e.g. { bgTaskIds, bgToolUseIds } from the bg-completion coalescer) are
-  // forwarded so an injected continuation can carry origin metadata onto the
-  // saved user message. originContinue stays the default for every inject path.
+  // Continuations preserve origin metadata; originContinue stays the default.
   inject: (session, text, opts) => runChatTurn(session, text, { originContinue: true, ...(opts || {}) }),
   isBusy: orchestrationChatBusy,
   hasExplicitWait: session => orchestrationRuntime.hasPending(session),
