@@ -5,22 +5,17 @@ MultiCC enforces this invariant at startup: every valid registered directory
 `type: "commander"`. Task-board automatic routing remains unavailable until
 the relevant Fleet has completed this migration.
 
-## Compatibility and identity rules
+## Identity and idempotence rules
 
 The migration is idempotent. A Fleet with one non-ephemeral chat session whose
 `type` is already `commander` is left unchanged. Re-running an upgrade or
 restarting the service does not create another session.
 
-A pre-type Commander is stamped in place only with two independent pieces of
-historical seed evidence:
-
-1. the exact former seed label, `🫡 Agent Commander` or `Agent Commander`; and
-2. the bundled Commander role-prompt signature (the Commander heading,
-   identity, Fleet model, and anti-pattern sections).
-
-A label alone is never identity evidence. A normal chat with the same name or
-a loosely similar label remains untouched, and MultiCC creates a separate
-typed Commander through the normal session-creation service.
+Stable metadata is the only Commander identity: the migration does not inspect
+or interpret historical labels or role prompts. If a Fleet has no typed
+Commander, MultiCC always creates a fresh one through the normal session-
+creation service. Every pre-type session remains untouched, including a session
+whose label and prompt happen to match an older bundled Commander preset.
 
 ## Creation and CLI selection
 

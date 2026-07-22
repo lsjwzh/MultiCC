@@ -1,6 +1,6 @@
 'use strict';
 
-// Startup/upgrade compatibility migration for the Fleet Commander invariant.
+// Startup/upgrade migration for the Fleet Commander invariant.
 //
 // This module deliberately owns no filesystem, Git or persistence code.  The
 // host supplies the existing session-creation service as a port, which keeps a
@@ -20,32 +20,6 @@ function isCommanderRecord(record, directoryId) {
     && record.type === COMMANDER_TYPE
     && !record.ephemeral
     && record.dirId === directoryId;
-}
-
-function hasLegacyCommanderPromptSignature(value) {
-  const prompt = typeof value === 'string' ? value.replace(/\r\n/g, '\n').trim() : '';
-  if (!prompt.startsWith('# 🫡 Agent Commander')) return false;
-  // Historical bundled presets have changed wording, so do not require byte
-  // equality with today's prompt.  These independent identity/behaviour
-  // markers are stable provenance evidence and cannot be supplied by a label.
-  return prompt.includes('You are the **Agent Commander**')
-    && prompt.includes('## 🗺️ How multicc works')
-    && prompt.includes('## 🚫 Anti-patterns');
-}
-
-function isExactLegacyCommanderLabel(value) {
-  const label = typeof value === 'string' ? value.trim() : '';
-  return label === COMMANDER_LABEL || label === 'Agent Commander';
-}
-
-function isTrustedLegacyCommander(record, directoryId) {
-  if (!record || record.dirId !== directoryId || record.kind !== 'chat' || record.ephemeral) return false;
-  if (record.type) return false;
-  // Both an exact historical seed label AND the bundled prompt signature are
-  // required.  A user-created chat merely named "Agent Commander" is ordinary
-  // and a new typed Commander must be created beside it.
-  return isExactLegacyCommanderLabel(record.label)
-    && hasLegacyCommanderPromptSignature(record.rolePrompt);
 }
 
 function availabilityFlag(value) {
@@ -196,13 +170,12 @@ function createCommanderMigration(options = {}) {
     commanderPreset,
     selectRuntime,
     createSession,
-    stampSession,
     validateDirectory,
     validateSession,
   } = options;
   if (!state || typeof state.setDirectory !== 'function') throw new TypeError('commander migration state required');
   if (!(directories instanceof Map) || !(records instanceof Map)) throw new TypeError('commander migration Maps required');
-  if (typeof selectRuntime !== 'function' || typeof createSession !== 'function' || typeof stampSession !== 'function') {
+  if (typeof selectRuntime !== 'function' || typeof createSession !== 'function') {
     throw new TypeError('commander migration session ports required');
   }
   const logger = options.logger || console;
@@ -249,26 +222,6 @@ function createCommanderMigration(options = {}) {
         }
         return report(directoryId, {
           status: 'ready', action: 'existing', sessionId: typed[0].id,
-        });
-      }
-
-      const legacy = [...records.values()].filter(record => isTrustedLegacyCommander(record, directoryId));
-      if (legacy.length > 1) {
-        return report(directoryId, { status: 'failed', code: 'commander_legacy_ambiguous' });
-      }
-      if (legacy.length === 1) {
-        const validity = typeof validateSession === 'function' ? await validateSession(legacy[0]) : { valid: true };
-        if (!validity || validity.valid === false) {
-          return report(directoryId, {
-            status: 'failed', code: publicFailure(validity, 'commander_session_invalid'),
-          });
-        }
-        const stamped = await stampSession(legacy[0].id, directoryId);
-        if (!stamped || stamped.type !== COMMANDER_TYPE) {
-          return report(directoryId, { status: 'failed', code: 'commander_stamp_failed' });
-        }
-        return report(directoryId, {
-          status: 'ready', action: 'stamped', sessionId: legacy[0].id,
         });
       }
 
@@ -333,8 +286,5 @@ module.exports = {
   commanderDirectoryValidity,
   createCommanderMigration,
   createCommanderMigrationState,
-  hasLegacyCommanderPromptSignature,
   isCommanderRecord,
-  isExactLegacyCommanderLabel,
-  isTrustedLegacyCommander,
 };
