@@ -931,8 +931,12 @@ function showSessionMenu(ev, sessionId) {
   items.push({ label: s?.rolePrompt ? tt('rolePromptSet') : tt('rolePrompt'), onclick: () => changeSessionRole(sessionId) });
   items.push({ sep: true });
   items.push({ label: mergeLabel, ready: mergeReady, onclick: () => mergeSession(sessionId) });
-  items.push({ sep: true });
-  items.push({ label: tt('deleteSession'), danger: true, onclick: () => deleteSession(sessionId) });
+  // Commander can only be removed by deleting its whole fleet (backend enforces
+  // this too); hide the single-session delete entry for it.
+  if (s?.type !== 'commander') {
+    items.push({ sep: true });
+    items.push({ label: tt('deleteSession'), danger: true, onclick: () => deleteSession(sessionId) });
+  }
   showPopoverMenu(ev.currentTarget, items);
 }
 
@@ -1065,6 +1069,8 @@ function renderDirSessionGroups(dirSessions) {
   const renderGroup = (kind, label) => {
     const ss = groups[kind];
     if (!ss || !ss.length) return '';
+    // Commander stays pinned to the top of its group (D1 keeps it ≤1 per fleet).
+    ss.sort((a, b) => (b.type === 'commander' ? 1 : 0) - (a.type === 'commander' ? 1 : 0));
     const rows = ss.map(s => renderSessionRow(s)).join('');
     return `
       <div class="sess-group ${kind}">
@@ -1173,7 +1179,7 @@ function renderDirPreview(dirId, dirSessions) {
       <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;min-height:56px;height:56px;">
         <span class="dot ${sessionActive ? 'active' : ''}" style="width:8px;height:8px;"></span>
         <div style="flex:1;min-width:0;">
-          <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}</div>
+          <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(sessionLabel)}${sessionInfo.type === 'commander' ? ' <span class="cmdr-badge" title="指挥官">🎖 指挥</span>' : ''}</div>
           <div style="font-size:11px;color:var(--faint);display:flex;gap:6px;align-items:center;">
             <span>${escapeHtml(formatRelative(sessionLastInteractionMs(sessionInfo) || sessionInfo.createdAt))}</span>
             ${sessionModel ? `<span>· ${escapeHtml(sessionModel)}</span>` : ''}
@@ -1702,7 +1708,7 @@ function renderSessionRow(s) {
       <span class="dot ${statusCls}" id="sess-status-${escapeHtml(s.id)}" title="${escapeHtml(statusText)}"></span>
       <span class="classify-badge" id="sess-classify-${escapeHtml(s.id)}" style="display:none"></span>
       <div class="lean-main">
-        <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
+        <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}${s.type === 'commander' ? '<span class="cmdr-badge" title="指挥官：只分发任务、不亲自执行；不可单独删除">🎖 指挥</span>' : ''}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
         <div class="lean-meta">
           <span class="cli-chip ${cliClass}" title="CLI: ${escapeHtml(cli)}">${escapeHtml(cli)}</span>
           <span class="sep">·</span><span>${escapeHtml(formatRelative(sessionLastInteractionMs(s) || s.createdAt))}</span>

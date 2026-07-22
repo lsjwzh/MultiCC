@@ -141,6 +141,7 @@ function createSessionAdminRuntime(rawDeps) {
       dirId: record.dirId || null,
       cli: record.cli || 'claude',
       kind: record.kind || 'terminal',
+      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
       cliSessionId: record.cliSessionId || null,
       label: record.label || null,
       model: record.model || null,
@@ -173,6 +174,7 @@ function createSessionAdminRuntime(rawDeps) {
       dirId: record.dirId,
       cli: record.cli,
       kind: record.kind,
+      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
       cliSessionId: record.cliSessionId || null,
       label: record.label || null,
       model: record.model || null,
@@ -204,6 +206,7 @@ function createSessionAdminRuntime(rawDeps) {
       label: record.label || null,
       cli: record.cli || 'claude',
       kind: record.kind || 'terminal',
+      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
       active: !!runtime.active,
       createdAt: record.createdAt || null,
       lastActivity: runtime.lastActivity,
