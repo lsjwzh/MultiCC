@@ -438,7 +438,8 @@
       const headers = { 'Content-Type': 'application/json' };
       if (_urlToken) headers['X-Access-Token'] = _urlToken;
       const res = await fetch('/api/settings/tunnel', { method: 'POST', headers, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.ok) throw new Error(d?.error || ('HTTP ' + res.status));
       if (msg) { msg.textContent = '已保存'; msg.className = 'status-text ok'; }
       showToast('外网穿透设置已保存');
       loadTunnelSettings();

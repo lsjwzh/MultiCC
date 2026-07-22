@@ -5,6 +5,7 @@ const { resolveNotifySettingsUpdates } = require('./host-read');
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';
 const MAX_SECRET_TEXT_LENGTH = 4096;
 const MAX_NOTIFY_URL_LENGTH = 2048;
+const CLI_TUNNEL_PROVIDERS = Object.freeze(['natapp', 'cpolar', 'sakurafrp']);
 const TUNNEL_LIMITS = Object.freeze({
   intervalSec: Object.freeze({ min: 10, max: 2147483 }),
   failThreshold: Object.freeze({ min: 1, max: 100 }),
@@ -77,6 +78,32 @@ function normalizeTunnelUpdate(body = {}) {
     // Funnel is execution state. Only POST /api/tunnel/funnel may change it;
     // the ordinary config route deliberately ignores checkbox/port echoes.
   }
+  for (const provider of CLI_TUNNEL_PROVIDERS) {
+    const value = body[provider];
+    if (!value || typeof value !== 'object') continue;
+    const normalized = {};
+    if (typeof value.enabled === 'boolean') normalized.enabled = value.enabled;
+    if (typeof value.url === 'string') {
+      const url = value.url.trim();
+      if (!validateNotifyUrl(url)) throw invalidTunnelSetting(`${provider}.url must be an http(s) URL`);
+      normalized.url = url;
+    }
+    if (typeof value.authtoken === 'string') {
+      const authtoken = value.authtoken.trim();
+      if (!validateSafeText(authtoken)) throw invalidTunnelSetting(`${provider}.authtoken is invalid`);
+      normalized.authtoken = authtoken;
+    }
+    if (hasOwn(value, 'port')) {
+      if (!validateFunnelPort(value.port)) throw invalidTunnelSetting(`${provider}.port must be an integer between 1 and 65535`);
+      normalized.port = value.port;
+    }
+    if (typeof value.startCmd === 'string') {
+      const startCmd = value.startCmd.trim();
+      if (!validateSafeText(startCmd, { allowEmpty: false })) throw invalidTunnelSetting(`${provider}.startCmd is invalid`);
+      normalized.startCmd = startCmd;
+    }
+    update[provider] = normalized;
+  }
   for (const key of ['intervalSec', 'failThreshold', 'restartCooldownSec', 'maxRestartsPerHour']) {
     if (!hasOwn(body, key)) continue;
     const value = body[key];
@@ -93,13 +120,21 @@ function normalizeTunnelUpdate(body = {}) {
 
 function publicTunnelRequested(body = {}) {
   return !!(body.phddns && body.phddns.enabled)
-    || !!(body.tailscale && body.tailscale.enabled);
+    || !!(body.tailscale && body.tailscale.enabled)
+    || CLI_TUNNEL_PROVIDERS.some(provider => !!body[provider]?.enabled);
 }
 
 function publicTunnelEnabled(status = {}) {
   const config = status && status.config || {};
   return !!(config.phddns && config.phddns.enabled)
-    || !!(config.tailscale && (config.tailscale.enabled || config.tailscale.funnel));
+    || !!(config.tailscale && (config.tailscale.enabled || config.tailscale.funnel))
+    || CLI_TUNNEL_PROVIDERS.some(provider => !!config[provider]?.enabled);
+}
+
+function invalidTunnelSetting(message) {
+  const error = new Error(message);
+  error.code = 'INVALID_TUNNEL_SETTING';
+  return error;
 }
 
 function validateSafeText(value, { maxLength = MAX_SECRET_TEXT_LENGTH, allowEmpty = true } = {}) {
