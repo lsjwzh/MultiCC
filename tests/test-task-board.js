@@ -1302,6 +1302,24 @@ test('manual classification can use the submitted task text before a reply exist
   assert.equal(runtime.getBoard().tasks[pending.id].title, '实现归类按钮');
 });
 
+test('reclassifying an input-less card returns a note guiding the user to delete it', () => {
+  // Supplement over b81218f: a card whose refs resolve to no user text can never
+  // be classified. The reclassify note must give an actionable exit (delete the
+  // dead card) instead of only reporting that content is "missing".
+  const { runtime } = mkRuntime({ loadHistory: () => [] });
+  const pending = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '够不到的种子', now: 1,
+  });
+  pending.refs.length = 0;   // corrupt: no refs → resolveTaskClassificationInput returns null
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
+  const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('POST /api/task-board/tasks/:taskId/reclassify')({ params: { taskId: pending.id }, body: {} }, r);
+  assert.equal(r.code, 409);
+  assert.equal(r.body.error, 'missing_context');
+  assert.match(r.body.note, /删除/);   // actionable: tells the user to delete the dead card
+});
+
 test('authenticated task-board mutations do not depend on transport locality', async () => {
   const { runtime } = mkRuntime();
   const routes = new Map();
