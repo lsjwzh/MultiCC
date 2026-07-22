@@ -118,7 +118,7 @@ class ChatMessage {
       timestamp = json['ts'] != null
           ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt())
           : DateTime.now(),
-      isStreaming = false,
+      isStreaming = json['streaming'] == true,
       cost = (json['cost'] as num?)?.toDouble(),
       usage = json['usage'] is Map
           ? MessageUsage.fromJson(json['usage'] as Map<String, dynamic>)
@@ -142,6 +142,14 @@ class ChatMessage {
       return tc;
     }).toList();
   }
+}
+
+/// Returns the one authoritative live tail carried by a reconnect history
+/// page. The server marks only the final assistant entry as `streaming:true`.
+ChatMessage? streamingAssistantTail(List<ChatMessage> messages) {
+  if (messages.isEmpty) return null;
+  final tail = messages.last;
+  return tail.role == MessageRole.assistant && tail.isStreaming ? tail : null;
 }
 
 /// Which CLI binary this session drives.

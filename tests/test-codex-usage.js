@@ -133,6 +133,7 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
       }];
     },
     reconcileRole(sessionId, usage) { calls.push(['role', sessionId, usage]); },
+    clearIncrementalSave(sessionId) { calls.push(['clear-interim', sessionId]); },
     persistFinalAssistantResult(sessionId, state, turn, runner, message, options) {
       calls.push(['persist', sessionId, message, options]);
       state._resultSaved = true;
@@ -159,6 +160,7 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
 
   const expected = cumulative(45, 30, 9, 3);
   assert.deepEqual(runner.pendingUsage, expected);
+  assert.deepEqual(calls[0], ['clear-interim', 'session-a']);
   assert.deepEqual(calls.find(call => call[0] === 'role')[2], expected);
   assert.deepEqual(calls.find(call => call[0] === 'ledger')[2], expected);
   const persisted = calls.find(call => call[0] === 'persist')[2];
