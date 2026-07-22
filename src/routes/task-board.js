@@ -233,6 +233,10 @@ function createTaskBoardRuntime(deps) {
     const task = board.tasks[taskId];
     if (!task?.classification) return { ok: false, error: 'not_pending' };
     if (pendingClassificationByTask.has(taskId)) return { ok: false, error: 'classification_running' };
+    // 方案A（手动归类）：自动调用方（turn-end 钩子、retry 扫描）一律不得把「待归类」
+    // 卡片自动分到真实模块——只有用户点击「归类/重新归类」的端点会传 { manual: true }。
+    // 这是唯一权威闸门：任何未来新增的自动调用点都会被这里挡住。
+    if (!options.manual) return { ok: false, error: 'auto_classify_disabled' };
     if (options.manual) task.classification.attempts = 0;
 
     const input = options.input || resolveTaskClassificationInput(task);
@@ -361,7 +365,12 @@ function createTaskBoardRuntime(deps) {
 
       const pendingTask = pendingTaskForRef(ref, markedTaskId);
       if (pendingTask) {
-        queueTaskClassification(pendingTask.id, { input: { userText, replyText, ref } });
+        // 方案A：卡片留在「待归类」。仅把本轮对话 ref 挂上去积累上下文，
+        // 绝不自动归类到真实模块——归类由用户手动点击触发。
+        if (core.addRefToTask(pendingTask, ref, now)) {
+          save();
+          notify(ref.dirId, [pendingTask.id]);
+        }
         return;
       }
 
@@ -393,9 +402,25 @@ function createTaskBoardRuntime(deps) {
         if (!result || result.cancelled) return;
         const parsed = core.parseTagResult(result.text);
         if (!parsed.tasks.length) return;
+        const now2 = Date.now();
         const beforeIds = new Set(Object.keys(board.tasks));
-        const touched = core.applyTagResult(board, parsed.tasks, ref, Date.now());
+        // 方案A：自动标签可以给任务起标题/合并，但不得把卡片建到真实模块。
+        // 强制所有条目落「待归类」——已归类过的真实模块卡片会被 applyTagResult
+        // 原地保留（不会被搬回），只收下这条 ref；新卡片则停在「待归类」等手动归类。
+        const pendingEntries = parsed.tasks.map(t => ({ ...t, module: core.CLASSIFY_PENDING_MODULE_NAME }));
+        const touched = core.applyTagResult(board, pendingEntries, ref, now2, { moduleSource: 'classify', mergeSimilar: true });
         if (touched.length) {
+          // 给新建的「待归类」卡片种上 classification，手动「归类」按钮才可用
+          // （handleReclassify 要求 task.classification 存在）。
+          for (const id of touched) {
+            const task = board.tasks[id];
+            if (task && !task.classification && board.modules[task.moduleId]?.source === 'classify') {
+              task.classification = {
+                state: 'waiting_reply', attempts: 0, lastAttemptAt: 0,
+                nextRetryAt: 0, lastError: '', seed: (task.title || '').slice(0, 1200),
+              };
+            }
+          }
           save();
           const created = touched.filter(id => !beforeIds.has(id));
           notify(ref.dirId, touched, created.length ? 'created' : undefined);
