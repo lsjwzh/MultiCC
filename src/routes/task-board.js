@@ -42,6 +42,10 @@ function createTaskBoardRuntime(deps) {
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState, isSessionBusy,
   } = deps;
+  // Optional host hooks: when present, panel-routed Commander dispatches also
+  // leave an assistant-role trace in the commander's own chat history/window.
+  const appendChatMessage = typeof deps.appendChatMessage === 'function' ? deps.appendChatMessage : null;
+  const chatBroadcast = typeof deps.chatBroadcast === 'function' ? deps.chatBroadcast : null;
   const getCommanderMigrationStatus = typeof deps.getCommanderMigrationStatus === 'function'
     ? deps.getCommanderMigrationStatus : null;
   const logger = deps.logger || console;
@@ -77,6 +81,31 @@ function createTaskBoardRuntime(deps) {
     if (kind) payload.kind = kind;
     try { workspaceBroadcast(null, payload); }
     catch (_) {}
+  }
+
+  // Panel-initiated (B path) Commander routing bypasses the commander's chat
+  // window, so on its own it leaves no trace there. When the host wires the
+  // optional appendChatMessage/chatBroadcast hooks, echo a compact one-way
+  // receipt into the commander's own history so its dispatch record is visible
+  // in-window too — same visibility as a chat-window (A path) dispatch. Still
+  // one-way: this only states WHAT was dispatched and to WHOM; the worker's
+  // result never flows back.
+  function writeCommanderDispatchReceipt(commanderId, task, result) {
+    if (!appendChatMessage) return;
+    try {
+      const workerLabel = (result.targetLabel
+        || records.get(result.targetSessionId)?.label
+        || result.targetSessionId || '').toString();
+      const elastic = result.elasticWorkerCreated ? '（已动态增加 worker）' : result.queued ? '（已排队）' : '';
+      const receipt = `📨 已把任务「${task.title}」派给 ${workerLabel}${elastic}。\n（单向派发，结果不回流指挥，进度见任务卡）`;
+      const saved = appendChatMessage(commanderId, { role: 'assistant', content: receipt, ts: Date.now() });
+      if (chatBroadcast) {
+        chatBroadcast(commanderId, { type: 'assistant', message: { content: [{ type: 'text', text: receipt }], id: saved?.id } });
+        chatBroadcast(commanderId, { type: 'result', total_cost_usd: null, commanderRoute: true });
+      }
+    } catch (e) {
+      logger.log(`[multicc/taskboard] commander receipt append failed: ${e.message}`);
+    }
   }
 
   // One in-flight tag per session: a newer turn supersedes the queued tag for
@@ -773,6 +802,7 @@ function createTaskBoardRuntime(deps) {
     });
     save();
     notify(core.taskDirId(board, task), [task.id]);
+    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, task, result);
     res.json({
       ok: true,
       target,
@@ -858,6 +888,7 @@ function createTaskBoardRuntime(deps) {
     });
     save();
     notify(dirId, [pending.id]);
+    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, pending, result);
     res.json({
       ok: true,
       taskId: pending.id,
