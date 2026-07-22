@@ -46,6 +46,13 @@
   }
 
   function taskRoutingLabel(task) {
+    // The task card intentionally hides the Commander→worker routing chip: a card
+    // should read as just "新任务 · 进行中" and let its title/runState sync from the
+    // worker's own classify. The routing data itself is kept on task.routing (it
+    // anchors runState to the worker and drives the detail composer) — this only
+    // suppresses the display. Return the old label below to re-enable the chip.
+    return '';
+    /* eslint-disable no-unreachable */
     const routing = task?.routing;
     if (!routing || routing.mode !== 'commander' || !routing.targetSessionId) return '';
     const id = routing.targetSessionId;
