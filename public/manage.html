@@ -1909,6 +1909,21 @@
     </div>
   </div>
 
+  <!-- Commit diff detail modal (opened by double-clicking a commit row) -->
+  <div id="git-commit-diff-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeCommitDiff()">
+    <div class="modal-card" style="width:min(96vw,900px);max-height:88vh;display:flex;flex-direction:column;background:var(--bg);">
+      <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;">
+        <span style="font-weight:680;font-size:14px;flex-shrink:0;">📄 提交 diff</span>
+        <span id="gcd-short" style="font-family:var(--mono);font-size:12px;color:var(--accent);flex-shrink:0;"></span>
+        <span id="gcd-subject" style="font-size:12px;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+        <button class="btn btn-sm" onclick="backToGitTree()">返回提交树</button>
+        <button class="btn btn-sm" onclick="closeCommitDiff()">关闭</button>
+      </div>
+      <div id="gcd-ai" class="gcd-ai"></div>
+      <div id="gcd-stat" style="padding:6px 16px;font-size:11px;color:var(--muted);font-family:var(--mono);border-bottom:1px solid var(--line);"></div>
+      <div id="gcd-diff" style="flex:1;overflow:auto;padding:8px 0;font-family:var(--mono);font-size:12px;line-height:1.55;">加载中…</div>
+    </div>
+  </div>
   <!-- AI Assistant (aux) history — simple popup modal, no side panel -->
   <div id="aux-history-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeAuxHistoryModal()">
     <div class="modal-card" style="width:min(96vw,720px);max-height:88vh;display:flex;flex-direction:column;background:var(--bg);">
@@ -1932,6 +1947,20 @@
     .git-subject{color:var(--text);flex:1;word-break:break-word;}
     .git-refs{color:var(--orange);font-size:10px;margin-left:4px;}
     .git-branch-line{color:var(--line);margin-right:4px;}
+
+    /* ── Commit diff detail modal: AI summary panel + spinner ── */
+    .gcd-ai{padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg-soft);min-height:42px;}
+    .gcd-ai-loading{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+    .gcd-spinner{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--blue);border-radius:50%;animation:gcd-spin 0.8s linear infinite;display:inline-block;flex-shrink:0;}
+    @keyframes gcd-spin{to{transform:rotate(360deg)}}
+    .gcd-cancel,.gcd-retry{height:24px;padding:0 10px;font-size:11px;border-radius:6px;margin-left:auto;flex-shrink:0;}
+    .gcd-cancel{border-color:var(--line-strong);color:var(--muted);}
+    .gcd-cancel:hover{color:var(--text);border-color:var(--danger);}
+    .gcd-retry{border-color:var(--accent-line);color:var(--accent);}
+    .gcd-retry:hover{background:var(--accent-dim);}
+    .gcd-result{white-space:pre-wrap;color:var(--text);font-family:var(--sans);font-size:12.5px;line-height:1.6;}
+    .gcd-error{color:var(--danger);font-size:12px;}
+    .gcd-cancelled{color:var(--faint);font-size:12px;}
   </style>
 
   <script>
@@ -1964,6 +1993,11 @@
           subject.appendChild(gitTreeText('git-refs', `(${ref})`));
         }
         row.appendChild(subject);
+        row.style.cursor = 'pointer';
+        row.title = String(c.subject || '') + '  ·  双击查看该提交的 diff';
+        row.addEventListener('dblclick', function () {
+          openCommitDiff(c.short || c.hash, c.subject || '', c.hash || c.short);
+        });
         fragment.appendChild(row);
       }
       body.replaceChildren(fragment);
@@ -1992,6 +2026,212 @@
     function closeGitTree() {
       document.getElementById('git-tree-modal').style.display = 'none';
       window._gitTreeDir = null;
+    }
+
+    /* ── Commit diff detail modal (double-click a commit row) ── */
+    window._gcdAbort = null;      // {id, ac} for the in-flight aux summary, or null
+    window._gcdReqToken = 0;      // bumped on every open/cancel/close to drop stale callbacks
+    window._gcdCtx = null;        // {short, subject, hash, diff} of the commit being shown
+
+    function gcdRandomId() {
+      return 'gcd-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
+    function gcdClearAi() {
+      var ai = document.getElementById('gcd-ai');
+      ai.textContent = '';
+      return ai;
+    }
+
+    function openCommitDiff(short, subject, hash) {
+      // Drop any summary still running for the previous commit.
+      cancelGcdSummary();
+      var myToken = ++window._gcdReqToken; // invalidates this fetch if superseded/closed
+      window._gcdCtx = { short: short, subject: subject, hash: hash, diff: '' };
+
+      document.getElementById('gcd-short').textContent = String(short || '');
+      document.getElementById('gcd-subject').textContent = String(subject || '');
+      gcdClearAi();
+      var statEl = document.getElementById('gcd-stat');
+      statEl.textContent = '';
+      statEl.style.display = 'none';
+      var diffEl = document.getElementById('gcd-diff');
+      diffEl.textContent = '加载中…';
+      document.getElementById('git-commit-diff-modal').style.display = 'flex';
+
+      fetch('/api/git/commit-diff?dirId=' + encodeURIComponent(window._gitTreeDir || '') + '&hash=' + encodeURIComponent(hash))
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (data) {
+          if (myToken !== window._gcdReqToken) return; // superseded
+          var d = data && typeof data === 'object' ? data : {};
+          if (d.error) {
+            diffEl.textContent = '';
+            var err = document.createElement('div');
+            err.className = 'diff-line diff-del';
+            err.textContent = '加载 diff 失败：' + String(d.error);
+            diffEl.appendChild(err);
+            return;
+          }
+          var diff = String(d.diff || '');
+          window._gcdCtx.diff = diff;
+          statEl.textContent = String(d.stat || '');
+          statEl.style.display = d.stat ? '' : 'none';
+          diffEl.textContent = '';
+          if (!diff) {
+            var empty = document.createElement('div');
+            empty.className = 'diff-line diff-meta';
+            empty.style.cssText = 'text-align:center;padding:24px;';
+            empty.textContent = '该提交无可显示的 diff（可能是空合并提交）';
+            diffEl.appendChild(empty);
+          } else {
+            diffEl.innerHTML = renderDiffLines(diff);
+          }
+          if (d.truncated) {
+            var tr = document.createElement('div');
+            tr.className = 'diff-line diff-meta';
+            tr.style.cssText = 'text-align:center;padding:8px;';
+            tr.textContent = '⚠ diff 过长已截断';
+            diffEl.appendChild(tr);
+          }
+          startCommitSummary(hash, short, subject, diff);
+        })
+        .catch(function (err) {
+          if (myToken !== window._gcdReqToken) return;
+          diffEl.textContent = '';
+          var e2 = document.createElement('div');
+          e2.className = 'diff-line diff-del';
+          e2.textContent = '加载 diff 失败：' + ((err && err.message) || String(err));
+          diffEl.appendChild(e2);
+        });
+    }
+
+    function startCommitSummary(hash, short, subject, diff) {
+      renderGcdLoading();
+      var id = gcdRandomId();
+      var ac = new AbortController();
+      window._gcdAbort = { id: id, ac: ac };
+      var token = ++window._gcdReqToken;
+
+      var body = String(diff || '');
+      var truncated = false;
+      if (body.length > 24000) { body = body.slice(0, 24000); truncated = true; }
+      var prompt = '你是代码审查助手。请用中文总结以下 git commit 的整体改动（commit: ' + short + ' ' + subject + '）。' +
+        '要求：1) 一两句话概括这次提交做了什么；2) 3-6 条要点列出关键改动；3) 若有潜在风险或值得注意的点最后列出，没有则不列。' +
+        '总输出 200 字内，纯文本，不要用 markdown 代码块。diff 内容如下：\n\n' + body +
+        (truncated ? '\n(diff 过长已截断)' : '');
+
+      var payload = { id: id, type: 'commit_diff_summary', prompt: prompt, meta: { dirId: window._gitTreeDir, hash: hash } };
+      fetch('/api/aux/enqueue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: ac.signal,
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (data) {
+          if (token !== window._gcdReqToken) return;
+          if (window._gcdAbort && window._gcdAbort.id === id) window._gcdAbort = null;
+          if (data && data.ok && data.result != null) renderGcdResult(String(data.result));
+          else if (data && data.error === 'cancelled') renderGcdCancelled();
+          else renderGcdError((data && data.error) || '未知错误', function () { startCommitSummary(hash, short, subject, diff); });
+        })
+        .catch(function (err) {
+          if (token !== window._gcdReqToken) return;
+          if (window._gcdAbort && window._gcdAbort.id === id) window._gcdAbort = null;
+          if (err && err.name === 'AbortError') return;
+          renderGcdError((err && err.message) || String(err), function () { startCommitSummary(hash, short, subject, diff); });
+        });
+    }
+
+    function cancelGcdSummary() {
+      if (!window._gcdAbort) return;
+      var a = window._gcdAbort;
+      window._gcdAbort = null;
+      try { a.ac.abort(); } catch (_) {}
+      try {
+        fetch('/api/aux/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: a.id }),
+        }).catch(function () {});
+      } catch (_) {}
+      window._gcdReqToken++;
+      renderGcdCancelled();
+    }
+
+    function renderGcdLoading() {
+      var ai = gcdClearAi();
+      var wrap = document.createElement('div');
+      wrap.className = 'gcd-ai-loading';
+      var sp = document.createElement('span');
+      sp.className = 'gcd-spinner';
+      wrap.appendChild(sp);
+      var txt = document.createElement('span');
+      txt.textContent = 'AI 正在总结该提交…';
+      wrap.appendChild(txt);
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sm gcd-cancel';
+      btn.textContent = '取消';
+      btn.addEventListener('click', function (e) { e.preventDefault(); cancelGcdSummary(); });
+      wrap.appendChild(btn);
+      ai.appendChild(wrap);
+    }
+    function renderGcdResult(text) {
+      var ai = gcdClearAi();
+      var out = document.createElement('div');
+      out.className = 'gcd-result';
+      out.textContent = String(text || '');
+      ai.appendChild(out);
+    }
+    function renderGcdCancelled() {
+      var ai = gcdClearAi();
+      var wrap = document.createElement('div');
+      wrap.className = 'gcd-ai-loading';
+      var t = document.createElement('span');
+      t.className = 'gcd-cancelled';
+      t.textContent = '已取消总结';
+      wrap.appendChild(t);
+      if (window._gcdCtx && window._gcdCtx.hash) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm gcd-retry';
+        btn.textContent = '重新总结';
+        btn.addEventListener('click', function (e) {
+          e.preventDefault();
+          var c = window._gcdCtx;
+          if (c) startCommitSummary(c.hash, c.short, c.subject, c.diff || '');
+        });
+        wrap.appendChild(btn);
+      }
+      ai.appendChild(wrap);
+    }
+    function renderGcdError(msg, onRetry) {
+      var ai = gcdClearAi();
+      var wrap = document.createElement('div');
+      wrap.className = 'gcd-ai-loading';
+      var t = document.createElement('span');
+      t.className = 'gcd-error';
+      t.textContent = '总结失败：' + msg;
+      wrap.appendChild(t);
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sm gcd-retry';
+      btn.textContent = '重试';
+      btn.addEventListener('click', function (e) { e.preventDefault(); onRetry(); });
+      wrap.appendChild(btn);
+      ai.appendChild(wrap);
+    }
+
+    function backToGitTree() {
+      cancelGcdSummary();
+      window._gcdReqToken++; // invalidate any in-flight diff fetch
+      document.getElementById('git-commit-diff-modal').style.display = 'none';
+    }
+    function closeCommitDiff() {
+      cancelGcdSummary();
+      window._gcdReqToken++; // invalidate any in-flight diff fetch
+      document.getElementById('git-commit-diff-modal').style.display = 'none';
+      document.getElementById('git-tree-modal').style.display = 'none';
     }
   </script>
 </body>
