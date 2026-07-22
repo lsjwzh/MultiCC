@@ -932,6 +932,8 @@ function showPrompt(message, value = '', opts = {}) { return _dialog({ message, 
 /* ── Keyboard shortcut: Esc to close focus panel or modal ── */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    const gcdModal = document.getElementById('git-commit-diff-modal');
+    if (gcdModal && gcdModal.style.display === 'flex') { closeCommitDiff(); return; }
     const modal = document.getElementById('newdir-modal');
     if (modal && modal.style.display === 'flex') { closeNewDirectoryModal(); return; }
     if (_focusedSessionId) closeFocusPanel();
