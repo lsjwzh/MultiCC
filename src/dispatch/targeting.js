@@ -27,6 +27,8 @@ function dispatchableSessionsFor(sessionId) {
     .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
     // Commander dispatches across every fleet (D5); everyone else stays in-directory.
     .filter(s => fromCommander || s.dirId === from.dirId)
+    // Commander only hands work to real chat workers, never a raw terminal session.
+    .filter(s => !fromCommander || s.kind !== 'terminal')
     .slice(0, fromCommander ? 100 : 30)
     .map(s => {
       const activeChat = chatSessions.get(s.id);

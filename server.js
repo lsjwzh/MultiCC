@@ -816,6 +816,34 @@ async function seedCommanderSession(dir) {
   }
 }
 
+// Boot back-fill: fleets created before the commander role existed carry legacy
+// label-based Agent Commander sessions with no type. Stamp exactly one per fleet
+// as type='commander' so it gains the role's protections (undeletable, kept out
+// of every worker pool, cross-fleet dispatch). Stamp-only — never creates a
+// session, so it can't spawn worktrees or race the register-time seed.
+function backfillCommanderTypes() {
+  const byDir = new Map();
+  for (const s of persistedSessions.values()) {
+    if (!s.dirId) continue;
+    if (!byDir.has(s.dirId)) byDir.set(s.dirId, []);
+    byDir.get(s.dirId).push(s);
+  }
+  let stamped = 0;
+  for (const owned of byDir.values()) {
+    if (owned.some(s => s.type === 'commander')) continue;   // fleet already has one
+    const legacy = owned.filter(s => s.kind === 'chat' && !s.type && /Agent Commander/.test(s.label || ''));
+    if (!legacy.length) continue;
+    const pick = legacy.find(s => s.cli === 'claude') || legacy[0];   // prefer claude (D2)
+    pick.type = 'commander';
+    stamped++;
+  }
+  if (stamped) {
+    savePersistedSessionsBestEffort('boot.commander-backfill');
+    console.log(`[multicc] commander back-fill: stamped ${stamped} legacy Agent Commander session(s) as type=commander`);
+  }
+  return { stamped };
+}
+
 // Tear down one session record + all its runtime state (tmux, chat proc, wait
 // registrations, shares, worktree, triggers, notes, status board entry).
 // Directory deletion cascades through here for every owned session.
@@ -6241,6 +6269,8 @@ const teardownTriggers = triggerRuntime.teardownSession;
 
 // Build worktrees for any session that lacks one, then recover tmux sessions.
 // Both paths are asynchronous so startup never blocks the event loop on git/tmux.
+// One-time migration for fleets that predate the commander role (stamp-only).
+backfillCommanderTypes();
 const startupRepoReady = initWorktrees()
   .then(() => recoverTmuxSessions())
   .catch(error => console.error('[multicc] async repo/tmux startup failed:', error.message));
