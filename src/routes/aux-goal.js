@@ -627,6 +627,7 @@ function mountAuxGoalRoutes(app, dependencies) {
 
   return {
     AUX_SESSION_ID,
+    AUX_HISTORY_MAX,
     auxQueue,
     getAuxConfig: () => ({ ...auxConfig }),
     resolveGoalLimits,

@@ -118,6 +118,8 @@ test('mounts the complete Aux and Goal REST surface', () => {
 
 test('exports the Aux history retention constant consumed by the host', () => {
   assert.equal(AUX_HISTORY_MAX, 200);
+  const { runtime } = createHarness();
+  assert.equal(runtime.AUX_HISTORY_MAX, 200);
 });
 
 test('initialization migrates legacy Aux config and registers the synthetic session', () => {
