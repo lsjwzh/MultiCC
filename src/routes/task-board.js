@@ -41,6 +41,8 @@ function createTaskBoardRuntime(deps) {
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState, isSessionBusy,
   } = deps;
+  const getCommanderMigrationStatus = typeof deps.getCommanderMigrationStatus === 'function'
+    ? deps.getCommanderMigrationStatus : null;
   const logger = deps.logger || console;
   // Optional goal-mode helpers (from aux-goal). When present, a goal-flagged
   // send gets the same "[Goal 模式限制]…" note text-prepended that the chat
@@ -601,6 +603,21 @@ function createTaskBoardRuntime(deps) {
     });
   }
 
+  function commanderMigrationFailure(res, dirId) {
+    if (!getCommanderMigrationStatus || !dirId) return false;
+    const status = getCommanderMigrationStatus(dirId);
+    if (status && status.ready === true) return false;
+    const code = status?.code || 'commander_migration_pending';
+    res.status(503).json({
+      error: code,
+      directoryId: dirId,
+      note: code === 'commander_migration_pending'
+        ? 'Agent Commander 升级迁移尚未完成，自动路由暂不可用'
+        : '该 Fleet 的 Agent Commander 迁移未安全完成，请查看 readiness 并修复后重试',
+    });
+    return true;
+  }
+
   function taskDto(task) {
     const dto = core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
     if (dto?.routing) {
@@ -682,7 +699,9 @@ function createTaskBoardRuntime(deps) {
       if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
       routeMode = 'manual';
     } else {
-      const commander = core.resolveDirectoryCommander(records, core.taskDirId(board, task));
+      const dirId = core.taskDirId(board, task);
+      if (commanderMigrationFailure(res, dirId)) return;
+      const commander = core.resolveDirectoryCommander(records, dirId);
       if (!commander.ok) return commanderFailure(res, commander.code);
       target = commander.sessionId;
       routeMode = 'commander';
@@ -746,6 +765,7 @@ function createTaskBoardRuntime(deps) {
       if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
       routeMode = 'manual';
     } else {
+      if (commanderMigrationFailure(res, dirId)) return;
       const commander = core.resolveDirectoryCommander(records, dirId);
       if (!commander.ok) return commanderFailure(res, commander.code);
       target = commander.sessionId;

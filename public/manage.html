@@ -2084,7 +2084,7 @@
             empty.textContent = '该提交无可显示的 diff（可能是空合并提交）';
             diffEl.appendChild(empty);
           } else {
-            diffEl.innerHTML = renderDiffLines(diff);
+            diffEl.replaceChildren(renderDiffLines(diff));
           }
           if (d.truncated) {
             var tr = document.createElement('div');
