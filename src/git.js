@@ -283,6 +283,43 @@ async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
   }, { ...opts, sessionId });
 }
 
+// Compensation used only while creating a brand-new session. Unlike forced
+// user deletion it intentionally creates no backup: these resources did not
+// exist before the failed transaction. Absence is verified before success.
+async function gitWorktreeRollbackCreate(dirPath, worktreePath, branch, opts = {}) {
+  const sessionId = opts.sessionId || path.basename(worktreePath || branch || 'session');
+  return defaultRepoActor.run(dirPath, 'worktree-create-rollback', async ({ execGit, progress }) => {
+    const errors = [];
+    progress('remove');
+    if (worktreePath && fs.existsSync(worktreePath)) {
+      try { await execGit(dirPath, ['worktree', 'remove', '--force', worktreePath]); }
+      catch (error) { errors.push(errorText(error) || 'worktree remove failed'); }
+    }
+    if (branch) {
+      let exists = false;
+      try { await execGit(dirPath, ['rev-parse', '--verify', branch]); exists = true; } catch (_) {}
+      if (exists) {
+        try { await execGit(dirPath, ['branch', '-D', branch]); }
+        catch (error) { errors.push(errorText(error) || 'branch remove failed'); }
+      }
+    }
+    try { await execGit(dirPath, ['worktree', 'prune']); } catch (_) {}
+    const worktreeExists = !!(worktreePath && fs.existsSync(worktreePath));
+    let branchExists = false;
+    if (branch) {
+      try { await execGit(dirPath, ['rev-parse', '--verify', branch]); branchExists = true; } catch (_) {}
+    }
+    if (worktreeExists) errors.push('worktree still exists');
+    if (branchExists) errors.push('branch still exists');
+    if (errors.length) {
+      const error = new Error(`session creation rollback incomplete: ${errors.join('; ')}`);
+      error.code = 'SESSION_CREATE_ROLLBACK_FAILED';
+      throw error;
+    }
+    return { ok: true, removed: true };
+  }, { ...opts, sessionId });
+}
+
 async function rebaseConflictsWith(execGit, worktreePath) {
   if (!worktreePath || !fs.existsSync(worktreePath)) return null;
   let inProgress = false;
@@ -664,6 +701,7 @@ module.exports = {
   gitImportSessionBundle,
   gitEnsureExcluded,
   gitWorktreeAdd,
+  gitWorktreeRollbackCreate,
   gitWorktreeRemove,
   gitRelocateWorktree,
   gitWorktreeCommitAll,

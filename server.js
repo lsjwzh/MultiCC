@@ -105,6 +105,12 @@ const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { mountVoiceRoutes } = require('./src/routes/voice');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board');
+const {
+  chooseCommanderRuntime, commanderDirectoryValidity,
+  createCommanderMigration,
+  createCommanderMigrationState,
+  isTrustedLegacyCommander,
+} = require('./src/commander-migration');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -267,6 +273,7 @@ const agentResources = createAgentResourcesRoutes({
   }),
 });
 const agentCommanderPrompt = agentResources.agentCommanderPrompt;
+const agentCommanderPreset = agentResources.agentCommanderPreset;
 logger.info('provider_router_runtime', {
   mode: providerRouterRuntime.mode,
   portApiVersion: providerRouterRuntime.apiVersion,
@@ -329,7 +336,11 @@ const authRuntime = createAuthRuntime({
 authRuntime.mountRoutes(app);
 
 let serviceReady = false;
-const healthHandlers = createHealthHandlers({ isReady: () => serviceReady && !_shuttingDown });
+const commanderMigrationState = createCommanderMigrationState();
+const healthHandlers = createHealthHandlers({
+  isReady: () => serviceReady && !_shuttingDown && commanderMigrationState.snapshot().ready,
+  readinessDetails: () => ({ commanderMigration: commanderMigrationState.snapshot() }),
+});
 app.get('/healthz', healthHandlers.healthz);
 app.get('/readyz', healthHandlers.readyz);
 app.get('/metrics', (req, res) => {
@@ -344,7 +355,7 @@ app.get('/metrics', (req, res) => {
     multicc_ws_clients: wss.clients.size,
     multicc_git_queue_depth: gitQueueDepth(),
     multicc_active_waits: waitStats.waits + (orchestrationRuntime ? orchestrationRuntime.pendingCount() : 0),
-    multicc_ready: serviceReady && !_shuttingDown ? 1 : 0,
+    multicc_ready: serviceReady && !_shuttingDown && commanderMigrationState.snapshot().ready ? 1 : 0,
   }));
 });
 
@@ -622,8 +633,8 @@ async function recoverTmuxSessions() {
 // Git + worktree ops extracted to src/git.js. Pure functions, destructured so
 // existing call sites are unchanged. The stateful bits stay here in server.js.
 const {
-  gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
-  gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeMergeState, gitMergeBack,
+  WORKTREE_SUBDIR, gitRun, gitIsRepo, gitHasCommit, gitBaseBranch, gitEnsureExcluded,
+  gitWorktreeAdd, gitWorktreeRollbackCreate, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeMergeState, gitMergeBack,
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
 } = require('./src/git');
@@ -775,73 +786,18 @@ for (const session of persistedSessions.values()) {
 // they are migrated over. saveDirectories() remains as a delegate for them.
 const { createDirectoryModule } = require('./src/directory');
 
-// D2: pick the commander's default CLI/provider — prefer a configured Claude
-// provider, then Codex, else fall back to Claude default login. model stays null
-// so the commander follows whatever model that provider defaults to (never a
-// hard-coded id, which would rot when the provider swaps models).
-// providerDefaults is a module-scope const initialised later in file order but
-// this runs only at request time (directory register), so it is always ready.
-function pickCommanderProvider() {
-  const claude = providers.listProviders('claude');
-  if (claude.length) return { cli: 'claude', provider: providerDefaults.claude || claude[0].id, model: null };
-  const codex = providers.listProviders('codex');
-  if (codex.length) return { cli: 'codex', provider: providerDefaults.codex || codex[0].id, model: null };
-  return { cli: 'claude', provider: null, model: null };   // fresh install: default OAuth login
-}
+let commanderMigrationRunner = null;
 
-// Seed one typed Agent Commander per directory; its role prompt comes from the preset.
+// Registration and upgrades share normal session creation.
 async function seedCommanderSession(dir) {
-  const commander = agentCommanderPrompt();
-  if (!commander) {
-    console.warn('[multicc] Agent Commander preset not found; skipping seed sessions for new dir');
-    return;
+  if (!commanderMigrationRunner) return { ok: false, error: 'commander migration unavailable' };
+  const result = await commanderMigrationRunner.migrateDirectory(dir);
+  if (result.status === 'ready' && result.sessionId) {
+    appendEvent(dir.id, 'session_role_changed', `Agent Commander（${result.action}）`, result.sessionId);
+    return { ok: true, ...result };
   }
-  if ([...persistedSessions.values()].some(s => s.dirId === dir.id && s.type === 'commander')) return;
-  const { cli, provider, model } = pickCommanderProvider();
-  const r = await createSessionRecord({
-    dir, cli, kind: 'chat', label: '🫡 Agent Commander',
-    type: 'commander', model, provider, rolePrompt: commander,
-    persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
-  });
-  if (r.ok) {
-    appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
-  } else {
-    console.warn(`[multicc] seed commander session failed for dir ${dir.id}: ${r.error}`);
-  }
-}
-
-// Compatibility recognizes only exact historical labels; runtime routing never
-// guesses labels and accepts only the persisted type='commander'.
-function isLegacyCommanderLabel(label) {
-  const t = String(label || '').trim();
-  return /^(?:🫡\s*)?agent commander$/i.test(t) || t === '指挥' || /^commander$/i.test(t);
-}
-
-// Boot migration:
-// - stamp one exact legacy label only when a typed Commander is absent;
-// - never create sessions or worktrees;
-// - persist the stable type used by runtime routing.
-function backfillCommanderTypes() {
-  const byDir = new Map();
-  for (const s of persistedSessions.values()) {
-    if (!s.dirId) continue;
-    if (!byDir.has(s.dirId)) byDir.set(s.dirId, []);
-    byDir.get(s.dirId).push(s);
-  }
-  let stamped = 0;
-  for (const owned of byDir.values()) {
-    if (owned.some(s => s.type === 'commander')) continue;   // fleet already has one
-    const legacy = owned.filter(s => s.kind === 'chat' && !s.type && isLegacyCommanderLabel(s.label));
-    if (!legacy.length) continue;
-    const pick = legacy.find(s => s.cli === 'claude') || legacy[0];   // prefer claude (D2)
-    pick.type = 'commander';
-    stamped++;
-  }
-  if (stamped) {
-    savePersistedSessionsBestEffort('boot.commander-backfill');
-    console.log(`[multicc] commander back-fill: stamped ${stamped} legacy Agent Commander session(s) as type=commander`);
-  }
-  return { stamped };
+  console.warn(`[multicc] seed commander session failed for dir ${dir.id}: ${result.code}`);
+  return { ok: false, error: result.code, ...result };
 }
 
 // Tear down one session record + all its runtime state (tmux, chat proc, wait
@@ -958,7 +914,42 @@ const directoryModule = createDirectoryModule({
 });
 const directories = directoryModule.repo.map();
 function saveDirectories() { directoryModule.repo.save(); }
-
+commanderMigrationRunner = createCommanderMigration({
+  state: commanderMigrationState,
+  directories,
+  records: persistedSessions,
+  commanderPrompt: agentCommanderPrompt,
+  commanderPreset: agentCommanderPreset,
+  validateDirectory: dir => commanderDirectoryValidity(dir, directories, {
+    exists: fs.existsSync,
+    isDirectory: value => fs.statSync(value).isDirectory(),
+    isHomeOrAbove,
+    realPathOf,
+  }),
+  validateSession: session => ({ valid: !!session.worktreePath && !!session.branch && fs.existsSync(session.worktreePath) && !invalidSessions.has(session.id), code: 'commander_session_invalid' }),
+  selectRuntime: (dir, preset) => chooseCommanderRuntime({
+    directory: dir,
+    records: persistedSessions,
+    preset,
+    supportedClis: SUPPORTED_CHAT_CLIS,
+    availability: cliAvailabilitySummary(),
+    providerDefaults,
+    listProviders: cli => providers.listProviders(cli),
+  }),
+  stampSession: (sessionId, directoryId) => sessionPersistence.mutate(
+    'startup.commander-migration-stamp', records => {
+      const record = records.get(sessionId);
+      if (!isTrustedLegacyCommander(record, directoryId)) {
+        const error = new Error('legacy commander evidence changed');
+        error.code = 'commander_legacy_changed';
+        throw error;
+      }
+      record.type = 'commander';
+      return record;
+    }),
+  createSession: spec => createSessionRecord(spec),
+  logger,
+});
 if (_state.needsSave) {
   saveDirectories();
   sessionPersistence.mutate('startup.schema-migration', () => {});
@@ -1875,10 +1866,13 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   // session its own worktree + branch.
   const ready = await ensureDirGitReady(dir);
   if (!ready.ok) return { ok: false, error: friendlyDirReason(ready.reason) };
-  let worktreePath, branch;
+  let worktreePath = path.join(dir.path, WORKTREE_SUBDIR, sid);
+  let branch = `multicc/${sid}`;
+  const rollbackOptions = { sessionId: sid, baseBranch: dir.baseBranch };
   try {
     ({ worktreePath, branch } = await gitWorktreeAdd(dir.path, sid, dir.baseBranch));
   } catch (e) {
+    await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
     return { ok: false, error: 'worktree 创建失败: ' + e.message };
   }
 
@@ -1920,15 +1914,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   } catch (error) {
     // The record never committed. Remove the just-created worktree so a failed
     // HTTP create cannot leave either a session ghost or an unowned worktree.
-    try {
-      await gitWorktreeRemove(dir.path, worktreePath, branch, {
-        sessionId: sid, baseBranch: dir.baseBranch, force: true,
-      });
-    } catch (cleanupError) {
-      logger.error('session_create_rollback_cleanup_failed', {
-        sessionId: sid, error: cleanupError && cleanupError.message,
-      });
-    }
+    await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
     throw error;
   }
   appendEvent(dir.id, 'session_created', `${cli} ${kind}${ephemeral ? ' (gw)' : ''}`, sid);
@@ -3248,6 +3234,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
   isSessionBusy: taskBoardSessionBusy,
+  getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
   getSessionRunState: sid => {
     const rec = persistedSessions.get(sid);
     if (!rec) return null;
@@ -6266,13 +6253,21 @@ const triggerRuntime = createSessionTriggers({
 triggerRuntime.mountRoutes(app);
 const teardownTriggers = triggerRuntime.teardownSession;
 
-// Build worktrees for any session that lacks one, then recover tmux sessions.
-// Both paths are asynchronous so startup never blocks the event loop on git/tmux.
-// One-time migration for fleets that predate the commander role (stamp-only).
-backfillCommanderTypes();
+// Migrate legacy worktrees and Commanders before recovery/readiness.
 const startupRepoReady = initWorktrees()
+  .catch(error => console.error('[multicc] async repo startup failed:', error.message))
+  .then(() => commanderMigrationRunner.run())
+  .catch(error => {
+    commanderMigrationState.setPhase('complete');
+    for (const dir of directories.values()) {
+      commanderMigrationState.setDirectory(dir.id, {
+        status: 'failed', code: 'commander_migration_startup_failed',
+      });
+    }
+    logger.error('commander_migration_startup_failed', { error: error && error.message });
+  })
   .then(() => recoverTmuxSessions())
-  .catch(error => console.error('[multicc] async repo/tmux startup failed:', error.message));
+  .catch(error => console.error('[multicc] async tmux recovery failed:', error.message));
 
 // Scheduled tasks (定时任务): inject the session-creation + turn-running machinery.
 // Complements the per-session triggers above — this one fires by creating a

@@ -69,6 +69,31 @@ check_runtime_dependencies() {
   return "$check_rc"
 }
 
+# An update is not complete merely because the new process stayed alive: boot
+# now runs the idempotent Fleet Commander compatibility migration.  Wait for
+# /readyz so `./multicc update` reports a degraded migration instead of a false
+# success. The server still listens on failure so operators can inspect/repair
+# the directoryId entries returned by readiness.
+wait_for_ready() {
+  local port="${PORT:-}" probe="" url
+  if [ -z "$port" ]; then
+    port="$("$NODE" -e 'const fs=require("fs");let s="";try{s=fs.readFileSync(process.argv[1],"utf8")}catch{};const m=s.match(/^PORT\s*=\s*([^\s#]+)\s*$/m);process.stdout.write(m?m[1]:"3000")' "$SCRIPT_DIR/.env")"
+  fi
+  url="http://127.0.0.1:${port}/readyz"
+  echo "Waiting for startup migrations and readiness..."
+  for _i in $(seq 1 120); do
+    if probe="$("$NODE" -e '(async()=>{for(const u of [process.argv[1],process.argv[2]]){try{const r=await fetch(u);const t=await r.text();process.stdout.write(t.slice(0,2000));process.exit(r.status===200?0:2)}catch{}}process.exit(3)})()' "$url" "http://[::1]:${port}/readyz" 2>/dev/null)"; then
+      echo "MultiCC readiness confirmed."
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "MultiCC restarted but readiness did not become healthy."
+  [ -n "$probe" ] && echo "Readiness report: $probe"
+  echo "Check $ERR_LOG; Commander migration failures include their directoryId."
+  return 1
+}
+
 do_start() {
   if is_running; then
     echo "MultiCC is already running (PID $(get_pid))"
@@ -379,6 +404,10 @@ do_update() {
     echo "Service reloaded."
   else
     do_restart
+  fi
+  if ! wait_for_ready; then
+    echo "Update code was applied, but startup migration/readiness needs operator attention."
+    return 1
   fi
   echo "Update complete (${before:0:7} → ${after:0:7})."
 }
