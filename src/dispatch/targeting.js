@@ -19,10 +19,6 @@ function createDispatchTargeting({ records, chatSessions, normalizeEffort } = {}
 function dispatchableSessionsFor(sessionId) {
   const from = records.get(sessionId);
   if (!from || !from.dirId) return [];
-  const fromCommander = from.type === 'commander';
-  // Commander never receives an LLM dispatch/tool prompt. Its routing decision
-  // is enforced by src/commander-router.js at the host boundary.
-  if (fromCommander) return [];
   return [...records.values()]
     .filter(s => s.id !== sessionId)
     // Never dispatch to a system/commander session: aux/gateway are internal,
@@ -47,7 +43,9 @@ function buildDispatchContextPrompt(sessionId) {
   if (!targets.length) return '';
   const current = records.get(sessionId);
   const isCommander = current?.type === 'commander';
-  if (isCommander || !current?.autoDispatch) return '';
+  // Commander always gets the dispatch prompt (it's a real-LLM dispatcher and
+  // routes one-way to workers); every other session must opt in via autoDispatch.
+  if (!isCommander && !current?.autoDispatch) return '';
   const ultra = normalizeEffort(current?.effort) === 'ultracode';
   const intro = ultra
     ? [

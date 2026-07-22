@@ -106,7 +106,7 @@ const { mountVoiceRoutes } = require('./src/routes/voice');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board');
 const { createCommanderMigrationState } = require('./src/commander-migration');
-const { createCommanderMigrationHost, createCommanderRoutingHost, createCommanderIngress } = require('./src/commander-host-runtime');
+const { createCommanderMigrationHost, createCommanderRoutingHost } = require('./src/commander-host-runtime');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -1300,7 +1300,11 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   if (!markers.length) { maybeNudgeUltracodeDispatch(dispatcherId, finalText); return; }
   const from = persistedSessions.get(dispatcherId);
   if (!from) return;
-  if (from.type === 'commander') return;
+  // Commander dispatches ONE-WAY: it fires tasks at workers but their results
+  // never flow back into its window (oneWay:true → completeDispatch produces no
+  // result outbox, and the addPendingDispatch guard keeps it off the waiting
+  // list). Every other session stays two-way (replyTo → results return).
+  const oneWay = from.type === 'commander';
   const deliveries = [];
   lastDispatchOutAt.set(dispatcherId, Date.now());
   const history = loadChatHistory(dispatcherId);
@@ -1315,6 +1319,7 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
     deliveries.push(dispatchToSession(mk.target, mk.message, {
       replyTo: dispatcherId,
+      oneWay,
       idempotencyKey: `marker:${dispatcherId}:${sourceKey}:${markerIndex}`,
     })
       .then(r => { if (!r.ok) waitInjector.safeInject(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
@@ -4785,19 +4790,15 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   logger,
 });
 
-const commanderIngress = createCommanderIngress({
-  historyService: chatHistoryService, appendMessage: appendChatMessage,
-  broadcast: chatBroadcast, setStatus: setSessionStatus,
-  taskBoardRuntime, orchestrationRuntime, logger,
-});
-
 function runChatTurn(sessionName, text, opts = {}) {
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
     return false;
   }
-  if (persisted.type === 'commander') return commanderIngress.runTurn(sessionName, text, opts);
+  // Commander runs a real LLM like any chat session (no host bypass). Its reply
+  // is visible in its own window; any <<dispatch>> markers it emits are routed
+  // one-way to workers by maybeDispatchFromChatTurn (results do not flow back).
 
   // Normalize once at the host boundary. Native CLI session ids and provider
   // credentials stay outside the pure request; only proof of native history is
