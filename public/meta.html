@@ -316,14 +316,6 @@ function scheduleTbRefresh(evt) {
   }, 400);
 }
 
-function classificationLabel(c) {
-  if (c?.state === 'retry_wait' && c.nextRetryAt) {
-    return `${Math.max(1, Math.ceil((c.nextRetryAt - Date.now()) / 60000))}分钟后重试`;
-  }
-  return ({ waiting_reply: '等待回复', pending: '待归类', running: '归类中',
-    retry_wait: '等待重试', failed: '归类失败' })[c?.state] || '待归类';
-}
-
 function taskRoutingHtml(task) {
   const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
   return label ? `<span class="tb-route-state">🫡 ${esc(label)}</span>` : '';
@@ -379,11 +371,11 @@ function renderTaskBoard() {
       const clsRun = display.running ? ' running' : '';
       const row = document.createElement('div');
       row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
-      const retryable = t.classification && t.classification.state !== 'running';
+      const assignment = t.moduleAssignment;
       row.innerHTML = `
         <span class="tb-icon">${display.icon}</span>
         <span class="tb-title">${esc(t.title)}</span>
-        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}${t.classification ? `<span class="tb-class-state ${esc(t.classification.state)}" title="${esc(t.classification.lastError || '')}">${esc(classificationLabel(t.classification))}</span>` : ''}${retryable ? '<button class="tb-reclassify">重新归类</button>' : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
+        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
       const retry = row.querySelector('.tb-reclassify');
       if (retry) retry.onclick = (e) => { e.stopPropagation(); reclassifyTask(t.id, retry); };
@@ -430,6 +422,7 @@ function renderTaskDetail(d) {
   const panel = $('task-detail');
   const t = d.task;
   const mod = tb.modules.find(m => m.id === t.moduleId);
+  const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
   panel.innerHTML = '';
 
   const head = document.createElement('div'); head.className = 'td-head';
@@ -444,9 +437,9 @@ function renderTaskDetail(d) {
     <div class="td-crumb">${esc(mod ? mod.name : '未分组')} ›</div>
     <div class="td-title-row">
       <span class="td-title">${esc(t.title)}</span>
-      <span class="td-badge ${t.status==='active'?'active':''}">${t.status==='active'?'进行中':t.status==='done'?'已完成':'已归档'}</span>
+      <span class="td-badge ${display.running ? 'active' : ''}">${display.label}</span>
       <span class="td-actions">
-        ${t.classification ? `<button class="btn-sec" id="td-reclassify"${t.classification.state === 'running' ? ' disabled' : ''}>🔄 重新归类</button>` : ''}
+        ${t.moduleAssignment ? `<button class="btn-sec" id="td-reclassify"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>` : ''}
         ${t.status === 'active'
           ? '<button class="btn-sec" id="td-done">✅ 标记完成</button>'
           : '<button class="btn-sec" id="td-reopen">♻️ 重开</button>'}

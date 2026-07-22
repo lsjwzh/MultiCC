@@ -8,30 +8,28 @@
 // Messages DTO: { ok, task, items:[{sessionId, sessionLabel, role, messageId,
 //   ts, text, lost?}] }
 
-/// Live classify verdict attached to a pending task. Mirrors the server's
-/// `task.classification` block. `state` is one of the five CLASSIFICATION_STATES
-/// (waiting_reply | pending | running | retry_wait | failed).
-class TaskClassification {
-  final String state;
+/// Operational metadata for manually assigning a pending task to a module.
+/// This is deliberately separate from the task's live `runState`, which comes
+/// exclusively from the session classify state machine.
+class TaskModuleAssignment {
+  final bool running;
   final int attempts;
   final int? lastAttemptAt;
-  final int? nextRetryAt;
   final String? lastError;
 
-  const TaskClassification({
-    required this.state,
+  const TaskModuleAssignment({
+    this.running = false,
     this.attempts = 0,
     this.lastAttemptAt,
-    this.nextRetryAt,
     this.lastError,
   });
 
-  factory TaskClassification.fromJson(Map<String, dynamic> json) =>
-      TaskClassification(
-        state: (json['state'] ?? 'pending').toString(),
+  factory TaskModuleAssignment.fromJson(Map<String, dynamic> json) =>
+      TaskModuleAssignment(
+        // `state` is accepted only for a rolling upgrade from the old DTO.
+        running: json['running'] == true || json['state'] == 'running',
         attempts: (json['attempts'] as num?)?.toInt() ?? 0,
         lastAttemptAt: (json['lastAttemptAt'] as num?)?.toInt(),
-        nextRetryAt: (json['nextRetryAt'] as num?)?.toInt(),
         lastError: json['lastError']?.toString(),
       );
 }
@@ -51,7 +49,7 @@ class TaskBoardTask {
   final int lastTs;
   final int createdAt;
   final String runState;
-  final TaskClassification? classification;
+  final TaskModuleAssignment? moduleAssignment;
 
   const TaskBoardTask({
     required this.id,
@@ -65,35 +63,41 @@ class TaskBoardTask {
     this.lastTs = 0,
     this.createdAt = 0,
     this.runState = 'idle',
-    this.classification,
+    this.moduleAssignment,
   });
 
   factory TaskBoardTask.fromJson(Map<String, dynamic> json) => TaskBoardTask(
-        id: (json['id'] ?? '').toString(),
-        moduleId: (json['moduleId'] ?? '').toString(),
-        title: (json['title'] ?? '').toString(),
-        status: (json['status'] ?? 'active').toString(),
-        areas: (json['areas'] as List?)
-                ?.map((e) => e.toString())
-                .toList(growable: false) ??
-            const [],
-        refCount: (json['refCount'] as num?)?.toInt() ?? 0,
-        sessionIds: (json['sessionIds'] as List?)
-                ?.map((e) => e.toString())
-                .toList(growable: false) ??
-            const [],
-        dirIds: (json['dirIds'] as List?)
-                ?.map((e) => e.toString())
-                .toList(growable: false) ??
-            const [],
-        lastTs: (json['lastTs'] as num?)?.toInt() ?? 0,
-        createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
-        runState: (json['runState'] ?? 'idle').toString(),
-        classification: json['classification'] is Map
-            ? TaskClassification.fromJson(
-                (json['classification'] as Map).cast<String, dynamic>())
-            : null,
-      );
+    id: (json['id'] ?? '').toString(),
+    moduleId: (json['moduleId'] ?? '').toString(),
+    title: (json['title'] ?? '').toString(),
+    status: (json['status'] ?? 'active').toString(),
+    areas:
+        (json['areas'] as List?)
+            ?.map((e) => e.toString())
+            .toList(growable: false) ??
+        const [],
+    refCount: (json['refCount'] as num?)?.toInt() ?? 0,
+    sessionIds:
+        (json['sessionIds'] as List?)
+            ?.map((e) => e.toString())
+            .toList(growable: false) ??
+        const [],
+    dirIds:
+        (json['dirIds'] as List?)
+            ?.map((e) => e.toString())
+            .toList(growable: false) ??
+        const [],
+    lastTs: (json['lastTs'] as num?)?.toInt() ?? 0,
+    createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
+    runState: (json['runState'] ?? 'idle').toString(),
+    moduleAssignment:
+        (json['moduleAssignment'] ?? json['classification']) is Map
+        ? TaskModuleAssignment.fromJson(
+            ((json['moduleAssignment'] ?? json['classification']) as Map)
+                .cast<String, dynamic>(),
+          )
+        : null,
+  );
 }
 
 /// A module (AI / directory / classify bucket) that groups tasks. `source` is
@@ -118,7 +122,8 @@ class TaskBoardModule {
 
   bool get isPending => source == 'classify' || name == '待归类';
 
-  factory TaskBoardModule.fromJson(Map<String, dynamic> json) => TaskBoardModule(
+  factory TaskBoardModule.fromJson(Map<String, dynamic> json) =>
+      TaskBoardModule(
         id: (json['id'] ?? '').toString(),
         name: (json['name'] ?? '').toString(),
         source: (json['source'] ?? 'ai').toString(),
@@ -151,14 +156,14 @@ class TaskMessage {
   });
 
   factory TaskMessage.fromJson(Map<String, dynamic> json) => TaskMessage(
-        sessionId: (json['sessionId'] ?? '').toString(),
-        sessionLabel: json['sessionLabel']?.toString(),
-        role: (json['role'] ?? 'user').toString(),
-        messageId: json['messageId']?.toString(),
-        ts: (json['ts'] as num?)?.toInt() ?? 0,
-        text: (json['text'] ?? '').toString(),
-        lost: json['lost'] == true,
-      );
+    sessionId: (json['sessionId'] ?? '').toString(),
+    sessionLabel: json['sessionLabel']?.toString(),
+    role: (json['role'] ?? 'user').toString(),
+    messageId: json['messageId']?.toString(),
+    ts: (json['ts'] as num?)?.toInt() ?? 0,
+    text: (json['text'] ?? '').toString(),
+    lost: json['lost'] == true,
+  );
 }
 
 /// Backfill (历史归档) progress reported by GET /api/task-board. A run is
@@ -210,20 +215,28 @@ class TaskBoard {
       sl.forEach((k, v) => labels[k.toString()] = v.toString());
     }
     return TaskBoard(
-      modules: (json['modules'] as List?)
-              ?.map((e) =>
-                  TaskBoardModule.fromJson((e as Map).cast<String, dynamic>()))
+      modules:
+          (json['modules'] as List?)
+              ?.map(
+                (e) => TaskBoardModule.fromJson(
+                  (e as Map).cast<String, dynamic>(),
+                ),
+              )
               .toList(growable: false) ??
           const [],
-      tasks: (json['tasks'] as List?)
-              ?.map((e) =>
-                  TaskBoardTask.fromJson((e as Map).cast<String, dynamic>()))
+      tasks:
+          (json['tasks'] as List?)
+              ?.map(
+                (e) =>
+                    TaskBoardTask.fromJson((e as Map).cast<String, dynamic>()),
+              )
               .toList(growable: false) ??
           const [],
       sessionLabels: Map.unmodifiable(labels),
       backfill: json['backfill'] is Map
           ? TaskBoardBackfill.fromJson(
-              (json['backfill'] as Map).cast<String, dynamic>())
+              (json['backfill'] as Map).cast<String, dynamic>(),
+            )
           : null,
     );
   }

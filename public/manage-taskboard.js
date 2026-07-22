@@ -28,23 +28,12 @@ function _tbTimeAgo(ts) {
   return `${Math.floor(s / 86400)}天前`;
 }
 
-function _tbClassificationHtml(task) {
-  const c = task && task.classification;
-  if (!c) return '';
-  const labels = {
-    waiting_reply: '等待回复', pending: '待归类', running: '归类中',
-    retry_wait: '等待重试', failed: '归类失败',
-  };
-  if (c.state === 'retry_wait' && c.nextRetryAt) {
-    const mins = Math.max(1, Math.ceil((c.nextRetryAt - Date.now()) / 60000));
-    labels.retry_wait = `${mins}分钟后重试`;
-  }
-  const title = c.lastError ? ` title="${_tbEsc(c.lastError)}"` : '';
-  const retryable = c.state !== 'running';
-  return `<span class="tb-class-state ${_tbEsc(c.state)}"${title}>${_tbEsc(labels[c.state] || '待归类')}</span>`
-    + (retryable
-      ? `<button class="btn btn-sm tb-reclassify" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(task.id)}')">重新归类</button>`
-      : '');
+function _tbModuleAssignmentHtml(task) {
+  const assignment = task && task.moduleAssignment;
+  if (!assignment) return '';
+  const title = assignment.lastError ? ` title="${_tbEsc(assignment.lastError)}"` : '';
+  const label = assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类';
+  return `<button class="btn btn-sm tb-reclassify" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(task.id)}')"${assignment.running ? ' disabled' : ''}${title}>${label}</button>`;
 }
 
 function _tbRoutingHtml(task) {
@@ -128,7 +117,7 @@ function renderTaskBoardSection(dirId, opts) {
         <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
           <span class="tb-icon">${display.icon}</span>
           <span class="tb-title">${_tbEsc(t.title)}</span>
-          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
+          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
         </div>`);
     }
   }
@@ -141,7 +130,7 @@ function renderTaskBoardSection(dirId, opts) {
       <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
         <span class="tb-icon">${display.icon}</span>
         <span class="tb-title">${_tbEsc(t.title)}</span>
-        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
+        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
       </div>`);
   }
   const body = rowsHtml.length
@@ -447,6 +436,7 @@ function renderTaskBoardDetail(d) {
   const t = d.task;
   const mod = _tbBoard.modules.find(m => m.id === t.moduleId);
   const labels = _tbBoard.sessionLabels || {};
+  const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
 
   const chips = t.sessionIds.map(sid => {
     const href = window.MultiCCTaskBoardUi.sessionChatUrl(sid);
@@ -477,10 +467,10 @@ function renderTaskBoardDetail(d) {
       <div class="tb-dim">${_tbEsc(mod ? mod.name : '未分组')} ›</div>
       <div class="tb-d-title-row">
         <span class="tb-d-title">${_tbEsc(t.title)}</span>
-        <span class="tb-badge${t.status === 'active' ? ' on' : ''}">${t.status === 'active' ? '进行中' : t.status === 'done' ? '已完成' : '已归档'}</span>
+        <span class="tb-badge${display.running ? ' on' : ''}">${display.label}</span>
         <span class="tb-d-actions">
-          ${t.classification
-            ? `<button class="btn btn-sm" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(t.id)}')"${t.classification.state === 'running' ? ' disabled' : ''}>🔄 重新归类</button>`
+          ${t.moduleAssignment
+            ? `<button class="btn btn-sm" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(t.id)}')"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>`
             : ''}
           ${t.status === 'active'
             ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done')">✅ 完成</button>`
