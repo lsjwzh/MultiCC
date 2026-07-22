@@ -332,7 +332,14 @@
 
       let existing = findById(source.id) || findByClientMsgId(source.clientMsgId);
       if (!existing && source.role === 'assistant') {
-        existing = Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
+        // A reconnect can promote the live bubble to a persisted interim id.
+        // The final commit then has a different durable id, but it still owns
+        // that same current-turn DOM node. Prefer the explicit current element
+        // before falling back to an unkeyed bubble so the final cannot append a
+        // second copy beside its interim representation.
+        existing = hostState.currentElement?.classList.contains('assistant')
+          ? hostState.currentElement
+          : Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
       }
 
       const node = renderMessage(source);
@@ -406,6 +413,15 @@
             } else {
               existing = Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
             }
+          }
+          if (!existing && operation.message?.role === 'assistant'
+              && operation.message?.streaming && plan.streamingTail
+              && currentElement?.classList.contains('assistant')) {
+            // The server promotes an on-disk interim to the sole authoritative
+            // streaming tail. During a forced WebSocket reconnect the browser
+            // still owns the pre-disconnect id-less bubble; adopt and retag it
+            // instead of appending a second cumulative assistant message.
+            existing = currentElement;
           }
           const node = renderMessage(operation.message);
           if (existing) {
