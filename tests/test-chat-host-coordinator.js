@@ -434,7 +434,7 @@ test('host runtime composes production ports without leaking effect switches bac
   assert.equal(state._continuationLineage, null);
 });
 
-test('host runtime lets a typed Commander fan an origin dispatch out before returning its result', () => {
+test('host runtime never lets a typed Commander fan out through assistant markers', () => {
   const owned = makeOwned({ request: { originDispatchId: 'taskboard-operation' } });
   const state = { _activeTurn: owned.turn, _activeRunner: owned.runner };
   owned.turn.resultDurable = true;
@@ -449,7 +449,7 @@ test('host runtime lets a typed Commander fan an origin dispatch out before retu
     emitTurnComplete: () => events.push('turn-complete'),
     emitDispatchComplete: operationId => events.push(`return:${operationId}`),
     emitGatewayComplete: () => { throw new Error('unexpected gateway'); },
-    inspectDispatchMarkers: () => events.push('fan-out'),
+    inspectDispatchMarkers: () => events.push('unexpected-fan-out'),
     logSuppressed: detail => events.push(`suppressed:${detail.reason}`),
   });
 
@@ -458,6 +458,6 @@ test('host runtime lets a typed Commander fan an origin dispatch out before retu
     '<<dispatch target="worker-1">do it</dispatch>>', {},
   ), true);
   assert.deepEqual(events, [
-    'handoff', 'turn-complete', 'fan-out', 'return:taskboard-operation',
+    'handoff', 'turn-complete', 'return:taskboard-operation',
   ]);
 });

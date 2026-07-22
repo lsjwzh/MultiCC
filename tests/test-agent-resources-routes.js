@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const {
   AGENT_COMMANDER_PRESET_ID,
+  COMMANDER_ROUTER_PROMPT,
   createAgentResourcesRoutes,
 } = require('../src/routes/agent-resources');
 
@@ -115,10 +116,10 @@ test('dependency and mount boundaries fail closed and own the complete route sur
 
 test('preset cache and commander prompt preserve provider default resolution', async () => {
   const current = fixture();
-  assert.equal(current.service.agentCommanderPrompt(), 'command the fleet');
+  assert.equal(current.service.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
   assert.equal(current.reads(), 1);
   assert.equal(current.service.agentCommanderPreset().id, AGENT_COMMANDER_PRESET_ID);
-  assert.equal(current.service.agentCommanderPrompt(), 'command the fleet');
+  assert.equal(current.service.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
   assert.equal(current.reads(), 1);
   const commander = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
     params: { id: AGENT_COMMANDER_PRESET_ID },
@@ -129,7 +130,7 @@ test('preset cache and commander prompt preserve provider default resolution', a
   assert.equal(xf.body.defaultProviderName, 'summary:xf-model');
   const server = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(server, /commanderPrompt: agentCommanderPrompt/);
-  assert.match(server, /createSession: spec => createSessionRecord\(spec\)/);
+  assert.match(server, /createCommanderMigrationHost\([\s\S]*?createSessionRecord/);
   assert.doesNotMatch(server, /r\.session\.rolePrompt = commander\.prompt/);
   const migration = require('node:fs').readFileSync(
     require('node:path').join(__dirname, '..', 'src', 'commander-migration.js'), 'utf8');
@@ -148,7 +149,8 @@ test('preset list strips prompts while detail preserves them and returns legacy 
   const detail = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
     params: { id: AGENT_COMMANDER_PRESET_ID },
   });
-  assert.equal(detail.body.prompt, 'command the fleet');
+  assert.equal(detail.body.prompt, COMMANDER_ROUTER_PROMPT);
+  assert.match(detail.body.description, /Router-only/);
   assert.equal(current.reads(), 1);
   const missing = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
     params: { id: 'missing' },

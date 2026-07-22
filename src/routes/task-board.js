@@ -21,6 +21,7 @@ const core = require('../task-board');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
+  'routeCommanderTask',
   'workspaceBroadcast', 'atomicWriteJson', 'isSystemInjected',
   'getSessionRunState', 'isSessionBusy',
 ];
@@ -37,7 +38,7 @@ function assertTaskBoardDeps(deps) {
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
   const {
-    file, auxQueue, records, loadHistory, dispatchToSession,
+    file, auxQueue, records, loadHistory, dispatchToSession, routeCommanderTask,
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState, isSessionBusy,
   } = deps;
@@ -622,6 +623,9 @@ function createTaskBoardRuntime(deps) {
     const dto = core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
     if (dto?.routing) {
       dto.routing.targetLabel = records.get(dto.routing.targetSessionId)?.label || dto.routing.targetSessionId;
+      if (dto.routing.workerSessionId) {
+        dto.routing.workerLabel = records.get(dto.routing.workerSessionId)?.label || dto.routing.workerSessionId;
+      }
     }
     return dto;
   }
@@ -634,6 +638,11 @@ function createTaskBoardRuntime(deps) {
         const sid = t.routing.targetSessionId;
         labels[sid] = records.get(sid)?.label || sid;
         t.routing.targetLabel = labels[sid];
+        if (t.routing.workerSessionId) {
+          const workerId = t.routing.workerSessionId;
+          labels[workerId] = records.get(workerId)?.label || workerId;
+          t.routing.workerLabel = labels[workerId];
+        }
       }
       for (const sid of t.sessionIds) {
         if (!(sid in labels)) labels[sid] = records.get(sid)?.label || sid;
@@ -686,7 +695,6 @@ function createTaskBoardRuntime(deps) {
     const explicit = String(req.body?.target || '').trim() || null;
     let target;
     let routeMode;
-    let wasBusy = false;
     if (explicit) {
       if (isSessionBusy(explicit)) {
         return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
@@ -705,18 +713,15 @@ function createTaskBoardRuntime(deps) {
       if (!commander.ok) return commanderFailure(res, commander.code);
       target = commander.sessionId;
       routeMode = 'commander';
-      wasBusy = isSessionBusy(target);
     }
     const routed = routeMode === 'commander'
       ? core.buildCommanderRoutedMessage(task, text)
       : core.buildRoutedMessage(task, text);
     const message = goalNoteFor(req.body) + routed;
-    const result = await dispatchToSession(target, message, {
-      idempotencyKey: `taskboard:${task.id}:${crypto.randomUUID()}`,
-      requireIdle: routeMode === 'manual',
-      queueIfBusy: routeMode === 'commander',
-      allowCommander: routeMode === 'commander',
-    });
+    const idempotencyKey = `taskboard:${task.id}:${crypto.randomUUID()}`;
+    const result = routeMode === 'commander'
+      ? await routeCommanderTask({ commanderId: target, message, idempotencyKey })
+      : await dispatchToSession(target, message, { idempotencyKey, requireIdle: true });
     if (!result.ok) {
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
       return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
@@ -724,8 +729,11 @@ function createTaskBoardRuntime(deps) {
     core.setTaskRouting(task, {
       mode: routeMode,
       targetSessionId: target,
+      workerSessionId: routeMode === 'commander' ? result.targetSessionId : '',
       operationId: result.operationId || '',
-      status: wasBusy ? 'queued' : (result.status || 'admitted'),
+      status: result.status || 'admitted',
+      oneWay: routeMode === 'commander',
+      elasticWorkerCreated: result.elasticWorkerCreated === true,
       routedAt: Date.now(),
     });
     save();
@@ -736,7 +744,10 @@ function createTaskBoardRuntime(deps) {
       targetLabel: records.get(target)?.label || target,
       routingMode: routeMode,
       commanderSessionId: routeMode === 'commander' ? target : null,
-      queued: routeMode === 'commander' && wasBusy,
+      workerSessionId: routeMode === 'commander' ? result.targetSessionId : null,
+      workerLabel: routeMode === 'commander' ? result.targetLabel : null,
+      queued: routeMode === 'commander' && result.queued === true,
+      elasticWorkerCreated: routeMode === 'commander' && result.elasticWorkerCreated === true,
       chatId: result.chatId,
       operationId: result.operationId || null,
     });
@@ -752,7 +763,6 @@ function createTaskBoardRuntime(deps) {
     const explicit = String(req.body?.target || '').trim() || null;
     let target;
     let routeMode;
-    let wasBusy = false;
     if (explicit) {
       if (isSessionBusy(explicit)) {
         return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
@@ -770,13 +780,12 @@ function createTaskBoardRuntime(deps) {
       if (!commander.ok) return commanderFailure(res, commander.code);
       target = commander.sessionId;
       routeMode = 'commander';
-      wasBusy = isSessionBusy(target);
     }
     const pending = core.createPendingTask(board, { dirId, sessionId: target, seed: text });
     const routedAt = Date.now();
     core.setTaskRouting(pending, {
       mode: routeMode, targetSessionId: target,
-      status: wasBusy ? 'queued' : 'admitted', routedAt,
+      status: 'routing', routedAt,
     });
     save();
     notify(dirId, [pending.id], 'created');
@@ -785,12 +794,11 @@ function createTaskBoardRuntime(deps) {
       const routed = routeMode === 'commander'
         ? core.buildCommanderRoutedMessage(pending, text)
         : core.buildRoutedMessage(pending, text);
-      result = await dispatchToSession(target, goalNoteFor(req.body) + routed, {
-        idempotencyKey: `taskboard:${pending.id}:${crypto.randomUUID()}`,
-        requireIdle: routeMode === 'manual',
-        queueIfBusy: routeMode === 'commander',
-        allowCommander: routeMode === 'commander',
-      });
+      const message = goalNoteFor(req.body) + routed;
+      const idempotencyKey = `taskboard:${pending.id}:${crypto.randomUUID()}`;
+      result = routeMode === 'commander'
+        ? await routeCommanderTask({ commanderId: target, message, idempotencyKey })
+        : await dispatchToSession(target, message, { idempotencyKey, requireIdle: true });
     } catch (e) {
       result = { ok: false, error: e?.message || 'dispatch_failed' };
     }
@@ -806,8 +814,11 @@ function createTaskBoardRuntime(deps) {
     core.setTaskRouting(pending, {
       mode: routeMode,
       targetSessionId: target,
+      workerSessionId: routeMode === 'commander' ? result.targetSessionId : '',
       operationId: result.operationId || '',
-      status: wasBusy ? 'queued' : (result.status || 'admitted'),
+      status: result.status || 'admitted',
+      oneWay: routeMode === 'commander',
+      elasticWorkerCreated: result.elasticWorkerCreated === true,
       routedAt,
     });
     save();
@@ -819,7 +830,10 @@ function createTaskBoardRuntime(deps) {
       targetLabel: records.get(target)?.label || target,
       routingMode: routeMode,
       commanderSessionId: routeMode === 'commander' ? target : null,
-      queued: routeMode === 'commander' && wasBusy,
+      workerSessionId: routeMode === 'commander' ? result.targetSessionId : null,
+      workerLabel: routeMode === 'commander' ? result.targetLabel : null,
+      queued: routeMode === 'commander' && result.queued === true,
+      elasticWorkerCreated: routeMode === 'commander' && result.elasticWorkerCreated === true,
       chatId: result.chatId,
       operationId: result.operationId || null,
     });
@@ -908,6 +922,55 @@ function createTaskBoardRuntime(deps) {
     onTurnEnd,
     onClassifyGoal,
     scanPendingClassifications,
+    routeCommanderInput: async (commanderId, text, options = {}) => {
+      const commander = records.get(commanderId);
+      if (!commander || commander.type !== 'commander' || commander.kind !== 'chat') {
+        return { ok: false, code: 'commander_not_found' };
+      }
+      const messageText = String(text || '').trim();
+      if (!messageText) return { ok: false, code: 'empty_text' };
+      const markedTaskId = core.extractTaskMarker(messageText);
+      const existing = markedTaskId ? board.tasks[markedTaskId] : null;
+      const task = existing || core.createPendingTask(board, {
+        dirId: commander.dirId, sessionId: commanderId, seed: messageText,
+      });
+      if (!task) return { ok: false, code: 'task_create_failed' };
+      const routed = markedTaskId ? messageText : core.buildCommanderRoutedMessage(task, messageText);
+      if (!existing) {
+        core.setTaskRouting(task, {
+          mode: 'commander', targetSessionId: commanderId,
+          status: 'routing', routedAt: Date.now(),
+        });
+        save();
+        notify(commander.dirId, [task.id], 'created');
+      }
+      const result = await routeCommanderTask({
+        commanderId,
+        message: routed,
+        idempotencyKey: options.idempotencyKey || `commander-input:${task.id}:${crypto.randomUUID()}`,
+      });
+      if (!result.ok) {
+        if (!existing) {
+          const moduleId = task.moduleId;
+          delete board.tasks[task.id];
+          if (!Object.values(board.tasks).some(candidate => candidate.moduleId === moduleId)) delete board.modules[moduleId];
+          save();
+          notify(commander.dirId, [task.id]);
+        }
+        return result;
+      }
+      core.setTaskRouting(task, {
+        mode: 'commander', targetSessionId: commanderId,
+        workerSessionId: result.targetSessionId,
+        operationId: result.operationId || '',
+        status: result.status || 'admitted', routedAt: Date.now(),
+        oneWay: true,
+        elasticWorkerCreated: result.elasticWorkerCreated === true,
+      });
+      save();
+      notify(commander.dirId, [task.id]);
+      return { ...result, taskId: task.id };
+    },
     // test/introspection surface
     getBoard: () => board,
     save,

@@ -50,7 +50,12 @@
     if (!routing || routing.mode !== 'commander' || !routing.targetSessionId) return '';
     const id = routing.targetSessionId;
     const label = routing.targetLabel || id;
-    return `已交给 Commander · ${label}${label === id ? '' : ` (${id})`}`;
+    const commander = `已交给 Commander · ${label}${label === id ? '' : ` (${id})`}`;
+    if (!routing.workerSessionId) return commander;
+    const workerId = routing.workerSessionId;
+    const workerLabel = routing.workerLabel || workerId;
+    const elastic = routing.elasticWorkerCreated ? ' · 动态扩容' : '';
+    return `${commander} → ${workerLabel}${workerLabel === workerId ? '' : ` (${workerId})`}${elastic}`;
   }
 
   const api = Object.freeze({ sessionChatUrl, sortModules, sortTasks, taskDisplayState, taskRoutingLabel });

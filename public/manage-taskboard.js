@@ -351,7 +351,7 @@ function syncTaskBoardDirComposer(dirId, visible) {
   _tbDirComposerDirId = dirId;
   if (!_tbDirComposer) {
     _tbDirComposer = createTbComposer(host, {
-      placeholder: '向该 Fleet 派发消息…（自动路由先交给 Agent Commander，再由 Commander 分派 worker）',
+    placeholder: '向该 Fleet 派发消息…（Commander 单向路由到空闲 worker）',
       submit: async (payload) => {
         const r = await fetch('/api/task-board/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -380,7 +380,7 @@ function _tbEnsureTaskComposer(task) {
   if (!host) return;
   if (!_tbTaskComposer) {
     _tbTaskComposer = createTbComposer(host, {
-      placeholder: '向该任务派发后续消息…（自动路由先交给 Agent Commander，回复完成后归档回本任务）',
+      placeholder: '向该任务派发后续消息…（Commander 单向路由到空闲 worker）',
       submit: async (payload) => {
         const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(_tbTaskComposerTaskId)}/send`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -390,7 +390,7 @@ function _tbEnsureTaskComposer(task) {
         _tbShowGatheringFloat();
         setTimeout(() => refreshTaskBoard(true), 1500);
         return d.routingMode === 'commander'
-          ? `已交给 Commander「${d.targetLabel}」${d.queued ? '（已安全排队）' : ''}`
+          ? `已由 Commander「${d.targetLabel}」单向路由到「${d.workerLabel || d.workerSessionId}」${d.elasticWorkerCreated ? '（已动态增加 worker）' : d.queued ? '（已安全排队）' : ''}`
           : `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
       },
     });

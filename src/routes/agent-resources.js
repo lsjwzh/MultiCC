@@ -1,6 +1,16 @@
 'use strict';
 
 const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
+const COMMANDER_ROUTER_PROMPT = [
+  '# Agent Commander — Router Only',
+  '',
+  'You are a routing control-plane for one MultiCC fleet, not an implementation agent.',
+  'Every inbound user or task-board message is routed by the MultiCC host to a typed worker session.',
+  'You never inspect or edit repository files, run shell commands, invoke tools, create subagents, merge branches, or implement tasks.',
+  'Worker selection, one-way delivery, durable queueing, and elastic worker creation are host-owned operations.',
+  'Worker results stay in the worker session and task board; they are not returned to this Commander.',
+  'Specialist roles such as architect, i18n, product/design, and operations are never auto-created or auto-routed; the user drives them manually.',
+].join('\n');
 
 function assertDependencies(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('[agent-resources] dependencies are required');
@@ -71,7 +81,15 @@ function createAgentResourcesRoutes(rawDeps) {
 
   function agentCommanderPreset() {
     const data = loadAgentPresets();
-    return data && (data.presets || []).find(preset => preset.id === AGENT_COMMANDER_PRESET_ID) || null;
+    const preset = data && (data.presets || []).find(item => item.id === AGENT_COMMANDER_PRESET_ID);
+    return preset ? {
+      ...preset,
+      description: 'Router-only fleet entrypoint: selects or elastically creates workers and sends tasks one-way.',
+      vibe: 'Routes every order to an available worker without doing the work itself.',
+      prompt: COMMANDER_ROUTER_PROMPT,
+      defaultEffort: 'high',
+      defaultModelNote: 'routing-only role; host enforces delivery and worker scaling',
+    } : null;
   }
 
   function agentCommanderPrompt() {
@@ -100,7 +118,8 @@ function createAgentResourcesRoutes(rawDeps) {
     app.get('/api/agent-presets', (req, res) => {
       const data = loadAgentPresets();
       if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-      const presets = (data.presets || []).map(preset => {
+      const presets = (data.presets || []).map(rawPreset => {
+        const preset = rawPreset.id === AGENT_COMMANDER_PRESET_ID ? agentCommanderPreset() : rawPreset;
         const { prompt, ...metadata } = enrichAgentPresetDefaults(preset);
         return metadata;
       });
@@ -117,7 +136,9 @@ function createAgentResourcesRoutes(rawDeps) {
     app.get('/api/agent-presets/:id', (req, res) => {
       const data = loadAgentPresets();
       if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-      const preset = (data.presets || []).find(item => item.id === req.params.id);
+      const preset = req.params.id === AGENT_COMMANDER_PRESET_ID
+        ? agentCommanderPreset()
+        : (data.presets || []).find(item => item.id === req.params.id);
       if (!preset) return res.status(404).json({ error: 'not found' });
       res.json(enrichAgentPresetDefaults(preset));
     });
@@ -179,5 +200,6 @@ function createAgentResourcesRoutes(rawDeps) {
 
 module.exports = {
   AGENT_COMMANDER_PRESET_ID,
+  COMMANDER_ROUTER_PROMPT,
   createAgentResourcesRoutes,
 };

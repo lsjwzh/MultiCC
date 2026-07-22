@@ -304,23 +304,20 @@ test('origin dispatch return wins routing and exactly-once receipt prevents redi
   assert.deepEqual(repeated.effects, []);
 });
 
-test('typed Commander may fan an origin dispatch out once while ordinary workers remain guarded', () => {
+test('typed Commander cannot fan out through assistant markers', () => {
   const first = routePostTurn({
     turnId: 'commander-turn', sessionId: 'commander-1', sessionType: 'commander',
     originDispatchId: 'taskboard-dispatch-1',
     finalText: '<<dispatch target="worker-1">do the work</dispatch>>',
   });
   assert.equal(first.route, 'dispatch-return');
-  assert.deepEqual(first.effects.map(effect => effect.type), [
-    'inspect-dispatch-markers', 'complete-dispatch',
-  ]);
-  assert.equal(first.effects[0].effectId, 'commander-dispatch:commander-turn');
-  assert.equal(first.effects[1].effectId, 'dispatch-return:taskboard-dispatch-1');
+  assert.deepEqual(first.effects.map(effect => effect.type), ['complete-dispatch']);
+  assert.equal(first.effects[0].effectId, 'dispatch-return:taskboard-dispatch-1');
 
   const repeated = routePostTurn({
     turnId: 'commander-turn', sessionId: 'commander-1', sessionType: 'commander',
     originDispatchId: 'taskboard-dispatch-1', finalText: 'same',
-    receipts: ['commander-dispatch:commander-turn', 'dispatch-return:taskboard-dispatch-1'],
+    receipts: ['dispatch-return:taskboard-dispatch-1'],
   });
   assert.deepEqual(repeated.effects, []);
 });

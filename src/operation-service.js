@@ -225,14 +225,16 @@ function createOperationService({
       );
     }
     const at = Number(now());
-    const outboxId = `operation:${operation.id}:result`;
-    admitOutboxItem(draft, {
-      id: outboxId,
-      sessionId: operation.resultSessionId,
-      payload: outboxPayload,
-      source: { type: 'operation', kind: operation.kind, operationId: operation.id },
-      now: at,
-    });
+    const outboxId = outboxPayload ? `operation:${operation.id}:result` : null;
+    if (outboxPayload) {
+      admitOutboxItem(draft, {
+        id: outboxId,
+        sessionId: operation.resultSessionId,
+        payload: outboxPayload,
+        source: { type: 'operation', kind: operation.kind, operationId: operation.id },
+        now: at,
+      });
+    }
     operation.status = status;
     operation.resultHash = resultHash;
     operation.result = normalizedResult;
@@ -285,7 +287,9 @@ function createOperationService({
         : `🔇【分发任务已中断】发往 ${label} 的任务在 MultiCC 服务重启时未找到可恢复的完成结果。请检查目标会话后决定是否重试。`;
       return completeOperationDraft(draft, operation, result, {
         status,
-        outboxPayload: {
+        // Commander routes are intentionally one-way: completion remains
+        // durable on the operation, but no result is injected into Commander.
+        outboxPayload: operation.spec.oneWay === true ? null : {
           type: 'dispatch.result',
           operationId: operation.id,
           targetId,
