@@ -133,8 +133,8 @@ test('preset cache and commander prompt preserve provider default resolution', a
   assert.doesNotMatch(server, /r\.session\.rolePrompt = commander\.prompt/);
   const migration = require('node:fs').readFileSync(
     require('node:path').join(__dirname, '..', 'src', 'commander-migration.js'), 'utf8');
-  assert.match(migration, /isExactLegacyCommanderLabel\(record\.label\)[\s\S]*hasLegacyCommanderPromptSignature\(record\.rolePrompt\)/,
-    'legacy migration requires exact label plus prompt provenance, never a label alone');
+  assert.doesNotMatch(migration, /isTrustedLegacyCommander|isExactLegacyCommanderLabel|hasLegacyCommanderPromptSignature|stampSession/,
+    'migration recognizes only stable type metadata and never stamps an untyped session');
 });
 
 test('preset list strips prompts while detail preserves them and returns legacy errors', async () => {
