@@ -108,6 +108,68 @@ test('buildDispatchContextPrompt (ultracode) switches to the ultra workflow intr
   assert.match(p, /<<dispatch target=/);
 });
 
+// ── Commander role (type='commander') ───────────────────────────────────────
+// Commander dispatches OUT across every fleet, is never itself a target, and
+// always gets the target list injected (no autoDispatch opt-in needed).
+const COMMANDER_BASE = [
+  { id: 'cmd', dirId: 'd1', type: 'commander' },                                  // no autoDispatch
+  { id: 'w-a', dirId: 'd1', type: 'chat', label: 'W A', cli: 'claude', kind: 'chat' },
+  { id: 'w-b', dirId: 'd2', type: 'chat', label: 'W B', cli: 'codex', kind: 'chat' },   // other fleet
+  { id: 'cmd2', dirId: 'd2', type: 'commander' },                                 // another fleet's commander
+  { id: 'aux', dirId: 'd1', type: 'aux' },
+];
+
+test('commander dispatches cross-fleet and never targets another commander/aux', () => {
+  const t = makeFactory(COMMANDER_BASE, {});
+  const ids = t.dispatchableSessionsFor('cmd').map(s => s.id).sort();
+  assert.deepEqual(ids, ['w-a', 'w-b']);   // both fleets' workers; no commanders, no aux, no self
+});
+
+test('a normal session never sees a commander peer as a dispatch target', () => {
+  const recs = [
+    { id: 'me', dirId: 'd1', type: 'chat', autoDispatch: true },
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    { id: 'peer', dirId: 'd1', type: 'chat' },
+  ];
+  const t = makeFactory(recs, {});
+  const ids = t.dispatchableSessionsFor('me').map(s => s.id);
+  assert.ok(!ids.includes('cmd'));
+  assert.deepEqual(ids, ['peer']);
+});
+
+test('a normal session stays in-directory even though commander goes cross-fleet', () => {
+  const t = makeFactory(COMMANDER_BASE.concat({ id: 'me', dirId: 'd1', type: 'chat', autoDispatch: true }), {});
+  const ids = t.dispatchableSessionsFor('me').map(s => s.id).sort();
+  assert.deepEqual(ids, ['w-a']);   // only same-dir worker; not w-b (d2), not any commander
+});
+
+test('commander gets the dispatch prompt injected even without autoDispatch', () => {
+  const t = makeFactory(COMMANDER_BASE, {});
+  const p = t.buildDispatchContextPrompt('cmd');
+  assert.match(p, /指挥官/);
+  assert.match(p, /<<dispatch target=/);
+  assert.match(p, /可用目标 sessions: \[/);
+});
+
+test('commander never targets a raw terminal session', () => {
+  const recs = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    { id: 'w', dirId: 'd1', type: 'chat', kind: 'chat' },
+    { id: 'term', dirId: 'd2', type: 'chat', kind: 'terminal' },
+  ];
+  const t = makeFactory(recs, {});
+  const ids = t.dispatchableSessionsFor('cmd').map(s => s.id);
+  assert.ok(!ids.includes('term'));
+  assert.deepEqual(ids, ['w']);
+});
+
+test('commander cross-fleet target list caps at 100', () => {
+  const many = [{ id: 'cmd', dirId: 'd1', type: 'commander' }];
+  for (let i = 0; i < 140; i++) many.push({ id: `p${i}`, dirId: `d${i % 5}`, type: 'chat' });
+  const t = makeFactory(many, {});
+  assert.equal(t.dispatchableSessionsFor('cmd').length, 100);
+});
+
 test('createDispatchTargeting validates its deps', () => {
   assert.throws(() => createDispatchTargeting({}), /records must be/);
   assert.throws(() => createDispatchTargeting({ records: new Map() }), /chatSessions must be/);

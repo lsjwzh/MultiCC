@@ -615,7 +615,7 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
 // task/directory may be selected. Activity time is only a final tie-breaker.
 
 function isRoutableRecord(rec) {
-  return !!rec && rec.kind === 'chat' && rec.type !== 'aux' && rec.type !== 'gateway' && !rec.ephemeral;
+  return !!rec && rec.kind === 'chat' && rec.type !== 'aux' && rec.type !== 'gateway' && rec.type !== 'commander' && !rec.ephemeral;
 }
 
 function recordActivityMs(rec) {

@@ -19,11 +19,17 @@ function createDispatchTargeting({ records, chatSessions, normalizeEffort } = {}
 function dispatchableSessionsFor(sessionId) {
   const from = records.get(sessionId);
   if (!from || !from.dirId) return [];
+  const fromCommander = from.type === 'commander';
   return [...records.values()]
     .filter(s => s.id !== sessionId)
-    .filter(s => s.type !== 'aux' && s.type !== 'gateway')
-    .filter(s => s.dirId === from.dirId)
-    .slice(0, 30)
+    // Never dispatch to a system/commander session: aux/gateway are internal,
+    // commander only dispatches out (it is never a worker).
+    .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
+    // Commander dispatches across every fleet (D5); everyone else stays in-directory.
+    .filter(s => fromCommander || s.dirId === from.dirId)
+    // Commander only hands work to real chat workers, never a raw terminal session.
+    .filter(s => !fromCommander || s.kind !== 'terminal')
+    .slice(0, fromCommander ? 100 : 30)
     .map(s => {
       const activeChat = chatSessions.get(s.id);
       return {
@@ -40,7 +46,11 @@ function buildDispatchContextPrompt(sessionId) {
   const targets = dispatchableSessionsFor(sessionId);
   if (!targets.length) return '';
   const current = records.get(sessionId);
-  if (!current?.autoDispatch) return '';
+  // Commander always gets the target list injected (that is its whole job — the
+  // live session ids can't live in a static role preset); everyone else must opt
+  // in via autoDispatch.
+  const isCommander = current?.type === 'commander';
+  if (!current?.autoDispatch && !isCommander) return '';
   const ultra = normalizeEffort(current?.effort) === 'ultracode';
   const intro = ultra
     ? [
@@ -65,7 +75,9 @@ function buildDispatchContextPrompt(sessionId) {
       ]
     : [
         '[MultiCC cross-session dispatch]',
-        '你可以把自包含子任务分发给同目录的其它 session。只有确实需要其它 session 干活时才输出标记，普通回答不要输出。',
+        isCommander
+          ? '你是本 fleet 的指挥官：可以把自包含子任务分发给下面列出的任意 worker session（含跨 fleet/跨目录）。你只派活、不亲自执行；只有确实需要 worker 干活时才输出标记。'
+          : '你可以把自包含子任务分发给同目录的其它 session。只有确实需要其它 session 干活时才输出标记，普通回答不要输出。',
       ];
   return [
     ...intro,

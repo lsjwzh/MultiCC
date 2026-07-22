@@ -775,29 +775,73 @@ for (const session of persistedSessions.values()) {
 // they are migrated over. saveDirectories() remains as a delegate for them.
 const { createDirectoryModule } = require('./src/directory');
 
-// Seed TWO default Agent Commander chat sessions for a newly-registered directory
-// (session-domain logic, exposed to the directory domain via its session port):
-// one under Claude, one under Codex — so every fleet has both CLI commanders.
+// D2: pick the commander's default CLI/provider — prefer a configured Claude
+// provider, then Codex, else fall back to Claude default login. model stays null
+// so the commander follows whatever model that provider defaults to (never a
+// hard-coded id, which would rot when the provider swaps models).
+// providerDefaults is a module-scope const initialised later in file order but
+// this runs only at request time (directory register), so it is always ready.
+function pickCommanderProvider() {
+  const claude = providers.listProviders('claude');
+  if (claude.length) return { cli: 'claude', provider: providerDefaults.claude || claude[0].id, model: null };
+  const codex = providers.listProviders('codex');
+  if (codex.length) return { cli: 'codex', provider: providerDefaults.codex || codex[0].id, model: null };
+  return { cli: 'claude', provider: null, model: null };   // fresh install: default OAuth login
+}
+
+// Seed the fleet's single Agent Commander chat session on directory registration
+// (session-domain logic, exposed to the directory domain via its session port).
+// The commander only dispatches (type='commander' keeps it out of every worker
+// target pool and gives it cross-fleet reach); its persona comes from the Agent
+// Commander preset (D6), editable per-session like any other role.
 async function seedCommanderSession(dir) {
   const commander = agentCommanderPrompt();
   if (!commander) {
     console.warn('[multicc] Agent Commander preset not found; skipping seed sessions for new dir');
     return;
   }
-  for (const cli of ['claude', 'codex']) {
-    const label = cli === 'codex' ? '🫡 Agent Commander (Codex)' : '🫡 Agent Commander';
-    const r = await createSessionRecord({
-      dir, cli, kind: 'chat', label,
-      persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
-    });
-    if (r.ok) {
-      r.session.rolePrompt = commander;
-      savePersistedSessionsBestEffort('directory.seed-commander-role');
-      appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
-    } else {
-      console.warn(`[multicc] seed ${cli} commander session failed for dir ${dir.id}: ${r.error}`);
-    }
+  // Idempotent: exactly one commander per fleet (D1). Skip if one already exists
+  // (guards re-registration and boot back-fill from racing in a duplicate).
+  if ([...persistedSessions.values()].some(s => s.dirId === dir.id && s.type === 'commander')) return;
+  const { cli, provider, model } = pickCommanderProvider();
+  const r = await createSessionRecord({
+    dir, cli, kind: 'chat', label: '🫡 Agent Commander',
+    type: 'commander', model, provider, rolePrompt: commander,
+    persistence: 'bestEffort', persistenceSource: 'directory.seed-commander',
+  });
+  if (r.ok) {
+    appendEvent(dir.id, 'session_role_changed', `${r.session.label || r.session.id}（默认指挥官）`, r.session.id);
+  } else {
+    console.warn(`[multicc] seed commander session failed for dir ${dir.id}: ${r.error}`);
   }
+}
+
+// Boot back-fill: fleets created before the commander role existed carry legacy
+// label-based Agent Commander sessions with no type. Stamp exactly one per fleet
+// as type='commander' so it gains the role's protections (undeletable, kept out
+// of every worker pool, cross-fleet dispatch). Stamp-only — never creates a
+// session, so it can't spawn worktrees or race the register-time seed.
+function backfillCommanderTypes() {
+  const byDir = new Map();
+  for (const s of persistedSessions.values()) {
+    if (!s.dirId) continue;
+    if (!byDir.has(s.dirId)) byDir.set(s.dirId, []);
+    byDir.get(s.dirId).push(s);
+  }
+  let stamped = 0;
+  for (const owned of byDir.values()) {
+    if (owned.some(s => s.type === 'commander')) continue;   // fleet already has one
+    const legacy = owned.filter(s => s.kind === 'chat' && !s.type && /Agent Commander/.test(s.label || ''));
+    if (!legacy.length) continue;
+    const pick = legacy.find(s => s.cli === 'claude') || legacy[0];   // prefer claude (D2)
+    pick.type = 'commander';
+    stamped++;
+  }
+  if (stamped) {
+    savePersistedSessionsBestEffort('boot.commander-backfill');
+    console.log(`[multicc] commander back-fill: stamped ${stamped} legacy Agent Commander session(s) as type=commander`);
+  }
+  return { stamped };
 }
 
 // Tear down one session record + all its runtime state (tmux, chat proc, wait
@@ -1062,6 +1106,7 @@ function validateDispatchTarget(targetId, fromSessionId = null) {
   const rec = persistedSessions.get(targetId);
   if (!rec) return { ok: false, error: `目标 session「${targetId}」不存在${hint}` };
   if (rec.type === 'aux' || rec.type === 'gateway') return { ok: false, error: `不能把任务分发给系统会话「${targetId}」` };
+  if (rec.type === 'commander') return { ok: false, error: `不能把任务分发给指挥官会话「${targetId}」；指挥只派活、不接活` };
   return { ok: true, rec };
 }
 
@@ -1311,7 +1356,8 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
     if (mk.target === dispatcherId) continue;                       // no self-dispatch
     const v = validateDispatchTarget(mk.target, dispatcherId);
     if (!v.ok) { waitInjector.safeInject(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
-    if (v.rec.dirId !== from.dirId) { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
+    // Commander dispatches cross-fleet (D5); every other session is limited to its own directory.
+    if (v.rec.dirId !== from.dirId && from.type !== 'commander') { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
     dispatchToSession(mk.target, mk.message, {
       replyTo: dispatcherId,
@@ -1791,7 +1837,7 @@ app.use(createMemoModule({
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
 // to create/reuse a named session (e.g. ephemeral gateway chats). Returns
 // { ok:true, id, session, reused? } or { ok:false, error }.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, type = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1859,6 +1905,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     branch,
   };
   if (rp) session.rolePrompt = rp;
+  if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
   if (ephemeral) session.ephemeral = true;
   if (kind === 'chat') ensureCliStates(session);
   try {
@@ -2577,6 +2624,12 @@ app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'Session not found' });
   }
   const force = req.query.force === '1' || req.body?.force === true;
+  // Commander is the fleet's dispatcher — it can only be removed by deleting its
+  // whole directory (which cascades through destroySessionCascade), never on its
+  // own. Guard here on the single-session route only, unconditional of force.
+  if (persisted?.type === 'commander') {
+    return res.status(400).json({ error: 'commander 会话不可单独删除，只能随其所属 fleet 一起删除' });
+  }
   if (persisted) {
     const dir = directories.get(persisted.dirId);
     if (!dir) return res.status(404).json({ error: 'directory not found' });
@@ -6216,6 +6269,8 @@ const teardownTriggers = triggerRuntime.teardownSession;
 
 // Build worktrees for any session that lacks one, then recover tmux sessions.
 // Both paths are asynchronous so startup never blocks the event loop on git/tmux.
+// One-time migration for fleets that predate the commander role (stamp-only).
+backfillCommanderTypes();
 const startupRepoReady = initWorktrees()
   .then(() => recoverTmuxSessions())
   .catch(error => console.error('[multicc] async repo/tmux startup failed:', error.message));
