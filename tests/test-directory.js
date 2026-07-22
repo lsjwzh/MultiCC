@@ -124,9 +124,11 @@ fs.mkdirSync(projA, { recursive: true });
   const commanders = Array.isArray(r.j)
     ? r.j.filter(session => session.dirId === dirA.id && /Agent Commander/.test(session.label || ''))
     : [];
-  ok(commanders.length === 2, 'both Claude and Codex commander sessions are seeded');
+  ok(commanders.length === 1, 'exactly one commander session is seeded per fleet (D1)');
+  ok(commanders.every(session => session.type === 'commander'),
+    'seeded commander carries type=commander');
   ok(commanders.every(session => typeof session.rolePrompt === 'string' && session.rolePrompt.length > 100),
-    'commander sessions receive the complete preset role prompt');
+    'commander session receives the complete preset role prompt');
 
   // ── PATCH /api/directories/:id ──
   r = await api('PATCH', '/api/directories/no-such-id', { name: 'x' });
