@@ -11,6 +11,7 @@
 //   • maxRestartsPerHour  — hard cap; over it the provider is parked
 const fs = require('fs');
 const os = require('os');
+const path = require('path');
 const { execFile } = require('child_process');
 const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
@@ -19,11 +20,24 @@ const CONFIG_FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).tunne
 const TAILSCALE_BIN = '/usr/local/bin/tailscale';
 const PHDDNS_APP = '/Applications/PhDDNS.app';
 
+// Binary detection for the CLI-based tunnel providers (natapp/cpolar/sakurafrp).
+// Each product is probed across a few well-known install paths, then falls back
+// to a PATH lookup so a user-installed binary still works.
+const NATAPP_BIN_CANDIDATES = ['/opt/natapp/natapp', '/usr/local/bin/natapp', '/opt/homebrew/bin/natapp'];
+const CPOLAR_BIN_CANDIDATES = ['/usr/local/bin/cpolar', '/opt/homebrew/bin/cpolar', '/usr/bin/cpolar'];
+const SAKURAFRP_BIN_CANDIDATES = ['/usr/local/bin/frpc', '/opt/homebrew/bin/frpc', '/usr/bin/frpc'];
+const NATAPP_DEFAULT_CMD = 'natapp -authtoken={authtoken}';
+const CPOLAR_DEFAULT_CMD = 'cpolar http {port}';
+const SAKURAFRP_DEFAULT_CMD = 'frpc -f {authtoken}';
+
 // Defaults — phddns prefilled with the legacy URL but DISABLED (it is currently
 // down; enabling a dead URL would just exercise the restart path on a loop).
 const DEFAULT_CONFIG = {
   phddns:    { enabled: false, url: 'https://1129874apfc68.vicp.fun/manage' },
   tailscale: { enabled: false, url: '', funnel: false, funnelPort: 3000 },
+  natapp:    { enabled: false, url: '', authtoken: '', port: 3000, startCmd: NATAPP_DEFAULT_CMD },
+  cpolar:    { enabled: false, url: '', authtoken: '', port: 3000, startCmd: CPOLAR_DEFAULT_CMD },
+  sakurafrp: { enabled: false, url: '', authtoken: '', port: 3000, startCmd: SAKURAFRP_DEFAULT_CMD },
   intervalSec: 30,
   failThreshold: 2,
   restartCooldownSec: 120,
@@ -48,6 +62,9 @@ const consistency = {
 const runtime = {
   phddns:    newProviderState(),
   tailscale: newProviderState(),
+  natapp:    newProviderState(),
+  cpolar:    newProviderState(),
+  sakurafrp: newProviderState(),
 };
 
 function newProviderState() {
@@ -79,6 +96,9 @@ function loadConfig() {
         ...DEFAULT_CONFIG, ...saved,
         phddns:    { ...DEFAULT_CONFIG.phddns,    ...(saved.phddns || {}) },
         tailscale: { ...DEFAULT_CONFIG.tailscale, ...(saved.tailscale || {}) },
+        natapp:    { ...DEFAULT_CONFIG.natapp,    ...(saved.natapp || {}) },
+        cpolar:    { ...DEFAULT_CONFIG.cpolar,    ...(saved.cpolar || {}) },
+        sakurafrp: { ...DEFAULT_CONFIG.sakurafrp, ...(saved.sakurafrp || {}) },
       };
     }
   } catch (e) {
@@ -100,6 +120,9 @@ function availability() {
   return {
     phddns: fs.existsSync(PHDDNS_APP),
     tailscale: fs.existsSync(TAILSCALE_BIN),
+    natapp: !!findBin(NATAPP_BIN_CANDIDATES, 'natapp'),
+    cpolar: !!findBin(CPOLAR_BIN_CANDIDATES, 'cpolar'),
+    sakurafrp: !!findBin(SAKURAFRP_BIN_CANDIDATES, 'frpc'),
   };
 }
 
@@ -123,6 +146,58 @@ function execShell(cmd, args) {
   return new Promise((resolve) => {
     execFile(cmd, args, { timeout: 20000 }, (err, stdout, stderr) => {
       resolve({ ok: !err, stdout: stdout || '', stderr: stderr || (err && err.message) || '' });
+    });
+  });
+}
+
+// Locate a CLI binary: try explicit candidate paths first, then scan PATH.
+function findBin(candidates, name) {
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  const dirs = (process.env.PATH || '').split(':');
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const full = path.join(dir, name);
+    try {
+      if (!fs.existsSync(full)) continue;
+      if (!fs.statSync(full).isFile()) continue;
+      fs.accessSync(full, fs.constants.X_OK);
+      return full;
+    } catch (_) { /* not executable / inaccessible */ }
+  }
+  return null;
+}
+
+// Wrap a value in single quotes for safe shell interpolation, escaping any
+// embedded single quotes so the result can never break out of the quote.
+function shellQuote(value) {
+  return "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'";
+}
+
+// Substitute the {authtoken}/{port} placeholders in a startCmd template. The
+// authtoken is single-quote-escaped to prevent shell injection; port is a
+// coerced integer so it needs no quoting.
+function renderStartCmd(template, pc) {
+  let cmd = template || '';
+  cmd = cmd.split('{authtoken}').join(shellQuote(pc.authtoken));
+  cmd = cmd.split('{port}').join(String(pc.port || 3000));
+  return cmd;
+}
+
+// Run a shell command that backgrounds a long-lived process via nohup ... &.
+// bash returns immediately (the trailing & detaches), so the 15s timeout only
+// guards against bash itself failing to start - it never waits on the tunnel.
+function runDetached(shellCmd) {
+  return new Promise((resolve, reject) => {
+    execFile('/bin/bash', ['-c', shellCmd], { timeout: 15000 }, (err) => {
+      if (err) {
+        const error = new Error('后台启动失败');
+        error.cause = (err && err.message) || 'unknown error';
+        reject(error);
+      } else {
+        resolve();
+      }
     });
   });
 }
@@ -250,7 +325,36 @@ async function ipv6Status() {
   return out;
 }
 
-const RESTARTERS = { phddns: restartPhddns, tailscale: restartTailscale };
+// Metadata for the CLI-based providers, used by the shared restart path.
+const PROVIDER_META = {
+  natapp:    { display: 'natapp', candidates: NATAPP_BIN_CANDIDATES, binName: 'natapp', defaultCmd: NATAPP_DEFAULT_CMD },
+  cpolar:    { display: 'cpolar', candidates: CPOLAR_BIN_CANDIDATES, binName: 'cpolar', defaultCmd: CPOLAR_DEFAULT_CMD },
+  sakurafrp: { display: '樱花frp (Sakura)', candidates: SAKURAFRP_BIN_CANDIDATES, binName: 'frpc', defaultCmd: SAKURAFRP_DEFAULT_CMD },
+};
+
+// Shared restart for the CLI-based providers: kill any stale instance, then
+// launch a fresh one detached via nohup so bash returns immediately. cpolar
+// additionally re-runs its idempotent `authtoken` config command first.
+async function restartCliProvider(name) {
+  const meta = PROVIDER_META[name];
+  const pc = config[name] || {};
+  const bin = findBin(meta.candidates, meta.binName);
+  if (!bin) throw new Error(name + ' 未安装, 请先安装其客户端');
+  if (name === 'cpolar' && pc.authtoken) {
+    await execShell(bin, ['authtoken', pc.authtoken]);
+  }
+  const startCmd = renderStartCmd(pc.startCmd || meta.defaultCmd, pc);
+  const logPath = '/tmp/multicc-' + name + '.log';
+  const shellCmd = 'pkill -f ' + shellQuote(bin) + ' 2>/dev/null; sleep 1; nohup ' + startCmd + ' > ' + logPath + ' 2>&1 &';
+  await runDetached(shellCmd);
+  return '已后台启动 ' + meta.display + ' (日志 ' + logPath + ')';
+}
+
+async function restartNatapp() { return restartCliProvider('natapp'); }
+async function restartCpolar() { return restartCliProvider('cpolar'); }
+async function restartSakurafrp() { return restartCliProvider('sakurafrp'); }
+
+const RESTARTERS = { phddns: restartPhddns, tailscale: restartTailscale, natapp: restartNatapp, cpolar: restartCpolar, sakurafrp: restartSakurafrp };
 
 // Decide+act for one provider. Returns nothing; mutates runtime[name].
 async function checkProvider(name) {
@@ -306,7 +410,8 @@ async function tick() {
 // config reload can never leave two intervals running.
 function startLoop() {
   if (timer) { clearInterval(timer); timer = null; }
-  const anyEnabled = config.phddns.enabled || config.tailscale.enabled;
+  const anyEnabled = config.phddns.enabled || config.tailscale.enabled
+    || config.natapp.enabled || config.cpolar.enabled || config.sakurafrp.enabled;
   if (!anyEnabled) return;
   const ms = Math.max(10, config.intervalSec) * 1000;
   timer = setInterval(tick, ms);
@@ -317,7 +422,7 @@ function init() {
   loadConfig();
   startLoop();
   const a = availability();
-  console.log(`[multicc/tunnel] monitor ready (phddns:${config.phddns.enabled?'on':'off'}/${a.phddns?'installed':'missing'}, tailscale:${config.tailscale.enabled?'on':'off'}/${a.tailscale?'installed':'missing'})`);
+  console.log(`[multicc/tunnel] monitor ready (phddns:${config.phddns.enabled?'on':'off'}/${a.phddns?'installed':'missing'}, tailscale:${config.tailscale.enabled?'on':'off'}/${a.tailscale?'installed':'missing'}, natapp:${config.natapp.enabled?'on':'off'}/${a.natapp?'installed':'missing'}, cpolar:${config.cpolar.enabled?'on':'off'}/${a.cpolar?'installed':'missing'}, sakurafrp:${config.sakurafrp.enabled?'on':'off'}/${a.sakurafrp?'installed':'missing'})`);
 }
 
 // Stop the process-owned monitor interval. This is intentionally idempotent so
@@ -336,10 +441,16 @@ function applyConfig(update, { persist = saveConfig, publish = startLoop } = {})
   const previousConfig = config;
   const wasPhddns = config.phddns.enabled;
   const wasTailscale = config.tailscale.enabled;
+  const wasNatapp = config.natapp.enabled;
+  const wasCpolar = config.cpolar.enabled;
+  const wasSakurafrp = config.sakurafrp.enabled;
   const nextConfig = {
     ...config, ...update,
     phddns:    { ...config.phddns,    ...(update.phddns || {}) },
     tailscale: { ...config.tailscale, ...(update.tailscale || {}) },
+    natapp:    { ...config.natapp,    ...(update.natapp || {}) },
+    cpolar:    { ...config.cpolar,    ...(update.cpolar || {}) },
+    sakurafrp: { ...config.sakurafrp, ...(update.sakurafrp || {}) },
   };
   persist(nextConfig);
   try {
@@ -363,6 +474,9 @@ function applyConfig(update, { persist = saveConfig, publish = startLoop } = {})
   }
   if (config.phddns.enabled && !wasPhddns) runtime.phddns = newProviderState();
   if (config.tailscale.enabled && !wasTailscale) runtime.tailscale = newProviderState();
+  if (config.natapp.enabled && !wasNatapp) runtime.natapp = newProviderState();
+  if (config.cpolar.enabled && !wasCpolar) runtime.cpolar = newProviderState();
+  if (config.sakurafrp.enabled && !wasSakurafrp) runtime.sakurafrp = newProviderState();
   return config;
 }
 
@@ -375,6 +489,9 @@ function getStatus() {
     providers: {
       phddns:    { ...runtime.phddns },
       tailscale: { ...runtime.tailscale },
+      natapp:    { ...runtime.natapp },
+      cpolar:    { ...runtime.cpolar },
+      sakurafrp: { ...runtime.sakurafrp },
     },
     consistency: { ...consistency },
   };
@@ -404,6 +521,9 @@ module.exports = {
   getStatus,
   restartNow,
   restartPhddns,
+  restartNatapp,
+  restartCpolar,
+  restartSakurafrp,
   loadConfig,
   availability,
   setFunnel,
