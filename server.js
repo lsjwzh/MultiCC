@@ -1062,6 +1062,7 @@ function validateDispatchTarget(targetId, fromSessionId = null) {
   const rec = persistedSessions.get(targetId);
   if (!rec) return { ok: false, error: `目标 session「${targetId}」不存在${hint}` };
   if (rec.type === 'aux' || rec.type === 'gateway') return { ok: false, error: `不能把任务分发给系统会话「${targetId}」` };
+  if (rec.type === 'commander') return { ok: false, error: `不能把任务分发给指挥官会话「${targetId}」；指挥只派活、不接活` };
   return { ok: true, rec };
 }
 
@@ -1311,7 +1312,8 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
     if (mk.target === dispatcherId) continue;                       // no self-dispatch
     const v = validateDispatchTarget(mk.target, dispatcherId);
     if (!v.ok) { waitInjector.safeInject(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
-    if (v.rec.dirId !== from.dirId) { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
+    // Commander dispatches cross-fleet (D5); every other session is limited to its own directory.
+    if (v.rec.dirId !== from.dirId && from.type !== 'commander') { waitInjector.safeInject(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
     dispatchToSession(mk.target, mk.message, {
       replyTo: dispatcherId,
@@ -1791,7 +1793,7 @@ app.use(createMemoModule({
 // Shared by the REST endpoint and the gateway dispatch path. Pass an explicit `id`
 // to create/reuse a named session (e.g. ephemeral gateway chats). Returns
 // { ok:true, id, session, reused? } or { ok:false, error }.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, type = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1859,6 +1861,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     branch,
   };
   if (rp) session.rolePrompt = rp;
+  if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
   if (ephemeral) session.ephemeral = true;
   if (kind === 'chat') ensureCliStates(session);
   try {
@@ -2577,6 +2580,12 @@ app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'Session not found' });
   }
   const force = req.query.force === '1' || req.body?.force === true;
+  // Commander is the fleet's dispatcher — it can only be removed by deleting its
+  // whole directory (which cascades through destroySessionCascade), never on its
+  // own. Guard here on the single-session route only, unconditional of force.
+  if (persisted?.type === 'commander') {
+    return res.status(400).json({ error: 'commander 会话不可单独删除，只能随其所属 fleet 一起删除' });
+  }
   if (persisted) {
     const dir = directories.get(persisted.dirId);
     if (!dir) return res.status(404).json({ error: 'directory not found' });
