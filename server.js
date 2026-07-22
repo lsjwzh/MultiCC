@@ -3202,6 +3202,10 @@ const taskBoardRuntime = createTaskBoardRuntime({
   loadHistory: sessionId => loadChatHistory(sessionId),
   dispatchToSession,
   routeCommanderTask: commanderRouter.route,
+  // Let panel-initiated Commander routing (B path) leave a trace in the
+  // commander's own chat window, so its dispatch history is visible there too.
+  appendChatMessage,
+  chatBroadcast,
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
