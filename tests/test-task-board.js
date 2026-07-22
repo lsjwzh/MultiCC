@@ -64,7 +64,7 @@ test('manage task detail renders clickable session links in chips and message ro
     renderTaskBoardDetail({
       task: {
         id: 'task-1', moduleId: 'mod-1', title: '跳转修复', status: 'active',
-        sessionIds: ['session one&中文'], areas: [], classification: null
+        sessionIds: ['session one&中文'], areas: [], moduleAssignment: null
       },
       items: [{
         sessionId: 'session one&中文', sessionLabel: '会话一', role: 'user',
@@ -131,6 +131,8 @@ test('task board display state follows classify runState for icon and status tex
     assert.match(source, /MultiCCTaskBoardUi\.taskDisplayState\(t\)/);
     assert.match(source, /tb-run-state \$\{display\.key\}[\s\S]*?\$\{display\.label\}/);
     assert.match(source, /tb-icon[^\n]*\$\{display\.icon\}/);
+    assert.match(source, /moduleAssignment/);
+    assert.doesNotMatch(source, /\.classification\b|classificationLabel|waiting_reply|retry_wait/);
   }
 
   const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
@@ -280,7 +282,7 @@ test('pending tasks are unique placeholders and converge in place after classifi
   assert.notEqual(first.id, second.id);
   assert.equal(Object.keys(board.modules).length, 1);
   assert.equal(first.title, '新任务');
-  assert.equal(first.classification.state, 'waiting_reply');
+  assert.equal(first.moduleAssignment.running, false);
 
   const result = core.applyTaskClassification(board, first.id, {
     id: first.id, title: '完善任务归类', module: '任务板', areas: ['src/task-board.js'],
@@ -289,7 +291,7 @@ test('pending tasks are unique placeholders and converge in place after classifi
   assert.equal(result.taskId, first.id);
   assert.equal(board.tasks[first.id].title, '完善任务归类');
   assert.equal(board.modules[board.tasks[first.id].moduleId].name, '任务板');
-  assert.equal(board.tasks[first.id].classification, undefined);
+  assert.equal(board.tasks[first.id].moduleAssignment, undefined);
   assert.equal(Object.keys(board.tasks).length, 2);
 });
 
@@ -388,7 +390,7 @@ test('normalizeBoard drops malformed entries and survives garbage', () => {
     tasks: {
       t1: {
         title: 'T', moduleId: 'm1', refs: [{ sessionId: 's1', ts: 5 }, { bad: true }],
-        classification: { state: 'failed', lastError: '/tmp/private token=secret' },
+        classification: { state: 'waiting_reply', lastError: '/tmp/private token=secret' },
       },
       bad: { refs: [] },
     },
@@ -397,7 +399,9 @@ test('normalizeBoard drops malformed entries and survives garbage', () => {
   assert.deepEqual(Object.keys(board.tasks), ['t1']);
   assert.equal(board.tasks.t1.refs.length, 1);
   assert.equal(board.tasks.t1.status, 'active');
-  assert.equal(board.tasks.t1.classification.lastError, 'classification_failed');
+  assert.equal(board.tasks.t1.classification, undefined);
+  assert.equal(board.tasks.t1.moduleAssignment.running, false);
+  assert.equal(board.tasks.t1.moduleAssignment.lastError, 'classification_failed');
 });
 
 test('normalizeBoard migrates legacy classify module names to 待归类', () => {
@@ -500,6 +504,25 @@ test('buildBoardDto aggregates counts, sessions and sorts by recency', () => {
   assert.equal(dto.modules.length, 1);
   assert.equal(dto.modules[0].taskCount, 2);
   assert.deepEqual(dto.tasks[0].sessionIds, ['s2']);
+});
+
+test('Commander one-way card status follows the executing worker classify only', () => {
+  const board = core.createEmptyBoard();
+  const pending = core.createPendingTask(board, {
+    dirId: 'd1', sessionId: 'commander-1', seed: '修复 URL 保存', now: 1,
+  });
+  core.setTaskRouting(pending, {
+    mode: 'commander', targetSessionId: 'commander-1', workerSessionId: 'worker-1',
+    status: 'admitted', oneWay: true, routedAt: 2,
+  });
+  const states = new Map([['commander-1', 'waiting'], ['worker-1', 'running']]);
+  let dto = core.buildBoardDto(board, sid => states.get(sid) || null).tasks[0];
+  assert.equal(dto.runState, 'running');
+  assert.equal(dto.moduleAssignment.running, false);
+
+  states.set('worker-1', 'done');
+  dto = core.buildBoardDto(board, sid => states.get(sid) || null).tasks[0];
+  assert.equal(dto.runState, 'done');
 });
 
 // ── runtime (integration with fake deps) ────────────────────────────────────
@@ -616,6 +639,8 @@ test('onClassifyGoal reuses the marked placeholder instead of creating a duplica
   const pending = core.createPendingTask(board, {
     dirId: 'dir-1', sessionId: 'sess-1', seed: '任务面板前端排序规则', now: 1,
   });
+  pending.moduleAssignment.running = true;
+  pending.moduleAssignment.attempts = 3;
   const routed = core.buildRoutedMessage(pending, '任务面板前端排序规则');
   boardHistory.push({ id: 'u-board', role: 'user', content: routed, ts: 10 });
 
@@ -627,7 +652,9 @@ test('onClassifyGoal reuses the marked placeholder instead of creating a duplica
   assert.equal(board.tasks[pending.id].title, '任务面板排序优化');
   assert.equal(board.tasks[pending.id].refs.length, 1);
   assert.equal(board.tasks[pending.id].refs[0].userMsgId, 'u-board');
-  assert.equal(board.tasks[pending.id].classification.seed, '任务面板排序优化');
+  assert.equal(board.tasks[pending.id].moduleAssignment.seed, '任务面板前端排序规则');
+  assert.equal(board.tasks[pending.id].moduleAssignment.running, true);
+  assert.equal(board.tasks[pending.id].moduleAssignment.attempts, 3);
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0].payload.kind, undefined);
 });
@@ -686,7 +713,7 @@ test('turn-end keeps the immediate card in 待归类 instead of auto-rehoming it
   assert.equal(board.tasks[taskId].refs[0].assistantMsgId, 'a-final');
   assert.equal(board.modules[board.tasks[taskId].moduleId].source, 'classify');
   assert.equal(board.modules[board.tasks[taskId].moduleId].name, '待归类');
-  assert.ok(board.tasks[taskId].classification, '卡片仍待归类（保留 classification 供手动按钮使用）');
+  assert.ok(board.tasks[taskId].moduleAssignment, '卡片仍在待归类模块，保留手动归类操作元数据');
 });
 
 test('streaming classify path creates or merges the task-board card before returning', () => {
@@ -1135,7 +1162,7 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
   assert.match(dispatches[1].opts.idempotencyKey, new RegExp(`^taskboard:${r2.body.taskId}:`));
   const pending = runtime.getBoard().tasks[r2.body.taskId];
   assert.equal(pending.title, '新任务');
-  assert.equal(pending.classification.state, 'waiting_reply');
+  assert.equal(pending.moduleAssignment.running, false);
 
   const r3 = res();
   routes.get('POST /api/task-board/send')({ body: { dirId: 'nope', text: 'x' } }, r3);
@@ -1182,13 +1209,13 @@ test('board placeholder stays in 待归类 at turn end (方案A：仅手动归�
   await new Promise(rr => setImmediate(rr));
   const board = runtime.getBoard();
   const tasks = Object.values(board.tasks);
-  // 方案A：turn-end 不再自动把占位卡归类进真实模块；卡片留在「待归类」、classification
-  // 仍在（等用户手动点「归类」），并收下本轮对话 ref，也不触发 aux。
+  // 方案A：turn-end 不再自动把占位卡归类进真实模块；卡片留在「待归类」，
+  // 并收下本轮对话 ref，也不触发 aux。
   assert.equal(auxCalls.length, 0);
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].id, taskId);
   assert.equal(tasks[0].title, '新任务');
-  assert.ok(tasks[0].classification, '占位卡仍待归类');
+  assert.ok(tasks[0].moduleAssignment, '占位卡仍待归类');
   assert.equal(board.modules[tasks[0].moduleId].source, 'classify');
   assert.ok(tasks[0].refs.some(ref => ref.assistantMsgId === 'a-new'), '本轮 ref 已挂到占位卡');
 });
@@ -1204,8 +1231,8 @@ test('manual reclassify retries a failed pending card and exposes batch route', 
   });
   pending.refs[0].userMsgId = 'u1';
   pending.refs[0].assistantMsgId = 'a1';
-  pending.classification.state = 'failed';
-  pending.classification.attempts = 5;
+  pending.moduleAssignment.lastError = 'previous_failure';
+  pending.moduleAssignment.attempts = 5;
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
   const res = () => ({ code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
@@ -1214,12 +1241,12 @@ test('manual reclassify retries a failed pending card and exposes batch route', 
   routes.get('POST /api/task-board/tasks/:taskId/reclassify')({ params: { taskId: pending.id }, body: {} }, single);
   assert.equal(single.body.ok, true);
   assert.equal(auxCalls.length, 1);
-  assert.equal(pending.classification.state, 'running');
-  assert.equal(pending.classification.attempts, 1);
+  assert.equal(pending.moduleAssignment.running, true);
+  assert.equal(pending.moduleAssignment.attempts, 6);
   resolveAux({ cancelled: false, text: '{"tasks":[]}' });
   await new Promise(rr => setImmediate(rr));
-  assert.equal(pending.classification.state, 'retry_wait');
-  assert.ok(pending.classification.nextRetryAt > Date.now());
+  assert.equal(pending.moduleAssignment.running, false);
+  assert.equal(pending.moduleAssignment.lastError, 'empty_classification');
 
   const batch = res();
   routes.get('POST /api/task-board/reclassify-pending')({ body: { dirId: 'dir-1' } }, batch);
@@ -1238,16 +1265,22 @@ test('automatic pending scan no longer auto-classifies (方案A：仅手动归�
   });
   pending.refs[0].userMsgId = 'u1';
   pending.refs[0].assistantMsgId = 'a1';
-  pending.classification.state = 'pending';
-  pending.classification.nextRetryAt = 0;
 
   // 方案A：定时扫描不再触发自动归类——卡片原地停在「待归类」，attempts 不增长，
-  // 也不排队 aux 任务。用户手动点「归类」才会分类（见上方 manual reclassify 用例）。
+  // 也不排队 aux 任务。用户手动点「归类」才会分类。
   assert.equal(runtime.scanPendingClassifications(), 0);
   assert.equal(auxCalls.length, 0);
-  assert.equal(pending.classification.attempts, 0);
-  assert.equal(pending.classification.state, 'pending');
+  assert.equal(pending.moduleAssignment.attempts, 0);
+  assert.equal(pending.moduleAssignment.running, false);
   assert.equal(Object.values(runtime.getBoard().modules).some(m => m.source === 'classify'), true);
+
+  // A persisted in-flight assignment has no live Aux owner after restart. The
+  // startup pass marks only that operation interrupted and still queues no AI.
+  pending.moduleAssignment.running = true;
+  assert.equal(runtime.scanPendingClassifications(99), 1);
+  assert.equal(pending.moduleAssignment.running, false);
+  assert.equal(pending.moduleAssignment.lastError, 'classification_interrupted');
+  assert.equal(auxCalls.length, 0);
 });
 
 test('manual classification can use the submitted task text before a reply exists', async () => {

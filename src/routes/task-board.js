@@ -2,8 +2,8 @@
 
 // Task board runtime — wires the pure core (src/task-board.js) to the host:
 // aux-queue tagging at turn end, atomic persistence, REST routes for the
-// fleet panel, the panel composer's auto-routed dispatch, and pending-card
-// classification retries.
+// fleet panel, the panel composer's auto-routed dispatch, and manual module
+// assignment for cards that remain under 「待归类」.
 //
 // Host contract (all deps injected by server.js):
 //   file               — task_board.json path (from createPaths)
@@ -82,9 +82,7 @@ function createTaskBoardRuntime(deps) {
   // One in-flight tag per session: a newer turn supersedes the queued tag for
   // the same session (mirrors runClassifyNow's cancelClassifyFor pattern).
   const pendingTagBySession = new Map();
-  const pendingClassificationByTask = new Map();
-  const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
-  const MAX_AUTO_ATTEMPTS = 5;
+  const pendingModuleAssignmentByTask = new Map();
 
   // Resolve the current turn even while it is still streaming. Looking for the
   // last committed assistant first is wrong mid-turn: it pairs the previous
@@ -116,8 +114,8 @@ function createTaskBoardRuntime(deps) {
   }
 
   function pendingTaskForRef(ref, markedTaskId = null) {
-    if (markedTaskId && board.tasks[markedTaskId]?.classification) return board.tasks[markedTaskId];
-    return Object.values(board.tasks).find(task => task.classification && task.refs.some(r =>
+    if (markedTaskId && board.tasks[markedTaskId]?.moduleAssignment) return board.tasks[markedTaskId];
+    return Object.values(board.tasks).find(task => task.moduleAssignment && task.refs.some(r =>
       (ref.userMsgId && r.userMsgId === ref.userMsgId)
         || (ref.assistantMsgId && r.assistantMsgId === ref.assistantMsgId))) || null;
   }
@@ -149,7 +147,7 @@ function createTaskBoardRuntime(deps) {
       }
       const userMsg = userIdx === -1 ? null : history[userIdx];
       const assistantMsg = assistantIdx === -1 ? null : history[assistantIdx];
-      const userText = core.messageText(userMsg).trim() || task.classification?.seed || storedRef.excerpt || '';
+      const userText = core.messageText(userMsg).trim() || task.moduleAssignment?.seed || storedRef.excerpt || '';
       const replyText = core.messageText(assistantMsg).trim();
       if (userText && !partial) {
         partial = {
@@ -162,7 +160,7 @@ function createTaskBoardRuntime(deps) {
             userMsgId: userMsg?.id || storedRef.userMsgId || null,
             assistantMsgId: storedRef.assistantMsgId || null,
             ts: userMsg?.ts || storedRef.ts || Date.now(),
-            excerpt: (task.classification?.seed || storedRef.excerpt || userText).slice(0, 140),
+            excerpt: (task.moduleAssignment?.seed || storedRef.excerpt || userText).slice(0, 140),
           },
         };
       }
@@ -177,7 +175,7 @@ function createTaskBoardRuntime(deps) {
             userMsgId: userMsg?.id || storedRef.userMsgId || null,
             assistantMsgId: assistantMsg?.id || storedRef.assistantMsgId || null,
             ts: assistantMsg?.ts || userMsg?.ts || storedRef.ts || Date.now(),
-            excerpt: (task.classification?.seed || storedRef.excerpt || userText).slice(0, 140),
+            excerpt: (task.moduleAssignment?.seed || storedRef.excerpt || userText).slice(0, 140),
           },
         };
       }
@@ -185,11 +183,11 @@ function createTaskBoardRuntime(deps) {
     return partial;
   }
 
-  function saveClassificationState(task, patch) {
-    const previous = task.classification || {};
-    task.classification = {
-      state: 'pending', attempts: 0, lastAttemptAt: 0,
-      nextRetryAt: 0, lastError: '', seed: '',
+  function saveModuleAssignment(task, patch) {
+    const previous = task.moduleAssignment || {};
+    task.moduleAssignment = {
+      running: false, attempts: 0, lastAttemptAt: 0,
+      lastError: '', seed: '',
       ...previous,
       ...patch,
     };
@@ -199,15 +197,11 @@ function createTaskBoardRuntime(deps) {
     notify(mod?.dirId || task.refs.find(r => r.dirId)?.dirId || null, [task.id]);
   }
 
-  function recordClassificationFailure(taskId, error) {
+  function recordModuleAssignmentFailure(taskId, error) {
     const task = board.tasks[taskId];
-    if (!task?.classification) return;
-    const attempts = task.classification.attempts || 0;
-    const exhausted = attempts >= MAX_AUTO_ATTEMPTS;
-    const delay = RETRY_DELAYS_MS[Math.min(Math.max(attempts - 1, 0), RETRY_DELAYS_MS.length - 1)];
-    saveClassificationState(task, {
-      state: exhausted ? 'failed' : 'retry_wait',
-      nextRetryAt: exhausted ? 0 : Date.now() + delay,
+    if (!task?.moduleAssignment) return;
+    saveModuleAssignment(task, {
+      running: false,
       lastError: String(error || 'classification_failed').slice(0, 200),
     });
   }
@@ -231,38 +225,36 @@ function createTaskBoardRuntime(deps) {
 
   function queueTaskClassification(taskId, options = {}) {
     const task = board.tasks[taskId];
-    if (!task?.classification) return { ok: false, error: 'not_pending' };
-    if (pendingClassificationByTask.has(taskId)) return { ok: false, error: 'classification_running' };
+    if (!task?.moduleAssignment) return { ok: false, error: 'not_pending' };
+    if (pendingModuleAssignmentByTask.has(taskId)) return { ok: false, error: 'classification_running' };
     // 方案A（手动归类）：自动调用方（turn-end 钩子、retry 扫描）一律不得把「待归类」
     // 卡片自动分到真实模块——只有用户点击「归类/重新归类」的端点会传 { manual: true }。
     // 这是唯一权威闸门：任何未来新增的自动调用点都会被这里挡住。
     if (!options.manual) return { ok: false, error: 'auto_classify_disabled' };
-    if (options.manual) task.classification.attempts = 0;
 
     const input = options.input || resolveTaskClassificationInput(task);
     if (!input?.userText) {
-      saveClassificationState(task, {
-        state: 'waiting_reply', nextRetryAt: Date.now() + 60_000,
-        lastError: '',
+      saveModuleAssignment(task, {
+        running: false,
+        lastError: 'missing_context',
       });
-      return { ok: false, error: 'waiting_reply' };
+      return { ok: false, error: 'missing_context' };
     }
     if (!input.replyText) input.replyText = '（尚无助手回复，仅根据用户提交的任务信息归类）';
     if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
-      saveClassificationState(task, {
-        state: 'retry_wait', nextRetryAt: Date.now() + 60_000,
+      saveModuleAssignment(task, {
+        running: false,
         lastError: 'aux_unhealthy',
       });
       return { ok: false, error: 'aux_unhealthy' };
     }
 
     const jobId = crypto.randomUUID();
-    pendingClassificationByTask.set(taskId, jobId);
-    saveClassificationState(task, {
-      state: 'running',
-      attempts: (task.classification.attempts || 0) + 1,
+    pendingModuleAssignmentByTask.set(taskId, jobId);
+    saveModuleAssignment(task, {
+      running: true,
+      attempts: (task.moduleAssignment.attempts || 0) + 1,
       lastAttemptAt: Date.now(),
-      nextRetryAt: 0,
       lastError: '',
     });
 
@@ -276,55 +268,62 @@ function createTaskBoardRuntime(deps) {
         meta: { sessionName: input.ref.sessionId, sessionId: input.ref.sessionId, taskId },
       });
     } catch (e) {
-      pendingClassificationByTask.delete(taskId);
+      pendingModuleAssignmentByTask.delete(taskId);
       logger.log(`[multicc/taskboard] classify enqueue failed for ${taskId}: ${e?.message || e}`);
-      recordClassificationFailure(taskId, 'enqueue_failed');
+      recordModuleAssignmentFailure(taskId, 'enqueue_failed');
       return { ok: false, error: 'enqueue_failed' };
     }
 
     Promise.resolve(promise).then(result => {
-      if (pendingClassificationByTask.get(taskId) !== jobId) return;
-      pendingClassificationByTask.delete(taskId);
+      if (pendingModuleAssignmentByTask.get(taskId) !== jobId) return;
+      pendingModuleAssignmentByTask.delete(taskId);
       if (!result || result.cancelled) {
-        recordClassificationFailure(taskId, 'classification_cancelled');
+        recordModuleAssignmentFailure(taskId, 'classification_cancelled');
         return;
       }
       const parsed = core.parseTagResult(result.text);
       const entry = parsed.tasks.find(t => t.id === taskId || (t.id && board.tasks[t.id])) || parsed.tasks[0];
       if (!entry) {
-        recordClassificationFailure(taskId, 'empty_classification');
+        recordModuleAssignmentFailure(taskId, 'empty_classification');
         return;
       }
       const applied = core.applyTaskClassification(board, taskId, entry, input.ref, Date.now());
       if (!applied.ok) {
-        recordClassificationFailure(taskId, applied.error);
+        recordModuleAssignmentFailure(taskId, applied.error);
         return;
       }
       save();
       notify(input.ref.dirId, applied.touched);
     }).catch(e => {
-      if (pendingClassificationByTask.get(taskId) !== jobId) return;
-      pendingClassificationByTask.delete(taskId);
+      if (pendingModuleAssignmentByTask.get(taskId) !== jobId) return;
+      pendingModuleAssignmentByTask.delete(taskId);
       logger.log(`[multicc/taskboard] classify failed for ${taskId}: ${e?.message || e}`);
-      recordClassificationFailure(taskId, 'classification_failed');
+      recordModuleAssignmentFailure(taskId, 'classification_failed');
     });
     return { ok: true, queued: true };
   }
 
   function scanPendingClassifications(now = Date.now()) {
-    let queued = 0;
+    // Module assignment is manual. This pass only recovers a persisted
+    // in-flight operation after restart; it never queues a new Aux request.
+    const recovered = [];
     for (const task of Object.values(board.tasks)) {
-      const c = task.classification;
-      if (!c || c.state === 'failed' || pendingClassificationByTask.has(task.id)) continue;
-      if (c.state === 'running') {
-        c.state = 'retry_wait';
-        c.nextRetryAt = now;
-      }
-      if (c.nextRetryAt && c.nextRetryAt > now) continue;
-      const result = queueTaskClassification(task.id);
-      if (result.ok) queued++;
+      const assignment = task.moduleAssignment;
+      if (!assignment?.running || pendingModuleAssignmentByTask.has(task.id)) continue;
+      assignment.running = false;
+      assignment.lastError = 'classification_interrupted';
+      task.updatedAt = now;
+      recovered.push(task.id);
     }
-    return queued;
+    if (recovered.length) {
+      save();
+      for (const taskId of recovered) {
+        const task = board.tasks[taskId];
+        const mod = task?.moduleId ? board.modules[task.moduleId] : null;
+        notify(mod?.dirId || task?.refs.find(r => r.dirId)?.dirId || null, [taskId]);
+      }
+    }
+    return recovered.length;
   }
 
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.
@@ -410,14 +409,14 @@ function createTaskBoardRuntime(deps) {
         const pendingEntries = parsed.tasks.map(t => ({ ...t, module: core.CLASSIFY_PENDING_MODULE_NAME }));
         const touched = core.applyTagResult(board, pendingEntries, ref, now2, { moduleSource: 'classify', mergeSimilar: true });
         if (touched.length) {
-          // 给新建的「待归类」卡片种上 classification，手动「归类」按钮才可用
-          // （handleReclassify 要求 task.classification 存在）。
+          // Store only the manual module-assignment operation metadata. It is
+          // not a task status; runState continues to come from session classify.
           for (const id of touched) {
             const task = board.tasks[id];
-            if (task && !task.classification && board.modules[task.moduleId]?.source === 'classify') {
-              task.classification = {
-                state: 'waiting_reply', attempts: 0, lastAttemptAt: 0,
-                nextRetryAt: 0, lastError: '', seed: (task.title || '').slice(0, 1200),
+            if (task && !task.moduleAssignment && board.modules[task.moduleId]?.source === 'classify') {
+              task.moduleAssignment = {
+                running: false, attempts: 0, lastAttemptAt: 0,
+                lastError: '', seed: (task.title || '').slice(0, 1200),
               };
             }
           }
@@ -464,18 +463,20 @@ function createTaskBoardRuntime(deps) {
       const markedTask = markedTaskId ? board.tasks[markedTaskId] : null;
       if (markedTask) {
         let changed = core.addRefToTask(markedTask, ref, now);
-        if (markedTask.classification) {
+        if (markedTask.moduleAssignment) {
           const nextTitle = String(goal || '').trim().slice(0, 40);
           if (markedTask.title === core.PENDING_TASK_TITLE && nextTitle) {
             markedTask.title = nextTitle;
             changed = true;
           }
-          markedTask.classification = {
-            state: 'waiting_reply', attempts: 0, lastAttemptAt: 0,
-            nextRetryAt: now + 60_000, lastError: '', seed: String(goal || '').slice(0, 1200),
-          };
-          markedTask.updatedAt = now;
-          changed = true;
+          // This callback reports execution progress from the classify system.
+          // It may enrich the placeholder, but must never alter the separate
+          // manual module-assignment operation or replace the submitted text.
+          if (!markedTask.moduleAssignment.seed && nextTitle) {
+            markedTask.moduleAssignment.seed = nextTitle;
+            markedTask.updatedAt = now;
+            changed = true;
+          }
         }
         if (changed) {
           save();
@@ -492,10 +493,10 @@ function createTaskBoardRuntime(deps) {
       if (touched.length) {
         for (const taskId of touched) {
           const task = board.tasks[taskId];
-          if (task && board.modules[task.moduleId]?.source === 'classify') {
-            task.classification = {
-              state: 'waiting_reply', attempts: 0, lastAttemptAt: 0,
-              nextRetryAt: now + 60_000, lastError: '', seed: goal.slice(0, 1200),
+          if (task && !task.moduleAssignment && board.modules[task.moduleId]?.source === 'classify') {
+            task.moduleAssignment = {
+              running: false, attempts: 0, lastAttemptAt: 0,
+              lastError: '', seed: goal.slice(0, 1200),
             };
           }
         }
@@ -780,7 +781,7 @@ function createTaskBoardRuntime(deps) {
 
   // Board-level composer: reserve a visible card first, then route either to
   // the explicitly selected idle worker or the directory's typed Commander.
-  // The marker lets turn-end classification converge that same card in place.
+  // The marker lets later turn evidence converge on that same card in place.
   async function handleBoardSend(req, res) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
@@ -882,11 +883,11 @@ function createTaskBoardRuntime(deps) {
   function handleReclassify(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
-    if (!task.classification) return res.status(409).json({ error: 'not_pending' });
+    if (!task.moduleAssignment) return res.status(409).json({ error: 'not_pending' });
     const result = queueTaskClassification(task.id, { manual: true });
     if (!result.ok) {
       const status = result.error === 'aux_unhealthy' ? 503 : 409;
-      const note = result.error === 'waiting_reply' ? '任务仍在执行，回复完成后会自动归类' : null;
+      const note = result.error === 'missing_context' ? '任务缺少可用于归类的内容' : null;
       return res.status(status).json({ error: result.error, note });
     }
     res.json({ ok: true, queued: true, task: taskDto(task) });
@@ -900,7 +901,7 @@ function createTaskBoardRuntime(deps) {
     let queued = 0;
     let skipped = 0;
     for (const task of Object.values(board.tasks)) {
-      if (!task.classification) continue;
+      if (!task.moduleAssignment) continue;
       const mod = task.moduleId ? board.modules[task.moduleId] : null;
       const taskDirId = mod?.dirId || task.refs.find(r => r.dirId)?.dirId || null;
       if (dirId && taskDirId !== dirId) continue;
@@ -937,8 +938,8 @@ function createTaskBoardRuntime(deps) {
     app.post('/api/task-board/reclassify-pending', handleReclassifyPending);
   }
 
-  const retryTimer = setInterval(() => scanPendingClassifications(), 60_000);
-  if (typeof retryTimer.unref === 'function') retryTimer.unref();
+  // Recover interrupted manual module assignment once after startup. Pending
+  // cards stay under 「待归类」 until the user explicitly assigns them.
   const startupTimer = setTimeout(() => scanPendingClassifications(), 1_000);
   if (typeof startupTimer.unref === 'function') startupTimer.unref();
 

@@ -19,13 +19,12 @@ import '../utils/session_status_helpers.dart';
 /// Task-board view for one directory: the AI-tagged module->task tree, filtered
 /// to [dirId], with 60s polling + manual refresh, plus the interactions layered
 /// on top of B1's read-only board:
-///   * tapping a task row opens a detail sheet (run state, classify badge,
-///     areas, sessions, cross-session message trail);
+///   * tapping a task row opens a detail sheet (run state, areas, sessions,
+///     cross-session message trail);
 ///   * status actions (done / reopen / archive) + reclassify call the
 ///     localhost-only write endpoints and surface [LocalOnlyException] as a
 ///     SnackBar;
 ///   * newly-filed tasks are auto-located and highlighted for 3s;
-///   * retry_wait classify badges carry a "N 分钟后重试" countdown.
 ///
 /// Real-time WS (/ws/meta `task_board_update`) is intentionally deferred (see
 /// notes); this matches the web dashboard, which also polls every 60s and only
@@ -48,7 +47,8 @@ class TaskBoardView extends StatefulWidget {
   /// the host fleet sheet to SessionManager.openSessionWithFocus (chat + focus)
   /// or openSession + switchToSession / a pushed TerminalScreen. Null = session
   /// jumping disabled.
-  final void Function(String sessionId, {String? focusMessageId})? onOpenSession;
+  final void Function(String sessionId, {String? focusMessageId})?
+  onOpenSession;
 
   const TaskBoardView({
     super.key,
@@ -89,8 +89,10 @@ class _TaskBoardViewState extends State<TaskBoardView> {
   void initState() {
     super.initState();
     _refresh();
-    _poll = Timer.periodic(const Duration(seconds: 60),
-        (_) => _refresh(silent: true));
+    _poll = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => _refresh(silent: true),
+    );
   }
 
   @override
@@ -106,8 +108,9 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     setState(() => _refreshing = true);
     _showGathering();
     try {
-      final board =
-          await ManageService(settings: widget.settings).fetchTaskBoard();
+      final board = await ManageService(
+        settings: widget.settings,
+      ).fetchTaskBoard();
       if (!mounted) return;
       _detectNewAndHighlight(board);
       setState(() {
@@ -157,14 +160,16 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       if (!mounted) return;
       final ctx = _taskKeys[_highlightId]?.currentContext;
       if (ctx != null) {
-        Scrollable.ensureVisible(ctx,
-            alignment: 0.3, duration: const Duration(milliseconds: 300));
+        Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.3,
+          duration: const Duration(milliseconds: 300),
+        );
       }
     });
   }
 
-  GlobalKey _keyFor(String id) =>
-      _taskKeys.putIfAbsent(id, () => GlobalKey());
+  GlobalKey _keyFor(String id) => _taskKeys.putIfAbsent(id, () => GlobalKey());
 
   void _showGathering() {
     _gatheringTimer?.cancel();
@@ -185,9 +190,11 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     if (b == null) return const [];
     final modDir = {for (final m in b.modules) m.id: m.dirId};
     final tasks = b.tasks
-        .where((t) =>
-            t.status != 'archived' &&
-            (t.dirIds.contains(dirId) || modDir[t.moduleId] == dirId))
+        .where(
+          (t) =>
+              t.status != 'archived' &&
+              (t.dirIds.contains(dirId) || modDir[t.moduleId] == dirId),
+        )
         .toList();
     return _sortTasks(tasks);
   }
@@ -229,8 +236,8 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       if (!s.isChat || s.isAux) continue;
       final st = widget.mgr.liveStatus(s.id);
       if (st != null && busy.contains(st.status)) continue;
-      final label = labels[s.id] ??
-          (s.label?.isNotEmpty == true ? s.label! : s.id);
+      final label =
+          labels[s.id] ?? (s.label?.isNotEmpty == true ? s.label! : s.id);
       out.add((id: s.id, label: label));
     }
     return out;
@@ -239,15 +246,18 @@ class _TaskBoardViewState extends State<TaskBoardView> {
   Future<void> _reclassifyPending() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final r = await ManageService(settings: widget.settings)
-          .reclassifyPending(dirId: widget.dirId);
+      final r = await ManageService(
+        settings: widget.settings,
+      ).reclassifyPending(dirId: widget.dirId);
       if (!mounted) return;
       messenger.showSnackBar(
         SnackBar(
-          content: Text(t('reclassifyQueued', {
-            'queued': '${r['queued'] ?? 0}',
-            'skipped': '${r['skipped'] ?? 0}',
-          })),
+          content: Text(
+            t('reclassifyQueued', {
+              'queued': '${r['queued'] ?? 0}',
+              'skipped': '${r['skipped'] ?? 0}',
+            }),
+          ),
         ),
       );
       await _refresh(silent: true);
@@ -363,14 +373,15 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     for (final t in tasks) {
       byModule.putIfAbsent(t.moduleId, () => []).add(t);
     }
-    final mods =
-        _sortModules(board.modules.where((m) => byModule.containsKey(m.id)).toList());
+    final mods = _sortModules(
+      board.modules.where((m) => byModule.containsKey(m.id)).toList(),
+    );
     final seen = mods.map((m) => m.id).toSet();
-    final orphans =
-        _sortTasks(tasks.where((t) => !seen.contains(t.moduleId)).toList());
+    final orphans = _sortTasks(
+      tasks.where((t) => !seen.contains(t.moduleId)).toList(),
+    );
 
-    final showFloat =
-        _gathering || (board.backfill?.running ?? false);
+    final showFloat = _gathering || (board.backfill?.running ?? false);
 
     return Column(
       children: [
@@ -391,7 +402,9 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                             'tasks': '${tasks.length}',
                           }),
                           style: const TextStyle(
-                              color: AppColors.muted, fontSize: 12),
+                            color: AppColors.muted,
+                            fontSize: 12,
+                          ),
                         ),
                         const Spacer(),
                         IconButton(
@@ -402,12 +415,18 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                                   width: 14,
                                   height: 14,
                                   child: CircularProgressIndicator(
-                                      strokeWidth: 2),
+                                    strokeWidth: 2,
+                                  ),
                                 )
-                              : const Icon(Icons.refresh_rounded,
-                                  size: 18, color: AppColors.muted),
+                              : const Icon(
+                                  Icons.refresh_rounded,
+                                  size: 18,
+                                  color: AppColors.muted,
+                                ),
                           constraints: const BoxConstraints(
-                              minWidth: 32, minHeight: 32),
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
                           padding: EdgeInsets.zero,
                         ),
                       ],
@@ -424,8 +443,9 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                           _collapsed.add(mod.id);
                         }
                       }),
-                      onReclassifyAll:
-                          mod.isPending ? _reclassifyPending : null,
+                      onReclassifyAll: mod.isPending
+                          ? _reclassifyPending
+                          : null,
                     ),
                     if (!_collapsed.contains(mod.id))
                       for (final task in _sortTasks(byModule[mod.id]!))
@@ -500,8 +520,7 @@ class _ModuleRow extends StatelessWidget {
             const SizedBox(width: 6),
             Text(
               '${module.taskCount}',
-              style:
-                  const TextStyle(color: AppColors.faint, fontSize: 11),
+              style: const TextStyle(color: AppColors.faint, fontSize: 11),
             ),
             const Spacer(),
             if (onReclassifyAll != null)
@@ -547,9 +566,7 @@ class _TaskRow extends StatelessWidget {
         curve: Curves.easeOut,
         decoration: BoxDecoration(
           border: Border.all(
-            color: highlighted
-                ? const Color(0xFFe3b341)
-                : Colors.transparent,
+            color: highlighted ? const Color(0xFFe3b341) : Colors.transparent,
             width: highlighted ? 1.5 : 1,
           ),
           borderRadius: BorderRadius.circular(6),
@@ -577,28 +594,22 @@ class _TaskRow extends StatelessWidget {
                         style: TextStyle(
                           color: isDone ? AppColors.faint : AppColors.text,
                           fontSize: 13,
-                          decoration:
-                              isDone ? TextDecoration.lineThrough : null,
+                          decoration: isDone
+                              ? TextDecoration.lineThrough
+                              : null,
                           decorationColor: AppColors.faint,
                         ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
                       const SizedBox(height: 3),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 3,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          if (task.classification != null)
-                            _classifyBadge(task.classification!),
-                          Text(
-                            '${t('taskRounds', {'n': '${task.refCount}'})}'
-                            '${_timeAgo(task.lastTs).isEmpty ? '' : ' · ${_timeAgo(task.lastTs)}'}',
-                            style: const TextStyle(
-                                color: AppColors.faint, fontSize: 10.5),
-                          ),
-                        ],
+                      Text(
+                        '${t('taskRounds', {'n': '${task.refCount}'})}'
+                        '${_timeAgo(task.lastTs).isEmpty ? '' : ' · ${_timeAgo(task.lastTs)}'}',
+                        style: const TextStyle(
+                          color: AppColors.faint,
+                          fontSize: 10.5,
+                        ),
                       ),
                     ],
                   ),
@@ -648,9 +659,10 @@ class _RunningDotState extends State<_RunningDot>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
-    _scale = Tween<double>(begin: 0.7, end: 1.15).animate(
-      CurvedAnimation(parent: _c, curve: Curves.easeInOut),
-    );
+    _scale = Tween<double>(
+      begin: 0.7,
+      end: 1.15,
+    ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
   }
 
   @override
@@ -691,68 +703,12 @@ class _EmojiDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-    Text(emoji, style: const TextStyle(fontSize: 12));
-}
-
-/// Classify-state pill. Five states mirror manage-taskboard.js
-/// _tbClassificationHtml; `lastError` becomes the tooltip. retry_wait appends a
-/// "N 分钟后重试" countdown computed from `nextRetryAt` (refreshed each 60s poll,
-/// so no extra ticker is needed).
-Widget _classifyBadge(TaskClassification c) {
-  final ({Color color, String label}) style = switch (c.state) {
-    'waiting_reply' => (
-      color: const Color(0xFFe3b341),
-      label: t('tbClassWaitingReply'),
-    ),
-    'running' => (
-      color: const Color(0xFF6cb6ff),
-      label: t('tbClassRunning'),
-    ),
-    'retry_wait' => (
-      color: const Color(0xFFe3b341),
-      label: t('tbClassRetryWait'),
-    ),
-    'failed' => (
-      color: AppColors.danger,
-      label: t('tbClassFailed'),
-    ),
-    _ => (
-      color: AppColors.muted,
-      label: t('tbClassPending'),
-    ),
-  };
-  var label = style.label;
-  if (c.state == 'retry_wait' && c.nextRetryAt != null) {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    var m = ((c.nextRetryAt! - now) / 60000).ceil();
-    if (m < 0) m = 0;
-    label = '$label · ${t('tbRetryInMinutes', {'m': '$m'})}';
-  }
-  final chip = Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-    decoration: BoxDecoration(
-      color: style.color.withValues(alpha: 0.15),
-      border: Border.all(color: style.color.withValues(alpha: 0.4)),
-      borderRadius: BorderRadius.circular(4),
-    ),
-    child: Text(
-      label,
-      style: TextStyle(
-        color: style.color,
-        fontSize: 9.5,
-        fontWeight: FontWeight.w700,
-      ),
-    ),
-  );
-  final err = c.lastError;
-  return (err != null && err.isNotEmpty)
-      ? Tooltip(message: err, child: chip)
-      : chip;
+      Text(emoji, style: const TextStyle(fontSize: 12));
 }
 
 // ── Task detail sheet ────────────────────────────────────────────────────────
 
-/// Bottom sheet for one task: run state + classify badge + rounds/time, areas
+/// Bottom sheet for one task: run state + rounds/time, areas
 /// and session chips (tappable -> jump to session), the cross-session message
 /// trail (async [ManageService.fetchTaskMessages]), and the status / reclassify
 /// actions. Writes are localhost-only; a 403 surfaces as a [LocalOnlyException]
@@ -762,7 +718,8 @@ class _TaskDetailSheet extends StatefulWidget {
   final TaskBoardTask task;
   final Map<String, String> sessionLabels;
   final List<({String id, String label})> targets;
-  final void Function(String sessionId, {String? focusMessageId})? onOpenSession;
+  final void Function(String sessionId, {String? focusMessageId})?
+  onOpenSession;
   final VoidCallback onChanged;
 
   const _TaskDetailSheet({
@@ -796,8 +753,9 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
       _msgError = null;
     });
     try {
-      final msgs = await ManageService(settings: widget.settings)
-          .fetchTaskMessages(widget.task.id);
+      final msgs = await ManageService(
+        settings: widget.settings,
+      ).fetchTaskMessages(widget.task.id);
       if (!mounted) return;
       setState(() {
         _messages = msgs;
@@ -812,15 +770,15 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     }
   }
 
-  String _sessionLabel(String sid) =>
-      widget.sessionLabels[sid] ?? sid;
+  String _sessionLabel(String sid) => widget.sessionLabels[sid] ?? sid;
 
   Future<void> _setStatus(String status) async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _busy = true);
     try {
-      await ManageService(settings: widget.settings)
-          .setTaskStatus(widget.task.id, status);
+      await ManageService(
+        settings: widget.settings,
+      ).setTaskStatus(widget.task.id, status);
       if (!mounted) return;
       Navigator.of(context).pop();
       widget.onChanged();
@@ -865,8 +823,9 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _busy = true);
     try {
-      await ManageService(settings: widget.settings)
-          .reclassifyTask(widget.task.id);
+      await ManageService(
+        settings: widget.settings,
+      ).reclassifyTask(widget.task.id);
       if (!mounted) return;
       Navigator.of(context).pop();
       widget.onChanged();
@@ -924,7 +883,9 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   }
 
   ({String label, Color color, String emoji}) _runStateInfo(
-      String runState, bool isDone) {
+    String runState,
+    bool isDone,
+  ) {
     switch (runState) {
       case 'running':
         return (
@@ -939,30 +900,14 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
           emoji: '⏳',
         );
       case 'error':
-        return (
-          label: t('tbRunError'),
-          color: AppColors.danger,
-          emoji: '❌',
-        );
+        return (label: t('tbRunError'), color: AppColors.danger, emoji: '❌');
       case 'done':
-        return (
-          label: t('tbRunDone'),
-          color: AppColors.faint,
-          emoji: '✅',
-        );
+        return (label: t('tbRunDone'), color: AppColors.faint, emoji: '✅');
       default:
         if (isDone) {
-          return (
-            label: t('tbRunDone'),
-            color: AppColors.faint,
-            emoji: '✅',
-          );
+          return (label: t('tbRunDone'), color: AppColors.faint, emoji: '✅');
         }
-        return (
-          label: t('tbRunIdle'),
-          color: AppColors.muted,
-          emoji: '⚪',
-        );
+        return (label: t('tbRunIdle'), color: AppColors.muted, emoji: '⚪');
     }
   }
 
@@ -972,7 +917,8 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     final task = widget.task;
     final isDone = task.status == 'done';
     final rs = _runStateInfo(task.runState, isDone);
-    final canReclassify = task.classification?.state != 'running';
+    final canReclassify =
+        task.moduleAssignment != null && !task.moduleAssignment!.running;
 
     return SafeArea(
       child: Container(
@@ -995,8 +941,7 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                         color: isDone ? AppColors.faint : AppColors.textBright,
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
-                        decoration:
-                            isDone ? TextDecoration.lineThrough : null,
+                        decoration: isDone ? TextDecoration.lineThrough : null,
                         decorationColor: AppColors.faint,
                       ),
                       maxLines: 2,
@@ -1006,16 +951,21 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                   IconButton(
                     tooltip: t('close'),
                     onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close_rounded,
-                        color: AppColors.muted, size: 20),
+                    icon: const Icon(
+                      Icons.close_rounded,
+                      color: AppColors.muted,
+                      size: 20,
+                    ),
                     constraints: const BoxConstraints(
-                        minWidth: 36, minHeight: 36),
+                      minWidth: 36,
+                      minHeight: 36,
+                    ),
                     padding: EdgeInsets.zero,
                   ),
                 ],
               ),
             ),
-            // Meta: runState + classify badge + rounds/time, areas, sessions.
+            // Meta: runState + rounds/time, areas, sessions.
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Column(
@@ -1034,13 +984,13 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                           fontWeight: FontWeight.w700,
                         ),
                       ),
-                      if (task.classification != null)
-                        _classifyBadge(task.classification!),
                       Text(
                         '${t('taskRounds', {'n': '${task.refCount}'})}'
                         '${_timeAgo(task.lastTs).isEmpty ? '' : ' · ${_timeAgo(task.lastTs)}'}',
                         style: const TextStyle(
-                            color: AppColors.faint, fontSize: 10.5),
+                          color: AppColors.faint,
+                          fontSize: 10.5,
+                        ),
                       ),
                     ],
                   ),
@@ -1049,9 +999,7 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                     Wrap(
                       spacing: 6,
                       runSpacing: 4,
-                      children: [
-                        for (final a in task.areas) _TagChip(a),
-                      ],
+                      children: [for (final a in task.areas) _TagChip(a)],
                     ),
                   ],
                   if (task.sessionIds.isNotEmpty) ...[
@@ -1122,7 +1070,11 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, color: AppColors.danger, size: 28),
+              const Icon(
+                Icons.error_outline,
+                color: AppColors.danger,
+                size: 28,
+              ),
               const SizedBox(height: 8),
               Text(
                 _msgError!,
@@ -1180,7 +1132,8 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     // A message is deep-linkable only when it carries a persisted id and an
     // opener is wired. Lost / id-less messages render greyed and non-tappable
     // (per spec: "lost==true 或 messageId 为空的消息不可点").
-    final canJump = widget.onOpenSession != null &&
+    final canJump =
+        widget.onOpenSession != null &&
         m.messageId != null &&
         m.messageId!.isNotEmpty;
     return Column(
@@ -1415,11 +1368,7 @@ class _TagChip extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: TextStyle(
-          color: color,
-          fontSize: 10.5,
-          fontFamily: 'monospace',
-        ),
+        style: TextStyle(color: color, fontSize: 10.5, fontFamily: 'monospace'),
       ),
     );
     if (!tappable) return chip;
@@ -1514,7 +1463,8 @@ class _BoardComposer extends StatefulWidget {
     String? target,
     bool goal,
     Map<String, dynamic>? goalLimits,
-  }) onSend;
+  })
+  onSend;
 
   final List<({String id, String label})> targets;
   final String? hint;
@@ -1569,8 +1519,7 @@ class _BoardComposerState extends State<_BoardComposer> {
     // status ticks arrive). If the selected target is no longer offered (it
     // became busy), fall back to auto-route so the dropdown never holds a
     // value absent from its items (which would assert).
-    if (_target.isNotEmpty &&
-        !widget.targets.any((tg) => tg.id == _target)) {
+    if (_target.isNotEmpty && !widget.targets.any((tg) => tg.id == _target)) {
       _target = '';
     }
   }
@@ -1600,12 +1549,14 @@ class _BoardComposerState extends State<_BoardComposer> {
       if (widget.settings.token.isNotEmpty) {
         req.headers['X-Access-Token'] = widget.settings.token;
       }
-      req.files.add(http.MultipartFile.fromBytes(
-        'file',
-        file.bytes!,
-        filename: file.name,
-        contentType: MediaType('application', 'octet-stream'),
-      ));
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          file.bytes!,
+          filename: file.name,
+          contentType: MediaType('application', 'octet-stream'),
+        ),
+      );
       final res = await req.send().timeout(const Duration(seconds: 30));
       final body = await res.stream.bytesToString();
       if (res.statusCode == 200) {
@@ -1625,9 +1576,9 @@ class _BoardComposerState extends State<_BoardComposer> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${t('boardAttach')}: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('${t('boardAttach')}: $e')));
       }
     } finally {
       if (mounted) setState(() => _uploading = false);
@@ -1651,7 +1602,10 @@ class _BoardComposerState extends State<_BoardComposer> {
         '${dir.path}/multicc_board_${DateTime.now().millisecondsSinceEpoch}.m4a';
     await _recorder.start(
       const RecordConfig(
-          encoder: AudioEncoder.aacLc, numChannels: 1, sampleRate: 16000),
+        encoder: AudioEncoder.aacLc,
+        numChannels: 1,
+        sampleRate: 16000,
+      ),
       path: filePath,
     );
     setState(() => _isRecording = true);
@@ -1675,11 +1629,13 @@ class _BoardComposerState extends State<_BoardComposer> {
       if (widget.settings.token.isNotEmpty) {
         req.headers['X-Access-Token'] = widget.settings.token;
       }
-      req.files.add(await http.MultipartFile.fromPath(
-        'file',
-        path,
-        contentType: MediaType('audio', 'mp4'),
-      ));
+      req.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          path,
+          contentType: MediaType('audio', 'mp4'),
+        ),
+      );
       final res = await req.send().timeout(const Duration(seconds: 60));
       final body = await res.stream.bytesToString();
       if (res.statusCode == 200) {
@@ -1688,8 +1644,7 @@ class _BoardComposerState extends State<_BoardComposer> {
         if (text.isNotEmpty && mounted) {
           final current = _ctrl.text;
           _ctrl.text = current.isEmpty ? text : '$current $text';
-          _ctrl.selection =
-              TextSelection.collapsed(offset: _ctrl.text.length);
+          _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
         }
       } else {
         if (mounted) {
@@ -1700,9 +1655,9 @@ class _BoardComposerState extends State<_BoardComposer> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${t('boardVoice')}: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('${t('boardVoice')}: $e')));
       }
     } finally {
       if (mounted) setState(() => _isTranscribing = false);
@@ -1719,8 +1674,9 @@ class _BoardComposerState extends State<_BoardComposer> {
       text = text.isEmpty ? paths : '$text $paths';
     }
     if (text.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(t('boardEmptyText'))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('boardEmptyText'))));
       return;
     }
     Map<String, dynamic>? goalLimits;
@@ -1747,11 +1703,15 @@ class _BoardComposerState extends State<_BoardComposer> {
         _attachments.clear();
       });
       final label = r?['targetLabel']?.toString();
-      messenger.showSnackBar(SnackBar(
-        content: Text(label != null && label.isNotEmpty
-            ? t('boardRoutedTo', {'target': label})
-            : t('boardSent')),
-      ));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            label != null && label.isNotEmpty
+                ? t('boardRoutedTo', {'target': label})
+                : t('boardSent'),
+          ),
+        ),
+      );
     } on LocalOnlyException {
       messenger.showSnackBar(SnackBar(content: Text(t('localOnly'))));
     } on BoardRouteException catch (e) {
@@ -1760,10 +1720,10 @@ class _BoardComposerState extends State<_BoardComposer> {
       final msg = e.note.isNotEmpty
           ? e.note
           : e.code == 'aux_unhealthy'
-              ? t('boardAuxUnhealthy')
-              : e.code == 'empty_text'
-                  ? t('boardEmptyText')
-                  : t('boardRouteFailed');
+          ? t('boardAuxUnhealthy')
+          : e.code == 'empty_text'
+          ? t('boardEmptyText')
+          : t('boardRouteFailed');
       messenger.showSnackBar(SnackBar(content: Text(msg)));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('$e')));
@@ -1774,7 +1734,8 @@ class _BoardComposerState extends State<_BoardComposer> {
 
   @override
   Widget build(BuildContext context) {
-    final canSend = (_hasText || _attachments.isNotEmpty) &&
+    final canSend =
+        (_hasText || _attachments.isNotEmpty) &&
         !_sending &&
         !_uploading &&
         !_isTranscribing;
@@ -1797,12 +1758,16 @@ class _BoardComposerState extends State<_BoardComposer> {
               child: Row(
                 children: [
                   Expanded(
-                      child: _numField(
-                          _roundsCtrl, t('roundLimit'), '200')),
+                    child: _numField(_roundsCtrl, t('roundLimit'), '200'),
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
-                      child: _numField(
-                          _budgetCtrl, t('tokenBudget'), t('unlimited'))),
+                    child: _numField(
+                      _budgetCtrl,
+                      t('tokenBudget'),
+                      t('unlimited'),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1818,7 +1783,9 @@ class _BoardComposerState extends State<_BoardComposer> {
                   final att = e.value;
                   return Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.panel2,
                       border: Border.all(color: AppColors.line),
@@ -1827,15 +1794,20 @@ class _BoardComposerState extends State<_BoardComposer> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.attach_file,
-                            size: 12, color: AppColors.muted),
+                        const Icon(
+                          Icons.attach_file,
+                          size: 12,
+                          color: AppColors.muted,
+                        ),
                         const SizedBox(width: 4),
                         ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 120),
                           child: Text(
                             att['name']!,
                             style: const TextStyle(
-                                color: AppColors.text, fontSize: 12),
+                              color: AppColors.text,
+                              fontSize: 12,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -1843,8 +1815,11 @@ class _BoardComposerState extends State<_BoardComposer> {
                         GestureDetector(
                           onTap: () =>
                               setState(() => _attachments.removeAt(idx)),
-                          child: const Icon(Icons.close,
-                              size: 12, color: AppColors.muted),
+                          child: const Icon(
+                            Icons.close,
+                            size: 12,
+                            color: AppColors.muted,
+                          ),
                         ),
                       ],
                     ),
@@ -1860,20 +1835,26 @@ class _BoardComposerState extends State<_BoardComposer> {
                 Expanded(child: _targetDropdown()),
                 if (widget.targets.isEmpty) ...[
                   const SizedBox(width: 8),
-                  Text(t('boardNoIdleSession'),
-                      style: const TextStyle(
-                          color: AppColors.faint, fontSize: 10.5)),
+                  Text(
+                    t('boardNoIdleSession'),
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 10.5,
+                    ),
+                  ),
                 ],
                 const SizedBox(width: 8),
-                Text('🎯 ${t('boardGoalMode')}',
-                    style: const TextStyle(
-                        color: AppColors.muted, fontSize: 11)),
+                Text(
+                  '🎯 ${t('boardGoalMode')}',
+                  style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                ),
                 SizedBox(
                   height: 28,
                   child: Switch(
                     value: _goal,
-                    onChanged:
-                        _sending ? null : (v) => setState(() => _goal = v),
+                    onChanged: _sending
+                        ? null
+                        : (v) => setState(() => _goal = v),
                   ),
                 ),
               ],
@@ -1892,13 +1873,14 @@ class _BoardComposerState extends State<_BoardComposer> {
               ),
               const SizedBox(width: 4),
               _ComposerBtn(
-                onTap:
-                    (!_isTranscribing && !_sending) ? _toggleRecording : null,
+                onTap: (!_isTranscribing && !_sending)
+                    ? _toggleRecording
+                    : null,
                 icon: _isTranscribing
                     ? Icons.hourglass_top_rounded
                     : _isRecording
-                        ? Icons.stop_circle_rounded
-                        : Icons.mic_rounded,
+                    ? Icons.stop_circle_rounded
+                    : Icons.mic_rounded,
                 color: _isRecording ? AppColors.danger : AppColors.muted,
               ),
               const SizedBox(width: 4),
@@ -1911,8 +1893,8 @@ class _BoardComposerState extends State<_BoardComposer> {
                       color: _isRecording
                           ? AppColors.danger
                           : _focusNode.hasFocus
-                              ? AppColors.blue
-                              : AppColors.line,
+                          ? AppColors.blue
+                          : AppColors.line,
                     ),
                     borderRadius: BorderRadius.circular(10),
                   ),
@@ -1922,13 +1904,16 @@ class _BoardComposerState extends State<_BoardComposer> {
                     maxLines: null,
                     textInputAction: TextInputAction.newline,
                     style: const TextStyle(
-                        color: AppColors.text, fontSize: 14, height: 1.4),
+                      color: AppColors.text,
+                      fontSize: 14,
+                      height: 1.4,
+                    ),
                     decoration: InputDecoration(
                       hintText: _isRecording
                           ? t('recording')
                           : _isTranscribing
-                              ? t('transcribing')
-                              : (widget.hint ?? t('typeMessage')),
+                          ? t('transcribing')
+                          : (widget.hint ?? t('typeMessage')),
                       hintStyle: TextStyle(
                         color: _isRecording
                             ? AppColors.danger
@@ -1937,17 +1922,16 @@ class _BoardComposerState extends State<_BoardComposer> {
                       ),
                       border: InputBorder.none,
                       contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                     ),
                     onSubmitted: canSend ? (_) => _doSend() : null,
                   ),
                 ),
               ),
               const SizedBox(width: 6),
-              _SendBtn(
-                onTap: canSend ? _doSend : null,
-                sending: _sending,
-              ),
+              _SendBtn(onTap: canSend ? _doSend : null, sending: _sending),
             ],
           ),
         ],
@@ -1979,14 +1963,15 @@ class _BoardComposerState extends State<_BoardComposer> {
     );
   }
 
-  Widget _numField(
-      TextEditingController ctrl, String label, String hint) {
+  Widget _numField(TextEditingController ctrl, String label, String hint) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(label,
-            style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+        Text(
+          label,
+          style: const TextStyle(color: AppColors.muted, fontSize: 11),
+        ),
         const SizedBox(height: 4),
         TextField(
           controller: ctrl,
@@ -1996,8 +1981,10 @@ class _BoardComposerState extends State<_BoardComposer> {
             hintText: hint,
             hintStyle: const TextStyle(color: AppColors.faint, fontSize: 13),
             isDense: true,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 10,
+            ),
             filled: true,
             fillColor: AppColors.bg,
             border: OutlineInputBorder(
@@ -2024,8 +2011,11 @@ class _ComposerBtn extends StatelessWidget {
   final IconData icon;
   final Color color;
 
-  const _ComposerBtn(
-      {required this.onTap, required this.icon, required this.color});
+  const _ComposerBtn({
+    required this.onTap,
+    required this.icon,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2035,8 +2025,11 @@ class _ComposerBtn extends StatelessWidget {
         width: 34,
         height: 40,
         alignment: Alignment.center,
-        child: Icon(icon,
-            color: onTap != null ? color : AppColors.faint, size: 20),
+        child: Icon(
+          icon,
+          color: onTap != null ? color : AppColors.faint,
+          size: 20,
+        ),
       ),
     );
   }
@@ -2066,10 +2059,15 @@ class _SendBtn extends StatelessWidget {
                 width: 18,
                 height: 18,
                 child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white),
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
               )
-            : Icon(Icons.send_rounded,
-                color: enabled ? Colors.white : AppColors.faint, size: 20),
+            : Icon(
+                Icons.send_rounded,
+                color: enabled ? Colors.white : AppColors.faint,
+                size: 20,
+              ),
       ),
     );
   }
@@ -2079,7 +2077,5 @@ class _SendBtn extends StatelessWidget {
 
 String _timeAgo(int ts) {
   if (ts <= 0) return '';
-  return formatRelativeTime(
-    DateTime.fromMillisecondsSinceEpoch(ts),
-  );
+  return formatRelativeTime(DateTime.fromMillisecondsSinceEpoch(ts));
 }
