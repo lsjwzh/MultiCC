@@ -919,8 +919,56 @@ test('panel-routed (B path) Commander dispatch leaves a one-way receipt in the c
   assert.match(receipt.content, /已把任务/);
   assert.match(receipt.content, /工程师1/);           // names the worker
   assert.match(receipt.content, /结果不回流指挥/);      // stays one-way in wording
-  // And it is pushed live to the commander's window.
-  assert.ok(broadcasts.some(b => b.sessionId === 'commander-1' && b.payload.type === 'assistant'));
+  // The full trigger message is shown verbatim in a collapsible fold, not just
+  // the generic task title.
+  assert.match(receipt.content, /让工程师改 README/);
+  assert.match(receipt.content, /<details><summary>触发派发的用户消息/);
+  assert.match(receipt.content, /<pre><code>/);
+  // And it is pushed live to the commander's window with the SAME string.
+  const live = broadcasts.find(b => b.sessionId === 'commander-1' && b.payload.type === 'assistant');
+  assert.ok(live);
+  assert.equal(live.payload.message.content[0].text, receipt.content);
+});
+
+test('dispatch receipt HTML-escapes the user message so it cannot break the fold or run scripts', async () => {
+  const appended = [];
+  const { runtime } = mkRuntime({
+    appendChatMessage: (sid, msg) => { const s = { ...msg, id: `m-${appended.length}` }; appended.push({ sessionId: sid, ...s }); return s; },
+    chatBroadcast: () => {},
+    routeCommanderTask: async () => ({ ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1', operationId: 'op-1', status: 'admitted' }),
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const res = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  const evil = '<script>alert(1)</script>\n</details><img src=x onerror=alert(2)>\n```\n# 标题 *斜体*';
+  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: evil } }, res);
+  await new Promise(r => setImmediate(r));
+
+  const receipt = appended.find(m => m.sessionId === 'commander-1' && m.role === 'assistant');
+  assert.ok(receipt);
+  assert.match(receipt.content, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);   // script escaped verbatim
+  assert.match(receipt.content, /&lt;\/details&gt;/);                          // user </details> escaped
+  assert.doesNotMatch(receipt.content, /<script>alert\(1\)<\/script>/);        // no live script tag
+  assert.doesNotMatch(receipt.content, /<img src=x onerror/);                  // no onerror handler
+  // Exactly one real <details> — the user's </details> did not spawn a second fold.
+  assert.equal((receipt.content.match(/<details>/g) || []).length, 1);
+  assert.equal((receipt.content.match(/<\/details>/g) || []).length, 1);
+});
+
+test('dispatch receipt omits the fold when the user message is empty (old-record shape)', () => {
+  // The route rejects empty text (400) before it reaches the receipt, so verify
+  // the generator directly: no userText → head only, matching legacy records
+  // that were persisted before this field existed.
+  const appended = [];
+  const { runtime } = mkRuntime({
+    appendChatMessage: (sid, msg) => { appended.push({ sessionId: sid, ...msg }); return { ...msg, id: 'm0' }; },
+    chatBroadcast: () => {},
+  });
+  runtime.writeCommanderDispatchReceipt('commander-1', { title: '新任务' }, { targetSessionId: 'sess-1', targetLabel: '工程师1' });
+  const receipt = appended.find(m => m.sessionId === 'commander-1');
+  assert.ok(receipt);
+  assert.match(receipt.content, /已把任务「新任务」派给 工程师1/);
+  assert.doesNotMatch(receipt.content, /<details>/);   // no fold without a body
 });
 
 test('Commander busy state is irrelevant; worker queue receipt survives refresh', async () => {
