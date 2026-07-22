@@ -318,6 +318,36 @@ test('an id-less streaming tail remains after newly recovered persisted messages
   assert.equal(result.streamingTail.element, messagesEl.children[2]);
 });
 
+test('a keyed reconnect tail and its final commit reuse the current assistant bubble', () => {
+  const { messagesEl, view } = viewFixture();
+  const current = view.createAssistantBubble(true);
+  view.renderCurrentText(current, 'first batch', { streaming: true });
+  const messages = [
+    { id: 'u1', role: 'user', content: 'question' },
+    {
+      id: 'interim-1', role: 'assistant', content: 'first batch plus second batch',
+      _interim: true, streaming: true,
+    },
+  ];
+  const reconnect = {
+    mode: 'reconcile', messages, hasMore: false,
+    operations: messages.map(message => operation('append', message)),
+    streamingTail: { id: 'interim-1', content: 'first batch plus second batch' },
+  };
+
+  const adopted = view.applyPlan(reconnect, { currentElement: current });
+  assert.equal(messagesEl.querySelectorAll('.msg.assistant').length, 1);
+  assert.equal(adopted.streamingTail.element.dataset.msgId, 'interim-1');
+  assert.equal(adopted.streamingTail.content, 'first batch plus second batch');
+
+  const committed = view.commitMessage({
+    id: 'final-1', role: 'assistant', content: 'first batch plus second batch plus final',
+  }, { currentElement: adopted.streamingTail.element });
+  assert.equal(messagesEl.querySelectorAll('.msg.assistant').length, 1);
+  assert.equal(committed.node.dataset.msgId, 'final-1');
+  assert.equal(committed.currentElement, committed.node);
+});
+
 test('authoritative reconciliation removes stale duplicate DOM ids', () => {
   const { messagesEl, view } = viewFixture();
   messagesEl.appendChild(view.renderMessage({ id: 'u1', role: 'user', content: 'stale one' }));
