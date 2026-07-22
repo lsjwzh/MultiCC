@@ -298,6 +298,10 @@ function openSessionChat(id, _cwd) {
 }
 
 async function deleteSession(id) {
+  // Commander can't be deleted on its own — it goes with its fleet. Backend also
+  // returns 400, but skip the confirm dialog entirely for a cleaner UX.
+  const rec = _cachedSessions.find(sess => sess.id === id);
+  if (rec?.type === 'commander') { showToast('指挥官会话不可单独删除，只能随其所属 fleet 一起删除', true); return; }
   if (!(await showConfirm(`Delete session ${id}?\nThe PTY process will be terminated.`, { danger: true, okText: '删除' }))) return;
   try {
     const res = await fetch(`/api/sessions/${id}` + tokenQS('?'), { method: 'DELETE' });
