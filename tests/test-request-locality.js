@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
 const {
   requestHost,
   hasForwardingMetadata,
@@ -91,17 +92,46 @@ test('missing or malformed request metadata fails closed', () => {
   assert.equal(isExternalProxyRequest({ headers: { host: '[::1' } }), true);
 });
 
-test('HTTP and WebSocket production gates share the same locality boundary', () => {
+test('locality checks stay limited to authentication and sensitive host controls', () => {
   const server = fs.readFileSync('server.js', 'utf8');
-  // The HTTP auth gate moved into src/routes/auth.js, which receives the one
-  // shared isLocalRequest helper as a dependency; the settings gate and the
-  // WebSocket gate remain in server.js. Counting across both files keeps the
-  // invariant honest — all production gates route through the same helper, and
-  // none has drifted to bespoke inline locality logic.
   const authRoutes = fs.readFileSync('src/routes/auth.js', 'utf8');
-  const calls = (server.match(/isLocalRequest\(req\)/g) || [])
-    .concat(authRoutes.match(/isLocalRequest\(req\)/g) || []);
-  assert.ok(calls.length >= 3, 'HTTP auth, settings and WebSocket gates must share one helper');
+  const taskBoardRoutes = fs.readFileSync('src/routes/task-board.js', 'utf8');
+  const hostReadRoutes = fs.readFileSync('src/routes/host-read.js', 'utf8');
+  const hostWriteRoutes = fs.readFileSync('src/routes/host-write.js', 'utf8');
+  const sourceFiles = ['server.js'];
+  const pending = ['src'];
+  while (pending.length) {
+    const current = pending.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const candidate = path.join(current, entry.name);
+      if (entry.isDirectory()) pending.push(candidate);
+      else if (entry.isFile() && entry.name.endsWith('.js')) sourceFiles.push(candidate);
+    }
+  }
+  const localityUsers = sourceFiles
+    .filter(file => /\bisLocalRequest\b/.test(fs.readFileSync(file, 'utf8')))
+    .sort();
+
+  // Ordinary authenticated product features must never grow a second
+  // localhost-only authorization layer. The helper is reserved for: local
+  // auth bootstrap/bypass, external WebSocket ticket enforcement, access-token
+  // editability, and the explicitly enumerated sensitive host settings.
+  assert.deepEqual(localityUsers, [
+    'server.js',
+    'src/request-locality.js',
+    'src/routes/auth.js',
+    'src/routes/host-read.js',
+    'src/routes/host-write.js',
+  ]);
+  assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
+  assert.match(authRoutes, /isLocalRequest\(req\)/);
+  assert.match(server, /isLocalRequest\(req\)/);
+  assert.match(hostReadRoutes, /canEdit:\s*deps\.isLocalRequest\(req\)/);
+  assert.match(hostWriteRoutes, /requireLocal\(deps, req, res/);
+  assert.ok(
+    server.indexOf('authRuntime.mountRoutes(app)') < server.indexOf('taskBoardRuntime.mountRoutes(app)'),
+    'the authenticated API gate must be mounted before task-board routes',
+  );
   assert.doesNotMatch(server, /\bisExternalProxy\s*\(/, 'removed inline helper must have no stale callers');
   assert.doesNotMatch(authRoutes, /\bisExternalProxy\s*\(/, 'auth module must not reintroduce an inline helper');
 });

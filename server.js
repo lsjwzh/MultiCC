@@ -3190,7 +3190,6 @@ const taskBoardRuntime = createTaskBoardRuntime({
   loadHistory: sessionId => loadChatHistory(sessionId),
   dispatchToSession: (target, message, opts) => dispatchToSession(target, message, opts),
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
-  isLocalRequest,
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
   isSessionBusy: taskBoardSessionBusy,
