@@ -816,8 +816,18 @@ async function seedCommanderSession(dir) {
   }
 }
 
+// A legacy commander is a pre-role session that a user (or the old seeder)
+// designated as the fleet's dispatcher by label alone: the seeder's
+// "🫡 Agent Commander", or a hand-named "指挥" / "Commander". Matching by role
+// label (not id) keeps the back-fill general — any fleet whose owner named a
+// session this way gets its commander protections on the next boot.
+function isLegacyCommanderLabel(label) {
+  const t = String(label || '').trim();
+  return /agent commander/i.test(t) || t === '指挥' || /^commander$/i.test(t);
+}
+
 // Boot back-fill: fleets created before the commander role existed carry legacy
-// label-based Agent Commander sessions with no type. Stamp exactly one per fleet
+// label-based commander sessions with no type. Stamp exactly one per fleet
 // as type='commander' so it gains the role's protections (undeletable, kept out
 // of every worker pool, cross-fleet dispatch). Stamp-only — never creates a
 // session, so it can't spawn worktrees or race the register-time seed.
@@ -831,7 +841,7 @@ function backfillCommanderTypes() {
   let stamped = 0;
   for (const owned of byDir.values()) {
     if (owned.some(s => s.type === 'commander')) continue;   // fleet already has one
-    const legacy = owned.filter(s => s.kind === 'chat' && !s.type && /Agent Commander/.test(s.label || ''));
+    const legacy = owned.filter(s => s.kind === 'chat' && !s.type && isLegacyCommanderLabel(s.label));
     if (!legacy.length) continue;
     const pick = legacy.find(s => s.cli === 'claude') || legacy[0];   // prefer claude (D2)
     pick.type = 'commander';
