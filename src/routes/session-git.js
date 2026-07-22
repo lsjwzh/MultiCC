@@ -473,6 +473,51 @@ function createSessionGitRuntime(rawDeps) {
         return res.status(500).json({ error: errorText(error) });
       }
     });
+
+    app.get('/api/git/commit-diff', async (req, res) => {
+      const dirId = req.query.dirId;
+      const dir = dirId ? deps.directories.get(dirId) : null;
+      if (!dir) return res.status(404).json({ error: 'directory not found' });
+      const repoPath = dir.path;
+      if (!deps.existsSync(repoPath)) return res.status(404).json({ error: 'repo path missing' });
+      const hash = req.query.hash;
+      if (typeof hash !== 'string' || !/^[0-9a-f]{4,40}$/i.test(hash)) {
+        return res.status(400).json({ error: 'invalid hash' });
+      }
+      let diff = '';
+      let truncated = false;
+      let error = null;
+      try {
+        diff = await deps.gitRunQueued(repoPath, ['show', '--format=', '--patch', hash], {
+          maxBuffer: maxDiffBytes + 16384,
+        });
+      } catch (cause) {
+        error = errorText(cause);
+      }
+      if (!diff) {
+        // Empty show patch (common for merge commits) or a thrown error: fall
+        // back to an explicit parent->commit range diff.
+        try {
+          diff = await deps.gitRunQueued(repoPath, ['diff', '--patch', hash + '~1', hash], {
+            maxBuffer: maxDiffBytes + 16384,
+          });
+        } catch (cause) {
+          error = errorText(cause);
+        }
+        if (diff) error = null;
+      }
+      if (diff.length > maxDiffBytes) {
+        diff = diff.slice(0, maxDiffBytes);
+        truncated = true;
+      }
+      let stat = '';
+      try {
+        stat = await deps.gitRunQueued(repoPath, ['show', '--format=', '--stat', hash], {
+          maxBuffer: 256 * 1024,
+        });
+      } catch (_) { stat = ''; }
+      return res.json({ hash, stat, diff, truncated, error: error || null });
+    });
   }
 
   function registerWriteRoutes(app) {

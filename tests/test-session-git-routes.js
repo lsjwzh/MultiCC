@@ -99,13 +99,14 @@ function createFixture(overrides = {}) {
   };
 }
 
-test('mountRoutes installs the eight routes once per app', () => {
+test('mountRoutes installs the nine routes once per app', () => {
   const fixture = createFixture();
   fixture.runtime.mountRoutes(fixture.app);
   assert.deepEqual(Object.keys(fixture.runtime).sort(), [
     'isWorktreeActive', 'mergeStateCached', 'mountRoutes',
   ]);
   assert.deepEqual([...fixture.app.routes.keys()].sort(), [
+    'GET /api/git/commit-diff',
     'GET /api/git/log',
     'GET /api/sessions/:id/diff',
     'GET /api/sessions/:id/diff/file',
@@ -127,7 +128,7 @@ test('production host delegates the complete Git route surface through narrow po
   for (const route of [
     '/api/sessions/:id/merge-status', '/api/sessions/:id/diff',
     '/api/sessions/:id/diff/files', '/api/sessions/:id/diff/file',
-    '/api/git/log',
+    '/api/git/log', '/api/git/commit-diff',
     '/api/sessions/:id/merge', '/api/sessions/:id/sync', '/api/sessions/:id/rebase',
   ]) {
     assert.equal(server.includes(route), false, `${route} is no longer inline in the host`);
@@ -268,6 +269,88 @@ test('git log bounds limit, supports all branches, and parses NUL records', asyn
   const invalid = await invoke(fixture.app.routes.get('GET /api/git/log'));
   assert.equal(invalid.statusCode, 400);
   assert.deepEqual(invalid.body, { error: 'dirId or sessionId required' });
+});
+
+test('commit-diff validates hash, resolves directory, and returns diff/stat', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args.includes('--stat')) return '1 file changed, 2 insertions(+)';
+        if (args.includes('--patch')) return 'diff --git a/foo b/foo\n+hello';
+        return '';
+      },
+    },
+  });
+
+  // invalid hash (non-hex and injection attempts) -> 400
+  const nonHex = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'zzz' },
+  });
+  assert.equal(nonHex.statusCode, 400);
+  assert.deepEqual(nonHex.body, { error: 'invalid hash' });
+
+  const injection = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: '--output=x' },
+  });
+  assert.equal(injection.statusCode, 400);
+  assert.deepEqual(injection.body, { error: 'invalid hash' });
+
+  // missing dirId / unknown dir -> 404
+  const missingDirId = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { hash: 'abcdef0' },
+  });
+  assert.equal(missingDirId.statusCode, 404);
+  assert.deepEqual(missingDirId.body, { error: 'directory not found' });
+
+  const unknownDir = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'nope', hash: 'abcdef0' },
+  });
+  assert.equal(unknownDir.statusCode, 404);
+  assert.deepEqual(unknownDir.body, { error: 'directory not found' });
+
+  // valid hash -> 200 with diff/stat
+  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0123' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.hash, 'abcdef0123');
+  assert.equal(response.body.diff, 'diff --git a/foo b/foo\n+hello');
+  assert.equal(response.body.stat, '1 file changed, 2 insertions(+)');
+  assert.equal(response.body.truncated, false);
+  assert.equal(response.body.error, null);
+  assert.deepEqual(fixture.calls.run[0].args, ['show', '--format=', '--patch', 'abcdef0123']);
+  assert.deepEqual(fixture.calls.run[1].args, ['show', '--format=', '--stat', 'abcdef0123']);
+});
+
+test('commit-diff falls back to diff range for empty show and truncates large diffs', async () => {
+  let showPatchCalls = 0;
+  const fixture = createFixture({
+    maxDiffBytes: 10,
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args.includes('--stat')) return '1 file changed';
+        if (args[0] === 'show' && args.includes('--patch')) {
+          showPatchCalls += 1;
+          return ''; // merge commit: empty show patch
+        }
+        if (args[0] === 'diff' && args.includes('--patch')) {
+          return 'fallback diff content here';
+        }
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(showPatchCalls, 1);
+  assert.equal(response.body.diff.length, 10);
+  assert.equal(response.body.truncated, true);
+  assert.equal(response.body.error, null);
+  assert.deepEqual(fixture.calls.run[1].args, ['diff', '--patch', 'abcdef0~1', 'abcdef0']);
 });
 
 test('active and classify gates block sync while force bypasses both', async () => {
