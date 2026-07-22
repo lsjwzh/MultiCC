@@ -59,7 +59,7 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
       messenger.showSnackBar(SnackBar(
           content: Text(r['ok'] == true
               ? '✓ $provider 已重启'
-              : '${provider} 重启失败：${r['error'] ?? ''}')));
+              : '$provider 重启失败：${r['error'] ?? ''}')));
       await _refresh();
     } catch (e) {
       messenger.hideCurrentSnackBar();
@@ -96,6 +96,12 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
                       _providerCard('花生壳 (phddns)', 'phddns', Icons.dns_outlined),
                       const SizedBox(height: 12),
                       _providerCard('Tailscale', 'tailscale', Icons.vpn_lock_outlined),
+                      const SizedBox(height: 12),
+                      _providerCard('natapp', 'natapp', Icons.cloud_outlined),
+                      const SizedBox(height: 12),
+                      _providerCard('cpolar', 'cpolar', Icons.cloud_queue_outlined),
+                      const SizedBox(height: 12),
+                      _providerCard('樱花frp', 'sakurafrp', Icons.vpn_key_outlined),
                     ],
                   ),
                 ),
@@ -137,6 +143,9 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
           const SizedBox(height: 10),
           _row('花生壳已安装', avail['phddns'] == true ? '是' : '否'),
           _row('Tailscale 已安装', avail['tailscale'] == true ? '是' : '否'),
+          _row('natapp 已安装', avail['natapp'] == true ? '是' : '否'),
+          _row('cpolar 已安装', avail['cpolar'] == true ? '是' : '否'),
+          _row('樱花frp 已安装', avail['sakurafrp'] == true ? '是' : '否'),
         ],
       ),
     );

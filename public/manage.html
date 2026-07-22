@@ -1084,6 +1084,49 @@
             <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="applyFunnel()">应用 Funnel</button><button class="btn" onclick="loadIpv6Status(true)">检测 IPv6</button><button class="btn" onclick="restartTunnel('tailscale')">立即重启</button><span class="status-text" id="tnl-ts-msg"></span></div>
           </div>
 
+          <!-- Natapp -->
+          <div class="settings-card">
+            <div class="sc-header">Natapp <span id="tnl-na-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-body">
+              <div class="setting-row"><label>启用监控</label><input id="tnl-na-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label>公网 URL</label><input id="tnl-na-url" type="text" placeholder="填该隧道的公网地址，用于健康检测" /></div>
+              <div class="setting-row"><label>凭证</label><input id="tnl-na-authtoken" type="password" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
+              <div class="setting-row"><label>端口</label><input id="tnl-na-port" type="number" min="1" placeholder="3000" /></div>
+              <div class="setting-row"><label>启动命令（高级）</label><textarea id="tnl-na-startcmd" rows="2" style="min-height:48px;resize:vertical;" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
+              <div class="setting-row"><label>状态</label><span id="tnl-na-status" style="font-size:13px;color:var(--text);">-</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="restartTunnel('natapp')">立即重启</button><span class="status-text" id="tnl-na-msg"></span></div>
+          </div>
+
+          <!-- cpolar -->
+          <div class="settings-card">
+            <div class="sc-header">cpolar <span id="tnl-cp-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-body">
+              <div class="setting-row"><label>启用监控</label><input id="tnl-cp-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label>公网 URL</label><input id="tnl-cp-url" type="text" placeholder="填该隧道的公网地址，用于健康检测" /></div>
+              <div class="setting-row"><label>凭证</label><input id="tnl-cp-authtoken" type="password" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
+              <div class="setting-row"><label>端口</label><input id="tnl-cp-port" type="number" min="1" placeholder="3000" /></div>
+              <div class="setting-row"><label>启动命令（高级）</label><textarea id="tnl-cp-startcmd" rows="2" style="min-height:48px;resize:vertical;" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
+              <div class="setting-row"><label>状态</label><span id="tnl-cp-status" style="font-size:13px;color:var(--text);">-</span></div>
+              <div style="font-size:11px;color:var(--faint);">authtoken 会在重启时自动写入</div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="restartTunnel('cpolar')">立即重启</button><span class="status-text" id="tnl-cp-msg"></span></div>
+          </div>
+
+          <!-- SakuraFrp -->
+          <div class="settings-card">
+            <div class="sc-header">SakuraFrp <span id="tnl-sf-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-body">
+              <div class="setting-row"><label>启用监控</label><input id="tnl-sf-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label>公网 URL</label><input id="tnl-sf-url" type="text" placeholder="填该隧道的公网地址，用于健康检测" /></div>
+              <div class="setting-row"><label>凭证</label><input id="tnl-sf-authtoken" type="password" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
+              <div class="setting-row"><label>端口</label><input id="tnl-sf-port" type="number" min="1" placeholder="3000" /></div>
+              <div class="setting-row"><label>启动命令（高级）</label><textarea id="tnl-sf-startcmd" rows="2" style="min-height:48px;resize:vertical;" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
+              <div class="setting-row"><label>状态</label><span id="tnl-sf-status" style="font-size:13px;color:var(--text);">-</span></div>
+            </div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="restartTunnel('sakurafrp')">立即重启</button><span class="status-text" id="tnl-sf-msg"></span></div>
+          </div>
+
           <!-- 高级参数 -->
           <div class="settings-card">
             <div class="sc-header">监控参数</div>
