@@ -433,3 +433,31 @@ test('host runtime composes production ports without leaking effect switches bac
   ]);
   assert.equal(state._continuationLineage, null);
 });
+
+test('host runtime lets a typed Commander fan an origin dispatch out before returning its result', () => {
+  const owned = makeOwned({ request: { originDispatchId: 'taskboard-operation' } });
+  const state = { _activeTurn: owned.turn, _activeRunner: owned.runner };
+  owned.turn.resultDurable = true;
+  owned.turn.resultRunnerId = owned.runner.runnerId;
+  const events = [];
+  const runtime = createChatHostRuntime({
+    appendMessage: () => true,
+    persistUsage: () => true,
+    afterUsageCommit: () => {},
+    getSessionState: () => state,
+    consumeHandoff: () => events.push('handoff'),
+    emitTurnComplete: () => events.push('turn-complete'),
+    emitDispatchComplete: operationId => events.push(`return:${operationId}`),
+    emitGatewayComplete: () => { throw new Error('unexpected gateway'); },
+    inspectDispatchMarkers: () => events.push('fan-out'),
+    logSuppressed: detail => events.push(`suppressed:${detail.reason}`),
+  });
+
+  assert.equal(runtime.runDurablePostTurn(
+    'commander-1', state, { type: 'commander' }, owned.turn, owned.runner,
+    '<<dispatch target="worker-1">do it</dispatch>>', {},
+  ), true);
+  assert.deepEqual(events, [
+    'handoff', 'turn-complete', 'fan-out', 'return:taskboard-operation',
+  ]);
+});
