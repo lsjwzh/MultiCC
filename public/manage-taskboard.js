@@ -47,6 +47,11 @@ function _tbClassificationHtml(task) {
       : '');
 }
 
+function _tbRoutingHtml(task) {
+  const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
+  return label ? `<span class="tb-route-state">🫡 ${_tbEsc(label)}</span>` : '';
+}
+
 async function refreshTaskBoard(force) {
   if (!force && Date.now() - _tbFetchedAt < 3000) return;   // debounce bursts
   try {
@@ -123,7 +128,7 @@ function renderTaskBoardSection(dirId, opts) {
         <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
           <span class="tb-icon">${display.icon}</span>
           <span class="tb-title">${_tbEsc(t.title)}</span>
-          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
+          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
         </div>`);
     }
   }
@@ -136,7 +141,7 @@ function renderTaskBoardSection(dirId, opts) {
       <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
         <span class="tb-icon">${display.icon}</span>
         <span class="tb-title">${_tbEsc(t.title)}</span>
-        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
+        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbClassificationHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
       </div>`);
   }
   const body = rowsHtml.length
@@ -333,7 +338,8 @@ let _tbDirComposerDirId = null;
 function _tbDirTargets(dirId) {
   if (typeof _cachedSessions === 'undefined' || !_cachedSessions) return [];
   return _cachedSessions
-    .filter(s => s.dirId === dirId && s.kind === 'chat' && s.type !== 'aux')
+    .filter(s => s.dirId === dirId && s.kind === 'chat'
+      && s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
     .map(s => ({ id: s.id, label: s.label || s.id }));
 }
 
@@ -345,7 +351,7 @@ function syncTaskBoardDirComposer(dirId, visible) {
   _tbDirComposerDirId = dirId;
   if (!_tbDirComposer) {
     _tbDirComposer = createTbComposer(host, {
-      placeholder: '向该 Fleet 派发消息…（仅路由到空闲且最相关的会话；AI 会把这轮对话归档到对应任务）',
+      placeholder: '向该 Fleet 派发消息…（自动路由先交给 Agent Commander，再由 Commander 分派 worker）',
       submit: async (payload) => {
         const r = await fetch('/api/task-board/send', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -355,7 +361,9 @@ function syncTaskBoardDirComposer(dirId, visible) {
         if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
         if (d.taskId) _tbPendingTaskIds = [d.taskId];
         await refreshTaskBoard(true);
-        return `已创建「新任务」并路由到「${d.targetLabel}」`;
+        return d.routingMode === 'commander'
+          ? `已创建「新任务」并交给 Commander「${d.targetLabel}」${d.queued ? '（已安全排队）' : ''}`
+          : `已创建「新任务」并路由到「${d.targetLabel}」`;
       },
     });
   }
@@ -372,7 +380,7 @@ function _tbEnsureTaskComposer(task) {
   if (!host) return;
   if (!_tbTaskComposer) {
     _tbTaskComposer = createTbComposer(host, {
-      placeholder: '向该任务派发后续消息…（自动路由到合适的会话，回复完成后自动归档回本任务）',
+      placeholder: '向该任务派发后续消息…（自动路由先交给 Agent Commander，回复完成后归档回本任务）',
       submit: async (payload) => {
         const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(_tbTaskComposerTaskId)}/send`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -381,14 +389,19 @@ function _tbEnsureTaskComposer(task) {
         if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
         _tbShowGatheringFloat();
         setTimeout(() => refreshTaskBoard(true), 1500);
-        return `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
+        return d.routingMode === 'commander'
+          ? `已交给 Commander「${d.targetLabel}」${d.queued ? '（已安全排队）' : ''}`
+          : `已路由到「${d.targetLabel}」，回复将自动归档回本任务`;
       },
     });
   }
   if (_tbTaskComposerTaskId !== task.id) _tbTaskComposer.reset();
   _tbTaskComposerTaskId = task.id;
   const labels = _tbBoard.sessionLabels || {};
-  _tbTaskComposer.setTargets(task.sessionIds.map(sid => ({ id: sid, label: labels[sid] || sid })));
+  const commanderId = task.routing?.mode === 'commander' ? task.routing.targetSessionId : null;
+  _tbTaskComposer.setTargets(task.sessionIds
+    .filter(sid => sid !== commanderId)
+    .map(sid => ({ id: sid, label: labels[sid] || sid })));
 }
 
 function openTaskBoardDetail(taskId) {
@@ -438,7 +451,10 @@ function renderTaskBoardDetail(d) {
   const chips = t.sessionIds.map(sid => {
     const href = window.MultiCCTaskBoardUi.sessionChatUrl(sid);
     return `<a class="tb-chip tb-session-link" href="${_tbEsc(href)}" target="_blank" rel="noopener noreferrer" title="在新标签打开对应会话">🖥 ${_tbEsc(labels[sid] || sid)} ↗</a>`;
-  })
+  });
+  const routingLabel = window.MultiCCTaskBoardUi.taskRoutingLabel(t);
+  if (routingLabel) chips.unshift(`<span class="tb-chip tb-route-state">🫡 ${_tbEsc(routingLabel)}</span>`);
+  const chipHtml = chips
     .concat((t.areas || []).map(a => `<span class="tb-chip">${_tbEsc(a)}</span>`)).join('');
 
   const msgs = (d.items || []).map(it => {
@@ -472,7 +488,7 @@ function renderTaskBoardDetail(d) {
           <button class="btn btn-sm" onclick="if(confirm('归档该任务？（从任务板隐藏，数据保留）'))setTaskBoardStatus('${_tbEsc(t.id)}','archived')">🗄 归档</button>
         </span>
       </div>
-      <div class="tb-chips">${chips}</div>
+      <div class="tb-chips">${chipHtml}</div>
     </div>
     <div class="tb-msgs">${msgs}</div>`;
 
