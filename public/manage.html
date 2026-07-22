@@ -2092,7 +2092,18 @@
             tr.textContent = '⚠ diff 过长已截断';
             diffEl.appendChild(tr);
           }
-          startCommitSummary(hash, short, subject, diff);
+          if (diff && String(diff).trim()) {
+            startCommitSummary(hash, short, subject, diff);
+          } else {
+            var ai = gcdClearAi();
+            var wrap = document.createElement('div');
+            wrap.className = 'gcd-ai-loading';
+            var t = document.createElement('span');
+            t.className = 'gcd-cancelled';
+            t.textContent = '无 diff 内容，跳过 AI 总结';
+            wrap.appendChild(t);
+            ai.appendChild(wrap);
+          }
         })
         .catch(function (err) {
           if (myToken !== window._gcdReqToken) return;
@@ -2191,7 +2202,7 @@
       t.className = 'gcd-cancelled';
       t.textContent = '已取消总结';
       wrap.appendChild(t);
-      if (window._gcdCtx && window._gcdCtx.hash) {
+      if (window._gcdCtx && window._gcdCtx.hash && window._gcdCtx.diff && String(window._gcdCtx.diff).trim()) {
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'btn btn-sm gcd-retry';

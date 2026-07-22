@@ -350,7 +350,62 @@ test('commit-diff falls back to diff range for empty show and truncates large di
   assert.equal(response.body.diff.length, 10);
   assert.equal(response.body.truncated, true);
   assert.equal(response.body.error, null);
-  assert.deepEqual(fixture.calls.run[1].args, ['diff', '--patch', 'abcdef0~1', 'abcdef0']);
+  assert.deepEqual(fixture.calls.run[1].args, ['rev-parse', '--verify', '--quiet', 'abcdef0~1']);
+  assert.deepEqual(fixture.calls.run[2].args, ['diff', '--patch', 'abcdef0~1', 'abcdef0']);
+});
+
+test('commit-diff treats maxBuffer overflow as a truncated placeholder, not an error', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args[0] === 'show' && args.includes('--patch')) {
+          const err = new Error('stdio maxBuffer exceeded');
+          err.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+          throw err;
+        }
+        if (args.includes('--stat')) return '1 file changed';
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0123' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.truncated, true);
+  assert.ok(String(response.body.diff).includes('exceeds'),
+    'maxBuffer overflow should surface the exceeds placeholder');
+  assert.equal(response.body.error, null);
+  // placeholder diff is non-empty -> parent-range fallback is skipped entirely
+  assert.equal(fixture.calls.run.filter(c => c.args[0] === 'diff').length, 0);
+  assert.equal(fixture.calls.run.filter(c => c.args[0] === 'rev-parse').length, 0);
+});
+
+test('commit-diff returns a clean empty diff for root commits (no parent)', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args[0] === 'show' && args.includes('--patch')) return ''; // empty commit
+        if (args[0] === 'rev-parse') {
+          // root commit has no parent -> hash~1 does not resolve
+          throw new Error("fatal: bad revision 'abcdef0~1'");
+        }
+        if (args.includes('--stat')) return '';
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.diff, '');
+  assert.equal(response.body.error, null);
+  assert.equal(response.body.truncated, false);
+  // rev-parse failed -> parent-range diff is never attempted
+  assert.equal(fixture.calls.run.filter(c => c.args[0] === 'diff').length, 0);
 });
 
 test('active and classify gates block sync while force bypasses both', async () => {
