@@ -145,26 +145,33 @@ test('task board display state follows classify runState for icon and status tex
   assert.doesNotMatch(runStateAdapter, /cls === 'D' \|\| cls === 'C'/);
 });
 
-test('task board UI exposes a stable Commander routing receipt label', () => {
+test('task board UI hides the Commander routing chip on the card', () => {
+  // The routing chip is intentionally suppressed: a card should read as just
+  // "新任务 · 进行中" and sync title/state from the worker's own classify. The
+  // label function returns '' for every routing shape (data is kept on the DTO,
+  // see the persistence test below), so no "已交给 Commander → worker" chip shows.
   assert.equal(taskBoardUi.taskRoutingLabel({
     routing: {
       mode: 'commander', targetSessionId: 'commander-1', targetLabel: 'Agent Commander',
     },
-  }), '已交给 Commander · Agent Commander (commander-1)');
+  }), '');
   assert.equal(taskBoardUi.taskRoutingLabel({
     routing: {
       mode: 'commander', targetSessionId: 'commander-1', targetLabel: '指挥',
       workerSessionId: 'worker-3', workerLabel: '弹性 Worker 3', elasticWorkerCreated: true,
     },
-  }), '已交给 Commander · 指挥 (commander-1) → 弹性 Worker 3 (worker-3) · 动态扩容');
+  }), '');
   assert.equal(taskBoardUi.taskRoutingLabel({
     routing: { mode: 'manual', targetSessionId: 'worker-1' },
   }), '');
   for (const file of ['public/manage-taskboard.js', 'public/meta.html']) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.match(source, /taskRoutingLabel/);
-    assert.match(source, /已由 Commander/);
   }
+  // The one-shot send toast ("已由 Commander…") is a transient send-time
+  // acknowledgement, not the card chip — it stays.
+  const composerSrc = fs.readFileSync(path.join(__dirname, '..', 'public/manage-taskboard.js'), 'utf8');
+  assert.match(composerSrc, /已由 Commander/);
 });
 
 // ── parseTagResult ──────────────────────────────────────────────────────────
@@ -938,7 +945,9 @@ test('Commander busy state is irrelevant; worker queue receipt survives refresh'
   const dto = boardRes.body.tasks.find(task => task.id === res.body.taskId);
   assert.equal(dto.routing.targetLabel, 'Agent Commander');
   assert.equal(dto.routing.workerLabel, '空闲 worker');
-  assert.equal(taskBoardUi.taskRoutingLabel(dto), '已交给 Commander · Agent Commander (commander-1) → 空闲 worker (worker-idle)');
+  // Routing data survives the restart on the DTO (asserted above), but the card
+  // chip itself is hidden — the label renders to ''.
+  assert.equal(taskBoardUi.taskRoutingLabel(dto), '');
 });
 
 test('automatic routing fails closed without a same-directory typed Commander', async () => {
