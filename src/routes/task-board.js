@@ -373,6 +373,13 @@ function createTaskBoardRuntime(deps) {
         return;
       }
 
+      // Commander runs a real LLM but only ever dispatches — its own planning
+      // dialogue is orchestration chatter, not work to archive. The deterministic
+      // marker/pending paths above still run (a panel-routed turn carrying a
+      // tb: marker attaches to its card), but a marker-less commander turn must
+      // NOT reach AI tagging or it would be filed as a bogus task.
+      if (rec.type === 'commander') return;
+
       // AI tagging needs a substantive reply to judge from.
       // Tool-heavy turns (Read/Edit/Bash) are substantive even with short text.
       const hasTools = assistantMsg && Array.isArray(assistantMsg.toolCalls) && assistantMsg.toolCalls.length > 0;
@@ -438,7 +445,9 @@ function createTaskBoardRuntime(deps) {
   function onClassifyGoal(sessionName, goal, phase, turn = {}) {
     try {
       const rec = records.get(sessionName);
-      if (!rec || rec.type === 'aux' || rec.type === 'gateway') return;
+      // Commander is a control-plane dispatcher — don't mint goal cards from its
+      // own planning turns (consistent with handleBackfill and onTurnEnd's AI path).
+      if (!rec || rec.type === 'aux' || rec.type === 'gateway' || rec.type === 'commander') return;
 
       const history = loadHistory(sessionName) || [];
       const currentUserText = String(turn.currentUserText || '').trim();
