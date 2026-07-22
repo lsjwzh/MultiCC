@@ -3199,12 +3199,10 @@ const taskBoardRuntime = createTaskBoardRuntime({
     if (taskBoardSessionBusy(sid)) return 'running';
     const ts = rec.taskState;
     const cls = ts?.classifyState;
-    // Map D/C/W/E/A/P classify state to the task-board run state.
-    if (cls === 'W') return 'waiting';
-    if (cls === 'E') return 'error';
-    if (cls === 'D' || cls === 'C') return 'done';
-    if (cls === 'A' || cls === 'P') return 'running';
-    return 'idle';
+    if (!cls) return 'idle';
+    if (cls === 'A') return 'running'; // legacy active state
+    const cardStatus = classifyDisplay(cls).cardStatus;
+    return cardStatus === 'completed' ? 'done' : cardStatus;
   },
   resolveGoalLimits,
   buildGoalLimitNote,

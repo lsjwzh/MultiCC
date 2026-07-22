@@ -76,6 +76,10 @@
   .tb-class-state { font-size: 10px; padding: 1px 6px; border-radius: 9px; background: #21262d; color: #8b949e; }
   .tb-class-state.running { color: #58a6ff; }
   .tb-class-state.failed { color: #f85149; }
+  .tb-run-state { font-size: 10px; white-space: nowrap; color: #8b949e; }
+  .tb-run-state.done, .tb-run-state.running { color: #3fb950; }
+  .tb-run-state.waiting { color: #d29922; }
+  .tb-run-state.error { color: #f85149; }
   .tb-reclassify { padding: 1px 6px; font-size: 10px; background: #21262d; border-color: #30363d; }
   @keyframes tb-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .tb-task .tb-icon { font-size: 11px; line-height: 1; }
@@ -366,15 +370,15 @@ function renderTaskBoard() {
     box.appendChild(mrow);
     if (collapsed) continue;
     for (const t of tasks) {
-      const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
-      const clsRun = t.runState === 'running' ? ' running' : '';
+      const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
+      const clsRun = display.running ? ' running' : '';
       const row = document.createElement('div');
-      row.className = 'tb-task' + (t.status === 'done' ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
+      row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
       const retryable = t.classification && t.classification.state !== 'running';
       row.innerHTML = `
-        <span class="tb-icon">${icon}</span>
+        <span class="tb-icon">${display.icon}</span>
         <span class="tb-title">${esc(t.title)}</span>
-        <span class="tb-meta">${t.classification ? `<span class="tb-class-state ${esc(t.classification.state)}" title="${esc(t.classification.lastError || '')}">${esc(classificationLabel(t.classification))}</span>` : ''}${retryable ? '<button class="tb-reclassify">重新归类</button>' : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
+        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${t.classification ? `<span class="tb-class-state ${esc(t.classification.state)}" title="${esc(t.classification.lastError || '')}">${esc(classificationLabel(t.classification))}</span>` : ''}${retryable ? '<button class="tb-reclassify">重新归类</button>' : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
       const retry = row.querySelector('.tb-reclassify');
       if (retry) retry.onclick = (e) => { e.stopPropagation(); reclassifyTask(t.id, retry); };
@@ -386,11 +390,11 @@ function renderTaskBoard() {
     visible.filter(t => !tb.modules.some(m => m.id === t.moduleId)),
   );
   for (const t of orphan) {
-    const icon = t.runState === 'running' ? '🟢' : t.runState === 'waiting' ? '⏳' : t.runState === 'error' ? '❌' : t.status === 'done' ? '✅' : '⚪';
-    const clsRun = t.runState === 'running' ? ' running' : '';
+    const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
+    const clsRun = display.running ? ' running' : '';
     const row = document.createElement('div');
-    row.className = 'tb-task' + (selectedTask === t.id ? ' selected' : '') + clsRun;
-    row.innerHTML = `<span class="tb-icon">${icon}</span><span class="tb-title">${esc(t.title)}</span><span class="tb-meta">${t.refCount}轮</span>`;
+    row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
+    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title">${esc(t.title)}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span><span>${t.refCount}轮</span></span>`;
     row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
     box.appendChild(row);
   }
