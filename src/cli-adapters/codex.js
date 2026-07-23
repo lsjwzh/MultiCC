@@ -33,6 +33,19 @@ function collabResult(item) {
   return lines.join('\n') || item.status || '';
 }
 
+// codex function/custom tool arguments arrive as a JSON string; parse to an
+// object for the tool card's input panel, falling back to the raw string.
+function parseToolArguments(raw) {
+  if (raw == null || raw === '') return {};
+  if (typeof raw === 'object') return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : { value: parsed };
+  } catch (_) {
+    return { arguments: String(raw) };
+  }
+}
+
 function createCodexAdapter(deps) {
   const {
     cmd,
@@ -100,7 +113,16 @@ function createCodexAdapter(deps) {
           }];
         }
         if (item.type === 'function_call' || item.type === 'custom_tool_call') {
-          return [{ type: 'activity', phase: 'tool', toolKind: item.name || item.type }];
+          // Surface function/custom tool calls as real tool cards (like Bash),
+          // not as a swallowed `activity` block. Otherwise a long chain of these
+          // gives the user no inline progress and the turn looks stuck. id must
+          // match the item.completed pairing below (codex keeps item.id stable).
+          return [{
+            type: 'tool_start', id: item.id || item.call_id,
+            name: item.name || item.type,
+            input: parseToolArguments(item.arguments),
+            status: 'running',
+          }];
         }
         if (item.type !== 'command_execution') return [];
         return [{
@@ -146,7 +168,13 @@ function createCodexAdapter(deps) {
           }];
         }
         if (item.type === 'function_call' || item.type === 'custom_tool_call') {
-          return [{ type: 'activity', phase: 'tool', toolKind: item.name || item.type }];
+          // Pair with the tool_start above so the card flips running→done and
+          // shows the tool's output, instead of vanishing into an activity block.
+          return [{
+            type: 'tool_result', id: item.id || item.call_id,
+            content: item.output || item.aggregated_output || item.result || '',
+            isError: item.status === 'failed' || !!(item.exit_code && item.exit_code !== 0),
+          }];
         }
         if (item.type === 'agent_message') {
           return [{ type: 'assistant_text', text: item.text || '', forwardSuffix: '\n\n' }];

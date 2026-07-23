@@ -1,6 +1,11 @@
 'use strict';
 
-const DEFAULT_INTERVAL_MS = 30_000;
+// Silent-period heartbeat cadence. codex only forwards blocks at item.completed
+// boundaries (no partial stream), so during reasoning / a long tool chain the
+// user otherwise sees nothing. 8s keeps a "still working" pulse visible without
+// the 30s dead-air that reads as "stuck". (claude streams partials, so its
+// heartbeat rarely fires regardless.)
+const DEFAULT_INTERVAL_MS = 8_000;
 
 const PHASE_ALIASES = Object.freeze({
   starting: 'starting',
