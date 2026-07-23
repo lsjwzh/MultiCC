@@ -56,13 +56,31 @@ assert.strictEqual(
   codex.decodeEvent({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })[0].type,
   'assistant_text',
 );
+// function_call / custom_tool_call now surface as real tool cards (start→result)
+// instead of a swallowed `activity` block, so a long tool chain shows inline
+// progress and the turn no longer looks stuck.
 assert.deepStrictEqual(
-  codex.decodeEvent({ type: 'item.started', item: { type: 'function_call', name: 'wait_agent' } }),
-  [{ type: 'activity', phase: 'tool', toolKind: 'wait_agent' }],
+  codex.decodeEvent({ type: 'item.started', item: { type: 'function_call', id: 'fc1', name: 'wait_agent', arguments: '{"ms":500}' } }),
+  [{ type: 'tool_start', id: 'fc1', name: 'wait_agent', input: { ms: 500 }, status: 'running' }],
 );
 assert.deepStrictEqual(
-  codex.decodeEvent({ type: 'item.completed', item: { type: 'custom_tool_call', name: 'exec' } }),
-  [{ type: 'activity', phase: 'tool', toolKind: 'exec' }],
+  codex.decodeEvent({ type: 'item.completed', item: { type: 'custom_tool_call', id: 'ct1', name: 'exec', output: 'ok' } }),
+  [{ type: 'tool_result', id: 'ct1', content: 'ok', isError: false }],
+);
+// non-JSON arguments fall back to a raw string field; failed status → isError.
+assert.deepStrictEqual(
+  codex.decodeEvent({ type: 'item.started', item: { type: 'function_call', id: 'fc2', name: 'grep', arguments: 'not json' } }),
+  [{ type: 'tool_start', id: 'fc2', name: 'grep', input: { arguments: 'not json' }, status: 'running' }],
+);
+assert.strictEqual(
+  codex.decodeEvent({ type: 'item.completed', item: { type: 'function_call', id: 'fc3', name: 'x', status: 'failed' } })[0].isError,
+  true,
+);
+// request_user_input / AskUserQuestion must still degrade to text (special-cased
+// before the generic function_call → tool_result path).
+assert.strictEqual(
+  codex.decodeEvent({ type: 'item.completed', item: { type: 'function_call', name: 'request_user_input', arguments: '{"questions":[{"question":"go?"}]}' } })[0].type,
+  'assistant_text',
 );
 assert.deepStrictEqual(
   codex.decodeEvent({
