@@ -65,8 +65,22 @@ function routePostTurn(input = {}) {
     return Object.freeze({ route: 'aux', effects: Object.freeze(effects) });
   }
   if (input.sessionType === 'commander') {
-    // Commander input is routed by the host directly. Never revive the legacy
-    // assistant-marker path as a second Commander dispatch implementation.
+    // Commander runs the LLM and routes one-way via <<route>> markers in its
+    // reply, so its turn must go through the marker scanner like a normal turn.
+    // A Commander-originated turn carries no originDispatchId (the dispatch-return
+    // branch above already returned for dispatched workers), so it gets no result
+    // 回流 — only the one-way marker inspection.
+    const effectId = `commander-turn:${turnId}`;
+    if (turnId && !receipts.has(effectId)) {
+      effects.push(Object.freeze({
+        type: 'inspect-dispatch-markers',
+        effectId,
+        requiresDeliveryProof: false,
+        sessionId,
+        turnId,
+        finalText,
+      }));
+    }
     return Object.freeze({ route: 'commander', effects: Object.freeze(effects) });
   }
 
