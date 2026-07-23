@@ -483,11 +483,12 @@ test('pickDirTarget uses recency only to break equal relevance scores', () => {
 
 // ── routed-message marker ───────────────────────────────────────────────────
 
-test('routed message marker round-trips through extractTaskMarker', () => {
+test('new routed messages keep taskId out of user-visible text while legacy markers still parse', () => {
   const task = { id: 'tsk-abc_1', title: '实现任务板' };
   const msg = core.buildRoutedMessage(task, '继续加个删除按钮');
-  assert.match(msg, /^【任务：实现任务板｜tb:tsk-abc_1】\n/);
-  assert.equal(core.extractTaskMarker(msg), 'tsk-abc_1');
+  assert.equal(msg, '【任务：实现任务板】\n继续加个删除按钮');
+  assert.doesNotMatch(msg, /tsk-abc_1|tb:/);
+  assert.equal(core.extractTaskMarker('【任务：旧任务｜tb:tsk-legacy】\n继续'), 'tsk-legacy');
   assert.equal(core.extractTaskMarker('普通消息'), null);
 });
 
@@ -527,6 +528,7 @@ test('Commander one-way card status follows the executing worker classify only',
     mode: 'commander', targetSessionId: 'commander-1', workerSessionId: 'worker-1',
     status: 'admitted', oneWay: true, routedAt: 2,
   });
+  delete pending.runState; // legacy cards fall back to session-level state
   const states = new Map([['commander-1', 'waiting'], ['worker-1', 'running']]);
   let dto = core.buildBoardDto(board, sid => states.get(sid) || null).tasks[0];
   assert.equal(dto.runState, 'running');
@@ -568,8 +570,13 @@ function mkRuntime(overrides = {}) {
       dispatches.push({ target, message, opts, route: opts.allowCommander ? 'commander' : 'manual' });
       return { ok: true, chatId: target, operationId: 'op-1', status: 'delivering' };
     },
-    routeCommanderTask: async ({ commanderId, message, idempotencyKey }) => {
-      dispatches.push({ target: commanderId, message, opts: { idempotencyKey, oneWay: true }, route: 'commander' });
+    routeCommanderTask: async ({ commanderId, message, idempotencyKey, ...taskContext }) => {
+      dispatches.push({
+        target: commanderId,
+        message,
+        opts: { idempotencyKey, oneWay: true, ...taskContext },
+        route: 'commander',
+      });
       return {
         ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
         operationId: 'op-1', status: 'delivering', queued: false,
@@ -591,146 +598,77 @@ test('assertTaskBoardDeps rejects missing deps', () => {
   assert.throws(() => assertTaskBoardDeps({}), /missing dep/);
 });
 
-test('onTurnEnd enqueues a task_tag aux call and applies the parsed result', async () => {
-  const { runtime, file, auxCalls, broadcasts, resolveAux } = mkRuntime();
-  runtime.onTurnEnd(
-    { currentUserText: '实现任务板', currentAssistantText: '已实现，改了 src/task-board.js（超过三十个字的正式回复内容，保证通过长度门槛）' },
-    'sess-1');
-  assert.equal(auxCalls.length, 1);
-  assert.equal(auxCalls[0].type, 'task_tag');
-  assert.match(auxCalls[0].prompt, /实现任务板/);
-  resolveAux({ text: '{"tasks":[{"id":"new","title":"实现任务板","module":"服务端","areas":["src/task-board.js"]}]}', cancelled: false });
-  await new Promise(r => setImmediate(r));
-  const board = runtime.getBoard();
-  assert.equal(Object.keys(board.tasks).length, 1);
-  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.equal(Object.keys(saved.tasks).length, 1);
-  assert.equal(broadcasts.length, 1);
-  assert.equal(broadcasts[0].payload.type, 'task_board_update');
-});
-
-test('onClassifyGoal creates immediately, anchors the current user and merges peer sessions', () => {
-  const histories = {
-    'sess-1': [
-      { id: 'u-old', role: 'user', content: '旧任务', ts: 1 },
-      { id: 'a-old', role: 'assistant', content: '旧任务完成', ts: 2 },
-      { id: 'u-live', role: 'user', content: '删除 [tiktok] 会话和 worktree', ts: 3 },
-      { id: 'a-live', role: 'assistant', content: '正在核对', ts: 4, _interim: true },
-    ],
-    'sess-2': [
-      { id: 'u-peer', role: 'user', content: '清理 tiktok 会话与 worktree', ts: 5 },
-    ],
-  };
-  const records = new Map([
-    ['sess-1', { id: 'sess-1', kind: 'chat', dirId: 'dir-1', label: '工程师1' }],
-    ['sess-2', { id: 'sess-2', kind: 'chat', dirId: 'dir-1', label: '工程师2' }],
-  ]);
-  const { runtime, broadcasts } = mkRuntime({ records, loadHistory: sid => histories[sid] || [] });
-
-  runtime.onClassifyGoal('sess-1', '删除 [tiktok] 会话和 worktree', 'planning', {
-    currentUserText: '删除 [tiktok] 会话和 worktree',
-  });
-  runtime.onClassifyGoal('sess-2', '清理 tiktok 会话与 worktree', 'planning', {
-    currentUserText: '清理 tiktok 会话与 worktree',
-  });
-
-  const tasks = Object.values(runtime.getBoard().tasks);
-  assert.equal(tasks.length, 1);
-  assert.equal(tasks[0].status, 'active');
-  assert.equal(runtime.getBoard().modules[tasks[0].moduleId].name, '待归类');
-  assert.deepEqual(tasks[0].refs.map(r => r.userMsgId), ['u-live', 'u-peer']);
-  assert.deepEqual(tasks[0].refs.map(r => r.assistantMsgId), [null, null]);
-  assert.equal(broadcasts[0].payload.kind, 'created');
-  assert.equal(broadcasts[1].payload.kind, undefined);
-});
-
-test('onClassifyGoal reuses the marked placeholder instead of creating a duplicate task', () => {
-  const boardHistory = [];
-  const { runtime, broadcasts } = mkRuntime({ loadHistory: () => boardHistory });
-  const board = runtime.getBoard();
-  const pending = core.createPendingTask(board, {
-    dirId: 'dir-1', sessionId: 'sess-1', seed: '任务面板前端排序规则', now: 1,
-  });
-  pending.moduleAssignment.running = true;
-  pending.moduleAssignment.attempts = 3;
-  const routed = core.buildRoutedMessage(pending, '任务面板前端排序规则');
-  boardHistory.push({ id: 'u-board', role: 'user', content: routed, ts: 10 });
-
-  runtime.onClassifyGoal('sess-1', '任务面板排序优化', 'planning', {
-    currentUserText: routed,
-  });
-
-  assert.deepEqual(Object.keys(board.tasks), [pending.id]);
-  assert.equal(board.tasks[pending.id].title, '任务面板排序优化');
-  assert.equal(board.tasks[pending.id].refs.length, 1);
-  assert.equal(board.tasks[pending.id].refs[0].userMsgId, 'u-board');
-  assert.equal(board.tasks[pending.id].moduleAssignment.seed, '任务面板前端排序规则');
-  assert.equal(board.tasks[pending.id].moduleAssignment.running, true);
-  assert.equal(board.tasks[pending.id].moduleAssignment.attempts, 3);
-  assert.equal(broadcasts.length, 1);
-  assert.equal(broadcasts[0].payload.kind, undefined);
-});
-
-test('onClassifyGoal treats a marker on an existing task as identity, not a new title', () => {
-  const boardHistory = [];
-  const { runtime } = mkRuntime({ loadHistory: () => boardHistory });
-  const board = runtime.getBoard();
-  core.applyTagResult(board, [{
-    id: 'new', title: '任务面板排序优化', module: '前端 UI', areas: [],
-  }], {
-    sessionId: 'seed-session', dirId: 'dir-1', userMsgId: 'u-seed',
-    assistantMsgId: 'a-seed', ts: 1, excerpt: '任务面板排序优化',
-  }, 1);
-  const existing = Object.values(board.tasks)[0];
-  const routed = core.buildRoutedMessage(existing, '继续调整排序规则');
-  boardHistory.push({ id: 'u-followup', role: 'user', content: routed, ts: 20 });
-
-  runtime.onClassifyGoal('sess-1', '任务面板前端排序规则', 'planning', {
-    currentUserText: routed,
-  });
-
-  assert.deepEqual(Object.keys(board.tasks), [existing.id]);
-  assert.equal(board.tasks[existing.id].title, '任务面板排序优化');
-  assert.equal(board.tasks[existing.id].refs.length, 2);
-  assert.equal(board.tasks[existing.id].refs[1].userMsgId, 'u-followup');
-});
-
-test('turn-end keeps the immediate card in 待归类 instead of auto-rehoming it (方案A)', async () => {
-  let history = [
-    { id: 'u-live', role: 'user', content: '删除 [tiktok] 会话和 worktree', ts: 10 },
-  ];
-  const { runtime, auxCalls } = mkRuntime({ loadHistory: () => history });
-  runtime.onClassifyGoal('sess-1', '删除 [tiktok] 会话和 worktree', 'planning', {
-    currentUserText: '删除 [tiktok] 会话和 worktree',
-  });
-  const taskId = Object.keys(runtime.getBoard().tasks)[0];
-  assert.equal(runtime.getBoard().modules[runtime.getBoard().tasks[taskId].moduleId].source, 'classify');
-
-  history = [
-    history[0],
-    { id: 'a-final', role: 'assistant', content: '已经删除所有目标会话，并清理对应 worktree；同时核对分支与会话记录均已移除。', ts: 20 },
-  ];
+test('ordinary chat never creates a task or queues task tagging', () => {
+  const { runtime, auxCalls } = mkRuntime();
   runtime.onTurnEnd({
-    currentUserText: '删除 [tiktok] 会话和 worktree',
-    currentAssistantText: '已经删除所有目标会话，并清理对应 worktree；同时核对分支与会话记录均已移除。',
+    currentUserText: '实现任务板',
+    currentAssistantText: '已实现完整功能。',
   }, 'sess-1');
-  await new Promise(r => setImmediate(r));
-
-  const board = runtime.getBoard();
-  // 方案A：turn-end 只把本轮 ref 挂到现有「待归类」卡片，不重复建卡、不自动搬到真实
-  // 模块，也不触发 aux 归类。归类改由用户手动点击。
+  runtime.onClassifyGoal('sess-1', '实现任务板', 'planning', {
+    currentUserText: '实现任务板',
+    runState: 'running',
+  });
   assert.equal(auxCalls.length, 0);
-  assert.equal(Object.keys(board.tasks).length, 1);
-  assert.equal(board.tasks[taskId].refs.length, 1);
-  assert.equal(board.tasks[taskId].refs[0].assistantMsgId, 'a-final');
-  assert.equal(board.modules[board.tasks[taskId].moduleId].source, 'classify');
-  assert.equal(board.modules[board.tasks[taskId].moduleId].name, '待归类');
-  assert.ok(board.tasks[taskId].moduleAssignment, '卡片仍在待归类模块，保留手动归类操作元数据');
+  assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
+});
+
+test('canonical task messages create one projection, retain full body, and classify updates it', () => {
+  const history = [];
+  const { runtime, broadcasts } = mkRuntime({ loadHistory: () => history });
+  const taskId = 'tsk-canonical-1';
+  const text = '第一行\n<script>alert(1)</script>\n最后一行';
+  const user = {
+    id: 'u1', role: 'user', content: '【任务：新任务】\n' + text, ts: 10,
+    taskId, taskStart: true, taskSource: 'task-board', taskText: text,
+  };
+  history.push(user);
+  assert.equal(runtime.onMessagePersisted('sess-1', user), true);
+  assert.equal(runtime.onMessagePersisted('sess-1', user), true);
+  assert.equal(Object.keys(runtime.getBoard().tasks).length, 1);
+  assert.equal(runtime.getBoard().tasks[taskId].refs.length, 1);
+
+  runtime.onClassifyGoal('sess-1', '统一任务链路', 'implementing', {
+    currentUserText: user.content,
+    taskId,
+    runState: 'waiting',
+  });
+  assert.equal(runtime.getBoard().tasks[taskId].title, '统一任务链路');
+  assert.equal(runtime.getBoard().tasks[taskId].runState, 'waiting');
+  assert.equal(broadcasts[0].payload.kind, 'created');
+
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: () => {} });
+  const res = { json(body) { this.body = body; return this; } };
+  routes.get('/api/task-board')({}, res);
+  const dto = res.body.tasks[0];
+  assert.equal(dto.body, text);
+  assert.equal(dto.legacy, false);
+  assert.equal(JSON.stringify(runtime.getBoard()).includes(text), false,
+    'task body must not be copied into task_board.json');
+});
+
+test('taskId boundaries keep intervening events on the current task and open a second card only for a new id', () => {
+  const history = [];
+  const { runtime } = mkRuntime({ loadHistory: () => history });
+  const push = message => {
+    history.push(message);
+    runtime.onMessagePersisted('sess-1', message);
+  };
+  push({ id: 'u1', role: 'user', content: '任务一', taskText: '任务一', taskId: 'tsk-one', taskStart: true, taskSource: 'task-board', ts: 1 });
+  push({ id: 'a1', role: 'assistant', content: '任务一回复', taskId: 'tsk-one', ts: 2 });
+  push({ id: 'u2', role: 'user', content: '任务一后续', taskId: 'tsk-one', ts: 3 });
+  push({ id: 'a2', role: 'assistant', content: '任务一后续回复', taskId: 'tsk-one', ts: 4 });
+  push({ id: 'u3', role: 'user', content: '任务二', taskText: '任务二', taskId: 'tsk-two', taskStart: true, taskSource: 'commander', ts: 5 });
+  assert.deepEqual(Object.keys(runtime.getBoard().tasks).sort(), ['tsk-one', 'tsk-two']);
+  assert.equal(runtime.getBoard().tasks['tsk-one'].refs.length, 2);
+  assert.equal(runtime.getBoard().tasks['tsk-two'].refs.length, 1);
 });
 
 test('streaming classify path creates or merges the task-board card before returning', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(source, /function recordTaskBoardGoal[\s\S]*?taskBoardRuntime\.onClassifyGoal/);
+  const taskContextHostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'task-context-host.js'), 'utf8');
+  assert.match(source, /function recordTaskBoardGoal[\s\S]*?taskContextHost\.recordGoal/);
+  assert.match(taskContextHostSource, /function recordGoal[\s\S]*?getTaskBoard\(\)\?\.onClassifyGoal/);
   const start = source.indexOf('function applyClassifyResult(');
   const end = source.indexOf('\nfunction scanAndReclassify()', start);
   const body = source.slice(start, end);
@@ -766,7 +704,7 @@ test('onTurnEnd skips aux/gateway sessions, short replies and injected turns', (
   assert.equal(auxCalls.length, 0);
 });
 
-test('marker turns attach deterministically before the AI verdict', () => {
+test('legacy marker turns still attach without re-enabling AI task creation', () => {
   const { runtime, auxCalls } = mkRuntime();
   const seeded = runtime.getBoard();
   seeded.tasks['tsk-seed'] = {
@@ -778,14 +716,14 @@ test('marker turns attach deterministically before the AI verdict', () => {
     currentAssistantText: '好的，已经继续推进并完成了相应的修改内容，包括删除按钮与确认弹窗的实现细节说明。',
   }, 'sess-1');
   assert.equal(seeded.tasks['tsk-seed'].refs.length, 1);
-  assert.equal(auxCalls.length, 1);   // AI tagging still runs for co-tags
+  assert.equal(auxCalls.length, 0);
 
   // Short-reply routed turn still attaches deterministically (no AI pass).
   runtime.onTurnEnd({
     currentUserText: '【任务：种子任务｜tb:tsk-seed】\n继续',
     currentAssistantText: '收到',
   }, 'sess-1');
-  assert.equal(auxCalls.length, 1);
+  assert.equal(auxCalls.length, 0);
 });
 
 test('REST: board, messages, send and status flow', async () => {
@@ -847,10 +785,12 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(sendRes.body.routingMode, 'commander');
   assert.equal(dispatches.length, 1);
   assert.equal(dispatches[0].route, 'commander');
-  assert.match(dispatches[0].message, /tb:/);
+  assert.doesNotMatch(dispatches[0].message, /tb:/);
   assert.match(dispatches[0].message, /Commander 单向路由任务/);
-  assert.match(dispatches[0].opts.idempotencyKey, /^taskboard:/);
+  assert.match(dispatches[0].opts.idempotencyKey, /^taskboard-followup:/);
   assert.equal(dispatches[0].opts.oneWay, true);
+  assert.equal(dispatches[0].opts.taskId, tid);
+  assert.equal(dispatches[0].opts.taskStart, false);
 
   const stRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/status')(
@@ -900,7 +840,66 @@ test('automatic board routing is Commander-first even with multiple active ordin
   assert.equal(res.body.workerSessionId, 'worker-newest');
 });
 
-test('panel-routed (B path) Commander dispatch leaves a one-way receipt in the commander history', async () => {
+test('same panel client id reuses taskId and operation without a second Commander decision', async () => {
+  const commanderCalls = [];
+  const replayCalls = [];
+  const { runtime } = mkRuntime({
+    routeCommanderTask: async request => {
+      commanderCalls.push(request);
+      return {
+        ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
+        operationId: 'op-idempotent', status: 'admitted',
+      };
+    },
+    dispatchToSession: async (target, message, opts) => {
+      replayCalls.push({ target, message, opts });
+      return {
+        ok: true, chatId: target, operationId: 'op-idempotent',
+        status: 'admitted', duplicate: true,
+      };
+    },
+  });
+  const routes = new Map();
+  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const response = () => ({
+    code: 200,
+    status(code) { this.code = code; return this; },
+    json(body) { this.body = body; return this; },
+  });
+  const request = {
+    body: {
+      dirId: 'dir-1',
+      text: '幂等任务正文',
+      clientMsgId: 'stable-client-message',
+    },
+  };
+  const first = response();
+  routes.get('/api/task-board/send')(request, first);
+  await new Promise(resolve => setImmediate(resolve));
+  const second = response();
+  routes.get('/api/task-board/send')(request, second);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(first.body.taskId, second.body.taskId);
+  assert.equal(commanderCalls.length, 1);
+  assert.equal(replayCalls.length, 1);
+  assert.equal(replayCalls[0].opts.idempotencyKey, `task-start:${first.body.taskId}`);
+  assert.equal(second.body.duplicate, true);
+  assert.equal(Object.keys(runtime.getBoard().tasks).length, 1);
+
+  const changedRoute = response();
+  routes.get('/api/task-board/send')({
+    body: { ...request.body, target: 'sess-1' },
+  }, changedRoute);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(changedRoute.code, 409);
+  assert.equal(changedRoute.body.error, 'idempotency_conflict');
+  assert.equal(commanderCalls.length, 1);
+  assert.equal(replayCalls.length, 1);
+  assert.equal(runtime.getBoard().tasks[first.body.taskId].routing.mode, 'commander');
+});
+
+test('panel routing does not create a synthetic Commander receipt or duplicate body store', async () => {
   const appended = [];
   const broadcasts = [];
   const { runtime } = mkRuntime({
@@ -918,62 +917,21 @@ test('panel-routed (B path) Commander dispatch leaves a one-way receipt in the c
   await new Promise(resolve => setImmediate(resolve));
 
   assert.equal(res.body.routingMode, 'commander');
-  // A receipt is written to the COMMANDER's own history (not the worker's).
-  const receipt = appended.find(m => m.sessionId === 'commander-1' && m.role === 'assistant');
-  assert.ok(receipt, 'commander history should carry a dispatch receipt');
-  assert.match(receipt.content, /已把任务/);
-  assert.match(receipt.content, /工程师1/);           // names the worker
-  assert.match(receipt.content, /结果不回流指挥/);      // stays one-way in wording
-  // The full trigger message is shown verbatim in a collapsible fold, not just
-  // the generic task title.
-  assert.match(receipt.content, /让工程师改 README/);
-  assert.match(receipt.content, /<details><summary>触发派发的用户消息/);
-  assert.match(receipt.content, /<pre><code>/);
-  // And it is pushed live to the commander's window with the SAME string.
-  const live = broadcasts.find(b => b.sessionId === 'commander-1' && b.payload.type === 'assistant');
-  assert.ok(live);
-  assert.equal(live.payload.message.content[0].text, receipt.content);
+  assert.deepEqual(appended, []);
+  assert.deepEqual(broadcasts, []);
+  assert.equal(JSON.stringify(runtime.getBoard()).includes('让工程师改 README'), false);
 });
 
-test('dispatch receipt HTML-escapes the user message so it cannot break the fold or run scripts', async () => {
-  const appended = [];
-  const { runtime } = mkRuntime({
-    appendChatMessage: (sid, msg) => { const s = { ...msg, id: `m-${appended.length}` }; appended.push({ sessionId: sid, ...s }); return s; },
-    chatBroadcast: () => {},
-    routeCommanderTask: async () => ({ ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1', operationId: 'op-1', status: 'admitted' }),
-  });
-  const routes = new Map();
-  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
-  const res = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
-  const evil = '<script>alert(1)</script>\n</details><img src=x onerror=alert(2)>\n```\n# 标题 *斜体*';
-  routes.get('/api/task-board/send')({ body: { dirId: 'dir-1', text: evil } }, res);
-  await new Promise(r => setImmediate(r));
-
-  const receipt = appended.find(m => m.sessionId === 'commander-1' && m.role === 'assistant');
-  assert.ok(receipt);
-  assert.match(receipt.content, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);   // script escaped verbatim
-  assert.match(receipt.content, /&lt;\/details&gt;/);                          // user </details> escaped
-  assert.doesNotMatch(receipt.content, /<script>alert\(1\)<\/script>/);        // no live script tag
-  assert.doesNotMatch(receipt.content, /<img src=x onerror/);                  // no onerror handler
-  // Exactly one real <details> — the user's </details> did not spawn a second fold.
-  assert.equal((receipt.content.match(/<details>/g) || []).length, 1);
-  assert.equal((receipt.content.match(/<\/details>/g) || []).length, 1);
-});
-
-test('dispatch receipt omits the fold when the user message is empty (old-record shape)', () => {
-  // The route rejects empty text (400) before it reaches the receipt, so verify
-  // the generator directly: no userText → head only, matching legacy records
-  // that were persisted before this field existed.
-  const appended = [];
-  const { runtime } = mkRuntime({
-    appendChatMessage: (sid, msg) => { appended.push({ sessionId: sid, ...msg }); return { ...msg, id: 'm0' }; },
-    chatBroadcast: () => {},
-  });
-  runtime.writeCommanderDispatchReceipt('commander-1', { title: '新任务' }, { targetSessionId: 'sess-1', targetLabel: '工程师1' });
-  const receipt = appended.find(m => m.sessionId === 'commander-1');
-  assert.ok(receipt);
-  assert.match(receipt.content, /已把任务「新任务」派给 工程师1/);
-  assert.doesNotMatch(receipt.content, /<details>/);   // no fold without a body
+test('task body UI folds long text and escapes or text-renders untrusted content', () => {
+  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
+  assert.match(manage, /tb-body-fold[\s\S]*?_tbEsc\(t\.body\)/);
+  assert.match(manage, /tb-body-detail[\s\S]*?_tbEsc\(t\.body\)/);
+  assert.match(meta, /tb-body-fold[\s\S]*?esc\(t\.body\)/);
+  assert.match(meta, /querySelector\('\.tb-body-fold'\)[\s\S]*?stopPropagation/);
+  assert.match(meta, /pre\.textContent = t\.body/);
+  assert.doesNotMatch(manage, /innerHTML\s*=\s*t\.body/);
+  assert.doesNotMatch(meta, /innerHTML\s*=\s*t\.body/);
 });
 
 test('Commander busy state is irrelevant; worker queue receipt survives refresh', async () => {
@@ -1131,9 +1089,13 @@ test('Commander chat input uses the same card-first one-way route as the board c
   assert.equal(result.targetSessionId, 'sess-1');
   assert.equal(routed.length, 1);
   assert.equal(routed[0].commanderId, 'commander-1');
-  assert.equal(routed[0].idempotencyKey, 'client-message-1');
+  assert.equal(routed[0].idempotencyKey, `task-start:${result.taskId}`);
   assert.match(routed[0].message, /Commander 单向路由任务/);
-  assert.match(routed[0].message, /｜tb:/);
+  assert.doesNotMatch(routed[0].message, /tb:/);
+  assert.equal(routed[0].taskId, result.taskId);
+  assert.equal(routed[0].taskStart, true);
+  assert.equal(routed[0].taskSource, 'commander');
+  assert.equal(routed[0].taskText, '实现新的路由入口');
   const task = runtime.getBoard().tasks[result.taskId];
   assert.equal(task.routing.targetSessionId, 'commander-1');
   assert.equal(task.routing.workerSessionId, 'sess-1');
@@ -1238,7 +1200,8 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
   await new Promise(rr => setImmediate(rr));
   assert.equal(r1.body.ok, true);
   assert.match(dispatches[0].message, /^\[Goal 模式限制\]\nrounds=50\n\[限制结束\]\n\n【Commander 单向路由任务】/);
-  assert.match(dispatches[0].message, /【任务：T｜tb:/);
+  assert.match(dispatches[0].message, /【任务：T】/);
+  assert.doesNotMatch(dispatches[0].message, /tb:/);
 
   const r2 = res();
   routes.get('POST /api/task-board/send')(
@@ -1248,8 +1211,11 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
   assert.equal(r2.body.target, 'commander-1');
   assert.equal(r2.body.routingMode, 'commander');
   assert.ok(r2.body.taskId);
-  assert.match(dispatches[1].message, new RegExp(`【任务：新任务｜tb:${r2.body.taskId}】\\n整体推进一下$`));
-  assert.match(dispatches[1].opts.idempotencyKey, new RegExp(`^taskboard:${r2.body.taskId}:`));
+  assert.match(dispatches[1].message, /【任务：新任务】\n整体推进一下$/);
+  assert.equal(dispatches[1].opts.idempotencyKey, `task-start:${r2.body.taskId}`);
+  assert.equal(dispatches[1].opts.taskId, r2.body.taskId);
+  assert.equal(dispatches[1].opts.taskStart, true);
+  assert.equal(dispatches[1].opts.taskText, '整体推进一下');
   const pending = runtime.getBoard().tasks[r2.body.taskId];
   assert.equal(pending.title, '新任务');
   assert.equal(pending.moduleAssignment.running, false);
@@ -1269,7 +1235,8 @@ test('goal flag is ignored gracefully when goal helpers are not wired', async ()
     { body: { dirId: 'dir-1', target: 'sess-1', text: 'hi', goal: true, goalLimits: { maxRounds: 5 } } }, r);
   await new Promise(rr => setImmediate(rr));
   assert.equal(r.body.ok, true);
-  assert.match(dispatches[0].message, /^【任务：新任务｜tb:[A-Za-z0-9_-]+】\nhi$/);
+  assert.equal(dispatches[0].message, '【任务：新任务】\nhi');
+  assert.equal(dispatches[0].opts.taskStart, true);
 });
 
 test('board placeholder stays in 待归类 at turn end (方案A：仅手动归类)', async () => {
@@ -1289,13 +1256,18 @@ test('board placeholder stays in 待归类 at turn end (方案A：仅手动归�
   const taskId = r.body.taskId;
   const routed = dispatches[0].message;
   history = [
-    { id: 'u-new', role: 'user', content: routed, ts: 30 },
-    { id: 'a-new', role: 'assistant', content: '已经完成按钮、接口以及失败重试状态的实现。', ts: 40 },
+    {
+      id: 'u-new', role: 'user', content: routed, ts: 30,
+      taskId, taskStart: true, taskSource: 'task-board',
+      taskText: '增加手动重新归类按钮',
+    },
+    {
+      id: 'a-new', role: 'assistant',
+      content: '已经完成按钮、接口以及失败重试状态的实现。', ts: 40, taskId,
+    },
   ];
-  runtime.onTurnEnd({
-    currentUserText: routed,
-    currentAssistantText: '已经完成按钮、接口以及失败重试状态的实现。',
-  }, 'commander-1');
+  runtime.onMessagePersisted('sess-1', history[0]);
+  runtime.onMessagePersisted('sess-1', history[1]);
   await new Promise(rr => setImmediate(rr));
   const board = runtime.getBoard();
   const tasks = Object.values(board.tasks);
@@ -1374,10 +1346,18 @@ test('automatic pending scan no longer auto-classifies (方案A：仅手动归�
 });
 
 test('manual classification can use the submitted task text before a reply exists', async () => {
-  const { runtime, auxCalls, resolveAux } = mkRuntime({ loadHistory: () => [] });
+  const history = [];
+  const { runtime, auxCalls, resolveAux } = mkRuntime({ loadHistory: () => history });
   const pending = core.createPendingTask(runtime.getBoard(), {
     dirId: 'dir-1', sessionId: 'sess-1', seed: '先实现一个归类按钮', now: 1,
   });
+  const user = {
+    id: 'u-pending', role: 'user', content: '【任务：新任务】\n先实现一个归类按钮',
+    taskId: pending.id, taskStart: true, taskSource: 'task-board',
+    taskText: '先实现一个归类按钮', ts: 2,
+  };
+  history.push(user);
+  runtime.onMessagePersisted('sess-1', user);
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) });
   const r = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };

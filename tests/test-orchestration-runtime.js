@@ -108,6 +108,42 @@ test('reconstruction closes resolve-to-inject crash and inject-to-ack crash wind
   await rebuilt.stop();
 });
 
+test('dispatch delivery carries canonical task metadata into runChatTurn', async t => {
+  const { runtime, injections } = fixture(t);
+  await runtime.admitDispatch({
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'task-delivery-1',
+    spec: {
+      targetId: 'worker',
+      chatId: 'worker',
+      message: '【任务：新任务】\n执行正文',
+      oneWay: true,
+      taskId: 'tsk-delivery',
+      taskStart: true,
+      taskSource: 'commander',
+      taskText: '执行正文',
+    },
+  });
+  await runtime.tick();
+  assert.equal(injections.length, 1);
+  assert.deepEqual(
+    {
+      taskId: injections[0].opts.taskId,
+      taskStart: injections[0].opts.taskStart,
+      taskSource: injections[0].opts.taskSource,
+      taskText: injections[0].opts.taskText,
+    },
+    {
+      taskId: 'tsk-delivery',
+      taskStart: true,
+      taskSource: 'commander',
+      taskText: '执行正文',
+    },
+  );
+  await runtime.stop();
+});
+
 test('busy and rejected turns retry, then deliver after the session is available', async t => {
   let busy = true;
   let accept = false;

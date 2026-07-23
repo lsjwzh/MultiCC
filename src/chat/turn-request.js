@@ -10,6 +10,7 @@ const RETRY_REASONS = new Set([
   'empty-exit', 'session-id-conflict', 'resume-target-missing',
   'transport-disconnect', 'api-error', 'interrupted', 'manual',
 ]);
+const TASK_SOURCES = new Set(['task-board', 'commander']);
 
 class TurnRequestError extends TypeError {
   constructor(code, message) {
@@ -63,6 +64,31 @@ function normalizeGoalLimits(value) {
   }
   const maxBudget = value.maxBudget == null ? null : String(value.maxBudget).trim().slice(0, 64) || null;
   return Object.freeze({ maxRounds, maxBudget });
+}
+
+function normalizeTaskContext(input) {
+  const taskId = cleanId(input.taskId, 'taskId');
+  const start = input.taskStart === true;
+  const source = cleanId(input.taskSource, 'taskSource');
+  if (start && !taskId) {
+    throw new TurnRequestError('invalid_task', 'taskStart requires taskId');
+  }
+  if (start && !TASK_SOURCES.has(source)) {
+    throw new TurnRequestError('invalid_task', 'taskStart requires a trusted task source');
+  }
+  if (source && !TASK_SOURCES.has(source)) {
+    throw new TurnRequestError('invalid_task', `unsupported task source: ${source}`);
+  }
+  const rawText = input.taskText == null ? '' : String(input.taskText).trim();
+  if (rawText && !start) {
+    throw new TurnRequestError('invalid_task', 'taskText is only valid on a task start');
+  }
+  return Object.freeze({
+    id: taskId,
+    start,
+    source: source || null,
+    text: start ? rawText : '',
+  });
 }
 
 function normalizeTurnRequest(input) {
@@ -150,6 +176,7 @@ function normalizeTurnRequest(input) {
     origin: Object.freeze({ kind: originKind, operationId: originDispatchId }),
     launch: Object.freeze({ reason: originContinue ? 'continue' : 'request' }),
     identity: Object.freeze({ clientMsgId, deliveryId }),
+    task: normalizeTaskContext(input),
     goalLimits: normalizeGoalLimits(input.goalLimits),
     background: Object.freeze({
       taskIds: normalizeStringList(input.bgTaskIds, 'bgTaskIds'),

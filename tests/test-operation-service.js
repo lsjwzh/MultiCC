@@ -97,11 +97,29 @@ test('dispatch request/result outboxes are atomic and duplicate results are payl
       message: 'inspect module',
       replyTo: 'commander',
       gateway: false,
+      taskId: 'tsk-stable',
+      taskStart: true,
+      taskSource: 'task-board',
+      taskText: '完整真实正文',
     },
   });
   let snapshot = await store.snapshot();
   assert.equal(snapshot.operations[admitted.id].requestOutboxId, `operation:${admitted.id}:request`);
   assert.equal(snapshot.outbox[`operation:${admitted.id}:request`].payload.type, 'dispatch.request');
+  assert.deepEqual(
+    {
+      taskId: snapshot.outbox[`operation:${admitted.id}:request`].payload.taskId,
+      taskStart: snapshot.outbox[`operation:${admitted.id}:request`].payload.taskStart,
+      taskSource: snapshot.outbox[`operation:${admitted.id}:request`].payload.taskSource,
+      taskText: snapshot.outbox[`operation:${admitted.id}:request`].payload.taskText,
+    },
+    {
+      taskId: 'tsk-stable',
+      taskStart: true,
+      taskSource: 'task-board',
+      taskText: '完整真实正文',
+    },
+  );
 
   const first = await service.completeDispatch(admitted.id, {
     status: 'completed', text: 'all clear', details: { b: 2, a: 1 },

@@ -129,13 +129,16 @@ function renderTaskBoardSection(dirId, opts) {
     rowsHtml.push(`
       <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
         <span class="tb-icon">${display.icon}</span>
-        <span class="tb-title">${_tbEsc(t.title)}</span>
+        <span class="tb-title-cell">
+          <span class="tb-title">${_tbEsc(t.title)}</span>
+          ${t.body ? `<details class="tb-body-fold" onclick="event.stopPropagation()"><summary>任务正文</summary><pre>${_tbEsc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}
+        </span>
         <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
       </div>`);
   }
   const body = rowsHtml.length
     ? rowsHtml.join('')
-    : '<div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div>';
+    : '<div class="tb-empty">还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。</div>';
   if (opts && opts.tabbed) {
     const stat = tasks.length
       ? `<div class="tb-stat">${mods.length || 1} 模块 · ${tasks.length} 任务 <button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板" style="margin-left:8px">🔄</button></div>` : '';
@@ -199,6 +202,8 @@ function createTbComposer(host, opts) {
   const goalRow = $q('.tb-goalrow');
   const fileInput = $q('.tb-file-input');
   const resultEl = $q('.tb-result');
+  let pendingClientMsgId = '';
+  let pendingText = '';
 
   const setResult = (text, cls) => { resultEl.textContent = text || ''; resultEl.className = 'tb-result' + (cls ? ' ' + cls : ''); };
 
@@ -282,6 +287,13 @@ function createTbComposer(host, opts) {
     if (paths.length) text = (text ? text + ' ' : '') + paths.join(' ');
     if (!text) { setResult('请输入内容', 'err'); return; }
     const payload = { text };
+    if (!pendingClientMsgId || pendingText !== text) {
+      pendingClientMsgId = window.crypto?.randomUUID
+        ? window.crypto.randomUUID()
+        : `tb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      pendingText = text;
+    }
+    payload.clientMsgId = pendingClientMsgId;
     if (targetSel.value) payload.target = targetSel.value;
     if (goalBtn.classList.contains('on')) {
       payload.goal = true;
@@ -299,6 +311,8 @@ function createTbComposer(host, opts) {
       input.value = '';
       chiprow.innerHTML = '';
       chiprow.style.display = 'none';
+      pendingClientMsgId = '';
+      pendingText = '';
     } catch (e) { setResult(String(e.message || e), 'err'); }
     finally { sendBtn.disabled = false; }
   }
@@ -314,7 +328,14 @@ function createTbComposer(host, opts) {
         + options.map(o => `<option value="${_tbEsc(o.id)}">${_tbEsc(o.label || o.id)}</option>`).join('');
       if ([...targetSel.options].some(o => o.value === prev)) targetSel.value = prev;
     },
-    reset() { input.value = ''; chiprow.innerHTML = ''; chiprow.style.display = 'none'; setResult(''); },
+    reset() {
+      input.value = '';
+      chiprow.innerHTML = '';
+      chiprow.style.display = 'none';
+      pendingClientMsgId = '';
+      pendingText = '';
+      setResult('');
+    },
     focus() { input.focus(); },
   };
 }
@@ -481,6 +502,7 @@ function renderTaskBoardDetail(d) {
         </span>
       </div>
       <div class="tb-chips">${chipHtml}</div>
+      ${t.body ? `<details class="tb-body-detail"><summary>${t.legacy ? '旧记录任务正文' : '完整任务正文'}</summary><pre>${_tbEsc(t.body)}</pre></details>` : '<div class="tb-body-pending">正文尚未进入目标会话历史。</div>'}
     </div>
     <div class="tb-msgs">${msgs}</div>`;
 

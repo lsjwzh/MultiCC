@@ -59,6 +59,7 @@ function browserContext() {
     Number,
     encodeURIComponent,
     confirm: () => true,
+    addEventListener(type, handler) { listeners.push({ type, handler }); },
     location: { protocol: 'http:', host: 'localhost:3000', origin: 'http://localhost:3000', search: '' },
     tokenQS: () => '',
     _urlToken: 'bootstrap-secret',

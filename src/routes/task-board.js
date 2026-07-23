@@ -19,16 +19,6 @@ const fs = require('fs');
 const crypto = require('crypto');
 const core = require('../task-board');
 
-// HTML-escape for embedding user/text into a receipt that is later rendered as
-// markdown in the chat window. Mirrors public/safe-markdown.js escapeHtml so the
-// raw user body shows verbatim (and can't break out of the <details>/<pre> fold
-// or inject markup). The front-end DOMPurify pass is the defense-in-depth backstop.
-function escapeHtml(value) {
-  return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-}
-
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
   'routeCommanderTask',
@@ -52,10 +42,6 @@ function createTaskBoardRuntime(deps) {
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState, isSessionBusy,
   } = deps;
-  // Optional host hooks: when present, panel-routed Commander dispatches also
-  // leave an assistant-role trace in the commander's own chat history/window.
-  const appendChatMessage = typeof deps.appendChatMessage === 'function' ? deps.appendChatMessage : null;
-  const chatBroadcast = typeof deps.chatBroadcast === 'function' ? deps.chatBroadcast : null;
   const getCommanderMigrationStatus = typeof deps.getCommanderMigrationStatus === 'function'
     ? deps.getCommanderMigrationStatus : null;
   const logger = deps.logger || console;
@@ -93,47 +79,138 @@ function createTaskBoardRuntime(deps) {
     catch (_) {}
   }
 
-  // Panel-initiated (B path) Commander routing bypasses the commander's chat
-  // window, so on its own it leaves no trace there. When the host wires the
-  // optional appendChatMessage/chatBroadcast hooks, echo a compact one-way
-  // receipt into the commander's own history so its dispatch record is visible
-  // in-window too — same visibility as a chat-window (A path) dispatch. Still
-  // one-way: this only states WHAT was dispatched and to WHOM; the worker's
-  // result never flows back.
-  function writeCommanderDispatchReceipt(commanderId, task, result, userText = '') {
-    if (!appendChatMessage) return;
-    try {
-      const workerLabel = (result.targetLabel
-        || records.get(result.targetSessionId)?.label
-        || result.targetSessionId || '').toString();
-      const elastic = result.elasticWorkerCreated ? '（已动态增加 worker）' : result.queued ? '（已排队）' : '';
-      // Head line keeps the existing info (task title, worker, status, card entry).
-      // task.title/workerLabel are escaped too, so a title like "**x**" or "<b>"
-      // renders literally instead of hijacking the markdown layout.
-      const head = `📨 已把任务「${escapeHtml(task.title)}」派给 ${escapeHtml(workerLabel)}${elastic}。\n（单向派发，结果不回流指挥，进度见任务卡）`;
-      // The task title is only a generic label ("新任务" for a fresh card). The
-      // real trigger text lives in userText — show it verbatim in a collapsible
-      // <details> fold. <pre><code> preserves newlines/whitespace and the escaped
-      // body can't break the fold (</details> → &lt;/details&gt;) or run markup.
-      // marked treats the blank-line-separated <details>…</details> as a raw HTML
-      // block; DOMPurify keeps details/summary/pre/code (fail-closed → escapeHtml).
-      const raw = String(userText || '').trim();
-      const receipt = raw
-        ? `${head}\n\n<details><summary>触发派发的用户消息（点击展开）</summary>\n<pre><code>${escapeHtml(raw)}</code></pre>\n</details>`
-        : head;   // old records / no body → head only, unchanged
-      const saved = appendChatMessage(commanderId, { role: 'assistant', content: receipt, ts: Date.now() });
-      if (chatBroadcast) {
-        chatBroadcast(commanderId, { type: 'assistant', message: { content: [{ type: 'text', text: receipt }], id: saved?.id } });
-        chatBroadcast(commanderId, { type: 'result', total_cost_usd: null, commanderRoute: true });
+  function stableTaskId(source, requestKey) {
+    const digest = crypto.createHash('sha256')
+      .update(`${source}\0${requestKey}`, 'utf8')
+      .digest('hex')
+      .slice(0, 32);
+    return `tsk-${digest}`;
+  }
+
+  function requestKey(req) {
+    const bodyKey = String(req?.body?.clientMsgId || '').trim();
+    const headerKey = typeof req?.get === 'function'
+      ? String(req.get('Idempotency-Key') || '').trim()
+      : String(req?.headers?.['idempotency-key'] || '').trim();
+    return (bodyKey || headerKey).slice(0, 128) || crypto.randomUUID();
+  }
+
+  function canonicalMessages(task) {
+    const sessionIds = new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean));
+    if (task.routing?.workerSessionId) sessionIds.add(task.routing.workerSessionId);
+    if (task.routing?.mode === 'manual' && task.routing.targetSessionId) {
+      sessionIds.add(task.routing.targetSessionId);
+    }
+    const messages = [];
+    for (const sessionId of sessionIds) {
+      let history = [];
+      try { history = loadHistory(sessionId) || []; } catch (_) {}
+      for (const message of history) {
+        if (message?.taskId !== task.id) continue;
+        messages.push({ sessionId, message });
       }
-    } catch (e) {
-      logger.log(`[multicc/taskboard] commander receipt append failed: ${e.message}`);
+    }
+    return messages.sort((a, b) => (a.message.ts || 0) - (b.message.ts || 0));
+  }
+
+  function canonicalTaskBody(task) {
+    const start = canonicalMessages(task)
+      .find(entry => entry.message.role === 'user' && entry.message.taskStart === true);
+    if (start) {
+      return {
+        text: String(start.message.taskText || core.messageText(start.message)),
+        messageId: start.message.id || null,
+        sessionId: start.sessionId,
+        legacy: false,
+      };
+    }
+    // Old cards predate taskId metadata. Their ref remains a read-only fallback;
+    // no new write path stores task text in the board.
+    for (const ref of task.refs || []) {
+      let history = [];
+      try { history = loadHistory(ref.sessionId) || []; } catch (_) {}
+      const message = ref.userMsgId
+        ? history.find(candidate => candidate?.id === ref.userMsgId)
+        : null;
+      if (message) {
+        return {
+          text: core.messageText(message),
+          messageId: message.id || null,
+          sessionId: ref.sessionId,
+          legacy: true,
+        };
+      }
+    }
+    return { text: '', messageId: null, sessionId: null, legacy: true };
+  }
+
+  function ensureTaskIndex({ taskId, dirId, sessionId, routing, now = Date.now() }) {
+    const existing = board.tasks[taskId];
+    const task = existing || core.createPendingTask(board, {
+      taskId, dirId, sessionId, now,
+    });
+    if (!task) return { task: null, created: false };
+    if (sessionId && !(task.refs || []).some(ref => ref.sessionId === sessionId)) {
+      core.addRefToTask(task, {
+        sessionId, dirId, userMsgId: null, assistantMsgId: null,
+        ts: now, excerpt: '',
+      }, now);
+    }
+    if (routing) core.setTaskRouting(task, routing);
+    return { task, created: !existing };
+  }
+
+  function onMessagePersisted(sessionId, message) {
+    try {
+      if (!message?.taskId || !message.role) return false;
+      const rec = records.get(sessionId);
+      if (!rec || rec.type === 'commander' || rec.type === 'aux' || rec.type === 'gateway') return false;
+      let task = board.tasks[message.taskId];
+      const created = !task && message.role === 'user' && message.taskStart === true;
+      if (created) {
+        task = ensureTaskIndex({
+          taskId: message.taskId,
+          dirId: rec.dirId || null,
+          sessionId,
+          now: message.ts || Date.now(),
+        }).task;
+      }
+      if (!task) return false;
+      const history = loadHistory(sessionId) || [];
+      const index = history.findIndex(candidate => candidate?.id === message.id);
+      let userMessage = message.role === 'user' ? message : null;
+      if (!userMessage && index !== -1) {
+        for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+          const candidate = history[cursor];
+          if (candidate?.role === 'user' && candidate.taskId === task.id) {
+            userMessage = candidate;
+            break;
+          }
+        }
+      }
+      const changed = core.addRefToTask(task, {
+        sessionId,
+        dirId: rec.dirId || null,
+        userMsgId: userMessage?.id || null,
+        assistantMsgId: message.role === 'assistant' ? message.id || null : null,
+        ts: message.ts || Date.now(),
+        excerpt: '',
+      }, message.ts || Date.now());
+      const stateChanged = message.role === 'user' && task.runState !== 'running';
+      if (stateChanged) {
+        task.runState = 'running';
+      }
+      if (created || changed || stateChanged) {
+        save();
+        notify(rec.dirId || null, [task.id], created ? 'created' : undefined);
+      }
+      return true;
+    } catch (error) {
+      logger.log(`[multicc/taskboard] canonical projection failed: ${error?.message || error}`);
+      return false;
     }
   }
 
-  // One in-flight tag per session: a newer turn supersedes the queued tag for
-  // the same session (mirrors runClassifyNow's cancelClassifyFor pattern).
-  const pendingTagBySession = new Map();
   const pendingModuleAssignmentByTask = new Map();
 
   // Resolve the current turn even while it is still streaming. Looking for the
@@ -163,13 +240,6 @@ function createTaskBoardRuntime(deps) {
       userMsg: userIdx === -1 ? null : history[userIdx],
       assistantMsg: asstIdx === -1 ? null : history[asstIdx],
     };
-  }
-
-  function pendingTaskForRef(ref, markedTaskId = null) {
-    if (markedTaskId && board.tasks[markedTaskId]?.moduleAssignment) return board.tasks[markedTaskId];
-    return Object.values(board.tasks).find(task => task.moduleAssignment && task.refs.some(r =>
-      (ref.userMsgId && r.userMsgId === ref.userMsgId)
-        || (ref.assistantMsgId && r.assistantMsgId === ref.assistantMsgId))) || null;
   }
 
   function resolveTaskClassificationInput(task) {
@@ -379,19 +449,23 @@ function createTaskBoardRuntime(deps) {
   }
 
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.
-  // Never throws: tagging is best-effort decoration over the chat loop.
+  // Only task-aware canonical messages participate. Ordinary chats are not
+  // inferred into tasks; legacy marker records remain attachable for migration.
   function onTurnEnd(cs, sessionName) {
     try {
       const rec = records.get(sessionName);
-      if (!rec || rec.type === 'aux' || rec.type === 'gateway') return;
+      if (!rec || rec.type === 'aux' || rec.type === 'gateway' || rec.type === 'commander') return;
       const userText = String(cs?.currentUserText || '').trim();
-      const replyText = String(cs?.currentAssistantText || '').trim();
       if (!userText) return;
       if (isSystemInjected(userText)) return;
 
       const history = loadHistory(sessionName) || [];
       const { userMsg, assistantMsg } = resolveTurnRefs(history, userText);
       if (!userMsg && !assistantMsg) return;
+      const taskId = userMsg?.taskId || assistantMsg?.taskId
+        || cs?._currentTaskId || core.extractTaskMarker(userText);
+      const task = taskId ? board.tasks[taskId] : null;
+      if (!task) return;
       const now = Date.now();
       const ref = {
         sessionId: sessionName,
@@ -400,111 +474,32 @@ function createTaskBoardRuntime(deps) {
         userMsgId: userMsg?.id || null,
         assistantMsgId: assistantMsg?.id || null,
         ts: assistantMsg?.ts || userMsg?.ts || now,
-        excerpt: userText.slice(0, 140),
+        excerpt: userMsg?.taskId ? '' : userText.slice(0, 140),
       };
-
-      // Deterministic path: turns routed from the task panel carry a marker;
-      // attach them to their task without waiting for the AI verdict (and
-      // regardless of reply length — a routed turn always belongs to its task).
-      const markedTaskId = core.extractTaskMarker(userText);
-      if (markedTaskId && board.tasks[markedTaskId]) {
-        if (core.addRefToTask(board.tasks[markedTaskId], ref, now)) {
-          save();
-          notify(ref.dirId, [markedTaskId]);
-        }
+      if (core.addRefToTask(task, ref, now)) {
+        save();
+        notify(ref.dirId, [task.id]);
       }
-
-      const pendingTask = pendingTaskForRef(ref, markedTaskId);
-      if (pendingTask) {
-        // 方案A：卡片留在「待归类」。仅把本轮对话 ref 挂上去积累上下文，
-        // 绝不自动归类到真实模块——归类由用户手动点击触发。
-        if (core.addRefToTask(pendingTask, ref, now)) {
-          save();
-          notify(ref.dirId, [pendingTask.id]);
-        }
-        return;
-      }
-
-      // Commander runs a real LLM but only ever dispatches — its own planning
-      // dialogue is orchestration chatter, not work to archive. The deterministic
-      // marker/pending paths above still run (a panel-routed turn carrying a
-      // tb: marker attaches to its card), but a marker-less commander turn must
-      // NOT reach AI tagging or it would be filed as a bogus task.
-      if (rec.type === 'commander') return;
-
-      // AI tagging needs a substantive reply to judge from.
-      // Tool-heavy turns (Read/Edit/Bash) are substantive even with short text.
-      const hasTools = assistantMsg && Array.isArray(assistantMsg.toolCalls) && assistantMsg.toolCalls.length > 0;
-      if (replyText.length < 30 && !hasTools) return;
-      if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) return;
-
-      const prior = pendingTagBySession.get(sessionName);
-      if (prior) auxQueue.cancel(prior);
-      const taskId = crypto.randomUUID();
-      pendingTagBySession.set(sessionName, taskId);
-
-      auxQueue.enqueue({
-        id: taskId,
-        type: 'task_tag',
-        systemPrompt: core.buildTagSystemPrompt(),
-        prompt: core.buildTagUserPrompt({
-          board,
-          sessionLabel: rec.label || sessionName,
-          dirLabel: null,
-          userText,
-          replyText,
-        }),
-        meta: { sessionName, sessionId: rec.id || sessionName },
-      }).then(result => {
-        if (pendingTagBySession.get(sessionName) === taskId) pendingTagBySession.delete(sessionName);
-        if (!result || result.cancelled) return;
-        const parsed = core.parseTagResult(result.text);
-        if (!parsed.tasks.length) return;
-        const now2 = Date.now();
-        const beforeIds = new Set(Object.keys(board.tasks));
-        // 方案A：自动标签可以给任务起标题/合并，但不得把卡片建到真实模块。
-        // 强制所有条目落「待归类」——已归类过的真实模块卡片会被 applyTagResult
-        // 原地保留（不会被搬回），只收下这条 ref；新卡片则停在「待归类」等手动归类。
-        const pendingEntries = parsed.tasks.map(t => ({ ...t, module: core.CLASSIFY_PENDING_MODULE_NAME }));
-        const touched = core.applyTagResult(board, pendingEntries, ref, now2, { moduleSource: 'classify', mergeSimilar: true });
-        if (touched.length) {
-          // Store only the manual module-assignment operation metadata. It is
-          // not a task status; runState continues to come from session classify.
-          for (const id of touched) {
-            const task = board.tasks[id];
-            if (task && !task.moduleAssignment && board.modules[task.moduleId]?.source === 'classify') {
-              task.moduleAssignment = {
-                running: false, attempts: 0, lastAttemptAt: 0,
-                lastError: '', seed: (task.title || '').slice(0, 1200),
-              };
-            }
-          }
-          save();
-          const created = touched.filter(id => !beforeIds.has(id));
-          notify(ref.dirId, touched, created.length ? 'created' : undefined);
-        }
-      }).catch(e => {
-        if (pendingTagBySession.get(sessionName) === taskId) pendingTagBySession.delete(sessionName);
-        if (e && e.cancelled) return;
-        logger.log(`[multicc/taskboard] tag failed for ${sessionName}: ${e?.message || e}`);
-      });
     } catch (e) {
       logger.log(`[multicc/taskboard] onTurnEnd error: ${e?.message || e}`);
     }
   }
 
-  // ── classify 识别出 goal 时立即创建/更新任务 ─────────────────────────
+  // classify enriches the already-indexed task selected by canonical taskId.
+  // It never creates a task for marker-less/ordinary chat.
   function onClassifyGoal(sessionName, goal, phase, turn = {}) {
     try {
       const rec = records.get(sessionName);
-      // Commander is a control-plane dispatcher — don't mint goal cards from its
-      // own planning turns (consistent with handleBackfill and onTurnEnd's AI path).
       if (!rec || rec.type === 'aux' || rec.type === 'gateway' || rec.type === 'commander') return;
 
       const history = loadHistory(sessionName) || [];
       const currentUserText = String(turn.currentUserText || '').trim();
       const { userMsg, assistantMsg } = resolveTurnRefs(history, currentUserText);
       if (!userMsg && !assistantMsg) return;
+      const taskId = turn.taskId || userMsg?.taskId || assistantMsg?.taskId
+        || core.extractTaskMarker(currentUserText);
+      const task = taskId ? board.tasks[taskId] : null;
+      if (!task) return;
 
       const now = Date.now();
       const ref = {
@@ -514,58 +509,27 @@ function createTaskBoardRuntime(deps) {
         userMsgId: userMsg?.id || null,
         assistantMsgId: assistantMsg?.id || null,
         ts: assistantMsg?.ts || userMsg?.ts || now,
-        excerpt: goal, // 用 goal 作为摘要
+        excerpt: userMsg?.taskId ? '' : String(goal || '').slice(0, 200),
       };
-
-      // A board-routed turn already owns a durable card. The marker is the
-      // authoritative identity: reusing it avoids briefly creating a second
-      // semantically-equivalent card before turn-end task_tag can reconcile.
-      const markedTaskId = core.extractTaskMarker(currentUserText);
-      const markedTask = markedTaskId ? board.tasks[markedTaskId] : null;
-      if (markedTask) {
-        let changed = core.addRefToTask(markedTask, ref, now);
-        if (markedTask.moduleAssignment) {
-          const nextTitle = String(goal || '').trim().slice(0, 40);
-          if (markedTask.title === core.PENDING_TASK_TITLE && nextTitle) {
-            markedTask.title = nextTitle;
-            changed = true;
-          }
-          // This callback reports execution progress from the classify system.
-          // It may enrich the placeholder, but must never alter the separate
-          // manual module-assignment operation or replace the submitted text.
-          if (!markedTask.moduleAssignment.seed && nextTitle) {
-            markedTask.moduleAssignment.seed = nextTitle;
-            markedTask.updatedAt = now;
-            changed = true;
-          }
-        }
-        if (changed) {
-          save();
-          notify(ref.dirId, [markedTask.id]);
-        }
-        logger.log(`[multicc/taskboard] onClassifyGoal: reused marked task ${markedTask.id} for ${sessionName} phase=${phase || '?'}`);
-        return;
+      let changed = core.addRefToTask(task, ref, now);
+      const rawTitle = String(goal || '').trim();
+      const nextTitle = rawTitle && rawTitle !== core.PENDING_TASK_TITLE
+        ? rawTitle.slice(0, 40)
+        : '';
+      if (task.title === core.PENDING_TASK_TITLE && nextTitle) {
+        task.title = nextTitle;
+        changed = true;
       }
-
-      const beforeIds = new Set(Object.keys(board.tasks));
-      const touched = core.applyTagResult(board, [{
-        id: 'new', title: goal, module: core.CLASSIFY_PENDING_MODULE_NAME, areas: [],
-      }], ref, now, { moduleSource: 'classify', mergeSimilar: true });
-      if (touched.length) {
-        for (const taskId of touched) {
-          const task = board.tasks[taskId];
-          if (task && !task.moduleAssignment && board.modules[task.moduleId]?.source === 'classify') {
-            task.moduleAssignment = {
-              running: false, attempts: 0, lastAttemptAt: 0,
-              lastError: '', seed: goal.slice(0, 1200),
-            };
-          }
-        }
+      if (turn.runState && task.runState !== turn.runState) {
+        task.runState = turn.runState;
+        task.updatedAt = now;
+        changed = true;
+      }
+      if (changed) {
         save();
-        const created = touched.filter(id => !beforeIds.has(id));
-        notify(ref.dirId, touched, created.length ? 'created' : undefined);
-        logger.log(`[multicc/taskboard] onClassifyGoal: ${created.length ? 'created' : 'merged'} task "${goal}" for ${sessionName} phase=${phase || '?'}`);
+        notify(ref.dirId, [task.id]);
       }
+      logger.log(`[multicc/taskboard] onClassifyGoal: updated task ${task.id} for ${sessionName} phase=${phase || '?'}`);
     } catch (e) {
       logger.log(`[multicc/taskboard] onClassifyGoal error: ${e?.message || e}`);
     }
@@ -708,6 +672,11 @@ function createTaskBoardRuntime(deps) {
 
   function taskDto(task) {
     const dto = core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
+    const body = canonicalTaskBody(task);
+    dto.body = body.text;
+    dto.bodyMessageId = body.messageId;
+    dto.bodySessionId = body.sessionId;
+    dto.legacy = body.legacy;
     if (dto?.routing) {
       dto.routing.targetLabel = records.get(dto.routing.targetSessionId)?.label || dto.routing.targetSessionId;
       if (dto.routing.workerSessionId) {
@@ -721,6 +690,11 @@ function createTaskBoardRuntime(deps) {
     const dto = core.buildBoardDto(board, getSessionRunState);
     const labels = {};
     for (const t of dto.tasks) {
+      const body = canonicalTaskBody(board.tasks[t.id]);
+      t.body = body.text;
+      t.bodyMessageId = body.messageId;
+      t.bodySessionId = body.sessionId;
+      t.legacy = body.legacy;
       if (t.routing) {
         const sid = t.routing.targetSessionId;
         labels[sid] = records.get(sid)?.label || sid;
@@ -750,7 +724,25 @@ function createTaskBoardRuntime(deps) {
       return cache.get(sid);
     };
     const items = [];
-    for (const ref of task.refs) {
+    const canonical = canonicalMessages(task);
+    for (const entry of canonical) {
+      const { sessionId, message } = entry;
+      const label = records.get(sessionId)?.label || sessionId;
+      const text = message.role === 'user' && message.taskStart
+        ? String(message.taskText || core.messageText(message))
+        : core.messageText(message);
+      if (!text && message.role !== 'assistant') continue;
+      items.push({
+        sessionId,
+        sessionLabel: label,
+        role: message.role,
+        messageId: message.id || null,
+        ts: message.ts || 0,
+        text,
+      });
+    }
+    // Legacy cards have no taskId metadata and continue to resolve through refs.
+    if (!canonical.length) for (const ref of task.refs) {
       const label = records.get(ref.sessionId)?.label || ref.sessionId;
       const history = historyFor(ref.sessionId);
       const um = ref.userMsgId ? history.find(m => m && m.id === ref.userMsgId) : null;
@@ -758,7 +750,7 @@ function createTaskBoardRuntime(deps) {
       if (um) {
         items.push({ sessionId: ref.sessionId, sessionLabel: label, role: 'user',
                      messageId: um.id || ref.userMsgId || null,
-                     ts: um.ts || ref.ts, text: core.messageText(um).slice(0, 4000) });
+                     ts: um.ts || ref.ts, text: core.messageText(um) });
       } else if (ref.excerpt) {
         // The message may have been trimmed out of history — keep the excerpt.
         items.push({ sessionId: ref.sessionId, sessionLabel: label, role: 'user',
@@ -767,7 +759,7 @@ function createTaskBoardRuntime(deps) {
       if (am) {
         items.push({ sessionId: ref.sessionId, sessionLabel: label, role: 'assistant',
                      messageId: am.id || ref.assistantMsgId || null,
-                     ts: am.ts || ref.ts, text: core.messageText(am).slice(0, 4000) });
+                     ts: am.ts || ref.ts, text: core.messageText(am) });
       }
     }
     items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -805,10 +797,18 @@ function createTaskBoardRuntime(deps) {
       ? core.buildCommanderRoutedMessage(task, text)
       : core.buildRoutedMessage(task, text);
     const message = goalNoteFor(req.body) + routed;
-    const idempotencyKey = `taskboard:${task.id}:${crypto.randomUUID()}`;
+    const followupKey = requestKey(req);
+    const idempotencyKey = `taskboard-followup:${task.id}:${followupKey}`;
+    const taskContext = {
+      taskId: task.id,
+      taskStart: false,
+      taskSource: 'task-board',
+    };
     const result = routeMode === 'commander'
-      ? await routeCommanderTask({ commanderId: target, message, idempotencyKey })
-      : await dispatchToSession(target, message, { idempotencyKey, requireIdle: true });
+      ? await routeCommanderTask({ commanderId: target, message, idempotencyKey, ...taskContext })
+      : await dispatchToSession(target, message, {
+          idempotencyKey, requireIdle: true, ...taskContext,
+        });
     if (!result.ok) {
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
       return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
@@ -825,7 +825,6 @@ function createTaskBoardRuntime(deps) {
     });
     save();
     notify(core.taskDirId(board, task), [task.id]);
-    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, task, result, text);
     res.json({
       ok: true,
       target,
@@ -841,9 +840,111 @@ function createTaskBoardRuntime(deps) {
     });
   }
 
-  // Board-level composer: reserve a visible card first, then route either to
-  // the explicitly selected idle worker or the directory's typed Commander.
-  // The marker lets later turn evidence converge on that same card in place.
+  async function dispatchTaskStart({
+    source, dirId, target, routeMode, text, clientKey, goalNote = '',
+  }) {
+    const taskId = stableTaskId(`${source}:${dirId || ''}`, clientKey);
+    const existing = board.tasks[taskId];
+    if (existing?.routing?.operationId) {
+      const routeChanged = existing.routing.mode !== routeMode
+        || (routeMode === 'manual' && existing.routing.targetSessionId !== target);
+      if (routeChanged) {
+        return {
+          ok: false,
+          code: 'idempotency_conflict',
+          error: 'idempotency key reused with different routing',
+        };
+      }
+    }
+    const effectiveRouteMode = existing?.routing?.mode || routeMode;
+    const effectiveTarget = existing?.routing?.targetSessionId || target;
+    const taskShape = { id: taskId, title: core.PENDING_TASK_TITLE };
+    const routed = effectiveRouteMode === 'commander'
+      ? core.buildCommanderRoutedMessage(taskShape, text)
+      : core.buildRoutedMessage(taskShape, text);
+    const message = goalNote + routed;
+    const idempotencyKey = `task-start:${taskId}`;
+    const taskContext = {
+      taskId,
+      taskStart: true,
+      taskSource: source,
+      taskText: text,
+    };
+    let result;
+    try {
+      if (existing?.routing?.operationId) {
+        const originalWorker = existing.routing.workerSessionId
+          || existing.routing.targetSessionId;
+        result = await dispatchToSession(originalWorker, message, {
+          ownerSessionId: existing.routing.mode === 'commander'
+            ? existing.routing.targetSessionId
+            : undefined,
+          idempotencyKey,
+          oneWay: existing.routing.mode === 'commander',
+          requireIdle: false,
+          ...taskContext,
+        });
+        if (result?.ok) {
+          result = {
+            ...result,
+            duplicate: true,
+            targetSessionId: originalWorker,
+            targetLabel: records.get(originalWorker)?.label || originalWorker,
+            queued: existing.routing.status === 'queued',
+          };
+        }
+      } else {
+        result = effectiveRouteMode === 'commander'
+          ? await routeCommanderTask({
+              commanderId: effectiveTarget, message, idempotencyKey, ...taskContext,
+            })
+          : await dispatchToSession(effectiveTarget, message, {
+              idempotencyKey, requireIdle: true, ...taskContext,
+            });
+      }
+    } catch (error) {
+      result = {
+        ok: false,
+        code: error?.code === 'OPERATION_CONFLICT'
+          ? 'idempotency_conflict'
+          : error?.code || null,
+        error: error?.message || 'dispatch_failed',
+      };
+    }
+    if (!result?.ok) return result || { ok: false, error: 'dispatch_failed' };
+    const workerSessionId = effectiveRouteMode === 'commander'
+      ? result.targetSessionId
+      : result.chatId || effectiveTarget;
+    const routedAt = Date.now();
+    const indexed = ensureTaskIndex({
+      taskId,
+      dirId,
+      sessionId: workerSessionId,
+      routing: {
+        mode: effectiveRouteMode,
+        targetSessionId: effectiveTarget,
+        workerSessionId: effectiveRouteMode === 'commander' ? workerSessionId : '',
+        operationId: result.operationId || '',
+        status: result.status || 'admitted',
+        oneWay: effectiveRouteMode === 'commander',
+        elasticWorkerCreated: result.elasticWorkerCreated === true,
+        routedAt,
+      },
+      now: routedAt,
+    });
+    save();
+    notify(dirId, [taskId], indexed.created ? 'created' : undefined);
+    return {
+      ...result,
+      taskId,
+      target: effectiveTarget,
+      routeMode: effectiveRouteMode,
+      workerSessionId,
+    };
+  }
+
+  // Board input and Commander input both call dispatchTaskStart. The board
+  // stores only the task index/routing projection; the target history owns text.
   async function handleBoardSend(req, res) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
@@ -869,62 +970,36 @@ function createTaskBoardRuntime(deps) {
       target = commander.sessionId;
       routeMode = 'commander';
     }
-    const pending = core.createPendingTask(board, { dirId, sessionId: target, seed: text });
-    const routedAt = Date.now();
-    core.setTaskRouting(pending, {
-      mode: routeMode, targetSessionId: target,
-      status: 'routing', routedAt,
+    const result = await dispatchTaskStart({
+      source: 'task-board',
+      dirId,
+      target,
+      routeMode,
+      text,
+      clientKey: requestKey(req),
+      goalNote: goalNoteFor(req.body),
     });
-    save();
-    notify(dirId, [pending.id], 'created');
-    let result;
-    try {
-      const routed = routeMode === 'commander'
-        ? core.buildCommanderRoutedMessage(pending, text)
-        : core.buildRoutedMessage(pending, text);
-      const message = goalNoteFor(req.body) + routed;
-      const idempotencyKey = `taskboard:${pending.id}:${crypto.randomUUID()}`;
-      result = routeMode === 'commander'
-        ? await routeCommanderTask({ commanderId: target, message, idempotencyKey })
-        : await dispatchToSession(target, message, { idempotencyKey, requireIdle: true });
-    } catch (e) {
-      result = { ok: false, error: e?.message || 'dispatch_failed' };
-    }
     if (!result.ok) {
-      const moduleId = pending.moduleId;
-      delete board.tasks[pending.id];
-      if (!Object.values(board.tasks).some(t => t.moduleId === moduleId)) delete board.modules[moduleId];
-      save();
-      notify(dirId, [pending.id]);
+      const conflict = result.code === 'idempotency_conflict';
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
-      return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
+      return res.status(busy || conflict ? 409 : 502).json({
+        error: result.code || result.error || 'dispatch_failed',
+      });
     }
-    core.setTaskRouting(pending, {
-      mode: routeMode,
-      targetSessionId: target,
-      workerSessionId: routeMode === 'commander' ? result.targetSessionId : '',
-      operationId: result.operationId || '',
-      status: result.status || 'admitted',
-      oneWay: routeMode === 'commander',
-      elasticWorkerCreated: result.elasticWorkerCreated === true,
-      routedAt,
-    });
-    save();
-    notify(dirId, [pending.id]);
-    if (routeMode === 'commander') writeCommanderDispatchReceipt(target, pending, result, text);
     res.json({
       ok: true,
-      taskId: pending.id,
-      target,
-      targetLabel: records.get(target)?.label || target,
-      routingMode: routeMode,
-      commanderSessionId: routeMode === 'commander' ? target : null,
-      workerSessionId: routeMode === 'commander' ? result.targetSessionId : null,
-      workerLabel: routeMode === 'commander' ? result.targetLabel : null,
-      queued: routeMode === 'commander' && result.queued === true,
-      elasticWorkerCreated: routeMode === 'commander' && result.elasticWorkerCreated === true,
+      taskId: result.taskId,
+      target: result.target,
+      targetLabel: records.get(result.target)?.label || result.target,
+      routingMode: result.routeMode,
+      commanderSessionId: result.routeMode === 'commander' ? result.target : null,
+      workerSessionId: result.routeMode === 'commander' ? result.workerSessionId : null,
+      workerLabel: result.routeMode === 'commander' ? result.targetLabel : null,
+      queued: result.routeMode === 'commander' && result.queued === true,
+      elasticWorkerCreated: result.routeMode === 'commander' && result.elasticWorkerCreated === true,
       chatId: result.chatId,
       operationId: result.operationId || null,
+      duplicate: result.duplicate === true,
     });
   }
 
@@ -1014,10 +1089,10 @@ function createTaskBoardRuntime(deps) {
 
   return Object.freeze({
     mountRoutes,
+    onMessagePersisted,
     onTurnEnd,
     onClassifyGoal,
     scanPendingClassifications,
-    writeCommanderDispatchReceipt,   // exposed for tests (also called internally by handleSend/handleBoardSend)
     routeCommanderInput: async (commanderId, text, options = {}) => {
       const commander = records.get(commanderId);
       if (!commander || commander.type !== 'commander' || commander.kind !== 'chat') {
@@ -1025,47 +1100,16 @@ function createTaskBoardRuntime(deps) {
       }
       const messageText = String(text || '').trim();
       if (!messageText) return { ok: false, code: 'empty_text' };
-      const markedTaskId = core.extractTaskMarker(messageText);
-      const existing = markedTaskId ? board.tasks[markedTaskId] : null;
-      const task = existing || core.createPendingTask(board, {
-        dirId: commander.dirId, sessionId: commanderId, seed: messageText,
+      const clientKey = String(options.clientMsgId || options.idempotencyKey || '').trim()
+        || crypto.randomUUID();
+      return dispatchTaskStart({
+        source: 'commander',
+        dirId: commander.dirId,
+        target: commanderId,
+        routeMode: 'commander',
+        text: messageText,
+        clientKey,
       });
-      if (!task) return { ok: false, code: 'task_create_failed' };
-      const routed = markedTaskId ? messageText : core.buildCommanderRoutedMessage(task, messageText);
-      if (!existing) {
-        core.setTaskRouting(task, {
-          mode: 'commander', targetSessionId: commanderId,
-          status: 'routing', routedAt: Date.now(),
-        });
-        save();
-        notify(commander.dirId, [task.id], 'created');
-      }
-      const result = await routeCommanderTask({
-        commanderId,
-        message: routed,
-        idempotencyKey: options.idempotencyKey || `commander-input:${task.id}:${crypto.randomUUID()}`,
-      });
-      if (!result.ok) {
-        if (!existing) {
-          const moduleId = task.moduleId;
-          delete board.tasks[task.id];
-          if (!Object.values(board.tasks).some(candidate => candidate.moduleId === moduleId)) delete board.modules[moduleId];
-          save();
-          notify(commander.dirId, [task.id]);
-        }
-        return result;
-      }
-      core.setTaskRouting(task, {
-        mode: 'commander', targetSessionId: commanderId,
-        workerSessionId: result.targetSessionId,
-        operationId: result.operationId || '',
-        status: result.status || 'admitted', routedAt: Date.now(),
-        oneWay: true,
-        elasticWorkerCreated: result.elasticWorkerCreated === true,
-      });
-      save();
-      notify(commander.dirId, [task.id]);
-      return { ...result, taskId: task.id };
     },
     // test/introspection surface
     getBoard: () => board,
