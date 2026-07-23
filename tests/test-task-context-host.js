@@ -167,8 +167,8 @@ test('task-board Commander ingress persists and broadcasts the original source e
   assert.equal(messages.length, 1, 'same board client id must not append twice');
 });
 
-test('canonical session ingress runs ordinary sessions and force-routes Commander sessions', async () => {
-  const { host, states, messages, runTurns } = fixture();
+test('canonical session ingress runs both ordinary and Commander sessions through runTurn', async () => {
+  const { host, states, runTurns } = fixture();
   states.set('commander', { clients: new Set(['commander-client']), _currentTaskId: null });
 
   const ordinary = await host.deliverSessionMessage('worker', '普通消息', {
@@ -179,16 +179,16 @@ test('canonical session ingress runs ordinary sessions and force-routes Commande
   assert.equal(runTurns.length, 1);
   assert.equal(runTurns[0].sessionId, 'worker');
 
-  const commander = await host.deliverSessionMessage('commander', '强制转发任务', {
+  // Commander now goes through the same runTurn path; the LLM decides routing via <<route>> markers.
+  const commander = await host.deliverSessionMessage('commander', '派给工程师改 README', {
     clientMsgId: 'commander-1',
     taskSource: 'task-board',
   });
   assert.equal(commander.ok, true);
-  assert.equal(commander.handled, true);
-  assert.equal(runTurns.length, 1, 'Commander must never start an ordinary model turn');
-  assert.equal(messages.at(-1).sessionId, 'commander');
-  assert.equal(messages.at(-1).content, '强制转发任务');
-  assert.equal(messages.at(-1).taskSource, 'task-board');
+  assert.equal(commander.handled, false);
+  assert.equal(runTurns.length, 2, 'Commander must start a model turn like any other session');
+  assert.equal(runTurns[1].sessionId, 'commander');
+  assert.equal(runTurns[1].text, '派给工程师改 README');
 });
 
 test('production wires task board and WebSocket chat to the same session ingress', () => {
