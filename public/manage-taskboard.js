@@ -472,9 +472,11 @@ function renderTaskBoardDetail(d) {
           ${t.moduleAssignment
             ? `<button class="btn btn-sm" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(t.id)}')"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>`
             : ''}
-          ${t.status === 'active'
-            ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done')">✅ 完成</button>`
-            : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active')">♻️ 重开</button>`}
+          ${t.status !== 'active'
+            ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active')">♻️ 重开</button>`
+            : display.key === 'done'
+              ? ''   // classify already shows「已完成」— a second 完成 button would be a contradiction
+              : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done')">✅ 完成</button>`}
           <button class="btn btn-sm" onclick="if(confirm('归档该任务？（从任务板隐藏，数据保留）'))setTaskBoardStatus('${_tbEsc(t.id)}','archived')">🗄 归档</button>
         </span>
       </div>
