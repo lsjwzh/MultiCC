@@ -319,5 +319,5 @@ test('host composition resolves history and rebound workspace broadcasting lazil
     /workspaceBroadcast:\s*\(dirId, payload\)\s*=>\s*workspaceBroadcast\(dirId, payload\)/);
   assert.match(server, /const memoryRuntime = createMemoryRuntime[\s\S]*chatHistoryRuntime = createChatHistoryRuntime/);
   assert.match(server,
-    /const pendingMemory = getPendingMemoryDistill\(sessionName\);[\s\S]*pendingMemory\.finally\(\(\) => runChatTurn/);
+    /const pendingMemory = getPendingMemoryDistill\(sessionName\);[\s\S]*const deliver = \(\) => taskContextHost\.deliverSessionMessage[\s\S]*pendingMemory\.finally\(deliver\)/);
 });

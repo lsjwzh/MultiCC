@@ -11,6 +11,7 @@
 //   records            — persistedSessions Map (sessionId → record)
 //   loadHistory        — sessionId → message[] (deep copy)
 //   dispatchToSession  — durable dispatch; Commander access requires an internal flag
+//   sendSessionMessage  — canonical per-session ingress used by WebSocket and task board
 //   workspaceBroadcast — (dirId, payload) → void (reaches /ws/meta clients)
 //   atomicWriteJson    — (file, value) → void
 //   isSystemInjected   — msgText → bool (skip recovery/nudge turns)
@@ -21,7 +22,7 @@ const core = require('../task-board');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
-  'routeCommanderTask',
+  'routeCommanderTask', 'sendSessionMessage',
   'workspaceBroadcast', 'atomicWriteJson', 'isSystemInjected',
   'getSessionRunState', 'isSessionBusy',
 ];
@@ -39,6 +40,7 @@ function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
   const {
     file, auxQueue, records, loadHistory, dispatchToSession, routeCommanderTask,
+    sendSessionMessage,
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState, isSessionBusy,
   } = deps;
@@ -766,14 +768,59 @@ function createTaskBoardRuntime(deps) {
     res.json({ ok: true, task: taskDto(task), items });
   }
 
+  async function routeCommanderFollowup(commanderId, taskId, text, options = {}) {
+    const commander = records.get(commanderId);
+    const task = board.tasks[taskId];
+    if (!commander || commander.type !== 'commander' || commander.kind !== 'chat') {
+      return { ok: false, code: 'commander_not_found' };
+    }
+    if (!task) return { ok: false, code: 'task_not_found' };
+    const messageText = String(text || '').trim();
+    if (!messageText) return { ok: false, code: 'empty_text' };
+    const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
+    const source = options.source === 'commander' ? 'commander' : 'task-board';
+    const message = String(options.goalNote || '') + core.buildCommanderRoutedMessage(task, messageText);
+    const result = await routeCommanderTask({
+      commanderId,
+      message,
+      idempotencyKey: `taskboard-followup:${task.id}:${clientKey}`,
+      taskId: task.id,
+      taskStart: false,
+      taskSource: source,
+    });
+    if (!result?.ok) return result || { ok: false, code: 'dispatch_failed' };
+    core.setTaskRouting(task, {
+      mode: 'commander',
+      targetSessionId: commanderId,
+      workerSessionId: result.targetSessionId || '',
+      operationId: result.operationId || '',
+      status: result.status || 'admitted',
+      oneWay: true,
+      elasticWorkerCreated: result.elasticWorkerCreated === true,
+      routedAt: Date.now(),
+    });
+    save();
+    notify(core.taskDirId(board, task), [task.id]);
+    return {
+      ...result,
+      taskId: task.id,
+      taskStart: false,
+      target: commanderId,
+      routeMode: 'commander',
+      workerSessionId: result.targetSessionId || null,
+    };
+  }
+
   async function handleSend(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
     const explicit = String(req.body?.target || '').trim() || null;
+    const followupKey = requestKey(req);
     let target;
     let routeMode;
+    let result;
     if (explicit) {
       if (isSessionBusy(explicit)) {
         return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
@@ -785,6 +832,27 @@ function createTaskBoardRuntime(deps) {
       if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '指定会话不可路由或不属于任务所在 Fleet' });
       if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
       routeMode = 'manual';
+      result = await dispatchToSession(target,
+        goalNoteFor(req.body) + core.buildRoutedMessage(task, text), {
+          idempotencyKey: `taskboard-followup:${task.id}:${followupKey}`,
+          oneWay: true,
+          requireIdle: true,
+          taskId: task.id,
+          taskStart: false,
+          taskSource: 'task-board',
+        });
+      if (result?.ok) {
+        core.setTaskRouting(task, {
+          mode: routeMode,
+          targetSessionId: target,
+          operationId: result.operationId || '',
+          status: result.status || 'admitted',
+          oneWay: true,
+          routedAt: Date.now(),
+        });
+        save();
+        notify(core.taskDirId(board, task), [task.id]);
+      }
     } else {
       const dirId = core.taskDirId(board, task);
       if (commanderMigrationFailure(res, dirId)) return;
@@ -792,46 +860,25 @@ function createTaskBoardRuntime(deps) {
       if (!commander.ok) return commanderFailure(res, commander.code);
       target = commander.sessionId;
       routeMode = 'commander';
+      result = await sendSessionMessage(target, text, {
+        clientMsgId: followupKey,
+        taskId: task.id,
+        taskStart: false,
+        taskSource: 'task-board',
+        goalNote: goalNoteFor(req.body),
+      });
     }
-    const routed = routeMode === 'commander'
-      ? core.buildCommanderRoutedMessage(task, text)
-      : core.buildRoutedMessage(task, text);
-    const message = goalNoteFor(req.body) + routed;
-    const followupKey = requestKey(req);
-    const idempotencyKey = `taskboard-followup:${task.id}:${followupKey}`;
-    const taskContext = {
-      taskId: task.id,
-      taskStart: false,
-      taskSource: 'task-board',
-    };
-    const result = routeMode === 'commander'
-      ? await routeCommanderTask({ commanderId: target, message, idempotencyKey, ...taskContext })
-      : await dispatchToSession(target, message, {
-          idempotencyKey, oneWay: true, requireIdle: true, ...taskContext,
-        });
-    if (!result.ok) {
-      const busy = result.code === 'target_busy' || result.error === 'target_busy';
-      return res.status(busy ? 409 : 502).json({ error: result.code || result.error || 'dispatch_failed' });
+    if (!result?.ok) {
+      const busy = result?.code === 'target_busy' || result?.error === 'target_busy';
+      return res.status(busy ? 409 : 502).json({ error: result?.code || result?.error || 'dispatch_failed' });
     }
-    core.setTaskRouting(task, {
-      mode: routeMode,
-      targetSessionId: target,
-      workerSessionId: routeMode === 'commander' ? result.targetSessionId : '',
-      operationId: result.operationId || '',
-      status: result.status || 'admitted',
-      oneWay: true,
-      elasticWorkerCreated: result.elasticWorkerCreated === true,
-      routedAt: Date.now(),
-    });
-    save();
-    notify(core.taskDirId(board, task), [task.id]);
     res.json({
       ok: true,
       target,
       targetLabel: records.get(target)?.label || target,
       routingMode: routeMode,
       commanderSessionId: routeMode === 'commander' ? target : null,
-      workerSessionId: routeMode === 'commander' ? result.targetSessionId : null,
+      workerSessionId: routeMode === 'commander' ? result.workerSessionId || result.targetSessionId : null,
       workerLabel: routeMode === 'commander' ? result.targetLabel : null,
       queued: routeMode === 'commander' && result.queued === true,
       elasticWorkerCreated: routeMode === 'commander' && result.elasticWorkerCreated === true,
@@ -943,8 +990,9 @@ function createTaskBoardRuntime(deps) {
     };
   }
 
-  // Board input and Commander input both call dispatchTaskStart. The board
-  // stores only the task index/routing projection; the target history owns text.
+  // Automatic board input first enters the Commander session through the same
+  // ingress as its WebSocket chat. Commander policy then calls dispatchTaskStart
+  // to force-forward the task; manual targets continue to dispatch directly.
   async function handleBoardSend(req, res) {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_text' });
@@ -970,15 +1018,22 @@ function createTaskBoardRuntime(deps) {
       target = commander.sessionId;
       routeMode = 'commander';
     }
-    const result = await dispatchTaskStart({
-      source: 'task-board',
-      dirId,
-      target,
-      routeMode,
-      text,
-      clientKey: requestKey(req),
-      goalNote: goalNoteFor(req.body),
-    });
+    const clientKey = requestKey(req);
+    const result = routeMode === 'commander'
+      ? await sendSessionMessage(target, text, {
+          clientMsgId: clientKey,
+          taskSource: 'task-board',
+          goalNote: goalNoteFor(req.body),
+        })
+      : await dispatchTaskStart({
+          source: 'task-board',
+          dirId,
+          target,
+          routeMode,
+          text,
+          clientKey,
+          goalNote: goalNoteFor(req.body),
+        });
     if (!result.ok) {
       const conflict = result.code === 'idempotency_conflict';
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
@@ -1128,15 +1183,18 @@ function createTaskBoardRuntime(deps) {
       if (!messageText) return { ok: false, code: 'empty_text' };
       const clientKey = String(options.clientMsgId || options.idempotencyKey || '').trim()
         || crypto.randomUUID();
+      const source = options.source === 'task-board' ? 'task-board' : 'commander';
       return dispatchTaskStart({
-        source: 'commander',
+        source,
         dirId: commander.dirId,
         target: commanderId,
         routeMode: 'commander',
         text: messageText,
         clientKey,
+        goalNote: String(options.goalNote || ''),
       });
     },
+    routeCommanderFollowup,
     // test/introspection surface
     getBoard: () => board,
     save,

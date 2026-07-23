@@ -547,7 +547,9 @@ function mkRuntime(overrides = {}) {
   const auxCalls = [];
   const broadcasts = [];
   const dispatches = [];
+  const sessionMessages = [];
   let auxResolve;
+  let runtime;
   const deps = {
     file,
     auxQueue: {
@@ -582,6 +584,20 @@ function mkRuntime(overrides = {}) {
         operationId: 'op-1', status: 'delivering', queued: false,
       };
     },
+    sendSessionMessage: async (sessionId, text, options) => {
+      sessionMessages.push({ sessionId, text, options: { ...options } });
+      return options.taskId
+        ? runtime.routeCommanderFollowup(sessionId, options.taskId, text, {
+            clientMsgId: options.clientMsgId,
+            source: options.taskSource,
+            goalNote: options.goalNote,
+          })
+        : runtime.routeCommanderInput(sessionId, text, {
+            clientMsgId: options.clientMsgId,
+            source: options.taskSource,
+            goalNote: options.goalNote,
+          });
+    },
     workspaceBroadcast: (dirId, payload) => broadcasts.push({ dirId, payload }),
     atomicWriteJson: (f, value) => fs.writeFileSync(f, JSON.stringify(value)),
     isSystemInjected: () => false,
@@ -590,8 +606,11 @@ function mkRuntime(overrides = {}) {
     logger: { log: () => {} },
     ...overrides,
   };
-  const runtime = createTaskBoardRuntime(deps);
-  return { runtime, deps, file, auxCalls, broadcasts, dispatches, resolveAux: v => auxResolve(v) };
+  runtime = createTaskBoardRuntime(deps);
+  return {
+    runtime, deps, file, auxCalls, broadcasts, dispatches, sessionMessages,
+    resolveAux: v => auxResolve(v),
+  };
 }
 
 test('assertTaskBoardDeps rejects missing deps', () => {
@@ -727,7 +746,7 @@ test('legacy marker turns still attach without re-enabling AI task creation', ()
 });
 
 test('REST: board, messages, send and status flow', async () => {
-  const { runtime, dispatches } = mkRuntime();
+  const { runtime, dispatches, sessionMessages } = mkRuntime();
   const routes = new Map();
   const app = {
     get: (p, h) => routes.set(`GET ${p}`, h),
@@ -792,6 +811,12 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(dispatches[0].opts.oneWay, true);
   assert.equal(dispatches[0].opts.taskId, tid);
   assert.equal(dispatches[0].opts.taskStart, false);
+  assert.equal(sessionMessages.length, 1);
+  assert.equal(sessionMessages[0].sessionId, 'commander-1');
+  assert.equal(sessionMessages[0].text, '加个删除按钮');
+  assert.equal(sessionMessages[0].options.taskId, tid);
+  assert.equal(sessionMessages[0].options.taskStart, false);
+  assert.equal(sessionMessages[0].options.taskSource, 'task-board');
 
   const stRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/status')(
@@ -917,7 +942,7 @@ test('automatic board routing is Commander-first even with multiple active ordin
 test('same panel client id reuses taskId and operation without a second Commander decision', async () => {
   const commanderCalls = [];
   const replayCalls = [];
-  const { runtime } = mkRuntime({
+  const { runtime, sessionMessages } = mkRuntime({
     routeCommanderTask: async request => {
       commanderCalls.push(request);
       return {
@@ -960,6 +985,9 @@ test('same panel client id reuses taskId and operation without a second Commande
   assert.equal(replayCalls[0].opts.idempotencyKey, `task-start:${first.body.taskId}`);
   assert.equal(second.body.duplicate, true);
   assert.equal(Object.keys(runtime.getBoard().tasks).length, 1);
+  assert.equal(sessionMessages.length, 2);
+  assert.equal(sessionMessages[0].options.clientMsgId, 'stable-client-message');
+  assert.equal(sessionMessages[1].options.clientMsgId, 'stable-client-message');
 
   const changedRoute = response();
   routes.get('/api/task-board/send')({
@@ -973,12 +1001,8 @@ test('same panel client id reuses taskId and operation without a second Commande
   assert.equal(runtime.getBoard().tasks[first.body.taskId].routing.mode, 'commander');
 });
 
-test('panel routing does not create a synthetic Commander receipt or duplicate body store', async () => {
-  const appended = [];
-  const broadcasts = [];
-  const { runtime } = mkRuntime({
-    appendChatMessage: (sessionId, msg) => { const saved = { ...msg, id: `m-${appended.length}` }; appended.push({ sessionId, ...saved }); return saved; },
-    chatBroadcast: (sessionId, payload) => broadcasts.push({ sessionId, payload }),
+test('panel routing sends the original user source through the canonical Commander session ingress', async () => {
+  const { runtime, sessionMessages } = mkRuntime({
     routeCommanderTask: async () => ({
       ok: true, targetSessionId: 'sess-1', targetLabel: '工程师1',
       operationId: 'op-1', status: 'admitted', queued: false,
@@ -991,8 +1015,16 @@ test('panel routing does not create a synthetic Commander receipt or duplicate b
   await new Promise(resolve => setImmediate(resolve));
 
   assert.equal(res.body.routingMode, 'commander');
-  assert.deepEqual(appended, []);
-  assert.deepEqual(broadcasts, []);
+  assert.deepEqual(sessionMessages, [{
+    sessionId: 'commander-1',
+    text: '让工程师改 README',
+    options: {
+      clientMsgId: sessionMessages[0].options.clientMsgId,
+      taskSource: 'task-board',
+      goalNote: '',
+    },
+  }]);
+  assert.ok(sessionMessages[0].options.clientMsgId);
   assert.equal(JSON.stringify(runtime.getBoard()).includes('让工程师改 README'), false);
 });
 

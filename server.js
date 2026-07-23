@@ -3163,7 +3163,6 @@ const {
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
 
-// Task board: AI-tagged module→task view over chat turns (fleet panel).
 function taskBoardSessionBusy(sid) {
   const prep = chatTurnPreparationRuntime.snapshot(sid);
   return prep.phase !== 'idle' || !!chatSessions.get(sid)?.isStreaming || orchestrationChatBusy(sid) || !!defaultRepoActor.isLeased(sid);
@@ -3179,7 +3178,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   records: persistedSessions,
   loadHistory: sessionId => loadChatHistory(sessionId),
   dispatchToSession,
-  routeCommanderTask: commanderRouter.route,
+  routeCommanderTask: commanderRouter.route, sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
@@ -3188,7 +3187,6 @@ const taskBoardRuntime = createTaskBoardRuntime({
   getSessionRunState: sid => {
     const rec = persistedSessions.get(sid);
     if (!rec) return null;
-    // Legacy cards without taskId fall back to the session's persisted verdict.
     const ts = rec.taskState;
     const cls = ts?.classifyState;
     if (!cls) return 'idle';
@@ -3206,7 +3204,8 @@ const taskContextHost = createTaskContextHost({
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
   getTaskBoard: () => taskBoardRuntime, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
-  randomUUID: () => crypto.randomUUID(),
+  randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
+  runTurn: (sessionId, text, options) => runChatTurn(sessionId, text, options),
 });
 
 // Skill-sync owns converter/link state, its watcher and its periodic timer.
@@ -3667,14 +3666,6 @@ function dispatchStateAction(result, ctx) {
     // here left every [nudge, error] pair in the history (prune never matched).
     waitInjector.injectSystemMsg(sessionName, nudge, API_RETRY_DELAY_MS);
   }
-
-  // B (background wait) is RETIRED. Background tasks now keep the main turn
-  // streaming (isStreaming stays true while Monitor / run_in_background run), and a
-  // genuinely async task resumes via the message mechanism (bg-completion injection
-  // / wait-injector callback+poll) — a real event, not a timer guess. So classify no
-  // longer emits B (removed from the prompt) and there is no B-autopush / 3-min idle
-  // "继续" timer. If a stale B somehow arrives, it just falls through to the waiting
-  // broadcast below — no injection.
 
   // Common waiting-state broadcast — driven by classifyState letter.
   // A 'continue' reaching here = C is deliberately NOT auto-driven anymore.
@@ -5924,20 +5915,12 @@ function handleChatWs(ws, req, urlObj) {
       if (msg.type === 'user_message' && msg.text) {
         // Gateway: a bare 确认/取消 resolves a pending dispatch without running the LLM.
         if (persisted.type === 'gateway' && handleGatewayControl(msg.text)) return;
-        if (await taskContextHost.handleCommander({ persisted, sessionName, message: msg, state: cs })) return;
-        // Goal mode: client flags the message; server applies the configured
-        // round/budget limits (per-send override merged over the global config).
         const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};
-        if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) {
-          turnOpts.clientMsgId = msg.clientMsgId;
-        }
+        if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) turnOpts.clientMsgId = msg.clientMsgId;
         const pendingMemory = getPendingMemoryDistill(sessionName);
-        if (pendingMemory) {
-          const queuedText = msg.text;
-          pendingMemory.finally(() => runChatTurn(sessionName, queuedText, turnOpts));
-        } else {
-          runChatTurn(sessionName, msg.text, turnOpts);
-        }
+        const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
+        if (pendingMemory) pendingMemory.finally(deliver);
+        else await deliver();
         return;
       }
     } catch (e) {
