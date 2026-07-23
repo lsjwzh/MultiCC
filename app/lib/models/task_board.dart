@@ -50,6 +50,7 @@ class TaskBoardTask {
   final int createdAt;
   final String runState;
   final TaskModuleAssignment? moduleAssignment;
+  final String? body;
 
   const TaskBoardTask({
     required this.id,
@@ -64,6 +65,7 @@ class TaskBoardTask {
     this.createdAt = 0,
     this.runState = 'idle',
     this.moduleAssignment,
+    this.body,
   });
 
   factory TaskBoardTask.fromJson(Map<String, dynamic> json) => TaskBoardTask(
@@ -97,6 +99,7 @@ class TaskBoardTask {
                 .cast<String, dynamic>(),
           )
         : null,
+    body: json['body']?.toString(),
   );
 }
 
