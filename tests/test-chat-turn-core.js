@@ -333,12 +333,22 @@ test('origin dispatch return wins routing and exactly-once receipt prevents redi
 });
 
 test('typed Commander cannot fan out through assistant markers', () => {
+  // A Commander-originated turn now goes through the marker scanner so its
+  // <<route>> markers get executed one-way. It carries no originDispatchId, so
+  // there is no result 回流 (that branch returned above for dispatched workers).
   const direct = routePostTurn({
     turnId: 'commander-direct', sessionId: 'commander-1', sessionType: 'commander',
-    finalText: '<<dispatch target="worker-1">must stay inert</dispatch>>',
+    finalText: '<<route target="worker-1">do the work</route>>',
   });
   assert.equal(direct.route, 'commander');
-  assert.deepEqual(direct.effects, []);
+  assert.deepEqual(direct.effects.map(effect => effect.type), ['inspect-dispatch-markers']);
+  assert.equal(direct.effects[0].effectId, 'commander-turn:commander-direct');
+  assert.equal(direct.effects[0].requiresDeliveryProof, false);
+  const directRepeated = routePostTurn({
+    turnId: 'commander-direct', sessionId: 'commander-1', sessionType: 'commander',
+    finalText: 'same', receipts: ['commander-turn:commander-direct'],
+  });
+  assert.deepEqual(directRepeated.effects, []);
 
   const first = routePostTurn({
     turnId: 'commander-turn', sessionId: 'commander-1', sessionType: 'commander',
