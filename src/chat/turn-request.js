@@ -11,6 +11,9 @@ const RETRY_REASONS = new Set([
   'transport-disconnect', 'api-error', 'interrupted', 'manual',
 ]);
 const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool']);
+const LEGACY_TASK_SOURCE_ALIASES = new Map([
+  ['commander-route', 'commander'],
+]);
 
 class TurnRequestError extends TypeError {
   constructor(code, message) {
@@ -69,7 +72,8 @@ function normalizeGoalLimits(value) {
 function normalizeTaskContext(input) {
   const taskId = cleanId(input.taskId, 'taskId');
   const start = input.taskStart === true;
-  const source = cleanId(input.taskSource, 'taskSource');
+  const rawSource = cleanId(input.taskSource, 'taskSource');
+  const source = LEGACY_TASK_SOURCE_ALIASES.get(rawSource) || rawSource;
   if (start && !taskId) {
     throw new TurnRequestError('invalid_task', 'taskStart requires taskId');
   }
