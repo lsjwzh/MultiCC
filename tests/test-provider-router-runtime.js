@@ -218,7 +218,7 @@ test('runtime defaults to legacy and an explicit CPR 0.2 router is never adverti
   );
 });
 
-test('installed CPR 0.3 cpr mode proxies Claude and Codex through explicit host paths', async () => {
+test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host paths', async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cpr-mode-integration-'));
   const dataRoot = path.join(temp, 'multicc-data');
   const codexHomesDir = path.join(temp, 'multicc-codex-homes');
@@ -272,7 +272,7 @@ test('installed CPR 0.3 cpr mode proxies Claude and Codex through explicit host 
 
     const router = require('cli-provider-router');
     const packageVersion = require('cli-provider-router/package.json').version;
-    assert.match(packageVersion, /^0\.3\./);
+    assert.match(packageVersion, /^0\.(?:[3-9]|\d{2,})\./);
     assert.match(String(router.API_VERSION), /^1\./);
 
     const providers = integrationProviders(upstream.url);
@@ -379,7 +379,7 @@ test('installed CPR 0.3 cpr mode proxies Claude and Codex through explicit host 
   }
 });
 
-test('installed CPR 0.3 negotiates the production API and required capabilities', (t) => {
+test('installed CPR 0.3+ negotiates the production API and required capabilities', (t) => {
   const router = require('cli-provider-router');
   const packageVersion = require('cli-provider-router/package.json').version;
   const routerApiVersion = String(router.API_VERSION || '');
@@ -397,7 +397,7 @@ test('installed CPR 0.3 negotiates the production API and required capabilities'
     return;
   }
 
-  assert.match(packageVersion, /^0\.3\./);
+  assert.match(packageVersion, /^0\.(?:[3-9]|\d{2,})\./);
   assert.equal(routerApiMajor, 1, `CPR ${packageVersion} must expose API major 1, received ${routerApiVersion || 'missing'}`);
   const runtime = createProviderRouterRuntime({
     mode: 'cpr', providers: fakeProviders(), router, ...HOST,
