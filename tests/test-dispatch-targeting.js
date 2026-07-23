@@ -147,7 +147,7 @@ test('commander gets the dispatch prompt without needing autoDispatch', () => {
   const t = makeFactory(COMMANDER_BASE, {});
   const p = t.buildDispatchContextPrompt('cmd');
   assert.match(p, /指挥官/);
-  assert.match(p, /<<dispatch target=/);
+  assert.match(p, /<<route target=/);
   assert.match(p, /可用目标 sessions: \[/);
 });
 

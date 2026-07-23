@@ -201,19 +201,6 @@ function createTaskContextHost(options = {}) {
   async function deliverSessionMessage(sessionName, text, options = {}) {
     const persisted = getRecord(sessionName);
     if (!persisted) return { ok: false, code: 'session_not_found' };
-    const commander = await routeCommanderMessage({
-      persisted,
-      sessionName,
-      message: {
-        text,
-        clientMsgId: options.clientMsgId,
-        taskId: options.taskId,
-        taskStart: options.taskStart,
-        taskSource: options.taskSource,
-        goalNote: options.goalNote,
-      },
-    });
-    if (commander.handled) return commander;
     const started = await runTurn(sessionName, text, options);
     return {
       ok: started !== false,

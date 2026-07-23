@@ -10,6 +10,34 @@ const DISPATCH_CONFIRM_RE = /^(确认|确定|yes|y|ok)$/i;
 const DISPATCH_CANCEL_RE = /^(取消|算了|no|n)$/i;
 const DISPATCH_RE_G = /<<dispatch\s+target=["'“”]?([^"'“”>\s]+)["'“”]?\s*>([\s\S]*?)<\/dispatch>>?/g;
 
+// <<route>> is the Commander one-way dispatch marker. Unlike <<dispatch>>,
+// it never requires user confirmation and always carries a system-generated
+// taskId for end-to-end tracking.
+const ROUTE_RE = /<<route\s+target=["'\u201c\u201d]?([^"'\u201c\u201d>\s]+)["'\u201c\u201d]?\s*>([\s\S]*?)<\/route>>?/;
+const ROUTE_RE_G = /<<route\s+target=["'\u201c\u201d]?([^"'\u201c\u201d>\s]+)["'\u201c\u201d]?\s*>([\s\S]*?)<\/route>>?/g;
+
+function parseRouteMarker(text) {
+  if (!text) return null;
+  const m = text.match(ROUTE_RE);
+  if (!m) return null;
+  const target = (m[1] || '').trim();
+  const message = (m[2] || '').trim();
+  if (!target || !message) return null;
+  const cleanText = text.replace(ROUTE_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { target, message, cleanText };
+}
+
+function parseAllRouteMarkers(text) {
+  if (!text) return [];
+  const out = [];
+  for (const m of text.matchAll(ROUTE_RE_G)) {
+    const target = (m[1] || '').trim();
+    const message = (m[2] || '').trim();
+    if (target && message) out.push({ target, message });
+  }
+  return out;
+}
+
 // Pull a single dispatch marker out of gateway reply text.
 // Returns { target, message, cleanText } (marker removed) or null.
 function parseDispatchMarker(text) {
@@ -60,4 +88,8 @@ module.exports = {
   parseDispatchMarker,
   isDispatchPlaceholderTarget,
   parseAllDispatchMarkers,
+  ROUTE_RE,
+  ROUTE_RE_G,
+  parseRouteMarker,
+  parseAllRouteMarkers,
 };
