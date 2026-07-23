@@ -1,6 +1,66 @@
 'use strict';
 
 const { isTerminalGateway } = require('./terminal-target-policy');
+const { sanitizePublicText } = require('../session-dto');
+
+const MAX_ROLE_SUMMARY_CHARS = 320;
+const MAX_RECENT_TASKS = 4;
+const MAX_RECENT_TASK_CHARS = 120;
+
+function compactSafeText(value, maxChars) {
+  const safe = sanitizePublicText(value, maxChars * 2);
+  return safe ? safe.replace(/\s+/g, ' ').trim().slice(0, maxChars) : '';
+}
+
+function roleSummaryFor(record) {
+  if (!record || typeof record !== 'object') return '';
+  if (record.rolePrompt) {
+    return compactSafeText(record.rolePrompt, MAX_ROLE_SUMMARY_CHARS);
+  }
+  if (typeof record.agent === 'string') {
+    return compactSafeText(record.agent, MAX_ROLE_SUMMARY_CHARS);
+  }
+  if (record.agent && typeof record.agent === 'object') {
+    const parts = ['role', 'description', 'name', 'label']
+      .map(key => compactSafeText(record.agent[key], MAX_ROLE_SUMMARY_CHARS))
+      .filter(Boolean);
+    if (parts.length) return compactSafeText(parts.join(' · '), MAX_ROLE_SUMMARY_CHARS);
+  }
+  return compactSafeText(record.label, MAX_ROLE_SUMMARY_CHARS);
+}
+
+function recentTasksFor(record) {
+  const state = record?.taskState && typeof record.taskState === 'object'
+    ? record.taskState : {};
+  const history = Array.isArray(state.classifyHistory)
+    ? [...state.classifyHistory].reverse()
+    : [];
+  if (state.goal) {
+    history.push({
+      goal: state.goal,
+      phase: state.phase,
+      state: state.classifyState,
+    });
+  }
+
+  const seen = new Set();
+  const recent = [];
+  for (const entry of history) {
+    if (!entry || typeof entry !== 'object') continue;
+    const task = compactSafeText(entry.goal, MAX_RECENT_TASK_CHARS);
+    const key = task.normalize('NFKC').toLowerCase().replace(/\s+/g, '');
+    if (!task || seen.has(key)) continue;
+    seen.add(key);
+    const item = { task };
+    const phase = compactSafeText(entry.phase, 40);
+    const taskState = compactSafeText(entry.state, 24);
+    if (phase) item.phase = phase;
+    if (taskState) item.state = taskState;
+    recent.push(item);
+    if (recent.length >= MAX_RECENT_TASKS) break;
+  }
+  return recent;
+}
 
 // Dispatch targeting: which sibling sessions a given session may dispatch to,
 // and the cross-session dispatch context prompt injected into a turn. Extracted
@@ -21,6 +81,7 @@ function createDispatchTargeting({ records, chatSessions, normalizeEffort } = {}
 function dispatchableSessionsFor(sessionId) {
   const from = records.get(sessionId);
   if (!from || !from.dirId) return [];
+  const includeRoutingProfile = from.type === 'commander';
   return [...records.values()]
     .filter(s => s.id !== sessionId)
     // Never dispatch to a system/commander session: aux/gateway are internal,
@@ -34,13 +95,19 @@ function dispatchableSessionsFor(sessionId) {
     .slice(0, 30)
     .map(s => {
       const activeChat = chatSessions.get(s.id);
-      return {
+      const target = {
         id: s.id,
         label: s.label || '',
         cli: s.cli || 'claude',
         kind: s.kind || 'terminal',
         active: !!activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming),
       };
+      if (includeRoutingProfile) {
+        target.role = roleSummaryFor(s);
+        target.recentTasks = recentTasksFor(s);
+        target.load = activeChat?.isStreaming ? 'running' : 'available';
+      }
+      return target;
     });
 }
 
@@ -89,6 +156,12 @@ function buildDispatchContextPrompt(sessionId) {
     isCommander
       ? '必须优先复用列表中的已有匹配会话；不得因为会话当前活跃、任务名称提到某种 CLI/终端，或为了“更合适”就新建会话。只有确实没有可胜任的现有 worker 时才报告缺少目标。'
       : '如果要并行执行多个子任务，可以在同一回复中输出多个 dispatch 标记；系统会把结果自动回流给你。',
+    ...(isCommander ? [
+      '候选字段含 role（稳定职责摘要）、recentTasks（最近任务，按新到旧）和 load（当前负载）。这些是服务端提供的有界事实；不要根据 id、CLI 名称或最近活跃时间猜职责。',
+      '选择顺序：① 用户明确点名的合法 chat session；② 与 recentTasks 中同一任务、模块或延续工作最匹配的会话；③ role 与任务领域最匹配的会话；④ 做过最相似近期任务的会话；⑤ 只有前述匹配相当时才用 load 破同分。',
+      'role 表示长期职责，优先级高于一次偶发任务；recentTasks 用于判断经验与上下文连续性，不能把一次任务永久当成该会话的角色。',
+      'load="running" 时 route_task 会持久排队且不会打断当前 turn。不要仅因最相关会话正在运行就改投不相关 worker；也不要把同一任务广播给多个会话。',
+    ] : []),
     isCommander
       ? '默认只选择 kind="chat"。任务正文出现“终端/terminal/CLI”不代表用户指定了 terminal session；只有用户原话点名某个 terminal 的完整 id 或完整 label 时，才可选择该 terminal id 并设置 allow_terminal=true。'
       : '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id，结果同样自动回流。',
