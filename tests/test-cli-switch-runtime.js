@@ -178,7 +178,7 @@ test('route validation preserves missing, system, terminal and unsupported respo
   assert.match(res.body.error, /claude, codex, opencode, zcode, qoder/);
 });
 
-test('same CLI is a transactional no-op while unavailable and busy targets fail before switching', async () => {
+test('same CLI is a transactional no-op while unavailable and busy targets are force-terminated', async () => {
   let harness = createHarness();
   let res = await harness.invoke({ body: { cli: 'claude' } });
   assert.equal(res.statusCode, 200);
@@ -194,10 +194,18 @@ test('same CLI is a transactional no-op while unavailable and busy targets fail 
   assert.match(res.body.error, /not installed/);
 
   harness = createHarness({ streamState: { busy: true, queued: 0 } });
+  harness.chat.claudeProc = {
+    kill: signal => harness.effects.push(`process-kill:${signal}`),
+  };
   res = await harness.invoke({ body: { cli: 'codex' } });
-  assert.equal(res.statusCode, 409);
-  assert.deepEqual(res.body.stream, { busy: true, queued: 0 });
-  assert.equal(harness.session.cli, 'claude');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.forced, true);
+  assert.equal(harness.session.cli, 'codex');
+  assert.equal(harness.chat.claudeProc, null);
+  assert.equal(harness.effects.includes('kill-reason:cli_switch'), true);
+  assert.equal(harness.effects.includes('process-kill:SIGTERM'), true);
+  assert.equal(harness.effects.includes('stream-close:s1'), true);
+  assert.equal(harness.effects.includes('chat:stream_end'), true);
 });
 
 test('successful switch preserves side-effect order, checkpoint and target state', async () => {
@@ -208,6 +216,7 @@ test('successful switch preserves side-effect order, checkpoint and target state
   assert.equal(res.body.cli, 'codex');
   assert.equal(res.body.fromCli, 'claude');
   assert.equal(res.body.handoffId, 'handoff_fixed');
+  assert.equal(res.body.forced, false);
   assert.equal(session.pendingCliHandoff.checkpoint.git.head, 'abc123');
   assert.equal(session.pendingCliHandoff.checkpoint.transcript[0].text, 'history:s1');
   assert.equal(session.provider, 'codex-default');
@@ -250,6 +259,21 @@ test('production composition mounts one runtime route and keeps only bounded exp
   assert.match(source, /const consumePendingCliHandoff = cliSwitchRuntime\.consumePendingCliHandoff/);
   assert.doesNotMatch(source, /function\s+performCliSwitch\s*\(/);
   assert.doesNotMatch(source, /app\.post\(['"]\/api\/sessions\/:id\/switch-cli/);
+});
+
+test('web and app explain forced termination and send the force intent', () => {
+  const webHost = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
+  const webPicker = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat-live-ui.js'), 'utf8');
+  const appService = fs.readFileSync(
+    path.join(__dirname, '..', 'app', 'lib', 'services', 'session_service.dart'), 'utf8');
+  const appPicker = fs.readFileSync(
+    path.join(__dirname, '..', 'app', 'lib', 'widgets', 'cli_switch_sheet.dart'), 'utf8');
+  assert.match(webHost, /JSON\.stringify\(\{ \.\.\.picked, force: true \}\)/);
+  assert.match(appService, /'force': true/);
+  for (const source of [webPicker, appPicker]) {
+    assert.match(source, /直接终止该回复并清空排队消息/);
+    assert.doesNotMatch(source, /运行中切换会被服务端拒绝|请在当前回复结束后切换/);
+  }
 });
 
 test('install-specs returns the static official command table', async () => {
