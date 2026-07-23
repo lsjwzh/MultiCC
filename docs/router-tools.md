@@ -19,7 +19,10 @@ queuing, idempotency, and result completion remain server-side.
 
 Busy targets are handled by the existing durable outbox. A routed request never
 interrupts an active worker turn. Every target must exist, be a non-system
-worker, and belong to the caller's directory.
+worker, and belong to the caller's directory. Normal routing accepts only
+`kind=chat`; a terminal target is rejected unless the caller passes
+`allow_terminal: true`, which Commander instructions permit only after an
+explicit user request for that terminal.
 
 ## CLI integration
 

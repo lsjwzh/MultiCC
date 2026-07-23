@@ -159,7 +159,7 @@ function createRouterToolRuntime({
     });
   }
 
-  function targetFor(context, rawTarget) {
+  function targetFor(context, rawTarget, allowTerminal = false) {
     const targetId = cleanId(rawTarget, 'target_session_id');
     if (targetId === context.sessionId) {
       throw new RouterToolError('self_dispatch', 'cannot route a task to the caller session');
@@ -172,6 +172,13 @@ function createRouterToolRuntime({
     }
     if (target.type === 'aux' || target.type === 'gateway' || target.type === 'commander') {
       throw new RouterToolError('invalid_target', 'target must be a non-system worker session');
+    }
+    if (target.kind !== 'chat' && allowTerminal !== true) {
+      throw new RouterToolError(
+        'terminal_target_requires_explicit_opt_in',
+        'terminal targets require allow_terminal=true',
+        409,
+      );
     }
     return { targetId, target };
   }
@@ -188,7 +195,9 @@ function createRouterToolRuntime({
   }
 
   async function admit(context, tool, args, resultMode) {
-    const { targetId } = targetFor(context, args.target_session_id);
+    const { targetId } = targetFor(
+      context, args.target_session_id, args.allow_terminal === true,
+    );
     const message = cleanText(args.message, 'message', MAX_MESSAGE_LENGTH);
     const identity = admissionIdentity(
       context, tool, targetId, message, args.idempotency_key,
