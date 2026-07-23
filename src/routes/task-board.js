@@ -1018,6 +1018,31 @@ function createTaskBoardRuntime(deps) {
     res.json({ ok: true, task: taskDto(task) });
   }
 
+  function handleArchiveCompleted(req, res) {
+    const dirId = String(req.body?.dirId || '').trim() || null;
+    const taskIds = [];
+    const now = Date.now();
+    const displayStateByTaskId = new Map(
+      core.buildBoardDto(board, getSessionRunState).tasks.map(task => [task.id, task.runState]),
+    );
+    for (const task of Object.values(board.tasks)) {
+      if (task.status === 'archived') continue;
+      if (dirId && core.taskDirId(board, task) !== dirId) continue;
+      // Keep this predicate aligned with taskDisplayState(): an explicit
+      // completed status wins, while canonical classify state may also finish
+      // a still-active card.
+      if (task.status !== 'done' && displayStateByTaskId.get(task.id) !== 'done') continue;
+      task.status = 'archived';
+      task.updatedAt = now;
+      taskIds.push(task.id);
+    }
+    if (taskIds.length) {
+      save();
+      notify(dirId, taskIds);
+    }
+    res.json({ ok: true, archivedCount: taskIds.length, taskIds });
+  }
+
   function handleReclassify(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
@@ -1066,6 +1091,7 @@ function createTaskBoardRuntime(deps) {
       });
     });
     app.post('/api/task-board/tasks/:taskId/status', handleStatus);
+    app.post('/api/task-board/archive-completed', handleArchiveCompleted);
     app.post('/api/task-board/tasks/:taskId/reclassify', handleReclassify);
     app.post('/api/task-board/send', (req, res) => {
       handleBoardSend(req, res).catch(e => {
