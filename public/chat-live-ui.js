@@ -704,7 +704,7 @@
         resetRow.append(reset, resetText);
         const warning = doc.createElement('div');
         warning.style.cssText = 'font-size:12px;color:#d29922;line-height:1.55;margin-bottom:14px;';
-        warning.textContent = '请在当前回复结束后切换。如果无法继续，请勾选上面的“重新开始”后再试。';
+        warning.textContent = '如果当前回复仍在运行，确认切换会直接终止该回复并清空排队消息；已保存的历史与任务上下文会保留。';
         const actions = doc.createElement('div');
         actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
         const cancel = doc.createElement('button');

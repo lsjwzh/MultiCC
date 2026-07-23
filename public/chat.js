@@ -1457,7 +1457,7 @@ cliBtn?.addEventListener('click', async () => {
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/switch-cli`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(picked),
+      body: JSON.stringify({ ...picked, force: true }),
     });
     const data = await res.json();
     if (!res.ok) {
