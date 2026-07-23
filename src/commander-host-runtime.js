@@ -58,6 +58,10 @@ function createCommanderRoutingHost(options = {}) {
       idempotencyKey: routeOptions.idempotencyKey,
       oneWay: true,
       requireIdle: false,
+      taskId: routeOptions.taskId,
+      taskStart: routeOptions.taskStart,
+      taskSource: routeOptions.taskSource,
+      taskText: routeOptions.taskText,
     }),
     logger: options.logger,
   });

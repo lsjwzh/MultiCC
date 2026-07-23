@@ -156,6 +156,70 @@ async function waitUntil(check, message, attempts = 100) {
     assert.notEqual(fs.realpathSync(execInvocation.cwd), fs.realpathSync(durableCommander.worktreePath),
       'Commander never executes the CLI');
 
+    const paths = createPaths({ dataDir: dataRoot });
+    const workerHistoryFile = path.join(paths.chatHistoryDir, `${board.routing.workerSessionId}.json`);
+    const workerHistory = await waitUntil(() => {
+      if (!fs.existsSync(workerHistoryFile)) return null;
+      const messages = JSON.parse(fs.readFileSync(workerHistoryFile, 'utf8'));
+      return messages.some(message => message.role === 'assistant' && message.content === 'FAKE-WORKER-DONE')
+        ? messages : null;
+    }, 'worker history did not persist the routed turn');
+    const canonicalStart = workerHistory.find(message => message.role === 'user' && message.taskStart === true);
+    assert.equal(canonicalStart.taskId, board.id);
+    assert.equal(canonicalStart.taskSource, 'commander');
+    assert.equal(canonicalStart.taskText, '实现一个隔离测试功能');
+    assert.match(canonicalStart.content, /Commander 单向路由任务/);
+
+    const replayResult = new Promise((resolve, reject) => {
+      const prior = events.filter(event => event.type === 'result' && event.commanderRoute === true).length;
+      const timer = setTimeout(() => reject(new Error('Commander idempotent replay timeout')), 10000);
+      const handler = raw => {
+        let event;
+        try { event = JSON.parse(raw.toString()); } catch (_) { return; }
+        events.push(event);
+        if (event.type === 'result' && event.commanderRoute === true
+            && events.filter(item => item.type === 'result' && item.commanderRoute === true).length > prior) {
+          clearTimeout(timer);
+          socket.off('message', handler);
+          resolve();
+        }
+      };
+      socket.on('message', handler);
+      socket.send(JSON.stringify({
+        type: 'user_message', text: '实现一个隔离测试功能', clientMsgId: 'commander-isolated-1',
+      }));
+    });
+    await replayResult;
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const afterReplayRows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
+    assert.equal(afterReplayRows.filter(row => row.args[0] === 'exec').length, 1,
+      'same Commander taskId must not execute twice');
+
+    const panelFirst = await api('POST', '/api/task-board/send', {
+      dirId: directory.id,
+      text: '从任务面板进入统一通道',
+      clientMsgId: 'panel-isolated-1',
+    });
+    const panelReplay = await api('POST', '/api/task-board/send', {
+      dirId: directory.id,
+      text: '从任务面板进入统一通道',
+      clientMsgId: 'panel-isolated-1',
+    });
+    assert.equal(panelFirst.taskId, panelReplay.taskId);
+    const panelCard = await waitUntil(async () => {
+      const value = await api('GET', '/api/task-board');
+      return value.tasks.find(task => task.id === panelFirst.taskId && task.body) || null;
+    }, 'panel task did not project from canonical worker history');
+    assert.equal(panelCard.body, '从任务面板进入统一通道');
+    assert.equal(panelCard.legacy, false);
+    assert.equal((await api('GET', '/api/task-board')).tasks.filter(task => task.id === panelFirst.taskId).length, 1);
+    assert.equal(fs.readFileSync(paths.taskBoardFile, 'utf8').includes('从任务面板进入统一通道'), false,
+      'task board index must not duplicate the canonical task body');
+    await waitUntil(() => {
+      const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
+      return rows.filter(row => row.args[0] === 'exec').length === 2;
+    }, 'panel task did not trigger worker execution exactly once');
+
     await new Promise(resolve => setTimeout(resolve, 500));
     assert.equal(events.some(event => event.type === 'assistant'), false, 'Commander emits no assistant reply');
     assert.equal(events.some(event => event.type === 'dispatch.result'), false, 'worker result never flows back to Commander');
