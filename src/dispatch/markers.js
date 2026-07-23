@@ -60,12 +60,15 @@ function isDispatchPlaceholderTarget(targetId) {
     .toLowerCase();
   if (/^(\.{2,}|…+)$/.test(normalized)) return true;
   if (/^<[^>]+>$/.test(normalized)) return true;
+  if (/^[xyz]{2,}$/i.test(normalized)) return true;
+  if (/^(worker|session|target|id)[-_]?\d*$/i.test(normalized)) return true;
   return new Set([
     'sid', 'session_id', 'session id', 'sessionid',
     'target', 'target_id', 'target id',
     'worker session id', 'worker-session-id',
     '真实 session id', '真实sessionid',
     '目标会话id', '目标 session id',
+    'xxx', 'yyy', 'zzz', 'worker-id', 'session-id',
   ]).has(normalized);
 }
 
