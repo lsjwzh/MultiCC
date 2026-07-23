@@ -4711,6 +4711,13 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
         type: 'assistant',
         message: { content: [{ type: 'tool_use', name: 'Thinking', id: evt.id, input: tool.input }] },
       });
+      // codex reasoning arrives complete (no partial stream), so pair it with a
+      // tool_result immediately — otherwise the Thinking card is stuck showing
+      // 「running...」forever because no result ever follows.
+      forward({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: evt.id, content: evt.text || '', is_error: false }] },
+      });
       continue;
     }
     if (evt.type === 'complete') {
