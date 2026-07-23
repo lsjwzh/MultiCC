@@ -116,6 +116,16 @@ test('task context is explicit, trusted, and preserved only for routed task star
     taskText: 'tool-routed task',
   });
   assert.equal(routed.task.source, 'router-tool');
+  const legacyCommanderRoute = normalizeTurnRequest({
+    sessionId: 'worker-1',
+    text: 'legacy Commander marker task',
+    taskId: 'tsk-legacy-router',
+    taskStart: true,
+    taskSource: 'commander-route',
+    taskText: 'legacy Commander marker task',
+  });
+  assert.equal(legacyCommanderRoute.task.source, 'commander',
+    'persisted pre-1.2 Commander outbox items remain deliverable after restart');
   assert.throws(() => normalizeTurnRequest({
     sessionId: 'worker-1', text: 'x', taskStart: true, taskId: 'tsk-x',
   }), /trusted task source/);

@@ -23,6 +23,10 @@ function fixture(t, overrides = {}) {
     ['worker-a', { id: 'worker-a', dirId: 'dir-a', kind: 'chat', type: 'worker' }],
     ['worker-b', { id: 'worker-b', dirId: 'dir-b', kind: 'chat', type: 'worker' }],
     ['terminal-a', { id: 'terminal-a', dirId: 'dir-a', kind: 'terminal', type: null }],
+    ['terminal-a-gw-chat', {
+      id: 'terminal-a-gw-chat', dirId: 'dir-a', kind: 'chat',
+      type: null, ephemeral: true, gatewayFor: 'terminal-a',
+    }],
     ['commander', { id: 'commander', dirId: 'dir-a', kind: 'chat', type: 'commander' }],
     ['aux', { id: 'aux', dirId: 'dir-a', kind: 'chat', type: 'aux' }],
   ]);
@@ -212,6 +216,7 @@ test('target and slave lineage validation fail closed', async t => {
     ['commander', 'invalid_target'],
     ['aux', 'invalid_target'],
     ['terminal-a', 'terminal_target_requires_explicit_opt_in'],
+    ['terminal-a-gw-chat', 'terminal_gateway_not_direct_target'],
     ['missing', 'target_not_found'],
   ]) {
     await assert.rejects(
@@ -229,12 +234,31 @@ test('target and slave lineage validation fail closed', async t => {
     }),
     error => error.code === 'terminal_target_requires_explicit_opt_in',
   );
-  const terminal = await runtime.execute(capability, 'route_task', {
+  const genericTerminalCapability = runtime.issueContext({
+    sessionId: 'caller',
+    turnId: 'turn-terminal-generic',
+    userText: '给我安装好 zcode 和 qoder 终端',
+  });
+  await assert.rejects(
+    runtime.execute(genericTerminalCapability, 'route_task', {
+      target_session_id: 'terminal-a',
+      message: 'install terminal software',
+      allow_terminal: true,
+    }),
+    error => error.code === 'terminal_target_not_explicitly_requested',
+  );
+  const terminalCapability = runtime.issueContext({
+    sessionId: 'caller',
+    turnId: 'turn-terminal-explicit',
+    userText: '请把这个任务派给 terminal-a',
+  });
+  const terminal = await runtime.execute(terminalCapability, 'route_task', {
     target_session_id: 'terminal-a',
     message: 'run the explicitly requested command',
     allow_terminal: true,
   });
   assert.equal(terminal.ok, true);
+  assert.equal(terminal.execution_session_id, 'terminal-a');
   const admitted = await operations.admitDispatch({
     ownerSessionId: 'caller',
     resultSessionId: 'caller',

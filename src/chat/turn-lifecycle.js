@@ -20,6 +20,7 @@ function createTurnLifecycle(request, input = {}) {
   return {
     turnId,
     sessionId: request.sessionId,
+    userText: clean(request.text),
     lineage: freezeLineage(request.origin),
     launchReason: request.launch.reason === 'continue' ? 'continue' : 'request',
     resultDurable: false,

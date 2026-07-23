@@ -21,6 +21,10 @@ const BASE = [
   { id: 'me', dirId: 'd1', type: 'chat', autoDispatch: true, effort: 'high' },
   { id: 'sib-a', dirId: 'd1', type: 'chat', label: 'Worker A', cli: 'claude', kind: 'chat' },
   { id: 'sib-b', dirId: 'd1', type: 'codex', label: '', cli: 'codex', kind: 'terminal' },
+  {
+    id: 'sib-b-gw-chat', dirId: 'd1', type: null, label: 'sib-b (gw)',
+    cli: 'codex', kind: 'chat', ephemeral: true, gatewayFor: 'sib-b',
+  },
   { id: 'other-dir', dirId: 'd2', type: 'chat', label: 'Elsewhere' },
   { id: 'aux', dirId: 'd1', type: 'aux' },
   { id: 'gw', dirId: 'd1', type: 'gateway' },
@@ -38,6 +42,7 @@ test('excludes aux/gateway and other-directory sessions', () => {
   assert.ok(!ids.includes('aux'));
   assert.ok(!ids.includes('gw'));
   assert.ok(!ids.includes('other-dir'));
+  assert.ok(!ids.includes('sib-b-gw-chat'), 'terminal execution gateways are not a second worker choice');
 });
 
 test('maps label/cli/kind with defaults and derives active from the chat session', () => {
@@ -147,7 +152,10 @@ test('commander gets the dispatch prompt without needing autoDispatch', () => {
   const t = makeFactory(COMMANDER_BASE, {});
   const p = t.buildDispatchContextPrompt('cmd');
   assert.match(p, /指挥官/);
-  assert.match(p, /<<route target=/);
+  assert.match(p, /route_task/);
+  assert.match(p, /优先复用/);
+  assert.match(p, /用户原话点名/);
+  assert.doesNotMatch(p, /<<route target=/);
   assert.match(p, /可用目标 sessions: \[/);
 });
 
