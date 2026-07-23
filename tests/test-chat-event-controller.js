@@ -363,6 +363,34 @@ test('live UI progress refreshes one stable row until the terminal update', () =
   assert.equal(body.children[0].className, 'dm-row dm-done');
 });
 
+test('classify bar reveals the manual mark-done button only while waiting for user', () => {
+  const { document, ids } = fakeDocument();
+  const bar = new FakeElement('div'); ids.set('aux-classify-bar', bar);
+  ids.set('ac-goal', new FakeElement('span'));
+  ids.set('ac-phase', new FakeElement('span'));
+  ids.set('ac-state', new FakeElement('span'));
+  const markBtn = new FakeElement('button'); ids.set('ac-mark-done', markBtn);
+  const marks = [];
+  const liveUi = liveUiApi.createLiveUi({
+    document, messagesEl: new FakeElement('div'), onMarkTaskDone: () => marks.push(1),
+  });
+
+  liveUi.renderAuxClassify('实现登录', 'implementing', 'W');
+  assert.equal(bar.classList.contains('show'), true);
+  assert.equal(bar.classList.contains('can-mark-done'), true);
+
+  markBtn.click();
+  assert.deepEqual(marks, [1]);
+  assert.equal(markBtn.disabled, true);
+
+  liveUi.renderAuxClassify('实现登录', 'implementing', 'P');
+  assert.equal(bar.classList.contains('can-mark-done'), false);
+
+  liveUi.renderAuxClassify('', 'idle', 'W');
+  assert.equal(bar.classList.contains('show'), false);
+  assert.equal(bar.classList.contains('can-mark-done'), false);
+});
+
 function makeDanmakuUi(extra = {}) {
   const { document, ids } = fakeDocument();
   for (const id of [

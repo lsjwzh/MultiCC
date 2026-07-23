@@ -98,6 +98,16 @@
     // danmaku row, notify the host with its task id so it can (best-effort)
     // request a real cancel. Absent → the ✕ button just clears the row locally.
     const onDanmakuDismiss = opts.onDanmakuDismiss || null;
+    // Optional host hook: manual "mark task done" from the classify bar. The bar
+    // only reveals the button while the aux state is waiting-for-user (W).
+    const onMarkTaskDone = opts.onMarkTaskDone || null;
+    const _markDoneBtn = doc.getElementById('ac-mark-done');
+    if (_markDoneBtn) {
+      _markDoneBtn.addEventListener('click', () => {
+        _markDoneBtn.disabled = true;
+        try { if (onMarkTaskDone) onMarkTaskDone(); } catch (_) {}
+      });
+    }
 
     const danmaku = {
       collapsed: false,
@@ -236,7 +246,7 @@
       const bar = doc.getElementById('aux-classify-bar');
       if (!bar) return;
       const normalizedGoal = String(goal || '').trim();
-      if (!normalizedGoal) { bar.classList.remove('show'); return; }
+      if (!normalizedGoal) { bar.classList.remove('show', 'can-mark-done'); return; }
       const goalEl = doc.getElementById('ac-goal');
       const phaseEl = doc.getElementById('ac-phase');
       const stateEl = doc.getElementById('ac-state');
@@ -252,6 +262,7 @@
         'st-running', 'st-completed', 'st-waiting', 'st-error');
       if (stateEl) { stateEl.textContent = display.label; stateEl.style.display = ''; }
       bar.classList.add(`st-${display.barTint}`);
+      bar.classList.toggle('can-mark-done', (classifyState || 'P') === 'W');
       bar.classList.add('show');
     }
 

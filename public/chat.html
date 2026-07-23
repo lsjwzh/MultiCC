@@ -810,6 +810,13 @@
     #aux-classify-bar.st-completed .ac-state { color: #56d364; border-color: #23863655; background: #0f2417; }
     #aux-classify-bar.st-waiting   .ac-state { color: #e3b341; border-color: #e3b34155; background: #241c08; }
     #aux-classify-bar.st-error     .ac-state { color: #f85149; border-color: #da363355; background: #2a1213; }
+    #aux-classify-bar .ac-mark-done {
+      display: none; flex: none; padding: 1px 9px; border-radius: 9px; font-size: 10px; font-weight: 700;
+      background: #14331f; color: #56d364; border: 1px solid #23863655; cursor: pointer; line-height: 1.5;
+    }
+    #aux-classify-bar .ac-mark-done:hover { background: #1c4529; border-color: #2ea04388; }
+    #aux-classify-bar .ac-mark-done:disabled { opacity: .6; cursor: default; }
+    #aux-classify-bar.can-mark-done .ac-mark-done { display: inline-flex; }
     .worktree-conflict-bar {
       display: flex; align-items: center; gap: 8px;
       padding: 6px 12px; font-size: 12px;
@@ -1776,6 +1783,7 @@
     <span class="ac-goal" id="ac-goal"></span>
     <span class="ac-state" id="ac-state"></span>
     <span class="ac-phase" id="ac-phase"></span>
+    <button type="button" class="ac-mark-done" id="ac-mark-done" title="把当前等待中的任务手动标记为完成">✓ 完成</button>
   </div>
 
   <!-- Messages -->
