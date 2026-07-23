@@ -154,6 +154,7 @@ test('session admin mounts the complete bounded route set once', () => {
     'GET /api/dashboard/sessions',
     'GET /api/dashboard/stats',
     'POST /api/sessions/:id/reclassify',
+    'POST /api/sessions/:id/mark-task-done',
     'POST /api/reclassify-all',
     'GET /api/directories/:id/sessions',
     'GET /api/directories/:id/workspace',
@@ -212,6 +213,47 @@ test('manual reclassify keeps D/W guard and fire-and-forget completion semantics
   fixture.queue.unhealthy = true;
   const unavailable = invoke(handler, { params: { id: 't1' } });
   assert.equal(unavailable.statusCode, 503);
+});
+
+test('manual mark-task-done flips a waiting task to completed through dispatchStateAction', () => {
+  const fixture = createFixture();
+  const handler = fixture.app.routes.get('POST /api/sessions/:id/mark-task-done');
+
+  const missing = invoke(handler, { params: { id: 'nope' } });
+  assert.equal(missing.statusCode, 404);
+
+  const aux = invoke(handler, { params: { id: '__aux__' } });
+  assert.equal(aux.statusCode, 400);
+
+  // s1 starts as D -> already done, no dispatch side effect
+  const done = invoke(handler, { params: { id: 's1' } });
+  assert.equal(done.statusCode, 200);
+  assert.equal(done.body.alreadyDone, true);
+  assert.equal(fixture.dispatched.length, 0);
+
+  // waiting chat session -> completed dispatch, non-terminal
+  fixture.records.get('s1').taskState = { classifyState: 'W', goal: 'wait goal', phase: 'verifying' };
+  const ok = invoke(handler, { params: { id: 's1' } });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.body.classifyState, 'D');
+  assert.equal(fixture.dispatched.length, 1);
+  assert.equal(fixture.dispatched[0].result.state, 'completed');
+  assert.equal(fixture.dispatched[0].result.goal, 'wait goal');
+  assert.equal(fixture.dispatched[0].context.sessionName, 's1');
+  assert.equal(fixture.dispatched[0].context.isTerminal, false);
+
+  // streaming session -> 409, no extra dispatch
+  fixture.chatSessions.get('s1').isStreaming = true;
+  const busy = invoke(handler, { params: { id: 's1' } });
+  assert.equal(busy.statusCode, 409);
+  assert.equal(fixture.dispatched.length, 1);
+  fixture.chatSessions.get('s1').isStreaming = false;
+
+  // terminal-kind session -> isTerminal true
+  fixture.records.get('t1').taskState = { classifyState: 'W', goal: 'tg', phase: 'tp' };
+  const term = invoke(handler, { params: { id: 't1' } });
+  assert.equal(term.statusCode, 200);
+  assert.equal(fixture.dispatched[1].context.isTerminal, true);
 });
 
 test('history read failures degrade per session and never abort bulk reclassify', () => {

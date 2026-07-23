@@ -534,6 +534,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
   isRestarting: () => _isRestarting,
   getBaseTitle: () => _baseTitle,
   debug: dbg,
+  onMarkTaskDone: markTaskDone,
 });
 let chatEventController = null;
 let _eventGeneration = 0;
@@ -733,6 +734,27 @@ function attachForkButton(msgEl) {
 function _classifyDisp(classifyState) { return chatLiveUi.classifyDisplay(classifyState); }
 function renderAuxClassify(goal, phase, classifyState) {
   return chatLiveUi.renderAuxClassify(goal, phase, classifyState);
+}
+
+// Manual "mark task done" from the classify bar. The bar only shows the button
+// while aux thinks the session is waiting-for-user; the server flips it to D and
+// the resulting WS task_state hides the button again.
+async function markTaskDone() {
+  if (!_sessionName) { addSystemMsg('无 session id，无法标记完成'); return; }
+  try {
+    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/mark-task-done`), { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      addSystemMsg(data.alreadyDone ? '✓ 任务已是完成状态' : '✓ 已手动标记当前任务为完成');
+    } else {
+      addSystemMsg(`⚠️ 标记完成失败：${data.note || data.error || res.status}`);
+    }
+  } catch (e) {
+    addSystemMsg(`⚠️ 标记完成异常：${e && e.message ? e.message : e}`);
+  } finally {
+    const b = document.getElementById('ac-mark-done');
+    if (b) b.disabled = false;
+  }
 }
 function attachUsageLine(bubbleEl, usage, roleBreakdown) {
   return chatLiveUi.attachUsageLine(bubbleEl, usage, roleBreakdown);
