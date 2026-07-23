@@ -52,7 +52,11 @@ class SessionService {
         .post(
           Uri.parse(_url('/api/sessions/$id/switch-cli')),
           headers: _headers,
-          body: jsonEncode({'cli': cli.name, 'fresh': fresh}),
+          body: jsonEncode({
+            'cli': cli.name,
+            'fresh': fresh,
+            'force': true,
+          }),
         )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) {

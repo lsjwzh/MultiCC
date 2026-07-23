@@ -398,7 +398,8 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
             const Padding(
               padding: EdgeInsets.only(top: 4, bottom: 14),
               child: Text(
-                '请在当前回复结束后切换。运行中切换会被服务端拒绝。',
+                '如果当前回复仍在运行，确认切换会直接终止该回复并清空排队消息；'
+                '已保存的历史与任务上下文会保留。',
                 style: TextStyle(color: Color(0xFFe3b341), fontSize: 12),
               ),
             ),
