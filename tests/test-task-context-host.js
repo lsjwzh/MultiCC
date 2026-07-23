@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 const { createTaskContextHost } = require('../src/task-context-host');
 
 function fixture() {
@@ -41,18 +43,56 @@ test('task boundary and inherited events stay on the current task until a new id
   const first = host.beginTurn(state, {
     id: 'tsk-one', start: true, source: 'task-board', text: 'one',
   });
-  assert.deepEqual(first, { taskId: 'tsk-one', boundaryChanged: true });
+  assert.deepEqual(first, { taskId: 'tsk-one', boundaryChanged: true, detached: false });
   host.appendMessage('worker', { role: 'assistant', content: 'reply' });
   host.broadcast('worker', { type: 'tool_use', name: 'Read' });
   assert.equal(messages[0].taskId, 'tsk-one');
   assert.equal(events[0].event.taskId, 'tsk-one');
 
   const continuation = host.beginTurn(state, {});
-  assert.deepEqual(continuation, { taskId: 'tsk-one', boundaryChanged: false });
+  assert.deepEqual(continuation, { taskId: 'tsk-one', boundaryChanged: false, detached: false });
   const second = host.beginTurn(state, {
     id: 'tsk-two', start: true, source: 'commander', text: 'two',
   });
-  assert.deepEqual(second, { taskId: 'tsk-two', boundaryChanged: true });
+  assert.deepEqual(second, { taskId: 'tsk-two', boundaryChanged: true, detached: false });
+});
+
+test('an untracked dispatch detaches from the prior task and survives history restore', () => {
+  const { host, states, messages } = fixture();
+  const state = states.get('worker');
+  host.beginTurn(state, {
+    id: 'tsk-board', start: true, source: 'task-board', text: 'board task',
+  });
+  host.appendMessage('worker', {
+    role: 'user',
+    content: 'board task',
+    ...host.messageMetadata({
+      id: 'tsk-board', start: true, source: 'task-board', text: 'board task',
+    }, 'tsk-board'),
+  });
+
+  const detached = host.beginTurn(state, {}, { detach: true });
+  assert.deepEqual(detached, { taskId: null, boundaryChanged: true, detached: true });
+  host.appendMessage('worker', {
+    role: 'user',
+    content: 'A marker dispatch',
+    ...host.messageMetadata({}, null, { detached: true }),
+  });
+  host.appendMessage('worker', { role: 'assistant', content: 'A result' });
+
+  assert.equal(state._currentTaskId, null);
+  assert.equal(messages.at(-2).taskDetached, true);
+  assert.equal(messages.at(-2).taskId, undefined);
+  assert.equal(messages.at(-1).taskId, undefined);
+  assert.equal(host.restore(messages), null,
+    'restart must not revive the task that preceded an untracked dispatch');
+});
+
+test('production detaches only dispatch requests that carry no canonical taskId', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(source, /const detachTaskContext = !!originDispatchId && !requestedTask\.id/);
+  assert.match(source, /beginTurn\(cs,\s*requestedTask,\s*\{\s*detach:\s*detachTaskContext\s*\}\)/);
+  assert.match(source, /messageMetadata\(requestedTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
 });
 
 test('Commander input routes once, persists a standard source message, and emits no assistant copy', async () => {
