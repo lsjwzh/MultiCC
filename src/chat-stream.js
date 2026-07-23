@@ -263,7 +263,7 @@ function clearIdle(s) {
 
 /**
  * Ensure a streaming session exists (does not spawn until first send()).
- * cfg: { cmd, cwd, sessionId, baseArgs, beforeSpawn?, env?, idleMs?, onExit?,
+ * cfg: { cmd, cwd, sessionId, baseArgs, beforeSpawn?, env?, idleMs?, onExit?, onDispose?,
  *        onNewSessionId?, resume? }
  */
 function ensure(name, cfg) {
@@ -280,6 +280,7 @@ function ensure(name, cfg) {
       idleMaxHoldMs: cfg.idleMaxHoldMs || DEFAULT_IDLE_MAX_HOLD_MS,
       isBackgroundActive: cfg.isBackgroundActive || null,
       onExit: cfg.onExit || null,
+      onDispose: cfg.onDispose || null,
       onNewSessionId: cfg.onNewSessionId || null,
       onBackgroundEvent: cfg.onBackgroundEvent || null,
       proc: null, started: false, busy: false,
@@ -296,6 +297,7 @@ function ensure(name, cfg) {
     if (cfg.onNewSessionId !== undefined) s.onNewSessionId = cfg.onNewSessionId;
     if (cfg.onBackgroundEvent !== undefined) s.onBackgroundEvent = cfg.onBackgroundEvent;
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
+    if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.isBackgroundActive !== undefined) s.isBackgroundActive = cfg.isBackgroundActive;
     if (cfg.idleMaxHoldMs !== undefined) s.idleMaxHoldMs = cfg.idleMaxHoldMs;
   }
@@ -339,7 +341,10 @@ function cancel(name) {
 function close(name) {
   cancel(name);
   const s = sessions.get(name);
-  if (s) clearIdle(s);
+  if (s) {
+    clearIdle(s);
+    try { s.onDispose?.(); } catch (_) {}
+  }
   sessions.delete(name);
 }
 
