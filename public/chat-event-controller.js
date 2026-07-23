@@ -221,6 +221,7 @@
           break;
         case 'stream_event': handleStreamEvent(message.event, expectedGeneration); break;
         case 'assistant': finalizeAssistantMsg(message.message); break;
+      case 'part_delta': handlePartDelta(message); break;
         case 'user':
           if (message.tool_use_result || message.message?.content) handleToolResult(message);
           break;
@@ -405,8 +406,7 @@
       return null;
     }
 
-    function finalizeAssistantMsg(message) {
-      if (!message?.content) return;
+    function finalizeAssistantMsg(message) {      if (!message?.content) return;
       liveUi.hideThinking();
       for (const block of message.content) {
         if (block.type === 'text' && block.text) {
@@ -430,6 +430,56 @@
           historyView.updateToolInput(tool);
           host.maybeScrollToBottom?.();
         }
+      }
+    }
+
+    // Token-level delta sidecar from the codex proxy (see server.js onDelta). The
+    // proxy sits between codex CLI and the provider and forwards each upstream
+    // text/reasoning/tool delta here, so a codex turn renders incrementally —
+    // text streams token-by-token, reasoning shows live, tools update as they
+    // run — instead of everything appearing at once at item.completed. This
+    // mirrors opencode's part-stream model. Deltas are pure UX; the authoritative
+    // blocks still arrive via finalizeAssistantMsg, which will overwrite/complete
+    // whatever these deltas previewed.
+    function handlePartDelta(message) {
+      const d = message && message.delta;
+      if (!d) return;
+      if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
+      liveUi.hideThinking?.();
+      if (d.type === 'text' && d.text) {
+        state.currentTextContent = (state.currentTextContent || '') + d.text;
+        host.renderCurrentText?.();
+        host.maybeScrollToBottom?.();
+      } else if (d.type === 'reasoning' && d.text) {
+        // Reasoning streams into a dedicated "Thinking" tool card keyed by a
+        // stable sidecar id, accumulating verbatim — readable live, not as JSON.
+        const rid = `sidecar-reasoning-${message.sessionId || ''}`;
+        let tool = state.currentToolCards.get(`id:${rid}`);
+        if (!tool) {
+          const card = historyView.createToolCard('Thinking', rid);
+          tool = { card, inputJson: '{}', name: 'Thinking', id: rid, reasoning: '' };
+          state.currentToolCards.set(`id:${rid}`, tool);
+          historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
+        }
+        tool.reasoning = (tool.reasoning || '') + d.text;
+        tool.inputJson = JSON.stringify({ text: tool.reasoning });
+        historyView.updateToolInput(tool);
+        host.maybeScrollToBottom?.();
+      } else if (d.type === 'tool' && d.tool && d.toolId) {
+        let tool = findCurrentToolCardById(d.toolId);
+        if (!tool) {
+          const card = historyView.createToolCard(d.tool.name || 'Tool', d.toolId);
+          tool = { card, inputJson: '{}', name: d.tool.name || 'Tool', id: d.toolId, args: '' };
+          state.currentToolCards.set(`id:${d.toolId}`, tool);
+          historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
+        }
+        // Tool arguments arrive in fragments (like codex function_call_arguments);
+        // accumulate and surface what's parsed so far.
+        tool.args = (tool.args || '') + (d.tool.arguments || '');
+        try { tool.inputJson = JSON.stringify(JSON.parse(tool.args)); }
+        catch (_) { tool.inputJson = JSON.stringify({ arguments: tool.args }); }
+        historyView.updateToolInput(tool);
+        host.maybeScrollToBottom?.();
       }
     }
 

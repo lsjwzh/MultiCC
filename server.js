@@ -1682,6 +1682,17 @@ providerRouterRuntime.mountProtocolProxies(app, {
   getPort: () => PORT,
   onUsageObserved: recordUsageObserved,
   onActivity: e => livenessRuntime.recordProxyActivity(e),
+  // Token-level delta sidecar (opencode-style incremental rendering for codex).
+  // The proxy forwards each upstream delta with its routing context; route it to
+  // the originating chat session so the UI can render reasoning/text/tool
+  // incrementally instead of waiting for item.completed. Best-effort — never
+  // throws (a broadcast failure must never break the proxy stream).
+  onDelta: (delta, ctx) => {
+    try {
+      if (!delta || !ctx || !ctx.sessionId) return;
+      chatBroadcast(ctx.sessionId, { type: 'part_delta', sessionId: ctx.sessionId, role: ctx.role, model: ctx.model || null, delta });
+    } catch (_) {}
+  },
 });
 
 // Session query, dashboard, workspace and classify-admin routes share one
