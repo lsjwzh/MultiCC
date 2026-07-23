@@ -739,6 +739,7 @@ test('REST: board, messages, send and status flow', async () => {
     'GET /api/task-board/tasks/:taskId/messages',
     'POST /api/task-board/tasks/:taskId/send',
     'POST /api/task-board/tasks/:taskId/status',
+    'POST /api/task-board/archive-completed',
     'POST /api/task-board/tasks/:taskId/reclassify',
     'POST /api/task-board/send',
     'POST /api/task-board/backfill',
@@ -798,10 +799,83 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(stRes.body.ok, true);
   assert.equal(runtime.getBoard().tasks[tid].status, 'done');
 
+  const archiveRes = res();
+  routes.get('POST /api/task-board/archive-completed')({ body: {} }, archiveRes);
+  assert.equal(archiveRes.body.ok, true);
+  assert.equal(archiveRes.body.archivedCount, 1);
+  assert.deepEqual(archiveRes.body.taskIds, [tid]);
+  assert.equal(runtime.getBoard().tasks[tid].status, 'archived');
+
   const badRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/status')(
     { params: { taskId: tid }, body: { status: 'weird' } }, badRes);
   assert.equal(badRes.code, 400);
+});
+
+test('bulk cleanup archives only completed tasks in scope and is idempotent', () => {
+  const { runtime, broadcasts } = mkRuntime({
+    getSessionRunState: sid => sid === 'session-done-by-session' ? 'done' : 'idle',
+  });
+  const board = runtime.getBoard();
+  const add = (id, dirId, status, runState) => {
+    const task = core.createPendingTask(board, {
+      taskId: id, dirId, sessionId: `session-${id}`, now: 1,
+    });
+    task.status = status;
+    task.runState = runState;
+    return task;
+  };
+  const byClassify = add('done-by-classify', 'dir-1', 'active', 'done');
+  const bySession = add('done-by-session', 'dir-1', 'active', 'idle');
+  delete bySession.runState;
+  const byStatus = add('done-by-status', 'dir-1', 'done', 'running');
+  const waiting = add('still-waiting', 'dir-1', 'active', 'waiting');
+  const otherDir = add('other-directory', 'dir-2', 'active', 'done');
+  const alreadyArchived = add('already-archived', 'dir-1', 'archived', 'done');
+  const routes = new Map();
+  runtime.mountRoutes({
+    get: (p, h) => routes.set(`GET ${p}`, h),
+    post: (p, h) => routes.set(`POST ${p}`, h),
+  });
+  const response = () => ({
+    code: 200,
+    status(c) { this.code = c; return this; },
+    json(body) { this.body = body; return this; },
+  });
+
+  const first = response();
+  routes.get('POST /api/task-board/archive-completed')(
+    { body: { dirId: 'dir-1' } }, first);
+  assert.equal(first.body.archivedCount, 3);
+  assert.deepEqual(
+    new Set(first.body.taskIds),
+    new Set([byClassify.id, bySession.id, byStatus.id]),
+  );
+  assert.equal(byClassify.status, 'archived');
+  assert.equal(bySession.status, 'archived');
+  assert.equal(byStatus.status, 'archived');
+  assert.equal(waiting.status, 'active');
+  assert.equal(otherDir.status, 'active');
+  assert.equal(alreadyArchived.status, 'archived');
+  assert.deepEqual(broadcasts.at(-1).payload.taskIds.sort(), first.body.taskIds.sort());
+
+  const second = response();
+  routes.get('POST /api/task-board/archive-completed')(
+    { body: { dirId: 'dir-1' } }, second);
+  assert.equal(second.body.archivedCount, 0);
+  assert.deepEqual(second.body.taskIds, []);
+});
+
+test('task board cleanup controls use the bulk archive endpoint and display-state predicate', () => {
+  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
+  for (const source of [manage, meta]) {
+    assert.match(source, /一键清理/);
+    assert.match(source, /\/api\/task-board\/archive-completed/);
+    assert.match(source, /MultiCCTaskBoardUi\.taskDisplayState\(t\)\.done/);
+  }
+  assert.match(manage, /JSON\.stringify\(\{ dirId \}\)/);
+  assert.match(meta, /body: '\{\}'/);
 });
 
 test('automatic board routing is Commander-first even with multiple active ordinary sessions', async () => {
@@ -1419,6 +1493,18 @@ test('authenticated task-board mutations do not depend on transport locality', a
   }, status);
   assert.equal(status.code, 200);
   assert.equal(status.body.task.status, 'archived');
+
+  const completed = core.createPendingTask(runtime.getBoard(), {
+    dirId: 'dir-1', sessionId: 'sess-1', seed: '允许远程批量归档', now: 2,
+  });
+  completed.status = 'done';
+  const cleanup = response();
+  routes.get('/api/task-board/archive-completed')({
+    ...remoteRequest, body: { dirId: 'dir-1' },
+  }, cleanup);
+  assert.equal(cleanup.code, 200);
+  assert.equal(cleanup.body.archivedCount, 1);
+  assert.equal(completed.status, 'archived');
 
   const missingSend = response();
   routes.get('/api/task-board/tasks/:taskId/send')({

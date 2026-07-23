@@ -137,7 +137,7 @@
 <main>
   <div class="left-col">
     <div class="tb-wrap">
-      <div class="tb-head"><span>📋 任务板</span><span class="tb-count" id="tb-count">加载中…</span><button class="btn-icon" onclick="fetchTaskBoard()" title="刷新任务板" style="margin-left:8px">🔄</button></div>
+      <div class="tb-head"><span>📋 任务板</span><span class="tb-count" id="tb-count">加载中…</span><button class="btn-sec" id="tb-archive-completed" onclick="archiveCompletedTasks(this)" title="归档全部已完成任务" disabled>🧹 一键清理</button><button class="btn-icon" onclick="fetchTaskBoard()" title="刷新任务板" style="margin-left:8px">🔄</button></div>
       <div id="taskboard"><div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div></div>
     </div>
     <section class="fleet" id="fleet"></section>
@@ -354,9 +354,35 @@ async function reclassifyAllPending(button) {
   finally { if (button) button.disabled = false; }
 }
 
+async function archiveCompletedTasks(button) {
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch('/api/task-board/archive-completed', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    if (selectedTask && (d.taskIds || []).includes(selectedTask)) {
+      selectedTask = null;
+      $('task-detail').innerHTML = '<div class="td-placeholder">已归档全部已完成任务。</div>';
+    }
+    await fetchTaskBoard();
+  } catch (e) {
+    alert('一键清理失败：' + e.message);
+    if (button) button.disabled = false;
+  }
+}
+
 function renderTaskBoard() {
   const box = $('taskboard'); box.innerHTML = '';
   const visible = tb.tasks.filter(t => t.status !== 'archived');
+  const completedCount = visible.filter(t =>
+    window.MultiCCTaskBoardUi.taskDisplayState(t).done).length;
+  const cleanup = $('tb-archive-completed');
+  if (cleanup) {
+    cleanup.disabled = completedCount === 0;
+    cleanup.textContent = `🧹 一键清理${completedCount ? ` (${completedCount})` : ''}`;
+  }
   $('tb-count').textContent = `${tb.modules.length} 模块 · ${visible.length} 任务`;
   if (!visible.length) {
     box.innerHTML = '<div class="tb-empty">还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。</div>';
