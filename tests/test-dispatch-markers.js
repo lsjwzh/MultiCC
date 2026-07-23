@@ -79,6 +79,7 @@ test('isDispatchPlaceholderTarget flags the ids the model must not use as target
   for (const bad of [
     '', '   ', '...', '…', '<目标会话id>', 'SID', 'session_id', 'session id',
     'target', 'target_id', 'worker session id', '真实 session id', '目标会话id',
+    '<真实id', '<真实id>', '<x', 'abc>', '<<route', 'id>',
   ]) {
     assert.equal(isDispatchPlaceholderTarget(bad), true, `${JSON.stringify(bad)} is a placeholder`);
   }
