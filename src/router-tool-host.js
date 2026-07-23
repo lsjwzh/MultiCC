@@ -26,6 +26,7 @@ function createRouterToolHost({
     orchestrationRuntime,
     resolveContext,
     taskBoard,
+    recordUserInput,
   } = {}) {
     runtime = createRouterToolRuntime({
       records,
@@ -34,6 +35,7 @@ function createRouterToolHost({
       completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
       tick: () => orchestrationRuntime.tick(),
       onAdmitted: taskBoard?.recordRouterAdmission,
+      recordUserInput,
       resolveContext: resolveContext || (sessionId => {
         const turn = activeTurnForSession(sessionId);
         return turn ? {

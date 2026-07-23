@@ -37,6 +37,47 @@ const TARGET_SCHEMA = {
 
 const TOOLS = [
   {
+    name: 'request_user_input',
+    title: 'Declare user input required',
+    description: 'Record a structured signal that this turn cannot continue without a user decision, confirmation, choice, or missing required information. This tool does not collect the reply and returns immediately. After calling it, present the question and options as the final assistant response, then stop the turn without running more tools.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['question'],
+      properties: {
+        question: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 16384,
+          description: 'The exact question the user must answer before work can continue.',
+        },
+        reason: {
+          type: 'string',
+          maxLength: 4096,
+          description: 'Optional concise explanation of why the task cannot safely continue.',
+        },
+        options: {
+          type: 'array',
+          maxItems: 12,
+          uniqueItems: true,
+          items: { type: 'string', minLength: 1, maxLength: 512 },
+          description: 'Optional user-facing choices. Omit for free-text input.',
+        },
+        allow_multiple: {
+          type: 'boolean',
+          default: false,
+          description: 'Whether the user may select more than one option.',
+        },
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'route_task',
     title: 'Route task (one way)',
     description: 'Durably queue a one-way task for a same-directory worker. Returns after admission and never waits for or recollects the worker result.',

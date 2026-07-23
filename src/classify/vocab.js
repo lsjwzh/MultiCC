@@ -122,6 +122,20 @@ const PHASE_LABELS = {
 function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
 function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 
+// Structured tool evidence is authoritative for "waiting on user". The Aux
+// classifier still owns goal/phase and remains the legacy fallback when no
+// signal exists, but it cannot override an unresolved explicit request.
+function applyUserInputEvidence(result, pendingUserInput) {
+  if (!pendingUserInput || pendingUserInput.resolved === true) return result;
+  return {
+    ...result,
+    state: 'waiting',
+    background: false,
+    error: false,
+    evidence: 'request_user_input',
+  };
+}
+
 // Build the classify system prompt (instructions only, no data).
 function buildClassifySystemPrompt(priorGoal) {
   return `你是任务状态分析器。你需要判断【当前】闭环任务的状态。请严格按以下步骤思考，最后只输出三行结果。
@@ -174,6 +188,7 @@ module.exports = {
   buildClassifySystemPrompt,
   classifyDisplay,
   phaseLabel,
+  applyUserInputEvidence,
   CLASSIFY_DISPLAY,
   PHASE_LABELS,
 };
