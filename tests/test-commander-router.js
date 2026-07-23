@@ -59,11 +59,32 @@ test('only stable worker metadata is auto-routable; specialist roles are ignored
     { id: 'architect', dirId: 'fleet', kind: 'chat', label: '架构师', rolePrompt: '系统架构' },
     { id: 'product', dirId: 'fleet', kind: 'chat', label: '产品 · UI · UX', rolePrompt: '产品设计' },
   ] });
-  const result = await h.router.route({ commanderId: 'commander', message: '修复后端 API' });
+  const result = await h.router.route({
+    commanderId: 'commander',
+    message: '修复后端 API',
+    taskId: 'tsk-route',
+    taskStart: true,
+    taskSource: 'commander',
+    taskText: '修复后端 API',
+  });
   assert.equal(result.ok, true);
   assert.equal(result.targetSessionId, 'backend');
   assert.deepEqual(h.dispatches.map(item => item.target), ['backend']);
   assert.equal(h.dispatches[0].options.commanderId, 'commander');
+  assert.deepEqual(
+    {
+      taskId: h.dispatches[0].options.taskId,
+      taskStart: h.dispatches[0].options.taskStart,
+      taskSource: h.dispatches[0].options.taskSource,
+      taskText: h.dispatches[0].options.taskText,
+    },
+    {
+      taskId: 'tsk-route',
+      taskStart: true,
+      taskSource: 'commander',
+      taskText: '修复后端 API',
+    },
+  );
 });
 
 test('trusted full-stack legacy sessions are stamped once before routing', async () => {

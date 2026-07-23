@@ -71,6 +71,13 @@
   .tb-task.done .tb-dot { background: #6e7681; }
   .tb-task.done .tb-title { color: #6e7681; text-decoration: line-through; }
   .tb-task .tb-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tb-title-cell { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .tb-body-fold, .td-body-fold { font-size: 11px; color: #8b949e; }
+  .tb-body-fold summary, .td-body-fold summary { cursor: pointer; color: #58a6ff; user-select: none; }
+  .tb-body-fold pre, .td-body-fold pre { margin: 5px 0 0; padding: 7px 9px; max-height: 180px; overflow: auto;
+    white-space: pre-wrap; word-break: break-word; border: 1px solid #30363d; border-radius: 6px;
+    background: #0d1117; color: #c9d1d9; font: inherit; }
+  .tb-body-pending { font-size: 10px; color: #6e7681; font-style: italic; }
   .tb-task .tb-meta { color: #6e7681; font-size: 11px; white-space: nowrap; }
   .tb-mod-actions, .tb-meta { display: flex; align-items: center; gap: 6px; }
   .tb-class-state { font-size: 10px; padding: 1px 6px; border-radius: 9px; background: #21262d; color: #8b949e; }
@@ -352,7 +359,7 @@ function renderTaskBoard() {
   const visible = tb.tasks.filter(t => t.status !== 'archived');
   $('tb-count').textContent = `${tb.modules.length} 模块 · ${visible.length} 任务`;
   if (!visible.length) {
-    box.innerHTML = '<div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div>';
+    box.innerHTML = '<div class="tb-empty">还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。</div>';
     return;
   }
   for (const mod of window.MultiCCTaskBoardUi.sortModules(tb.modules)) {
@@ -374,8 +381,9 @@ function renderTaskBoard() {
       const assignment = t.moduleAssignment;
       row.innerHTML = `
         <span class="tb-icon">${display.icon}</span>
-        <span class="tb-title">${esc(t.title)}</span>
+        <span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span>
         <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
+      row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
       const retry = row.querySelector('.tb-reclassify');
       if (retry) retry.onclick = (e) => { e.stopPropagation(); reclassifyTask(t.id, retry); };
@@ -391,7 +399,8 @@ function renderTaskBoard() {
     const clsRun = display.running ? ' running' : '';
     const row = document.createElement('div');
     row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
-    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title">${esc(t.title)}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}<span>${t.refCount}轮</span></span>`;
+    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}<span>${t.refCount}轮</span></span>`;
+    row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
     row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
     box.appendChild(row);
   }
@@ -447,6 +456,17 @@ function renderTaskDetail(d) {
       </span>
     </div>
     <div class="td-chips">${routingChip}${sessChips}${areaChips}</div>`;
+  if (t.body) {
+    const bodyFold = document.createElement('details');
+    bodyFold.className = 'td-body-fold';
+    const summary = document.createElement('summary');
+    summary.textContent = t.legacy ? '旧记录任务正文' : '完整任务正文';
+    const pre = document.createElement('pre');
+    pre.textContent = t.body;
+    bodyFold.appendChild(summary);
+    bodyFold.appendChild(pre);
+    head.appendChild(bodyFold);
+  }
   panel.appendChild(head);
 
   const msgs = document.createElement('div'); msgs.className = 'td-msgs';
@@ -507,6 +527,8 @@ function renderTaskDetail(d) {
   if (reclassifyBtn) reclassifyBtn.onclick = () => reclassifyTask(t.id, reclassifyBtn);
 
   const sendBtn = panel.querySelector('#td-send');
+  let pendingFollowupId = '';
+  let pendingFollowupText = '';
   sendBtn.onclick = async () => {
     const input = panel.querySelector('#td-input');
     const resultEl = panel.querySelector('#td-result');
@@ -516,8 +538,15 @@ function renderTaskDetail(d) {
     resultEl.textContent = '路由中…'; resultEl.className = 'msg';
     try {
       const target = panel.querySelector('#td-target').value || undefined;
+      if (!pendingFollowupId || pendingFollowupText !== text) {
+        pendingFollowupId = window.crypto?.randomUUID
+          ? window.crypto.randomUUID()
+          : `tb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        pendingFollowupText = text;
+      }
       const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(t.id)}/send`, {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text, target }) });
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text, target, clientMsgId: pendingFollowupId }) });
       const res = await r.json();
       if (!r.ok || !res.ok) throw new Error(res.note || res.error || r.status);
       resultEl.textContent = res.routingMode === 'commander'
@@ -525,6 +554,8 @@ function renderTaskDetail(d) {
         : `已路由到「${res.targetLabel}」，回复将自动归档回本任务`;
       resultEl.className = 'msg ok';
       input.value = '';
+      pendingFollowupId = '';
+      pendingFollowupText = '';
       showGatheringFloat();
       setTimeout(fetchTaskBoard, 1500);
     } catch (e) { resultEl.textContent = String(e.message); resultEl.className = 'msg err'; }

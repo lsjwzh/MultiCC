@@ -153,6 +153,10 @@ function createCommanderRouter(options = {}) {
         commanderId,
         idempotencyKey: clean(input.idempotencyKey) || null,
         queued: target.queued,
+        taskId: clean(input.taskId) || null,
+        taskStart: input.taskStart === true,
+        taskSource: clean(input.taskSource) || null,
+        taskText: typeof input.taskText === 'string' ? input.taskText : '',
       });
       if (!dispatched?.ok) {
         return { ok: false, code: dispatched?.code || dispatched?.error || 'dispatch_failed' };
