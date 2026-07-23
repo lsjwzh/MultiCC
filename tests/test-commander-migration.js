@@ -217,15 +217,9 @@ test('a newly migrated Commander is identified by the task board and safely queu
         operationId: 'queued-op', status: 'admitted', queued: false, elasticWorkerCreated: true,
       };
     },
-    sendSessionMessage: (sessionId, text, options) => runtime.routeCommanderInput(
-      sessionId,
-      text,
-      {
-        clientMsgId: options.clientMsgId,
-        source: options.taskSource,
-        goalNote: options.goalNote,
-      },
-    ),
+    sendSessionMessage: async (sessionId, text, options) => {
+      return { ok: true, handled: false, chatId: sessionId };
+    },
     workspaceBroadcast() {},
     atomicWriteJson: (file, value) => fs.writeFileSync(file, JSON.stringify(value)),
     isSystemInjected: () => false,
@@ -242,9 +236,8 @@ test('a newly migrated Commander is identified by the task board and safely queu
 
   assert.equal(response.code, 200);
   assert.equal(response.body.target, 'commander-dir-a');
+  assert.equal(response.body.routingMode, 'commander');
+  assert.equal(response.body.workerSessionId, null, 'worker assignment is async via LLM');
   assert.equal(response.body.queued, false);
-  assert.equal(response.body.workerSessionId, 'elastic-worker');
-  assert.equal(response.body.elasticWorkerCreated, true);
-  assert.equal(dispatches.length, 1);
-  assert.equal(dispatches[0].options.oneWay, true);
+  assert.equal(dispatches.length, 0, 'no synchronous dispatch; Commander LLM routes via <<route>>');
 });

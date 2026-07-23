@@ -62,14 +62,17 @@ test('natural-language dispatch narration is inert without a structured marker',
   assert.deepEqual(parseAllDispatchMarkers('这是对 dispatch 和 worker 路由的历史复盘，不是执行指令。'), []);
 });
 
-test('chat host does not infer dispatch intent from assistant prose', () => {
+test('chat host parses both dispatch and route markers from assistant prose', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.doesNotMatch(source, /ULTRA_DISPATCH_INTENT_RE|maybeNudgeUltracodeDispatch|lastUltraNudgeAt/);
-  assert.match(source, /const markers = parseAllDispatchMarkers\(finalText\);\s*if \(!markers\.length\) return;/);
-  assert.match(source, /if \(from\.type === 'commander'\) return;/,
-    'typed Commander must use the canonical task router, never the marker path');
-  assert.match(source, /replyTo:\s*dispatcherId,[\s\S]*?oneWay:\s*false/,
-    'ordinary marker dispatch remains the explicit two-way A path');
+  assert.match(source, /parseAllDispatchMarkers\(finalText\)/);
+  assert.match(source, /parseAllRouteMarkers\(finalText\)/);
+  assert.doesNotMatch(source, /if \(from\.type === 'commander'\) return;/,
+    'Commander now runs the LLM and uses <<route>> markers like any other session');
+  assert.match(source, /oneWay:\s*true/,
+    'route markers use one-way dispatch with system-generated taskId');
+  assert.match(source, /oneWay:\s*false/,
+    'ordinary dispatch markers remain the explicit two-way path');
 });
 
 test('isDispatchPlaceholderTarget flags the ids the model must not use as targets', () => {

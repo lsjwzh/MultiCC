@@ -71,15 +71,21 @@ function buildDispatchContextPrompt(sessionId) {
     : [
         '[MultiCC cross-session dispatch]',
         isCommander
-          ? '你是本 fleet 的指挥官：可以把自包含子任务分发给下面列出的任意 worker session（含跨 fleet/跨目录）。你只派活、不亲自执行；只有确实需要 worker 干活时才输出标记。'
+          ? '你是本 fleet 的指挥官：分析任务后，用 <<route>> 标记把自包含子任务单向派发给下面列出的 worker session。你只派活、不亲自执行。'
           : '你可以把自包含子任务分发给同目录的其它 session。只有确实需要其它 session 干活时才输出标记，普通回答不要输出。',
       ];
   return [
     ...intro,
-    '格式：<<dispatch target="真实 session id">完整、自包含的任务说明</dispatch>>',
+    isCommander
+      ? '格式：<<route target="真实 session id">完整、自包含的任务说明</route>>'
+      : '格式：<<dispatch target="真实 session id">完整、自包含的任务说明</dispatch>>',
     'target 必须逐字使用下面列表中的某个 id；不要使用 ...、SID、SESSION_ID、<目标会话id> 等占位符。',
-    '如果要并行执行多个子任务，可以在同一回复中输出多个 dispatch 标记；系统会把结果自动回流给你。',
-    '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id，结果同样自动回流。',
+    isCommander
+      ? '如果要并行派发多个子任务，可以在同一回复中输出多个 route 标记；派发是单向的，worker 结果不会回流给你。'
+      : '如果要并行执行多个子任务，可以在同一回复中输出多个 dispatch 标记；系统会把结果自动回流给你。',
+    isCommander
+      ? '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id。'
+      : '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id，结果同样自动回流。',
     `可用目标 sessions: ${JSON.stringify(targets)}`,
     ultra ? '[MultiCC Ultracode workflow end]' : '[MultiCC cross-session dispatch end]',
     '',
