@@ -441,6 +441,31 @@ function createSessionAdminRuntime(rawDeps) {
       return res.json({ ok: true, note: 'reclassify enqueued; 状态更新会通过 WS 异步到达' });
     });
 
+    // Manual "mark task done": let the user flip a waiting-for-user (W) task to
+    // completed (D) from the chat classify bar. Reuses the canonical completed
+    // dispatch path so notify/setTaskState/setSessionStatus all stay consistent.
+    app.post('/api/sessions/:id/mark-task-done', (req, res) => {
+      const id = req.params.id;
+      const record = deps.records.get(id);
+      if (!record) return res.status(404).json({ error: 'session not found' });
+      if (record.type === 'aux' || record.type === 'gateway') {
+        return res.status(400).json({ error: 'not a chat session' });
+      }
+      const task = deps.getTaskState(record);
+      if (task.classifyState === 'D') {
+        return res.json({ ok: true, alreadyDone: true, classifyState: 'D' });
+      }
+      const cs = deps.chatSessions.get(id);
+      if (cs && cs.isStreaming) {
+        return res.status(409).json({ error: 'session is streaming', note: '会话正在执行，无法标记完成' });
+      }
+      deps.dispatchStateAction(
+        { state: 'completed', goal: task.goal || '', phase: task.phase || '' },
+        { sessionName: id, sessionId: id, cs: cs || null, isTerminal: record.kind !== 'chat' },
+      );
+      return res.json({ ok: true, classifyState: 'D' });
+    });
+
     app.post('/api/reclassify-all', (req, res) => {
       const queue = auxRuntime().queue;
       if (queue.isUnhealthy()) return res.status(503).json({ error: 'aux 服务不可用，无法重判' });
