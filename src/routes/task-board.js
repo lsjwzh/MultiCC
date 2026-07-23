@@ -1041,21 +1041,40 @@ function createTaskBoardRuntime(deps) {
         error: result.code || result.error || 'dispatch_failed',
       });
     }
-    res.json({
-      ok: true,
-      taskId: result.taskId,
-      target: result.target,
-      targetLabel: records.get(result.target)?.label || result.target,
-      routingMode: result.routeMode,
-      commanderSessionId: result.routeMode === 'commander' ? result.target : null,
-      workerSessionId: result.routeMode === 'commander' ? result.workerSessionId : null,
-      workerLabel: result.routeMode === 'commander' ? result.targetLabel : null,
-      queued: result.routeMode === 'commander' && result.queued === true,
-      elasticWorkerCreated: result.routeMode === 'commander' && result.elasticWorkerCreated === true,
-      chatId: result.chatId,
-      operationId: result.operationId || null,
-      duplicate: result.duplicate === true,
-    });
+    if (routeMode === 'commander') {
+      // Commander receives the message and routes asynchronously via <<route>> markers.
+      res.json({
+        ok: true,
+        taskId: null,
+        target,
+        targetLabel: records.get(target)?.label || target,
+        routingMode: 'commander',
+        commanderSessionId: target,
+        workerSessionId: null,
+        workerLabel: null,
+        queued: false,
+        elasticWorkerCreated: false,
+        chatId: target,
+        operationId: null,
+        duplicate: false,
+      });
+    } else {
+      res.json({
+        ok: true,
+        taskId: result.taskId,
+        target: result.target,
+        targetLabel: records.get(result.target)?.label || result.target,
+        routingMode: result.routeMode || routeMode,
+        commanderSessionId: null,
+        workerSessionId: null,
+        workerLabel: null,
+        queued: false,
+        elasticWorkerCreated: false,
+        chatId: result.chatId,
+        operationId: result.operationId || null,
+        duplicate: result.duplicate === true,
+      });
+    }
   }
 
   function handleStatus(req, res) {
