@@ -4,7 +4,7 @@
 const readline = require('readline');
 
 const SERVER_NAME = 'multicc-router';
-const SERVER_VERSION = '1.1.0';
+const SERVER_VERSION = '1.2.0';
 const BASE_URL = String(process.env.MULTICC_BASE_URL || '').replace(/\/+$/, '');
 const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
 
@@ -35,7 +35,7 @@ const TARGET_SCHEMA = {
     allow_terminal: {
       type: 'boolean',
       default: false,
-      description: 'Set true only when the user explicitly requested this terminal session. Omit or false for normal routing.',
+      description: 'Set true only when the originating user message names this terminal session by its exact id or complete label. Mentioning terminal/CLI software is not sufficient.',
     },
   },
 };
@@ -85,7 +85,7 @@ const TOOLS = [
   {
     name: 'route_task',
     title: 'Route task (one way)',
-    description: 'Durably queue a one-way task for a same-directory chat worker. Terminal sessions are rejected unless allow_terminal=true. Returns after admission and never recollects the result.',
+    description: 'Durably queue a one-way task for an existing same-directory worker. Prefer an existing chat worker. Terminal sessions require exact user targeting plus allow_terminal=true. Returns after admission and never recollects the result.',
     inputSchema: TARGET_SCHEMA,
     annotations: {
       readOnlyHint: false,

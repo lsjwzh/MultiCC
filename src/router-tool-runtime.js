@@ -1,6 +1,11 @@
 'use strict';
 
 const crypto = require('crypto');
+const {
+  explicitlyNamesTerminal,
+  isTerminalGateway,
+  terminalForRecord,
+} = require('./dispatch/terminal-target-policy');
 
 const TERMINAL_OPERATION_STATES = new Set([
   'completed', 'failed', 'interrupted', 'cancelled',
@@ -140,6 +145,7 @@ function createRouterToolRuntime({
     sessionId,
     turnId = null,
     originDispatchId = null,
+    userText = '',
     dynamic = false,
   } = {}) {
     const caller = records.get(sessionId);
@@ -149,6 +155,7 @@ function createRouterToolRuntime({
       sessionId: String(sessionId),
       turnId: turnId ? cleanId(turnId, 'turnId') : null,
       originDispatchId: originDispatchId ? cleanId(originDispatchId, 'originDispatchId') : null,
+      userText: String(userText || '').slice(0, MAX_MESSAGE_LENGTH),
       dynamic: dynamic === true,
       expiresAt: Number(now()) + capabilityTtlMs,
     }));
@@ -186,6 +193,7 @@ function createRouterToolRuntime({
       originDispatchId: current.originDispatchId
         ? cleanId(current.originDispatchId, 'originDispatchId')
         : null,
+      userText: String(current.userText || '').slice(0, MAX_MESSAGE_LENGTH),
     });
   }
 
@@ -203,10 +211,25 @@ function createRouterToolRuntime({
     if (target.type === 'aux' || target.type === 'gateway' || target.type === 'commander') {
       throw new RouterToolError('invalid_target', 'target must be a non-system worker session');
     }
+    if (isTerminalGateway(records, target)) {
+      const terminal = terminalForRecord(records, target);
+      throw new RouterToolError(
+        'terminal_gateway_not_direct_target',
+        `select terminal session ${terminal.id} instead of its execution gateway`,
+        409,
+      );
+    }
     if (target.kind !== 'chat' && allowTerminal !== true) {
       throw new RouterToolError(
         'terminal_target_requires_explicit_opt_in',
         'terminal targets require allow_terminal=true',
+        409,
+      );
+    }
+    if (target.kind !== 'chat' && !explicitlyNamesTerminal(context.userText, target)) {
+      throw new RouterToolError(
+        'terminal_target_not_explicitly_requested',
+        'the originating user message must name the exact terminal session id or complete label',
         409,
       );
     }
@@ -295,6 +318,7 @@ function createRouterToolRuntime({
       status: admitted.status,
       operation_id: admitted.operationId,
       target_session_id: admitted.targetSessionId,
+      execution_session_id: admitted.chatId || admitted.targetSessionId,
       task_id: admitted.taskId,
       duplicate: admitted.duplicate,
       queued: true,
@@ -311,6 +335,7 @@ function createRouterToolRuntime({
         status: 'timed_out',
         operation_id: admitted.operationId,
         target_session_id: admitted.targetSessionId,
+        execution_session_id: admitted.chatId || admitted.targetSessionId,
         task_id: admitted.taskId,
         retryable: true,
       };
@@ -320,6 +345,7 @@ function createRouterToolRuntime({
       status: operation.status,
       operation_id: operation.id,
       target_session_id: operation.spec.targetId,
+      execution_session_id: operation.spec.chatId,
       task_id: operation.spec.taskId || admitted.taskId,
       result: operation.result || null,
       duplicate: admitted.duplicate,

@@ -108,7 +108,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(routeSchema.properties.allow_terminal, {
     type: 'boolean',
     default: false,
-    description: 'Set true only when the user explicitly requested this terminal session. Omit or false for normal routing.',
+    description: 'Set true only when the originating user message names this terminal session by its exact id or complete label. Mentioning terminal/CLI software is not sufficient.',
   });
   const called = await plain.call('tools/call', {
     name: 'route_task',

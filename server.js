@@ -95,6 +95,7 @@ const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createRouterToolHost } = require('./src/router-tool-host');
+const { routeLegacyCommanderMarkers } = require('./src/dispatch/legacy-commander-route');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { scheduleDetachedRestart } = require('./src/server-restart');
@@ -1308,6 +1309,8 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   const deliveries = [];
   const history = loadChatHistory(dispatcherId);
   const sourceMessage = [...history].reverse().find(entry => entry && entry.role === 'assistant');
+  const sourceUserMessage = [...history].reverse().find(entry => entry && entry.role === 'user');
+  const sourceUserText = String(sourceUserMessage?.content || '');
   const sourceKey = sourceMessage?.id || crypto.createHash('sha256').update(String(finalText || '')).digest('hex').slice(0, 24);
 
   // <<dispatch>> markers: two-way (worker results flow back to dispatcher)
@@ -1326,38 +1329,16 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
       .catch(e => waitInjector.injectSystemMsg(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`)));
   }
 
-  // <<route>> markers: one-way with system-generated taskId (Commander dispatch)
-  const routeSuccesses = [];
-  for (const [markerIndex, mk] of routeMarkers.entries()) {
-    if (mk.target === dispatcherId) continue;
-    if (isDispatchPlaceholderTarget(mk.target)) { waitInjector.injectSystemMsg(dispatcherId, `⚠️ route 目标无效：${mk.target}`); continue; }
-    const v = validateDispatchTarget(mk.target, dispatcherId);
-    if (!v.ok) { waitInjector.injectSystemMsg(dispatcherId, `⚠️ 无法路由给 ${mk.target}：${v.error}`); continue; }
-    if (v.rec.dirId !== from.dirId && from.type !== 'commander') { waitInjector.injectSystemMsg(dispatcherId, `⚠️ 只能路由给同目录会话，已跳过 ${mk.target}`); continue; }
-    const taskId = `tsk-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
-    const targetLabel = v.rec.label || mk.target;
-    appendEvent(from.dirId, 'route', `→ ${targetLabel} [${taskId}]`, dispatcherId);
-    routeSuccesses.push({ targetLabel, taskId });
-    deliveries.push(dispatchToSession(mk.target, mk.message, {
-      replyTo: dispatcherId,
-      oneWay: true,
-      taskId,
-      taskStart: true,
-      taskSource: 'commander-route',
-      taskText: mk.message,
-      idempotencyKey: `route:${dispatcherId}:${sourceKey}:${markerIndex}`,
-    })
-      .then(r => { if (!r.ok) waitInjector.injectSystemMsg(dispatcherId, `⚠️ 路由给 ${targetLabel} 失败：${r.error}`); })
-      .catch(e => waitInjector.injectSystemMsg(dispatcherId, `⚠️ 路由 ${targetLabel} 异常：${e.message}`)));
-  }
+  deliveries.push(...routeLegacyCommanderMarkers({
+    markers: routeMarkers, dispatcherId, from, sourceUserText, sourceKey,
+    records: persistedSessions, crypto, isPlaceholder: isDispatchPlaceholderTarget,
+    validateTarget: target => validateDispatchTarget(target, dispatcherId),
+    appendEvent, dispatch: dispatchToSession,
+    inject: text => waitInjector.injectSystemMsg(dispatcherId, text),
+  }));
 
   // Strip <<route>> markers from displayed history (like Gateway strips <<dispatch>>)
   if (routeMarkers.length) stripRouteMarkerFromHistory(dispatcherId);
-
-  // Inject confirmation receipts for successful routes
-  for (const { targetLabel, taskId } of routeSuccesses) {
-    waitInjector.injectSystemMsg(dispatcherId, `📨 已路由给「${targetLabel}」[${taskId}]（单向派发，结果不回流）`);
-  }
 
   return Promise.all(deliveries);
 }
@@ -5253,6 +5234,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       cli: persisted.cli, spawn, command: invocation.cmd,
       args: spawnArgs, cwd: cs.cwd, env: childEnv,
       sessionId: sessionName, turnId: turn.turnId, originDispatchId,
+      userText: turn.userText,
       baseUrl: `http://127.0.0.1:${PORT}`,
     });
     const runner = createRunnerOwnership(turn, {

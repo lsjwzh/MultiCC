@@ -41,6 +41,7 @@ function createRouterToolHost({
         return turn ? {
           turnId: turn.turnId,
           originDispatchId: turn.lineage?.kind === 'dispatch' ? turn.lineage.operationId : null,
+          userText: turn.userText || '',
         } : null;
       }),
     });
@@ -94,11 +95,14 @@ function createRouterToolHost({
     sessionId,
     turnId,
     originDispatchId = null,
+    userText = '',
     baseUrl,
     dynamic = false,
   } = {}) {
     if (!runtime) throw new Error('router tool runtime is not configured');
-    const token = runtime.issueContext({ sessionId, turnId, originDispatchId, dynamic });
+    const token = runtime.issueContext({
+      sessionId, turnId, originDispatchId, userText, dynamic,
+    });
     let revoked = false;
     const revoke = () => {
       if (revoked) return;
@@ -147,10 +151,11 @@ function createRouterToolHost({
     sessionId,
     turnId,
     originDispatchId,
+    userText,
     baseUrl,
   } = {}) {
     const processCapability = processContext({
-      sessionId, turnId, originDispatchId, baseUrl,
+      sessionId, turnId, originDispatchId, userText, baseUrl,
     });
     if (processCapability) Object.assign(env, processCapability.env);
     applyRouterMcpEnv(env, cli, routerMcpNode, routerMcpScript);

@@ -1,5 +1,7 @@
 'use strict';
 
+const { isTerminalGateway } = require('./terminal-target-policy');
+
 // Dispatch targeting: which sibling sessions a given session may dispatch to,
 // and the cross-session dispatch context prompt injected into a turn. Extracted
 // verbatim from server.js; the host injects the session registry, the live chat
@@ -25,6 +27,10 @@ function dispatchableSessionsFor(sessionId) {
     // commander only dispatches out (it is never a worker).
     .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
     .filter(s => s.dirId === from.dirId)
+    // A terminal gateway is an execution detail, not a second worker choice.
+    // The Commander selects the stable terminal id only after explicit user
+    // targeting; dispatchToSession then reuses this gateway automatically.
+    .filter(s => !isTerminalGateway(records, s))
     .slice(0, 30)
     .map(s => {
       const activeChat = chatSessions.get(s.id);
@@ -71,21 +77,25 @@ function buildDispatchContextPrompt(sessionId) {
     : [
         '[MultiCC cross-session dispatch]',
         isCommander
-          ? '你是本 fleet 的指挥官：分析任务后，用 <<route>> 标记把自包含子任务单向派发给下面列出的 worker session。你只派活、不亲自执行。'
+          ? '你是本 fleet 的指挥官：分析任务后，只调用 route_task 工具把自包含子任务单向派发给下面列出的现有 worker session。你只派活、不亲自执行。'
           : '你可以把自包含子任务分发给同目录的其它 session。只有确实需要其它 session 干活时才输出标记，普通回答不要输出。',
       ];
   return [
     ...intro,
     isCommander
-      ? '格式：<<route target="multicc-claude-chat-05">完整、自包含的任务说明</route>>（把示例里的 id 换成上方「可用目标 sessions」列表中你选定的那个 id，逐字复制其 id 字段）'
+      ? '工具格式：route_task({"target_session_id":"multicc-claude-chat-05","message":"完整、自包含的任务说明"})（把示例 id 换成下方「可用目标 sessions」列表中逐字复制的 id）'
       : '格式：<<dispatch target="multicc-claude-chat-05">完整、自包含的任务说明</dispatch>>（把示例里的 id 换成上方「可用目标 sessions」列表中你选定的那个 id，逐字复制其 id 字段）',
     'target 必须逐字复制下面列表中某个对象的 id 字段值（如 multicc-claude-chat-05）；绝对不要使用 xxx、...、SID、SESSION_ID、worker-1 等占位符，否则派发必定失败。',
     isCommander
-      ? '如果要并行派发多个子任务，可以在同一回复中输出多个 route 标记；派发是单向的，worker 结果不会回流给你。'
+      ? '必须优先复用列表中的已有匹配会话；不得因为会话当前活跃、任务名称提到某种 CLI/终端，或为了“更合适”就新建会话。只有确实没有可胜任的现有 worker 时才报告缺少目标。'
       : '如果要并行执行多个子任务，可以在同一回复中输出多个 dispatch 标记；系统会把结果自动回流给你。',
     isCommander
-      ? '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id。'
+      ? '默认只选择 kind="chat"。任务正文出现“终端/terminal/CLI”不代表用户指定了 terminal session；只有用户原话点名某个 terminal 的完整 id 或完整 label 时，才可选择该 terminal id 并设置 allow_terminal=true。'
       : '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id，结果同样自动回流。',
+    ...(isCommander ? [
+      '不要输出 <<route>> 标记，也不要直接调用创建 session/终端的 API；route_task 的 queued/operation_id 回执才是有效派发。',
+      '如果要并行派发多个独立子任务，可连续调用多个 route_task；派发是单向的，worker 结果不会回流给你。',
+    ] : []),
     `可用目标 sessions: ${JSON.stringify(targets)}`,
     ultra ? '[MultiCC Ultracode workflow end]' : '[MultiCC cross-session dispatch end]',
     '',

@@ -64,13 +64,17 @@ test('natural-language dispatch narration is inert without a structured marker',
 
 test('chat host parses both dispatch and route markers from assistant prose', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const legacyRoute = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dispatch', 'legacy-commander-route.js'),
+    'utf8',
+  );
   assert.doesNotMatch(source, /ULTRA_DISPATCH_INTENT_RE|maybeNudgeUltracodeDispatch|lastUltraNudgeAt/);
   assert.match(source, /parseAllDispatchMarkers\(finalText\)/);
   assert.match(source, /parseAllRouteMarkers\(finalText\)/);
   assert.doesNotMatch(source, /if \(from\.type === 'commander'\) return;/,
-    'Commander now runs the LLM and uses <<route>> markers like any other session');
-  assert.match(source, /oneWay:\s*true/,
-    'route markers use one-way dispatch with system-generated taskId');
+    'old Commander turns retain a bounded <<route>> compatibility reader');
+  assert.match(legacyRoute, /oneWay:\s*true/,
+    'legacy route markers use one-way dispatch with system-generated taskId');
   assert.match(source, /oneWay:\s*false/,
     'ordinary dispatch markers remain the explicit two-way path');
 });
