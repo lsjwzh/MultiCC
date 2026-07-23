@@ -17,6 +17,51 @@ function sameAssistantPayload(left, right) {
     && stableTools(left.tools) === stableTools(right.tools);
 }
 
+function isInjectedNudge(msg) {
+  return !!msg && msg.role === 'user'
+    && typeof msg.content === 'string'
+    && msg.content.trimStart().startsWith('🔇');
+}
+
+function assistantContains(prev, latest) {
+  if (!prev || !latest) return false;
+  if (prev.role !== 'assistant' || latest.role !== 'assistant') return false;
+  if (prev._interim || latest._interim) return false;
+  if (stableTools(prev.tools) !== stableTools(latest.tools)) return false;
+
+  const prevContent = prev.content;
+  const latestContent = latest.content;
+
+  // Exact match
+  if (prevContent === latestContent) return true;
+
+  // Prefix containment: latest starts with prev and prev is long enough
+  if (typeof prevContent === 'string' && typeof latestContent === 'string') {
+    return prevContent.length >= 16 && latestContent.startsWith(prevContent);
+  }
+
+  // Structured content: JSON.stringify fallback
+  if (typeof prevContent === 'object' && typeof latestContent === 'object') {
+    const prevStr = JSON.stringify(prevContent);
+    const latestStr = JSON.stringify(latestContent);
+    if (prevStr === latestStr) return true;
+    return prevStr.length >= 16 && latestStr.startsWith(prevStr);
+  }
+
+  return false;
+}
+
+function findPrevAssistant(messages, startIndex) {
+  for (let i = startIndex; i >= 0; i--) {
+    const candidate = messages[i];
+    if (isInjectedNudge(candidate)) continue;
+    if (candidate.role === 'assistant' && candidate._interim) continue;
+    if (candidate.role === 'user' && !isInjectedNudge(candidate)) return null; // real user = stop
+    if (candidate.role === 'assistant' && !candidate._interim) return candidate;
+  }
+  return null;
+}
+
 function cleanThinkingBlocks(message) {
   if (!message || !Array.isArray(message.content)) return message;
   message.content = message.content.filter((block) => !(
@@ -83,6 +128,10 @@ function createChatHistoryService({
       if (message.role === 'assistant' && !message._interim) {
         while (normalized.at(-1)?.role === 'assistant' && normalized.at(-1)?._interim) {
           normalized.pop();
+        }
+        const prevInNormalized = findPrevAssistant(normalized, normalized.length - 1);
+        if (prevInNormalized && assistantContains(prevInNormalized, message)) {
+          normalized.splice(normalized.indexOf(prevInNormalized), 1);
         }
       } else if (message.role === 'assistant' && message._interim) {
         const previous = normalized.at(-1);
@@ -175,18 +224,18 @@ function createChatHistoryService({
       }
     }
 
-    if (message.role === 'assistant' && messages.length) {
-      const previous = messages[messages.length - 1];
-      if (sameAssistantPayload(previous, message)) {
-        if (message.usage) previous.usage = message.usage;
-        if (message.cost != null) previous.cost = message.cost;
-        if (message.durationMs != null) previous.durationMs = message.durationMs;
-        if (message.ts) previous.ts = message.ts;
-        const dropped = trim(sessionId, messages);
+    if (message.role === 'assistant' && !message._interim && messages.length) {
+      const prev = findPrevAssistant(messages, messages.length - 1);
+      if (prev && assistantContains(prev, message)) {
+        const prevIndex = messages.indexOf(prev);
+        messages.splice(prevIndex, 1);
+        messages.push(message);
+        const trimmedDropped = trim(sessionId, messages);
+        const allDropped = Object.freeze([jsonClone(prev), ...jsonClone(trimmedDropped)]);
         const result = Object.freeze({
           deduplicated: true,
-          dropped: jsonClone(dropped),
-          message: jsonClone(previous),
+          dropped: allDropped,
+          message: jsonClone(message),
           messages: jsonClone(messages),
         });
         persist(sessionId, messages, {
