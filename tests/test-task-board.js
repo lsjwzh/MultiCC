@@ -143,6 +143,11 @@ test('task board display state follows classify runState for icon and status tex
   assert.match(runStateAdapter, /cls === 'A'[\s\S]*?return 'running'/);
   assert.match(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
   assert.doesNotMatch(runStateAdapter, /cls === 'D' \|\| cls === 'C'/);
+  // A task card must follow the session's persisted classify verdict, never a
+  // momentary session-busy flag. The `if (taskBoardSessionBusy(sid)) return
+  // 'running'` short-circuit used to make every historical card light up as
+  // 「进行中」whenever its owning session ran any new turn — do not reintroduce it.
+  assert.doesNotMatch(runStateAdapter, /taskBoardSessionBusy/);
 });
 
 test('task board UI hides the Commander routing chip on the card', () => {

@@ -3192,7 +3192,15 @@ const taskBoardRuntime = createTaskBoardRuntime({
   getSessionRunState: sid => {
     const rec = persistedSessions.get(sid);
     if (!rec) return null;
-    if (taskBoardSessionBusy(sid)) return 'running';
+    // Task-card state must track the session's persisted classify result, NOT
+    // whether the session is momentarily busy. The old `if (busy) return running`
+    // short-circuit made every historical card owned by a session light up as
+    // 「进行中」the moment that session started ANY new turn — because busy is a
+    // session-level flag unrelated to which task the card represents. Reading
+    // classifyState instead keeps each card on its own last classify verdict
+    // (D→done, W/B/E→waiting, C/P→running); a card only changes when classify
+    // re-runs on it, so a finished/waiting card stays put while the session
+    // works on something else.
     const ts = rec.taskState;
     const cls = ts?.classifyState;
     if (!cls) return 'idle';
