@@ -402,6 +402,10 @@ function createOrchestrationRuntime({
         originContinue: false,
         deliveryId: item.id,
         clientMsgId: item.id,
+        taskId: payload.taskId || undefined,
+        taskStart: payload.taskStart === true,
+        taskSource: payload.taskSource || undefined,
+        taskText: payload.taskText || undefined,
       };
     }
     return {

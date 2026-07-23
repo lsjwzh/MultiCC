@@ -23,6 +23,7 @@ const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
 const CLASSIFY_PENDING_MODULE_NAME = '待归类';
 const PENDING_TASK_TITLE = '新任务';
+const TASK_RUN_STATES = new Set(['running', 'waiting', 'done', 'error', 'idle']);
 
 function safeClassificationError(value) {
   const code = typeof value === 'string' ? value.slice(0, 80) : '';
@@ -87,6 +88,7 @@ function normalizeBoard(raw) {
           })).slice(-MAX_REFS_PER_TASK)
         : [],
     };
+    if (TASK_RUN_STATES.has(t.runState)) task.runState = t.runState;
     // `classification.state` was an older module-assignment retry state that
     // was easily confused with the session classify state (A/B/C/D/W/P).
     // Migrate it into non-status operation metadata. The module itself is the
@@ -101,8 +103,10 @@ function normalizeBoard(raw) {
         attempts: Math.max(0, Math.floor(Number(legacyAssignment?.attempts) || 0)),
         lastAttemptAt: Number(legacyAssignment?.lastAttemptAt) || 0,
         lastError: safeClassificationError(legacyAssignment?.lastError),
-        seed: typeof legacyAssignment?.seed === 'string' ? legacyAssignment.seed.slice(0, 1200) : '',
       };
+      if (typeof legacyAssignment?.seed === 'string' && legacyAssignment.seed) {
+        task.moduleAssignment.seed = legacyAssignment.seed.slice(0, 1200);
+      }
     }
     const routing = normalizeTaskRouting(t.routing);
     if (routing) task.routing = routing;
@@ -492,8 +496,11 @@ function addRefToTask(task, ref, now) {
 // Create the durable card shown immediately after a board-level send. It is
 // intentionally unique even though every card starts with the same visible
 // title; title-based aggregation would otherwise collapse unrelated sends.
-function createPendingTask(board, { dirId = null, sessionId, seed = '', now = Date.now() }) {
+function createPendingTask(board, { taskId = null, dirId = null, sessionId, now = Date.now() }) {
   if (!sessionId) return null;
+  const id = typeof taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(taskId)
+    ? taskId : newId('tsk');
+  if (board.tasks[id]) return board.tasks[id];
   let mod = Object.values(board.modules).find(m =>
     m.source === 'classify' && m.name === CLASSIFY_PENDING_MODULE_NAME
       && (m.dirId || null) === (dirId || null));
@@ -504,17 +511,17 @@ function createPendingTask(board, { dirId = null, sessionId, seed = '', now = Da
     };
     board.modules[mod.id] = mod;
   }
-  const text = String(seed || '').trim();
   const task = {
-    id: newId('tsk'), moduleId: mod.id, title: PENDING_TASK_TITLE,
+    id, moduleId: mod.id, title: PENDING_TASK_TITLE,
     status: 'active', areas: [], createdAt: now, updatedAt: now,
     refs: [{
       sessionId, dirId: dirId || null, userMsgId: null, assistantMsgId: null,
-      ts: now, excerpt: text.slice(0, 200),
+      ts: now, excerpt: '',
     }],
+    runState: 'running',
     moduleAssignment: {
       running: false, attempts: 0, lastAttemptAt: 0,
-      lastError: '', seed: text.slice(0, 1200),
+      lastError: '',
     },
   };
   board.tasks[task.id] = task;
@@ -820,10 +827,10 @@ function pickRouteTarget(board, task, records, explicitTarget, options = {}) {
   return ranked[0]?.sid || null;
 }
 
-// Routed messages carry a marker so the turn-end tagger can deterministically
-// attach the resulting turn back to this task (no AI round-trip needed).
+// taskId is transport metadata, never user-visible prompt text. Keeping the
+// prompt free of identity markers avoids a second parser/source of truth.
 function buildRoutedMessage(task, text) {
-  return `【任务：${task.title}｜tb:${task.id}】\n${text}`;
+  return `【任务：${task.title}】\n${text}`;
 }
 
 function buildCommanderRoutedMessage(task, text) {
@@ -889,7 +896,9 @@ function buildBoardDto(board, getSessionRunState) {
       dirIds: [...new Set(t.refs.map(r => r.dirId).filter(Boolean))],
       lastTs: taskLastTs(t),
       createdAt: t.createdAt,
-      runState: aggregateTaskRunState(runSessionIds, getSessionRunState),
+      runState: TASK_RUN_STATES.has(t.runState)
+        ? t.runState
+        : aggregateTaskRunState(runSessionIds, getSessionRunState),
       moduleAssignment: t.moduleAssignment ? {
         running: t.moduleAssignment.running === true,
         attempts: t.moduleAssignment.attempts || 0,

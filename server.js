@@ -156,6 +156,7 @@ const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
+const { createTaskContextHost } = require('./src/task-context-host');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -1183,6 +1184,7 @@ async function dispatchToSession(targetId, message, opts = {}) {
       replyTo: opts.replyTo || null,
       gateway: !opts.replyTo && !opts.oneWay,
       oneWay: !!opts.oneWay,
+      ...taskContextHost.dispatchSpec(opts),
     },
   });
   const dispatchId = admitted.id;
@@ -3180,10 +3182,6 @@ const taskBoardRuntime = createTaskBoardRuntime({
   loadHistory: sessionId => loadChatHistory(sessionId),
   dispatchToSession,
   routeCommanderTask: commanderRouter.route,
-  // Let panel-initiated Commander routing (B path) leave a trace in the
-  // commander's own chat window, so its dispatch history is visible there too.
-  appendChatMessage,
-  chatBroadcast,
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
@@ -3192,15 +3190,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   getSessionRunState: sid => {
     const rec = persistedSessions.get(sid);
     if (!rec) return null;
-    // Task-card state must track the session's persisted classify result, NOT
-    // whether the session is momentarily busy. The old `if (busy) return running`
-    // short-circuit made every historical card owned by a session light up as
-    // 「进行中」the moment that session started ANY new turn — because busy is a
-    // session-level flag unrelated to which task the card represents. Reading
-    // classifyState instead keeps each card on its own last classify verdict
-    // (D→done, W/B/E→waiting, C/P→running); a card only changes when classify
-    // re-runs on it, so a finished/waiting card stays put while the session
-    // works on something else.
+    // Legacy cards without taskId fall back to the session's persisted verdict.
     const ts = rec.taskState;
     const cls = ts?.classifyState;
     if (!cls) return 'idle';
@@ -3213,6 +3203,13 @@ const taskBoardRuntime = createTaskBoardRuntime({
   logger: console,
 });
 taskBoardRuntime.mountRoutes(app);
+const taskContextHost = createTaskContextHost({
+  getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
+  append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
+  getTaskBoard: () => taskBoardRuntime, classifyDisplay,
+  containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
+  randomUUID: () => crypto.randomUUID(),
+});
 
 // Skill-sync owns converter/link state, its watcher and its periodic timer.
 // The host supplies only the process/session ports needed by detached AI conversion.
@@ -3390,7 +3387,7 @@ function scheduleIncrementalSave(sessionId, state) {
   return chatHistoryRuntime.scheduleIncrementalSave(sessionId, state);
 }
 function appendChatMessage(sessionId, message) {
-  return chatHistoryRuntime.appendMessage(sessionId, message);
+  return taskContextHost.appendMessage(sessionId, message);
 }
 
 // The host coordinator owns result/usage/post-turn ordering. server.js supplies
@@ -3430,9 +3427,7 @@ const codexUsageHost = createCodexUsageHost({
 });
 
 function chatBroadcast(sessionName, payload) {
-  const cs = chatSessions.get(sessionName);
-  if (!cs) return;
-  broadcastTo(cs.clients, payload);
+  taskContextHost.broadcast(sessionName, payload);
 }
 
 // ── WeChat Bridge ──
@@ -3547,11 +3542,8 @@ function pruneErrorTurnPairs(sessionName) {
   return removed;
 }
 
-function recordTaskBoardGoal(sessionName, goal, phase, cs) {
-  if (!sessionName || !goal || goal === '新任务' || isInjectedOrJunkGoal(goal)) return;
-  taskBoardRuntime.onClassifyGoal(sessionName, goal, phase, {
-    currentUserText: cs?.currentUserText || '',
-  });
+function recordTaskBoardGoal(sessionName, goal, phase, cs, classifyState = 'P') {
+  taskContextHost.recordGoal(sessionName, goal, phase, cs, classifyState);
 }
 
 function dispatchStateAction(result, ctx) {
@@ -3583,7 +3575,7 @@ function dispatchStateAction(result, ctx) {
   if (sessionName) setTaskState(sessionName, finalPhase ? { goal: finalGoal || '', phase: finalPhase } : { goal: finalGoal || '' });
   if (sessionId && finalGoal) setSessionSummary(sessionId, finalGoal);
 
-  recordTaskBoardGoal(sessionName, finalGoal, finalPhase, cs);
+  recordTaskBoardGoal(sessionName, finalGoal, finalPhase, cs, state);
 
   // Mid-stream reclassify only observes goal/phase. Turn-end owns state and
   // side effects; persisting a provisional classifyState poisons scan guards.
@@ -4386,30 +4378,21 @@ function newCurrentTask(goal) {
   };
 }
 
-// Ensure cs.currentTask exists for this turn. Continuation heuristic: prior task
-// exists, started < 10 min ago, not done → bump turnSeq, keep the goal (the async
-// to decide continuity). Otherwise start a fresh task object with a synchronous
-// fallback goal that the in-progress classify loop will refine async.
-function ensureCurrentTask(cs, sessionName, userText) {
+// taskId is the authoritative boundary; legacy turns retain the 10-minute heuristic.
+function ensureCurrentTask(cs, sessionName, userText, forceNew = false) {
   if (!cs) return;
   const now = Date.now();
   const prev = cs.currentTask;
-  if (prev && prev.phase !== 'done' && prev.startedAt && (now - prev.startedAt) < 10 * 60 * 1000) {
+  const canonicalContinuation = !!cs._currentTaskId && !forceNew && !!prev;
+  if (taskContextHost.continues(cs, prev, forceNew, now)) {
     prev.turnSeq = (prev.turnSeq || 0) + 1;
+    if (canonicalContinuation && prev.phase === 'done') prev.phase = 'planning';
     // Refresh persisted state: a continued turn means the closed-loop task
     // is still running (classify will refine shortly).
     setTaskState(sessionName, { classifyState: 'P' });
     return prev;
   }
-  // No rule-based goal from userText — the classify loop (fired right after this
-  // at turn start)提炼 the real goal, ignoring greetings / injected system text.
-  // Carry a prior task's classify-refined goal forward so the "新任务" placeholder
-  // doesn't overwrite a valid goal before classify runs - BUT only while that prior
-  // task is still in flight (phase !== 'done'). If it already reached 'done', this
-  // new user message starts a new task: inheriting the old already-resolved goal
-  // makes scan see isStreaming + isGoalResolved(旧goal)=true -> skipped-streaming,
-  // starving classify for the whole turn. Reset to '新任务' so scan falls through
-  // and extracts the real goal mid-stream.
+  // Preserve only an unfinished classify-refined legacy goal.
   const carryGoal = (prev && prev.phase !== 'done' && prev.goal && prev.goal !== '新任务' && !isInjectedOrJunkGoal(prev.goal)) ? prev.goal : '';
   cs.currentTask = newCurrentTask(carryGoal);
   cs.currentTask.turnSeq = 1;
@@ -4829,6 +4812,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       goalLimits: opts.goalLimits,
       bgTaskIds: opts.bgTaskIds,
       bgToolUseIds: opts.bgToolUseIds,
+      ...taskContextHost.turnOptions(opts),
     });
   } catch (error) {
     const code = error instanceof TurnRequestError ? error.code : 'invalid_request';
@@ -4844,6 +4828,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   const goalLimits = turnRequest.goalLimits;
   const bgTaskIds = turnRequest.background.taskIds;
   const bgToolUseIds = turnRequest.background.toolUseIds;
+  const requestedTask = turnRequest.task;
 
   // Durable orchestration may replay an outbox claim after a crash in the
   // narrow window between history persistence and outbox acknowledgement.
@@ -4928,6 +4913,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       streamReplay: [],
       _classifyTimer: null,
       _classifyTaskId: null,
+      _currentTaskId: taskContextHost.restore(hist),
     };
     chatSessions.set(sessionName, cs);
   }
@@ -4973,16 +4959,16 @@ function runChatTurn(sessionName, text, opts = {}) {
     }
   }
 
-  // Save user message to history. bgTaskIds/bgToolUseIds are present ONLY on
-  // background-completion result injections — they let history (and the UI)
-  // attribute this message back to the task(s) / tool_use block that originated
-  // it. Omitted (undefined, not null) for ordinary user messages and every other
-  // inject path, so old history and other callers are completely unaffected.
+  const { taskId: nextTaskId, boundaryChanged: taskBoundaryChanged } =
+    taskContextHost.beginTurn(cs, requestedTask);
+
+  // Persist the canonical user event before any provider execution.
   const userMessageSaved = appendChatMessage(sessionName, {
     role: 'user', content: text, ts: Date.now(),
     clientMsgId: clientMsgId || undefined,
     deliveryId: deliveryId || undefined,
     originDispatchId: originDispatchId || undefined,
+    ...taskContextHost.messageMetadata(requestedTask, nextTaskId),
     bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
     bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
   });
@@ -5006,7 +4992,7 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.currentUserText = text;          // store user message for summary context
   // Synchronous task goal fallback (zero-latency first frame); the in-progress
   // classify loop will refine it to a stable noun-phrase goal within 60s.
-  ensureCurrentTask(cs, sessionName, text);
+  ensureCurrentTask(cs, sessionName, text, taskBoundaryChanged);
   cs.currentTaskName = cs.currentTask ? cs.currentTask.goal : '新任务'; // compat for legacy callers
   cs.currentToolCalls = [];
   cs.currentCost = null;
@@ -5758,6 +5744,7 @@ function handleChatWs(ws, req, urlObj) {
       streamReplay: [],
       _classifyTimer: null,
       _classifyTaskId: null,
+      _currentTaskId: taskContextHost.restore(history),
     };
     chatSessions.set(sessionName, cs);
   }
@@ -5924,6 +5911,7 @@ function handleChatWs(ws, req, urlObj) {
       if (msg.type === 'user_message' && msg.text) {
         // Gateway: a bare 确认/取消 resolves a pending dispatch without running the LLM.
         if (persisted.type === 'gateway' && handleGatewayControl(msg.text)) return;
+        if (await taskContextHost.handleCommander({ persisted, sessionName, message: msg, state: cs })) return;
         // Goal mode: client flags the message; server applies the configured
         // round/budget limits (per-send override merged over the global config).
         const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};

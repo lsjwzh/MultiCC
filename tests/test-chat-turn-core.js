@@ -89,6 +89,34 @@ test('force-first/resume/retry/dispatch metadata is explicit and illegal combina
   assert.throws(() => request({ retry: { strategy: 'resume' } }), /cannot be a first turn/);
 });
 
+test('task context is explicit, trusted, and preserved only for routed task starts', () => {
+  const request = normalizeTurnRequest({
+    sessionId: 'worker-1',
+    text: '【任务：新任务】\n完整正文',
+    cli: 'codex',
+    turnCount: 0,
+    hasNativeSession: false,
+    taskId: 'tsk-stable',
+    taskStart: true,
+    taskSource: 'task-board',
+    taskText: '完整正文\n<script>alert(1)</script>',
+  });
+  assert.deepEqual(request.task, {
+    id: 'tsk-stable',
+    start: true,
+    source: 'task-board',
+    text: '完整正文\n<script>alert(1)</script>',
+  });
+  assert.throws(() => normalizeTurnRequest({
+    sessionId: 'worker-1', text: 'x', taskStart: true, taskId: 'tsk-x',
+  }), /trusted task source/);
+  assert.throws(() => normalizeTurnRequest({
+    sessionId: 'worker-1', text: 'x', taskText: 'body',
+  }), /only valid on a task start/);
+  const ordinary = normalizeTurnRequest({ sessionId: 'worker-1', text: '普通聊天' });
+  assert.deepEqual(ordinary.task, { id: null, start: false, source: null, text: '' });
+});
+
 test('Claude host pre-allocation proof preserves legacy resume intent for existing history', () => {
   const turn = request({ cli: 'claude', turnCount: 3, hasNativeSession: true });
   assert.equal(turn.execution.isFirstTurn, false);

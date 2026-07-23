@@ -111,6 +111,7 @@ function buildReplayMessages(pageMessages, state, now = Date.now) {
     ts: now(),
     streaming: state?.isStreaming === true,
   };
+  if (state?._currentTaskId) live.taskId = state._currentTaskId;
   const last = messages[messages.length - 1];
   if (last?.role === 'assistant' && last._interim) {
     messages[messages.length - 1] = { ...last, ...live, id: last.id };
@@ -341,13 +342,15 @@ function createChatHistoryRuntime(rawDeps) {
         ? state.currentToolCalls
         : undefined;
       try {
-        service.upsertInterim(key, {
+        const interim = {
           role: 'assistant',
           content: state.currentAssistantText,
           tools,
           ts: now(),
           _interim: true,
-        });
+        };
+        if (state._currentTaskId) interim.taskId = state._currentTaskId;
+        service.upsertInterim(key, interim);
       } catch (error) {
         logFailure('chat_history_interim_save_failed', error, key);
       }
