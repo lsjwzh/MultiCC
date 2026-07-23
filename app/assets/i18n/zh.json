@@ -1,13 +1,11 @@
 {
   "multicc": "MultiCC",
-
   "dirs_sessions": "{dirs} dirs · {sessions} sessions",
   "newDirectory": "新建目录",
   "refresh": "刷新",
   "settings": "设置",
   "retry": "重试",
   "noDirectories": "还没有目录",
-
   "activeSessions": "活跃会话",
   "waitingSessions": "等待输入",
   "cronTasks": "定时任务",
@@ -21,7 +19,6 @@
   "noRecentActivity": "暂无活动",
   "noRecentTask": "暂无最近任务",
   "noActiveTask": "暂无进行中任务",
-
   "thinking": "思考中",
   "editing": "编辑中",
   "running": "运行中",
@@ -29,7 +26,6 @@
   "completed": "已完成",
   "error": "出现异常",
   "idle": "空闲",
-
   "rename": "改名",
   "cancel": "取消",
   "save": "保存",
@@ -39,13 +35,11 @@
   "close": "关闭",
   "copy": "复制",
   "copyLink": "复制链接",
-
   "renameDirectory": "改名",
   "deleteDirectory": "删除目录",
   "gitPush": "Git 推送",
   "projectMemo": "项目备忘 (multicc.memo.md)",
   "moreActions": "更多操作",
-
   "renameSession": "改名",
   "merge": "合并",
   "mergeWorktree": "合并 worktree",
@@ -55,7 +49,6 @@
   "leaveNote": "留言",
   "restartSession": "重启",
   "deleteSession": "删除会话",
-
   "claudeTerminals": "CLAUDE TERMINALS",
   "claudeChats": "CLAUDE CHATS",
   "codexTerminals": "CODEX TERMINALS",
@@ -66,18 +59,15 @@
   "zCodeChats": "ZCODE CHATS",
   "qoderTerminals": "QODER CN TERMINALS",
   "qoderChats": "QODER CN CHATS",
-
   "noSessions": "还没有会话",
   "mergeReadyLabel": "有未提交改动，可合并回 {base}",
   "mergeReadyLabelAhead": "{n} 个提交领先，可合并回 {base}",
   "mergeReadyLabelDirtyAhead": "有未提交改动，{n} 个提交领先，可合并回 {base}",
-
   "renameDirTitle": "改名",
   "renameDirHint": "目录名",
   "deleteDirConfirm": "删除目录",
   "deleteDirBody": "删除「{name}」及其中全部 {n} 个会话？不可撤销。",
   "deleteDirBodyEmpty": "删除空目录「{name}」？",
-
   "pushing": "正在推送到远程…",
   "pushAhead": "↑ 推送 {n}",
   "pushBehind": "↓ 落后 {n}",
@@ -85,15 +75,12 @@
   "pushed": "已推送 {n} 个提交 → {remote}/{branch}",
   "nothingToPush": "无待推送提交",
   "pushFailed": "推送失败：{error}",
-
   "renameSessionTitle": "改名",
   "renameSessionHint": "会话名",
   "renameSessionSaved": "会话已改名",
   "renameSessionFailed": "改名失败：{error}",
-
   "deleteSessionConfirm": "删除会话",
   "deleteSessionBody": "删除「{id}」？",
-
   "mergeTitle": "合并 worktree",
   "mergeBody": "把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。",
   "merging": "正在合并 worktree...",
@@ -102,7 +89,6 @@
   "mergeConflict": "⚠️ 合并冲突，已 abort：{files}",
   "mergeFailed": "合并失败：{error}",
   "mergeRequestFailed": "合并请求失败：{error}",
-
   "leaveNoteTitle": "留言",
   "leaveNoteHint": "留言会在对方下一轮对话开始时送达。",
   "leaveNoteBody": "留言内容…",
@@ -110,12 +96,10 @@
   "leaveNoteSent": "留言已发送",
   "leaveNoteFailed": "发送失败：{error}",
   "leaveNoteNoTarget": "该目录下没有其他会话可留言",
-
   "sessionCreated": "新建会话",
   "sessionRenamed": "会话改名",
   "sessionDeleted": "删除会话",
   "activity": "活动",
-
   "eventCreated": "🆕 新建会话 {who}（{detail}）",
   "eventRenamed": "✏️ 会话改名为 {detail}",
   "eventDeleted": "🗑 删除会话 {detail}",
@@ -126,7 +110,6 @@
   "eventDispatch": "📤 {who} 分发 {detail}",
   "eventNote": "📨 {who} 留言 {detail}",
   "eventNoteDelivered": "📬 {who}：{detail}",
-
   "reconnect": "重连（重建连接）",
   "reconnecting": "正在重建连接…",
   "switchModel": "切换该会话使用的模型（下一轮对话生效）",
@@ -144,7 +127,6 @@
   "defaultLogin": "默认登录 / 订阅",
   "defaultLoginDesc": "不覆盖，走本机登录",
   "subscription": "订阅",
-
   "clearHistory": "清空历史",
   "clearHistoryTitle": "清空历史",
   "clearHistoryBody": "这会清空聊天记录并重置会话。",
@@ -153,10 +135,8 @@
   "clearAll": "清空全部",
   "clearKeepLast": "保留最近 N 条",
   "clearKeepConfirm": "确认",
-
   "changeCwd": "切换",
   "changeCwdTitle": "切换工作目录",
-
   "rolePrompt": "角色提示词",
   "rolePromptDesc": "留空＝清除（会话将继承目录默认角色）",
   "rolePromptSaved": "✓ 已清除会话角色（继承目录默认），下一轮对话生效",
@@ -176,7 +156,6 @@
   "roleUseSelected": "使用所选",
   "roleNoMatches": "没有匹配的模板",
   "roleLoadFailed": "加载失败：{error}",
-
   "sessionMemory": "会话记忆",
   "sessionMemoryDesc": "辅助 AI 在周期复盘、清理历史或历史滚动时提炼的稳定事实。会在下一个原生 CLI 会话快照中生效，可手动编辑或清空。",
   "sessionMemoryPlaceholder": "（还没有积累记忆。聊一段后 Clear 历史，或历史超长自动滚动时，辅助 AI 会在这里记下关键问题与解决方式。）",
@@ -185,7 +164,6 @@
   "sessionMemoryCleared": "✓ 已清空会话记忆",
   "sessionMemoryFailed": "记忆保存失败：{error}",
   "memoryTooLong": "记忆过长（上限 8000 字）",
-
   "memTitle": "🧠 会话记忆库",
   "memIntro": "记忆在原生 CLI 会话启动/重建时形成快照。写入立即持久化，下次重建快照生效。私有＝仅本会话；公共＝本项目所有会话共享。",
   "memScopeOwn": "私有（仅本会话）",
@@ -202,7 +180,6 @@
   "memSaveFailed": "保存失败",
   "memLegacyTitle": "Legacy 自动提炼记忆（只读）",
   "memLegacyHint": "辅助 AI 自动提炼的结构化记忆条目，已镜像到 _auto.md，会在下一个原生 CLI 会话快照中生效。",
-
   "msgDeleteAction": "删除这条消息",
   "msgDeleteTitle": "删除消息",
   "msgDeleteConfirm": "仅从聊天记录移除，不可恢复，不影响模型上下文（模型可能仍记得内容）。",
@@ -215,7 +192,6 @@
   "msgForkFailed": "分叉失败：{error}",
   "msgCopyAction": "复制内容",
   "msgCopied": "已复制",
-
   "shareSession": "分享会话",
   "shareDesc": "接收方在浏览器打开链接即可。",
   "shareOperateWarn": "「可对话」= 对方能通过此会话在你机器上执行操作，务必设强密码。",
@@ -227,7 +203,6 @@
   "shareRegenerate": "重新生成",
   "shareCopied": "链接已复制",
   "shareMessages": "分享选定消息",
-
   "behindWarning": "⚠ 当前 worktree 落后 {base} {n} 个提交，建议同步",
   "syncSuccess": "✓ 已从 {base} 同步 {n} 个提交",
   "syncAlreadyLatest": "已是最新",
@@ -237,7 +212,6 @@
   "syncing": "同步中…",
   "syncNow": "同步",
   "behindBanner": "当前 worktree 落后 {base} {n} 个提交",
-
   "newDirTitle": "新建目录",
   "newDirName": "名称",
   "newDirPath": "路径",
@@ -245,24 +219,19 @@
   "newDirPathHint": "/Users/you/code/my-project",
   "newDirNamePathRequired": "名称和路径不能为空",
   "newDirFailed": "创建失败：{error}",
-
   "selectProvider": "选择该会话使用的 Provider",
-
   "restartDone": "会话已重启",
   "restartFailed": "重启失败：{error}",
-
   "newClaudeTerm": "+ Claude Term",
   "newClaudeChat": "+ Claude Chat",
   "newCodexTerm": "+ Codex Term",
   "newCodexChat": "+ Codex Chat",
-
   "fileBrowser": "文件浏览",
   "restartCli": "重启会话 (Restart CLI)",
   "restartCliBody": "将终止并重建该会话底层的 CLI 进程。进行中的任务会被中断，但聊天记录保留。确定重启？",
   "restart": "重启",
   "restarting": "正在重启会话…",
   "restarted": "✓ 会话已重启",
-
   "languageSettings": "语言",
   "languageChinese": "简体中文",
   "languageEnglish": "English",
@@ -590,7 +559,6 @@
   "diffSummarizing": "AI 正在总结改动…",
   "diffSummaryFailed": "摘要失败",
   "diffBackToList": "返回列表",
-
   "taskBoard": "任务板",
   "modules": "模块",
   "tasks": "任务",
@@ -624,7 +592,6 @@
   "tbSessionNotFound": "找不到该会话",
   "tbMessages": "消息流",
   "messageNotFound": "消息未找到",
-
   "boardSend": "发送",
   "boardTarget": "目标会话",
   "boardAutoRoute": "🎯 自动路由",
@@ -640,5 +607,8 @@
   "boardSent": "已发送",
   "boardRoutedTo": "已路由到「{target}」",
   "boardComposerHint": "向该 Fleet 派发消息…（自动路由到空闲且最相关的会话）",
-  "boardTaskComposerHint": "向该任务派发后续消息…（自动路由到合适的会话，回复自动归档回本任务）"
+  "boardTaskComposerHint": "向该任务派发后续消息…（自动路由到合适的会话，回复自动归档回本任务）",
+  "archiveCompleted": "一键清理",
+  "archiveCompletedDone": "已归档 {n} 个已完成任务",
+  "archiveCompletedFailed": "一键清理失败：{error}"
 }

@@ -4,7 +4,6 @@
   "settings": "Settings",
   "retry": "Retry",
   "noDirectories": "No directories yet",
-
   "activeSessions": "Active",
   "waitingSessions": "Waiting",
   "cronTasks": "Cron",
@@ -18,7 +17,6 @@
   "noRecentActivity": "No recent activity",
   "noRecentTask": "No recent task",
   "noActiveTask": "No active tasks",
-
   "thinking": "Thinking",
   "editing": "Editing",
   "running": "Running",
@@ -26,7 +24,6 @@
   "completed": "Completed",
   "error": "Error",
   "idle": "Idle",
-
   "rename": "Rename",
   "cancel": "Cancel",
   "save": "Save",
@@ -36,13 +33,11 @@
   "close": "Close",
   "copy": "Copy",
   "copyLink": "Copy Link",
-
   "renameDirectory": "Rename",
   "deleteDirectory": "Delete Dir",
   "gitPush": "Git Push",
   "projectMemo": "Project Memo",
   "moreActions": "More",
-
   "renameSession": "Rename",
   "merge": "Merge",
   "mergeWorktree": "Merge Worktree",
@@ -52,7 +47,6 @@
   "leaveNote": "Note",
   "restartSession": "Restart",
   "deleteSession": "Delete Session",
-
   "claudeTerminals": "CLAUDE TERMINALS",
   "claudeChats": "CLAUDE CHATS",
   "codexTerminals": "CODEX TERMINALS",
@@ -67,13 +61,11 @@
   "mergeReadyLabel": "Uncommitted changes, ready to merge into {base}",
   "mergeReadyLabelAhead": "{n} commits ahead, ready to merge into {base}",
   "mergeReadyLabelDirtyAhead": "Uncommitted changes, {n} commits ahead, ready to merge into {base}",
-
   "renameDirTitle": "Rename",
   "renameDirHint": "Directory name",
   "deleteDirConfirm": "Delete Directory",
   "deleteDirBody": "Delete \"{name}\" and all {n} sessions? This cannot be undone.",
   "deleteDirBodyEmpty": "Delete empty directory \"{name}\"?",
-
   "pushing": "Pushing to remote...",
   "pushAhead": "↑ Push {n}",
   "pushBehind": "↓ Behind {n}",
@@ -81,14 +73,12 @@
   "pushed": "Pushed {n} commits → {remote}/{branch}",
   "nothingToPush": "Nothing to push",
   "pushFailed": "Push failed: {error}",
-
   "renameSessionTitle": "Rename",
   "renameSessionHint": "Session name",
   "renameSessionSaved": "Session renamed",
   "renameSessionFailed": "Rename failed: {error}",
   "deleteSessionConfirm": "Delete Session",
   "deleteSessionBody": "Delete \"{id}\"?",
-
   "mergeTitle": "Merge Worktree",
   "mergeBody": "Merge this worktree back to the base branch?\nUncommitted changes will be auto-committed first.",
   "merging": "Merging worktree...",
@@ -97,7 +87,6 @@
   "mergeConflict": "⚠️ Merge conflict, aborted: {files}",
   "mergeFailed": "Merge failed: {error}",
   "mergeRequestFailed": "Merge request failed: {error}",
-
   "leaveNoteTitle": "Leave a Note",
   "leaveNoteHint": "The note will be delivered when the recipient's next turn starts.",
   "leaveNoteBody": "Note content...",
@@ -105,16 +94,13 @@
   "leaveNoteSent": "Note sent",
   "leaveNoteFailed": "Send failed: {error}",
   "leaveNoteNoTarget": "No other sessions in this directory",
-
   "activity": "Activity",
-
   "sessionNotLoaded": "Session info not loaded",
   "noProviders": "No providers available. Go to Settings → Providers to import or create one.",
   "providerPickerTitle": "Choose a Provider for this session (applies next turn)",
   "defaultLogin": "Default Login / Subscription",
   "defaultLoginDesc": "No override, use local login",
   "subscription": "Subscription",
-
   "reconnect": "Reconnect (rebuild connection)",
   "reconnecting": "Reconnecting...",
   "switchModel": "Switch model for this session (applies next turn)",
@@ -126,7 +112,6 @@
   "modelSwitchFailed": "Model switch failed: {error}",
   "providerSwitched": "✓ Provider switched to {name}, applies next turn",
   "providerSwitchFailed": "Provider switch failed: {error}",
-
   "clearHistory": "Clear History",
   "clearHistoryTitle": "Clear History",
   "clearHistoryBody": "This will clear chat history and reset the session.",
@@ -135,10 +120,8 @@
   "clearAll": "Clear all",
   "clearKeepLast": "Keep last N",
   "clearKeepConfirm": "OK",
-
   "changeCwd": "Change",
   "changeCwdTitle": "Change Working Directory",
-
   "rolePrompt": "Role Prompt",
   "rolePromptDesc": "Empty = clear (inherits directory default)",
   "rolePromptSaved": "✓ Role cleared (inheriting directory default), applies next turn",
@@ -158,7 +141,6 @@
   "roleUseSelected": "Use Selected",
   "roleNoMatches": "No matching presets",
   "roleLoadFailed": "Load failed: {error}",
-
   "sessionMemory": "Session Memory",
   "sessionMemoryDesc": "Stable facts distilled by the aux AI during periodic review, history clear, or history trimming. Effective in the next native CLI session snapshot. Editable.",
   "sessionMemoryPlaceholder": "(No memories yet. Chat for a while, then Clear history — the aux AI will record key problems and solutions here.)",
@@ -167,7 +149,6 @@
   "sessionMemoryCleared": "✓ Session memory cleared",
   "sessionMemoryFailed": "Memory save failed: {error}",
   "memoryTooLong": "Memory too long (max 8000 chars)",
-
   "memTitle": "🧠 Session Memory Library",
   "memIntro": "Memory is snapshotted when a native CLI session starts or is rebuilt. Writes persist immediately and enter the next snapshot. Private = this session only; shared = every session in this project.",
   "memScopeOwn": "Private (this session)",
@@ -184,7 +165,6 @@
   "memSaveFailed": "Save failed",
   "memLegacyTitle": "Legacy auto-distilled memory (read-only)",
   "memLegacyHint": "Structured entries distilled by the aux AI are mirrored to _auto.md and enter the next native CLI session snapshot.",
-
   "msgDeleteAction": "Delete this message",
   "msgDeleteTitle": "Delete message",
   "msgDeleteConfirm": "Removes from chat history only; cannot be undone. Does not affect model context — the model may still remember the content.",
@@ -197,7 +177,6 @@
   "msgForkFailed": "Fork failed: {error}",
   "msgCopyAction": "Copy content",
   "msgCopied": "Copied",
-
   "shareSession": "Share Session",
   "shareDesc": "Recipient opens the link in a browser.",
   "shareOperateWarn": "\"Operate\" = recipient can execute commands on your machine. Use a strong password.",
@@ -209,7 +188,6 @@
   "shareRegenerate": "Regenerate",
   "shareCopied": "Link copied",
   "shareMessages": "Share Messages",
-
   "behindWarning": "⚠ Worktree is {n} commits behind {base}, consider syncing",
   "syncSuccess": "✓ Synced {n} commits from {base}",
   "syncAlreadyLatest": "Already up to date",
@@ -219,7 +197,6 @@
   "syncing": "Syncing...",
   "syncNow": "Sync",
   "behindBanner": "Worktree is {n} commits behind {base}",
-
   "newDirTitle": "New Directory",
   "newDirName": "Name",
   "newDirPath": "Path",
@@ -227,17 +204,13 @@
   "newDirPathHint": "/Users/you/code/my-project",
   "newDirNamePathRequired": "Name and path are required",
   "newDirFailed": "Create failed: {error}",
-
   "selectProvider": "Choose a Provider for this session",
-
   "restartDone": "Session restarted",
   "restartFailed": "Restart failed: {error}",
-
   "newClaudeTerm": "+ Claude Term",
   "newClaudeChat": "+ Claude Chat",
   "newCodexTerm": "+ Codex Term",
   "newCodexChat": "+ Codex Chat",
-
   "eventCreated": "🆕 New session {who} ({detail})",
   "eventRenamed": "✏️ Session renamed to {detail}",
   "eventDeleted": "🗑 Deleted session {detail}",
@@ -249,7 +222,6 @@
   "eventNote": "📨 {who} noted {detail}",
   "eventNoteDelivered": "📬 {who}: {detail}",
   "dirs_sessions": "{dirs} dirs · {sessions} sessions",
-
   "multicc": "MultiCC",
   "sessionCreated": "Session created",
   "sessionRenamed": "Session renamed",
@@ -260,7 +232,6 @@
   "restart": "Restart",
   "restarting": "Restarting session...",
   "restarted": "✓ Session restarted",
-
   "languageSettings": "Language",
   "languageChinese": "简体中文",
   "languageEnglish": "English",
@@ -588,7 +559,6 @@
   "diffSummarizing": "Summarizing...",
   "diffSummaryFailed": "Summary failed",
   "diffBackToList": "Back to file list",
-
   "taskBoard": "Task Board",
   "modules": "Modules",
   "tasks": "Tasks",
@@ -622,7 +592,6 @@
   "tbSessionNotFound": "Session not found",
   "tbMessages": "Messages",
   "messageNotFound": "Message not found",
-
   "boardSend": "Send",
   "boardTarget": "Target session",
   "boardAutoRoute": "🎯 Auto route",
@@ -638,5 +607,8 @@
   "boardSent": "Sent",
   "boardRoutedTo": "Routed to \"{target}\"",
   "boardComposerHint": "Dispatch to this Fleet... (auto-routes to the most relevant idle session)",
-  "boardTaskComposerHint": "Dispatch to this task... (auto-routes; replies are filed back to this task)"
+  "boardTaskComposerHint": "Dispatch to this task... (auto-routes; replies are filed back to this task)",
+  "archiveCompleted": "Clean up",
+  "archiveCompletedDone": "Archived {n} completed tasks",
+  "archiveCompletedFailed": "Clean up failed: {error}"
 }

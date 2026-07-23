@@ -849,4 +849,31 @@ class ManageService {
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
         .cast<String, dynamic>();
   }
+
+  /// POST /api/task-board/archive-completed -> bulk-archive all done tasks.
+  /// Returns {ok, archivedCount, taskIds}. Throws [LocalOnlyException] on 403.
+  Future<Map<String, dynamic>> archiveCompletedTasks({String? dirId}) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/task-board/archive-completed')),
+            headers: _headers,
+            body: jsonEncode(
+                {if (dirId != null && dirId.isNotEmpty) 'dirId': dirId}))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// POST /api/sessions/:id/mark-task-done -> manually mark a waiting-for-user
+  /// task as completed from the classify bar. Returns {ok, classifyState}.
+  /// 409 = session is streaming; 404 = session not found.
+  Future<Map<String, dynamic>> markTaskDone(String sessionId) async {
+    final res = await http
+        .post(Uri.parse(_url('/api/sessions/$sessionId/mark-task-done')),
+            headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
 }
