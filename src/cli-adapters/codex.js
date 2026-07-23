@@ -46,6 +46,46 @@ function parseToolArguments(raw) {
   }
 }
 
+function mcpResultText(item) {
+  if (item && item.error) {
+    return typeof item.error === 'string'
+      ? item.error
+      : String(item.error.message || item.error.code || 'MCP tool failed');
+  }
+  const result = item && item.result;
+  if (typeof result === 'string') return result;
+  if (result && Array.isArray(result.content)) {
+    const text = result.content
+      .filter(block => block && block.type === 'text')
+      .map(block => String(block.text || ''))
+      .join('\n');
+    if (text) return text;
+  }
+  if (result == null) return '';
+  try { return JSON.stringify(result); } catch (_) { return String(result); }
+}
+
+function routerMcpConfigArgs(node, script) {
+  if (!node || !script) return [];
+  const envVars = [
+    'MULTICC_BASE_URL',
+    'MULTICC_SESSION_ID',
+    'MULTICC_TURN_ID',
+    'MULTICC_ORIGIN_DISPATCH_ID',
+    'MULTICC_ROUTER_CAPABILITY',
+  ];
+  return [
+    `mcp_servers.multicc_router.command=${JSON.stringify(String(node))}`,
+    `mcp_servers.multicc_router.args=${JSON.stringify([String(script)])}`,
+    `mcp_servers.multicc_router.env_vars=${JSON.stringify(envVars)}`,
+    'mcp_servers.multicc_router.enabled=true',
+    'mcp_servers.multicc_router.required=true',
+    'mcp_servers.multicc_router.startup_timeout_sec=10',
+    'mcp_servers.multicc_router.tool_timeout_sec=21630',
+    'mcp_servers.multicc_router.default_tools_approval_mode="approve"',
+  ];
+}
+
 function createCodexAdapter(deps) {
   const {
     cmd,
@@ -55,6 +95,8 @@ function createCodexAdapter(deps) {
     envConstraint,
     stayAlivePrompt,
     multiccImgHint,
+    routerMcpNode,
+    routerMcpScript,
     isResponseCompletedDisconnect = () => false,
     isTransportDisconnect = () => false,
   } = deps;
@@ -89,7 +131,10 @@ function createCodexAdapter(deps) {
       let payload = isFirstTurn ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt }) : prompt;
       if (stayAlivePrompt) payload += `\n${stayAlivePrompt}`;
       const args = ['exec'];
-      for (const arg of configArgsFor(session)) args.push('-c', arg);
+      for (const arg of [
+        ...configArgsFor(session),
+        ...routerMcpConfigArgs(routerMcpNode, routerMcpScript),
+      ]) args.push('-c', arg);
       if (!isFirstTurn) args.push('resume', env.historyHandle.cliSessionId);
       args.push('--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox');
       return { cmd, args, payload };
@@ -102,6 +147,15 @@ function createCodexAdapter(deps) {
       if (event.type === 'turn.started') return [];
       if (event.type === 'item.started') {
         const item = event.item || {};
+        if (item.type === 'mcp_tool_call') {
+          return [{
+            type: 'tool_start',
+            id: item.id || item.call_id,
+            name: item.tool || item.name || 'MCP Tool',
+            input: parseToolArguments(item.arguments),
+            status: 'running',
+          }];
+        }
         if (item.type === 'collab_tool_call') {
           return [{
             type: 'tool_start', id: item.id, name: collabToolName(item.tool),
@@ -132,6 +186,14 @@ function createCodexAdapter(deps) {
       }
       if (event.type === 'item.completed') {
         const item = event.item || {};
+        if (item.type === 'mcp_tool_call') {
+          return [{
+            type: 'tool_result',
+            id: item.id || item.call_id,
+            content: mcpResultText(item),
+            isError: item.status === 'failed' || !!item.error || item.result?.isError === true,
+          }];
+        }
         if (item.type === 'collab_tool_call') {
           return [{
             type: 'tool_result', id: item.id,
@@ -200,4 +262,9 @@ function createCodexAdapter(deps) {
   };
 }
 
-module.exports = { createCodexAdapter, normalizeCodexUsage };
+module.exports = {
+  createCodexAdapter,
+  mcpResultText,
+  normalizeCodexUsage,
+  routerMcpConfigArgs,
+};

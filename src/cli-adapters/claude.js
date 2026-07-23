@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { renderPrompt } = require('../message-composer');
+const { claudeLikeMcpArgs } = require('./router-mcp');
 
 function createClaudeAdapter(deps) {
   const {
@@ -16,7 +17,10 @@ function createClaudeAdapter(deps) {
     cliEffortLevel,
     normalizeEffort,
     debugLogClaudeInvoke,
+    routerMcpNode,
+    routerMcpScript,
   } = deps;
+  const routerArgs = claudeLikeMcpArgs(routerMcpNode, routerMcpScript);
 
   return {
     name: 'claude',
@@ -53,7 +57,8 @@ function createClaudeAdapter(deps) {
           extraArgs.push('--disallowedTools', chatDisallowedTools.join(','));
         }
         const args = [
-          '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
+          '-p', ...routerArgs,
+          '--input-format', 'stream-json', '--output-format', 'stream-json',
           '--verbose', '--include-partial-messages', '--dangerously-skip-permissions',
           ...(model ? ['--model', model] : []),
           ...(sysPrompt ? ['--append-system-prompt', sysPrompt] : []),
@@ -64,7 +69,8 @@ function createClaudeAdapter(deps) {
       }
 
       const args = [
-        '-p', '--output-format', 'stream-json', '--verbose',
+        '-p', ...routerArgs,
+        '--output-format', 'stream-json', '--verbose',
         '--include-partial-messages', '--dangerously-skip-permissions',
         '--append-system-prompt', sysPrompt,
       ];

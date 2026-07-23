@@ -107,6 +107,15 @@ test('task context is explicit, trusted, and preserved only for routed task star
     source: 'task-board',
     text: '完整正文\n<script>alert(1)</script>',
   });
+  const routed = normalizeTurnRequest({
+    sessionId: 'worker-1',
+    text: 'tool-routed task',
+    taskId: 'tsk-router',
+    taskStart: true,
+    taskSource: 'router-tool',
+    taskText: 'tool-routed task',
+  });
+  assert.equal(routed.task.source, 'router-tool');
   assert.throws(() => normalizeTurnRequest({
     sessionId: 'worker-1', text: 'x', taskStart: true, taskId: 'tsk-x',
   }), /trusted task source/);

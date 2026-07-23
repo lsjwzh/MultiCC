@@ -76,6 +76,39 @@ assert.strictEqual(
   codex.decodeEvent({ type: 'item.completed', item: { type: 'function_call', id: 'fc3', name: 'x', status: 'failed' } })[0].isError,
   true,
 );
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'item.started',
+    item: {
+      type: 'mcp_tool_call', id: 'mcp1', server: 'multicc_router',
+      tool: 'dispatch_master', arguments: { target_session_id: 'worker-1', message: 'test' },
+    },
+  }),
+  [{
+    type: 'tool_start', id: 'mcp1', name: 'dispatch_master',
+    input: { target_session_id: 'worker-1', message: 'test' }, status: 'running',
+  }],
+);
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'item.completed',
+    item: {
+      type: 'mcp_tool_call', id: 'mcp1', status: 'completed',
+      result: { content: [{ type: 'text', text: '{"ok":true}' }], isError: false },
+    },
+  }),
+  [{ type: 'tool_result', id: 'mcp1', content: '{"ok":true}', isError: false }],
+);
+assert.strictEqual(
+  codex.decodeEvent({
+    type: 'item.completed',
+    item: {
+      type: 'mcp_tool_call', id: 'mcp2', status: 'failed',
+      error: { message: 'tool timed out' },
+    },
+  })[0].isError,
+  true,
+);
 // request_user_input / AskUserQuestion must still degrade to text (special-cased
 // before the generic function_call → tool_result path).
 assert.strictEqual(
@@ -141,6 +174,63 @@ assert.deepStrictEqual(
   zcode.buildInvocation(opencodeEnvelope).args,
   ['run', '--format', 'json', '--auto', '--model', 'open/model'],
 );
+const codexWithRouter = createCodexAdapter({
+  cmd: 'codex',
+  codexReasoningConfigArg: () => null,
+  codexModelConfigArg: () => null,
+  multiccImgHint: 'hint',
+  routerMcpNode: '/opt/node',
+  routerMcpScript: '/opt/multicc/router-mcp.js',
+});
+const codexRouterArgs = codexWithRouter.buildInvocation(opencodeEnvelope).args;
+assert.deepStrictEqual(codexRouterArgs.slice(0, 3), [
+  'exec',
+  '-c',
+  'mcp_servers.multicc_router.command="/opt/node"',
+]);
+assert.equal(
+  codexRouterArgs.includes('mcp_servers.multicc_router.args=["/opt/multicc/router-mcp.js"]'),
+  true,
+);
+assert.equal(
+  codexRouterArgs.includes('mcp_servers.multicc_router.required=true'),
+  true,
+);
+assert.equal(
+  codexRouterArgs.includes('mcp_servers.multicc_router.default_tools_approval_mode="approve"'),
+  true,
+);
+const claudeWithRouter = createClaudeAdapter({
+  cmd: 'claude',
+  resolveSessionWireModel: model => model,
+  claudeDefaultModel: () => null,
+  cliEffortLevel: () => null,
+  normalizeEffort: () => null,
+  debugLogClaudeInvoke: () => {},
+  routerMcpNode: '/opt/node',
+  routerMcpScript: '/opt/multicc/router-mcp.js',
+});
+const claudeRouterArgs = claudeWithRouter.buildInvocation({
+  ...opencodeEnvelope,
+  systemPrompt: 'system',
+  spawnOpts: { ...opencodeEnvelope.spawnOpts, mode: 'streaming' },
+}).args;
+const claudeMcpIndex = claudeRouterArgs.indexOf('--mcp-config');
+assert.notEqual(claudeMcpIndex, -1);
+assert.deepStrictEqual(
+  JSON.parse(claudeRouterArgs[claudeMcpIndex + 1]).mcpServers.multicc_router,
+  { command: '/opt/node', args: ['/opt/multicc/router-mcp.js'] },
+);
+const qoderWithRouter = createQoderAdapter({
+  cmd: 'qoderclicn',
+  routerMcpNode: '/opt/node',
+  routerMcpScript: '/opt/multicc/router-mcp.js',
+});
+const qoderRouterArgs = qoderWithRouter.buildInvocation({
+  ...opencodeEnvelope,
+  systemPrompt: 'system',
+}).args;
+assert.notEqual(qoderRouterArgs.indexOf('--mcp-config'), -1);
 assert.strictEqual(
   opencode.buildTerminalCmd({ model: 'open/model', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
   'opencode --model open/model --variant max --agent build --session ses_1',

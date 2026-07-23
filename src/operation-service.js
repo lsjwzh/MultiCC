@@ -291,9 +291,10 @@ function createOperationService({
         : `🔇【分发任务已中断】发往 ${label} 的任务在 MultiCC 服务重启时未找到可恢复的完成结果。请检查目标会话后决定是否重试。`;
       return completeOperationDraft(draft, operation, result, {
         status,
-        // Commander routes are intentionally one-way: completion remains
-        // durable on the operation, but no result is injected into Commander.
-        outboxPayload: operation.spec.oneWay === true ? null : {
+        // One-way routes and MCP dispatch_master calls keep completion durable
+        // without injecting a second chat turn. dispatch_master returns this
+        // operation result through the original tool_call instead.
+        outboxPayload: operation.spec.oneWay === true || operation.spec.resultMode === 'tool' ? null : {
           type: 'dispatch.result',
           operationId: operation.id,
           targetId,

@@ -94,6 +94,7 @@ const stateTx = require('./src/state-tx');
 const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
+const { createRouterToolHost } = require('./src/router-tool-host');
 const { createShutdownCoordinator } = require('./src/shutdown');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { scheduleDetachedRestart } = require('./src/server-restart');
@@ -209,6 +210,10 @@ const chatTurnPreparationRuntime = createTurnRuntimeStore();
 let orchestrationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
+const routerToolHost = createRouterToolHost({
+  express, isLocalRequest, logger,
+  activeTurnForSession: id => chatSessions.get(id)?._activeTurn,
+});
 const turnProgressHeartbeat = new TurnProgressHeartbeat({
   onHeartbeat(event) {
     const active = chatSessions.get(event.sessionId);
@@ -309,9 +314,8 @@ function parseCookies(header) {
   return cookies;
 }
 
-// requestId middleware runs first so every subsequent handler + error response
-// can be correlated with a log line. It's cheap (8 hex chars) and always safe.
 app.use(requestIdMiddleware);
+routerToolHost.mount(app);
 // Auth surface (src/routes/auth.js): the /api shutdown gate, login routes and
 // gate middleware, plus cookie/ws-ticket exchange. Always registered (no-op
 // while ACCESS_TOKEN is empty, see isAuthenticated) so a token set later via the
@@ -1273,6 +1277,7 @@ async function finalizeDispatch(dispatchId, sessionName, finalText) {
   // A worker finished → drop it from the dispatcher's pending list (so the
   // dispatcher's status can leave 'waiting' once all workers回流).
   if (replyTo) removePendingDispatch(replyTo, dispatchId);
+  if (operation && TERMINAL_DISPATCH_STATUS.has(operation.status)) return;
   const completed = await orchestrationRuntime.completeDispatch(dispatchId, {
     status: 'completed',
     sessionName,
@@ -5227,9 +5232,6 @@ function runChatTurn(sessionName, text, opts = {}) {
   });
 
   const spawnChat = (spawnArgs, isRetry) => {
-    // buildChildEnv strips inherited ANTHROPIC_* routing vars (which may have
-    // leaked into the multicc server's own env) before applying the session's
-    // provider env, so the per-session provider choice is always authoritative.
     const { env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
       TERM: 'dumb', NO_COLOR: '1',
       // Let the bundled multicc-trigger skill know who it is and where the
@@ -5249,10 +5251,11 @@ function runChatTurn(sessionName, text, opts = {}) {
         subagent: persisted.subagent, port: PORT,
       });
     }
-    const proc = spawn(invocation.cmd, spawnArgs, {
-      cwd: cs.cwd,
-      env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const proc = routerToolHost.spawnProcess({
+      cli: persisted.cli, spawn, command: invocation.cmd,
+      args: spawnArgs, cwd: cs.cwd, env: childEnv,
+      sessionId: sessionName, turnId: turn.turnId, originDispatchId,
+      baseUrl: `http://127.0.0.1:${PORT}`,
     });
     const runner = createRunnerOwnership(turn, {
       runnerId: `proc_${proc.pid || 'pending'}_${crypto.randomBytes(6).toString('hex')}`,
@@ -5562,6 +5565,7 @@ orchestrationRuntime = createOrchestrationRuntime({
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
+routerToolHost.configure({records:persistedSessions,dispatchToSession,orchestrationRuntime,taskBoard:taskBoardRuntime});
 
 waitInjector.init({
   // Continuations preserve origin metadata; originContinue stays the default.
@@ -5607,18 +5611,11 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
     MULTICC_DIR_ID: persisted.dirId || '',
     MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
   });
-  // Route through the local claude-proxy (per-session + per-role). Only takes
-  // effect for provider-backed sessions; default-login sessions bypass.
   providers.applyClaudeProxyEnv(childEnv, {
     providerId: persisted.provider, sessionId: sessionName,
     subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
     officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
   });
-  // Streaming uses a SEPARATE session UUID (stored on the persisted record as
-  // _streamSessionId) so the persistent process never collides with the per-turn
-  // spawn path which uses cliSessionId. Both paths share the same Claude project
-  // directory (keyed on cwd), and the streaming process is the single source of
-  // truth for streaming sessions — per-turn spawns are never used concurrently.
   const resumeExistingStream = !!persisted._streamSessionId;
   if (!persisted._streamSessionId) {
     persisted._streamSessionId = crypto.randomUUID();
@@ -5637,6 +5634,8 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
       savePersistedSessionsBestEffort('runtime.streaming-session-id-capture');
     },
     beforeSpawn: ({ sessionId }) => {
+      routerToolHost.refreshPersistentProcess(cs, childEnv,
+        { sessionId: sessionName, baseUrl: `http://127.0.0.1:${PORT}` });
       const cleaned = typeof provider.prepareSpawn === 'function'
         ? provider.prepareSpawn({ sessionId })
         : 0;
@@ -5646,10 +5645,8 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
       }
     },
     env: childEnv,
+    onDispose: () => routerToolHost.releasePersistentProcess(cs),
     onBackgroundEvent: (evt) => backgroundTaskRuntime.handleEvent(sessionName, cs, evt),
-    // Never idle-kill a warm process that still owns live background work (that
-    // would murder the running task); on any exit, reap open shadows so a lost
-    // completion can't leave the UI spinning. See background-task-runtime.
     isBackgroundActive: () => backgroundTaskRuntime.hasLiveBackgroundTasks(sessionName),
     onExit: () => {
       try {
@@ -6496,9 +6493,10 @@ shutdownCoordinator.onClose(async () => {
   await closeSessionRuntime();
 });
 
-// Stop orchestration after HTTP has stopped accepting callbacks.  Awaiting the
-// serialized worker/store tail guarantees no lease mutation is left half-run.
-shutdownCoordinator.onClose(() => orchestrationRuntime ? orchestrationRuntime.stop() : undefined);
+shutdownCoordinator.onClose(() => {
+  routerToolHost.clear();
+  return orchestrationRuntime ? orchestrationRuntime.stop() : undefined;
+});
 shutdownCoordinator.onClose(() => sessionPersistence.stop());
 
 function gracefulShutdown(sig) {
