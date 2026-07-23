@@ -141,6 +141,8 @@ const {
   classifyDisplay,
   phaseLabel,
 } = require('./src/classify/vocab');
+const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint,
+  createUserInputSignalHost } = require('./src/classify/user-input-host');
 const {
   DISPATCH_RE,
   DISPATCH_CONFIRM_RE,
@@ -375,17 +377,9 @@ const CLAUDE_CHAT_DISALLOWED_TOOLS = (process.env.CLAUDE_CHAT_DISALLOWED_TOOLS ?
   .map(s => s.trim())
   .filter(Boolean);
 
-// Codex chat runs non-interactively (codex exec --json --dangerously-bypass-approvals-and-sandbox).
-// In this mode the request_user_input tool is unavailable (Codex replies "is unavailable in Default mode"),
-// and the model can loop calling it repeatedly, stalling the turn. Prepend a short constraint on the
-// first turn so the model asks questions as plain assistant text instead. Toggle via env if needed.
+// Codex exec cannot use its built-in ask tool; steer it to MultiCC's MCP signal.
 const CODEX_NO_ASK_TOOL_HINT = process.env.CODEX_NO_ASK_TOOL_HINT ?? '1';
-const CODEX_ENV_CONSTRAINT = CODEX_NO_ASK_TOOL_HINT === '0' ? '' : [
-  '[MultiCC 环境约束]',
-  '- 当前是非交互执行环境，request_user_input / AskUserQuestion 等向用户提问的工具不可用。',
-  '- 需要向用户提问或请求确认时，直接把问题作为普通文本回复发出，不要调用任何提问类工具。',
-  '[MultiCC 环境约束结束]',
-].join('\n');
+const CODEX_ENV_CONSTRAINT = buildCodexUserInputConstraint(CODEX_NO_ASK_TOOL_HINT !== '0');
 // Keep codex exec alive until ALL background tasks complete.
 // Codex exec exits when the model emits end_turn. Without explicit instruction,
 // the model often ends the turn early while Monitor / run_in_background tasks
@@ -462,6 +456,8 @@ const MULTICC_IMG_HINT = [
   '![说明](/绝对/路径/到/图片.png)',
   '前端会自动把本地路径图片内联显示给用户（可点击放大），无需上传或转 base64。',
   '仅在图片文件确实存在时这样写，不要编造路径。',
+  '',
+  ...USER_INPUT_SIGNAL_PROMPT,
   '',
   '【定时任务】当用户要你「定时/每天/每隔一段时间」自动做某事时，可登记一个 multicc 定时任务（到点会自动新建一个 chat 会话执行你写的 prompt）。在本机用 curl 调用：',
   `  curl -s http://127.0.0.1:${process.env.PORT || 3000}/api/cron -H 'Content-Type: application/json' \\`,
@@ -3630,7 +3626,8 @@ function dispatchStateAction(result, ctx) {
   // ── Classify history (persisted, last 7 days) ────────────────────────
   const now = Date.now();
   const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-  const entry = { at: now, goal: goal || '', phase: phase || '', state, error: !!error };
+  const entry = { at: now, goal: goal || '', phase: phase || '', state,
+    error: !!error, evidence: result.evidence || undefined };
   const persisted = persistedSessions.get(sessionName);
   if (persisted) {
     const ts = persisted.taskState || {};
@@ -3711,28 +3708,20 @@ function dispatchStateAction(result, ctx) {
   }
 
   if (state === 'continue') {
-    // C — the conversation reads as "keep going". We deliberately DO NOT auto-inject
-    // a 继续 here anymore. Auto-recovery is reserved for FAULTS only: E (API error,
-    // below) and 非正常中断 (interrupted turn — see finalizeStreamingTurn's
-    // !_resultSaved recovery + the P/no-turn-in-flight resume above). A turn that
-    // ended NORMALLY (fired its `result` event) is never auto-pushed, even if the
-    // task isn't finished — a deliberate pause (assistant asked the user something)
-    // must reach the user. The old uncapped C-autopush was the runaway-loop bug:
-    // it re-injected "继续" every scan and fed on its own injected messages.
-    setTaskState(sessionName, { classifyState: 'C', endedAt: Date.now() }, { save: false });
-    // Mid-stream: a turn IS in flight and will carry the continuation itself — just
-    // refresh the in-progress label, don't finalize.
+    // C stays C without auto-injection. Fault recovery remains E/P-only.
+    setTaskState(sessionName, { classifyState: 'C', endedAt: Date.now() });
     if (cs && cs.isStreaming) {
       const ph = phaseLabel(phase);
       const label = finalGoal ? `处理中：${finalGoal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
       emitRunningNotify(sessionName, label);
       return;
     }
-    // Turn ended: no auto-continue. Fall through to the waiting broadcast — the
-    // session rests as W (user is in charge; scan skips W, so no re-judge churn).
+    // No user-input signal: keep the task card running, but leave the CLI idle.
+    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
+    return;
   }
 
-  // ── C(no auto-continue) / W / B / E all → waiting (user-facing) ─────────
+  // ── W / B / E (plus exhausted P recovery) → waiting (user-facing) ───────
 
   // E: API error -> inject retry nudge. Uncapped - keeps retrying as long
   // as aux (classify) is healthy. Before injecting, prune trailing
@@ -3748,10 +3737,6 @@ function dispatchStateAction(result, ctx) {
   }
 
   // Common waiting-state broadcast — driven by classifyState letter.
-  // A 'continue' reaching here = C is deliberately NOT auto-driven anymore.
-  // (The old uncapped C-autopush was a runaway loop; now all C ends up here,
-  // no injection.) Persist it as W, not C. As W it's scan-skipped and the UI
-  // correctly shows "waiting" — the session genuinely waits for the user.
   const cls = error ? 'E' : background ? 'B' : 'W';
   const disp = classifyDisplay(cls);
   const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
@@ -3766,9 +3751,9 @@ function dispatchStateAction(result, ctx) {
   const dirId2 = persistedSessions.get(sessionName)?.dirId;
   if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: pushType, classifyState: cls, message: waitMsg });
   setSessionStatus(sessionName, { status: 'waiting' });
-  // Persist the accurate letter for observability (E/B, or W incl. a fell-through C).
-  // scan re-judges C/B/E/P but skips D/W — a fell-through C is now W, so it rests.
-  setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() }, { save: false });
+  // Persist the accurate letter for observability. scan re-judges C/B/E/P and
+  // skips D/W; C never reaches this branch merely because auto-inject is off.
+  setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() });
   // Reset auto-continue guard on a plain W (user is in charge now). B/E/C keep their own flow.
   if (state === 'waiting' && !background && !error) {
     waitInjector.resetAuto(sessionName);
@@ -3783,7 +3768,8 @@ function dispatchStateAction(result, ctx) {
 //
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
-//     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory }
+//     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory,
+//     pendingUserInput, userInputSignalVersion }
 //   classifyState ∈ D | C | W | B | E | P | null  (D=done; B=terminal only; null=never classified)
 //   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
 const TASK_STATE_DEFAULTS = {
@@ -3791,6 +3777,7 @@ const TASK_STATE_DEFAULTS = {
   lastSummary: '', lastSummaryAt: null, lastTurnEndedAt: null,
   classifyState: null, pendingDispatches: [],
   classifyHistory: [],
+  pendingUserInput: null, userInputSignalVersion: 0, userInputSignalTurnId: null,
 };
 
 function getTaskState(persisted) {
@@ -3829,6 +3816,11 @@ function setTaskState(sessionId, patch, opts = {}) {
   }
   return next;
 }
+
+const userInputSignalHost = createUserInputSignalHost(
+  { getSession: id => chatSessions.get(id),
+    getState: id => getTaskState(persistedSessions.get(id)),
+    setState: setTaskState, log: message => console.log(message) });
 
 const AUX_HEALTH_PROBE_INTERVAL_MS = 5 * 60 * 1000;  // ④: probe aux recovery while unhealthy
 
@@ -4069,6 +4061,7 @@ function isGoalResolved(goal) {
 // Shared turn-end/scan classify handler. Mid-stream only goal/phase is trusted;
 // once the turn ends dispatchStateAction owns the definitive state verdict.
 function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = {}) {
+  res = userInputSignalHost.apply(sessionName, res);
   if (cs && cs.isStreaming) {
     if (cs.currentTask) {
       cs.currentTask.goal = (res.goal && res.goal !== '-') ? res.goal : '';
@@ -4089,7 +4082,7 @@ function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = 
   }
   // Turn over - dispatch state action.
   dispatchStateAction(res, { sessionName, sessionId, cs, isTerminal: false, cwd });
-  console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.error ? ' (API error)' : ''}`);
+  console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.error ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
 }
 
 function scanAndReclassify() {
@@ -4381,9 +4374,6 @@ function buildClassifyConversation(sessionName, reply) {
 }
 
 function runClassifyNow(cs, sessionName) {
-  // ⑦ Gate: aux unhealthy → suppress, freeze last-known state
-  if (auxQueue.isUnhealthy()) return;
-
   const reply = cs.currentAssistantText || '';
   const userMsg = cs.currentUserText || '';
   // Need at least a user message (turn-start) or some AI reply (mid/end) to work with.
@@ -4391,6 +4381,13 @@ function runClassifyNow(cs, sessionName) {
 
   const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
   const priorGoal = cs.currentTask?.goal || '';
+  // Structured W remains available while Aux is degraded.
+  if (auxQueue.isUnhealthy()) {
+    const structured = userInputSignalHost.degradedResult(sessionName, cs.currentTask);
+    if (structured) applyClassifyResult(cs, sessionName, sessionId, structured,
+      { cwd: cs.cwd, source: 'multicc/structured' });
+    return;
+  }
   // Dedup: drop this session's older queued/in-flight classify before enqueuing
   // the fresh one — a session only needs its single latest judgement. Without
   // this, rapid turns pile up near-duplicate classifies that then supersede each
@@ -4498,7 +4495,7 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) return;
   const sessionId = persisted.id || sessionName;
-
+  if (userInputSignalHost.pending(sessionName)) { setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now() }); return; }
   // Enrich bare "任务完成" with the stable task name so the
   // dashboard / chat shows "任务完成：memo图片更换" instead of a dry "任务完成".
   // Prefer the current turn's stored task name; fall back to the last
@@ -5070,6 +5067,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     preparationFailure = messageMarked.code || 'message-proof-rejected';
     throw new Error(`turn message proof rejected: ${preparationFailure}`);
   }
+  userInputSignalHost.beginTurn(sessionName, { originContinue, turnId });
 
   // Reset accumulators
   cs.currentAssistantText = '';
@@ -5565,7 +5563,9 @@ orchestrationRuntime = createOrchestrationRuntime({
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
-routerToolHost.configure({records:persistedSessions,dispatchToSession,orchestrationRuntime,taskBoard:taskBoardRuntime});
+routerToolHost.configure({ records: persistedSessions, dispatchToSession,
+  orchestrationRuntime, taskBoard: taskBoardRuntime,
+  recordUserInput: userInputSignalHost.record });
 
 waitInjector.init({
   // Continuations preserve origin metadata; originContinue stays the default.

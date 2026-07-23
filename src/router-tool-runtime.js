@@ -5,9 +5,15 @@ const crypto = require('crypto');
 const TERMINAL_OPERATION_STATES = new Set([
   'completed', 'failed', 'interrupted', 'cancelled',
 ]);
-const TOOL_NAMES = new Set(['route_task', 'dispatch_master', 'dispatch_slave']);
+const TOOL_NAMES = new Set([
+  'request_user_input', 'route_task', 'dispatch_master', 'dispatch_slave',
+]);
 const MAX_MESSAGE_LENGTH = 256 * 1024;
 const MAX_RESULT_LENGTH = 512 * 1024;
+const MAX_QUESTION_LENGTH = 16 * 1024;
+const MAX_REASON_LENGTH = 4 * 1024;
+const MAX_OPTION_LENGTH = 512;
+const MAX_OPTIONS = 12;
 const DEFAULT_CAPABILITY_TTL_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_MASTER_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_MASTER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
@@ -37,6 +43,26 @@ function cleanText(value, field, maxLength) {
     throw new RouterToolError('payload_too_large', `${field} exceeds ${maxLength} characters`, 413);
   }
   return text;
+}
+
+function cleanOptionalText(value, field, maxLength) {
+  if (value == null || String(value).trim() === '') return '';
+  return cleanText(value, field, maxLength);
+}
+
+function cleanOptions(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new RouterToolError('invalid_arguments', 'options must be an array');
+  }
+  if (value.length > MAX_OPTIONS) {
+    throw new RouterToolError('invalid_arguments', `options cannot exceed ${MAX_OPTIONS} items`);
+  }
+  const options = value.map(option => cleanText(option, 'option', MAX_OPTION_LENGTH));
+  if (new Set(options).size !== options.length) {
+    throw new RouterToolError('invalid_arguments', 'options must be unique');
+  }
+  return options;
 }
 
 function boundedTimeout(value) {
@@ -90,6 +116,7 @@ function createRouterToolRuntime({
   capabilityTtlMs = DEFAULT_CAPABILITY_TTL_MS,
   resolveContext = () => null,
   onAdmitted = async () => {},
+  recordUserInput,
 } = {}) {
   if (!records || typeof records.get !== 'function') {
     throw new TypeError('[router-tool-runtime] records map is required');
@@ -102,6 +129,9 @@ function createRouterToolRuntime({
   }
   if (typeof completeDispatch !== 'function') {
     throw new TypeError('[router-tool-runtime] completeDispatch port is required');
+  }
+  if (typeof recordUserInput !== 'function') {
+    throw new TypeError('[router-tool-runtime] recordUserInput port is required');
   }
 
   const capabilities = new Map();
@@ -351,6 +381,46 @@ function createRouterToolRuntime({
     };
   }
 
+  async function requestUserInput(context, args) {
+    const question = cleanText(args.question, 'question', MAX_QUESTION_LENGTH);
+    const reason = cleanOptionalText(args.reason, 'reason', MAX_REASON_LENGTH);
+    const options = cleanOptions(args.options);
+    const allowMultiple = args.allow_multiple === true;
+    if (allowMultiple && options.length < 2) {
+      throw new RouterToolError(
+        'invalid_arguments',
+        'allow_multiple requires at least two options',
+      );
+    }
+    const requestId = `usrq-${stableSuffix([
+      context.sessionId, context.turnId, question, reason,
+      options.join('\0'), allowMultiple,
+    ], cryptoImpl)}`;
+    const recorded = await recordUserInput({
+      requestId,
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      question,
+      reason,
+      options,
+      allowMultiple,
+    });
+    if (!recorded || recorded.ok !== true) {
+      throw new RouterToolError(
+        recorded?.code || 'user_input_signal_rejected',
+        recorded?.error || 'user input signal was rejected',
+        recorded?.statusCode || 409,
+      );
+    }
+    return {
+      ok: true,
+      status: 'waiting_reply_signal_recorded',
+      request_id: requestId,
+      duplicate: recorded.duplicate === true,
+      instruction: 'Present the recorded question to the user as the final response and stop this turn.',
+    };
+  }
+
   async function execute(token, tool, args = {}, options = {}) {
     if (!TOOL_NAMES.has(tool)) {
       throw new RouterToolError('unknown_tool', 'unknown router tool', 404);
@@ -359,6 +429,7 @@ function createRouterToolRuntime({
       throw new RouterToolError('invalid_arguments', 'tool arguments must be an object');
     }
     const context = contextFor(token);
+    if (tool === 'request_user_input') return requestUserInput(context, args);
     if (tool === 'route_task') return routeTask(context, args);
     if (tool === 'dispatch_master') return dispatchMaster(context, args, options.signal);
     return dispatchSlave(context, args);

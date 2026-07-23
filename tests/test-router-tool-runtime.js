@@ -27,6 +27,7 @@ function fixture(t, overrides = {}) {
     ['aux', { id: 'aux', dirId: 'dir-a', kind: 'chat', type: 'aux' }],
   ]);
   const admissions = [];
+  const userInputSignals = [];
   const dispatchToSession = async (targetId, message, opts) => {
     admissions.push({ targetId, message, opts });
     const admitted = await operations.admitDispatch({
@@ -61,15 +62,55 @@ function fixture(t, overrides = {}) {
     dispatchToSession,
     operations,
     completeDispatch: (id, result) => operations.completeDispatch(id, result),
+    recordUserInput: async signal => {
+      const duplicate = userInputSignals.some(existing => existing.requestId === signal.requestId);
+      if (!duplicate) userInputSignals.push(signal);
+      return { ok: true, duplicate };
+    },
     pollIntervalMs: 2,
     ...overrides,
   });
-  return { admissions, dispatchToSession, operations, records, runtime, store };
+  return {
+    admissions, dispatchToSession, operations, records, runtime, store,
+    userInputSignals,
+  };
 }
 
 async function nextTurn() {
   await new Promise(resolve => setImmediate(resolve));
 }
+
+test('request_user_input records an idempotent turn-scoped semantic signal', async t => {
+  const { runtime, userInputSignals } = fixture(t);
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-question' });
+  const args = {
+    question: '选择发布环境',
+    reason: '两个环境的发布风险不同',
+    options: ['测试环境', '生产环境'],
+  };
+  const first = await runtime.execute(capability, 'request_user_input', args);
+  const duplicate = await runtime.execute(capability, 'request_user_input', args);
+  assert.equal(first.status, 'waiting_reply_signal_recorded');
+  assert.equal(first.request_id, duplicate.request_id);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(userInputSignals.length, 1);
+  assert.deepEqual(userInputSignals[0].options, args.options);
+  assert.equal(userInputSignals[0].turnId, 'turn-question');
+});
+
+test('request_user_input validates bounded choices without dispatching work', async t => {
+  const { admissions, runtime } = fixture(t);
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-invalid-question' });
+  await assert.rejects(
+    runtime.execute(capability, 'request_user_input', {
+      question: '请选择',
+      options: ['唯一选项'],
+      allow_multiple: true,
+    }),
+    error => error.code === 'invalid_arguments',
+  );
+  assert.equal(admissions.length, 0);
+});
 
 test('route_task durably admits one-way work and is turn-idempotent', async t => {
   const { admissions, operations, runtime } = fixture(t);
