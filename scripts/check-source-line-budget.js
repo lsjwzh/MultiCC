@@ -19,7 +19,7 @@ const SOURCE_EXTENSIONS = new Set([
 const MIGRATION_DEBT = Object.freeze({
   'server.js': Object.freeze({
     ceiling: 6491,
-    byteCeiling: 306357,
+    byteCeiling: 306276,
     target: DEFAULT_MAX_LINES,
     reason: 'legacy host composition and inline route/controller migration',
   }),

@@ -1068,7 +1068,20 @@ test('manual target remains an idle worker-only route', async () => {
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].target, 'sess-1');
   assert.equal(workerCalls[0].opts.requireIdle, true);
+  assert.equal(workerCalls[0].opts.oneWay, true);
+  assert.equal(runtime.getBoard().tasks[res.body.taskId].routing.oneWay, true);
   assert.equal(commanderCalls.length, 0);
+
+  const followup = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  routes.get('/api/task-board/tasks/:taskId/send')({
+    params: { taskId: res.body.taskId },
+    body: { target: 'sess-1', text: '手工继续任务' },
+  }, followup);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(followup.code, 200);
+  assert.equal(workerCalls.length, 2);
+  assert.equal(workerCalls[1].opts.oneWay, true);
+  assert.equal(runtime.getBoard().tasks[res.body.taskId].routing.oneWay, true);
 });
 
 test('Commander chat input uses the same card-first one-way route as the board composer', async () => {

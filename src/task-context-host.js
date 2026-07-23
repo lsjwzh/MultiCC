@@ -19,7 +19,12 @@ function createTaskContextHost(options = {}) {
 
   function restore(history) {
     if (!Array.isArray(history)) return null;
-    return [...history].reverse().find(message => message?.taskId)?.taskId || null;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const message = history[index];
+      if (message?.taskDetached === true) return null;
+      if (message?.taskId) return message.taskId;
+    }
+    return null;
   }
 
   function dispatchSpec(opts = {}) {
@@ -40,21 +45,23 @@ function createTaskContextHost(options = {}) {
     };
   }
 
-  function beginTurn(state, requested = {}) {
+  function beginTurn(state, requested = {}, options = {}) {
     const previous = state?._currentTaskId || null;
-    const taskId = requested.id || previous;
-    const boundaryChanged = !!requested.id
-      && (requested.start === true || requested.id !== previous);
+    const detached = options.detach === true;
+    const taskId = detached ? null : requested.id || previous;
+    const boundaryChanged = detached || (!!requested.id
+      && (requested.start === true || requested.id !== previous));
     if (state) state._currentTaskId = taskId || null;
-    return { taskId, boundaryChanged };
+    return { taskId, boundaryChanged, detached };
   }
 
-  function messageMetadata(requested = {}, taskId = null) {
+  function messageMetadata(requested = {}, taskId = null, options = {}) {
     return {
       taskId: taskId || undefined,
       taskStart: requested.start || undefined,
       taskSource: requested.source || undefined,
       taskText: requested.start ? requested.text : undefined,
+      taskDetached: options.detached === true || undefined,
     };
   }
 

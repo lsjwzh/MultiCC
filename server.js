@@ -1283,11 +1283,9 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   if (!markers.length) return;
   const from = persistedSessions.get(dispatcherId);
   if (!from) return;
-  // Commander dispatches ONE-WAY: it fires tasks at workers but their results
-  // never flow back into its window (oneWay:true → completeDispatch produces no
-  // result outbox, and the addPendingDispatch guard keeps it off the waiting
-  // list). Every other session stays two-way (replyTo → results return).
-  const oneWay = from.type === 'commander';
+  // Typed Commander input is handled by the canonical task router before an
+  // LLM turn starts. Keep markers exclusively on the ordinary two-way A path.
+  if (from.type === 'commander') return;
   const deliveries = [];
   const history = loadChatHistory(dispatcherId);
   const sourceMessage = [...history].reverse().find(entry => entry && entry.role === 'assistant');
@@ -1301,7 +1299,7 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
     appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
     deliveries.push(dispatchToSession(mk.target, mk.message, {
       replyTo: dispatcherId,
-      oneWay,
+      oneWay: false,
       idempotencyKey: `marker:${dispatcherId}:${sourceKey}:${markerIndex}`,
     })
       .then(r => { if (!r.ok) waitInjector.injectSystemMsg(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
@@ -4769,9 +4767,8 @@ function runChatTurn(sessionName, text, opts = {}) {
     console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
     return false;
   }
-  // Commander runs a real LLM like any chat session (no host bypass). Its reply
-  // is visible in its own window; any <<dispatch>> markers it emits are routed
-  // one-way to workers by maybeDispatchFromChatTurn (results do not flow back).
+  // Typed Commander user input is intercepted by the host router. Any fallback
+  // Commander turn is deliberately barred from the legacy marker dispatcher.
 
   // Normalize once at the host boundary. Native CLI session ids and provider
   // credentials stay outside the pure request; only proof of native history is
@@ -4959,8 +4956,11 @@ function runChatTurn(sessionName, text, opts = {}) {
     }
   }
 
-  const { taskId: nextTaskId, boundaryChanged: taskBoundaryChanged } =
-    taskContextHost.beginTurn(cs, requestedTask);
+  const detachTaskContext = !!originDispatchId && !requestedTask.id;
+  const {
+    taskId: nextTaskId, boundaryChanged: taskBoundaryChanged,
+    detached: taskDetached,
+  } = taskContextHost.beginTurn(cs, requestedTask, { detach: detachTaskContext });
 
   // Persist the canonical user event before any provider execution.
   const userMessageSaved = appendChatMessage(sessionName, {
@@ -4968,7 +4968,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     clientMsgId: clientMsgId || undefined,
     deliveryId: deliveryId || undefined,
     originDispatchId: originDispatchId || undefined,
-    ...taskContextHost.messageMetadata(requestedTask, nextTaskId),
+    ...taskContextHost.messageMetadata(requestedTask, nextTaskId, { detached: taskDetached }),
     bgTaskIds: Array.isArray(bgTaskIds) && bgTaskIds.length ? bgTaskIds : undefined,
     bgToolUseIds: Array.isArray(bgToolUseIds) && bgToolUseIds.length ? bgToolUseIds : undefined,
   });

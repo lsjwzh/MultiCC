@@ -333,6 +333,13 @@ test('origin dispatch return wins routing and exactly-once receipt prevents redi
 });
 
 test('typed Commander cannot fan out through assistant markers', () => {
+  const direct = routePostTurn({
+    turnId: 'commander-direct', sessionId: 'commander-1', sessionType: 'commander',
+    finalText: '<<dispatch target="worker-1">must stay inert</dispatch>>',
+  });
+  assert.equal(direct.route, 'commander');
+  assert.deepEqual(direct.effects, []);
+
   const first = routePostTurn({
     turnId: 'commander-turn', sessionId: 'commander-1', sessionType: 'commander',
     originDispatchId: 'taskboard-dispatch-1',
@@ -589,6 +596,7 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
   assert.equal(routePostTurn({ handoffResumeFailure: true }).route, 'handoff-failed');
   assert.equal(routePostTurn({ turnId: 't2', sessionId: 'g', sessionType: 'gateway' }).route, 'gateway');
   assert.equal(routePostTurn({ turnId: 't3', sessionId: 'a', sessionType: 'aux' }).route, 'aux');
+  assert.equal(routePostTurn({ turnId: 't3c', sessionId: 'c', sessionType: 'commander' }).route, 'commander');
   assert.equal(routePostTurn({ turnId: 't4', sessionId: 'n', sessionType: 'normal' }).route, 'normal');
 });
 
