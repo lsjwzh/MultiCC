@@ -21,6 +21,7 @@ test('internal bridge requires loopback plus its scoped process capability', asy
     ['worker', { id: 'worker', dirId: 'dir', type: 'worker' }],
   ]);
   let sequence = 0;
+  const userInputSignals = [];
   const operations = new Map();
   const orchestrationRuntime = {
     operations: { get: async id => operations.get(id) || null },
@@ -39,6 +40,10 @@ test('internal bridge requires loopback plus its scoped process capability', asy
         spec: { targetId, chatId: targetId, message },
       });
       return { ok: true, operationId, status: 'admitted', chatId: targetId };
+    },
+    recordUserInput: async signal => {
+      userInputSignals.push(signal);
+      return { ok: true, duplicate: false };
     },
   });
   const app = express();
@@ -79,4 +84,27 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   assert.equal(accepted.status, 200);
   const body = await accepted.json();
   assert.equal(body.result.operation_id, 'op-1');
+
+  const question = await fetch(
+    `http://127.0.0.1:${port}/api/internal/router-tools/request_user_input`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-multicc-router-capability': context.env.MULTICC_ROUTER_CAPABILITY,
+      },
+      body: JSON.stringify({
+        arguments: {
+          question: '是否继续？',
+          options: ['继续', '停止'],
+        },
+      }),
+    },
+  );
+  assert.equal(question.status, 200);
+  const questionBody = await question.json();
+  assert.equal(questionBody.result.status, 'waiting_reply_signal_recorded');
+  assert.equal(userInputSignals.length, 1);
+  assert.equal(userInputSignals[0].sessionId, 'caller');
+  assert.equal(userInputSignals[0].turnId, 'turn-1');
 });
