@@ -89,6 +89,9 @@ function _tbTasksForDir(dirId) {
 // would duplicate the tab label) is dropped.
 function renderTaskBoardSection(dirId, opts) {
   const tasks = _tbTasksForDir(dirId);
+  const completedCount = tasks.filter(t =>
+    window.MultiCCTaskBoardUi.taskDisplayState(t).done).length;
+  const cleanupButton = `<button class="btn btn-sm tb-clean-completed" onclick="archiveCompletedTaskBoard(event,'${_tbEsc(dirId)}',this)" title="归档全部已完成任务"${completedCount ? '' : ' disabled'}>🧹 一键清理${completedCount ? ` (${completedCount})` : ''}</button>`;
   const rowsHtml = [];
   const byModule = new Map();
   for (const t of tasks) {
@@ -140,13 +143,18 @@ function renderTaskBoardSection(dirId, opts) {
     ? rowsHtml.join('')
     : '<div class="tb-empty">还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。</div>';
   if (opts && opts.tabbed) {
-    const stat = tasks.length
-      ? `<div class="tb-stat">${mods.length || 1} 模块 · ${tasks.length} 任务 <button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板" style="margin-left:8px">🔄</button></div>` : '';
+    const stat = `<div class="tb-stat" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <span>${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : '暂无任务'}</span>
+      <span>${cleanupButton}<button class="btn-icon" onclick="event.stopPropagation();refreshTaskBoard(true)" title="刷新任务板" style="margin-left:8px">🔄</button></span>
+    </div>`;
     return `<div class="tb-section tb-tabbed">${stat}${body}</div>`;
   }
   return `
     <div class="tb-section">
-      <div class="tb-section-head">📋 任务板 <span class="tb-dim">${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : ''}</span></div>
+      <div class="tb-section-head">
+        <span>📋 任务板 <span class="tb-dim">${tasks.length ? `${mods.length || 1} 模块 · ${tasks.length} 任务` : ''}</span></span>
+        ${cleanupButton}
+      </div>
       ${body}
     </div>`;
 }
@@ -528,6 +536,27 @@ async function setTaskBoardStatus(taskId, status) {
     refreshTaskBoard(true);
   } catch (e) {
     if (typeof showToast === 'function') showToast(`操作失败：${e.message}`, true);
+  }
+}
+
+async function archiveCompletedTaskBoard(ev, dirId, button) {
+  if (ev) ev.stopPropagation();
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch('/api/task-board/archive-completed', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dirId }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    if (_tbDetailTaskId && (d.taskIds || []).includes(_tbDetailTaskId)) {
+      closeTaskBoardDetail();
+    }
+    if (typeof showToast === 'function') showToast(`已归档 ${d.archivedCount} 个已完成任务`);
+    await refreshTaskBoard(true);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast(`一键清理失败：${e.message}`, true);
+    if (button) button.disabled = false;
   }
 }
 
