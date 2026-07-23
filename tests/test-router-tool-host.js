@@ -17,8 +17,8 @@ async function listen(server) {
 
 test('internal bridge requires loopback plus its scoped process capability', async t => {
   const records = new Map([
-    ['caller', { id: 'caller', dirId: 'dir', type: 'worker' }],
-    ['worker', { id: 'worker', dirId: 'dir', type: 'worker' }],
+    ['caller', { id: 'caller', dirId: 'dir', kind: 'chat', type: 'worker' }],
+    ['worker', { id: 'worker', dirId: 'dir', kind: 'chat', type: 'worker' }],
   ]);
   let sequence = 0;
   const operations = new Map();

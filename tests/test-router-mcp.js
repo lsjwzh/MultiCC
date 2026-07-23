@@ -91,6 +91,12 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
     'route_task', 'dispatch_master', 'dispatch_slave',
   ]);
+  const routeSchema = listed.result.tools.find(tool => tool.name === 'route_task').inputSchema;
+  assert.deepEqual(routeSchema.properties.allow_terminal, {
+    type: 'boolean',
+    default: false,
+    description: 'Set true only when the user explicitly requested this terminal session. Omit or false for normal routing.',
+  });
   const called = await plain.call('tools/call', {
     name: 'route_task',
     arguments: { target_session_id: 'worker', message: 'do it' },
