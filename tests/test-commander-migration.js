@@ -200,7 +200,8 @@ test('a newly migrated Commander is identified by the task board and safely queu
   const h = harness(t);
   await h.migration.run();
   const dispatches = [];
-  const runtime = createTaskBoardRuntime({
+  let runtime;
+  runtime = createTaskBoardRuntime({
     file: path.join(h.dataRoot, 'task_board.json'),
     auxQueue: { isUnhealthy: () => false, cancel() {}, enqueue: async () => ({ cancelled: true }) },
     records: h.records,
@@ -216,6 +217,15 @@ test('a newly migrated Commander is identified by the task board and safely queu
         operationId: 'queued-op', status: 'admitted', queued: false, elasticWorkerCreated: true,
       };
     },
+    sendSessionMessage: (sessionId, text, options) => runtime.routeCommanderInput(
+      sessionId,
+      text,
+      {
+        clientMsgId: options.clientMsgId,
+        source: options.taskSource,
+        goalNote: options.goalNote,
+      },
+    ),
     workspaceBroadcast() {},
     atomicWriteJson: (file, value) => fs.writeFileSync(file, JSON.stringify(value)),
     isSystemInjected: () => false,
