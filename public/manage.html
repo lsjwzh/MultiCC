@@ -2160,10 +2160,13 @@
       window._gcdAbort = null;
       try { a.ac.abort(); } catch (_) {}
       try {
+        // keepalive lets the cancel reach the server even if this runs during
+        // page unload (close tab / navigate away), avoiding an orphan aux task.
         fetch('/api/aux/cancel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: a.id }),
+          keepalive: true,
         }).catch(function () {});
       } catch (_) {}
       window._gcdReqToken++;
@@ -2245,6 +2248,12 @@
       document.getElementById('git-commit-diff-modal').style.display = 'none';
       document.getElementById('git-tree-modal').style.display = 'none';
     }
+    // Closing the tab / navigating away is the one path that doesn't go through
+    // closeCommitDiff/backToGitTree. Cancel any in-flight commit summary here so
+    // the keepalive cancel POST reaches the server and no orphan aux task lingers.
+    window.addEventListener('pagehide', function () {
+      if (window._gcdAbort) cancelGcdSummary();
+    });
   </script>
 </body>
 </html>
