@@ -212,8 +212,60 @@
       if (message.clientMsgId) node.dataset.clientMsgId = message.clientMsgId;
       if (!message.id) return;
       node.dataset.msgId = message.id;
+      // Stash the raw content text so a later duplicate-detection pass can
+      // compare "is the previous assistant contained by the latest one" using
+      // the original text, not the rendered (markdown/HTML-noisy) textContent.
+      if (message.role === 'assistant') {
+        try { node.dataset.rawText = asText(message.content); } catch (_) {}
+        try { node.dataset.rawTools = stableToolsString(message.tools); } catch (_) {}
+      }
       attachDeleteButton(node);
       attachForkButton(node);
+    }
+
+    // A 🔇-prefixed user message is a system-injected "please continue" nudge,
+    // not a real user turn. Duplicate detection skips these when backtracking
+    // to find the previous assistant (two retries of the same reply are often
+    // separated only by such a nudge).
+    function isInjectedNudgeNode(node) {
+      if (!node) return false;
+      if (node.dataset.rawText) return false; // assistant nodes carry rawText
+      const text = node.textContent || '';
+      return node.classList.contains('user') && text.trimStart().startsWith('🔇');
+    }
+    function stableToolsString(tools) {
+      try { return JSON.stringify(tools || null); } catch (_) { return ''; }
+    }
+    // True if prev (an assistant node) is contained by latest content:
+    // exact same text, or latest starts with prev's text and prev is long
+    // enough (≥16) to avoid short/coincidental matches. Tools must match.
+    function assistantNodeContained(prevNode, latestMessage) {
+      if (!prevNode || !prevNode.classList.contains('assistant')) return false;
+      const prevText = prevNode.dataset.rawText || '';
+      const latestText = asText(latestMessage.content);
+      if (!prevText || !latestText) return false;
+      if (prevText === latestText) return true;
+      return prevText.length >= 16 && latestText.startsWith(prevText);
+    }
+    // Backtrack from a position in the DOM list to the previous *real* assistant
+    // node, skipping 🔇 nudge user nodes and interim assistant bubbles. Stops
+    // at (and returns null for) a real user message — two same replies to two
+    // real user turns must both stay.
+    function findPrevAssistantNode(fromNode) {
+      let node = fromNode ? fromNode.previousElementSibling : null;
+      while (node) {
+        if (node.classList.contains('assistant')) {
+          // interim/live bubbles are not durable persisted assistants
+          if (node.dataset.msgId || node.dataset.rawText) return node;
+          node = node.previousElementSibling; continue;
+        }
+        if (node.classList.contains('user')) {
+          if (isInjectedNudgeNode(node)) { node = node.previousElementSibling; continue; }
+          return null; // real user turn — stop, do not dedup
+        }
+        node = node.previousElementSibling;
+      }
+      return null;
     }
 
     function renderAssistant(message) {
@@ -352,6 +404,17 @@
 
       const node = renderMessage(source);
       if (!existing) {
+        // Duplicate-guard: a 🔇-nudge-separated retry produces the same (or a
+        // longer, containing) assistant reply as the previous turn. Drop the
+        // older copy so the user sees only the latest. Never crosses a real
+        // user message (findPrevAssistantNode stops there).
+        if (source.role === 'assistant') {
+          const prev = findPrevAssistantNode(messagesEl.lastElementChild);
+          if (prev && assistantNodeContained(prev, source)
+              && stableToolsString(source.tools) === (prev.dataset.rawTools || stableToolsString(null))) {
+            prev.remove();
+          }
+        }
         messagesEl.appendChild(node);
         return Object.freeze({
           node,
