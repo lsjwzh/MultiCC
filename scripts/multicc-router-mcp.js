@@ -4,7 +4,7 @@
 const readline = require('readline');
 
 const SERVER_NAME = 'multicc-router';
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.1.0';
 const BASE_URL = String(process.env.MULTICC_BASE_URL || '').replace(/\/+$/, '');
 const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
 
@@ -17,7 +17,7 @@ const TARGET_SCHEMA = {
       type: 'string',
       minLength: 1,
       maxLength: 256,
-      description: 'Stable target session id. The server enforces same-directory worker-only routing.',
+      description: 'Stable same-directory target session id. Terminal targets require allow_terminal=true.',
     },
     message: {
       type: 'string',
@@ -31,6 +31,11 @@ const TARGET_SCHEMA = {
       maxLength: 256,
       pattern: '^[A-Za-z0-9._:-]+$',
       description: 'Optional stable retry key. Omit to use the current turn-scoped deterministic key.',
+    },
+    allow_terminal: {
+      type: 'boolean',
+      default: false,
+      description: 'Set true only when the user explicitly requested this terminal session. Omit or false for normal routing.',
     },
   },
 };
@@ -80,7 +85,7 @@ const TOOLS = [
   {
     name: 'route_task',
     title: 'Route task (one way)',
-    description: 'Durably queue a one-way task for a same-directory worker. Returns after admission and never waits for or recollects the worker result.',
+    description: 'Durably queue a one-way task for a same-directory chat worker. Terminal sessions are rejected unless allow_terminal=true. Returns after admission and never recollects the result.',
     inputSchema: TARGET_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -92,7 +97,7 @@ const TOOLS = [
   {
     name: 'dispatch_master',
     title: 'Dispatch and await worker',
-    description: 'Durably dispatch a task to a same-directory worker and keep this tool call pending until the worker returns a persisted result. Busy workers are queued and never interrupted. Retry with the same idempotency_key after a timeout.',
+    description: 'Durably dispatch to a same-directory chat worker and await its persisted result. Terminal sessions require allow_terminal=true. Busy targets are queued and never interrupted.',
     inputSchema: {
       ...TARGET_SCHEMA,
       properties: {
