@@ -65,7 +65,7 @@ function createHeartbeat(clock, heartbeats, overrides = {}) {
   });
 }
 
-test('uses the 30 second default and emits deterministic, minimal heartbeat data', () => {
+test('uses the 8 second default and emits deterministic, minimal heartbeat data', () => {
   const clock = createClock(1_000);
   const heartbeats = [];
   const manager = new TurnProgressHeartbeat({
@@ -76,24 +76,25 @@ test('uses the 30 second default and emits deterministic, minimal heartbeat data
   });
 
   assert.equal(manager.intervalMs, DEFAULT_INTERVAL_MS);
+  assert.equal(DEFAULT_INTERVAL_MS, 8_000, 'silent-period pulse is 8s so codex turns do not read as stuck');
   manager.start('session-1', 'turn-1', { phase: 'thinking' });
   assert.equal(clock.unrefCalls, 1, 'the interval does not keep Node alive');
-  clock.advance(29_999);
+  clock.advance(7_999);
   assert.equal(heartbeats.length, 0);
   clock.advance(1);
   assert.deepEqual(heartbeats, [{
     sessionId: 'session-1',
     turnId: 'turn-1',
-    elapsedMs: 30_000,
-    silentMs: 30_000,
+    elapsedMs: 8_000,
+    silentMs: 8_000,
     phase: 'thinking',
     toolKind: null,
-    activityAgeMs: 30_000,
+    activityAgeMs: 8_000,
   }]);
 
-  clock.advance(30_000);
+  clock.advance(8_000);
   assert.equal(heartbeats.length, 2, 'a later silent period emits one fresh heartbeat');
-  assert.equal(heartbeats[1].silentMs, 60_000);
+  assert.equal(heartbeats[1].silentMs, 16_000);
 });
 
 test('touchVisible resets and realigns the silent window', () => {

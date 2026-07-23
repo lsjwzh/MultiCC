@@ -153,6 +153,14 @@
       if (!input) return;
       try {
         const parsed = JSON.parse(toolState.inputJson || '{}');
+        // Thinking (reasoning) is prose, not a tool invocation — show its text
+        // verbatim instead of a {"text":"…"} JSON blob, and preview it in the desc.
+        const nameEl = toolState.card.querySelector('.tool-name');
+        if (nameEl && nameEl.textContent === 'Thinking' && typeof parsed.text === 'string') {
+          input.textContent = parsed.text;
+          if (description) description.textContent = truncate(parsed.text.replace(/\s+/g, ' ').trim(), 60);
+          return;
+        }
         const summary = parsed.description || parsed.command || parsed.pattern || parsed.file_path || '';
         if (summary && description) description.textContent = truncate(summary, 60);
         input.textContent = JSON.stringify(parsed, null, 2);
