@@ -130,6 +130,40 @@ test('commander (real-LLM dispatcher) sees same-dir workers, not commanders/aux/
   assert.deepEqual(ids, ['w-a']);   // same-dir worker only; not w-b (d2), not cmd2/aux/self
 });
 
+test('commander sees bounded roles and deduplicated recent task evidence', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    {
+      id: 'backend', dirId: 'd1', type: 'worker', kind: 'chat',
+      label: '后端工程师',
+      rolePrompt: '# 角色：后端与安全\n负责 API、数据和鉴权。token=top-secret /private/repo/server.js',
+      taskState: {
+        goal: '当前 API 修复',
+        phase: 'implementing',
+        classifyState: 'running',
+        classifyHistory: [
+          { goal: '旧 UI 任务', phase: 'done', state: 'completed' },
+          { goal: '修复 OAuth 回调', phase: 'done', state: 'completed' },
+          { goal: '修复OAuth回调', phase: 'verifying', state: 'completed' },
+          { goal: '当前 API 修复', phase: 'planning', state: 'waiting' },
+        ],
+      },
+    },
+  ];
+  const t = makeFactory(records, {
+    backend: { clients: { size: 1 }, isStreaming: true },
+  });
+  const [target] = t.dispatchableSessionsFor('cmd');
+  assert.equal(target.load, 'running');
+  assert.match(target.role, /后端与安全/);
+  assert.doesNotMatch(target.role, /top-secret|private\/repo/);
+  assert.deepEqual(target.recentTasks, [
+    { task: '当前 API 修复', phase: 'planning', state: 'waiting' },
+    { task: '修复OAuth回调', phase: 'verifying', state: 'completed' },
+    { task: '旧 UI 任务', phase: 'done', state: 'completed' },
+  ]);
+});
+
 test('a normal session never sees a commander peer as a dispatch target', () => {
   const recs = [
     { id: 'me', dirId: 'd1', type: 'chat', autoDispatch: true },
@@ -154,6 +188,11 @@ test('commander gets the dispatch prompt without needing autoDispatch', () => {
   assert.match(p, /指挥官/);
   assert.match(p, /route_task/);
   assert.match(p, /优先复用/);
+  assert.match(p, /role（稳定职责摘要）/);
+  assert.match(p, /recentTasks/);
+  assert.match(p, /上下文连续性/);
+  assert.match(p, /load="running"/);
+  assert.match(p, /不要根据 id、CLI 名称或最近活跃时间猜职责/);
   assert.match(p, /用户原话点名/);
   assert.doesNotMatch(p, /<<route target=/);
   assert.match(p, /可用目标 sessions: \[/);
