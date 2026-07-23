@@ -9,10 +9,12 @@ function createTaskContextHost(options = {}) {
     containsDelivery,
     classifyDisplay,
     randomUUID,
+    getRecord,
+    runTurn,
   } = options;
   for (const [name, value] of Object.entries({
     getState, append, emitClients, getTaskBoard,
-    containsDelivery, classifyDisplay, randomUUID,
+    containsDelivery, classifyDisplay, randomUUID, getRecord, runTurn,
   })) {
     if (typeof value !== 'function') throw new TypeError(`[task-context-host] ${name} port required`);
   }
@@ -98,53 +100,127 @@ function createTaskContextHost(options = {}) {
     });
   }
 
+  function recordCommanderRoute({
+    sessionName,
+    text,
+    clientMsgId,
+    taskId,
+    taskStart = true,
+    taskSource = 'commander',
+    taskText,
+    workerSessionId,
+    operationId,
+  } = {}) {
+    const state = getState(sessionName);
+    if (state && taskId) state._currentTaskId = taskId;
+    const deliveryKey = typeof clientMsgId === 'string' ? clientMsgId.trim().slice(0, 128) : '';
+    const deduplicated = !!deliveryKey && containsDelivery(sessionName, deliveryKey);
+    if (!deduplicated) {
+      const saved = appendMessage(sessionName, {
+        role: 'user',
+        content: String(text || ''),
+        ts: Date.now(),
+        clientMsgId: deliveryKey || undefined,
+        taskId: taskId || undefined,
+        taskStart: taskStart || undefined,
+        taskSource: taskSource || undefined,
+        taskText: taskStart ? String(taskText == null ? text || '' : taskText) : undefined,
+      });
+      if (!saved) return { ok: false, code: 'commander_history_not_persisted' };
+    }
+    broadcast(sessionName, {
+      type: 'result',
+      commanderRoute: true,
+      targetSessionId: workerSessionId || null,
+      operationId: operationId || null,
+    });
+    return { ok: true, deduplicated };
+  }
+
   function continues(state, previous, forceNew, now = Date.now()) {
     if (state?._currentTaskId && !forceNew && previous) return true;
     return !!(!forceNew && previous && previous.phase !== 'done'
       && previous.startedAt && now - previous.startedAt < 10 * 60 * 1000);
   }
 
-  async function handleCommander({
+  async function routeCommanderMessage({
     persisted,
     sessionName,
     message,
-    state,
   }) {
-    if (persisted?.type !== 'commander') return false;
+    if (persisted?.type !== 'commander') return { handled: false };
     const clientMsgId = typeof message.clientMsgId === 'string' && message.clientMsgId.trim()
       ? message.clientMsgId.trim().slice(0, 128)
       : `commander-${randomUUID()}`;
-    const routed = await getTaskBoard().routeCommanderInput(sessionName, message.text, {
-      clientMsgId,
-      idempotencyKey: `commander-input:${sessionName}:${clientMsgId}`,
-    });
+    const source = message.taskSource === 'task-board' ? 'task-board' : 'commander';
+    const board = getTaskBoard();
+    const routed = message.taskId && message.taskStart !== true
+      ? await board.routeCommanderFollowup(sessionName, message.taskId, message.text, {
+          clientMsgId,
+          source,
+          goalNote: message.goalNote,
+        })
+      : await board.routeCommanderInput(sessionName, message.text, {
+          clientMsgId,
+          source,
+          goalNote: message.goalNote,
+        });
     if (!routed.ok) {
       broadcast(sessionName, {
         type: 'error',
         error: `Commander 路由失败：${routed.code || routed.error || 'dispatch_failed'}`,
       });
-      return true;
+      return { handled: true, ...routed };
     }
-    state._currentTaskId = routed.taskId;
-    if (!containsDelivery(sessionName, clientMsgId)) {
-      appendMessage(sessionName, {
-        role: 'user',
-        content: message.text,
-        ts: Date.now(),
-        clientMsgId,
-        taskId: routed.taskId,
-        taskStart: true,
-        taskSource: 'commander',
-        taskText: message.text,
-      });
-    }
-    broadcast(sessionName, {
-      type: 'result',
-      commanderRoute: true,
-      targetSessionId: routed.workerSessionId || routed.targetSessionId || null,
-      operationId: routed.operationId || null,
+    const recorded = recordCommanderRoute({
+      sessionName,
+      text: message.text,
+      clientMsgId,
+      taskId: routed.taskId,
+      taskStart: routed.taskStart !== false,
+      taskSource: source,
+      taskText: routed.taskStart === false ? undefined : message.text,
+      workerSessionId: routed.workerSessionId || routed.targetSessionId,
+      operationId: routed.operationId,
     });
-    return true;
+    if (!recorded.ok) {
+      broadcast(sessionName, {
+        type: 'error',
+        error: 'Commander 已完成路由，但源消息未能持久化；使用相同消息重试不会重复执行。',
+      });
+      return { handled: true, ...routed, ...recorded };
+    }
+    return { handled: true, ...routed, commanderRecorded: true };
+  }
+
+  async function handleCommander(input) {
+    const routed = await routeCommanderMessage(input);
+    return routed.handled === true;
+  }
+
+  async function deliverSessionMessage(sessionName, text, options = {}) {
+    const persisted = getRecord(sessionName);
+    if (!persisted) return { ok: false, code: 'session_not_found' };
+    const commander = await routeCommanderMessage({
+      persisted,
+      sessionName,
+      message: {
+        text,
+        clientMsgId: options.clientMsgId,
+        taskId: options.taskId,
+        taskStart: options.taskStart,
+        taskSource: options.taskSource,
+        goalNote: options.goalNote,
+      },
+    });
+    if (commander.handled) return commander;
+    const started = await runTurn(sessionName, text, options);
+    return {
+      ok: started !== false,
+      code: started === false ? 'turn_rejected' : undefined,
+      handled: false,
+      chatId: sessionName,
+    };
   }
 
   return Object.freeze({
@@ -152,10 +228,13 @@ function createTaskContextHost(options = {}) {
     beginTurn,
     broadcast,
     continues,
+    deliverSessionMessage,
     dispatchSpec,
     handleCommander,
     messageMetadata,
+    recordCommanderRoute,
     recordGoal,
+    routeCommanderMessage,
     restore,
     turnOptions,
   });
