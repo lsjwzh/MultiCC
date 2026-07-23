@@ -164,6 +164,28 @@ test('one-way Commander dispatch completes durably without a result outbox', asy
   assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
 });
 
+test('tool-return dispatch completes durably without injecting a result turn', async t => {
+  const { store, service } = fixture(t);
+  const admitted = await service.admitDispatch({
+    ownerSessionId: 'master',
+    resultSessionId: 'master',
+    idempotencyKey: 'tool-return-1',
+    spec: {
+      targetId: 'worker', chatId: 'worker', message: 'implement',
+      replyTo: 'master', gateway: false, oneWay: false, resultMode: 'tool',
+    },
+  });
+  await service.completeDispatch(admitted.id, {
+    status: 'completed', text: 'done', source: 'dispatch_slave',
+  });
+  const operation = await service.get(admitted.id);
+  const snapshot = await store.snapshot();
+  assert.equal(operation.status, 'completed');
+  assert.equal(operation.result.text, 'done');
+  assert.equal(operation.resultOutboxId, null);
+  assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
+});
+
 test('task ledger records terminal output and interrupts only unproven active tasks', async t => {
   const { store, service } = fixture(t);
   await service.observeTask({

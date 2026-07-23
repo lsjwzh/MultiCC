@@ -1,0 +1,213 @@
+#!/usr/bin/env node
+'use strict';
+
+const readline = require('readline');
+
+const SERVER_NAME = 'multicc-router';
+const SERVER_VERSION = '1.0.0';
+const BASE_URL = String(process.env.MULTICC_BASE_URL || '').replace(/\/+$/, '');
+const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
+
+const TARGET_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['target_session_id', 'message'],
+  properties: {
+    target_session_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      description: 'Stable target session id. The server enforces same-directory worker-only routing.',
+    },
+    message: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 262144,
+      description: 'Complete self-contained task instructions for the target session.',
+    },
+    idempotency_key: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      pattern: '^[A-Za-z0-9._:-]+$',
+      description: 'Optional stable retry key. Omit to use the current turn-scoped deterministic key.',
+    },
+  },
+};
+
+const TOOLS = [
+  {
+    name: 'route_task',
+    title: 'Route task (one way)',
+    description: 'Durably queue a one-way task for a same-directory worker. Returns after admission and never waits for or recollects the worker result.',
+    inputSchema: TARGET_SCHEMA,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'dispatch_master',
+    title: 'Dispatch and await worker',
+    description: 'Durably dispatch a task to a same-directory worker and keep this tool call pending until the worker returns a persisted result. Busy workers are queued and never interrupted. Retry with the same idempotency_key after a timeout.',
+    inputSchema: {
+      ...TARGET_SCHEMA,
+      properties: {
+        ...TARGET_SCHEMA.properties,
+        timeout_seconds: {
+          type: 'number',
+          exclusiveMinimum: 0,
+          maximum: 21600,
+          description: 'How long this tool call waits. Timeout does not cancel the durable dispatch.',
+        },
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+];
+
+TOOLS.push({
+    name: 'dispatch_slave',
+    title: 'Return dispatch result',
+    description: 'Complete the dispatch that created this turn. Call exactly once after finishing the assigned work so dispatch_master receives the persisted result. A server-side post-turn fallback also completes the dispatch if this tool is not called.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['result'],
+      properties: {
+        result: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 524288,
+          description: 'Concise final result including verification and remaining risks.',
+        },
+        status: {
+          type: 'string',
+          enum: ['completed', 'failed'],
+          default: 'completed',
+        },
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+});
+
+function write(message) {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+function rpcError(id, code, message) {
+  write({ jsonrpc: '2.0', id, error: { code, message } });
+}
+
+function toolContent(value, isError = false) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(value) }],
+    structuredContent: value,
+    isError,
+  };
+}
+
+async function callBridge(name, args, signal) {
+  if (!BASE_URL || !CAPABILITY) throw new Error('MultiCC router environment is unavailable');
+  const response = await fetch(`${BASE_URL}/api/internal/router-tools/${encodeURIComponent(name)}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-multicc-router-capability': CAPABILITY,
+    },
+    body: JSON.stringify({ arguments: args || {} }),
+    signal,
+  });
+  let payload = null;
+  try { payload = await response.json(); } catch (_) { /* handled below */ }
+  if (!response.ok) {
+    const code = payload && typeof payload.code === 'string' ? payload.code : 'router_error';
+    const error = new Error(code);
+    error.code = code;
+    throw error;
+  }
+  return payload && Object.prototype.hasOwnProperty.call(payload, 'result')
+    ? payload.result
+    : payload;
+}
+
+const inflight = new Map();
+
+async function handle(message) {
+  if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') return;
+  if (message.method === 'notifications/cancelled') {
+    inflight.get(message.params?.requestId)?.abort();
+    return;
+  }
+  if (message.id == null) return;
+  const { id, method, params = {} } = message;
+  if (method === 'initialize') {
+    write({
+      jsonrpc: '2.0',
+      id,
+      result: {
+        protocolVersion: params.protocolVersion || '2025-06-18',
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+      },
+    });
+    return;
+  }
+  if (method === 'ping') {
+    write({ jsonrpc: '2.0', id, result: {} });
+    return;
+  }
+  if (method === 'tools/list') {
+    write({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
+    return;
+  }
+  if (method === 'tools/call') {
+    const tool = TOOLS.find(entry => entry.name === params.name);
+    if (!tool) {
+      write({
+        jsonrpc: '2.0', id,
+        result: toolContent({ ok: false, code: 'unknown_tool' }, true),
+      });
+      return;
+    }
+    const controller = new AbortController();
+    inflight.set(id, controller);
+    try {
+      const result = await callBridge(tool.name, params.arguments || {}, controller.signal);
+      write({ jsonrpc: '2.0', id, result: toolContent(result, false) });
+    } catch (error) {
+      const code = typeof error.code === 'string' ? error.code : 'router_error';
+      write({
+        jsonrpc: '2.0', id,
+        result: toolContent({ ok: false, code }, true),
+      });
+    } finally {
+      inflight.delete(id);
+    }
+    return;
+  }
+  rpcError(id, -32601, 'Method not found');
+}
+
+const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+lines.on('line', line => {
+  let message;
+  try { message = JSON.parse(line); } catch (_) { return; }
+  // Do not serialize calls: dispatch_master may legitimately remain pending
+  // while Codex sends cancellation or other protocol traffic.
+  handle(message).catch(() => {
+    if (message && message.id != null) rpcError(message.id, -32603, 'Internal error');
+  });
+});

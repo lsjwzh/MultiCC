@@ -25,10 +25,64 @@ fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
 fs.writeFileSync(fakeCodex, `#!/usr/bin/env node
 const fs = require('node:fs');
-fs.appendFileSync(${JSON.stringify(invocationFile)}, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + '\\n');
-process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fake-worker-thread' }) + '\\n');
-process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'FAKE-WORKER-DONE' } }) + '\\n');
-process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }) + '\\n');
+async function main() {
+  const args = process.argv.slice(2);
+  const sessionId = process.env.MULTICC_SESSION_ID || 'unknown';
+  fs.appendFileSync(${JSON.stringify(invocationFile)}, JSON.stringify({ cwd: process.cwd(), args, sessionId }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fake-' + sessionId }) + '\\n');
+  const base = process.env.MULTICC_BASE_URL;
+  const headers = process.env.ACCESS_TOKEN
+    ? { Authorization: 'Bearer ' + process.env.ACCESS_TOKEN }
+    : {};
+  const sessionsResponse = await fetch(base + '/api/sessions', { headers });
+  const sessions = await sessionsResponse.json();
+  const current = sessions.find(session => session.id === sessionId);
+  if (current && current.type === 'commander') {
+    const target = sessions.find(session => session.dirId === current.dirId
+      && session.type !== 'commander'
+      && String(session.label || '').startsWith('全栈工程师'));
+    if (!target) throw new Error('fake Commander could not resolve a worker');
+    const payload = String(args[args.length - 1] || '');
+    const knownTasks = ['实现一个隔离测试功能', '从任务面板进入统一通道'];
+    const message = knownTasks.find(value => payload.includes(value)) || payload.slice(-2000);
+    const toolResponse = await fetch(base + '/api/internal/router-tools/route_task', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-multicc-router-capability': process.env.MULTICC_ROUTER_CAPABILITY || '',
+      },
+      body: JSON.stringify({ arguments: { target_session_id: target.id, message } }),
+    });
+    const toolBody = await toolResponse.json();
+    if (!toolResponse.ok || !toolBody.ok) throw new Error('route_task failed: ' + JSON.stringify(toolBody));
+    process.stdout.write(JSON.stringify({
+      type: 'item.started',
+      item: { type: 'mcp_tool_call', id: 'route-call', tool: 'mcp__multicc_router__route_task',
+        arguments: JSON.stringify({ target_session_id: target.id, message }) },
+    }) + '\\n');
+    process.stdout.write(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'mcp_tool_call', id: 'route-call', status: 'completed',
+        result: { content: [{ type: 'text', text: JSON.stringify(toolBody.result) }] } },
+    }) + '\\n');
+    process.stdout.write(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: 'FAKE-COMMANDER-ROUTED' },
+    }) + '\\n');
+  } else {
+    process.stdout.write(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: 'FAKE-WORKER-DONE' },
+    }) + '\\n');
+  }
+  process.stdout.write(JSON.stringify({
+    type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 },
+  }) + '\\n');
+}
+main().catch(error => {
+  process.stderr.write(String(error && error.stack || error) + '\\n');
+  process.exitCode = 1;
+});
 `);
 fs.chmodSync(fakeCodex, 0o755);
 
@@ -65,6 +119,7 @@ async function waitUntil(check, message, attempts = 100) {
       ...process.env,
       NODE_ENV: 'test', PORT: String(port), ACCESS_TOKEN: TOKEN,
       MULTICC_DATA_DIR: dataRoot,
+      MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories'),
       MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100',
       CLAUDE_CMD: path.join(testRoot, 'missing-claude'),
       CODEX_CMD: fakeCodex,
@@ -118,18 +173,16 @@ async function waitUntil(check, message, attempts = 100) {
     const events = [];
     const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(commander.id)}&token=${TOKEN}`);
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Commander route receipt timeout')), 10000);
-      socket.on('open', () => socket.send(JSON.stringify({
+      socket.on('open', () => {
+        socket.send(JSON.stringify({
         type: 'user_message', text: '实现一个隔离测试功能', clientMsgId: 'commander-isolated-1',
-      })));
+        }));
+        resolve();
+      });
       socket.on('message', raw => {
         let event;
         try { event = JSON.parse(raw.toString()); } catch (_) { return; }
         events.push(event);
-        if (event.type === 'result' && event.commanderRoute === true) {
-          clearTimeout(timer);
-          resolve();
-        }
       });
       socket.on('error', reject);
     });
@@ -143,18 +196,20 @@ async function waitUntil(check, message, attempts = 100) {
     assert.equal(board.routing.oneWay, true);
     assert.notEqual(board.routing.workerSessionId, specialist.id, 'specialist is never auto-routed');
 
-    const execInvocation = await waitUntil(() => {
+    const invocationRows = await waitUntil(() => {
       if (!fs.existsSync(invocationFile)) return null;
       const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
-      return rows.find(row => row.args[0] === 'exec') || null;
-    }, 'selected worker fake CLI was not invoked');
+      return rows.filter(row => row.args[0] === 'exec').length >= 2 ? rows : null;
+    }, 'Commander tool call and selected worker were not both invoked');
     const persisted = readJson(createPaths({ dataDir: dataRoot }).sessionsFile, { legacyIsArray: true }).data;
     const durableCommander = persisted.find(session => session.id === commander.id);
     const durableWorker = persisted.find(session => session.id === board.routing.workerSessionId);
-    assert.equal(fs.realpathSync(execInvocation.cwd), fs.realpathSync(durableWorker.worktreePath),
-      'only the selected worker executes the CLI');
-    assert.notEqual(fs.realpathSync(execInvocation.cwd), fs.realpathSync(durableCommander.worktreePath),
-      'Commander never executes the CLI');
+    const commanderInvocation = invocationRows.find(row =>
+      fs.realpathSync(row.cwd) === fs.realpathSync(durableCommander.worktreePath));
+    const workerInvocation = invocationRows.find(row =>
+      fs.realpathSync(row.cwd) === fs.realpathSync(durableWorker.worktreePath));
+    assert.ok(commanderInvocation, 'Commander executes the model turn that chooses route_task');
+    assert.ok(workerInvocation, 'only the tool-selected worker executes the routed task');
 
     const paths = createPaths({ dataDir: dataRoot });
     const workerHistoryFile = path.join(paths.chatHistoryDir, `${board.routing.workerSessionId}.json`);
@@ -166,33 +221,16 @@ async function waitUntil(check, message, attempts = 100) {
     }, 'worker history did not persist the routed turn');
     const canonicalStart = workerHistory.find(message => message.role === 'user' && message.taskStart === true);
     assert.equal(canonicalStart.taskId, board.id);
-    assert.equal(canonicalStart.taskSource, 'commander');
+    assert.equal(canonicalStart.taskSource, 'router-tool');
     assert.equal(canonicalStart.taskText, '实现一个隔离测试功能');
-    assert.match(canonicalStart.content, /Commander 单向路由任务/);
+    assert.equal(canonicalStart.content, '实现一个隔离测试功能');
 
-    const replayResult = new Promise((resolve, reject) => {
-      const prior = events.filter(event => event.type === 'result' && event.commanderRoute === true).length;
-      const timer = setTimeout(() => reject(new Error('Commander idempotent replay timeout')), 10000);
-      const handler = raw => {
-        let event;
-        try { event = JSON.parse(raw.toString()); } catch (_) { return; }
-        events.push(event);
-        if (event.type === 'result' && event.commanderRoute === true
-            && events.filter(item => item.type === 'result' && item.commanderRoute === true).length > prior) {
-          clearTimeout(timer);
-          socket.off('message', handler);
-          resolve();
-        }
-      };
-      socket.on('message', handler);
-      socket.send(JSON.stringify({
-        type: 'user_message', text: '实现一个隔离测试功能', clientMsgId: 'commander-isolated-1',
-      }));
-    });
-    await replayResult;
+    socket.send(JSON.stringify({
+      type: 'user_message', text: '实现一个隔离测试功能', clientMsgId: 'commander-isolated-1',
+    }));
     await new Promise(resolve => setTimeout(resolve, 300));
     const afterReplayRows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
-    assert.equal(afterReplayRows.filter(row => row.args[0] === 'exec').length, 1,
+    assert.equal(afterReplayRows.filter(row => row.args[0] === 'exec').length, 2,
       'same Commander taskId must not execute twice');
 
     const panelFirst = await api('POST', '/api/task-board/send', {
@@ -205,27 +243,29 @@ async function waitUntil(check, message, attempts = 100) {
       text: '从任务面板进入统一通道',
       clientMsgId: 'panel-isolated-1',
     });
-    assert.equal(panelFirst.taskId, panelReplay.taskId);
     const panelCard = await waitUntil(async () => {
       const value = await api('GET', '/api/task-board');
-      return value.tasks.find(task => task.id === panelFirst.taskId && task.body) || null;
+      return value.tasks.find(task => task.body === '从任务面板进入统一通道') || null;
     }, 'panel task did not project from canonical worker history');
     assert.equal(panelCard.body, '从任务面板进入统一通道');
     assert.equal(panelCard.legacy, false);
-    assert.equal((await api('GET', '/api/task-board')).tasks.filter(task => task.id === panelFirst.taskId).length, 1);
+    assert.equal(panelFirst.target, commander.id);
+    assert.equal(panelReplay.target, commander.id);
+    assert.equal((await api('GET', '/api/task-board')).tasks.filter(task => task.id === panelCard.id).length, 1);
     assert.equal(fs.readFileSync(paths.taskBoardFile, 'utf8').includes('从任务面板进入统一通道'), false,
       'task board index must not duplicate the canonical task body');
     await waitUntil(() => {
       const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
-      return rows.filter(row => row.args[0] === 'exec').length === 2;
+      return rows.filter(row => row.args[0] === 'exec').length === 4;
     }, 'panel task did not trigger worker execution exactly once');
 
     await new Promise(resolve => setTimeout(resolve, 500));
-    assert.equal(events.some(event => event.type === 'assistant'), false, 'Commander emits no assistant reply');
+    assert.equal(events.some(event => event.type === 'assistant'), true, 'Commander reports after the tool call');
     assert.equal(events.some(event => event.type === 'dispatch.result'), false, 'worker result never flows back to Commander');
     sessions = await api('GET', '/api/sessions');
     assert.equal(sessions.find(session => session.id === specialist.id).type, null, 'specialist metadata remains manual-only');
-    assert.ok(['worker'].includes(sessions.find(session => session.id === board.routing.workerSessionId).type));
+    assert.notEqual(sessions.find(session => session.id === board.routing.workerSessionId).type, 'commander',
+      'the routed target remains an ordinary non-Commander chat session');
     socket.terminate();
     await stop();
     console.log('Commander real WS → task board → one-way worker route: passed');

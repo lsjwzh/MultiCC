@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderPrompt } = require('../message-composer');
+const { claudeLikeMcpArgs } = require('./router-mcp');
 
 /**
  * Qoder CN exposes a Claude-compatible stream-json envelope, but its command
@@ -14,7 +15,8 @@ function qoderEffortLevel(session) {
   return QODER_REASONING_LEVELS.has(value) ? value : null;
 }
 
-function createQoderAdapter({ cmd }) {
+function createQoderAdapter({ cmd, routerMcpNode, routerMcpScript }) {
+  const routerArgs = claudeLikeMcpArgs(routerMcpNode, routerMcpScript);
   return {
     name: 'qoder',
     cmd,
@@ -30,7 +32,7 @@ function createQoderAdapter({ cmd }) {
     buildInvocation(env) {
       const so = env.spawnOpts;
       const args = [
-        '-p', '--output-format', 'stream-json',
+        '-p', ...routerArgs, '--output-format', 'stream-json',
         '--dangerously-skip-permissions',
         '--append-system-prompt', env.systemPrompt,
       ];

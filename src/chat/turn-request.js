@@ -10,7 +10,7 @@ const RETRY_REASONS = new Set([
   'empty-exit', 'session-id-conflict', 'resume-target-missing',
   'transport-disconnect', 'api-error', 'interrupted', 'manual',
 ]);
-const TASK_SOURCES = new Set(['task-board', 'commander']);
+const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool']);
 
 class TurnRequestError extends TypeError {
   constructor(code, message) {

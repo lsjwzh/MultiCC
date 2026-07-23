@@ -250,9 +250,9 @@ test('HTTP pagination projects the full history before slicing a page', () => {
   const seen = [];
   const fx = fixture({
     initial: { s1: [
-      { id: 'm1', role: 'assistant', usage: { value: 10 } },
-      { id: 'm2', role: 'assistant', usage: { value: 15 } },
-      { id: 'm3', role: 'assistant', usage: { value: 19 } },
+      { id: 'm1', role: 'assistant', content: 'one', usage: { value: 10 } },
+      { id: 'm2', role: 'assistant', content: 'two', usage: { value: 15 } },
+      { id: 'm3', role: 'assistant', content: 'three', usage: { value: 19 } },
     ] },
     deps: {
       projectMessages(sessionId, messages) {

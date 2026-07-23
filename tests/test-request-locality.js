@@ -95,6 +95,7 @@ test('missing or malformed request metadata fails closed', () => {
 test('locality checks stay limited to authentication and sensitive host controls', () => {
   const server = fs.readFileSync('server.js', 'utf8');
   const authRoutes = fs.readFileSync('src/routes/auth.js', 'utf8');
+  const routerToolHost = fs.readFileSync('src/router-tool-host.js', 'utf8');
   const taskBoardRoutes = fs.readFileSync('src/routes/task-board.js', 'utf8');
   const hostReadRoutes = fs.readFileSync('src/routes/host-read.js', 'utf8');
   const hostWriteRoutes = fs.readFileSync('src/routes/host-write.js', 'utf8');
@@ -115,16 +116,19 @@ test('locality checks stay limited to authentication and sensitive host controls
   // Ordinary authenticated product features must never grow a second
   // localhost-only authorization layer. The helper is reserved for: local
   // auth bootstrap/bypass, external WebSocket ticket enforcement, access-token
-  // editability, and the explicitly enumerated sensitive host settings.
+  // editability, scoped internal MCP bridges, and the explicitly enumerated
+  // sensitive host settings.
   assert.deepEqual(localityUsers, [
     'server.js',
     'src/request-locality.js',
+    'src/router-tool-host.js',
     'src/routes/auth.js',
     'src/routes/host-read.js',
     'src/routes/host-write.js',
   ]);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
   assert.match(authRoutes, /isLocalRequest\(req\)/);
+  assert.match(routerToolHost, /isLocalRequest\(req\)/);
   assert.match(server, /isLocalRequest\(req\)/);
   assert.match(hostReadRoutes, /canEdit:\s*deps\.isLocalRequest\(req\)/);
   assert.match(hostWriteRoutes, /requireLocal\(deps, req, res/);
