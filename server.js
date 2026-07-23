@@ -802,8 +802,6 @@ async function seedCommanderSession(dir) {
 async function destroySessionCascade(s, d, opts = {}) {
   const active = sessions.get(s.id);
   const chat = chatSessions.get(s.id);
-  const isActive = !!active || !!(chat && (chat.claudeProc || chat.isStreaming || chat.clients?.size));
-  if (isActive && !opts.force) return { ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be removed' };
   let removal = null;
   // Remove the worktree before tearing down runtime/persistence. A default
   // dirty/unmerged refusal therefore leaves the session completely intact.
@@ -811,7 +809,7 @@ async function destroySessionCascade(s, d, opts = {}) {
     try {
       removal = await gitWorktreeRemove(d.path, s.worktreePath, s.branch, {
         sessionId: s.id, baseBranch: d.baseBranch, force: !!opts.force,
-        activeCheck: opts.force ? null : () => sessionGitRuntime.isWorktreeActive(s.id),
+        activeCheck: null,
       });
     } catch (error) {
       const reason = error.code === 'SESSION_ACTIVE' ? 'active'
@@ -828,12 +826,14 @@ async function destroySessionCascade(s, d, opts = {}) {
     cleanupPushMonitor(s.id);
     await stopOutputCapture(active);
     await tmuxKillSession(s.id);
+    for (const client of active.clients || []) try { client.terminate(); } catch (_) {}
     sessions.delete(s.id);
   }
   if (chat) {
     assignKillReason(chat._activeRunner, 'session_delete');
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
+    for (const client of chat.clients || []) try { client.terminate(); } catch (_) {}
     chatSessions.delete(s.id);
   }
   backgroundTaskRuntime.stopSession(s.id);
@@ -2572,10 +2572,9 @@ app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
     sessionPersistence.mutate('http.delete-session', records => records.delete(id));
     appendEvent(persisted.dirId, 'session_deleted', persisted.label || persisted.id, null);
     return res.json({ ...result, forced: force });
-  } else if (!force) {
-    return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be removed without force=1' });
   } else {
-    if (session) await tmuxKillSession(id);
+    if (session) { await tmuxKillSession(id); for (const client of session.clients || []) try { client.terminate(); } catch (_) {} }
+    if (chat) { if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {} chatStream.close(id); for (const client of chat.clients || []) try { client.terminate(); } catch (_) {} }
     sessions.delete(id);
     chatSessions.delete(id);
   }
