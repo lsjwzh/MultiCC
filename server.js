@@ -147,6 +147,7 @@ const {
   parseDispatchMarker,
   parseAllDispatchMarkers,
   parseAllRouteMarkers,
+  ROUTE_RE_G,
   isDispatchPlaceholderTarget,
 } = require('./src/dispatch/markers');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
@@ -1080,6 +1081,24 @@ function stripMarkerFromGatewayHistory() {
   }
 }
 
+function stripRouteMarkerFromHistory(sessionId) {
+  const hist = loadChatHistory(sessionId);
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const m = hist[i];
+    if (m.role !== 'assistant') continue;
+    if (typeof m.content === 'string' && ROUTE_RE_G.test(m.content)) {
+      ROUTE_RE_G.lastIndex = 0;
+      m.content = m.content.replace(ROUTE_RE_G, '').replace(/\n{3,}/g, '\n\n').trim();
+      try { chatHistoryService.replace(sessionId, hist, { reason: 'strip-route-marker' }); }
+      catch (error) {
+        logger.warn('chat_history_route_marker_strip_failed', { sessionId, error: error.message });
+      }
+    }
+    ROUTE_RE_G.lastIndex = 0;
+    return;   // only inspect the latest assistant message
+  }
+}
+
 // Called when a gateway turn completes: detect a dispatch marker, stage it as a
 // pending request, and ask the user to confirm. Does NOT deliver yet.
 function handleGatewayTurnComplete(finalText) {
@@ -1307,6 +1326,7 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
   }
 
   // <<route>> markers: one-way with system-generated taskId (Commander dispatch)
+  const routeSuccesses = [];
   for (const [markerIndex, mk] of routeMarkers.entries()) {
     if (mk.target === dispatcherId) continue;
     if (isDispatchPlaceholderTarget(mk.target)) { waitInjector.injectSystemMsg(dispatcherId, `⚠️ route 目标无效：${mk.target}`); continue; }
@@ -1314,7 +1334,9 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
     if (!v.ok) { waitInjector.injectSystemMsg(dispatcherId, `⚠️ 无法路由给 ${mk.target}：${v.error}`); continue; }
     if (v.rec.dirId !== from.dirId && from.type !== 'commander') { waitInjector.injectSystemMsg(dispatcherId, `⚠️ 只能路由给同目录会话，已跳过 ${mk.target}`); continue; }
     const taskId = `tsk-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
-    appendEvent(from.dirId, 'route', `→ ${v.rec.label || mk.target} [${taskId}]`, dispatcherId);
+    const targetLabel = v.rec.label || mk.target;
+    appendEvent(from.dirId, 'route', `→ ${targetLabel} [${taskId}]`, dispatcherId);
+    routeSuccesses.push({ targetLabel, taskId });
     deliveries.push(dispatchToSession(mk.target, mk.message, {
       replyTo: dispatcherId,
       oneWay: true,
@@ -1324,8 +1346,16 @@ function maybeDispatchFromChatTurn(dispatcherId, finalText) {
       taskText: mk.message,
       idempotencyKey: `route:${dispatcherId}:${sourceKey}:${markerIndex}`,
     })
-      .then(r => { if (!r.ok) waitInjector.injectSystemMsg(dispatcherId, `⚠️ 路由给 ${mk.target} 失败：${r.error}`); })
-      .catch(e => waitInjector.injectSystemMsg(dispatcherId, `⚠️ 路由 ${mk.target} 异常：${e.message}`)));
+      .then(r => { if (!r.ok) waitInjector.injectSystemMsg(dispatcherId, `⚠️ 路由给 ${targetLabel} 失败：${r.error}`); })
+      .catch(e => waitInjector.injectSystemMsg(dispatcherId, `⚠️ 路由 ${targetLabel} 异常：${e.message}`)));
+  }
+
+  // Strip <<route>> markers from displayed history (like Gateway strips <<dispatch>>)
+  if (routeMarkers.length) stripRouteMarkerFromHistory(dispatcherId);
+
+  // Inject confirmation receipts for successful routes
+  for (const { targetLabel, taskId } of routeSuccesses) {
+    waitInjector.injectSystemMsg(dispatcherId, `📨 已路由给「${targetLabel}」[${taskId}]（单向派发，结果不回流）`);
   }
 
   return Promise.all(deliveries);
