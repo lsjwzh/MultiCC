@@ -77,8 +77,8 @@ function buildDispatchContextPrompt(sessionId) {
   return [
     ...intro,
     isCommander
-      ? '格式：<<route target="真实 session id">完整、自包含的任务说明</route>>'
-      : '格式：<<dispatch target="真实 session id">完整、自包含的任务说明</dispatch>>',
+      ? '格式：<<route target="multicc-claude-chat-05">完整、自包含的任务说明</route>>（把示例里的 id 换成上方「可用目标 sessions」列表中你选定的那个 id，逐字复制其 id 字段）'
+      : '格式：<<dispatch target="multicc-claude-chat-05">完整、自包含的任务说明</dispatch>>（把示例里的 id 换成上方「可用目标 sessions」列表中你选定的那个 id，逐字复制其 id 字段）',
     'target 必须逐字复制下面列表中某个对象的 id 字段值（如 multicc-claude-chat-05）；绝对不要使用 xxx、...、SID、SESSION_ID、worker-1 等占位符，否则派发必定失败。',
     isCommander
       ? '如果要并行派发多个子任务，可以在同一回复中输出多个 route 标记；派发是单向的，worker 结果不会回流给你。'
