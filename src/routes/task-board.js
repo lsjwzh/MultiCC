@@ -213,6 +213,37 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
+  function recordRouterAdmission(admission = {}) {
+    const caller = records.get(admission.callerSessionId);
+    const worker = records.get(admission.targetSessionId);
+    const taskId = String(admission.taskId || '').trim();
+    if (!caller || !worker || !taskId || caller.dirId !== worker.dirId) return false;
+    const existing = board.tasks[taskId];
+    if (existing?.routing?.operationId
+        && existing.routing.operationId === admission.operationId) return true;
+    const commanderRoute = caller.type === 'commander';
+    const indexed = ensureTaskIndex({
+      taskId,
+      dirId: worker.dirId || null,
+      sessionId: worker.id || admission.targetSessionId,
+      routing: {
+        mode: commanderRoute ? 'commander' : 'router-tool',
+        targetSessionId: commanderRoute
+          ? (caller.id || admission.callerSessionId)
+          : (worker.id || admission.targetSessionId),
+        workerSessionId: worker.id || admission.targetSessionId,
+        operationId: admission.operationId || '',
+        status: admission.status || 'admitted',
+        oneWay: admission.resultMode !== 'tool',
+        routedAt: Date.now(),
+      },
+    });
+    if (!indexed.task) return false;
+    save();
+    notify(worker.dirId || null, [taskId], indexed.created ? 'created' : undefined);
+    return true;
+  }
+
   const pendingModuleAssignmentByTask = new Map();
 
   // Resolve the current turn even while it is still streaming. Looking for the
@@ -1190,6 +1221,7 @@ function createTaskBoardRuntime(deps) {
   return Object.freeze({
     mountRoutes,
     onMessagePersisted,
+    recordRouterAdmission,
     onTurnEnd,
     onClassifyGoal,
     scanPendingClassifications,

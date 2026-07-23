@@ -8,6 +8,7 @@ const stream = require('../src/chat-stream');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-stream-resume-'));
 const argLog = path.join(tmp, 'args.jsonl');
+let disposed = 0;
 const fakeCli = [
   "const fs=require('fs')",
   "fs.appendFileSync(process.env.ARG_LOG, JSON.stringify(process.argv.slice(1))+'\\n')",
@@ -29,6 +30,7 @@ async function run(name, sessionId, resume) {
     baseArgs: ['-e', fakeCli, '--'],
     env: { ...process.env, ARG_LOG: argLog },
     resume,
+    onDispose: () => { disposed += 1; },
   });
   await stream.send(name, 'probe', () => {});
   stream.close(name);
@@ -43,6 +45,7 @@ async function run(name, sessionId, resume) {
   assert.deepStrictEqual(rows[1], ['--resume', 'resume-id']);
   assert.strictEqual(stream.status('fresh-stream'), null);
   assert.strictEqual(stream.status('resumed-stream'), null);
+  assert.strictEqual(disposed, 2);
   console.log('chat-stream fresh/resume argument tests passed');
 })().catch((error) => {
   console.error(error);

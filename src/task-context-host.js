@@ -35,6 +35,7 @@ function createTaskContextHost(options = {}) {
       taskStart: opts.taskStart === true,
       taskSource: opts.taskSource || null,
       taskText: opts.taskStart === true ? String(opts.taskText || '') : null,
+      resultMode: opts.resultMode || null,
     };
   }
 
