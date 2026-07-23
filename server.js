@@ -3597,7 +3597,7 @@ function dispatchStateAction(result, ctx) {
     // interruption (network drop, crashed CLI, truncated stream), NOT real
     // "still processing". Recover it like a fault (E-class): resume regardless of
     // the autoContinue toggle, capped to avoid an infinite drop-loop.
-    if (waitInjector.resumeInterrupted(sessionName)) {
+    if ((!cs || !cs._resultSaved) && waitInjector.resumeInterrupted(sessionName)) {
       console.log(`[multicc/classify] ${sessionName} P + no turn in flight → 未知中断, resume`);
       return;
     }
@@ -4550,6 +4550,12 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
       if (resultDurable) {
         recordDurableTurnUsage(sessionName, runner, usage);
         cs.chatTurnCount++;
+        // Mark this turn as having a durable persisted result so the classify
+        // P+no-turn-in-flight branch (server.js ~3610) does not mistake a
+        // normally-completed turn for an unknown interruption and resume it —
+        // which would re-run `claude --resume` and produce duplicate replies
+        // with cumulative usage (the 1x/2x/3x symptom).
+        cs._resultSaved = true;
       }
       // Cancel any pending incremental-save timer: the final message is now
       // persisted, so a timer firing 0-5s later would append a stale _interim
