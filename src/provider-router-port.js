@@ -423,6 +423,12 @@ function createProviderRouterPort(options = {}) {
       ...(typeof mountOptions.getPort === 'function' ? { getPort: mountOptions.getPort } : {}),
       ...(mountOptions.proxyBaseUrl ? { proxyBaseUrl: String(mountOptions.proxyBaseUrl) } : {}),
       onUsageEvent: onUsageObserved ? event => onUsageObserved(normalizeUsage(event)) : undefined,
+      // Token-level delta sidecar: cli-provider-router's codex proxy forwards each
+      // upstream text/reasoning/tool delta here along with routing context
+      // {providerId, sessionId, role, routeName, model}. The host broadcasts it to
+      // the matching chat session so codex turns render incrementally (opencode-
+      // style) instead of waiting for each item.completed boundary.
+      ...(typeof mountOptions.onDelta === 'function' ? { onDelta: mountOptions.onDelta } : {}),
     };
     const mounted = {};
     if (protocols.includes('claude')) {
