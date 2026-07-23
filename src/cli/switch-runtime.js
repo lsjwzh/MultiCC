@@ -333,6 +333,9 @@ function createCliSwitchRuntime(options) {
 
     options.getChatStream().close(session.id);
     resetChatRuntimeForCli(chatSessions.get(session.id), session);
+    if (switchOptions.forced === true) {
+      options.chatBroadcast(session.id, { type: 'stream_end', reason: 'cli_switch' });
+    }
     options.rememberActiveCliState(session, now);
     options.appendMessage(session.id, {
       role: 'system',
@@ -432,15 +435,16 @@ function createCliSwitchRuntime(options) {
         return res.status(400).json({ error: `${targetCli} CLI is not installed or not executable` });
       }
       const activity = cliSwitchBusyState(session.id);
-      if (activity.busy) {
-        return res.status(409).json({
-          error: 'session is running; wait for the current turn to finish or cancel it before switching CLI',
-          stream: activity.stream || null,
-        });
-      }
+      // Switching is an explicit user action with its own confirmation UI.
+      // performCliSwitch already closes the stream, rejects queued sends,
+      // assigns a terminal kill reason and SIGTERMs a process-backed turn.
+      // Refusing here made that cleanup path unreachable precisely when it was
+      // needed, leaving interrupted/stuck sessions impossible to switch.
       const gitSnapshot = await cliSwitchGitSnapshot(session);
       const switched = sessionPersistence.mutate('http.switch-cli', () =>
-        performCliSwitch(session, targetCli, { fresh, gitSnapshot }));
+        performCliSwitch(session, targetCli, {
+          fresh, gitSnapshot, forced: activity.busy,
+        }));
       return res.json({
         ok: true,
         changed: true,
@@ -449,6 +453,7 @@ function createCliSwitchRuntime(options) {
         handoffId: switched.handoff.id,
         reusedTarget: switched.result.reused,
         fresh,
+        forced: activity.busy,
         cliStates: options.cliStateSummary(session),
         cliAvailability: availability,
         effectiveModel: options.effectiveSessionModel(session),
