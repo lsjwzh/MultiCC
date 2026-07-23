@@ -8,11 +8,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   parseClassifyResult,
   buildClassifySystemPrompt,
   classifyDisplay,
   phaseLabel,
+  applyUserInputEvidence,
   CLASSIFY_DISPLAY,
   PHASE_LABELS,
 } = require('../src/classify/vocab');
@@ -40,6 +43,21 @@ test('unknown/unparseable state defaults to waiting, NEVER completed', () => {
   assert.equal(parseClassifyResult('garbage only').state, 'waiting');
   // A single blank/space state line must not fall through to completed.
   assert.equal(parseClassifyResult('目标\n实现中\n ').state, 'waiting');
+});
+
+test('unresolved request_user_input evidence authoritatively yields plain waiting', () => {
+  const classified = parseClassifyResult('部署修复\n已完成\nD');
+  const resolved = applyUserInputEvidence(classified, {
+    requestId: 'usrq-1',
+    question: '是否立即发布？',
+    resolved: false,
+  });
+  assert.equal(resolved.state, 'waiting');
+  assert.equal(resolved.background, false);
+  assert.equal(resolved.error, false);
+  assert.equal(resolved.evidence, 'request_user_input');
+  assert.equal(applyUserInputEvidence(classified, null), classified);
+  assert.equal(applyUserInputEvidence(classified, { resolved: true }), classified);
 });
 
 test('goal is extracted, label-stripped, and capped at 60 chars', () => {
@@ -121,4 +139,23 @@ test('phaseLabel maps known phases to Chinese and unknown to empty string', () =
   assert.equal(phaseLabel('implementing'), '实现中');
   assert.equal(phaseLabel('nope'), '');
   assert.equal(phaseLabel(undefined), '');
+});
+
+test('host preserves classify C instead of coercing it into waiting W', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const start = source.indexOf("if (state === 'continue')");
+  const end = source.indexOf('// ── W / B / E', start);
+  const continueBranch = source.slice(start, end);
+  assert.match(continueBranch, /classifyState: 'C'/);
+  assert.match(continueBranch, /setSessionStatus\(sessionName, \{ status: 'idle'/);
+  assert.match(continueBranch, /return;/);
+  assert.doesNotMatch(continueBranch, /classifyState: 'W'/);
+});
+
+test('optimistic completion cannot overwrite a pending structured question', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const start = source.indexOf('function emitTurnOutcome');
+  const end = source.indexOf('// Turn-boundary hook', start);
+  assert.match(source.slice(start, end),
+    /if \(userInputSignalHost\.pending\(sessionName\)\).*setTaskState.*return;/);
 });

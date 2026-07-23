@@ -89,8 +89,21 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.equal(initialized.result.serverInfo.name, 'multicc-router');
   const listed = await plain.call('tools/list');
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
-    'route_task', 'dispatch_master', 'dispatch_slave',
+    'request_user_input', 'route_task', 'dispatch_master', 'dispatch_slave',
   ]);
+  const questionTool = listed.result.tools[0];
+  assert.deepEqual(questionTool.inputSchema.required, ['question']);
+  assert.equal(questionTool.inputSchema.properties.options.maxItems, 12);
+  const asked = await plain.call('tools/call', {
+    name: 'request_user_input',
+    arguments: {
+      question: '选择发布环境',
+      options: ['测试环境', '生产环境'],
+    },
+  });
+  assert.equal(asked.result.isError, false);
+  assert.equal(requests[0].url, '/api/internal/router-tools/request_user_input');
+  assert.deepEqual(requests[0].body.arguments.options, ['测试环境', '生产环境']);
   const routeSchema = listed.result.tools.find(tool => tool.name === 'route_task').inputSchema;
   assert.deepEqual(routeSchema.properties.allow_terminal, {
     type: 'boolean',
@@ -103,9 +116,9 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   });
   assert.equal(called.result.isError, false);
   assert.equal(called.result.structuredContent.operation_id, 'op-1');
-  assert.equal(requests[0].url, '/api/internal/router-tools/route_task');
-  assert.equal(requests[0].capability, 'cap-test');
-  assert.deepEqual(requests[0].body.arguments, {
+  assert.equal(requests[1].url, '/api/internal/router-tools/route_task');
+  assert.equal(requests[1].capability, 'cap-test');
+  assert.deepEqual(requests[1].body.arguments, {
     target_session_id: 'worker',
     message: 'do it',
   });
@@ -114,6 +127,6 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   t.after(() => dispatched.stop());
   const dispatchedList = await dispatched.call('tools/list');
   assert.deepEqual(dispatchedList.result.tools.map(tool => tool.name), [
-    'route_task', 'dispatch_master', 'dispatch_slave',
+    'request_user_input', 'route_task', 'dispatch_master', 'dispatch_slave',
   ]);
 });
