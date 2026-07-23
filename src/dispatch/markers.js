@@ -59,7 +59,7 @@ function isDispatchPlaceholderTarget(targetId) {
     .replace(/\s+/g, ' ')
     .toLowerCase();
   if (/^(\.{2,}|…+)$/.test(normalized)) return true;
-  if (/^<[^>]+>$/.test(normalized)) return true;
+  if (normalized.includes('<') || normalized.includes('>')) return true;
   if (/^[xyz]{2,}$/i.test(normalized)) return true;
   if (/^(worker|session|target|id)[-_]?\d*$/i.test(normalized)) return true;
   return new Set([
