@@ -87,7 +87,7 @@
   .tb-run-state.done, .tb-run-state.running { color: #3fb950; }
   .tb-run-state.waiting { color: #d29922; }
   .tb-run-state.error { color: #f85149; }
-  .tb-reclassify { padding: 1px 6px; font-size: 10px; background: #21262d; border-color: #30363d; }
+  .tb-reclassify, .tb-quick-archive { padding: 1px 6px; font-size: 10px; background: #21262d; border-color: #30363d; }
   @keyframes tb-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .tb-task .tb-icon { font-size: 11px; line-height: 1; }
   .tb-task.running .tb-icon { animation: tb-blink 2s ease-in-out infinite; }
@@ -354,6 +354,34 @@ async function reclassifyAllPending(button) {
   finally { if (button) button.disabled = false; }
 }
 
+async function archiveTaskFromBoard(taskId, button) {
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/status`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status: 'archived' }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    if (selectedTask === taskId) {
+      selectedTask = null;
+      $('task-detail').innerHTML = '<div class="td-placeholder">已归档。</div>';
+    }
+    await fetchTaskBoard();
+  } catch (e) {
+    alert('归档失败：' + e.message);
+    if (button) button.disabled = false;
+  }
+}
+
+function bindQuickTaskArchive(row, task) {
+  const button = row.querySelector('.tb-quick-archive');
+  if (!button) return;
+  button.onclick = (event) => {
+    event.stopPropagation();
+    if (confirm('归档该任务？（从任务板隐藏，数据保留）')) archiveTaskFromBoard(task.id, button);
+  };
+}
+
 async function archiveCompletedTasks(button) {
   if (button) button.disabled = true;
   try {
@@ -408,11 +436,12 @@ function renderTaskBoard() {
       row.innerHTML = `
         <span class="tb-icon">${display.icon}</span>
         <span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span>
-        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
+        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
       row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
       const retry = row.querySelector('.tb-reclassify');
       if (retry) retry.onclick = (e) => { e.stopPropagation(); reclassifyTask(t.id, retry); };
+      bindQuickTaskArchive(row, t);
       box.appendChild(row);
     }
   }
@@ -425,9 +454,10 @@ function renderTaskBoard() {
     const clsRun = display.running ? ' running' : '';
     const row = document.createElement('div');
     row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
-    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}<span>${t.refCount}轮</span></span>`;
+    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮</span></span>`;
     row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
     row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
+    bindQuickTaskArchive(row, t);
     box.appendChild(row);
   }
 }
