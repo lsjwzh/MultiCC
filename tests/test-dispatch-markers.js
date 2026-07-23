@@ -66,6 +66,10 @@ test('chat host does not infer dispatch intent from assistant prose', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.doesNotMatch(source, /ULTRA_DISPATCH_INTENT_RE|maybeNudgeUltracodeDispatch|lastUltraNudgeAt/);
   assert.match(source, /const markers = parseAllDispatchMarkers\(finalText\);\s*if \(!markers\.length\) return;/);
+  assert.match(source, /if \(from\.type === 'commander'\) return;/,
+    'typed Commander must use the canonical task router, never the marker path');
+  assert.match(source, /replyTo:\s*dispatcherId,[\s\S]*?oneWay:\s*false/,
+    'ordinary marker dispatch remains the explicit two-way A path');
 });
 
 test('isDispatchPlaceholderTarget flags the ids the model must not use as targets', () => {
