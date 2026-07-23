@@ -19,11 +19,12 @@ function fixture(t, overrides = {}) {
     idFactory: () => `op_router_${++sequence}`,
   });
   const records = new Map([
-    ['caller', { id: 'caller', dirId: 'dir-a', type: 'worker' }],
-    ['worker-a', { id: 'worker-a', dirId: 'dir-a', type: 'worker' }],
-    ['worker-b', { id: 'worker-b', dirId: 'dir-b', type: 'worker' }],
-    ['commander', { id: 'commander', dirId: 'dir-a', type: 'commander' }],
-    ['aux', { id: 'aux', dirId: 'dir-a', type: 'aux' }],
+    ['caller', { id: 'caller', dirId: 'dir-a', kind: 'chat', type: 'worker' }],
+    ['worker-a', { id: 'worker-a', dirId: 'dir-a', kind: 'chat', type: 'worker' }],
+    ['worker-b', { id: 'worker-b', dirId: 'dir-b', kind: 'chat', type: 'worker' }],
+    ['terminal-a', { id: 'terminal-a', dirId: 'dir-a', kind: 'terminal', type: null }],
+    ['commander', { id: 'commander', dirId: 'dir-a', kind: 'chat', type: 'commander' }],
+    ['aux', { id: 'aux', dirId: 'dir-a', kind: 'chat', type: 'aux' }],
   ]);
   const admissions = [];
   const dispatchToSession = async (targetId, message, opts) => {
@@ -169,6 +170,7 @@ test('target and slave lineage validation fail closed', async t => {
     ['worker-b', 'cross_directory'],
     ['commander', 'invalid_target'],
     ['aux', 'invalid_target'],
+    ['terminal-a', 'terminal_target_requires_explicit_opt_in'],
     ['missing', 'target_not_found'],
   ]) {
     await assert.rejects(
@@ -178,6 +180,20 @@ test('target and slave lineage validation fail closed', async t => {
       error => error.code === code,
     );
   }
+  await assert.rejects(
+    runtime.execute(capability, 'dispatch_master', {
+      target_session_id: 'terminal-a',
+      message: 'must not reach a terminal by default',
+      timeout_seconds: 1,
+    }),
+    error => error.code === 'terminal_target_requires_explicit_opt_in',
+  );
+  const terminal = await runtime.execute(capability, 'route_task', {
+    target_session_id: 'terminal-a',
+    message: 'run the explicitly requested command',
+    allow_terminal: true,
+  });
+  assert.equal(terminal.ok, true);
   const admitted = await operations.admitDispatch({
     ownerSessionId: 'caller',
     resultSessionId: 'caller',
