@@ -130,7 +130,32 @@ class _TaskBoardViewState extends State<TaskBoardView> {
     }
   }
 
-  /// Diff the freshly-fetched board against [_prevTaskIds]. On a non-first load,
+
+  Future<void> _archiveCompleted() async {
+    try {
+      final r = await ManageService(
+        settings: widget.settings,
+      ).archiveCompletedTasks(dirId: widget.dirId);
+      if (!mounted) return;
+      final n = (r['archivedCount'] as num?)?.toInt() ?? 0;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('archiveCompletedDone', {'n': '$n'}))),
+      );
+      _refresh();
+    } on LocalOnlyException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('localOnly'))),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('archiveCompletedFailed', {'error': '$e'}))),
+      );
+    }
+  }
+
+    /// Diff the freshly-fetched board against [_prevTaskIds]. On a non-first load,
   /// if new task ids appeared, pick the first new task visible for this dir
   /// (sorted newest-activity first) and flag it for the 3s highlight + scroll.
   void _detectNewAndHighlight(TaskBoard board) {
@@ -320,7 +345,29 @@ class _TaskBoardViewState extends State<TaskBoardView> {
       task: task,
       highlighted: _highlightId == task.id,
       onTap: () => _openDetail(task),
+      onQuickArchive: task.status != 'archived'
+          ? () => _quickArchive(task)
+          : null,
     );
+  }
+
+  Future<void> _quickArchive(TaskBoardTask task) async {
+    try {
+      await ManageService(settings: widget.settings)
+          .setTaskStatus(task.id, 'archived');
+      if (!mounted) return;
+      _refresh();
+    } on LocalOnlyException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('localOnly'))),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e')),
+      );
+    }
   }
 
   /// Dir-level composer pinned to the bottom of the board view. The composer
@@ -407,6 +454,36 @@ class _TaskBoardViewState extends State<TaskBoardView> {
                           ),
                         ),
                         const Spacer(),
+                        // Bulk archive completed tasks (mirrors web)
+                        Builder(builder: (_) {
+                          final completedCount = tasks
+                              .where((t) =>
+                                  t.status == 'done' ||
+                                  t.runState == 'done' ||
+                                  t.runState == 'completed')
+                              .length;
+                          return TextButton.icon(
+                            onPressed: completedCount > 0
+                                ? _archiveCompleted
+                                : null,
+                            icon: const Icon(Icons.cleaning_services_rounded,
+                                size: 14),
+                            label: Text(
+                              completedCount > 0
+                                  ? '${t('archiveCompleted')} ($completedCount)'
+                                  : t('archiveCompleted'),
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppColors.muted,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              minimumSize: Size.zero,
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          );
+                        }),
                         IconButton(
                           tooltip: t('refresh'),
                           onPressed: _refreshing ? null : () => _refresh(),
@@ -547,11 +624,13 @@ class _ModuleRow extends StatelessWidget {
 class _TaskRow extends StatelessWidget {
   final TaskBoardTask task;
   final VoidCallback? onTap;
+  final VoidCallback? onQuickArchive;
   final bool highlighted;
 
   const _TaskRow({
     required this.task,
     this.onTap,
+    this.onQuickArchive,
     this.highlighted = false,
     super.key,
   });
@@ -559,6 +638,7 @@ class _TaskRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDone = task.status == 'done';
+    final hasBody = task.body != null && task.body!.isNotEmpty;
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 2, 4, 2),
       child: AnimatedContainer(
@@ -602,6 +682,23 @@ class _TaskRow extends StatelessWidget {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
+                      // Task body preview (mirrors web tb-body-fold)
+                      if (hasBody)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            task.body!,
+                            style: TextStyle(
+                              color: isDone
+                                  ? AppColors.faint
+                                  : const Color(0xFF8a909b),
+                              fontSize: 11,
+                              height: 1.3,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       const SizedBox(height: 3),
                       Text(
                         '${t('taskRounds', {'n': '${task.refCount}'})}'
@@ -614,6 +711,27 @@ class _TaskRow extends StatelessWidget {
                     ],
                   ),
                 ),
+                // Quick archive button (mirrors web tb-quick-archive)
+                if (onQuickArchive != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: GestureDetector(
+                      onTap: onQuickArchive,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.panel2,
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: AppColors.line),
+                        ),
+                        child: const Text(
+                          '🗄',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

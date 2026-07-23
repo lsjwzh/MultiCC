@@ -8,6 +8,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
+import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/session_status_helpers.dart';
@@ -71,6 +72,22 @@ class _ChatViewState extends State<ChatView> {
 
   int _behindCount() => (_mergeStatus?['behind'] as num?)?.toInt() ?? 0;
   String _baseBranchName() => _mergeStatus?['baseBranch']?.toString() ?? 'main';
+
+  /// Mark a waiting-for-user task as completed from the classify bar.
+  /// Mirrors the web's ac-mark-done button (POST /api/sessions/:id/mark-task-done).
+  Future<void> _markTaskDone(ChatProvider provider) async {
+    try {
+      await ManageService(settings: widget.settings)
+          .markTaskDone(provider.sessionName);
+      if (!mounted) return;
+      // The server will push a task_state update via WS; no manual refresh needed.
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e')),
+      );
+    }
+  }
 
   // One-click sync: pull the base branch into this session's worktree.
   Future<void> _syncWorktree(String sessionId) async {
@@ -310,6 +327,9 @@ class _ChatViewState extends State<ChatView> {
                 goal: provider.classifyGoal,
                 phase: provider.classifyPhase,
                 classifyState: provider.classifyState,
+                onMarkDone: provider.classifyState.toUpperCase() == 'W'
+                    ? () => _markTaskDone(provider)
+                    : null,
               ),
             if (_behindCount() > 0)
               _BehindMainBanner(
@@ -1175,10 +1195,16 @@ class _AuxClassifyBar extends StatelessWidget {
   /// Live classify-state letter (D/C/W/B/E/P). Drives the pill tint, aligned
   /// with main_shell _classifyBadge and the web CLASSIFY_DISPLAY barTint.
   final String classifyState;
+
+  /// Non-null when state is W (waiting-for-user): shows a "✓ 完成" button
+  /// that calls POST /api/sessions/:id/mark-task-done (mirrors web ac-mark-done).
+  final VoidCallback? onMarkDone;
+
   const _AuxClassifyBar({
     required this.goal,
     required this.phase,
     required this.classifyState,
+    this.onMarkDone,
   });
 
   String _phaseLabel(String value) => switch (value) {
@@ -1284,6 +1310,31 @@ class _AuxClassifyBar extends StatelessWidget {
               ),
             ),
           ),
+          // Mark-done button: visible only when state is W (waiting-for-user)
+          if (onMarkDone != null) ...[
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: onMarkDone,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1c4529),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: const Color(0x882ea043)),
+                ),
+                child: const Text(
+                  '✓ 完成',
+                  style: TextStyle(
+                    color: Color(0xFF56d364),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
