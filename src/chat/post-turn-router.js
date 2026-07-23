@@ -64,6 +64,11 @@ function routePostTurn(input = {}) {
   if (input.sessionType === 'aux') {
     return Object.freeze({ route: 'aux', effects: Object.freeze(effects) });
   }
+  if (input.sessionType === 'commander') {
+    // Commander input is routed by the host directly. Never revive the legacy
+    // assistant-marker path as a second Commander dispatch implementation.
+    return Object.freeze({ route: 'commander', effects: Object.freeze(effects) });
+  }
 
   const effectId = `normal-turn:${turnId}`;
   if (turnId && !receipts.has(effectId)) {

@@ -807,7 +807,7 @@ function createTaskBoardRuntime(deps) {
     const result = routeMode === 'commander'
       ? await routeCommanderTask({ commanderId: target, message, idempotencyKey, ...taskContext })
       : await dispatchToSession(target, message, {
-          idempotencyKey, requireIdle: true, ...taskContext,
+          idempotencyKey, oneWay: true, requireIdle: true, ...taskContext,
         });
     if (!result.ok) {
       const busy = result.code === 'target_busy' || result.error === 'target_busy';
@@ -819,7 +819,7 @@ function createTaskBoardRuntime(deps) {
       workerSessionId: routeMode === 'commander' ? result.targetSessionId : '',
       operationId: result.operationId || '',
       status: result.status || 'admitted',
-      oneWay: routeMode === 'commander',
+      oneWay: true,
       elasticWorkerCreated: result.elasticWorkerCreated === true,
       routedAt: Date.now(),
     });
@@ -880,7 +880,7 @@ function createTaskBoardRuntime(deps) {
             ? existing.routing.targetSessionId
             : undefined,
           idempotencyKey,
-          oneWay: existing.routing.mode === 'commander',
+          oneWay: true,
           requireIdle: false,
           ...taskContext,
         });
@@ -899,7 +899,7 @@ function createTaskBoardRuntime(deps) {
               commanderId: effectiveTarget, message, idempotencyKey, ...taskContext,
             })
           : await dispatchToSession(effectiveTarget, message, {
-              idempotencyKey, requireIdle: true, ...taskContext,
+              idempotencyKey, oneWay: true, requireIdle: true, ...taskContext,
             });
       }
     } catch (error) {
@@ -926,7 +926,7 @@ function createTaskBoardRuntime(deps) {
         workerSessionId: effectiveRouteMode === 'commander' ? workerSessionId : '',
         operationId: result.operationId || '',
         status: result.status || 'admitted',
-        oneWay: effectiveRouteMode === 'commander',
+        oneWay: true,
         elasticWorkerCreated: result.elasticWorkerCreated === true,
         routedAt,
       },
