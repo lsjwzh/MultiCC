@@ -903,6 +903,21 @@ test('task board cleanup controls use the bulk archive endpoint and display-stat
   assert.match(meta, /body: '\{\}'/);
 });
 
+test('task rows expose quick archive immediately after the classify action', () => {
+  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
+
+  assert.match(manage, /\$\{_tbModuleAssignmentHtml\(t\)\}\$\{_tbQuickArchiveHtml\(t\)\}/);
+  assert.match(manage, /archiveTaskBoardTask\(event,'\$\{_tbEsc\(task\.id\)\}',this\)/);
+  assert.match(meta,
+    /\$\{assignment \? `<button class="tb-reclassify"[\s\S]*?<\/button>` : ''\}<button class="tb-quick-archive"/);
+  for (const source of [manage, meta]) {
+    assert.match(source, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/status/);
+    assert.match(source, /归档该任务？（从任务板隐藏，数据保留）/);
+    assert.match(source, /stopPropagation\(\)/);
+  }
+});
+
 test('automatic board routing is Commander-first even with multiple active ordinary sessions', async () => {
   const commanderCalls = [];
   const workerCalls = [];

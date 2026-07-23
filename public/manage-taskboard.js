@@ -36,6 +36,10 @@ function _tbModuleAssignmentHtml(task) {
   return `<button class="btn btn-sm tb-reclassify" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(task.id)}')"${assignment.running ? ' disabled' : ''}${title}>${label}</button>`;
 }
 
+function _tbQuickArchiveHtml(task) {
+  return `<button class="btn btn-sm tb-quick-archive" onclick="archiveTaskBoardTask(event,'${_tbEsc(task.id)}',this)" title="快捷归档该任务">归档</button>`;
+}
+
 function _tbRoutingHtml(task) {
   const label = window.MultiCCTaskBoardUi.taskRoutingLabel(task);
   return label ? `<span class="tb-route-state">🫡 ${_tbEsc(label)}</span>` : '';
@@ -120,7 +124,7 @@ function renderTaskBoardSection(dirId, opts) {
         <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
           <span class="tb-icon">${display.icon}</span>
           <span class="tb-title">${_tbEsc(t.title)}</span>
-          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
+          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
         </div>`);
     }
   }
@@ -136,7 +140,7 @@ function renderTaskBoardSection(dirId, opts) {
           <span class="tb-title">${_tbEsc(t.title)}</span>
           ${t.body ? `<details class="tb-body-fold" onclick="event.stopPropagation()"><summary>任务正文</summary><pre>${_tbEsc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}
         </span>
-        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
+        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
       </div>`);
   }
   const body = rowsHtml.length
@@ -502,11 +506,11 @@ function renderTaskBoardDetail(d) {
             ? `<button class="btn btn-sm" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(t.id)}')"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>`
             : ''}
           ${t.status !== 'active'
-            ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active')">♻️ 重开</button>`
+            ? `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','active',event)">♻️ 重开</button>`
             : display.key === 'done'
               ? ''   // classify already shows「已完成」— a second 完成 button would be a contradiction
-              : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done')">✅ 完成</button>`}
-          <button class="btn btn-sm" onclick="if(confirm('归档该任务？（从任务板隐藏，数据保留）'))setTaskBoardStatus('${_tbEsc(t.id)}','archived')">🗄 归档</button>
+              : `<button class="btn btn-sm" onclick="setTaskBoardStatus('${_tbEsc(t.id)}','done',event)">✅ 完成</button>`}
+          <button class="btn btn-sm" onclick="archiveTaskBoardTask(event,'${_tbEsc(t.id)}',this)">🗄 归档</button>
         </span>
       </div>
       <div class="tb-chips">${chipHtml}</div>
@@ -523,8 +527,8 @@ function renderTaskBoardDetail(d) {
   _tbEnsureTaskComposer(t);
 }
 
-async function setTaskBoardStatus(taskId, status) {
-  if (event) event.stopPropagation();
+async function setTaskBoardStatus(taskId, status, ev) {
+  if (ev) ev.stopPropagation();
   try {
     const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/status`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
@@ -534,9 +538,19 @@ async function setTaskBoardStatus(taskId, status) {
     if (status === 'archived') closeTaskBoardDetail();
     else loadTaskBoardDetail(taskId, true);
     refreshTaskBoard(true);
+    return true;
   } catch (e) {
     if (typeof showToast === 'function') showToast(`操作失败：${e.message}`, true);
+    return false;
   }
+}
+
+async function archiveTaskBoardTask(ev, taskId, button) {
+  if (ev) ev.stopPropagation();
+  if (!confirm('归档该任务？（从任务板隐藏，数据保留）')) return;
+  if (button) button.disabled = true;
+  const archived = await setTaskBoardStatus(taskId, 'archived', ev);
+  if (!archived && button) button.disabled = false;
 }
 
 async function archiveCompletedTaskBoard(ev, dirId, button) {
