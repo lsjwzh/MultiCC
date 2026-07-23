@@ -196,6 +196,75 @@ test('chat history normalizes, removes interim messages and deduplicates final a
   assert.equal(service.latestAssistantAt('s1').getTime() > 0, true);
 });
 
+test('chat history dedups a 🔇-nudge-separated retry and keeps only the latest reply', () => {
+  const store = new Map();
+  let sequence = 0;
+  const service = createChatHistoryService({
+    history: {
+      read: id => store.get(id) || [],
+      write: (id, messages) => store.set(id, messages),
+      deleteSession: id => store.delete(id),
+      hasPersistedDelivery: () => false,
+    },
+    idFactory: () => `m${++sequence}`,
+    clock: () => 1000 + sequence,
+    maxMessages: 100,
+  });
+  const LONG = '好，明确了：那个被撤销的任务不用管，现在继续 runState 同步（删 busy 短路）任务。';
+  service.append('s1', { role: 'assistant', content: LONG, usage: { input: 100 } });
+  service.append('s1', { role: 'user', content: '🔇【判定未知中断】请继续刚才未完成的任务' });
+  service.append('s1', { role: 'assistant', content: LONG, usage: { input: 200 } });
+  service.append('s1', { role: 'user', content: '🔇【判定未知中断】请继续刚才未完成的任务' });
+  service.append('s1', { role: 'assistant', content: LONG, usage: { input: 300 } });
+  const after = service.read('s1');
+  // Only the latest assistant survives; the two older copies are folded.
+  const assistants = after.filter(m => m.role === 'assistant');
+  assert.equal(assistants.length, 1, 'three same replies separated by 🔇 nudge collapse to one');
+  assert.equal(assistants[0].usage.input, 300, 'the kept copy is the latest');
+});
+
+test('chat history does NOT dedup two same replies separated by a real user message', () => {
+  const store = new Map();
+  let sequence = 0;
+  const service = createChatHistoryService({
+    history: { read: id => store.get(id) || [], write: (id, m) => store.set(id, m), deleteSession: id => store.delete(id), hasPersistedDelivery: () => false },
+    idFactory: () => `m${++sequence}`,
+    clock: () => 1000 + sequence,
+    maxMessages: 100,
+  });
+  const LONG = '这是一个足够长的相同回复内容用于测试去重护栏逻辑abcdef';
+  service.append('s1', { role: 'assistant', content: LONG });
+  service.append('s1', { role: 'user', content: '再问一次相同的问题' }); // real user, NOT 🔇
+  service.append('s1', { role: 'assistant', content: LONG });
+  const after = service.read('s1');
+  assert.equal(after.filter(m => m.role === 'assistant').length, 2, 'two independent answers to two real user turns stay');
+});
+
+test('chat history prefix-containment dedups a longer retry that starts with the older reply', () => {
+  const store = new Map();
+  let sequence = 0;
+  const service = createChatHistoryService({
+    history: { read: id => store.get(id) || [], write: (id, m) => store.set(id, m), deleteSession: id => store.delete(id), hasPersistedDelivery: () => false },
+    idFactory: () => `m${++sequence}`,
+    clock: () => 1000 + sequence,
+    maxMessages: 100,
+  });
+  const SHORT_OK = '好的，明白了。'; // < 16 chars, below the length guard
+  const PREV = '第一段足够长的回复内容用于前缀包含判定测试场景一二三四五六';
+  service.append('s1', { role: 'assistant', content: PREV });
+  service.append('s1', { role: 'user', content: '🔇请继续' });
+  // latest starts with PREV and adds more — a longer retry version
+  service.append('s1', { role: 'assistant', content: PREV + '，接着补充新内容。' });
+  const after = service.read('s1');
+  assert.equal(after.filter(m => m.role === 'assistant').length, 1, 'older reply folded into the longer latest');
+  // Short content below 16-char guard must NOT match via startsWith:
+  service.append('s1', { role: 'user', content: '🔇请继续' });
+  service.append('s1', { role: 'assistant', content: SHORT_OK + '，更多' }); // prev SHORT_OK<16 -> no dedup
+  assert.equal(after.filter(m => m.role === 'assistant').length, 1);
+  const after2 = service.read('s1');
+  assert.equal(after2.filter(m => m.role === 'assistant').length, 2, 'short-content startsWith below length guard does not dedup');
+});
+
 test('chat history upserts one interim message and preserves its id', () => {
   const store = new Map();
   let sequence = 0;
