@@ -317,6 +317,7 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
   if (adapter.name === 'zcode') {
     const result = !o.isFirstTurn && persisted.cliSessionId
       ? ['--session', persisted.cliSessionId] : [];
+    if (persisted.model) result.push('--model', persisted.model);
     const payload = o.isFirstTurn && o.rolePrompt
       ? `[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
       : promptText;
@@ -414,7 +415,7 @@ shapeEquiv('3f opencode resume', {
   isFirstTurn: false,
 });
 
-// 3g: zcode bridge first turn (bridge owns engine flags; host passes payload only)
+// 3g: zcode bridge first turn (bridge owns engine flags and applies the persisted model)
 shapeEquiv('3g zcode first-turn', {
   adapter: zcodeAdapter,
   persisted: basePersisted({ cli: 'zcode', type: null, effort: 'high', model: 'z-1' }),

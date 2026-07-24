@@ -1,7 +1,9 @@
 'use strict';
 
 function appTypeForCli(cli) {
-  return cli === 'codex' ? 'codex' : 'claude';
+  if (cli === 'codex') return 'codex';
+  if (cli === 'claude' || cli === 'opencode') return 'claude';
+  return null;
 }
 
 function findProviderReferences({ appType, providerId, sessions, defaults, aux } = {}) {

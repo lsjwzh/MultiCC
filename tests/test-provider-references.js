@@ -9,6 +9,8 @@ test('provider deletion references include main, subagent, default and Aux with 
     ['main', { id: 'main', name: 'Main', cli: 'claude', provider: 'p1' }],
     ['sub', { id: 'sub', cli: 'claude', provider: 'other', subagent: { providerId: 'p1', model: 'm' } }],
     ['codex', { id: 'codex', cli: 'codex', provider: 'p1', subagent: { providerId: 'p1' } }],
+    ['zcode', { id: 'zcode', cli: 'zcode', provider: 'p1' }],
+    ['qoder', { id: 'qoder', cli: 'qoder', provider: 'p1' }],
   ]);
   const references = findProviderReferences({
     appType: 'claude',

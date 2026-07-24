@@ -92,6 +92,19 @@ test('plain provider models and CLI fallback choices never retain a stale provid
     ['', 'auto', 'ultimate', 'performance', 'efficient', 'lite', '__custom__']);
   assert.equal(ai.modelChoiceLabel('', '', qoder), '默认（跟随 Qoder CN 设置）');
   assert.equal(ai.modelChoiceLabel('performance', '', qoder), 'Performance（性能）');
+
+  const zcode = state({ providers: [], defaults: {}, cli: 'zcode' });
+  assert.deepEqual(ai.buildModelChoices('', zcode),
+    ['', 'bigmodel/glm-5.2', '__custom__']);
+  assert.equal(ai.modelChoiceLabel('', '', zcode), '默认（跟随 ZCode 设置）');
+});
+
+test('Qoder and ZCode are rendered as vendor-managed model selectors', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'public', 'chat-ai-config.js'), 'utf8');
+  const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
+  assert.match(source, /cli !== 'qoder' && cli !== 'zcode'/);
+  assert.match(source, /ZCode.*使用自身账号与厂商配置/);
+  assert.match(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
 });
 
 test('provider and session transport use MultiCCApi with token-free relative URLs', async () => {

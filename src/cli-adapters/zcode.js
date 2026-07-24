@@ -14,7 +14,9 @@ const path = require('path');
 const { renderPrompt } = require('../message-composer');
 
 const BRIDGE = path.join(__dirname, 'zcode-bridge.cjs');
+const TERMINAL_BRIDGE = path.join(__dirname, 'zcode-terminal.cjs');
 const LABEL = 'ZCode';
+const shellArg = value => JSON.stringify(String(value));
 
 function createZcodeAdapter({ cmd } = {}) {
   return {
@@ -23,8 +25,9 @@ function createZcodeAdapter({ cmd } = {}) {
     // 终端/交互模式：打开引擎的 TUI（需 ZCODE_ENGINE 指向 zcode.cjs）。
     buildTerminalCmd(session) {
       const engine = process.env.ZCODE_ENGINE || cmd || 'zcode';
-      let command = `${engine} tui`;
-      if (session && session.cliSessionId) command += ` --resume ${session.cliSessionId}`;
+      let command = `${shellArg(process.execPath)} ${shellArg(TERMINAL_BRIDGE)} --engine ${shellArg(engine)}`;
+      if (session && session.model) command += ` --model ${shellArg(session.model)}`;
+      if (session && session.cliSessionId) command += ` --resume ${shellArg(session.cliSessionId)}`;
       return command;
     },
     buildInvocation(env) {
@@ -33,6 +36,7 @@ function createZcodeAdapter({ cmd } = {}) {
       if (!isFirstTurn && env.historyHandle.cliSessionId) {
         args.push('--session', env.historyHandle.cliSessionId);
       }
+      if (env.spawnOpts.rawModel) args.push('--model', env.spawnOpts.rawModel);
       const prompt = renderPrompt(env);
       const payload = isFirstTurn && env.rolePrompt
         ? `[角色设定]\n${env.rolePrompt}\n[角色设定结束]\n\n${prompt}`

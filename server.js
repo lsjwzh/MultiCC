@@ -1428,19 +1428,13 @@ async function createSession(id) {
   }
 
   const provider = providerFor(persisted);
-  // Per-session provider override (cc-switch). Injected into the tmux pane (see
-  // tmuxCreateSession) so terminal sessions honor their provider too — without
-  // this they silently fell back to the default login. The codex session-id
-  // capture below also uses this provider's CODEX_HOME.
+  // Per-session provider override is injected into tmux; Codex capture below
+  // also uses the selected provider's CODEX_HOME.
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
-  // tmux panes inherit the tmux *server's* global env (captured at its first
-  // launch), which may carry ANTHROPIC_* routing vars leaked from the shell that
-  // started multicc. For claude sessions, explicitly blank every routing key the
-  // chosen provider does NOT set, so an inherited value can't override the
-  // Provider config wins; blanks block inherited Claude
-  // routing.
+  // Blank inherited Claude routing keys so the per-session provider wins.
   const termEnv = { ...provEnv.env };
-  if ((persisted.cli || 'claude') !== 'codex' && persisted.cli !== 'qoder') {
+  const appType = providers.appTypeForCli(persisted.cli || 'claude');
+  if (appType === 'claude') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
       if (!(k in termEnv)) termEnv[k] = '';
     }
@@ -1450,7 +1444,7 @@ async function createSession(id) {
       subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
-  } else {
+  } else if (appType === 'codex') {
     providers.applyCodexProxyConfig(termEnv, {
       providerId: persisted.provider, sessionId: id,
       subagent: persisted.subagent, port: PORT,
@@ -2120,10 +2114,10 @@ app.patch('/api/sessions/:id', (req, res) => {
     // (or the user's /model default when switching back to the default login)
     // so the card always shows a concrete, correct model name instead of a
     // stale "默认" placeholder. The user can still re-set via /model afterwards.
-    const appType = (s.cli === 'codex') ? 'codex' : 'claude';
-    if (req.body.model === undefined) {
+    const appType = providers.appTypeForCli(s.cli || 'claude');
+    if (appType && req.body.model === undefined) {
       s.model = providerDefaultModel(appType, v.value) || null;
-    } else if (!providers.modelValidForProvider(appType, v.value, s.model)) {
+    } else if (appType && !providers.modelValidForProvider(appType, v.value, s.model)) {
       // The same PATCH carried a model (the AI-config dialog always submits
       // provider+model together), but the new provider doesn't serve it — a
       // stale value from the previous provider. Replace it with the new
@@ -2137,7 +2131,7 @@ app.patch('/api/sessions/:id', (req, res) => {
     // Chat sessions pick it up on the next per-turn spawn; a warm streaming
     // process must be torn down so it relaunches with the new env.
     if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
-    const pname = v.value ? (providerRouterRuntime.getProviderSummary(s.cli === 'codex' ? 'codex' : 'claude', v.value)?.name || v.value) : '默认登录';
+    const pname = appType && v.value ? (providerRouterRuntime.getProviderSummary(appType, v.value)?.name || v.value) : (appType ? '默认登录' : '厂商客户端设置');
     appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
     // Push current classify state to chat so the classify bar updates immediately
     // (otherwise the chat page shows stale / blank until the next classify run).
@@ -5083,12 +5077,13 @@ function runChatTurn(sessionName, text, opts = {}) {
       MULTICC_DIR_ID: persisted.dirId || '',
       MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
     });
-    if (persisted.cli !== 'qoder') providers.applyClaudeProxyEnv(childEnv, {
+    const appType = providers.appTypeForCli(persisted.cli);
+    if (appType === 'claude') providers.applyClaudeProxyEnv(childEnv, {
         providerId: persisted.provider, sessionId: sessionName,
         subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
         officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
       });
-    if (persisted.cli === 'codex') {
+    if (appType === 'codex') {
       providers.applyCodexProxyConfig(childEnv, {
         providerId: persisted.provider, sessionId: sessionName,
         subagent: persisted.subagent, port: PORT,

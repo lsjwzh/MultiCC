@@ -31,10 +31,13 @@ const ZCODE_ENGINE = process.env.ZCODE_ENGINE || DEFAULT_ENGINE;
 // multicc 以 `node bridge [--session sid] <prompt>` 形式 spawn（payload 是末尾 argv）。
 const argv = process.argv.slice(2);
 let cliSessionId = null;
+let model = null;
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--session' && i + 1 < argv.length) {
     cliSessionId = argv[++i];
+  } else if (argv[i] === '--model' && i + 1 < argv.length) {
+    model = argv[++i];
   } else {
     positional.push(argv[i]);
   }
@@ -61,44 +64,41 @@ if (!fs.existsSync(ZCODE_ENGINE)) {
   process.exit(0);
 }
 
-// ── 3. 解析 API key：env 优先（multicc spawn 时按 provider 注入），兜底 cc-switch.db ─
-function resolveKey() {
-  if (process.env.BIGMODEL_API_KEY) return process.env.BIGMODEL_API_KEY;
-  // multicc providers.js 常把 anthropic-kind provider 的 token 注入为该变量
-  if (process.env.ANTHROPIC_AUTH_TOKEN) return process.env.ANTHROPIC_AUTH_TOKEN;
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+// ── 3. 可选模型覆盖 ────────────────────────────────────────────────────────
+// ZCode owns provider/auth configuration in ~/.zcode/cli/config.json. Its
+// headless CLI has no --model flag, but does support --settings. To honor the
+// per-session MultiCC model without duplicating provider credentials, clone the
+// vendor config into a private temporary file and override only `model`.
+let settingsDir = null;
+let settingsFile = null;
+if (model) {
   try {
-    const cp = require('child_process');
-    const db = path.join(os.homedir(), '.cc-switch', 'cc-switch.db');
-    if (!fs.existsSync(db)) return '';
-    // cc-switch.db 的 providers 表里 name 含 Zhipu/GLM 的条目即为 bigmodel
-    const rows = cp.execSync(
-      `sqlite3 ${JSON.stringify(db)} "SELECT settings_config FROM providers WHERE name LIKE '%Zhipu%' OR name LIKE '%GLM%' LIMIT 1;"`,
-      { encoding: 'utf8', maxBuffer: 1e7 }
-    );
-    const j = JSON.parse(rows);
-    for (const k of ['apiKey', 'api_key', 'authToken', 'token', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY']) {
-      const v = j[k] || (j.settings && j.settings[k]) || (j.env && j.env[k]);
-      if (typeof v === 'string' && v.length > 10) return v;
+    const source = process.env.ZCODE_SETTINGS
+      || path.join(os.homedir(), '.zcode', 'cli', 'config.json');
+    const config = JSON.parse(fs.readFileSync(source, 'utf8'));
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error('vendor settings must be a JSON object');
     }
-  } catch (e) {}
-  return '';
-}
-
-const key = resolveKey();
-if (!key) {
-  process.stdout.write(JSON.stringify({
-    sessionID: 'zcode-nokey', type: 'error',
-    error: { message: 'ZCode 桥接未找到 BIGMODEL_API_KEY：请在 multicc 为 zcode 会话配置 Zhipu GLM provider，或设置 BIGMODEL_API_KEY' },
-  }) + '\n');
-  process.exit(0);
+    settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-'));
+    settingsFile = path.join(settingsDir, 'config.json');
+    fs.writeFileSync(settingsFile, JSON.stringify({ ...config, model }), { mode: 0o600 });
+  } catch (error) {
+    process.stdout.write(JSON.stringify({
+      sessionID: 'zcode-settings', type: 'error',
+      error: { message: `ZCode 模型配置失败：${error.message}` },
+    }) + '\n');
+    process.exit(0);
+  }
 }
 
 // ── 4. 调用 zcode.cjs 引擎（整体 JSON 输出）────────────────────────────────
 const zargs = [ZCODE_ENGINE, '--json', '--prompt', prompt];
 if (cliSessionId && /^sess_/.test(cliSessionId)) zargs.push('--resume', cliSessionId);
-const env = { ...process.env, BIGMODEL_API_KEY: key };
-const res = spawnSync('node', zargs, { encoding: 'utf8', env, maxBuffer: 1e8 });
+if (settingsFile) zargs.push('--settings', settingsFile);
+const res = spawnSync('node', zargs, { encoding: 'utf8', env: process.env, maxBuffer: 1e8 });
+if (settingsDir) {
+  try { fs.rmSync(settingsDir, { recursive: true, force: true }); } catch (_) {}
+}
 
 if (res.status !== 0) {
   const msg = ((res.stdout || '') + (res.stderr || '')).split('\n').slice(0, 3).join(' ').slice(0, 300);
