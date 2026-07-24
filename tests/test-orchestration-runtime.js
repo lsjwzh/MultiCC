@@ -31,6 +31,7 @@ function fixture(t, overrides = {}) {
       history.get(sessionId)?.has(deliveryId) || false
     ),
     probe: overrides.probe || (async () => ''),
+    getSessionRecoveryState: overrides.getSessionRecoveryState || (() => null),
     setIntervalFn(fn) {
       scheduled = fn;
       return { unref() {} };
@@ -86,8 +87,12 @@ test('reconstruction closes resolve-to-inject crash and inject-to-ack crash wind
 
   // Simulate a process dying after runChatTurn durably wrote the user message,
   // but before the worker acknowledged its claim.
-  const [lostClaim] = await first.runtime.outbox.claim({ workerId: 'crashed-process' });
+  const [lostClaim] = await first.runtime.outbox.claim({
+    workerId: 'crashed-process',
+    selectSessionItem: first.runtime.sessionScheduler.selectSessionItem,
+  });
   assert.equal(lostClaim.id, `wait:${registered.id}`);
+  assert.equal((await first.runtime.sessionScheduler.claim(lostClaim)).ok, true);
   sharedHistory.set('A', new Set([lostClaim.id]));
 
   clock.value += 101;
@@ -97,6 +102,7 @@ test('reconstruction closes resolve-to-inject crash and inject-to-ack crash wind
     now: () => clock.value,
     runChatTurn: async (...args) => { replayedInjections.push(args); return true; },
     hasPersistedDelivery: async (sessionId, deliveryId) => sharedHistory.get(sessionId)?.has(deliveryId) || false,
+    getSessionRecoveryState: () => ({ classifyState: 'D', endedAt: 20_050 }),
     setIntervalFn: () => ({ unref() {} }),
     clearIntervalFn: () => {},
     outboxOptions: { leaseMs: 100, maxAttempts: 4, backoff: () => 0 },
@@ -105,6 +111,7 @@ test('reconstruction closes resolve-to-inject crash and inject-to-ack crash wind
   assert.equal(replayedInjections.length, 0, 'persisted delivery is not injected twice');
   assert.equal((await rebuilt.outbox.get(lostClaim.id)).state, 'delivered');
   assert.equal(rebuilt.hasPending('A'), false);
+  assert.equal((await rebuilt.sessionScheduler.status('A')).state, 'idle');
   await rebuilt.stop();
 });
 
@@ -144,7 +151,7 @@ test('dispatch delivery carries canonical task metadata into runChatTurn', async
   await runtime.stop();
 });
 
-test('busy and rejected turns retry, then deliver after the session is available', async t => {
+test('busy work waits, while a rejected start freezes until an explicit retry', async t => {
   let busy = true;
   let accept = false;
   const calls = [];
@@ -171,12 +178,62 @@ test('busy and rejected turns retry, then deliver after the session is available
   busy = false;
   await runtime.tick();
   assert.equal(calls.length, 1);
-  assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'pending');
+  assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'dead-letter');
+  assert.equal((await runtime.sessionScheduler.status('A')).state, 'frozen');
 
   accept = true;
+  const retried = await runtime.sessionScheduler.resolve('A', {
+    action: 'retry',
+    text: 'explicit retry',
+    idempotencyKey: 'retry-wait',
+  });
+  assert.equal(retried.ok, true);
   await runtime.tick();
   assert.equal(calls.length, 2);
-  assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'delivered');
+  assert.equal(calls[1].text, 'explicit retry');
+});
+
+test('direct messages and dispatch requests share one success-gated FIFO', async t => {
+  const { runtime, injections } = fixture(t);
+  const first = await runtime.admitSessionWork({
+    sessionId: 'worker',
+    text: 'direct one',
+    idempotencyKey: 'direct-1',
+  });
+  assert.equal(first.ok, true);
+  assert.deepEqual(injections.map(entry => entry.text), ['direct one']);
+
+  await runtime.admitSessionWork({
+    sessionId: 'worker',
+    text: 'direct two',
+    idempotencyKey: 'direct-2',
+  });
+  await runtime.admitDispatch({
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'dispatch-3',
+    spec: {
+      targetId: 'worker',
+      chatId: 'worker',
+      message: 'dispatch three',
+      oneWay: true,
+      taskId: 'task-three',
+      taskStart: true,
+      taskSource: 'commander',
+      taskText: 'dispatch three',
+    },
+  });
+  await runtime.tick();
+  assert.deepEqual(injections.map(entry => entry.text), ['direct one']);
+
+  await runtime.sessionScheduler.complete('worker');
+  await runtime.tick();
+  assert.deepEqual(injections.map(entry => entry.text), ['direct one', 'direct two']);
+  await runtime.sessionScheduler.complete('worker');
+  await runtime.tick();
+  assert.deepEqual(injections.map(entry => entry.text), [
+    'direct one', 'direct two', 'dispatch three',
+  ]);
 });
 
 test('different sessions deliver concurrently while one session remains ordered', async t => {

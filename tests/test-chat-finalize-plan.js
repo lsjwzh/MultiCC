@@ -241,15 +241,16 @@ test('API stream classification wins; explicit kills never auto-resume', () => {
   assert.equal(killed.effects.find(e => e.type === 'set-status').reason, 'explicit-kill');
 });
 
-test('unknown stream interruption is the sole automatic resume candidate and remains capped/wait-guarded', () => {
+test('unknown stream interruption freezes instead of automatically resuming', () => {
   const resolved = resolveTurnFinalization(planTurnFinalization(base({
     runnerKind: 'stream', cli: 'claude', resultEvent: false,
     resultDurable: false, hasOutput: false,
   })));
-  const resume = resolved.effects.find(entry => entry.type === 'try-resume-interrupted');
-  assert.deepEqual(resume, {
-    type: 'try-resume-interrupted', fallbackStatus: 'idle', capped: true, waitGuarded: true,
-  });
+  assert.equal(types(resolved).includes('try-resume-interrupted'), false);
+  assert.deepEqual(
+    resolved.effects.find(entry => entry.type === 'freeze-interrupted'),
+    { type: 'freeze-interrupted', reason: 'unknown_interruption' },
+  );
   assert.equal(resolved.effects.at(-1).interrupted, true);
 });
 

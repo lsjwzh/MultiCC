@@ -24,6 +24,7 @@ function createHarness(options = {}) {
     classifyTurnEnd() { calls.push(['classify']); },
     resetInterrupted() { calls.push(['reset-interrupted']); },
     resumeInterrupted() { calls.push(['resume-interrupted']); return options.resumed === true; },
+    freezeInterrupted(sessionName, reason) { calls.push(['freeze-interrupted', reason]); },
     emitTurnOutcome() { calls.push(['outcome']); },
     runPostTurn(context, entry) { calls.push(['post-turn', entry.guard, context.turn.resultDurable]); },
     now: () => 200,
@@ -93,7 +94,7 @@ test('failed append never fabricates durability and exposes the guarded post-tur
   assert.deepEqual(harness.calls.at(-1), ['post-turn', 'current-runner-and-durable-final-result', false]);
 });
 
-test('unknown stream interruption is delegated to the bounded resume port', () => {
+test('unknown stream interruption freezes and never invokes automatic resume', () => {
   const harness = createHarness({ resumed: true });
   const ctx = context({
     runnerKind: 'stream',
@@ -110,8 +111,9 @@ test('unknown stream interruption is delegated to the bounded resume port', () =
     resultDurable: false,
   });
   harness.executor.execute(plan, ctx);
-  assert.equal(harness.calls.some(call => call[0] === 'resume-interrupted'), true);
-  assert.equal(harness.calls.some(call => call[0] === 'status'), false);
+  assert.equal(harness.calls.some(call => call[0] === 'resume-interrupted'), false);
+  assert.equal(harness.calls.some(call => call[0] === 'freeze-interrupted'), true);
+  assert.deepEqual(harness.calls.find(call => call[0] === 'status'), ['status', 'waiting']);
   assert.equal(harness.calls.some(call => call[0] === 'broadcast' && call[1] === 'stream_end'), true);
 });
 

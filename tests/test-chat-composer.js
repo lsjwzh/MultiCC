@@ -162,6 +162,8 @@ function composerFixture(overrides = {}) {
     finishCancelledTurn: () => starts.push('cancelled'),
     setPendingCancel: value => pending.push(value),
     onTurnStarted: () => starts.push('started'),
+    getUserInputRequestId: () => overrides.userInputRequestId || null,
+    consumeUserInputRequestId: value => starts.push(['consumed-input', value]),
     resetHistory: () => starts.push('reset'),
     goalWrap: task => `[goal] ${task}`,
     debug() {},
@@ -177,7 +179,7 @@ test('classic module exports a frozen narrow API and stable helpers', () => {
   assert.match(api.defaultClientMessageId(1234, 0.123456), /^c[0-9a-z]+-[0-9a-z]+$/);
 });
 
-test('send appends durable attachment paths and starts exactly one turn', () => {
+test('send appends durable attachment paths and waits for server start ownership', () => {
   const fixture = composerFixture({ text: 'inspect', paths: ['/tmp/a.png', '/tmp/b.txt'] });
   assert.equal(fixture.composer.send(), true);
   assert.deepEqual(fixture.users, ['inspect /tmp/a.png /tmp/b.txt']);
@@ -185,16 +187,31 @@ test('send appends durable attachment paths and starts exactly one turn', () => 
   assert.equal(fixture.sent[0].type, 'user_message');
   assert.equal(fixture.sent[0].text, 'inspect /tmp/a.png /tmp/b.txt');
   assert.match(fixture.sent[0].clientMsgId, /^c/);
-  assert.deepEqual(fixture.starts, ['started']);
+  assert.deepEqual(fixture.starts, []);
   assert.deepEqual(fixture.pending, [false]);
   assert.equal(fixture.inputEl.value, '');
   assert.equal(fixture.area.children.every(chip => chip.removed), true);
 });
 
-test('send closes a stale turn before dispatching a new message', () => {
+test('send never closes an active turn; the server queues the new message', () => {
   const fixture = composerFixture({ openTurn: true });
   fixture.composer.send();
-  assert.deepEqual(fixture.starts, ['finish-open', 'started']);
+  assert.deepEqual(fixture.starts, []);
+});
+
+test('a pending structured question is correlated with the next successful send only', () => {
+  const fixture = composerFixture({ userInputRequestId: 'usrq-1' });
+  assert.equal(fixture.composer.send(), true);
+  assert.equal(fixture.sent[0].userInputRequestId, 'usrq-1');
+  assert.deepEqual(fixture.starts, [['consumed-input', 'usrq-1']]);
+
+  const failed = composerFixture({
+    userInputRequestId: 'usrq-2',
+    sendResult: false,
+  });
+  assert.equal(failed.composer.send(), false);
+  assert.equal(failed.sent[0].userInputRequestId, 'usrq-2');
+  assert.deepEqual(failed.starts, []);
 });
 
 test('goal slash command uses the same send path and preserves goal metadata', () => {

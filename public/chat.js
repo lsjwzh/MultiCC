@@ -2377,6 +2377,7 @@ async function openMessagePicker() {
 }
 
 const chatEventState = {};
+chatEventState.pendingUserInputRequestId = null;
 const eventStateBindings = {
   sessionId: [() => sessionId, value => { sessionId = value; }],
   pendingCancel: [() => _pendingCancel, value => { _pendingCancel = value; }],
@@ -2552,6 +2553,12 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   debug: dbg,
   updateUi: updateUI,
   getIsStreaming: () => isStreaming,
+  getUserInputRequestId: () => chatEventState.pendingUserInputRequestId,
+  consumeUserInputRequestId: requestId => {
+    if (chatEventState.pendingUserInputRequestId === requestId) {
+      chatEventState.pendingUserInputRequestId = null;
+    }
+  },
   hasOpenTurn: () => isStreaming || !!currentMsgEl,
   finishOpenTurn: () => {
     hideThinking();
