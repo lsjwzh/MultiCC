@@ -1567,8 +1567,8 @@ function showAIConfigPicker(config) {
 function updateModelBtn() {
   if (!modelBtn) return;
   const shown = _sessionEffectiveModel || _sessionModel;
-  const provider = _sessionCli === 'qoder'
-    ? 'Qoder CN'
+  const provider = _sessionCli === 'qoder' || _sessionCli === 'zcode'
+    ? (_sessionCli === 'zcode' ? 'ZCode' : 'Qoder CN')
     : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
       || _sessionProviderDisplayName
       || tt('default'));
@@ -1606,7 +1606,7 @@ async function loadSessionModel() {
     _sessionSubagent = info.subagent || null;
     _sessionAgent = info.agent || '';
     updateSubagentPill();
-    if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
+    if (_sessionProvider && _sessionCli !== 'qoder' && _sessionCli !== 'zcode') await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
     updateProviderBtn();
     _sessionModel = info.model || '';
     _sessionEffectiveModel = info.effectiveModel || info.model || '';
@@ -1624,7 +1624,7 @@ async function loadSessionModel() {
 modelBtn?.addEventListener('click', async () => {
   // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
   await loadSessionModel();
-  if (_sessionCli !== 'qoder') {
+  if (_sessionCli !== 'qoder' && _sessionCli !== 'zcode') {
     await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude', { loading: true });
   }
   const picked = await showAIConfigPicker({

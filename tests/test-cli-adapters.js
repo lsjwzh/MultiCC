@@ -202,13 +202,13 @@ assert.deepStrictEqual(
 // zcode 专用 adapter：不直调引擎，而是 spawn 树内 bridge（zcode-bridge.cjs）。
 // 首轮无 --session；payload 由 multicc 作为末尾 argv 传给 bridge。
 const zcodeInv = zcode.buildInvocation(opencodeEnvelope);
-assert.deepStrictEqual(zcodeInv.args, []);
+assert.deepStrictEqual(zcodeInv.args, ['--model', 'open/model']);
 assert.ok(zcodeInv.cmd.endsWith('zcode-bridge.cjs'), 'zcode cmd 指向树内 bridge');
 assert.strictEqual(zcodeInv.payload, 'hello');
 // 续轮：带 cliSessionId → bridge 收到 --session（转成引擎 --resume）
 assert.deepStrictEqual(
   zcode.buildInvocation({ ...opencodeEnvelope, historyHandle: { isFirstTurn: false, cliSessionId: 'sess_abc' } }).args,
-  ['--session', 'sess_abc'],
+  ['--session', 'sess_abc', '--model', 'open/model'],
 );
 // 首轮 + rolePrompt → payload 包裹角色设定
 assert.ok(
@@ -280,8 +280,8 @@ const priorZcodeEngine = process.env.ZCODE_ENGINE;
 delete process.env.ZCODE_ENGINE;
 try {
   assert.strictEqual(
-    zcode.buildTerminalCmd({ cliSessionId: 'ses_1' }),
-    'zcode tui --resume ses_1',
+    zcode.buildTerminalCmd({ model: 'bigmodel/glm-5.2', cliSessionId: 'ses_1' }),
+    `${JSON.stringify(process.execPath)} ${JSON.stringify(require('node:path').join(__dirname, '..', 'src', 'cli-adapters', 'zcode-terminal.cjs'))} --engine "zcode" --model "bigmodel/glm-5.2" --resume "ses_1"`,
   );
 } finally {
   if (priorZcodeEngine == null) delete process.env.ZCODE_ENGINE;

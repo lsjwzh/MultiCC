@@ -57,6 +57,11 @@ function createHarness(overrides = {}) {
   const defaultsFile = '/runtime/provider-defaults.json';
   const providers = {
     WIRE_DEFAULT_MODEL: 'claude-wire-default',
+    appTypeForCli(cli) {
+      if (cli === 'codex') return 'codex';
+      if (cli === 'claude' || cli === 'opencode') return 'claude';
+      return null;
+    },
     getCcSwitchStatus: () => ({ available: true, dbFound: true, dbPath: '/private/cc-switch.db' }),
     listProviders(appType) {
       calls.push({ method: 'listProviders', appType });
@@ -222,6 +227,9 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     file: '/runtime/provider-defaults.json',
     value: { claude: null, codex: 'codex-one' },
   }]);
+  assert.deepEqual(harness.runtime.validProviderId('zcode', ''), { ok: true, value: null });
+  assert.deepEqual(harness.runtime.validProviderId('zcode', 'claude-one'), { ok: false });
+  assert.deepEqual(harness.runtime.validProviderId('qoder', 'claude-one'), { ok: false });
 });
 
 test('provider route public errors redact secrets and absolute paths without changing DTO fields', async () => {

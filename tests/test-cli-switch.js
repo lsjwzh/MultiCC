@@ -97,6 +97,35 @@ test('fresh switch discards only the target native state', () => {
   assert.strictEqual(stateSummary(session).codex.hasNativeSession, false);
 });
 
+test('Qoder and ZCode never restore or persist MultiCC provider bindings', () => {
+  for (const cli of ['qoder', 'zcode']) {
+    const session = {
+      kind: 'chat',
+      cli: 'claude',
+      provider: 'claude-provider',
+      subagent: { providerId: 'sub', model: 'mini' },
+      cliStates: {
+        [cli]: {
+          cliSessionId: `${cli}-native`,
+          model: `${cli}/model`,
+          provider: 'stale-provider',
+          subagent: { providerId: 'stale-sub', model: 'stale-model' },
+        },
+      },
+    };
+    const switched = activateCliState(session, cli, {
+      now: 450,
+      defaults: { provider: 'default-provider', subagent: { providerId: 'default-sub', model: 'm' } },
+    });
+    assert.strictEqual(switched.reused, true);
+    assert.strictEqual(session.provider, null);
+    assert.strictEqual(session.subagent, null);
+    assert.strictEqual(session.cliStates[cli].provider, null);
+    assert.strictEqual(session.cliStates[cli].subagent, null);
+    assert.strictEqual(stateSummary(session)[cli].provider, null);
+  }
+});
+
 test('rememberActiveCliState captures a newly assigned native id', () => {
   const session = { kind: 'chat', cli: 'opencode', cliSessionId: null, effort: 'high', agent: 'build' };
   ensureCliStates(session, 1);
