@@ -314,6 +314,15 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
     result.push('--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', payload);
     return result;
   }
+  if (adapter.name === 'zcode') {
+    const result = !o.isFirstTurn && persisted.cliSessionId
+      ? ['--session', persisted.cliSessionId] : [];
+    const payload = o.isFirstTurn && o.rolePrompt
+      ? `[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
+      : promptText;
+    result.push(payload);
+    return result;
+  }
   const result = ['run', '--format', 'json', '--auto'];
   if (persisted.model) result.push('--model', persisted.model);
   if (adapter.name === 'opencode' && persisted.effort) result.push('--variant', persisted.effort);
@@ -405,7 +414,7 @@ shapeEquiv('3f opencode resume', {
   isFirstTurn: false,
 });
 
-// 3g: zcode first turn
+// 3g: zcode bridge first turn (bridge owns engine flags; host passes payload only)
 shapeEquiv('3g zcode first-turn', {
   adapter: zcodeAdapter,
   persisted: basePersisted({ cli: 'zcode', type: null, effort: 'high', model: 'z-1' }),

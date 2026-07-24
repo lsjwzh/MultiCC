@@ -137,6 +137,27 @@ assert.strictEqual(
 );
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'response-disconnect' })[0].kind, 'response_completed_disconnect');
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'transport-disconnect' })[0].kind, 'transport_disconnect');
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'turn.failed',
+    error: {
+      message: 'limited',
+      code: 'rate_limit_error',
+      status: 429,
+      headers: { 'retry-after': '5' },
+      request_id: 'private-request-id',
+    },
+  })[0].error,
+  {
+    source: 'codex_event',
+    provider: 'codex',
+    code: 'rate_limit_error',
+    httpStatus: 429,
+    headers: { 'retry-after': '5' },
+    requestId: 'private-request-id',
+    message: 'limited',
+  },
+);
 assert.strictEqual(codex.decodeEvent({ type: 'turn.completed', usage: { input_tokens: 3 } })[0].type, 'complete');
 assert.deepStrictEqual(
   codex.decodeEvent({
@@ -159,6 +180,14 @@ for (const adapter of [opencode, zcode]) {
   assert.strictEqual(tool.type, 'tool_update');
   assert.strictEqual(tool.completed, true);
   assert.strictEqual(adapter.decodeEvent({ type: 'step_finish', part: { reason: 'stop' } })[0].type, 'complete');
+  const providerError = adapter.decodeEvent({
+    type: 'error',
+    error: { message: 'bad model', code: 'model_not_found', statusCode: 404 },
+  })[0];
+  assert.equal(providerError.error.provider, adapter.name);
+  assert.equal(providerError.error.source, `${adapter.name}_event`);
+  assert.equal(providerError.error.code, 'model_not_found');
+  assert.equal(providerError.error.httpStatus, 404);
 }
 
 const opencodeEnvelope = {
@@ -247,10 +276,17 @@ assert.strictEqual(
   'opencode --model open/model --variant max --agent build --session ses_1',
 );
 // zcode buildTerminalCmd：走引擎 TUI（ZCODE_ENGINE 未设时回退到 cmd）
-assert.strictEqual(
-  zcode.buildTerminalCmd({ cliSessionId: 'ses_1' }),
-  'zcode tui --resume ses_1',
-);
+const priorZcodeEngine = process.env.ZCODE_ENGINE;
+delete process.env.ZCODE_ENGINE;
+try {
+  assert.strictEqual(
+    zcode.buildTerminalCmd({ cliSessionId: 'ses_1' }),
+    'zcode tui --resume ses_1',
+  );
+} finally {
+  if (priorZcodeEngine == null) delete process.env.ZCODE_ENGINE;
+  else process.env.ZCODE_ENGINE = priorZcodeEngine;
+}
 // zcode decodeEvent：bridge 输出 opencode raw shape，按 opencode-like 同款解码
 assert.strictEqual(zcode.decodeEvent({ sessionID: 'sess_z', type: 'step_start' })[0].type, 'session_started');
 assert.strictEqual(zcode.decodeEvent({ sessionID: 'sess_z', type: 'step_start' })[1].type, 'status');

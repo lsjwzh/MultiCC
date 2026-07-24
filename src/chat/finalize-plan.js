@@ -74,6 +74,20 @@ function retryEffects(action, retry, facts) {
   ]);
 }
 
+function apiRetryEffects(decision) {
+  return Object.freeze([
+    effect('mark-retry-planned'),
+    effect('set-streaming', { value: true }),
+    effect('set-status', { status: 'retry_wait' }),
+    effect('schedule-api-retry', {
+      attempt: decision.attempt,
+      cap: decision.error && decision.error.maxAttempts,
+      delayMs: decision.delayMs,
+      retryAt: decision.retryAt,
+    }),
+  ]);
+}
+
 // First stage: decide whether the runner must continue/retry, and describe the
 // durability boundary needed by a real finalization. No host state is mutated.
 function planTurnFinalization(input = {}, deps = {}) {
@@ -102,6 +116,7 @@ function planTurnFinalization(input = {}, deps = {}) {
     auxUnhealthy: input.auxUnhealthy === true,
     signal: input.signal == null ? '' : String(input.signal),
     code: input.code == null ? 0 : Number(input.code),
+    apiErrorDecision: input.apiErrorDecision || null,
   };
   // Some adapters surface a close-time error on the mutable host state before
   // an event can be attached to the runner. It must block native-session retry
@@ -143,7 +158,17 @@ function planTurnFinalization(input = {}, deps = {}) {
     }
   }
 
-  if (runnerKind === 'process' && !guardedHandoffResumeFailure && !facts.hasOutput
+  if (facts.apiErrorDecision && facts.apiErrorDecision.action === 'retry') {
+    return freezePlan({
+      action: 'retry-api',
+      code: null,
+      facts,
+      retry: facts.apiErrorDecision,
+      effects: apiRetryEffects(facts.apiErrorDecision),
+    });
+  }
+
+  if (runnerKind === 'process' && !guardedHandoffResumeFailure && !facts.apiError && !facts.hasOutput
       && !facts.killReason && !facts.retryBlockedByAdapterError && !facts.isRetry) {
     const retry = decideRetry({
       event: 'empty-exit', cli, isRetry: facts.isRetry,

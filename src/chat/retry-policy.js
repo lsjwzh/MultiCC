@@ -1,10 +1,11 @@
 'use strict';
 
+const { decideApiErrorPolicy } = require('./api-error-policy');
+
 const DEFAULT_LIMITS = Object.freeze({
   freshStart: 1,
   codexDisconnect: 2,
   interruptedResume: 10,
-  apiError: Infinity,
 });
 const DEFAULT_DELAYS = Object.freeze({
   freshStart: 0,
@@ -56,8 +57,21 @@ function decideRetry(input = {}, deps = {}) {
     return terminal('handoff-resume', 'fail-closed-no-fresh-retry', { preserveHandoff: true });
   }
   if (event === 'api-error') {
-    const attempt = count(attempts.apiError) + 1;
-    return schedule('resume', 'api-error', attempt, delays.apiError, deps, { capped: false });
+    const decision = decideApiErrorPolicy(input.error || {}, {
+      ...(input.context || {}),
+      attempt: count(attempts.apiError),
+      maxAttempts: deps.limits && Object.prototype.hasOwnProperty.call(deps.limits, 'apiError')
+        ? limits.apiError : undefined,
+    }, deps);
+    if (decision.action !== 'retry') {
+      return terminal('api-error', decision.reason, { decision });
+    }
+    return schedule('retry-api', 'api-error', decision.attempt,
+      decision.delayMs ?? delays.apiError, { ...deps, jitterMs: 0 }, {
+        capped: true,
+        cap: decision.error.maxAttempts,
+        decision,
+      });
   }
   if (event === 'interrupted') {
     if (input.killReason) return terminal('interrupted', 'explicit-lifecycle-stop');

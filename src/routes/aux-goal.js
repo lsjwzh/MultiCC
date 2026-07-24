@@ -193,29 +193,78 @@ function mountAuxGoalRoutes(app, dependencies) {
     processing: false,
     totalProcessed: 0,
     lastTaskTime: null,
-    health: { consecutiveFails: 0, unhealthy: false, lastFailAt: null, lastFailMsg: '', sinceAt: null },
+    health: {
+      consecutiveFails: 0,
+      unhealthy: false,
+      retryable: true,
+      category: null,
+      action: null,
+      retryAt: null,
+      lastFailAt: null,
+      lastFailMsg: '',
+      sinceAt: null,
+    },
     clients: new Set(),
 
-    recordFail(message) {
-      const publicMessage = safeAuxErrorMessage(message);
+    recordFail(error) {
+      const publicMessage = safeAuxErrorMessage(error);
+      const detail = error && typeof error === 'object' ? error : {};
+      const response = detail.response && typeof detail.response === 'object' ? detail.response : {};
+      const responseHeaders = response.headers;
+      const retryAfter = detail.retryAfter
+        || (responseHeaders && typeof responseHeaders.get === 'function'
+          ? responseHeaders.get('retry-after') : null);
+      const decision = recordApiError({
+        source: 'aux_http',
+        provider: auxConfig.protocol === 'openai' ? 'aux-openai' : 'aux-anthropic',
+        code: detail.code || detail.type || response.code,
+        httpStatus: detail.httpStatus || detail.statusCode || detail.status
+          || response.statusCode || response.status,
+        retryAfterMs: detail.retryAfterMs,
+        retryAfter,
+        message: publicMessage,
+      }, {
+        provider: auxConfig.protocol === 'openai' ? 'aux-openai' : 'aux-anthropic',
+        source: 'aux_http',
+        phase: 'before_first_token',
+        partialOutput: false,
+        sideEffects: false,
+        idempotencyKey: `aux:${this.currentTask?.id || 'unknown'}`,
+      });
       const health = this.health;
       health.consecutiveFails = (health.consecutiveFails || 0) + 1;
       health.lastFailAt = Date.now();
       health.lastFailMsg = publicMessage.slice(0, 200);
-      if (health.consecutiveFails >= 3 && !health.unhealthy) {
+      health.retryable = decision
+        ? decision.action === 'retry' || decision.action === 'wait_circuit'
+          || (decision.action === 'wait_reset' && !!decision.retryAt)
+        : true;
+      health.category = decision?.error?.category || 'unknown';
+      health.action = decision?.action || 'fail_fast';
+      health.retryAt = decision?.retryAt || null;
+      const thresholdReached = health.action === 'retry'
+        ? health.consecutiveFails >= 3 : true;
+      if (thresholdReached && !health.unhealthy) {
         health.unhealthy = true;
         health.sinceAt = Date.now();
-        logger.error(`[multicc/aux] UNHEALTHY after ${health.consecutiveFails} consecutive failures: ${health.lastFailMsg}`);
+        logger.error('[multicc/aux] unavailable', {
+          category: health.category,
+          retryable: health.retryable,
+          consecutiveFails: health.consecutiveFails,
+        });
         this.broadcastHealth();
       }
-      recordApiError(publicMessage);
-      return health;
+      return { health, decision, publicMessage };
     },
 
     recordSuccess() {
       const health = this.health;
       if (health.consecutiveFails || health.unhealthy) {
         health.consecutiveFails = 0;
+        health.retryable = true;
+        health.category = null;
+        health.action = null;
+        health.retryAt = null;
         if (health.unhealthy) {
           health.unhealthy = false;
           health.sinceAt = null;
@@ -223,7 +272,7 @@ function mountAuxGoalRoutes(app, dependencies) {
           this.broadcastHealth();
         }
       }
-      recordApiSuccess();
+      recordApiSuccess(auxConfig.protocol === 'openai' ? 'aux-openai' : 'aux-anthropic');
       return health;
     },
 
@@ -384,7 +433,7 @@ function mountAuxGoalRoutes(app, dependencies) {
         // A user-cancelled in-flight request may still finish by failing because
         // the transport itself is intentionally not aborted. That is not an
         // upstream health failure and must retain cancellation semantics.
-        if (!task.cancelled) this.recordFail(message);
+        const failure = !task.cancelled ? this.recordFail(error) : null;
         appendChatMessage(AUX_SESSION_ID, {
           role: 'user',
           content: task.prompt,
@@ -410,6 +459,15 @@ function mountAuxGoalRoutes(app, dependencies) {
           enqueuedAt: task.ts,
           startedAt: startTime,
           queueMs: startTime - task.ts,
+          apiError: failure && failure.decision ? {
+            category: failure.decision.error.category,
+            provider: failure.decision.error.provider,
+            code: failure.decision.error.code,
+            httpStatus: failure.decision.error.httpStatus,
+            retryable: failure.decision.error.retryable,
+            action: failure.decision.action,
+            retryAfterMs: failure.decision.error.retryAfterMs,
+          } : undefined,
         });
         if (task.cancelled) {
           task.reject({ cancelled: true });
