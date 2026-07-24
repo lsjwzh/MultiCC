@@ -4904,9 +4904,14 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
   cs.streamReplay = [];
   cs._resultSaved = false;
-  // Auto-prune claude transcript JSONL before --resume if it exceeds the
-  // context-window threshold, preventing context_length_exceeded failures.
-  if (persisted.cli === 'claude') require('./src/chat/transcript-prune').maybePrune(persisted.cwd, persisted.cliSessionId);
+  // Auto-prune the claude transcript before --resume so it never exceeds the
+  // context window. cwd MUST be cwdForSession(persisted): the record has no .cwd
+  // field, so persisted.cwd was undefined and this silently no-op'd. Best-effort —
+  // a prune failure must never crash the turn.
+  if (persisted.cli === 'claude') {
+    try { require('./src/chat/transcript-prune').maybePrune(cwdForSession(persisted), persisted.cliSessionId); }
+    catch (_) {}
+  }
   cs._adapterError = null;
   cs._sawApiError = false;
   cs._activeTurn = turn;

@@ -33,6 +33,9 @@ function findTranscriptFile(cwd, cliSessionId) {
   try {
     for (const name of fs.readdirSync(dir)) {
       if (!name.endsWith('.jsonl')) continue;
+      // Never select our own prune backup as the file to trim/resume: it only
+      // holds already-removed rows (kept solely so token-global reads their usage).
+      if (name.endsWith('.pruned.jsonl')) continue;
       const p = path.join(dir, name);
       const sz = fs.statSync(p).size;
       if (!best || sz > best.size) best = { path: p, size: sz };
