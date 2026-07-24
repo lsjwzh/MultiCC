@@ -631,6 +631,45 @@ function getProviderSummary(appType, id) {
   return p ? summarize(p) : null;
 }
 
+// Stable seam for the usage-limit poller: given a provider, report where its
+// account quota/balance can be queried and by what strategy — WITHOUT leaking
+// settingsConfig shape to the caller. Returns null when the provider has no
+// pollable limit surface (unknown host, missing key, or a vendor-owned CLI like
+// Qoder/ZCode that bypasses our proxy entirely).
+//
+//   strategy 'glm-monitor'      → open.bigmodel.cn / z.ai window-utilization endpoint
+//   strategy 'deepseek-balance' → api.deepseek.com prepaid money balance endpoint
+//
+// host is the ORIGINAL upstream host (not our local proxy), so a session routed
+// through the chat-to-responses proxy still resolves to its real vendor.
+function getProviderLimitTarget(appType, id) {
+  const provider = getProvider(appType, id);
+  if (!provider) return null;
+  const cfg = parseConfig(provider.settingsConfig);
+  let baseUrl = '';
+  let apiKey = '';
+  if (provider.appType === 'codex') {
+    baseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl)
+      || tomlValue(cfg.config, 'base_url') || '';
+    apiKey = (cfg.proxyTarget && cfg.proxyTarget.apiKey)
+      || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '';
+  } else {
+    const env = cfg.env || {};
+    baseUrl = env.ANTHROPIC_BASE_URL || '';
+    apiKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '';
+  }
+  if (!baseUrl || !apiKey) return null;
+  let host = '';
+  try { host = new URL(baseUrl).host.toLowerCase(); } catch (_) { return null; }
+  let strategy = null;
+  if (host === 'api.deepseek.com') strategy = 'deepseek-balance';
+  else if (host === 'open.bigmodel.cn' || host === 'api.z.ai' || host.endsWith('.bigmodel.cn')) {
+    strategy = 'glm-monitor';
+  }
+  if (!strategy) return null;
+  return { providerId: id, appType: provider.appType, host, apiKey, strategy };
+}
+
 // Compatibility wrapper used by the provider speed test.
 function resolveCodexDirectHttp(providerId) {
   const target = resolveAuxHttpTarget('openai', providerId);
@@ -1423,6 +1462,7 @@ module.exports = {
   listProviders,
   getProvider,
   getProviderSummary,
+  getProviderLimitTarget,
   resolveAuxHttpTarget,
   resolveCodexDirectHttp,
   createProvider,
