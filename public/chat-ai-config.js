@@ -205,10 +205,13 @@
 
   function providerLabel(provider, includeModel) {
     if (!provider) return '';
+    const protocol = provider.apiFormat === 'openai_chat'
+      ? ' [Chat→Responses]'
+      : (provider.apiFormat === 'openai_responses' ? ' [Responses]' : ' [Anthropic]');
     const endpoint = provider.isOfficial
       ? ' · 订阅'
       : (provider.baseUrl ? ' · ' + provider.baseUrl.replace(/^https?:\/\//, '') : '');
-    return provider.name + endpoint + (includeModel && provider.model ? ' · ' + provider.model : '');
+    return provider.name + protocol + endpoint + (includeModel && provider.model ? ' · ' + provider.model : '');
   }
 
   function documentOf(options) {
@@ -522,17 +525,17 @@
     return api;
   }
 
-  async function loadProviderList(appType, options = {}) {
+  async function loadProviderList(cli, options = {}) {
     const api = requiredApi(options);
     const catalog = options.providerCatalog || (root && root.MultiCCProviderCatalog);
     if (!catalog || typeof catalog.normalizeCatalog !== 'function') {
       throw new Error('MultiCCProviderCatalog is unavailable');
     }
-    const type = appType === 'codex' ? 'codex' : 'claude';
-    const raw = await api.json(`/api/providers?appType=${encodeURIComponent(type)}`);
+    const type = cli === 'codex' ? 'codex' : 'claude';
+    const raw = await api.json(`/api/providers?cli=${encodeURIComponent(cli || 'claude')}`);
     const normalized = catalog.normalizeCatalog(raw);
     return Object.freeze({
-      providers: Object.freeze(normalized.providers.filter(provider => provider.appType === type)),
+      providers: Object.freeze(catalog.providersForCli(normalized, cli || 'claude')),
       defaults: normalized.defaults,
     });
   }

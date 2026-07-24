@@ -2085,7 +2085,7 @@ const PROVIDER_PRESETS = [
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
   { key: 'codex-official', label: 'OpenAI（Codex 官方）', appType: 'codex', baseUrl: '', model: 'gpt-5.5', models: 'gpt-5.5\ngpt-5.4\ngpt-5.4-mini\ngpt-5.3-codex-spark', note: '走 ChatGPT 登录；Provider 是 OpenAI，模型在 Model 层选择' },
-  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopdeepseekv4pro', models: 'xopdeepseekv4pro\nxopglm52', useChatResponsesProxy: true, note: '走本地 Codex 兼容代理；Provider 是讯飞，模型在 DeepSeek/GLM 间选择，档位在会话里选' },
+  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', apiFormat: 'openai_responses', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopdeepseekv4pro', models: 'xopdeepseekv4pro\nxopglm52', note: 'Responses 协议经稳定性兼容代理；模型在 DeepSeek/GLM 间选择' },
 ];
 
 function providerModelList(primary, raw) {
@@ -2095,7 +2095,13 @@ function providerModelList(primary, raw) {
 function syncNewProviderProxyVisibility() {
   const appType = document.getElementById('prov-new-apptype');
   const row = document.getElementById('prov-new-proxy-row');
-  if (row && appType) row.style.display = appType.value === 'codex' ? '' : 'none';
+  const format = document.getElementById('prov-new-apiformat');
+  if (row && appType) row.style.display = '';
+  if (format && appType) {
+    if (appType.value === 'claude') format.value = 'anthropic';
+    else if (format.value === 'anthropic') format.value = 'openai_responses';
+    format.disabled = appType.value === 'claude';
+  }
   const aliasRow = document.getElementById('prov-new-alias-row');
   if (aliasRow && appType) aliasRow.style.display = appType.value === 'claude' ? '' : 'none';
 }
@@ -2136,7 +2142,7 @@ function applyProviderPreset() {
   const token = document.getElementById('prov-new-token');
   const model = document.getElementById('prov-new-model');
   const models = document.getElementById('prov-new-models');
-  const proxy = document.getElementById('prov-new-chat-proxy');
+  const format = document.getElementById('prov-new-apiformat');
   const status = document.getElementById('prov-new-status');
   if (!presetSel || !appType || !name || !baseUrl || !token || !model) return;
 
@@ -2146,7 +2152,7 @@ function applyProviderPreset() {
     baseUrl.value = '';
     model.value = '';
     if (models) models.value = '';
-    if (proxy) proxy.checked = false;
+    if (format) format.value = appType.value === 'claude' ? 'anthropic' : 'openai_responses';
     if (status) { status.textContent = ''; status.className = 'status-text'; }
     return;
   }
@@ -2157,7 +2163,7 @@ function applyProviderPreset() {
   baseUrl.value = preset.baseUrl;
   model.value = preset.model;
   if (models) models.value = preset.models || preset.model || '';
-  if (proxy) proxy.checked = !!preset.useChatResponsesProxy;
+  if (format) format.value = preset.apiFormat || (preset.useChatResponsesProxy ? 'openai_chat' : (preset.appType === 'claude' ? 'anthropic' : 'openai_responses'));
   token.value = '';
   if (status) {
     status.textContent = preset.note || '已套用模板，请填写 API Key';
@@ -2404,7 +2410,8 @@ async function importProviders() {
 }
 
 function providerLabel(p) {
-  const bits = [p.name];
+  const protocol = p.apiFormat === 'openai_chat' ? '[Chat→Responses]' : (p.apiFormat === 'openai_responses' ? '[Responses]' : '[Anthropic]');
+  const bits = [p.name, protocol];
   if (p.isOfficial) bits.push('· 默认登录/订阅');
   else if (p.baseUrl) bits.push('· ' + p.baseUrl.replace(/^https?:\/\//, ''));
   if (p.model) bits.push('· ' + p.model);
@@ -2465,7 +2472,7 @@ function renderProviderList() {
     return `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'}</span>${latBadge}</div>
+        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'} · 可用于 ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
         <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
@@ -2485,8 +2492,10 @@ function renderProviderList() {
       <div style="display:flex;flex-direction:column;gap:8px;">${providers.map(cardHtml).join('')}</div>
     </div>`;
   };
-  const groups = providerCatalog.groupByAppType(_providerData);
-  box.innerHTML = groupHtml('Claude', '🤖', groups.claude) + groupHtml('Codex', '⚡', groups.codex);
+  const groups = providerCatalog.groupByProtocol(_providerData);
+  box.innerHTML = groupHtml('Anthropic Messages', '🤖', groups.anthropic)
+    + groupHtml('OpenAI Responses', '⚡', groups.openai_responses)
+    + groupHtml('OpenAI Chat（Codex 自动转 Responses）', '🔄', groups.openai_chat);
 }
 
 // ── Provider speed-test ──────────────────────────────────────────────
@@ -2554,7 +2563,7 @@ async function createProvider() {
     model: document.getElementById('prov-new-model').value.trim(),
   };
   body.models = providerModelList(body.model, document.getElementById('prov-new-models')?.value || '');
-  body.useChatResponsesProxy = document.getElementById('prov-new-chat-proxy')?.checked === true;
+  body.apiFormat = document.getElementById('prov-new-apiformat')?.value;
   if (body.appType === 'claude') body.aliasMap = readAliasMapFields('prov-new-alias');
   if (!body.name) { if (status) { status.textContent = '名称必填'; status.className = 'status-text err'; } return; }
   try {
@@ -2566,7 +2575,7 @@ async function createProvider() {
     document.getElementById('prov-new-token').value = '';
     document.getElementById('prov-new-model').value = '';
     document.getElementById('prov-new-models').value = '';
-    document.getElementById('prov-new-chat-proxy').checked = false;
+    document.getElementById('prov-new-apiformat').value = body.appType === 'claude' ? 'anthropic' : 'openai_responses';
     fillAliasMapFields('prov-new-alias', document, null);
     const presetSel = document.getElementById('prov-new-preset');
     if (presetSel) presetSel.value = '';
@@ -2628,8 +2637,8 @@ function editProvider(appType, id) {
       ${field('Model', p.model, '可选')}
       ${textarea('模型列表', (p.modelOptions || []).join('\n'), '每行一个模型；留空则只使用 Model')}
       ${aliasSection}
-      ${appType === 'codex' ? `<label style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;margin-bottom:10px">
-        <input id="ep-chat-proxy" type="checkbox" ${p.useChatResponsesProxy ? 'checked' : ''}> Codex 兼容代理
+      ${appType === 'codex' ? `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">上游协议</div>
+        <select id="ep-apiformat" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px"><option value="openai_responses" ${p.apiFormat === 'openai_responses' ? 'selected' : ''}>OpenAI Responses</option><option value="openai_chat" ${p.apiFormat === 'openai_chat' ? 'selected' : ''}>OpenAI Chat（Codex 自动转换）</option></select>
       </label>` : ''}
       ${keyField('', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置')}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
@@ -2650,7 +2659,7 @@ function editProvider(appType, id) {
       model: val('Model'),
       models: providerModelList(val('Model'), val('模型列表')),
     };
-    if (appType === 'codex') body.useChatResponsesProxy = overlay.querySelector('#ep-chat-proxy')?.checked === true;
+    body.apiFormat = appType === 'claude' ? 'anthropic' : overlay.querySelector('#ep-apiformat')?.value;
     if (appType === 'claude') body.aliasMap = readAliasMapFields('ep-alias', overlay);
     const tok = val('API Key');
     if (tok) body.authToken = tok;  // blank = keep existing

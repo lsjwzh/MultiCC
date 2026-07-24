@@ -226,7 +226,11 @@ function createProviderRoutes(rawDeps) {
     // vendor clients and do not consume MultiCC's Claude/Codex provider store.
     const appType = deps.providers.appTypeForCli(cli);
     if (!appType) return { ok: false };
-    if (!deps.providerRouterRuntime.getProviderSummary(appType, String(id))) return { ok: false };
+    const summary = deps.providerRouterRuntime.getProviderSummary(
+      cli === 'opencode' ? undefined : appType,
+      String(id),
+    );
+    if (!summary || !deps.providers.providerSupportsCli(summary, cli)) return { ok: false };
     return { ok: true, value: String(id) };
   }
 
@@ -237,6 +241,7 @@ function createProviderRoutes(rawDeps) {
     // import source by the explicit import endpoint mounted below.
     app.get('/api/providers', (req, res) => {
       const appType = (req.query.appType || '').trim();
+      const cli = (req.query.cli || '').trim();
       const ccSwitchStatus = deps.providers.getCcSwitchStatus();
       res.json({
         available: true,
@@ -244,7 +249,7 @@ function createProviderRoutes(rawDeps) {
         ccSwitchStatus,
         providers: deps.providers.listProviders(
           appType === 'claude' || appType === 'codex' ? appType : undefined,
-        ),
+        ).filter(provider => !cli || deps.providers.providerSupportsCli(provider, cli)),
         defaults: providerDefaults,
         stats: deps.providers.getProviderUsageStats().stats,
       });
@@ -280,6 +285,7 @@ function createProviderRoutes(rawDeps) {
           model: (req.body.model || '').trim(),
           models: req.body.models,
           useChatResponsesProxy: req.body.useChatResponsesProxy,
+          ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
         });
@@ -298,6 +304,7 @@ function createProviderRoutes(rawDeps) {
           model: req.body.model,
           models: req.body.models,
           useChatResponsesProxy: req.body.useChatResponsesProxy,
+          ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
         });

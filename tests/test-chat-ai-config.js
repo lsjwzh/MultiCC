@@ -130,7 +130,7 @@ test('provider and session transport use MultiCCApi with token-free relative URL
   assert.deepEqual(loaded.providers.map(item => item.id), ['safe']);
   assert.equal(loaded.providers[0].authToken, undefined);
   assert.deepEqual(loaded.defaults, { claude: 'safe', codex: null });
-  assert.equal(calls[0].url, '/api/providers?appType=claude');
+  assert.equal(calls[0].url, '/api/providers?cli=claude');
 
   const session = await ai.loadSession('s/1', { api });
   assert.equal(session.model, 'm1');

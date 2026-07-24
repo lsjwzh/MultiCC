@@ -50,17 +50,49 @@ const STORE_FILE = RUNTIME_PATHS.providersFile;
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
 
 const APP_TYPES = ['claude', 'codex'];
+const API_FORMATS = Object.freeze({
+  ANTHROPIC: 'anthropic',
+  OPENAI_RESPONSES: 'openai_responses',
+  OPENAI_CHAT: 'openai_chat',
+});
+
+function normalizeApiFormat(value, appType, cfg = {}) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (raw === 'anthropic' || raw === 'messages' || raw === 'anthropic_messages') return API_FORMATS.ANTHROPIC;
+  if (raw === 'openai_chat' || raw === 'chat' || raw === 'chat_completions') return API_FORMATS.OPENAI_CHAT;
+  if (raw === 'openai_responses' || raw === 'responses' || raw === 'response') return API_FORMATS.OPENAI_RESPONSES;
+  if (cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses') return API_FORMATS.OPENAI_CHAT;
+  if (appType === 'claude') return API_FORMATS.ANTHROPIC;
+  return API_FORMATS.OPENAI_RESPONSES;
+}
+
+function compatibleClisForFormat(apiFormat) {
+  if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'opencode'];
+  return ['codex', 'opencode'];
+}
+
+function providerSupportsCli(provider, cli) {
+  if (!provider || !cli) return false;
+  const format = normalizeApiFormat(provider.apiFormat || provider.protocol, provider.appType, parseConfig(provider.settingsConfig));
+  return compatibleClisForFormat(format).includes(String(cli));
+}
 
 // Map a session's cli to its MultiCC-managed provider pool (appType).
 // Qoder CN and ZCode own authentication/provider configuration in their vendor
 // clients, so they deliberately return null: MultiCC persists only their model
 // selection and must not inject Claude/Codex routing into those processes.
-// OpenCode remains on the existing Claude pool until its multi-protocol provider
-// contract is represented explicitly.
+// OpenCode resolves globally by provider id and then maps the stored protocol
+// to its matching AI SDK package; appTypeForCli remains a legacy default only.
 function appTypeForCli(cli) {
   if (cli === 'codex') return 'codex';
   if (cli === 'claude' || cli === 'opencode') return 'claude';
   return null;
+}
+
+function appTypesForCli(cli) {
+  if (cli === 'opencode') return ['claude', 'codex'];
+  const type = appTypeForCli(cli);
+  return type ? [type] : [];
 }
 
 // Safe wire model used when a provider is "alias-only" — it declares only
@@ -335,7 +367,7 @@ function applyAliasMapToEnv(env, aliasMap) {
 }
 
 // Build a cc-switch-shaped settingsConfig from simple fields.
-function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, useChatResponsesProxy, aliasMap }) {
+function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, apiFormat, useChatResponsesProxy, aliasMap }) {
   const modelOptions = parseModelList(models, model);
   if (appType === 'claude') {
     const env = {};
@@ -359,7 +391,15 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
   // For domestic services, config.toml's base_url is rewritten to the local
   // proxy; the real /chat/completions URL + apiKey are stored in
   // settingsConfig.proxyTarget for cli-provider-router's Codex proxy to read.
-  const proxySpec = useChatResponsesProxy ? codexProxyTarget(baseUrl) : null;
+  const format = normalizeApiFormat(
+    apiFormat || (useChatResponsesProxy ? API_FORMATS.OPENAI_CHAT : API_FORMATS.OPENAI_RESPONSES),
+    appType,
+  );
+  const proxySpec = format === API_FORMATS.OPENAI_CHAT
+    ? { baseUrl: chatCompletionsTarget(baseUrl), mode: 'chat-to-responses' }
+    : (detectResponsesCompatTarget(baseUrl)
+      ? { baseUrl: detectResponsesCompatTarget(baseUrl), mode: 'responses-compat' }
+      : null);
   const port = process.env.PORT || 3000;
   const proxyBaseUrl = (proxySpec && providerId)
     ? `http://127.0.0.1:${port}/codex-proxy/${providerId}`
@@ -389,10 +429,47 @@ function buildSettingsConfig(appType, { baseUrl, authToken, model, models, provi
   return cfg;
 }
 
+function replaceTomlString(config, key, value) {
+  const line = `${key} = "${String(value || '').replace(/["\\]/g, '')}"`;
+  const pattern = new RegExp(`(^|\\n)\\s*${key}\\s*=\\s*"[^"]*"`);
+  if (pattern.test(config || '')) return String(config).replace(pattern, `$1${line}`);
+  return `${line}\n${config || ''}`;
+}
+
+function effectiveCodexSettings(provider) {
+  const cfg = parseConfig(provider && provider.settingsConfig);
+  const copy = JSON.parse(JSON.stringify(cfg || {}));
+  const format = normalizeApiFormat(provider && provider.apiFormat, 'codex', copy);
+  const originalBaseUrl = (copy.proxyTarget && copy.proxyTarget.originalBaseUrl) || tomlValue(copy.config, 'base_url');
+  let proxySpec = null;
+  if (format === API_FORMATS.OPENAI_CHAT && originalBaseUrl) {
+    proxySpec = { baseUrl: chatCompletionsTarget(originalBaseUrl), mode: 'chat-to-responses' };
+  } else {
+    const compat = detectResponsesCompatTarget(originalBaseUrl);
+    if (compat) proxySpec = { baseUrl: compat, mode: 'responses-compat' };
+  }
+  if (proxySpec && provider && provider.id) {
+    const localBase = `http://127.0.0.1:${process.env.PORT || 3000}/codex-proxy/${provider.id}`;
+    copy.config = replaceTomlString(copy.config, 'base_url', localBase);
+    copy.config = replaceTomlString(copy.config, 'wire_api', 'responses');
+    copy.proxyTarget = {
+      baseUrl: proxySpec.baseUrl,
+      apiKey: (copy.auth && copy.auth.OPENAI_API_KEY) || '',
+      originalBaseUrl,
+      mode: proxySpec.mode,
+    };
+  } else if (copy.proxyTarget) {
+    if (originalBaseUrl) copy.config = replaceTomlString(copy.config, 'base_url', originalBaseUrl);
+    delete copy.proxyTarget;
+  }
+  return copy;
+}
+
 // Public-safe summary — never leaks a full token (only masked).
 // opts.codexCachePath (test-only) overrides the codex models cache location.
 function summarize(p, opts = {}) {
-  const cfg = parseConfig(p.settingsConfig);
+  const cfg = p.appType === 'codex' ? effectiveCodexSettings(p) : parseConfig(p.settingsConfig);
+  const apiFormat = normalizeApiFormat(p.apiFormat, p.appType, cfg);
   let baseUrl = '', model = '', token = '', modelOptions = [], aliasOnly = false, aliasMap = {};
   if (p.appType === 'claude') {
     const env = cfg.env || {};
@@ -447,8 +524,13 @@ function summarize(p, opts = {}) {
   return {
     id: p.id,
     appType: p.appType,
-    protocol: p.appType === 'claude' ? 'anthropic' : 'openai',
-    wireApi: p.appType === 'claude' ? 'messages' : (tomlValue(cfg.config, 'wire_api') || 'responses'),
+    apiFormat,
+    protocol: apiFormat,
+    wireApi: apiFormat === API_FORMATS.ANTHROPIC
+      ? 'messages'
+      : (apiFormat === API_FORMATS.OPENAI_CHAT ? 'chat_completions' : 'responses'),
+    compatibleClis: compatibleClisForFormat(apiFormat),
+    requiresConversionFor: apiFormat === API_FORMATS.OPENAI_CHAT ? ['codex'] : [],
     name: p.name,
     source: p.source || 'local', // 'local' | 'ccswitch'
     baseUrl,
@@ -456,7 +538,7 @@ function summarize(p, opts = {}) {
     modelOptions,
     aliasOnly,
     aliasMap,
-    useChatResponsesProxy: !!cfg.proxyTarget,
+    useChatResponsesProxy: apiFormat === API_FORMATS.OPENAI_CHAT,
     tokenMask: maskToken(token),
     hasToken: !!token,
     isOfficial: !baseUrl, // no custom base url -> default login / subscription
@@ -557,17 +639,19 @@ function resolveCodexDirectHttp(providerId) {
     : { ...target, canDirect: false };
 }
 
-function createProvider({ appType, name, baseUrl, authToken, model, models, useChatResponsesProxy, settingsConfig, aliasMap }) {
+function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, useChatResponsesProxy, settingsConfig, aliasMap }) {
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
   // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
   const id = crypto.randomUUID();
   const cfg = (settingsConfig && typeof settingsConfig === 'object')
     ? settingsConfig
-    : buildSettingsConfig(appType, { baseUrl, authToken, model, models, useChatResponsesProxy, providerId: id, aliasMap });
+    : buildSettingsConfig(appType, { baseUrl, authToken, model, models, apiFormat, useChatResponsesProxy, providerId: id, aliasMap });
+  const format = normalizeApiFormat(apiFormat || (useChatResponsesProxy ? API_FORMATS.OPENAI_CHAT : ''), appType, cfg);
   const p = {
     id,
     appType,
+    apiFormat: format,
     name: String(name).trim(),
     source: 'local',
     settingsConfig: cfg,
@@ -579,7 +663,7 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, useC
   return { id: p.id, appType, name: p.name };
 }
 
-function updateProvider(appType, id, { name, baseUrl, authToken, model, models, useChatResponsesProxy, settingsConfig, aliasMap }) {
+function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, useChatResponsesProxy, settingsConfig, aliasMap }) {
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
   if (!p) throw new Error('provider not found');
@@ -597,9 +681,10 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
     if (aliasMap !== undefined) applyAliasMapToEnv(cfg.env, aliasMap);
   } else {
     const currentBaseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
-    const nextProxy = useChatResponsesProxy !== undefined
-      ? !!useChatResponsesProxy
-      : !!cfg.proxyTarget;
+    const requestedFormat = apiFormat || (useChatResponsesProxy === true
+      ? API_FORMATS.OPENAI_CHAT
+      : (useChatResponsesProxy === false ? API_FORMATS.OPENAI_RESPONSES : p.apiFormat));
+    const nextProxy = normalizeApiFormat(requestedFormat, appType, cfg) === API_FORMATS.OPENAI_CHAT;
     const rebuilt = buildSettingsConfig('codex', {
       baseUrl: baseUrl !== undefined ? baseUrl : currentBaseUrl,
       authToken: authToken || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
@@ -608,6 +693,7 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
         ? models
         : ((cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models)) ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean) : undefined),
       useChatResponsesProxy: nextProxy,
+      apiFormat: requestedFormat,
       providerId: id,
     });
     // Drop a stale proxyTarget if the user switched to a non-domestic baseUrl.
@@ -615,6 +701,13 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
     if (!rebuilt.proxyTarget) delete cfg.proxyTarget;
   }
   if (name) p.name = String(name).trim();
+  p.apiFormat = normalizeApiFormat(
+    apiFormat || (useChatResponsesProxy === true
+      ? API_FORMATS.OPENAI_CHAT
+      : (useChatResponsesProxy === false ? API_FORMATS.OPENAI_RESPONSES : p.apiFormat)),
+    appType,
+    cfg,
+  );
   p.settingsConfig = cfg;
   saveStore(list);
   return { id, appType };
@@ -636,7 +729,9 @@ function importFromCcSwitch() {
   const db = sqliteRuntime.openReadonly(ccDb);
   let rows;
   try {
-    rows = db.prepare('SELECT id, app_type, name, settings_config FROM providers ORDER BY app_type, sort_index, name').all();
+    const columns = db.prepare('PRAGMA table_info(providers)').all().map(column => column.name);
+    const metaSelect = columns.includes('meta') ? 'meta' : 'NULL AS meta';
+    rows = db.prepare(`SELECT id, app_type, name, settings_config, ${metaSelect} FROM providers ORDER BY app_type, sort_index, name`).all();
   } finally { db.close(); }
 
   const list = loadStore();
@@ -645,6 +740,8 @@ function importFromCcSwitch() {
   for (const r of rows) {
     if (!APP_TYPES.includes(r.app_type)) continue;
     const cfg = parseConfig(r.settings_config);
+    const meta = parseConfig(r.meta) || {};
+    const apiFormat = normalizeApiFormat(meta.apiFormat, r.app_type, cfg);
     // Keep cc-switch's REAL model ids in the stored env so the editor / model
     // picker shows e.g. glm-5.2 (not a claude-* wire name). The spawn path
     // (resolveSpawnEnv) applies the safe wire default to alias-only relays at
@@ -652,6 +749,7 @@ function importFromCcSwitch() {
     const entry = {
       id: r.id,
       appType: r.app_type,
+      apiFormat,
       name: r.name,
       source: 'ccswitch',
       settingsConfig: cfg,
@@ -675,6 +773,9 @@ function importFromCcSwitch() {
       updated++;
     }
     else { list.push(entry); imported++; }
+  }
+  for (const provider of list) {
+    if (provider.appType === 'codex') provider.settingsConfig = effectiveCodexSettings(provider);
   }
   saveStore(list);
   return { imported, updated, total: rows.length };
@@ -733,6 +834,7 @@ function buildChildEnv(base, session, extra = {}) {
   if (session && session.cli === 'claude') {
     for (const k of CLAUDE_ROUTING_KEYS) delete env[k];
   }
+  if (session && session.cli === 'opencode') delete env.OPENCODE_CONFIG_CONTENT;
   const spawn = resolveSpawnEnv(session);
   Object.assign(env, extra, spawn.env);
   return {
@@ -741,6 +843,7 @@ function buildChildEnv(base, session, extra = {}) {
     aliasOnly: spawn.aliasOnly,
     providerModel: spawn.providerModel,
     providerModels: spawn.providerModels,
+    qualifiedModel: spawn.qualifiedModel || null,
     providerName: spawn.providerName,
     codexHome: spawn.codexHome,
     tools: spawn.tools,
@@ -753,6 +856,71 @@ function materializeCodexAuth(home, cfg) {
   return result;
 }
 
+function opencodeProviderId(provider) {
+  return `multicc-${String(provider && provider.id || 'provider')}`
+    .toLowerCase().replace(/[^a-z0-9._-]+/g, '-').slice(0, 96);
+}
+
+function anthropicSdkBaseUrl(value) {
+  const raw = String(value || '').replace(/\/+$/, '');
+  if (!raw || /\/v1$/i.test(raw)) return raw;
+  return `${raw}/v1`;
+}
+
+function buildOpenCodeRoute(provider, session) {
+  const cfg = parseConfig(provider.settingsConfig);
+  const summary = summarize(provider);
+  const format = summary.apiFormat;
+  const models = uniqueModels([session && session.model, summary.model, ...(summary.modelOptions || [])]);
+  const selected = (session && session.model) || summary.model || models[0] || '';
+  const custom = !!summary.baseUrl;
+  if (!custom) {
+    const nativeId = format === API_FORMATS.ANTHROPIC ? 'anthropic' : 'openai';
+    return {
+      env: {},
+      qualifiedModel: selected ? `${nativeId}/${selected}` : null,
+      providerModel: summary.model || null,
+      providerModels: models,
+      providerName: provider.name,
+    };
+  }
+
+  const id = opencodeProviderId(provider);
+  const options = {};
+  let npm;
+  if (format === API_FORMATS.ANTHROPIC) {
+    npm = '@ai-sdk/anthropic';
+    const src = cfg.env || {};
+    options.baseURL = anthropicSdkBaseUrl(src.ANTHROPIC_BASE_URL || summary.baseUrl);
+    if (src.ANTHROPIC_AUTH_TOKEN) options.authToken = src.ANTHROPIC_AUTH_TOKEN;
+    else if (src.ANTHROPIC_API_KEY) options.apiKey = src.ANTHROPIC_API_KEY;
+  } else {
+    npm = format === API_FORMATS.OPENAI_CHAT ? '@ai-sdk/openai-compatible' : '@ai-sdk/openai';
+    options.baseURL = summary.baseUrl;
+    const key = cfg.auth && cfg.auth.OPENAI_API_KEY;
+    if (key) options.apiKey = key;
+    if (format === API_FORMATS.OPENAI_CHAT) options.includeUsage = true;
+  }
+  const providerConfig = {
+    npm,
+    name: provider.name,
+    options,
+    models: Object.fromEntries(models.map(model => [model, { name: model }])),
+  };
+  return {
+    env: {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        enabled_providers: [id],
+        provider: { [id]: providerConfig },
+      }),
+    },
+    qualifiedModel: selected ? `${id}/${selected}` : null,
+    providerModel: summary.model || null,
+    providerModels: models,
+    providerName: provider.name,
+  };
+}
+
 // Compute env overrides + flags to apply when spawning a child for `session`.
 //   - env: object merged into the child's process env (only this child).
 //   - skipDefaultModel: claude routes elsewhere → don't force the global --model.
@@ -761,11 +929,15 @@ function resolveSpawnEnv(session) {
   if (!providerId) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const appType = appTypeForCli(session.cli);
   if (!appType) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
-  const p = getProvider(appType, providerId);
+  const p = getProvider(session.cli === 'opencode' ? undefined : appType, providerId);
   if (!p) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
-  const cfg = parseConfig(p.settingsConfig);
+  if (!providerSupportsCli(p, session.cli)) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
+  if (session.cli === 'opencode') {
+    return { ...buildOpenCodeRoute(p, session), skipDefaultModel: false, aliasOnly: false };
+  }
+  const cfg = p.appType === 'codex' ? effectiveCodexSettings(p) : parseConfig(p.settingsConfig);
 
-  if (appType === 'claude') {
+  if (session.cli === 'claude') {
     const env = {};
     const src = cfg.env || {};
     for (const k of Object.keys(src)) {
@@ -1204,6 +1376,11 @@ module.exports = {
   ccSwitchAvailable,
   getCcSwitchStatus,
   appTypeForCli,
+  appTypesForCli,
+  providerSupportsCli,
+  normalizeApiFormat,
+  compatibleClisForFormat,
+  API_FORMATS,
   APP_TYPES,
   listProviders,
   getProvider,

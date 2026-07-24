@@ -43,7 +43,7 @@
     "@slack/bolt": "^4.2.0",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
-    "cli-provider-router": "https://github.com/lsjwzh/cli-provider-router/archive/99b8ece25101aa4ded11d07c90d238744b7f6cea.tar.gz",
+    "cli-provider-router": "https://github.com/lsjwzh/cli-provider-router/archive/c1d4943e4f6fcacd052e979eaa10235dd94dcb54.tar.gz",
     "discord.js": "^14.16.0",
     "express": "^4.22.2",
     "multer": "^2.2.0",

@@ -190,6 +190,14 @@ for (const adapter of [opencode, zcode]) {
   assert.equal(providerError.error.httpStatus, 404);
 }
 
+assert.deepStrictEqual(
+  opencode.decodeEvent({ type: 'reasoning', sessionID: 'ses_1', part: { id: 'reason_1', text: 'inspect protocol' } }),
+  [
+    { type: 'session_started', sessionId: 'ses_1' },
+    { type: 'thinking', id: 'reason_1', text: 'inspect protocol' },
+  ],
+);
+
 const opencodeEnvelope = {
   spawnOpts: { rawModel: 'open/model', rawEffort: 'high', rawAgent: 'build' },
   historyHandle: { isFirstTurn: true, cliSessionId: null },
@@ -197,7 +205,7 @@ const opencodeEnvelope = {
 };
 assert.deepStrictEqual(
   opencode.buildInvocation(opencodeEnvelope).args,
-  ['run', '--format', 'json', '--auto', '--model', 'open/model', '--variant', 'high', '--agent', 'build'],
+  ['run', '--format', 'json', '--auto', '--thinking', '--model', 'open/model', '--variant', 'high', '--agent', 'build'],
 );
 // zcode 专用 adapter：不直调引擎，而是 spawn 树内 bridge（zcode-bridge.cjs）。
 // 首轮无 --session；payload 由 multicc 作为末尾 argv 传给 bridge。
