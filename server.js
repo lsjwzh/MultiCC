@@ -1429,12 +1429,10 @@ async function createSession(id) {
 
   const provider = providerFor(persisted);
   // Per-session provider override is injected into tmux; Codex capture below
-  // also uses the selected provider's CODEX_HOME.
+  // also uses the selected CODEX_HOME.
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
-  // Blank inherited Claude routing keys so the per-session provider wins.
   const termEnv = { ...provEnv.env };
-  const appType = providers.appTypeForCli(persisted.cli || 'claude');
-  if (appType === 'claude') {
+  if (persisted.cli === 'claude') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
       if (!(k in termEnv)) termEnv[k] = '';
     }
@@ -1444,7 +1442,7 @@ async function createSession(id) {
       subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
-  } else if (appType === 'codex') {
+  } else if (persisted.cli === 'codex') {
     providers.applyCodexProxyConfig(termEnv, {
       providerId: persisted.provider, sessionId: id,
       subagent: persisted.subagent, port: PORT,
@@ -1464,7 +1462,8 @@ async function createSession(id) {
   const launchTime = Date.now();
   if (!await tmuxHasSession(id)) {
     console.log(`[multicc] Creating tmux session: ${tmuxSessionName(id)} in ${cwd} (${provider.name} session: ${persisted.cliSessionId || '<pending>'})`);
-    await tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(persisted || {}), termEnv);
+    const launchSession = provEnv.qualifiedModel ? { ...persisted, model: provEnv.qualifiedModel } : persisted;
+    await tmuxCreateSession(id, cwd, 80, 24, provider.buildTerminalCmd(launchSession || {}), termEnv);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
     isRecovery = true;
@@ -5000,6 +4999,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       skipDefaultModel: provEnv.skipDefaultModel,
       providerModel: provEnv.providerModel,
       providerModels: provEnv.providerModels,
+      rawModel: provEnv.qualifiedModel || envelope.spawnOpts.rawModel,
     },
   };
   const invocation = provider.buildInvocation(invocationEnvelope);
@@ -5077,13 +5077,12 @@ function runChatTurn(sessionName, text, opts = {}) {
       MULTICC_DIR_ID: persisted.dirId || '',
       MULTICC_BASE_URL: `http://127.0.0.1:${PORT}`,
     });
-    const appType = providers.appTypeForCli(persisted.cli);
-    if (appType === 'claude') providers.applyClaudeProxyEnv(childEnv, {
+    if (persisted.cli === 'claude') providers.applyClaudeProxyEnv(childEnv, {
         providerId: persisted.provider, sessionId: sessionName,
         subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
         officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
       });
-    if (appType === 'codex') {
+    if (persisted.cli === 'codex') {
       providers.applyCodexProxyConfig(childEnv, {
         providerId: persisted.provider, sessionId: sessionName,
         subagent: persisted.subagent, port: PORT,

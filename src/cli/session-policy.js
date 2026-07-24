@@ -42,11 +42,12 @@ function createSessionPolicy(options) {
     if (!session) return null;
     const appType = providers.appTypeForCli(session.cli);
     if (!appType) return session.model || session.reportedModel || null;
+    const lookupType = session.cli === 'opencode' ? undefined : appType;
     if (session.model) {
       const providerId = session.provider;
       if (providerId) {
         try {
-          const aliasMap = providerRouter.getProviderSummary(appType, providerId)?.aliasMap;
+          const aliasMap = providerRouter.getProviderSummary(lookupType, providerId)?.aliasMap;
           const entry = aliasMap && aliasMap[session.model];
           if (entry && entry.model) return entry.model;
         } catch (_) {}
@@ -56,7 +57,7 @@ function createSessionPolicy(options) {
     const providerId = session.provider;
     if (providerId) {
       try {
-        const provider = providerRouter.getProviderSummary(appType, providerId);
+        const provider = providerRouter.getProviderSummary(lookupType, providerId);
         if (provider && provider.model) return provider.model;
         if (appType === 'claude' && provider && provider.baseUrl) return session.reportedModel || null;
       } catch (_) {}
@@ -103,7 +104,7 @@ function createSessionPolicy(options) {
     if (!appType) return null;
     try {
       return providerRouter.getProviderSummary(
-        appType,
+        session.cli === 'opencode' ? undefined : appType,
         providerId,
       )?.name || providerId;
     } catch (_) {

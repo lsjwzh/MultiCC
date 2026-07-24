@@ -62,6 +62,9 @@ function createHarness(overrides = {}) {
       if (cli === 'claude' || cli === 'opencode') return 'claude';
       return null;
     },
+    providerSupportsCli(provider, cli) {
+      return !!provider && (cli === 'opencode' || provider.appType === (cli === 'codex' ? 'codex' : 'claude'));
+    },
     getCcSwitchStatus: () => ({ available: true, dbFound: true, dbPath: '/private/cc-switch.db' }),
     listProviders(appType) {
       calls.push({ method: 'listProviders', appType });
@@ -496,7 +499,7 @@ test('provider defaults validate the full request before changing live state', a
 test('provider route composition cannot reach CPR lifecycle or CC-Switch write APIs', async () => {
   let forbiddenRuntimeRead = false;
   const runtime = new Proxy({
-    getProviderSummary: () => ({ id: 'claude-one' }),
+    getProviderSummary: () => ({ id: 'claude-one', appType: 'claude' }),
   }, {
     get(target, property, receiver) {
       if (/takeover|restore/i.test(String(property))) forbiddenRuntimeRead = true;

@@ -325,6 +325,7 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
     return result;
   }
   const result = ['run', '--format', 'json', '--auto'];
+  if (adapter.name === 'opencode') result.push('--thinking');
   if (persisted.model) result.push('--model', persisted.model);
   if (adapter.name === 'opencode' && persisted.effort) result.push('--variant', persisted.effort);
   if (adapter.name === 'opencode' && persisted.agent) result.push('--agent', persisted.agent);
