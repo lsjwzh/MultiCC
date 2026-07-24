@@ -432,6 +432,12 @@ function createProviderRouterPort(options = {}) {
       // the matching chat session so codex turns render incrementally (opencode-
       // style) instead of waiting for each item.completed boundary.
       ...(typeof mountOptions.onDelta === 'function' ? { onDelta: mountOptions.onDelta } : {}),
+      // Claude subscription 5h rate-limit sidecar: the claude proxy reads the
+      // anthropic-ratelimit-unified-5h-* response headers off official-OAuth turns
+      // and forwards a whitewashed {rateLimitType,status,utilization,resetsAt} DTO
+      // here with routing context. The host broadcasts it to the matching chat
+      // session so the 5h usage bar updates live. Best-effort, never breaks stream.
+      ...(typeof mountOptions.onRateLimit === 'function' ? { onRateLimit: mountOptions.onRateLimit } : {}),
     };
     const mounted = {};
     if (protocols.includes('claude')) {
