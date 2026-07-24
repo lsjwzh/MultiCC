@@ -276,10 +276,17 @@ assert.strictEqual(
   'opencode --model open/model --variant max --agent build --session ses_1',
 );
 // zcode buildTerminalCmd：走引擎 TUI（ZCODE_ENGINE 未设时回退到 cmd）
-assert.strictEqual(
-  zcode.buildTerminalCmd({ cliSessionId: 'ses_1' }),
-  'zcode tui --resume ses_1',
-);
+const priorZcodeEngine = process.env.ZCODE_ENGINE;
+delete process.env.ZCODE_ENGINE;
+try {
+  assert.strictEqual(
+    zcode.buildTerminalCmd({ cliSessionId: 'ses_1' }),
+    'zcode tui --resume ses_1',
+  );
+} finally {
+  if (priorZcodeEngine == null) delete process.env.ZCODE_ENGINE;
+  else process.env.ZCODE_ENGINE = priorZcodeEngine;
+}
 // zcode decodeEvent：bridge 输出 opencode raw shape，按 opencode-like 同款解码
 assert.strictEqual(zcode.decodeEvent({ sessionID: 'sess_z', type: 'step_start' })[0].type, 'session_started');
 assert.strictEqual(zcode.decodeEvent({ sessionID: 'sess_z', type: 'step_start' })[1].type, 'status');

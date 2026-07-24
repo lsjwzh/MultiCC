@@ -80,11 +80,29 @@ function createZcodeAdapter({ cmd } = {}) {
         }
       } else if (event.type === 'error') {
         const error = event.error || part.error;
-        const message = (error && error.data && error.data.message)
-          || (error && error.message)
+        const detail = error && typeof error === 'object' ? error : {};
+        const data = detail.data && typeof detail.data === 'object' ? detail.data : {};
+        const message = data.message
+          || detail.message
           || (typeof error === 'string' ? error : '')
           || `${LABEL} 出错`;
-        decoded.push({ type: 'error', label: LABEL, message, kind: 'provider' });
+        decoded.push({
+          type: 'error',
+          label: LABEL,
+          message,
+          kind: 'provider',
+          error: {
+            source: 'zcode_event',
+            provider: 'zcode',
+            code: data.code || detail.code || detail.name || event.code,
+            httpStatus: data.statusCode || data.status || detail.statusCode
+              || detail.status || event.statusCode || event.status,
+            headers: data.headers || detail.headers || event.headers,
+            requestId: data.requestID || data.requestId || detail.requestID
+              || detail.requestId || event.requestID || event.requestId,
+            message,
+          },
+        });
       }
       return decoded;
     },
