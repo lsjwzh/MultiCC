@@ -23,7 +23,7 @@ const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
 const CLASSIFY_PENDING_MODULE_NAME = '待归类';
 const PENDING_TASK_TITLE = '新任务';
-const TASK_RUN_STATES = new Set(['running', 'waiting', 'done', 'error', 'idle']);
+const TASK_RUN_STATES = new Set(['queued', 'running', 'waiting', 'done', 'error', 'idle']);
 
 function safeClassificationError(value) {
   const code = typeof value === 'string' ? value.slice(0, 80) : '';
@@ -870,6 +870,7 @@ function aggregateTaskRunState(sessionIds, getSessionRunState) {
   const states = sessionIds.map(sid => getSessionRunState(sid)).filter(Boolean);
   if (!states.length) return 'idle';
   if (states.some(s => s === 'running')) return 'running';
+  if (states.some(s => s === 'queued')) return 'queued';
   if (states.some(s => s === 'waiting')) return 'waiting';
   if (states.some(s => s === 'error')) return 'error';
   if (states.every(s => s === 'done')) return 'done';

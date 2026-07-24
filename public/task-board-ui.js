@@ -40,6 +40,7 @@
     if (status === 'archived') return { key: 'archived', icon: '🗄', label: '已归档', done: false, running: false };
     if (status === 'done' || runState === 'done') return { key: 'done', icon: '✅', label: '已完成', done: true, running: false };
     if (runState === 'running') return { key: 'running', icon: '🟢', label: '进行中', done: false, running: true };
+    if (runState === 'queued') return { key: 'queued', icon: '📥', label: '排队中', done: false, running: false };
     if (runState === 'waiting') return { key: 'waiting', icon: '⏳', label: '等待中', done: false, running: false };
     if (runState === 'error') return { key: 'error', icon: '❌', label: '异常', done: false, running: false };
     return { key: 'idle', icon: '⚪', label: '待处理', done: false, running: false };

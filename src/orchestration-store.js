@@ -8,7 +8,7 @@
 const nodeFs = require('fs');
 const nodePath = require('path');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 let tempCounter = 0;
 
 class OrchestrationStoreCorruptError extends Error {
@@ -30,6 +30,7 @@ function initialState() {
     outbox: {},
     operations: {},
     tasks: {},
+    sessionSchedules: {},
   };
 }
 
@@ -45,6 +46,14 @@ function migrateState(value) {
       schemaVersion: SCHEMA_VERSION,
       operations: {},
       tasks: {},
+      sessionSchedules: {},
+    };
+  }
+  if (value.schemaVersion === 2) {
+    return {
+      ...value,
+      schemaVersion: SCHEMA_VERSION,
+      sessionSchedules: {},
     };
   }
   return value;
@@ -69,7 +78,8 @@ function validateState(input, file) {
       || !isRecord(value.waits)
       || !isRecord(value.outbox)
       || !isRecord(value.operations)
-      || !isRecord(value.tasks)) {
+      || !isRecord(value.tasks)
+      || !isRecord(value.sessionSchedules)) {
     throw new OrchestrationStoreCorruptError(
       `invalid orchestration collections in ${file}`,
       { file },

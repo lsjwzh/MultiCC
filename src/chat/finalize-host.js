@@ -132,6 +132,11 @@ function createTurnFinalizationExecutor(rawPorts) {
           ports.setStatus(sessionName, entry.fallbackStatus);
         }
         break;
+      case 'freeze-interrupted':
+        if (typeof ports.freezeInterrupted === 'function') {
+          ports.freezeInterrupted(sessionName, entry.reason || 'unknown_interruption');
+        }
+        break;
       case 'stream-end':
         ports.broadcast(sessionName, { type: 'stream_end' });
         break;

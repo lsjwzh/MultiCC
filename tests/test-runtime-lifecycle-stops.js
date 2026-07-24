@@ -160,8 +160,8 @@ function testWaitInjector() {
 
     wait.injectSystemMsg('session-a', 'later', 5000);
     wait.safeInject('session-b', 'busy payload');
-    ok(clock.timeouts.size === 2 && wait.stats().pendingTimers === 2,
-      'delayed nudge and busy retry are both lifecycle-tracked');
+    ok(clock.timeouts.size === 1 && wait.stats().pendingTimers === 1,
+      'only an explicit delay owns a timer; busy work enters the durable scheduler immediately');
     ok([...clock.timeouts.values()].every(h => h.unrefCalled),
       'wait one-shot timers are unrefed');
 

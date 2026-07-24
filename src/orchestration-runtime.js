@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { createOrchestrationStore } = require('./orchestration-store');
 const { createOutbox } = require('./outbox');
 const { createWaitService } = require('./wait-service');
+const { createSessionWorkScheduler } = require('./session-work-scheduler');
 const {
   TERMINAL_OPERATION_STATES,
   TERMINAL_TASK_STATES,
@@ -64,6 +65,8 @@ function createOrchestrationRuntime({
   detachedAdapter = null,
   recoverDispatchResult = async () => null,
   replayRecoveredDispatchEffects = async () => {},
+  getSessionRecoveryState = () => null,
+  onSchedulerEvent = () => {},
   now = Date.now,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -96,6 +99,12 @@ function createOrchestrationRuntime({
   });
   const waits = createWaitService({ store, now, ...waitOptions });
   const operations = createOperationService({ store, now });
+  const sessionScheduler = createSessionWorkScheduler({
+    store,
+    now,
+    onEvent: onSchedulerEvent,
+    log,
+  });
   const pendingBySession = new Map();
   let timer = null;
   let started = false;
@@ -254,6 +263,9 @@ function createOrchestrationRuntime({
         task.updatedAt = at;
         cancelledTasks++;
       }
+      if (draft.sessionSchedules[sessionId]) {
+        delete draft.sessionSchedules[sessionId];
+      }
       return {
         ok: true,
         cancelled,
@@ -387,6 +399,7 @@ function createOrchestrationRuntime({
 
   function deliveryText(item) {
     const payload = item.payload || {};
+    if (payload.type === 'session.work') return String(payload.message || '');
     if (payload.type === 'dispatch.request') return String(payload.message || '');
     if (typeof payload.deliveryText === 'string' && payload.deliveryText) return payload.deliveryText;
     const defaultPrefix = payload.mode === 'poll' ? '[轮询条件已满足]' : '[等待的数据已返回]';
@@ -396,6 +409,17 @@ function createOrchestrationRuntime({
 
   function deliveryOptions(item) {
     const payload = item.payload || {};
+    if (payload.type === 'session.work') {
+      return {
+        ...(payload.options || {}),
+        originContinue: payload.workKind !== 'task',
+        deliveryId: item.id,
+        clientMsgId: item.id,
+        schedulerEntryId: payload.activeEntryId || item.id,
+        schedulerWorkKind: payload.workKind || 'task',
+        userInputRequestId: payload.requestId || undefined,
+      };
+    }
     if (payload.type === 'dispatch.request') {
       return {
         originDispatchId: payload.operationId,
@@ -420,21 +444,62 @@ function createOrchestrationRuntime({
     if (acknowledged.ok && item.payload?.type === 'dispatch.request') {
       await operations.markRunning(item.payload.operationId);
     }
+    if (acknowledged.ok
+        && (item.payload?.type === 'session.work' || item.payload?.type === 'dispatch.request')) {
+      // Once canonical chat history proves the delivery, retain only a stable
+      // reference in orchestration state. The original payload hash stays
+      // untouched so an idempotent retry can still be compared without keeping
+      // a second drifting copy of the user task body.
+      await store.mutate(draft => {
+        const saved = draft.outbox[item.id];
+        if (!saved || saved.state !== 'delivered') return false;
+        if (Object.prototype.hasOwnProperty.call(saved.payload, 'message')) {
+          delete saved.payload.message;
+          saved.payload.messageRef = {
+            sessionId: item.sessionId,
+            deliveryId: item.id,
+          };
+          saved.updatedAt = Number(now());
+        }
+        if (item.payload?.operationId) {
+          const operation = draft.operations[item.payload.operationId];
+          if (operation?.kind === 'dispatch' && operation.spec) {
+            delete operation.spec.message;
+            delete operation.spec.taskText;
+            operation.spec.messageRef = {
+              sessionId: item.sessionId,
+              deliveryId: item.id,
+            };
+            operation.updatedAt = Number(now());
+          }
+        }
+        return true;
+      });
+    }
     return acknowledged;
   }
 
   async function deliver(item) {
     const deliveryId = item.id;
+    let schedulerClaimed = false;
     try {
-      if (await hasPersistedDelivery(item.sessionId, deliveryId)) {
-        return acknowledgeDelivery(item);
-      }
       if (isBusy(item.sessionId)) {
         return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
-          // runTick itself is timer-paced; zero here keeps deterministic/manual
-          // ticks responsive without creating an internal retry loop.
           delayMs: 0,
         });
+      }
+      const schedulerClaim = await sessionScheduler.claim(item);
+      if (!schedulerClaim.ok) {
+        return outbox.defer(item.id, item.leaseToken, schedulerClaim.code || 'session gate closed', {
+          delayMs: 0,
+        });
+      }
+      schedulerClaimed = true;
+      if (await hasPersistedDelivery(item.sessionId, deliveryId)) {
+        const acknowledged = await acknowledgeDelivery(item);
+        const recovered = getSessionRecoveryState(item.sessionId) || {};
+        await sessionScheduler.settlePersistedDelivery(item, recovered);
+        return acknowledged;
       }
       const descriptor = {
         item,
@@ -448,20 +513,41 @@ function createOrchestrationRuntime({
           : runChatTurn(descriptor.sessionId, descriptor.text, descriptor.opts),
       );
       if (!accepted) {
-        return outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery');
+        await sessionScheduler.freeze(item.sessionId, 'delivery_rejected', {
+          expectedTaskId: item.payload?.taskId || null,
+        });
+        return outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery', {
+          retryable: false,
+        });
       }
       if (!await hasPersistedDelivery(item.sessionId, deliveryId)) {
-        return outbox.fail(item.id, item.leaseToken, 'chat history did not persist delivery');
+        await sessionScheduler.freeze(item.sessionId, 'message_not_durable', {
+          expectedTaskId: item.payload?.taskId || null,
+        });
+        return outbox.fail(item.id, item.leaseToken, 'chat history did not persist delivery', {
+          retryable: false,
+        });
       }
-      return acknowledgeDelivery(item);
+      const acknowledged = await acknowledgeDelivery(item);
+      if (acknowledged.ok) await sessionScheduler.started(item);
+      return acknowledged;
     } catch (error) {
       log(`[orchestration] delivery ${item.id} failed: ${error.message}`);
-      return outbox.fail(item.id, item.leaseToken, error);
+      if (schedulerClaimed) {
+        await sessionScheduler.freeze(item.sessionId, 'delivery_error', {
+          expectedTaskId: item.payload?.taskId || null,
+        }).catch(() => {});
+      }
+      return outbox.fail(item.id, item.leaseToken, error, { retryable: false });
     }
   }
 
   async function processOutbox() {
-    const claimed = await outbox.claim({ workerId, limit: claimLimit });
+    const claimed = await outbox.claim({
+      workerId,
+      limit: claimLimit,
+      selectSessionItem: sessionScheduler.selectSessionItem,
+    });
     await Promise.all(claimed.map(deliver));
     return claimed.length;
   }
@@ -568,7 +654,23 @@ function createOrchestrationRuntime({
   }
 
   async function admitDispatch(spec) {
-    return operations.admitDispatch(spec);
+    const admitted = await operations.admitDispatch(spec);
+    if (admitted.requestOutboxId && !admitted.idempotent) {
+      await sessionScheduler.noteQueued(admitted.requestOutboxId);
+    }
+    return admitted;
+  }
+
+  async function admitSessionWork(spec) {
+    const admitted = await sessionScheduler.admit(spec);
+    if (admitted.ok) await tick();
+    const current = admitted.ok ? await sessionScheduler.status(spec.sessionId) : admitted.schedule;
+    return {
+      ...admitted,
+      status: current?.state || null,
+      queued: !!current?.active && current.active.entryId !== admitted.entry?.id,
+      schedule: current,
+    };
   }
 
   async function completeDispatch(id, result) {
@@ -600,6 +702,10 @@ function createOrchestrationRuntime({
     await outbox.recoverExpired();
     await refreshPending();
     await operations.interruptActiveTasks();
+    await sessionScheduler.recover({
+      stateForSession: getSessionRecoveryState,
+      isBusy,
+    });
     await reconcileDispatchesOnStartup();
     await reconcileDetached();
     await tick();
@@ -626,6 +732,7 @@ function createOrchestrationRuntime({
     outbox,
     waits,
     operations,
+    sessionScheduler,
     start,
     stop,
     tick,
@@ -640,6 +747,7 @@ function createOrchestrationRuntime({
     refreshPending,
     startDetached,
     admitDispatch,
+    admitSessionWork,
     completeDispatch,
     observeTask,
   });

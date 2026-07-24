@@ -127,16 +127,16 @@ const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✅', msg); } els
   ok(wait.autoContinue('sv2', { delayMs: 0 }), 'auto-continue re-enabled after resetBgResult');
   await sleep(20); // flush so it can't pollute later sections
 
-  // ── inject defers while busy ──
-  console.log('busy deferral');
+  // ── durable admission is immediate; the shared scheduler owns busy deferral ──
+  console.log('busy durable admission');
   injected.length = 0; busy = true;
   const r6 = wait.register({ session: 's6', mode: 'callback' });
   wait.resolve(r6.id, r6.token, 'data');
   await sleep(50);
-  ok(injected.length === 0, 'inject deferred while session busy');
+  ok(injected.length === 1, 'busy callback is admitted once without a volatile retry timer');
   busy = false;
-  await sleep(1200);
-  ok(injected.length === 1, 'inject fires once session is free');
+  await sleep(100);
+  ok(injected.length === 1, 'becoming idle does not duplicate the durable admission');
 
   console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAIL'}  (${pass} pass, ${fail} fail)`);
   process.exit(fail === 0 ? 0 : 1);

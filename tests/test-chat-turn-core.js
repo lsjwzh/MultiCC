@@ -143,7 +143,7 @@ test('Claude host pre-allocation proof preserves legacy resume intent for existi
   assert.equal(turn.execution.historyIntent, 'resume');
 });
 
-test('duplicate delivery is checked before interrupt and never emits interruption effects', () => {
+test('duplicate delivery wins and a fresh busy runner rejects without interruption effects', () => {
   const turn = request({ deliveryId: 'delivery-1' });
   const duplicate = planTurnAdmission(turn, {
     duplicateSeen: true,
@@ -156,10 +156,9 @@ test('duplicate delivery is checked before interrupt and never emits interruptio
   assert.deepEqual(duplicate.effects, []);
 
   const fresh = planTurnAdmission(turn, { sessionExists: true, runningTurn: true });
-  assert.equal(fresh.decision, 'prepare');
-  assert.deepEqual(fresh.effects.map(effect => effect.type), [
-    'interrupt-running-turn', 'persist-user-message',
-  ]);
+  assert.equal(fresh.decision, 'reject');
+  assert.equal(fresh.reason, 'session-busy');
+  assert.deepEqual(fresh.effects, []);
 });
 
 test('system continuation is held during network failure while user turns remain admissible', () => {
@@ -275,7 +274,6 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   const duplicateReturn = at("admission.decision === 'duplicate'");
   const nativeAllocation = at('persisted.cliSessionId = crypto.randomUUID()');
   const claim = at('chatTurnPreparationRuntime.claim(');
-  const interrupt = at('New user_message while claude pid=');
   const append = at('const userMessageSaved = appendChatMessage(');
   const durable = at('createDurableMessageProof(turnRequest');
   const route = at('providerRouterRuntime.resolveSpawnEnv(persisted)');
@@ -289,8 +287,9 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   assert.ok(admission < duplicateReturn && duplicateReturn < nativeAllocation,
     'duplicate delivery must not allocate or mutate a native session');
   assert.ok(duplicateReturn < claim);
-  assert.ok(claim < interrupt, 'claim must cover every interrupt/persist/route preparation effect');
-  assert.ok(interrupt < append && append < durable && durable < route);
+  assert.doesNotMatch(body, /New user_message while claude pid=|interrupting previous/,
+    'the canonical turn boundary must reject busy races instead of interrupting an active turn');
+  assert.ok(claim < append && append < durable && durable < route);
   assert.ok(route < guard && guard < authorize);
   assert.ok(authorize < claudeRunner && authorize < codexRunner);
   assert.ok(codexRunner < failureRelease, 'finally must release a failed preparation lease');
@@ -616,8 +615,8 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     /catch \(error\) \{[\s\S]{0,120}logFailure\('token_usage_write_failed', error\);[\s\S]{0,80}return false;/,
     'a failed cumulative write must release the durable usage claim for retry');
   const finalizeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-plan.js'), 'utf8');
-  assert.match(finalizeSource, /if \(!facts\.killReason\) \{[\s\S]{0,120}try-resume-interrupted/,
-    'only unknown interruptions without an explicit lifecycle kill may auto-recover');
+  assert.match(finalizeSource, /if \(!facts\.killReason\) \{[\s\S]{0,180}freeze-interrupted/,
+    'unknown interruptions must freeze until an explicit user decision');
   assert.match(finalizeSource, /if \(durableAfterAppend\) \{[\s\S]{0,220}classify-turn-end/,
     'clean streaming completion must still classify immediately');
 });
