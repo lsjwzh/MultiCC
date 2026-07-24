@@ -195,9 +195,9 @@ function assertNormalized(request) {
   }
 }
 
-// Characterises the existing ordering: duplicate proof is consulted before an
-// interrupt effect can be emitted. Persistence is then requested before spawn;
-// evaluateSpawnGuard below refuses spawn without durable proof.
+// This is the provider-runner boundary, not the public admission queue. A busy
+// runner must never be interrupted by a second request: all public ingress is
+// required to persist through the session scheduler first.
 function planTurnAdmission(request, facts = {}) {
   assertNormalized(request);
   const trace = ['duplicate-check'];
@@ -222,10 +222,15 @@ function planTurnAdmission(request, facts = {}) {
       effects: Object.freeze([{ type: 'hold-turn', sessionId: request.sessionId, text: request.text }]),
     });
   }
-  const effects = [];
   if (facts.runningTurn === true) {
-    effects.push(Object.freeze({ type: 'interrupt-running-turn', sessionId: request.sessionId, reason: 'new-user-message' }));
+    return Object.freeze({
+      decision: 'reject',
+      reason: 'session-busy',
+      trace: Object.freeze([...trace, 'busy-check']),
+      effects: Object.freeze([]),
+    });
   }
+  const effects = [];
   effects.push(Object.freeze({
     type: 'persist-user-message',
     sessionId: request.sessionId,
@@ -233,7 +238,7 @@ function planTurnAdmission(request, facts = {}) {
     identity: request.identity,
     origin: request.origin,
   }));
-  trace.push('interrupt-plan', 'persistence-plan');
+  trace.push('busy-check', 'persistence-plan');
   return Object.freeze({ decision: 'prepare', trace: Object.freeze(trace), effects: Object.freeze(effects) });
 }
 

@@ -224,14 +224,20 @@ function planTurnFinalization(input = {}, deps = {}) {
 function statusEffects(plan, durableAfterAppend) {
   const facts = plan.facts;
   if (facts.runnerKind === 'process') {
-    if (facts.killReason) return [effect('set-status', { status: 'idle', reason: 'explicit-kill' })];
+    if (facts.killReason) return [
+      effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
+      effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
+    ];
     if (durableAfterAppend || facts.apiError || facts.adapterError
         || facts.exitKind === 'nonzero_exit' || facts.exitKind === 'signaled') {
       const effects = [effect('classify-turn-end')];
       if (facts.auxUnhealthy) effects.push(effect('set-status', { status: 'idle', reason: 'aux-unhealthy' }));
       return effects;
     }
-    return [effect('set-status', { status: 'idle', reason: facts.exitKind })];
+    return [
+      effect('set-status', { status: 'waiting', reason: facts.exitKind }),
+      effect('freeze-interrupted', { reason: 'unknown_interruption' }),
+    ];
   }
 
   if (facts.guardedHandoffResumeFailure) {
@@ -256,9 +262,15 @@ function statusEffects(plan, durableAfterAppend) {
     ];
   }
   if (!facts.killReason) {
-    return [effect('try-resume-interrupted', { fallbackStatus: 'idle', capped: true, waitGuarded: true })];
+    return [
+      effect('set-status', { status: 'waiting', reason: 'unknown-interruption' }),
+      effect('freeze-interrupted', { reason: 'unknown_interruption' }),
+    ];
   }
-  return [effect('set-status', { status: 'idle', reason: 'explicit-kill' })];
+  return [
+    effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
+    effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
+  ];
 }
 
 // Second stage: appendFinal has returned, so the host can resolve status and
