@@ -119,6 +119,8 @@ test('preset cache and commander prompt preserve provider default resolution', a
   assert.equal(current.service.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
   assert.equal(current.reads(), 1);
   assert.equal(current.service.agentCommanderPreset().id, AGENT_COMMANDER_PRESET_ID);
+  assert.equal(current.service.agentPreset('xf').id, 'xf');
+  assert.equal(current.service.agentPreset('missing'), null);
   assert.equal(current.service.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
   assert.equal(current.reads(), 1);
   const commander = await invoke(current.app, 'GET', '/api/agent-presets/:id', {

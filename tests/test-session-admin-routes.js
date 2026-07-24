@@ -41,6 +41,7 @@ function createFixture(overrides = {}) {
       id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', label: 'Chat',
       createdAt: 100, model: 'model-1', provider: 'provider-1',
       rolePrompt: 'legacy-only prompt', cwd: '/private/worktree',
+      rolePresetId: 'testing__testing-engineer',
       taskState: { classifyState: 'D', goal: 'done goal', phase: 'done' },
       cliSessionId: 'native-secret', worktreePath: '/private/worktree',
     }],
@@ -177,7 +178,17 @@ test('v1 responses stay bounded while legacy and dashboard fields remain compati
   const legacy = invoke(app.routes.get('GET /api/sessions'));
   assert.equal(legacy.body[0].id, '__aux__');
   assert.equal(legacy.body.find(item => item.id === 's1').cwd, '/session/s1');
+  assert.equal(legacy.body.find(item => item.id === 's1').rolePresetId, 'testing__testing-engineer');
   assert.equal(legacy.body.find(item => item.id === 't1').active, true);
+
+  const directorySessions = invoke(app.routes.get('GET /api/directories/:id/sessions'), {
+    params: { id: 'd1' },
+  });
+  assert.equal(directorySessions.body.sessions.find(item => item.id === 's1').rolePresetId,
+    'testing__testing-engineer');
+
+  const detail = invoke(app.routes.get('GET /api/sessions/:id'), { params: { id: 's1' } });
+  assert.equal(detail.body.rolePresetId, 'testing__testing-engineer');
 
   const dashboard = invoke(app.routes.get('GET /api/dashboard/stats'));
   assert.deepEqual(dashboard.body, {

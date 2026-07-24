@@ -123,6 +123,15 @@ function createAgentResourcesRoutes(rawDeps) {
     return preset && preset.prompt ? preset.prompt : null;
   }
 
+  function agentPreset(id) {
+    const data = loadAgentPresets();
+    if (!data) return null;
+    const preset = id === AGENT_COMMANDER_PRESET_ID
+      ? agentCommanderPreset()
+      : (data.presets || []).find(item => item.id === id);
+    return preset ? enrichAgentPresetDefaults(preset) : null;
+  }
+
   function mountRoutes(app) {
     if (!app || typeof app.get !== 'function' || typeof app.delete !== 'function') {
       throw new TypeError('[agent-resources] Express-compatible app is required');
@@ -162,11 +171,9 @@ function createAgentResourcesRoutes(rawDeps) {
     app.get('/api/agent-presets/:id', (req, res) => {
       const data = loadAgentPresets();
       if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-      const preset = req.params.id === AGENT_COMMANDER_PRESET_ID
-        ? agentCommanderPreset()
-        : (data.presets || []).find(item => item.id === req.params.id);
+      const preset = agentPreset(req.params.id);
       if (!preset) return res.status(404).json({ error: 'not found' });
-      res.json(enrichAgentPresetDefaults(preset));
+      res.json(preset);
     });
 
     app.get('/api/agent-resources/claude-sessions', (req, res) => {
@@ -218,6 +225,7 @@ function createAgentResourcesRoutes(rawDeps) {
   }
 
   return Object.freeze({
+    agentPreset,
     agentCommanderPreset,
     agentCommanderPrompt,
     mountRoutes,
