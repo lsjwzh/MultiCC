@@ -276,6 +276,29 @@
           break;
         case 'chat_history_reset': handleHistoryReset(message); break;
         case 'task_state': liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState); break;
+        case 'user_input_required':
+          state.pendingUserInputRequestId = message.requestId || null;
+          host.addSystemMsg?.([
+            '需要你的确认：' + (message.question || '请补充必要信息'),
+            Array.isArray(message.options) && message.options.length
+              ? message.options.map((option, index) => `${index + 1}. ${option}`).join('\n')
+              : '',
+          ].filter(Boolean).join('\n'));
+          break;
+        case 'session_queue':
+          if (message.event === 'queued') {
+            host.showNotifyToast?.(
+              message.queuePosition ? `消息已排队（第 ${message.queuePosition} 位）` : '消息已持久排队',
+              'running',
+            );
+          } else if (message.event === 'frozen') {
+            host.addSystemMsg?.(`队列已冻结：${message.freezeReason || '当前任务尚未成功完成'}`);
+          } else if (message.event === 'started') {
+            host.showNotifyToast?.('已开始执行队首任务', 'running');
+          } else if (message.event === 'snapshot' && message.state === 'frozen') {
+            host.addSystemMsg?.(`队列保持冻结：${message.freezeReason || '当前任务尚未解决'}`);
+          }
+          break;
         case 'rate_limit_event': {
           const limit = global.MultiCCChatRateLimit?.consumeRateLimitEvent(
             message.rate_limit_info,

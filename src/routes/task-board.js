@@ -44,6 +44,9 @@ function createTaskBoardRuntime(deps) {
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState, isSessionBusy,
   } = deps;
+  const resolveSessionQueue = typeof deps.resolveSessionQueue === 'function'
+    ? deps.resolveSessionQueue
+    : async () => ({ ok: false, code: 'no_active_task' });
   const getCommanderMigrationStatus = typeof deps.getCommanderMigrationStatus === 'function'
     ? deps.getCommanderMigrationStatus : null;
   const logger = deps.logger || console;
@@ -239,6 +242,7 @@ function createTaskBoardRuntime(deps) {
       },
     });
     if (!indexed.task) return false;
+    indexed.task.runState = admission.status === 'running' ? 'running' : 'queued';
     save();
     notify(worker.dirId || null, [taskId], indexed.created ? 'created' : undefined);
     return true;
@@ -568,6 +572,34 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
+  function onQueueEvent(event = {}) {
+    const taskId = String(event.taskId || '');
+    const task = taskId ? board.tasks[taskId] : null;
+    if (!task) return { ok: false, code: 'task_not_found' };
+    const type = String(event.type || '');
+    let runState = null;
+    if (type === 'queued' && event.workKind !== 'task') {
+      return { ok: true, changed: false };
+    }
+    if (type === 'queued') runState = 'queued';
+    else if (type === 'claimed' || type === 'started' || type === 'resumed') runState = 'running';
+    else if (type === 'completed') runState = 'done';
+    else if (type === 'frozen') {
+      runState = String(event.freezeReason || '').includes('error') ? 'error' : 'waiting';
+    } else if (type === 'cancelled' || type === 'skipped') runState = 'idle';
+    if (!runState || task.runState === runState) return { ok: true, changed: false };
+    task.runState = runState;
+    task.updatedAt = Date.now();
+    if (task.routing) {
+      task.routing.status = runState;
+      task.routing.freezeReason = event.freezeReason || null;
+    }
+    save();
+    const dirId = core.taskDirId(board, task);
+    notify(dirId || null, [task.id]);
+    return { ok: true, changed: true };
+  }
+
   // ── Backfill (scan existing chat history into the board) ─────────────────
 
   // Pair user→assistant turns from a history array, skipping system-injected
@@ -853,21 +885,17 @@ function createTaskBoardRuntime(deps) {
     let routeMode;
     let result;
     if (explicit) {
-      if (isSessionBusy(explicit)) {
-        return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
-      }
       target = core.pickRouteTarget(board, task, records, explicit, {
         queryText: text,
-        isAvailable: sid => !isSessionBusy(sid),
+        isAvailable: () => true,
       });
-      if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '指定会话不可路由或不属于任务所在 Fleet' });
-      if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
+      if (!target) return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于任务所在 Fleet' });
       routeMode = 'manual';
       result = await dispatchToSession(target,
         goalNoteFor(req.body) + core.buildRoutedMessage(task, text), {
           idempotencyKey: `taskboard-followup:${task.id}:${followupKey}`,
           oneWay: true,
-          requireIdle: true,
+          requireIdle: false,
           taskId: task.id,
           taskStart: false,
           taskSource: 'task-board',
@@ -977,7 +1005,7 @@ function createTaskBoardRuntime(deps) {
               commanderId: effectiveTarget, message, idempotencyKey, ...taskContext,
             })
           : await dispatchToSession(effectiveTarget, message, {
-              idempotencyKey, oneWay: true, requireIdle: true, ...taskContext,
+              idempotencyKey, oneWay: true, requireIdle: false, ...taskContext,
             });
       }
     } catch (error) {
@@ -1010,6 +1038,9 @@ function createTaskBoardRuntime(deps) {
       },
       now: routedAt,
     });
+    if (indexed.task) {
+      indexed.task.runState = result.status === 'running' ? 'running' : 'queued';
+    }
     save();
     notify(dirId, [taskId], indexed.created ? 'created' : undefined);
     return {
@@ -1032,15 +1063,11 @@ function createTaskBoardRuntime(deps) {
     let target;
     let routeMode;
     if (explicit) {
-      if (isSessionBusy(explicit)) {
-        return res.status(409).json({ error: 'target_busy', note: '指定会话正在执行任务，请等待其空闲后再发送' });
-      }
       target = core.pickDirTarget(records, dirId, explicit, {
         queryText: text,
-        isAvailable: sid => !isSessionBusy(sid),
+        isAvailable: () => true,
       });
-      if (!target) return res.status(409).json({ error: 'no_idle_relevant_target', note: '指定会话不可路由或不属于该 Fleet' });
-      if (isSessionBusy(target)) return res.status(409).json({ error: 'target_busy', note: '目标会话刚刚开始执行其他任务，请重试' });
+      if (!target) return res.status(409).json({ error: 'no_relevant_target', note: '指定会话不可路由或不属于该 Fleet' });
       routeMode = 'manual';
     } else {
       if (commanderMigrationFailure(res, dirId)) return;
@@ -1108,12 +1135,28 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  function handleStatus(req, res) {
+  async function handleStatus(req, res) {
     const task = board.tasks[req.params.taskId];
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     const status = String(req.body?.status || '');
     if (!['active', 'done', 'archived'].includes(status)) {
       return res.status(400).json({ error: 'invalid_status' });
+    }
+    if (status === 'done') {
+      const routedWorker = task.routing?.workerSessionId;
+      const sessionIds = routedWorker
+        ? [routedWorker]
+        : [...new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean))];
+      for (const sessionId of sessionIds) {
+        const resolved = await resolveSessionQueue(sessionId, task.id);
+        if (resolved && resolved.ok === false
+            && !['no_active_task', 'active_task_mismatch'].includes(resolved.code)) {
+          return res.status(409).json({
+            error: resolved.code || 'queue_resolution_failed',
+            note: '当前任务仍在执行；请先取消，或等待其进入冻结状态后再明确标记完成。',
+          });
+        }
+      }
     }
     task.status = status;
     task.updatedAt = Date.now();
@@ -1195,7 +1238,12 @@ function createTaskBoardRuntime(deps) {
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
     });
-    app.post('/api/task-board/tasks/:taskId/status', handleStatus);
+    app.post('/api/task-board/tasks/:taskId/status', (req, res) => {
+      handleStatus(req, res).catch(error => {
+        logger.log(`[multicc/taskboard] status update failed: ${error?.message || error}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
+      });
+    });
     app.post('/api/task-board/archive-completed', handleArchiveCompleted);
     app.post('/api/task-board/tasks/:taskId/reclassify', handleReclassify);
     app.post('/api/task-board/send', (req, res) => {
@@ -1221,6 +1269,7 @@ function createTaskBoardRuntime(deps) {
   return Object.freeze({
     mountRoutes,
     onMessagePersisted,
+    onQueueEvent,
     recordRouterAdmission,
     onTurnEnd,
     onClassifyGoal,

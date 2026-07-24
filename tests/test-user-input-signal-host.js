@@ -98,6 +98,40 @@ test('structured signal overrides Aux state and provides degraded W fallback', (
   });
 });
 
+test('a correlated answer resolves the pending request once and continuation keeps the evidence', () => {
+  const { host, states } = fixture();
+  states.get('chat-1').pendingUserInput = {
+    requestId: 'usrq-1',
+    turnId: 'turn-1',
+    taskId: 'task-1',
+    question: '是否发布？',
+    resolved: false,
+  };
+  assert.deepEqual(host.resolve('chat-1', 'wrong'), {
+    ok: false,
+    code: 'request_id_mismatch',
+  });
+  assert.equal(states.get('chat-1').pendingUserInput.resolved, false);
+  assert.deepEqual(host.resolve('chat-1', 'usrq-1'), {
+    ok: true,
+    duplicate: false,
+  });
+  assert.equal(states.get('chat-1').pendingUserInput.resolved, true);
+  assert.equal(states.get('chat-1').pendingUserInput.resolvedAt, 1234);
+  assert.deepEqual(host.resolve('chat-1', 'usrq-1'), {
+    ok: true,
+    duplicate: true,
+  });
+  host.beginTurn('chat-1', { originContinue: true, turnId: 'turn-answer' });
+  assert.equal(states.get('chat-1').pendingUserInput.requestId, 'usrq-1');
+  assert.equal(states.get('chat-1').pendingUserInput.resolved, true);
+  assert.equal(host.apply('chat-1', {
+    state: 'completed',
+    background: false,
+    error: false,
+  }).state, 'completed');
+});
+
 test('prompt directs models to the MCP signal, not the unavailable built-in', () => {
   assert.match(USER_INPUT_SIGNAL_PROMPT.join('\n'), /MCP.*request_user_input/);
   const codex = buildCodexUserInputConstraint(true);

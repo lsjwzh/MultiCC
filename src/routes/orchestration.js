@@ -231,6 +231,51 @@ function createOrchestrationRoutes(rawDeps) {
       }
     });
 
+    if (deps.runtime.sessionScheduler) app.get('/api/sessions/:id/queue', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+      try {
+        const queue = await deps.runtime.sessionScheduler.status(session.id);
+        res.json({ ok: true, queue });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    if (deps.runtime.sessionScheduler) app.post('/api/sessions/:id/queue/action', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+      const body = req.body || {};
+      const action = String(body.action || '').trim();
+      if (!['retry', 'resume', 'skip', 'cancel', 'resolve'].includes(action)) {
+        return res.status(400).json({ error: 'invalid_action' });
+      }
+      if (body.confirm !== true) {
+        return res.status(409).json({
+          error: 'confirmation_required',
+          note: 'This action changes the active task and may advance the FIFO queue.',
+        });
+      }
+      try {
+        if (action === 'cancel' && typeof deps.cancelActiveTurn === 'function') {
+          await deps.cancelActiveTurn(session.id);
+        }
+        const result = await deps.runtime.sessionScheduler.resolve(session.id, {
+          action,
+          reason: body.reason,
+          actor: 'user',
+          text: body.text,
+          idempotencyKey: req.get('Idempotency-Key') || body.idempotencyKey || null,
+        });
+        if (result.ok) await deps.runtime.tick();
+        const status = result.ok ? 200
+          : result.code === 'no_active_task' ? 404 : 409;
+        res.status(status).json(result);
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
     app.get('/api/detached/:taskId', async (req, res) => {
       const state = deps.detached.status(req.params.taskId);
       if (!state) return res.status(404).json({ error: 'task not found' });

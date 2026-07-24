@@ -79,6 +79,24 @@ function createUserInputSignalHost({
     return applyUserInputEvidence(result, pending(sessionId));
   }
 
+  function resolve(sessionId, requestId) {
+    const current = pending(sessionId);
+    if (!current || current.requestId !== requestId) {
+      return { ok: false, code: current ? 'request_id_mismatch' : 'no_pending_request' };
+    }
+    if (current.resolved === true) return { ok: true, duplicate: true };
+    setState(sessionId, {
+      pendingUserInput: {
+        ...current,
+        resolved: true,
+        resolvedAt: now(),
+      },
+      userInputSignalVersion: 1,
+    });
+    log(`[multicc/classify] ${sessionId} request_user_input resolved request=${requestId}`);
+    return { ok: true, duplicate: false };
+  }
+
   function degradedResult(sessionId, currentTask) {
     if (!pending(sessionId)) return null;
     const state = getState(sessionId) || {};
@@ -91,7 +109,7 @@ function createUserInputSignalHost({
     };
   }
 
-  return Object.freeze({ apply, beginTurn, degradedResult, pending, record });
+  return Object.freeze({ apply, beginTurn, degradedResult, pending, record, resolve });
 }
 
 module.exports = {

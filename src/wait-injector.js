@@ -379,20 +379,10 @@ function recentlyBgResultInjected(session) {
 // injected text during classify/reconcile, replacing the old per-language regex.
 const SYS_PREFIX = '🔇';
 
-// Retry while a turn is mid-flight so we don't interrupt the work we're waiting
-// on. After BUSY_MAX_ATTEMPTS we force-inject anyway: a turn hung longer than
-// that would otherwise block a real-data inject (dispatch result / bg-completion)
-// forever. injectSystemMsg (classify nudges) has no such cap - nudges can wait,
-// real data must eventually land. (Streaming queues internally too.)
-const BUSY_MAX_ATTEMPTS = 300; // 5min @ 1s - generous; a live long turn never hits it
-function fireInject(session, text, attempt = 0, opts) {
-  if (_isBusy(session) && attempt < BUSY_MAX_ATTEMPTS) {
-    scheduleTimer(() => fireInject(session, text, attempt + 1, opts), 1000);
-    return;
-  }
-  if (attempt >= BUSY_MAX_ATTEMPTS) {
-    _log(`[wait] fireInject ${session}: still busy after ${BUSY_MAX_ATTEMPTS}s, force-injecting (turn may be hung)`);
-  }
+// inject() is the durable session admission boundary. It persists immediately
+// even while a turn is busy; the scheduler, not a volatile timer loop, decides
+// when this continuation may run.
+function fireInject(session, text, _attempt = 0, opts) {
   Promise.resolve(_inject(session, text, opts)).catch(e => _log(`[wait] inject failed for ${session}: ${e.message}`));
 }
 
@@ -409,7 +399,6 @@ function injectSystemMsg(session, text, delayMs, opts) {
   const d = Number(delayMs);
   const delay = Number.isFinite(d) ? Math.max(0, d) : 0;
   const go = () => {
-    if (_isBusy(session)) { scheduleTimer(go, 1000); return; }
     Promise.resolve(_inject(session, msg, opts)).catch(e => _log(`[wait] system inject failed for ${session}: ${e.message}`));
   };
   if (delay) { scheduleTimer(go, delay); return; }

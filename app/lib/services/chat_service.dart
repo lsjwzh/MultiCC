@@ -44,6 +44,8 @@ class ChatService {
   // from the dying CLI process can't flip isStreaming back on. Cleared when a
   // new turn begins (send) or the stream truly ends (stream_end/result/error).
   bool _cancelRequested = false;
+  String? _pendingUserInputRequestId;
+  int _messageSequence = 0;
 
   // ── Heartbeat: detect "half-open" sockets ──
   // When the phone sleeps / network switches, the OS can freeze the socket
@@ -322,6 +324,15 @@ class ChatService {
         _emit('task_state', msg);
         break;
 
+      case 'user_input_required':
+        _pendingUserInputRequestId = msg['requestId']?.toString();
+        _emit('user_input_required', msg);
+        break;
+
+      case 'session_queue':
+        _emit('session_queue', msg);
+        break;
+
       default:
         break;
     }
@@ -373,13 +384,22 @@ class ChatService {
       return false;
     }
     try {
-      final payload = <String, dynamic>{'type': 'user_message', 'text': text};
+      final payload = <String, dynamic>{
+        'type': 'user_message',
+        'text': text,
+        'clientMsgId':
+            'app-${DateTime.now().microsecondsSinceEpoch}-${_messageSequence++}',
+      };
+      final pendingRequestId = _pendingUserInputRequestId;
+      if (pendingRequestId != null && pendingRequestId.isNotEmpty) {
+        payload['userInputRequestId'] = pendingRequestId;
+      }
       if (goal) {
         payload['goal'] = true;
         payload['goalLimits'] = goalLimits ?? <String, dynamic>{};
       }
       _channel!.sink.add(jsonEncode(payload));
-      isStreaming = true;
+      if (pendingRequestId != null) _pendingUserInputRequestId = null;
       _cancelRequested = false; // New turn — clear any stale cancel guard
       return true;
     } catch (_) {

@@ -98,9 +98,10 @@ test('an untracked dispatch detaches from the prior task and survives history re
     'restart must not revive the task that preceded an untracked dispatch');
 });
 
-test('production detaches only dispatch requests that carry no canonical taskId', () => {
+test('production detaches every new untracked scheduler task from the prior taskId', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(source, /const detachTaskContext = !!originDispatchId && !requestedTask\.id/);
+  assert.match(source,
+    /const detachTaskContext = \(!requestedTask\.id && opts\.schedulerWorkKind === 'task'\)\s*\|\| \(!!originDispatchId && !requestedTask\.id\)/);
   assert.match(source, /beginTurn\(cs,\s*requestedTask,\s*\{\s*detach:\s*detachTaskContext\s*\}\)/);
   assert.match(source, /messageMetadata\(requestedTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
 });
