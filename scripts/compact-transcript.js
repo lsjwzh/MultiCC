@@ -84,10 +84,11 @@ function compact(filePath, opts) {
     return;
   }
 
-  // Backup
-  const bak = filePath + '.bak';
-  fs.copyFileSync(filePath, bak);
-  console.log(`  Backup: ${path.basename(bak)}`);
+  // Move pruned lines to <name>.pruned.jsonl (append) so token-global still
+  // reads their usage; claude --resume only loads the trimmed file.
+  const prunedFile = filePath.replace(/\.jsonl$/, '.pruned.jsonl');
+  fs.appendFileSync(prunedFile, lines.slice(0, cutIndex).join('\n') + '\n');
+  console.log(`  Pruned lines → ${path.basename(prunedFile)}`);
 
   // Write truncated
   fs.writeFileSync(filePath, kept.join('\n') + '\n');
