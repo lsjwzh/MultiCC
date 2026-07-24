@@ -80,6 +80,17 @@ test('UsageObserved validates coverage, source, roleKind, agentRole, and routeNa
   }));
   assert.equal(unobservable.tokens, null);
   assert.equal(unobservable.coverage, 'unobservable');
+
+  // The proxy router reports a completed third-party-relay turn as
+  // coverage=unobservable + status=success (no usage headers to observe).
+  // Status tracks observability, not turn outcome, so it normalizes to
+  // 'unobservable' instead of being rejected.
+  const relay = createUsageObserved(exactUsage({
+    coverage: 'unobservable', status: 'success', usage: null,
+  }));
+  assert.equal(relay.coverage, 'unobservable');
+  assert.equal(relay.status, 'unobservable');
+  assert.equal(relay.tokens, null);
 });
 
 test('UsageObserved binds attribution and rejects conflicts', () => {
