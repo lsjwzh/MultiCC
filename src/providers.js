@@ -724,7 +724,7 @@ function deleteProvider(appType, id) {
 // Pull cc-switch's providers into multicc's store. Idempotent: keyed by the
 // cc-switch id (kept as the provider id with source='ccswitch'), so re-import
 // refreshes existing entries instead of duplicating. Local providers untouched.
-function importFromCcSwitch() {
+function readCcSwitchRows() {
   const ccDb = resolveCcDb();
   const db = sqliteRuntime.openReadonly(ccDb);
   let rows;
@@ -733,6 +733,44 @@ function importFromCcSwitch() {
     const metaSelect = columns.includes('meta') ? 'meta' : 'NULL AS meta';
     rows = db.prepare(`SELECT id, app_type, name, settings_config, ${metaSelect} FROM providers ORDER BY app_type, sort_index, name`).all();
   } finally { db.close(); }
+  return rows;
+}
+
+function migrateLegacyProviderProtocols() {
+  const list = loadStore();
+  let ccFormats = null;
+  try {
+    ccFormats = new Map(readCcSwitchRows().map(row => {
+      const meta = parseConfig(row.meta) || {};
+      return [`${row.app_type}:${row.id}`, meta.apiFormat || null];
+    }));
+  } catch (_) {}
+
+  let updated = 0, skipped = 0;
+  const next = list.map(provider => {
+    if (!provider || !APP_TYPES.includes(provider.appType)
+      || Object.values(API_FORMATS).includes(provider.apiFormat)) return provider;
+    const cfg = parseConfig(provider.settingsConfig);
+    const sourceFormat = ccFormats && ccFormats.get(`${provider.appType}:${provider.id}`);
+    const hasLocalSignal = provider.appType === 'claude' || (cfg.proxyTarget && cfg.proxyTarget.mode);
+    if (provider.source === 'ccswitch' && provider.appType === 'codex' && !sourceFormat && !hasLocalSignal) {
+      skipped++;
+      return provider;
+    }
+    const migrated = {
+      ...provider,
+      apiFormat: normalizeApiFormat(sourceFormat, provider.appType, cfg),
+    };
+    if (provider.appType === 'codex') migrated.settingsConfig = effectiveCodexSettings(migrated);
+    updated++;
+    return migrated;
+  });
+  if (updated) saveStore(next);
+  return { updated, skipped, total: list.length };
+}
+
+function importFromCcSwitch() {
+  const rows = readCcSwitchRows();
 
   const list = loadStore();
   const byKey = new Map(list.map((p, i) => [`${p.appType}:${p.id}`, i]));
@@ -1391,6 +1429,7 @@ module.exports = {
   updateProvider,
   deleteProvider,
   importFromCcSwitch,
+  migrateLegacyProviderProtocols,
   resolveSpawnEnv,
   buildChildEnv,
   materializeCodexAuth,
