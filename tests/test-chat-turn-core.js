@@ -296,15 +296,26 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   assert.ok(codexRunner < failureRelease, 'finally must release a failed preparation lease');
 });
 
-test('retry policy preserves current caps, delay and deterministic scheduling', () => {
-  const deps = { now: () => 1_000, random: () => 0.5, jitterMs: 20 };
-  const api = decideRetry({ event: 'api-error', cli: 'claude', attempts: { apiError: 999 } }, deps);
-  assert.deepEqual(api, {
-    action: 'resume', classification: 'api-error', attempt: 1000,
-    delayMs: 10, scheduledAt: 1010, capped: false,
-  });
-  assert.equal(decideRetry({ event: 'api-error', attempts: {} }, { now: () => 10 }).delayMs, 0,
-    'production default preserves API_RETRY_DELAY_MS=0');
+test('retry policy bounds API failures and keeps deterministic scheduling', () => {
+  const deps = { now: () => 1_000, random: () => 0 };
+  const api = decideRetry({
+    event: 'api-error',
+    error: { httpStatus: 503, source: 'claude_result', provider: 'claude' },
+    context: { source: 'claude_result', provider: 'claude', phase: 'before_first_token' },
+    attempts: { apiError: 0 },
+  }, deps);
+  assert.equal(api.action, 'retry-api');
+  assert.equal(api.attempt, 1);
+  assert.equal(api.delayMs, 1000);
+  assert.equal(api.capped, true);
+  const exhausted = decideRetry({
+    event: 'api-error',
+    error: { httpStatus: 503, source: 'claude_result', provider: 'claude' },
+    context: { source: 'claude_result', provider: 'claude', phase: 'before_first_token' },
+    attempts: { apiError: 2 },
+  }, deps);
+  assert.equal(exhausted.action, 'fail');
+  assert.equal(exhausted.reason, 'retry_budget_exhausted');
   const interrupted = decideRetry({ event: 'interrupted', attempts: { interruptedResume: 9 } }, { now: () => 0 });
   assert.equal(interrupted.action, 'resume');
   assert.equal(interrupted.attempt, 10);

@@ -22,13 +22,9 @@
 //                  nudge a little after such a turn — same guard shape as D
 //                  (capped count, reset by a real user message, skipped when an
 //                  explicit A/B wait already covers the session).
-//   F. apiRetry  — chat-only resilience guard: a turn ended on a transport/API
-//                  error (e.g. "API Error: Connection closed mid-response") rather
-//                  than a real completion, so the assistant's answer is truncated
-//                  and the turn is effectively dead. server.js injects "刚才因 API
-//                  异常中断…请继续" via safeInject — UNCAPPED, retrying as long as
-//                  aux (classify) stays healthy; when aux goes down classify stops
-//                  running and the retry loop stops naturally.
+//   F. API retries now live in src/chat/api-error-policy.js. This module does
+//                  not own a second classify-driven retry channel: doing so
+//                  would bypass budgets and could replay side effects.
 //   G. resumeInterrupted — classify judged P (still processing) but the CLI
 //                  process / event stream has ALREADY ended: the turn died
 //                  mid-flight (network drop, crashed CLI, truncated stream). We

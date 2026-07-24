@@ -1,0 +1,86 @@
+{
+  "source": "MultiCC production logs and persisted assistant error events",
+  "observedWindow": {
+    "from": "2026-06-24T00:00:00.000Z",
+    "to": "2026-07-24T03:00:00.000Z"
+  },
+  "sanitized": true,
+  "samples": [
+    {
+      "provider": "claude",
+      "source": "claude_result",
+      "httpStatus": 403,
+      "code": "permission_denied",
+      "message": "API Error: 403 permission denied",
+      "observedOccurrences": 92
+    },
+    {
+      "provider": "claude",
+      "source": "claude_result",
+      "httpStatus": 429,
+      "headers": { "retry-after": "7" },
+      "message": "API Error: 429 rate limit",
+      "observedOccurrences": 10
+    },
+    {
+      "provider": "claude",
+      "source": "claude_result",
+      "httpStatus": 503,
+      "message": "API Error: 503 service unavailable",
+      "observedOccurrences": 24
+    },
+    {
+      "provider": "claude",
+      "source": "claude_result",
+      "httpStatus": 529,
+      "message": "API Error: 529 overloaded",
+      "observedOccurrences": 4
+    },
+    {
+      "provider": "codex",
+      "source": "codex_event",
+      "httpStatus": 400,
+      "code": "invalid_request",
+      "message": "invalid request",
+      "observedOccurrences": 1
+    },
+    {
+      "provider": "codex",
+      "source": "codex_event",
+      "httpStatus": 429,
+      "message": "rate limit",
+      "observedOccurrences": 2
+    },
+    {
+      "provider": "codex",
+      "source": "codex_event",
+      "httpStatus": 502,
+      "message": "bad gateway",
+      "observedOccurrences": 1
+    },
+    {
+      "provider": "codex",
+      "source": "codex_event",
+      "httpStatus": 529,
+      "message": "overloaded",
+      "observedOccurrences": 3
+    },
+    {
+      "provider": "opencode",
+      "source": "opencode_event",
+      "code": "provider_error",
+      "message": "provider error",
+      "observedOccurrences": 27
+    }
+  ],
+  "notObserved": [
+    {
+      "provider": "qoder",
+      "reason": "configured sessions existed, but no upstream error with reliable attribution was found"
+    },
+    {
+      "provider": "zcode",
+      "reason": "no configured ZCode session existed in the sampled state"
+    }
+  ]
+}

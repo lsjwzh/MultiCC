@@ -180,6 +180,10 @@ const {
   hasMatchingPartialCheckpoint,
   planTurnFinalization,
   createTurnFinalizationExecutor,
+  createApiErrorPolicyRuntime,
+  createApiErrorHost,
+  retryNotice,
+  sanitizeMessage: sanitizeApiErrorMessage,
 } = require('./src/chat');
 const {
   createErrorDto,
@@ -213,6 +217,7 @@ const chatTurnPreparationRuntime = createTurnRuntimeStore();
 let orchestrationRuntime = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
+const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
 const routerToolHost = createRouterToolHost({
   express, isLocalRequest, logger,
   activeTurnForSession: id => chatSessions.get(id)?._activeTurn,
@@ -3078,6 +3083,20 @@ tunnel.setFailureReporter((stage, category) => {
 });
 const chatStream = require('./src/chat-stream');
 const waitInjector = require('./src/wait-injector');
+let apiErrorAuxQueue = null;
+const apiErrorHost = createApiErrorHost({
+  policy: apiErrorPolicy, logger, persistedSessions, getTaskState, setTaskState,
+  chatBroadcast, workspaceBroadcast, waitInjector,
+  getAuxQueue: () => apiErrorAuxQueue,
+  setSessionStatus, isShuttingDown: () => _shuttingDown,
+  clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
+  isCurrentTurnRunner: (...args) => isCurrentTurnRunner(...args),
+});
+const {
+  recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,
+  turnHasSideEffects, clearSessionApiErrorState, scheduleOwnedRetry,
+  isNetworkUnhealthy, holdSession, auxHealthProbe, stopNetworkProbe,
+} = apiErrorHost;
 const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
@@ -3197,6 +3216,7 @@ const {
   executeAuxHttp,
   broadcast: broadcastTo,
 });
+apiErrorAuxQueue = auxQueue;
 
 // Memory runtime owns normalization, Aux distillation, periodic review and the
 // pending-distill gate. History is resolved lazily because its runtime is
@@ -3552,50 +3572,6 @@ const cleanupPushMonitor = pushRuntime.cleanup;
 
 // Map classifier states to their runtime actions; D/W are scan-terminal states.
 
-// Retry fires immediately - classify itself already runs ~60s apart, so a
-// delay here would just stack on top of that. Retries are uncapped: as long
-// as the aux service is up (so classify can judge E), we keep nudging. When
-// aux goes down, classify stops running and the retry loop stops naturally.
-const API_RETRY_DELAY_MS = 0;
-
-// Detect an assistant message that is pure API/transport error noise (empty,
-// or short and made up of error keywords). Used to prune retry churn so the
-// chat history isn't polluted with [nudge, error-reply, nudge, error-reply, …]
-// pairs when the upstream API is flapping.
-function isPureErrorMessage(text) {
-  const t = String(text || '').trim();
-  if (!t) return true;                       // empty reply = the turn produced nothing usable
-  if (t.length > 200) return false;          // long reply has real content even if it ends in an error
-  return /api\s*error|503|connection\s*(closed|reset|refused)|overloaded|internal\s*server\s*error|the system is busy|timeout|timed?\s*out|rate\s*limit|insufficient\s*balance|authorization\s*failed|exit\s*code|nonzero/i.test(t);
-}
-
-// Remove trailing [system-injected nudge, error assistant reply] pairs from the
-// chat history. Stops at the first pair that isn't of this shape, so the real
-// user message and the first error reply (whose trigger is the real user msg,
-// NOT a nudge) are preserved. Called before injecting the next retry nudge.
-function pruneErrorTurnPairs(sessionName) {
-  const history = loadChatHistory(sessionName);
-  if (!Array.isArray(history) || history.length < 2) return 0;
-  let removed = 0;
-  while (history.length >= 2) {
-    const last = history[history.length - 1];
-    const prev = history[history.length - 2];
-    if (last && last.role === 'assistant' && isPureErrorMessage(last.content)
-        && prev && prev.role === 'user' && isSystemInjectedMsg(prev.content)) {
-      history.pop();
-      history.pop();
-      removed++;
-    } else {
-      break;
-    }
-  }
-  if (removed > 0) {
-    chatHistoryService.replace(sessionName, history, { reason: 'prune-error-turn-pairs' });
-    console.log(`[multicc/classify] ${sessionName} pruned ${removed} error+nudge pair(s)`);
-  }
-  return removed;
-}
-
 function recordTaskBoardGoal(sessionName, goal, phase, cs, classifyState = 'P') {
   taskContextHost.recordGoal(sessionName, goal, phase, cs, classifyState);
 }
@@ -3649,16 +3625,15 @@ function dispatchStateAction(result, ctx) {
       emitRunningNotify(sessionName, label);
       return;
     }
-    // (2) P but no turn in flight — the CLI process / event stream already ended
-    // while classify still reads the reply as incomplete. That's an unknown
-    // interruption (network drop, crashed CLI, truncated stream), NOT real
-    // "still processing". Recover it like a fault (E-class): resume regardless of
-    // the autoContinue toggle, capped to avoid an infinite drop-loop.
-    if ((!cs || !cs._resultSaved) && waitInjector.resumeInterrupted(sessionName)) {
-      console.log(`[multicc/classify] ${sessionName} P + no turn in flight → 未知中断, resume`);
-      return;
-    }
-    // resume capped / explicit wait pending -> fall through to the waiting broadcast.
+    // (2) P but no turn in flight. The runner boundary owns the sole bounded
+    // unknown-error retry. Classify only reflects the exhausted/waiting state;
+    // it must not open a second resume loop.
+    logger.info('api_error_classifier_interrupted_observed', {
+      sessionId: sessionName,
+      provider: persisted?.cli || 'unknown',
+      policyAction: cs?._lastApiErrorDecision?.action || 'fail_fast',
+    });
+    // Fall through to the waiting broadcast.
   }
 
   if (state === 'completed') {
@@ -3704,24 +3679,44 @@ function dispatchStateAction(result, ctx) {
 
   // ── W / B / E (plus exhausted P recovery) → waiting (user-facing) ───────
 
-  // E: API error -> inject retry nudge. Uncapped - keeps retrying as long
-  // as aux (classify) is healthy. Before injecting, prune trailing
-  // [nudge, error-reply] pairs so the history doesn't fill with retry churn.
+  // E is now display/classification only. The runner boundary already called
+  // the centralized API policy, which either scheduled one bounded safe retry
+  // or failed fast. Classify must never create a second retry channel.
   if (error) {
-    pruneErrorTurnPairs(sessionName);
-    const nudge = '刚才因 API 异常中断，回答可能不完整，请从中断处继续。';
-    console.log(`[multicc/classify] ${sessionName} API error -> retry (uncapped)`);
-    // injectSystemMsg (NOT safeInject): it prepends SYS_PREFIX, which is what
-    // pruneErrorTurnPairs keys on to collapse retry churn — a bare safeInject
-    // here left every [nudge, error] pair in the history (prune never matched).
-    waitInjector.injectSystemMsg(sessionName, nudge, API_RETRY_DELAY_MS);
+    if (!cs?._lastApiErrorDecision) {
+      evaluateTurnApiError({
+        sessionName,
+        cs,
+        persisted,
+        turn: cs?._activeTurn,
+        runner: cs?._activeRunner,
+        raw: {
+          source: 'classifier_legacy',
+          provider: persisted?.cli || 'unknown',
+          code: 'classifier_api_error',
+          message: 'classifier reported an API error without structured provider evidence',
+        },
+        attempt: cs?._apiRetryAttempt || 0,
+        phase: 'stream',
+        partialOutput: true,
+        sideEffects: turnHasSideEffects(cs),
+      });
+    }
+    logger.info('api_error_classifier_observed', {
+      sessionId: sessionName,
+      provider: persisted?.cli || 'unknown',
+      policyAction: cs?._lastApiErrorDecision?.action || 'fail_fast',
+    });
   }
 
   // Common waiting-state broadcast — driven by classifyState letter.
   const cls = error ? 'E' : background ? 'B' : 'W';
   const disp = classifyDisplay(cls);
   const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
-  const waitMsg = finalGoal ? `等待：${finalGoal}` : (error ? 'API 异常，等待重试…' : '等待交互');
+  const policyMessage = error && cs?._lastApiErrorDecision
+    ? retryNotice(cs._lastApiErrorDecision) : '';
+  const waitMsg = error ? (policyMessage || 'API 异常，未自动重试')
+    : finalGoal ? `等待：${finalGoal}` : '等待交互';
   if (isTerminal) {
     triggerPush(sessionId, pushType, waitMsg);
     terminalBroadcast(sessionId, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
@@ -3750,7 +3745,7 @@ function dispatchStateAction(result, ctx) {
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
 //     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory,
-//     pendingUserInput, userInputSignalVersion }
+//     pendingUserInput, userInputSignalVersion, apiError }
 //   classifyState ∈ D | C | W | B | E | P | null  (D=done; B=terminal only; null=never classified)
 //   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
 const TASK_STATE_DEFAULTS = {
@@ -3759,6 +3754,7 @@ const TASK_STATE_DEFAULTS = {
   classifyState: null, pendingDispatches: [],
   classifyHistory: [],
   pendingUserInput: null, userInputSignalVersion: 0, userInputSignalTurnId: null,
+  apiError: null,
 };
 
 function getTaskState(persisted) {
@@ -3784,6 +3780,7 @@ function setTaskState(sessionId, patch, opts = {}) {
     goal: next.goal || '',
     phase: next.phase || 'idle',
     classifyState: next.classifyState || null,
+    apiError: next.apiError || null,
   };
   try {
     chatBroadcast(sessionId, classifyPayload);
@@ -3804,181 +3801,6 @@ const userInputSignalHost = createUserInputSignalHost(
     setState: setTaskState, log: message => console.log(message) });
 
 const AUX_HEALTH_PROBE_INTERVAL_MS = 5 * 60 * 1000;  // ④: probe aux recovery while unhealthy
-
-// ④ Degraded-mode recovery probe: while aux is unhealthy, every 5 min run a
-// trivial aux task. Any success → recordSuccess → unhealthy clears → normal
-// summary/reconcile/resume resumes. Cheap (a 1-token reply) and self-limiting
-// (only runs while unhealthy; no-op when healthy).
-// ── Network health hold (⑥A) ────────────────────────────────────────────────
-// When the upstream model API becomes unreliable (503, timeout, 402, etc.),
-// starting new turns only wastes credits and corrupts task state. Instead we
-// freeze all new-turn initiation (dispatch, auto-continue, wait-inject, nudge,
-// reconcile-resume) and wait for the API to recover. Held sessions' turn
-// context is preserved; on recovery each gets a gentle resume prompt so no
-// task is lost — just delayed until the API is back.
-//
-// Scope: "upstream API" means the model API the CLI / aux talks to. Network
-// errors from the CLI process (exit code 1 with stderr about API failures) and
-// from the aux queue (recordFail) are unified here. This does NOT cover the
-// server's own network outage (⑥B) — that's a separate, harder problem.
-
-const NETWORK_UNHEALTHY_THRESHOLD = 3;         // consecutive API failures before hold
-const NETWORK_PROBE_INTERVAL_MS = 30 * 1000;   // how often we test recovery
-const NETWORK_RECOVERY_PROBE_TIMEOUT_MS = 15000;
-
-const networkHealth = {
-  unhealthy: false,
-  sinceAt: null,
-  consecutiveFails: 0,
-  lastFailAt: null,
-  lastFailMsg: '',
-  heldSessions: new Map(),   // sessionId → { goal, heldAt, reason }
-  probeTimer: null,
-};
-
-// Call this from any code path that sees an upstream-API-style failure.
-// Aggregates across aux + main sessions; once >=THRESHOLD, triggers hold.
-function recordApiError(msg) {
-  const h = networkHealth;
-  h.consecutiveFails = (h.consecutiveFails || 0) + 1;
-  h.lastFailAt = Date.now();
-  h.lastFailMsg = String(msg || '').slice(0, 200);
-  if (h.consecutiveFails >= NETWORK_UNHEALTHY_THRESHOLD && !h.unhealthy) {
-    h.unhealthy = true;
-    h.sinceAt = Date.now();
-    console.error(`[multicc/net] UNHEALTHY after ${h.consecutiveFails} consecutive API errors: ${h.lastFailMsg}`);
-    // Broadcast to frontend so the dashboard can show a banner (reuse aux_health
-    // channel or add a dedicated one — for now log + console).
-    startNetworkProbe();
-  }
-}
-
-// Clear the unhealthy flag. Called when a probe succeeds.
-function recordApiSuccess() {
-  const h = networkHealth;
-  if (h.consecutiveFails || h.unhealthy) {
-    h.consecutiveFails = 0;
-    if (h.unhealthy) {
-      h.unhealthy = false;
-      const heldCount = h.heldSessions.size;
-      console.log(`[multicc/net] recovered — resuming ${heldCount} held session(s)`);
-      // 【顺序不变量·勿颠倒】unhealthy 必须先置 false（上一行）再 resume。恢复注入走
-      // safeInject → runChatTurn({originContinue:true})，而 runChatTurn 入口的 degrade防线
-      // chokepoint 会拦 `originContinue && isNetworkUnhealthy()`——若先把 resume 挪到清标记
-      // 之前，恢复注入会被自己的防线拦下，held 会话永远接续不上（死锁）。
-      resumeHeldSessions();
-      stopNetworkProbe();
-    }
-  }
-}
-
-// Whether new turns should be blocked right now.
-function isNetworkUnhealthy() { return networkHealth.unhealthy; }
-
-// Hold a session: mark it as waiting for API recovery. Its in-progress turn
-// (if any) can finish naturally; we just prevent NEW turns from starting.
-// Callers should check isNetworkUnhealthy() BEFORE calling this — this is the
-// "actually put it on hold" step.
-// Decide what pendingText to stash for a held session. Real data (dispatch result
-// / bg-completion via safeInject) has NO SYS_PREFIX; the classify E-retry nudge
-// (injectSystemMsg) DOES. A later nudge must NOT overwrite already-stashed real data
-// - the real payload is what resumeHeldSessions must replay. (A new real payload
-// still wins over a prior nudge; nudges overwrite nudges.)
-function mergeHeldPendingText(pendingText, prior) {
-  const SP = waitInjector.SYS_PREFIX;
-  const newIsNudge = typeof pendingText === 'string' && pendingText.startsWith(SP);
-  const priorIsReal = prior && prior.pendingText != null && !String(prior.pendingText).startsWith(SP);
-  if (newIsNudge && priorIsReal) return prior.pendingText;
-  return pendingText != null ? pendingText : (prior ? prior.pendingText : null);
-}
-function holdSession(sessionId, reason, pendingText) {
-  if (!networkHealth.unhealthy) return;
-  const p = persistedSessions.get(sessionId);
-  if (!p) return;
-  const ts = getTaskState(p);
-  const prior = networkHealth.heldSessions.get(sessionId);
-  // Preserve the original heldAt across re-holds. pendingText = the suppressed
-  // inject's text, stashed so resumeHeldSessions can replay real data (dispatch
-  // result / bg-completion) that would otherwise be lost when the chokepoint drops
-  // the turn. scan-skip-held keeps classify nudges from re-holding an already-held
-  // session, so a later hold usually carries NEW real data — let it overwrite so
-  // the most recent suppressed payload is what resume replays.
-  networkHealth.heldSessions.set(sessionId, {
-    goal: ts.goal || (typeof p.summary === 'string' ? p.summary.slice(0, 40) : ''),
-    heldAt: prior ? prior.heldAt : Date.now(),
-    reason: reason || (prior ? prior.reason : 'API 异常'),
-    pendingText: mergeHeldPendingText(pendingText, prior),
-  });
-  // One-shot notification: only when freshly held, so a long outage with later
-  // real-data re-holds doesn't spam "已暂挂" on every hold.
-  if (!prior) {
-    const dirId = p.dirId;
-    const note = `上游 API 异常，任务「${ts.goal || '未命名'}」已暂挂，恢复后自动接续`;
-    if (dirId) workspaceBroadcast(dirId, { type: 'notify', sessionId, state: 'waiting', message: note });
-  }
-}
-
-// Resume all held sessions with a gentle prompt. Called when the API recovers.
-async function resumeHeldSessions() {
-  const held = new Map(networkHealth.heldSessions);
-  networkHealth.heldSessions.clear();
-  let i = 0;
-  for (const [sid, info] of held) {
-    // Leak guard: drop sessions deleted while held (heldSessions is never
-    // .delete()'d on session removal — see DELETE /api/sessions/:id).
-    if (!persistedSessions.has(sid)) { console.log(`[multicc/net] skip resumed session ${sid}: gone`); i++; continue; }
-    // If a real payload (dispatch result / bg-completion) was suppressed while held,
-    // replay THAT so the model gets the actual data it was blocked on — otherwise the
-    // generic recovery nudge. Prefixed so the model knows the API recovered either way.
-    const recoveryNote = `上游 API 已恢复。之前因 API 异常暂挂的任务「${info.goal || '未命名'}」现在可以继续了。`;
-    const resumeMsg = info.pendingText
-      ? `${recoveryNote}（含暂挂期间被暂存的真实数据，请据此继续）\n${info.pendingText}`
-      : `${recoveryNote}请确认当前状态并继续执行。`;
-    try { waitInjector.safeInject(sid, resumeMsg); } catch (_) {}
-    console.log(`[multicc/net] resumed session ${sid}: ${info.goal}`);
-    // Stagger: don't fire N concurrent turns at the freshly-recovered API
-    // (thundering herd → 3 fails → re-hold → oscillation).
-    if (++i < held.size) await new Promise(r => setTimeout(r, 2000));
-  }
-}
-
-// Periodically probe upstream API health via a trivial aux request.
-function startNetworkProbe() {
-  stopNetworkProbe();
-  const probe = () => {
-    if (!networkHealth.unhealthy) return;
-    // Dedup + backpressure: skip if a network_probe is already queued or in-flight.
-    // (Without this, probes pile up at 1/30s while each one times out.)
-    if (auxQueue.queue.some(t => t.type === 'network_probe') ||
-        (auxQueue.currentTask && auxQueue.currentTask.type === 'network_probe')) return;
-    auxQueue.enqueue({
-      type: 'network_probe',
-      prompt: '回复 ok',
-      meta: { timeout: NETWORK_RECOVERY_PROBE_TIMEOUT_MS },
-    }).then(r => {
-      if (r && !r.cancelled && r.text && /ok/i.test(r.text)) {
-        console.log('[multicc/net] probe OK — API recovered');
-        recordApiSuccess();
-      }
-    }).catch(() => { /* still down — recordApiError already called in drain */ });
-  };
-  networkHealth.probeTimer = setInterval(probe, NETWORK_PROBE_INTERVAL_MS);
-  probe(); // run one immediately
-}
-function stopNetworkProbe() {
-  if (networkHealth.probeTimer) { clearInterval(networkHealth.probeTimer); networkHealth.probeTimer = null; }
-}
-
-function auxHealthProbe() {
-  if (!auxQueue.isUnhealthy()) return;
-  auxQueue.enqueue({
-    type: 'health_probe',
-    prompt: '回复一个字：ok',
-    meta: { probe: true },
-  }).then(result => {
-    if (result && !result.cancelled) auxQueue.recordSuccess();
-  }).catch(() => { /* recordFail already called inside drain */ });
-}
 
 // ── Periodic scan (replaces the old startup-only reconcile) ────────────────
 // Every minute, sweep sessions whose classifyState is not D or W (i.e. still
@@ -4114,7 +3936,7 @@ function scanAndReclassify() {
     // nudge here would re-hit the chokepoint and overwrite the stashed pendingText
     // with boilerplate, losing any real dispatch/bg payload held for replay on
     // recovery. resumeHeldSessions owns these; leave them alone.
-    if (networkHealth.heldSessions.has(sid)) {
+    if (apiErrorHost.isHeld(sid)) {
       note(sid, ts.classifyState, 'skipped-held', 'held by degrade防线 (API recovery)');
       continue;
     }
@@ -4517,16 +4339,15 @@ function emitTurnOutcome(sessionName, { status, notifyState, message, alert }) {
   }
 }
 
-// Turn-boundary hook for guard F (REMOVED — classify prompt + dispatchStateAction
-// now handle API errors via state E → retry inject). The two call sites still
-// set/reset _sawApiError for classify to reference.
+// API recovery is decided at the owned runner boundary. Classify state E only
+// reflects that decision; it cannot inject a second retry turn.
 
 // Apply one claude-shaped stream-json event to chat session state, then forward
 // it to clients. Shared by the per-turn spawn path (handleLine) and the
 // persistent streaming path (runChatTurnStreaming) so the two never drift.
 // The `result` event is the turn boundary: it saves the assistant message,
 // returns the session to idle, and fires post-turn hooks.
-function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
+function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, providerName = 'claude') {
   if (!isCurrentTurnRunner(cs, turn, runner)) return;
   turnProgressHeartbeat.touchActivity(sessionName, turn.turnId);
   if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
@@ -4574,14 +4395,26 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
   if (evt.type === 'result') {
     turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
     cs.currentCost = evt.total_cost_usd || null;
-    // Flag transport/API failures — classify prompt recognizes these and
-    // judges state E (API error) → retry inject picks up naturally.
-    if (evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype))) {
+    const apiFailure = evt.is_error === true
+      || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype));
+    if (apiFailure) {
+      chatHistoryRuntime.clearIncrementalSave(sessionName);
       cs._sawApiError = true;
       runner.sawApiError = true;
-      recordApiError(evt.subtype || 'api_error');
+      const detail = evt.error && typeof evt.error === 'object' ? evt.error : {};
+      runner.apiErrorRaw = {
+        source: providerName === 'qoder' ? 'qoder_result' : 'claude_result',
+        provider: providerName,
+        code: detail.code || evt.subtype || detail.type,
+        httpStatus: detail.http_status || detail.status_code || detail.status
+          || evt.http_status || evt.status_code || evt.status,
+        headers: detail.headers || evt.headers,
+        requestId: detail.request_id || evt.request_id,
+        message: detail.message || evt.result || evt.subtype || 'api_error',
+      };
     } else {
-      recordApiSuccess();
+      recordApiSuccess(providerName, { retryAttempt: runner.apiRetryAttempt || 0 });
+      clearSessionApiErrorState(sessionName, cs);
     }
     // Hoisted out of the if-block below: forward() at the end of this branch
     // also needs it. Block-scoping it inside the if made the forward line throw
@@ -4590,7 +4423,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
     // reload replayed chat_history.
     const usage = evt.usage || {};
     runner.pendingUsage = usage;
-    if (cs.currentAssistantText || cs.currentToolCalls.length) {
+    if (!apiFailure && (cs.currentAssistantText || cs.currentToolCalls.length)) {
       const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
         role: 'assistant', content: cs.currentAssistantText,
         tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
@@ -4611,7 +4444,12 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner) {
       // AFTER the final — a duplicate bubble on reconnect. Mirrors the cancel
       // in the child-process close handler.
       chatHistoryRuntime.clearIncrementalSave(sessionName);
+    } else if (!apiFailure) {
+      recordResultEvent(turn, runner, { current: true, persisted: false });
     } else {
+      // An error result is a turn boundary, not a durable successful answer.
+      // Close finalization may checkpoint meaningful partial output, while an
+      // error-only envelope remains eligible for a safe bounded retry.
       recordResultEvent(turn, runner, { current: true, persisted: false });
     }
     // Include durationMs + num_turns in the result broadcast so clients
@@ -4641,7 +4479,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
   for (const evt of (Array.isArray(decoded) ? decoded : [decoded])) {
     if (!evt) continue;
     if (evt.type === 'claude_event') {
-      applyClaudeChatEvent(cs, sessionName, evt.raw, forward, turn, runner);
+      applyClaudeChatEvent(cs, sessionName, evt.raw, forward, turn, runner, provider.name);
       continue;
     }
     if (evt.type === 'session_init') {
@@ -4777,6 +4615,8 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
     }
     if (evt.type === 'complete') {
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
+      recordApiSuccess(provider.name, { retryAttempt: runner.apiRetryAttempt || 0 });
+      clearSessionApiErrorState(sessionName, cs);
       codexUsageHost.complete({ evt, cs, persisted, sessionName, turn, runner, forward });
       continue;
     }
@@ -4784,21 +4624,45 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId,
         evt.kind === 'transport_disconnect' ? 'recovering' : 'finalizing');
       if (evt.kind === 'response_completed_disconnect') {
-        cs._codexPendingStreamError = evt.message;
+        const publicMessage = sanitizeApiErrorMessage(evt.message);
+        cs._codexPendingStreamError = publicMessage;
         cs._codexPendingStreamErrorCount = (cs._codexPendingStreamErrorCount || 0) + 1;
         const hasOutput = !!(cs.currentAssistantText || cs.currentToolCalls.length || cs._resultSaved);
         if (hasOutput) cs._codexRecoveredDisconnect = true;
-        console.warn(`[multicc/chat] [${sessionName}] pending ${provider.name} response.completed disconnect${hasOutput ? ' after output' : ''} #${cs._codexPendingStreamErrorCount}: ${evt.message}`);
+        logger.warn('chat_provider_response_completed_disconnect', {
+          sessionId: sessionName,
+          provider: provider.name,
+          afterOutput: hasOutput,
+          occurrence: cs._codexPendingStreamErrorCount,
+        });
       } else if (evt.kind === 'transport_disconnect') {
-        cs._codexTransportError = evt.message;
+        const publicMessage = sanitizeApiErrorMessage(evt.message);
+        cs._codexTransportError = publicMessage;
         cs._sawApiError = true;
         runner.sawApiError = true;
-        recordApiError(evt.message);
-        console.warn(`[multicc/chat] [${sessionName}] ${provider.name} transport disconnect: ${evt.message}`);
+        runner.apiErrorRaw = evt.error || {
+          source: `${provider.name}_event`,
+          provider: provider.name,
+          code: 'connection_reset',
+          message: evt.message,
+        };
+        logger.warn('chat_provider_transport_error', {
+          sessionId: sessionName,
+          provider: provider.name,
+          phase: meaningfulTurnOutput(cs) || turnHasSideEffects(cs) ? 'stream' : 'before_first_token',
+        });
       } else {
-        cs._adapterError = evt.message;
-        runner.adapterError = evt.message;
-        forward({ type: 'error', error: `${evt.label || provider.name} 出错：${evt.message}` });
+        const publicMessage = sanitizeApiErrorMessage(evt.message);
+        cs._adapterError = publicMessage;
+        runner.adapterError = publicMessage;
+        runner.sawApiError = true;
+        runner.apiErrorRaw = evt.error || {
+          source: `${provider.name}_event`,
+          provider: provider.name,
+          code: 'provider_error',
+          message: evt.message,
+        };
+        forward({ type: 'error', error: `${evt.label || provider.name} 出错：${publicMessage}` });
       }
     }
   }
@@ -4978,6 +4842,12 @@ function runChatTurn(sessionName, text, opts = {}) {
   }
 
   cancelClassify(cs);
+  if (!originContinue) {
+    apiErrorHost.cancelRetry(sessionName, cs);
+    cs._apiRetryAttempt = 0;
+    cs._lastApiErrorDecision = null;
+    setTaskState(sessionName, { apiError: null }, { save: false });
+  }
   // Kill previous process if still running
   if (cs.claudeProc) {
     console.log(`[multicc/chat] [${sessionName}] New user_message while claude pid=${cs.claudeProc.pid} still running, killing previous turn`);
@@ -5210,7 +5080,7 @@ function runChatTurn(sessionName, text, opts = {}) {
     spawnOpts: { ...invocationEnvelope.spawnOpts, ultracode: false },
   });
 
-  const spawnChat = (spawnArgs, isRetry) => {
+  const spawnChat = (spawnArgs, isRetry, apiRetryAttempt = 0) => {
     const { env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
       TERM: 'dumb', NO_COLOR: '1',
       // Let the bundled multicc-trigger skill know who it is and where the
@@ -5241,6 +5111,7 @@ function runChatTurn(sessionName, text, opts = {}) {
       runnerId: `proc_${proc.pid || 'pending'}_${crypto.randomBytes(6).toString('hex')}`,
       kind: 'process',
     });
+    runner.apiRetryAttempt = Math.max(0, Number(apiRetryAttempt) || 0);
     cs._activeTurn = turn;
     cs._activeRunner = runner;
     cs.claudeProc = proc;
@@ -5282,12 +5153,26 @@ function runChatTurn(sessionName, text, opts = {}) {
     proc.stderr.on('data', (chunk) => {
       if (!isActiveProc()) return;
       stderrBuf += chunk.toString();
-      console.error(`[multicc/chat] stderr: ${chunk.toString().slice(0, 200)}`);
+      logger.warn('chat_provider_stderr', {
+        sessionId: sessionName,
+        provider: cs.cli,
+        message: sanitizeApiErrorMessage(chunk.toString()),
+      });
     });
 
     proc.on('error', (err) => {
       if (!isActiveProc()) return;
-      console.error(`[multicc/chat] [${sessionName}] pid=${proc.pid} spawn error: ${err.message}`);
+      runner.apiErrorRaw = {
+        source: 'process_stderr',
+        provider: cs.cli,
+        code: err && err.code || 'spawn_failed',
+        message: err && err.message,
+      };
+      logger.error('chat_provider_spawn_error', {
+        sessionId: sessionName,
+        provider: cs.cli,
+        code: err && err.code || 'spawn_failed',
+      });
     });
 
     proc.on('close', (code, signal) => {
@@ -5310,6 +5195,7 @@ function runChatTurn(sessionName, text, opts = {}) {
         chatBroadcast(sessionName, { type: 'error', error: `Codex 出错：${pendingStreamError}` });
       }
       const recoveredCodexDisconnect = (!!cs._codexRecoveredDisconnect || !!pendingStreamError) && hasTurnOutput;
+      const sanitizedStderrTail = sanitizeApiErrorMessage(stderrBuf.slice(-300).trim(), '');
       const diag = {
         session: sessionName, cli: cs.cli, pid: proc.pid, code, signal, durMs, killReason,
         resultSaved: !!turn.resultDurable,
@@ -5320,13 +5206,49 @@ function runChatTurn(sessionName, text, opts = {}) {
         recoveredCodexDisconnect,
         pendingTransportError: pendingTransportError.slice(0, 200),
         pendingStreamErrorCount,
-        stderrTail: stderrBuf.slice(-300).trim(),
+        stderrTail: sanitizedStderrTail,
       };
       let kind = 'normal';
       if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
       else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
       else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
       console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
+      const partialOutput = meaningfulTurnOutput(cs);
+      const sideEffects = turnHasSideEffects(cs);
+      const shouldClassifyApiError = !!(
+        runner.apiErrorRaw
+        || runner.sawApiError
+        || runner.adapterError
+        || pendingTransportError
+        || killReason
+        || code !== 0
+        || (!turn.resultDurable && !hasTurnOutput)
+      );
+      const rawApiError = killReason ? {
+        source: 'process_stderr',
+        provider: cs.cli,
+        code: killReason,
+        message: 'turn cancelled',
+      } : runner.apiErrorRaw || {
+        source: 'process_stderr',
+        provider: cs.cli,
+        code: killReason || (code !== 0 ? `process_exit_${code}` : 'empty_exit'),
+        message: pendingTransportError || sanitizedStderrTail || (killReason ? 'turn cancelled' : 'provider returned no result'),
+      };
+      const apiErrorDecision = shouldClassifyApiError
+        ? evaluateTurnApiError({
+          sessionName,
+          cs,
+          persisted,
+          turn,
+          runner,
+          raw: rawApiError,
+          attempt: runner.apiRetryAttempt || 0,
+          phase: partialOutput || sideEffects ? 'stream' : 'before_first_token',
+          partialOutput,
+          sideEffects,
+        })
+        : null;
       const closeCheckpointKey = assistantCheckpointKey(cs);
       const finalizePlan = planTurnFinalization({
         current: true,
@@ -5335,7 +5257,8 @@ function runChatTurn(sessionName, text, opts = {}) {
         code,
         signal,
         killReason,
-        apiError: !!runner.sawApiError,
+        apiError: !!apiErrorDecision || !!runner.sawApiError,
+        apiErrorDecision,
         adapterError: !!runner.adapterError,
         retryBlockedByAdapterError: !!cs._adapterError,
         retryPlanned: !!runner.retryPlanned,
@@ -5382,7 +5305,12 @@ function runChatTurn(sessionName, text, opts = {}) {
           : stderrTail.includes('already in use') ? 'session-id conflict'
           : stderrTail.includes('No conversation found') || stderrTail.includes('session not found') ? 'resume target missing'
           : `exit ${code}${signal ? '/' + signal : ''}`;
-        console.warn(`[multicc/chat] [${sessionName}] ${cs.cli} yielded no output (${reason}), retrying fresh. stderr: ${stderrTail.slice(0, 200)}`);
+        logger.warn('chat_empty_exit_fresh_retry', {
+          sessionId: sessionName,
+          provider: cs.cli,
+          reason,
+          stderr: sanitizeApiErrorMessage(stderrTail),
+        });
         // Reset session id so the retry starts a brand-new conversation
         if (cs.cli === 'claude') persisted.cliSessionId = crypto.randomUUID();
         else persisted.cliSessionId = null;  // codex will allocate on first turn
@@ -5403,12 +5331,21 @@ function runChatTurn(sessionName, text, opts = {}) {
         cs.claudeProc = spawnChat(fallbackArgs, true);
         return;
       }
+      if (finalizePlan.action === 'retry-api') {
+        cs.claudeProc = null;
+        scheduleOwnedRetry({
+          sessionName, cs, persisted, turn, runner,
+          decision: finalizePlan.retry, provider: cs.cli,
+          start: () => spawnChat(spawnArgs, true, finalizePlan.retry.attempt),
+        });
+        return;
+      }
       turnProgressHeartbeat.stop(sessionName, turn.turnId);
       turnFinalizationExecutor.execute(finalizePlan, {
         runnerKind: 'process', sessionName, cs, persisted, turn, runner,
         code,
         signal,
-        stderrTail: stderrBuf.slice(-300).trim(),
+        stderrTail: sanitizedStderrTail,
         pendingTransportError,
       });
     });
@@ -5582,7 +5519,7 @@ createOrchestrationRoutes({
 // UI sees identical events. The turn boundary is the `result` event (handled
 // inside applyClaudeChatEvent); finalizeStreamingTurn() then does the
 // process-independent cleanup (stream_end, gateway回流) WITHOUT killing the proc.
-function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, turn) {
+function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, turn, apiRetryAttempt = 0) {
   // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
   // vars before applying the provider env, so the provider choice is always
   // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
@@ -5648,6 +5585,7 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
     runnerId: `stream_${mySeq}_${crypto.randomBytes(6).toString('hex')}`,
     kind: 'stream', sequence: mySeq,
   });
+  runner.apiRetryAttempt = Math.max(0, Number(apiRetryAttempt) || 0);
   cs._activeTurn = turn;
   cs._activeRunner = runner;
 
@@ -5664,10 +5602,24 @@ function runChatTurnStreaming(sessionName, cs, persisted, invocation, provider, 
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
     applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
   })
-    .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner))
+    .then(() => finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner, invocation, provider))
     .catch((err) => {
-      console.warn(`[multicc/chat] [${sessionName}] (streaming) turn ended early: ${err.message}`);
-      finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner);
+      if (!runner.killReason) {
+        runner.sawApiError = true;
+        runner.apiErrorRaw = {
+          source: 'anthropic_event',
+          provider: provider.name,
+          code: err && err.code,
+          message: err && err.message,
+        };
+      }
+      logger.warn('chat_stream_ended_early', {
+        sessionId: sessionName,
+        provider: provider.name,
+        code: err && err.code || null,
+        killed: !!runner.killReason,
+      });
+      finalizeStreamingTurn(sessionName, cs, persisted, mySeq, turn, runner, invocation, provider);
     });
 
   return true;
@@ -5728,16 +5680,53 @@ const turnFinalizationExecutor = createTurnFinalizationExecutor({
 // Process-independent end-of-turn cleanup for the streaming path. Guarded by
 // the turn sequence so a superseded (interrupted) turn's late completion can't
 // clobber the turn that replaced it.
-function finalizeStreamingTurn(sessionName, cs, persisted, seq, turn, runner) {
+function finalizeStreamingTurn(sessionName, cs, persisted, seq, turn, runner, invocation, provider) {
   if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
   if (!isCurrentTurnRunner(cs, turn, runner)) return;
+  const partialOutput = meaningfulTurnOutput(cs);
+  const sideEffects = turnHasSideEffects(cs);
+  const shouldClassifyApiError = !!(
+    runner.apiErrorRaw
+    || runner.sawApiError
+    || runner.adapterError
+    || runner.killReason
+    || (!runner.resultEvent && !turn.resultDurable)
+  );
+  const rawApiError = runner.killReason
+    ? {
+      source: 'anthropic_event',
+      provider: persisted.cli || 'claude',
+      code: runner.killReason,
+      message: 'turn cancelled',
+    }
+    : runner.apiErrorRaw || {
+      source: 'host_interruption',
+      provider: persisted.cli || 'claude',
+      code: 'stream_ended_without_result',
+      message: 'stream ended without a result event',
+    };
+  const apiErrorDecision = shouldClassifyApiError
+    ? evaluateTurnApiError({
+      sessionName,
+      cs,
+      persisted,
+      turn,
+      runner,
+      raw: rawApiError,
+      attempt: runner.apiRetryAttempt || 0,
+      phase: partialOutput || sideEffects ? 'stream' : 'before_first_token',
+      partialOutput,
+      sideEffects,
+    })
+    : null;
   const finalizeCheckpointKey = assistantCheckpointKey(cs);
   const plan = planTurnFinalization({
     current: true,
     runnerKind: 'stream',
     cli: persisted.cli || 'claude',
     killReason: runner.killReason || null,
-    apiError: !!runner.sawApiError,
+    apiError: !!apiErrorDecision || !!runner.sawApiError,
+    apiErrorDecision,
     adapterError: !!runner.adapterError,
     retryPlanned: !!runner.retryPlanned,
     resultEvent: !!runner.resultEvent,
@@ -5747,6 +5736,15 @@ function finalizeStreamingTurn(sessionName, cs, persisted, seq, turn, runner) {
     handoff: persisted.pendingCliHandoff,
   });
   turnProgressHeartbeat.stop(sessionName, turn.turnId);
+  if (plan.action === 'retry-api') {
+    scheduleOwnedRetry({
+      sessionName, cs, persisted, turn, runner,
+      decision: plan.retry, provider: persisted.cli || 'claude',
+      start: () => runChatTurnStreaming(
+        sessionName, cs, persisted, invocation, provider, turn, plan.retry.attempt),
+    });
+    return;
+  }
   turnFinalizationExecutor.execute(plan, {
     runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
   });

@@ -137,6 +137,27 @@ assert.strictEqual(
 );
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'response-disconnect' })[0].kind, 'response_completed_disconnect');
 assert.strictEqual(codex.decodeEvent({ type: 'error', message: 'transport-disconnect' })[0].kind, 'transport_disconnect');
+assert.deepStrictEqual(
+  codex.decodeEvent({
+    type: 'turn.failed',
+    error: {
+      message: 'limited',
+      code: 'rate_limit_error',
+      status: 429,
+      headers: { 'retry-after': '5' },
+      request_id: 'private-request-id',
+    },
+  })[0].error,
+  {
+    source: 'codex_event',
+    provider: 'codex',
+    code: 'rate_limit_error',
+    httpStatus: 429,
+    headers: { 'retry-after': '5' },
+    requestId: 'private-request-id',
+    message: 'limited',
+  },
+);
 assert.strictEqual(codex.decodeEvent({ type: 'turn.completed', usage: { input_tokens: 3 } })[0].type, 'complete');
 assert.deepStrictEqual(
   codex.decodeEvent({
@@ -159,6 +180,14 @@ for (const adapter of [opencode, zcode]) {
   assert.strictEqual(tool.type, 'tool_update');
   assert.strictEqual(tool.completed, true);
   assert.strictEqual(adapter.decodeEvent({ type: 'step_finish', part: { reason: 'stop' } })[0].type, 'complete');
+  const providerError = adapter.decodeEvent({
+    type: 'error',
+    error: { message: 'bad model', code: 'model_not_found', statusCode: 404 },
+  })[0];
+  assert.equal(providerError.error.provider, adapter.name);
+  assert.equal(providerError.error.source, `${adapter.name}_event`);
+  assert.equal(providerError.error.code, 'model_not_found');
+  assert.equal(providerError.error.httpStatus, 404);
 }
 
 const opencodeEnvelope = {
