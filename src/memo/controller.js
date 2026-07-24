@@ -98,11 +98,6 @@ function createMemoController({ directories, sessions, runtime, files, pathPort 
     if (target.kind !== 'chat') {
       domain(DOMAIN_KINDS.BAD_REQUEST, '只能发送到 chat 类型的会话', 'memo_session_kind_invalid');
     }
-    const active = runtime.getChatSession(sessionId);
-    if (active && active.claudeProc) {
-      domain(DOMAIN_KINDS.CONFLICT, '目标会话正在跑回合，稍后再试', 'memo_session_busy');
-    }
-
     let started;
     try {
       started = await runtime.runTurn(sessionId, text, {});

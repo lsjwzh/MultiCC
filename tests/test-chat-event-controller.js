@@ -179,7 +179,7 @@ function controllerFixture() {
     resetHistoryPagination() {},
     applyHistoryPlan() {},
     removeHistoryMessageById() {},
-    showNotifyToast() {},
+    showNotifyToast(...args) { calls.push(['toast', ...args]); },
     speakNotify() {},
     maybeScrollToBottom() {},
     renderCurrentText() { calls.push(['render', state.currentTextContent]); },
@@ -254,6 +254,38 @@ test('only server init synchronizes streaming state and pending cancel ownership
   assert.equal(fixture.state.pendingCancel, false);
   assert.deepEqual(fixture.calls.find(call => Array.isArray(call) && call[0] === 'send'), ['send', { type: 'cancel' }]);
   assert.equal(fixture.state.providerTokenWindows.today, 1);
+});
+
+test('structured user-input and FIFO events expose correlation and honest frozen state', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'user_input_required',
+    requestId: 'usrq-1',
+    question: '<img src=x onerror=alert(1)> 是否继续？',
+    options: ['继续', '取消'],
+  }, generation);
+  assert.equal(fixture.state.pendingUserInputRequestId, 'usrq-1');
+  assert.deepEqual(fixture.calls.at(-1), [
+    'system',
+    '需要你的确认：<img src=x onerror=alert(1)> 是否继续？\n1. 继续\n2. 取消',
+  ]);
+
+  fixture.controller.handleEvent({
+    type: 'session_queue',
+    event: 'frozen',
+    state: 'frozen',
+    freezeReason: 'awaiting_user_input',
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'session_queue',
+    event: 'queued',
+    queuePosition: 2,
+  }, generation);
+  assert.deepEqual(fixture.calls.slice(-2), [
+    ['system', '队列已冻结：awaiting_user_input'],
+    ['toast', '消息已排队（第 2 位）', 'running'],
+  ]);
 });
 
 test('Claude five-hour limit consumes the structured SDK event without retaining billing fields', () => {

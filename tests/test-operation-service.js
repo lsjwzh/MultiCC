@@ -235,11 +235,12 @@ test('schema v1 wait/outbox state migrates without losing existing records', asy
 
   const store = createOrchestrationStore({ file });
   const before = await store.snapshot();
-  assert.equal(before.schemaVersion, 2);
+  assert.equal(before.schemaVersion, 3);
   assert.equal(before.waits.old.id, 'old');
   assert.deepEqual(before.operations, {});
+  assert.deepEqual(before.sessionSchedules, {});
   await store.mutate(draft => { draft.migrated = true; });
   const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.equal(disk.schemaVersion, 2);
+  assert.equal(disk.schemaVersion, 3);
   assert.equal(disk.outbox.old.id, 'old');
 });

@@ -165,6 +165,7 @@ const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { createTaskContextHost } = require('./src/task-context-host');
+const { createSessionWorkHost } = require('./src/session-work-host');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -217,6 +218,7 @@ let chatHistoryService = null;
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
 let orchestrationRuntime = null;
+let sessionWorkHost = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
@@ -1808,7 +1810,7 @@ app.use(createMemoModule({
   sessions: { get: id => persistedSessions.get(id) },
   runtime: {
     getChatSession: id => chatSessions.get(id),
-    runTurn: (id, text, options) => runChatTurn(id, text, options),
+    runTurn: (id, text, options) => admitChatWork(id, text, options),
   },
 }).router);
 
@@ -3229,17 +3231,9 @@ const taskBoardRuntime = createTaskBoardRuntime({
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
   isSessionBusy: taskBoardSessionBusy,
+  resolveSessionQueue: (...args) => sessionWorkHost.resolveTask(...args),
   getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
-  getSessionRunState: sid => {
-    const rec = persistedSessions.get(sid);
-    if (!rec) return null;
-    const ts = rec.taskState;
-    const cls = ts?.classifyState;
-    if (!cls) return 'idle';
-    if (cls === 'A') return 'running'; // legacy active state
-    const cardStatus = classifyDisplay(cls).cardStatus;
-    return cardStatus === 'completed' ? 'done' : cardStatus;
-  },
+  getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle',
   resolveGoalLimits,
   buildGoalLimitNote,
   logger: console,
@@ -3251,7 +3245,7 @@ const taskContextHost = createTaskContextHost({
   getTaskBoard: () => taskBoardRuntime, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
-  runTurn: (sessionId, text, options) => runChatTurn(sessionId, text, options),
+  runTurn: (sessionId, text, options) => admitChatWork(sessionId, text, options),
 });
 
 // Skill-sync owns converter/link state, its watcher and its periodic timer.
@@ -3615,6 +3609,7 @@ function dispatchStateAction(result, ctx) {
     // Fall through to the waiting broadcast.
   }
 
+  sessionWorkHost.classifyTransition(sessionName, cs?._currentTaskId || null, result);
   if (state === 'completed') {
     // D — task genuinely finished. This is the ONLY terminal state.
     const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
@@ -3778,6 +3773,23 @@ const userInputSignalHost = createUserInputSignalHost(
   { getSession: id => chatSessions.get(id),
     getState: id => getTaskState(persistedSessions.get(id)),
     setState: setTaskState, log: message => console.log(message) });
+sessionWorkHost = createSessionWorkHost({
+  runtime: () => orchestrationRuntime,
+  getRecord: id => persistedSessions.get(id),
+  getChatSession: id => chatSessions.get(id),
+  getTaskState,
+  pendingUserInput: id => userInputSignalHost.pending(id),
+  recordUserInput: signal => userInputSignalHost.record(signal),
+  broadcast: chatBroadcast,
+  setTaskState,
+  onTaskBoardQueueEvent: event => taskBoardRuntime.onQueueEvent(event),
+  classifyDisplay,
+  cancelClassify,
+  chatStream,
+  assignKillReason,
+  appendMessage: appendChatMessage,
+  log: logger,
+});
 
 const AUX_HEALTH_PROBE_INTERVAL_MS = 5 * 60 * 1000;  // ④: probe aux recovery while unhealthy
 
@@ -4168,6 +4180,8 @@ function runClassifyNow(cs, sessionName) {
     const structured = userInputSignalHost.degradedResult(sessionName, cs.currentTask);
     if (structured) applyClassifyResult(cs, sessionName, sessionId, structured,
       { cwd: cs.cwd, source: 'multicc/structured' });
+    else sessionWorkHost.classifyUnavailable(
+      sessionName, cs._currentTaskId || null, 'classification_unavailable');
     return;
   }
   // Dedup: drop this session's older queued/in-flight classify before enqueuing
@@ -4196,6 +4210,8 @@ function runClassifyNow(cs, sessionName) {
     // and no .message — that's normal churn, not a failure. Don't log it as FAILED.
     if (e && e.cancelled) return;
     console.log(`[multicc/aux] Classify FAILED for ${sessionName}: ${e.message}`);
+    sessionWorkHost.classifyUnavailable(
+      sessionName, cs._currentTaskId || null, 'classification_error');
   });
 }
 
@@ -4206,6 +4222,7 @@ function runClassifyNow(cs, sessionName) {
 // runClassifyNow handles the empty-reply case itself (falls back to user msg).
 function classifyTurnEnd(cs, sessionName) {
   cancelClassify(cs);
+  sessionWorkHost.turnEnded(sessionName);
   runClassifyNow(cs, sessionName);
   taskBoardRuntime.onTurnEnd(cs, sessionName);
 }
@@ -4670,6 +4687,11 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   logger,
 });
 
+async function admitChatWork(sessionName, text, opts = {}) {
+  return sessionWorkHost?.admit(sessionName, text, opts)
+    || { ok: false, code: 'scheduler_not_ready' };
+}
+
 function runChatTurn(sessionName, text, opts = {}) {
   const persisted = persistedSessions.get(sessionName);
   if (!persisted) {
@@ -4786,7 +4808,6 @@ function runChatTurn(sessionName, text, opts = {}) {
   let preparationOpen = true;
   let preparationFailure = 'preparation-failed';
   let cs = existingCs;
-  let runnerSuperseded = false;
   let runnerHandedOff = false;
   let preparationStateActivated = false;
   let messageDurable = false;
@@ -4831,47 +4852,8 @@ function runChatTurn(sessionName, text, opts = {}) {
     cs._lastApiErrorDecision = null;
     setTaskState(sessionName, { apiError: null }, { save: false });
   }
-  // Kill previous process if still running
-  if (cs.claudeProc) {
-    console.log(`[multicc/chat] [${sessionName}] New user_message while claude pid=${cs.claudeProc.pid} still running, killing previous turn`);
-    assignKillReason(cs._activeRunner, 'new_user_message');
-    runnerSuperseded = true;
-    try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
-    cs.claudeProc = null;
-    cs.lineBuf = '';
-    cs.isStreaming = false;
-    cs.streamReplay = [];
-    // Save partial assistant response before starting new turn
-    if (cs.currentAssistantText || cs.currentToolCalls.length) {
-      appendChatMessage(sessionName, {
-        role: 'assistant', content: cs.currentAssistantText,
-        tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-        ts: Date.now(), cancelled: true,
-      });
-      cs.chatTurnCount++;
-    }
-  } else if ((persisted.cli || 'claude') === 'claude' && chatStream.status(sessionName)?.busy) {
-    // Streaming: no per-turn child proc, but a turn may be in flight on the
-    // persistent process. Interrupt it (its finalize becomes a no-op via the
-    // _streamTurnSeq bump) and preserve its partial output before resetting.
-    console.log(`[multicc/chat] [${sessionName}] (streaming) new message while turn busy → interrupting previous`);
-    assignKillReason(cs._activeRunner, 'new_user_message');
-    runnerSuperseded = true;
-    cs._streamTurnSeq = (cs._streamTurnSeq || 0) + 1; // supersede the in-flight turn's finalize
-    chatStream.cancel(sessionName);
-    cs.isStreaming = false;
-    cs.streamReplay = [];
-    if (cs.currentAssistantText || cs.currentToolCalls.length) {
-      appendChatMessage(sessionName, {
-        role: 'assistant', content: cs.currentAssistantText,
-        tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-        ts: Date.now(), cancelled: true,
-      });
-      cs.chatTurnCount++;
-    }
-  }
-
-  const detachTaskContext = !!originDispatchId && !requestedTask.id;
+  const detachTaskContext = (!requestedTask.id && opts.schedulerWorkKind === 'task')
+    || (!!originDispatchId && !requestedTask.id);
   const {
     taskId: nextTaskId, boundaryChanged: taskBoundaryChanged,
     detached: taskDetached,
@@ -4896,6 +4878,13 @@ function runChatTurn(sessionName, text, opts = {}) {
     return false;
   }
   messageDurable = true;
+  if (opts.userInputRequestId) {
+    const resolvedInput = userInputSignalHost.resolve(sessionName, opts.userInputRequestId);
+    if (!resolvedInput.ok) {
+      preparationFailure = resolvedInput.code || 'user-input-resolution-rejected';
+      throw new Error(`pending user input resolution rejected: ${preparationFailure}`);
+    }
+  }
   const messageMarked = chatTurnPreparationRuntime.markMessageDurable(sessionName, turnId);
   if (!messageMarked.ok) {
     preparationFailure = messageMarked.code || 'message-proof-rejected';
@@ -5375,8 +5364,8 @@ function runChatTurn(sessionName, text, opts = {}) {
       ? '消息已保存，但本轮准备失败，尚未启动新的 CLI 请求。'
       : '本轮准备失败，尚未启动新的 CLI 请求。';
     try { chatBroadcast(sessionName, { type: 'error', error: publicError }); } catch (_) {}
-    if (cs && (runnerSuperseded || preparationStateActivated)) cs.isStreaming = false;
-    if (runnerSuperseded || preparationStateActivated) {
+    if (cs && preparationStateActivated) cs.isStreaming = false;
+    if (preparationStateActivated) {
       setSessionStatus(sessionName, { status: 'idle', currentFile: null });
     }
     return false;
@@ -5392,8 +5381,15 @@ function runChatTurn(sessionName, text, opts = {}) {
 // Chat domain owns runChatTurn; other domains reach it without require()-ing chat:
 //  • fire-and-forget (triggers): bus event 'chat:run'
 //  • need the return value (gateway): registry service 'chat.runTurn'
-bus.on('chat:run', (sessionName, text, opts) => runChatTurn(sessionName, text, opts));
-services.provide('chat.runTurn', runChatTurn);
+bus.on('chat:run', (sessionName, text, opts) => {
+  admitChatWork(sessionName, text, opts).catch(error => {
+    logger.error('chat_work_admission_failed', {
+      sessionId: sessionName,
+      error: error.message,
+    });
+  });
+});
+services.provide('chat.runTurn', admitChatWork);
 
 // ── Wait injector: continue a session when external data arrives (A/B/D) ──
 function orchestrationChatBusy(session) {
@@ -5471,16 +5467,21 @@ orchestrationRuntime = createOrchestrationRuntime({
   detachedAdapter: detached,
   recoverDispatchResult: recoverDispatchOperation,
   replayRecoveredDispatchEffects: () => {},
+  getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
+  onSchedulerEvent: event => sessionWorkHost.onSchedulerEvent(event),
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession,
   orchestrationRuntime, taskBoard: taskBoardRuntime,
-  recordUserInput: userInputSignalHost.record });
+  recordUserInput: signal => sessionWorkHost.recordInput(signal) });
 
 waitInjector.init({
   // Continuations preserve origin metadata; originContinue stays the default.
-  inject: (session, text, opts) => runChatTurn(session, text, { originContinue: true, ...(opts || {}) }),
+  inject: (session, text, opts) => admitChatWork(session, text, {
+    originContinue: true,
+    ...(opts || {}),
+  }),
   isBusy: orchestrationChatBusy,
   hasExplicitWait: session => orchestrationRuntime.hasPending(session),
   exec: (cmd, cwd) => new Promise((resolve) => {
@@ -5503,6 +5504,7 @@ createOrchestrationRoutes({
   withApiMeta,
   requestContext,
   v1Error,
+  cancelActiveTurn: sessionId => sessionWorkHost.cancelActiveTurn(sessionId),
 }).mountRoutes(app);
 
 // ── Streaming chat turn (persistent process; see runChatTurn's streaming branch) ──
@@ -5642,6 +5644,10 @@ const turnFinalizationExecutor = createTurnFinalizationExecutor({
   classifyTurnEnd,
   resetInterrupted: sessionName => waitInjector.resetInterrupted(sessionName),
   resumeInterrupted: sessionName => waitInjector.resumeInterrupted(sessionName),
+  freezeInterrupted(sessionName, reason) {
+    Promise.resolve(orchestrationRuntime?.sessionScheduler?.freeze(sessionName, reason))
+      .catch(() => {});
+  },
   emitTurnOutcome,
   runPostTurn(context, entry) {
     runDurablePostTurn(
@@ -5893,6 +5899,9 @@ function handleChatWs(ws, req, urlObj) {
   try {
     sendWs(ws, { type: 'background_tasks', tasks: backgroundTaskRuntime.listActiveBackgroundTasks(sessionName) });
   } catch (_) {}
+  try {
+    sessionWorkHost.replayState(sessionName, event => sendWs(ws, event));
+  } catch (_) {}
 
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -5919,35 +5928,7 @@ function handleChatWs(ws, req, urlObj) {
       }
 
       if (msg.type === 'cancel') {
-        cancelClassify(cs);
-        if (cs.cli === 'claude' && chatStream.isAlive(sessionName)) {
-          console.log(`[multicc/chat] [${sessionName}] (streaming) cancel requested by user`);
-          assignKillReason(cs._activeRunner, 'user_cancel');
-          // proc death → finalizeStreamingTurn fires (stream_end + idle). Don't
-          // bump the seq here so that finalize is NOT superseded.
-          chatStream.cancel(sessionName);
-          cs.isStreaming = false;
-          cs.streamReplay = [];
-        }
-        if (cs.claudeProc) {
-          console.log(`[multicc/chat] [${sessionName}] Cancel requested by user, killing claude pid=${cs.claudeProc.pid}`);
-          assignKillReason(cs._activeRunner, 'user_cancel');
-          try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
-          cs.claudeProc = null;
-          cs.lineBuf = '';
-          cs.isStreaming = false;
-          cs.streamReplay = [];
-        }
-        // Save partial response if any
-        if (cs.currentAssistantText || cs.currentToolCalls.length) {
-          appendChatMessage(sessionName, {
-            role: 'assistant', content: cs.currentAssistantText,
-            tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-            ts: Date.now(), cancelled: true,
-          });
-          cs.currentAssistantText = '';
-          cs.currentToolCalls = [];
-        }
+        await sessionWorkHost.cancelActiveTurn(sessionName, { resolveQueue: true });
         return;
       }
 
@@ -5961,6 +5942,9 @@ function handleChatWs(ws, req, urlObj) {
         if (persisted.type === 'gateway' && handleGatewayControl(msg.text)) return;
         const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};
         if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) turnOpts.clientMsgId = msg.clientMsgId;
+        if (typeof msg.userInputRequestId === 'string' && msg.userInputRequestId.trim()) {
+          turnOpts.userInputRequestId = msg.userInputRequestId.trim();
+        }
         const pendingMemory = getPendingMemoryDistill(sessionName);
         const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
         if (pendingMemory) pendingMemory.finally(deliver);
