@@ -9,6 +9,28 @@
   const catalog = root.MultiCCProviderCatalog;
   const mutationEpoch = new Map();
   let nextMutationEpoch = 0;
+  const QODER_MODEL_OPTIONS = Object.freeze([
+    { value: '', label: '默认（跟随 Qoder CN 设置）' },
+    { value: 'auto', label: 'Auto（智能路由）' },
+    { value: 'ultimate', label: 'Ultimate（极致）' },
+    { value: 'performance', label: 'Performance（性能）' },
+    { value: 'efficient', label: 'Efficient（经济）' },
+    { value: 'lite', label: 'Lite（轻量）' },
+  ]);
+  const ZCODE_MODEL_OPTIONS = Object.freeze([
+    { value: '', label: '默认（跟随 ZCode 设置）' },
+    { value: 'bigmodel/glm-5.2', label: 'GLM-5.2' },
+  ]);
+
+  function supportsManagedProvider(cli) {
+    return cli === 'claude' || cli === 'codex' || cli === 'opencode';
+  }
+
+  function vendorModelOptions(cli) {
+    if (cli === 'qoder') return QODER_MODEL_OPTIONS;
+    if (cli === 'zcode') return ZCODE_MODEL_OPTIONS;
+    return null;
+  }
 
   function beginMutation(ownerKey) {
     const epoch = ++nextMutationEpoch;
@@ -101,7 +123,7 @@
 
   // WebView-safe model picker (same pattern as _dialog). Resolves to '' (default),
   // a model string, or null (cancelled).
-  function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), current = '', providerId = '' } = {}) {
+  function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), current = '', providerId = '', cli = 'claude' } = {}) {
     return new Promise((resolve) => {
       let closed = false;
       const overlay = document.createElement('div');
@@ -116,7 +138,10 @@
       // Alias-mapped relays: list the tiers directly, each reading
       // "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id); map a stored wire id back to its tier.
       const tiers = providerAliasTiers(providerId);
-      const optionList = tiers.length
+      const vendorOptions = vendorModelOptions(cli);
+      const optionList = vendorOptions
+        ? [...vendorOptions, { value: '__custom__', labelKey: 'custom' }]
+        : tiers.length
         ? [
             ...tiers.map(([t, m]) => ({
               value: t,
@@ -185,14 +210,16 @@
     // Single dialog: name + role + provider + model
     let providers = [];
     let defaultProviderId = '';
-    try {
-      const appType = cli === 'codex' ? 'codex' : 'claude';
-      const data = catalog.normalizeCatalog(
-        await api.json(`/api/providers?appType=${encodeURIComponent(appType)}`),
-      );
-      providers = catalog.groupByAppType(data)[appType];
-      defaultProviderId = data.defaults[appType] || '';
-    } catch (_) {}
+    if (supportsManagedProvider(cli)) {
+      try {
+        const appType = cli === 'codex' ? 'codex' : 'claude';
+        const data = catalog.normalizeCatalog(
+          await api.json(`/api/providers?appType=${encodeURIComponent(appType)}`),
+        );
+        providers = catalog.groupByAppType(data)[appType];
+        defaultProviderId = data.defaults[appType] || '';
+      } catch (_) {}
+    }
 
     const result = await showCreateSessionDialog({
       cli, kind, providers, defaultProviderId,
@@ -262,8 +289,9 @@
     return '';
   }
 
-  function applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId }) {
+  function applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId, cli }) {
     if (!preset) return;
+    if (!supportsManagedProvider(cli)) return;
     const presetCli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
     const dialogCli = isClaude ? 'claude' : 'codex';
     if (presetCli && presetCli !== dialogCli) return;
@@ -272,7 +300,7 @@
     if (providerId && [...provSelect.options].some(o => o.value === providerId)) {
       provSelect.value = providerId;
     }
-    rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId);
+    rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId, cli);
 
     const model = preset.defaultModel || '';
     if (model) {
@@ -295,7 +323,7 @@
   // Build the <select> options for a model dropdown based on the selected
   // provider's modelOptions. Falls back to CLAUDE_MODEL_OPTIONS when no
   // provider or a provider without modelOptions is chosen.
-  function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProviderId, isClaude, defaultProviderId = '') {
+  function rebuildModelOptions(modelSelect, modelCustom, providers, selectedProviderId, isClaude, defaultProviderId = '', cli = 'claude') {
     const prev = modelSelect.value;
     modelSelect.innerHTML = '';
     const effectiveProviderId = selectedProviderId || defaultProviderId || '';
@@ -306,7 +334,10 @@
     // filtering come from the shared aliasTiersFromMap helper.
     const tiers = aliasTiersFromMap(prov && prov.aliasMap ? prov.aliasMap : null);
     let opts;
-    if (tiers.length) {
+    const vendorOptions = vendorModelOptions(cli);
+    if (vendorOptions) {
+      opts = vendorOptions;
+    } else if (tiers.length) {
       opts = tiers.map(([t, m]) => ({ value: t, label: formatAliasTierLabel(t, m) }));
   } else if (prov && catalog.modelsFor(prov).length) {
     opts = catalog.modelsFor(prov).map(m => ({ value: m, label: m }));
@@ -413,7 +444,7 @@
         presetSel.disabled = false;
         if (preset && preset.prompt) {
           roleInput.value = preset.prompt;
-          applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId });
+          applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId, cli });
           roleInput.focus();
         }
         else showToast('预设角色加载失败', true);
@@ -429,6 +460,7 @@
       const provLabel = document.createElement('div');
       provLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
       provLabel.textContent = 'Provider';
+      if (!supportsManagedProvider(cli)) provLabel.style.display = 'none';
       box.appendChild(provLabel);
       const provSelect = document.createElement('select');
       provSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
@@ -447,6 +479,7 @@
         provSelect.appendChild(opt);
       });
       if (defaultProvider) provSelect.value = defaultProviderId;
+      if (!supportsManagedProvider(cli)) provSelect.style.display = 'none';
       box.appendChild(provSelect);
 
       // ── Model select (both Claude & Codex, linked to provider) ──
@@ -470,21 +503,25 @@
 
       // Empty provider follows the configured default provider for this CLI, so
       // Codex still shows GPT / XF model choices instead of Claude-only fallback.
-      rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId);
+      rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId, cli);
 
       // Provider → Model linkage: when provider changes, rebuild model list
       provSelect.addEventListener('change', () => {
-        rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId);
+        rebuildModelOptions(modelSelect, modelCustom, providers, provSelect.value, isClaude, defaultProviderId, cli);
       });
 
       // ── Effort / Reasoning level ──
       const effortLabel = document.createElement('div');
       effortLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
-      effortLabel.textContent = isClaude ? 'Effort' : 'Reasoning Level';
+      effortLabel.textContent = cli === 'qoder' ? 'Reasoning Effort' : (isClaude ? 'Effort' : 'Reasoning Level');
       box.appendChild(effortLabel);
       const effortSelect = document.createElement('select');
       effortSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
-      const effortOptions = isClaude
+      const effortOptions = cli === 'zcode'
+        ? []
+        : cli === 'qoder'
+          ? ['', 'low', 'medium', 'high', 'xhigh', 'max']
+          : isClaude
         ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
         : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
       for (const v of effortOptions) {
@@ -493,7 +530,11 @@
         opt.textContent = v;
         effortSelect.appendChild(opt);
       }
-      effortSelect.value = isClaude ? 'medium' : 'xhigh';
+      effortSelect.value = cli === 'qoder' ? '' : (isClaude ? 'medium' : 'xhigh');
+      if (!effortOptions.length) {
+        effortLabel.style.display = 'none';
+        effortSelect.style.display = 'none';
+      }
       box.appendChild(effortSelect);
 
       // ── Buttons ──
@@ -551,6 +592,7 @@
       okText: tt('save'),
       current: sess.model || '',
       providerId: sess.provider || '',
+      cli: sess.cli || 'claude',
     });
     if (picked === null) return; // cancelled
     const result = await ownedJson(`session:${id}:model`, `/api/sessions/${encodeURIComponent(id)}`, {

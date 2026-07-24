@@ -222,10 +222,10 @@ function createProviderRoutes(rawDeps) {
 
   function validProviderId(cli, id) {
     if (id == null || id === '') return { ok: true, value: null };
-    // Qoder CN owns authentication/BYOK configuration in ~/.qoder-cn and does
-    // not consume MultiCC's Claude/Codex provider store.
-    if (cli === 'qoder') return { ok: false };
-    const appType = cli === 'codex' ? 'codex' : 'claude';
+    // Qoder CN and ZCode own authentication/provider configuration in their
+    // vendor clients and do not consume MultiCC's Claude/Codex provider store.
+    const appType = deps.providers.appTypeForCli(cli);
+    if (!appType) return { ok: false };
     if (!deps.providerRouterRuntime.getProviderSummary(appType, String(id))) return { ok: false };
     return { ok: true, value: String(id) };
   }
