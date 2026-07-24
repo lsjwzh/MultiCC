@@ -86,6 +86,41 @@ test('process empty exit gets one fresh retry but adapter, explicit kill and ret
   assert.equal(types(resolveTurnFinalization(exhausted)).includes('report-empty-retry-failure'), true);
 });
 
+test('central API policy decision runs before legacy empty-exit retry', () => {
+  const retryDecision = {
+    action: 'retry',
+    attempt: 1,
+    delayMs: 7000,
+    retryAt: 8000,
+    error: { category: 'rate_limit', maxAttempts: 2 },
+  };
+  const plan = planTurnFinalization(base({
+    hasOutput: false,
+    resultEvent: false,
+    apiError: true,
+    apiErrorDecision: retryDecision,
+  }));
+  assert.equal(plan.action, 'retry-api');
+  assert.equal(plan.retry, retryDecision);
+  assert.deepEqual(types(plan), [
+    'mark-retry-planned',
+    'set-streaming',
+    'set-status',
+    'schedule-api-retry',
+  ]);
+  const failFast = planTurnFinalization(base({
+    hasOutput: false,
+    resultEvent: false,
+    apiError: true,
+    apiErrorDecision: {
+      action: 'fail_fast',
+      reason: 'authentication_permission_not_retryable',
+      error: { category: 'authentication_permission', maxAttempts: 0 },
+    },
+  }));
+  assert.equal(failFast.action, 'finalize');
+});
+
 test('close-time adapter state blocks retry without changing runner-owned classification facts', () => {
   const plan = planTurnFinalization(base({
     hasOutput: false,
