@@ -6,6 +6,7 @@
   if (root) root.MultiCCProviderCatalog = catalog;
 })(typeof window !== 'undefined' ? window : null, function createProviderCatalog() {
   const APP_TYPES = new Set(['claude', 'codex']);
+  const API_FORMATS = new Set(['anthropic', 'openai_responses', 'openai_chat']);
   const ALIAS_TIERS = ['opus', 'sonnet', 'haiku', 'fable'];
 
   function text(value, max = 300) {
@@ -103,11 +104,22 @@
     const appType = text(value.appType, 20).toLowerCase();
     if (!id || !APP_TYPES.has(appType)) return null;
     const model = text(value.model, 240);
+    const apiFormat = API_FORMATS.has(value.apiFormat)
+      ? value.apiFormat
+      : (appType === 'claude' ? 'anthropic' : (value.useChatResponsesProxy ? 'openai_chat' : 'openai_responses'));
+    const defaultClis = apiFormat === 'anthropic' ? ['claude', 'opencode'] : ['codex', 'opencode'];
     return Object.freeze({
       id,
       appType,
       name: text(value.name, 240) || id,
       source: value.source === 'ccswitch' ? 'ccswitch' : 'local',
+      apiFormat,
+      protocol: apiFormat,
+      wireApi: ['messages', 'responses', 'chat_completions', 'chat-completions'].includes(value.wireApi) ? value.wireApi : '',
+      compatibleClis: Object.freeze((Array.isArray(value.compatibleClis) ? value.compatibleClis : defaultClis)
+        .filter(cli => ['claude', 'codex', 'opencode'].includes(cli))),
+      requiresConversionFor: Object.freeze((Array.isArray(value.requiresConversionFor) ? value.requiresConversionFor : (apiFormat === 'openai_chat' ? ['codex'] : []))
+        .filter(cli => cli === 'codex')),
       baseUrl: safeBaseUrl(value.baseUrl),
       model,
       modelOptions: Object.freeze(normalizeModelOptions(value.modelOptions || value.models, model)),
@@ -209,6 +221,20 @@
     return groups;
   }
 
+  function groupByProtocol(value) {
+    const providers = Array.isArray(value) ? value : ((value && value.providers) || []);
+    const groups = { anthropic: [], openai_responses: [], openai_chat: [] };
+    for (const provider of providers) {
+      if (provider && groups[provider.apiFormat]) groups[provider.apiFormat].push(provider);
+    }
+    return groups;
+  }
+
+  function providersForCli(value, cli) {
+    const providers = Array.isArray(value) ? value : ((value && value.providers) || []);
+    return providers.filter(provider => provider && provider.compatibleClis.includes(cli));
+  }
+
   function findProvider(value, appType, id) {
     const providers = Array.isArray(value) ? value : ((value && value.providers) || []);
     const type = appType ? text(appType, 20).toLowerCase() : '';
@@ -261,6 +287,8 @@
     formatUsageWindow,
     formatUsageCumulative,
     groupByAppType,
+    groupByProtocol,
+    providersForCli,
     findProvider,
     modelsFor,
     normalizeDeleteReferences,

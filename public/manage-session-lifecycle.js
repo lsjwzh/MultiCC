@@ -214,10 +214,10 @@
       try {
         const appType = cli === 'codex' ? 'codex' : 'claude';
         const data = catalog.normalizeCatalog(
-          await api.json(`/api/providers?appType=${encodeURIComponent(appType)}`),
+          await api.json(`/api/providers?cli=${encodeURIComponent(cli)}`),
         );
-        providers = catalog.groupByAppType(data)[appType];
-        defaultProviderId = data.defaults[appType] || '';
+        providers = catalog.providersForCli(data, cli);
+        defaultProviderId = cli === 'opencode' ? '' : (data.defaults[appType] || '');
       } catch (_) {}
     }
 
@@ -475,7 +475,8 @@
         const opt = document.createElement('option');
         opt.value = p.id;
         const isDefault = p.id === defaultProviderId;
-        opt.textContent = (isDefault ? '默认 · ' : '') + p.name + (p.isOfficial ? ' · 订阅' : '') + (p.model ? ' · ' + p.model : '');
+        const protocol = p.apiFormat === 'openai_chat' ? ' [Chat→Responses]' : (p.apiFormat === 'openai_responses' ? ' [Responses]' : ' [Anthropic]');
+        opt.textContent = (isDefault ? '默认 · ' : '') + p.name + protocol + (p.isOfficial ? ' · 订阅' : '') + (p.model ? ' · ' + p.model : '');
         provSelect.appendChild(opt);
       });
       if (defaultProvider) provSelect.value = defaultProviderId;
