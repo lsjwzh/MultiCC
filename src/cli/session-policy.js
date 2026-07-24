@@ -62,6 +62,7 @@ function createSessionPolicy(options) {
         if (appType === 'claude' && provider && provider.baseUrl) return session.reportedModel || null;
       } catch (_) {}
     }
+    if (session.cli === 'opencode') return session.reportedModel || null;
     if (appType === 'claude') return claudeDefaultModel() || session.reportedModel || null;
     return session.reportedModel || null;
   }

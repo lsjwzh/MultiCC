@@ -111,6 +111,10 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
     'a relay-controlled model must not borrow the local Claude default');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', reportedModel: 'runtime' }), 'claude-user');
   assert.equal(policy.effectiveSessionModel({ cli: 'codex', reportedModel: 'gpt-runtime' }), 'gpt-runtime');
+  assert.equal(policy.effectiveSessionModel({ cli: 'opencode' }), null,
+    'OpenCode without an explicit provider must use its own native default');
+  assert.equal(policy.effectiveSessionModel({ cli: 'opencode', reportedModel: 'opencode-runtime' }),
+    'opencode-runtime', 'OpenCode may report its native runtime model without borrowing Claude config');
   assert.equal(policy.effectiveSessionModel({ cli: 'qoder', reportedModel: 'performance' }), 'performance');
   assert.equal(policy.effectiveSessionModel({ cli: 'zcode', model: 'bigmodel/glm-5.2' }), 'bigmodel/glm-5.2');
   assert.equal(policy.effectiveSessionModel({ cli: 'zcode', reportedModel: 'vendor/default' }), 'vendor/default');
