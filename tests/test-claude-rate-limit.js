@@ -9,6 +9,9 @@ const {
   saveFiveHourRateLimit,
   loadFiveHourRateLimit,
   consumeRateLimitEvent,
+  normalizeBalance,
+  formatBalance,
+  consumeBalanceEvent,
   setCli,
 } = require('../public/chat-rate-limit');
 
@@ -31,6 +34,7 @@ test('normalizes Claude five-hour rate-limit event into a privacy-minimal DTO', 
     resetsAtMs: 1_700_003_600_000,
     observedAtMs: now,
     source: 'claude_code',
+    provider: 'claude',
   });
   assert.equal('token' in value, false);
   assert.equal('overageDisabledReason' in value, false);
@@ -129,6 +133,70 @@ test('structured event renders directly in the Claude chat bar and hides for ano
     assert.equal(element.style.display, 'none');
     setCli('claude');
     assert.equal(element.style.display, 'block');
+  } finally {
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+  }
+});
+
+test('GLM window limit labels as GLM 5h and shows under codex, hides under claude', () => {
+  const value = normalizeFiveHourRateLimit({
+    status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44,
+    resetsAt: Math.floor(Date.now() / 1000) + 3600, provider: 'glm',
+  }, Date.now());
+  assert.equal(value.provider, 'glm');
+  assert.match(formatFiveHourRateLimit(value).text, /^GLM 5h 44% · .+ 重置$/);
+
+  const element = { style: {}, textContent: '', title: '' };
+  const values = new Map();
+  global.document = { getElementById: id => id === 'claude-rate-limit-bar' ? element : null };
+  global.localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, v) => values.set(key, v),
+    removeItem: key => values.delete(key),
+  };
+  try {
+    consumeRateLimitEvent({
+      status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44,
+      resetsAt: Math.floor(Date.now() / 1000) + 3600, provider: 'glm',
+    }, 'glm-sess');
+    setCli('codex');
+    assert.equal(element.style.display, 'block', 'GLM window shows under codex');
+    assert.match(element.textContent, /^GLM 5h 44%/);
+    setCli('claude');
+    assert.equal(element.style.display, 'none', 'GLM window hidden under claude');
+  } finally {
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+  }
+});
+
+test('DeepSeek balance normalizes, formats, and renders in its own bar under codex', () => {
+  assert.equal(normalizeBalance({ kind: 'window' }), null, 'rejects non-balance');
+  const bal = normalizeBalance({ kind: 'balance', available: true, currency: 'CNY', total: 110 });
+  assert.equal(bal.provider, 'deepseek');
+  assert.equal(formatBalance(bal).text, 'DeepSeek 余额 ¥110.00');
+  const exhausted = normalizeBalance({ kind: 'balance', available: false, currency: 'USD', total: 0 });
+  assert.match(formatBalance(exhausted).text, /余额不足/);
+  assert.equal(formatBalance(exhausted).text, 'DeepSeek 余额 $0.00 · 余额不足');
+
+  const element = { style: {}, textContent: '', title: '' };
+  const values = new Map();
+  global.document = { getElementById: id => id === 'usage-balance-bar' ? element : null };
+  global.localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, v) => values.set(key, v),
+    removeItem: key => values.delete(key),
+  };
+  try {
+    consumeBalanceEvent({ kind: 'balance', available: true, currency: 'CNY', total: 42.5 }, 'ds-sess');
+    setCli('codex');
+    assert.equal(element.style.display, 'block', 'balance shows under codex');
+    assert.equal(element.textContent, 'DeepSeek 余额 ¥42.50');
+    setCli('claude');
+    assert.equal(element.style.display, 'none', 'balance hidden under claude');
   } finally {
     setCli('codex');
     delete global.document;
