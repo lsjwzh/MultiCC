@@ -414,7 +414,7 @@ let CLAUDE_PROXY_ENABLED = String(process.env.CLAUDE_PROXY_ENABLED ?? '1') !== '
 // unavailable for them). ON: enables subagent routing on official sessions
 // (⚠️ replays subscription OAuth outside the official client — ToS + shared-Keychain
 // considerations; hot-reloadable via POST /api/settings/official-oauth, persisted).
-let CLAUDE_OFFICIAL_VIA_PROXY = String(process.env.CLAUDE_OFFICIAL_VIA_PROXY ?? '0') === '1';
+let CLAUDE_OFFICIAL_VIA_PROXY = String(process.env.CLAUDE_OFFICIAL_VIA_PROXY ?? '1') === '1';
 
 // Model/provider display and effort policy is independent from process runners.
 // It reads user defaults on demand so /model and CLI config changes are visible
