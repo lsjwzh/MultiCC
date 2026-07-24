@@ -74,8 +74,11 @@ function maybePrune(cwd, cliSessionId, { maxBytes = DEFAULT_MAX_BYTES, keepTurns
 
   const kept = lines.slice(cutIndex);
 
-  // Backup then write.
-  try { fs.copyFileSync(file, file + '.bak'); } catch (_) {}
+  // Move pruned lines to <sessionId>.pruned.jsonl (append) so token-global
+  // still reads their usage via listJsonl(*.jsonl), while claude --resume
+  // only loads the trimmed <sessionId>.jsonl. This preserves token stats.
+  const prunedFile = file.replace(/\.jsonl$/, '.pruned.jsonl');
+  try { fs.appendFileSync(prunedFile, lines.slice(0, cutIndex).join('\n') + '\n'); } catch (_) {}
   fs.writeFileSync(file, kept.join('\n') + '\n');
 
   const droppedLines = cutIndex;
