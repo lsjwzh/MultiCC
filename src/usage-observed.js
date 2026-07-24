@@ -136,10 +136,18 @@ function createUsageObserved(input, binding = null) {
   if (!SOURCES.has(source)) throw new UsageObservedError('source must be exact or reconciled');
   const coverage = requiredString(input.coverage, 'coverage', 32).toLowerCase();
   if (!COVERAGE.has(coverage)) throw new UsageObservedError('coverage must be observed or unobservable');
-  const status = requiredString(input.status || (coverage === 'unobservable' ? 'unobservable' : 'success'), 'status', 32).toLowerCase();
+  let status = requiredString(input.status || (coverage === 'unobservable' ? 'unobservable' : 'success'), 'status', 32).toLowerCase();
   if (!STATUSES.has(status)) throw new UsageObservedError('status must be success, error, or unobservable');
   if (coverage === 'observed' && status === 'unobservable') {
     throw new UsageObservedError('observed coverage cannot use unobservable status');
+  }
+  // A producer (e.g. the proxy router) reports the turn's own outcome as its
+  // status. When usage headers are absent it emits coverage=unobservable but
+  // still status=success ("the turn completed"). Status here tracks the
+  // observability axis, not turn outcome, so a successful-but-unobservable turn
+  // normalizes to 'unobservable'; only a genuine 'error' is preserved.
+  if (coverage === 'unobservable' && status === 'success') {
+    status = 'unobservable';
   }
   if (coverage === 'unobservable' && status !== 'unobservable' && status !== 'error') {
     throw new UsageObservedError('unobservable coverage requires unobservable or error status');
