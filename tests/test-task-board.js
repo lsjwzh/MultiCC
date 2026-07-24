@@ -112,6 +112,7 @@ test('task board display state follows classify runState for icon and status tex
   const cases = [
     [{ status: 'active', runState: 'done' }, ['done', '✅', '已完成', true, false]],
     [{ status: 'active', runState: 'running' }, ['running', '🟢', '进行中', false, true]],
+    [{ status: 'active', runState: 'queued' }, ['queued', '📥', '排队中', false, false]],
     [{ status: 'active', runState: 'waiting' }, ['waiting', '⏳', '等待中', false, false]],
     [{ status: 'active', runState: 'error' }, ['error', '❌', '异常', false, false]],
     [{ status: 'active', runState: 'idle' }, ['idle', '⚪', '待处理', false, false]],
@@ -136,14 +137,12 @@ test('task board display state follows classify runState for icon and status tex
     assert.doesNotMatch(source, /\.classification\b|classificationLabel|waiting_reply|retry_wait/);
   }
 
-  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  const start = server.indexOf('getSessionRunState: sid =>');
-  const end = server.indexOf('\n  resolveGoalLimits,', start);
-  const runStateAdapter = server.slice(start, end);
-  assert.match(runStateAdapter, /classifyDisplay\(cls\)\.cardStatus/);
-  assert.match(runStateAdapter, /cls === 'A'[\s\S]*?return 'running'/);
+  const runStateAdapter = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'session-work-host.js'), 'utf8');
+  assert.match(runStateAdapter, /classifyDisplay\(classifyState\)\.cardStatus/);
+  assert.match(runStateAdapter, /classifyState === 'A'[\s\S]*?return 'running'/);
   assert.match(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
-  assert.doesNotMatch(runStateAdapter, /cls === 'D' \|\| cls === 'C'/);
+  assert.doesNotMatch(runStateAdapter, /classifyState === 'D' \|\| classifyState === 'C'/);
   // A task card must follow the session's persisted classify verdict, never a
   // momentary session-busy flag. The `if (taskBoardSessionBusy(sid)) return
   // 'running'` short-circuit used to make every historical card light up as
@@ -905,6 +904,7 @@ test('REST: board, messages, send and status flow', async () => {
   const stRes = res();
   routes.get('POST /api/task-board/tasks/:taskId/status')(
     { params: { taskId: tid }, body: { status: 'done' } }, stRes);
+  await new Promise(r => setImmediate(r));
   assert.equal(stRes.body.ok, true);
   assert.equal(runtime.getBoard().tasks[tid].status, 'done');
 
@@ -1236,7 +1236,7 @@ test('automatic routing is unavailable until Commander migration finishes, while
   assert.equal(automatic.body.routingMode, 'commander');
 });
 
-test('manual target remains an idle worker-only route', async () => {
+test('manual target remains worker-only and admits into the durable queue while busy', async () => {
   const commanderCalls = [];
   const workerCalls = [];
   const { runtime } = mkRuntime({
@@ -1253,7 +1253,7 @@ test('manual target remains an idle worker-only route', async () => {
   assert.equal(res.body.routingMode, 'manual');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].target, 'sess-1');
-  assert.equal(workerCalls[0].opts.requireIdle, true);
+  assert.equal(workerCalls[0].opts.requireIdle, false);
   assert.equal(workerCalls[0].opts.oneWay, true);
   assert.equal(runtime.getBoard().tasks[res.body.taskId].routing.oneWay, true);
   assert.equal(commanderCalls.length, 0);
@@ -1644,7 +1644,7 @@ test('failed board dispatch rolls back its placeholder and empty pending module'
   assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
 });
 
-test('manual task send rejects an explicit busy target and a selection-to-dispatch race', async () => {
+test('manual task followup admits to the same durable queue even when the worker is busy', async () => {
   let busyChecks = 0;
   const { runtime, dispatches } = mkRuntime({ isSessionBusy: () => ++busyChecks >= 3 });
   const routes = new Map();
@@ -1659,15 +1659,15 @@ test('manual task send rejects an explicit busy target and a selection-to-dispat
     params: { taskId: task.id }, body: { text: '继续修复跳转', target: 'sess-1' },
   }, race);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(race.code, 409);
-  assert.equal(race.body.error, 'target_busy');
-  assert.equal(dispatches.length, 0);
+  assert.equal(race.code, 200);
+  assert.equal(dispatches.length, 1);
+  assert.equal(dispatches[0].opts.requireIdle, false);
 
 });
 
-test('last-moment busy rejection returns 409 and rolls back board placeholder', async () => {
+test('a durable admission failure rolls back the board placeholder', async () => {
   const { runtime } = mkRuntime({
-    dispatchToSession: async () => ({ ok: false, error: 'target_busy', code: 'target_busy' }),
+    dispatchToSession: async () => ({ ok: false, error: 'queue_unavailable', code: 'queue_unavailable' }),
   });
   const routes = new Map();
   runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
@@ -1676,8 +1676,8 @@ test('last-moment busy rejection returns 409 and rolls back board placeholder', 
     body: { dirId: 'dir-1', target: 'sess-1', text: '修复前端消息跳转' },
   }, r);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(r.code, 409);
-  assert.equal(r.body.error, 'target_busy');
+  assert.equal(r.code, 502);
+  assert.equal(r.body.error, 'queue_unavailable');
   assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
 });
 

@@ -148,7 +148,6 @@ test('send locks missing, mismatch, kind and busy error semantics', async () => 
     [{ directoryId: 'dir-1', text: 'go', sessionId: 'unknown' }, 404, 'session not found'],
     [{ directoryId: 'dir-1', text: 'go', sessionId: 'other-dir' }, 400, 'session is not in this directory'],
     [{ directoryId: 'dir-1', text: 'go', sessionId: 'terminal-1' }, 400, '只能发送到 chat 类型的会话'],
-    [{ directoryId: 'dir-1', text: 'go', sessionId: 'busy-1' }, 409, '目标会话正在跑回合，稍后再试'],
   ];
   for (const [input, status, message] of cases) {
     const result = await capture(() => f.controller.send(input));
@@ -165,6 +164,10 @@ test('send delegates only valid turns and fails closed when start fails', async 
     directoryId: 'dir-1', text: '  ship it  ', sessionId: ' chat-1 ',
   }), { ok: true, sentTo: 'chat-1' });
   assert.deepEqual(f.calls, [{ id: 'chat-1', text: 'ship it', options: {} }]);
+  assert.deepEqual(await f.controller.send({
+    directoryId: 'dir-1', text: 'queue me', sessionId: 'busy-1',
+  }), { ok: true, sentTo: 'busy-1' });
+  assert.deepEqual(f.calls.at(-1), { id: 'busy-1', text: 'queue me', options: {} });
 
   for (const sessionId of ['fail-1', 'throw-1']) {
     const result = await capture(() => f.controller.send({ directoryId: 'dir-1', text: 'go', sessionId }));
@@ -182,6 +185,6 @@ test('production server mounts only the injected memo module', () => {
   assert.equal((source.match(/createMemoModule\(\{/g) || []).length, 1);
   assert.doesNotMatch(source, /app\.(?:get|put|post)\('\/api\/directories\/:id\/memo/);
   assert.doesNotMatch(source, /const MEMO_(?:FILENAME|MAX_BYTES)/);
-  assert.match(source, /runTurn: \(id, text, options\) => runChatTurn\(id, text, options\)/);
+  assert.match(source, /runTurn: \(id, text, options\) => admitChatWork\(id, text, options\)/);
   assert.doesNotMatch(controllerSource, /require\(['"]express['"]\)|server\.js/);
 });

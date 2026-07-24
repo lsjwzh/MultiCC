@@ -203,6 +203,13 @@ function createTaskContextHost(options = {}) {
     const persisted = getRecord(sessionName);
     if (!persisted) return { ok: false, code: 'session_not_found' };
     const started = await runTurn(sessionName, text, options);
+    if (started && typeof started === 'object') {
+      return {
+        handled: false,
+        chatId: sessionName,
+        ...started,
+      };
+    }
     return {
       ok: started !== false,
       code: started === false ? 'turn_rejected' : undefined,

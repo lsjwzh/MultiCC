@@ -229,7 +229,12 @@ function createOutbox({
     });
   }
 
-  async function claim({ workerId, limit = 1, leaseForMs = leaseMs } = {}) {
+  async function claim({
+    workerId,
+    limit = 1,
+    leaseForMs = leaseMs,
+    selectSessionItem = null,
+  } = {}) {
     if (!workerId || typeof workerId !== 'string') {
       throw new TypeError('[outbox] claim requires workerId');
     }
@@ -247,14 +252,20 @@ function createOutbox({
       // Only the oldest non-terminal item for a session may be admitted. A
       // leased item or a retry in backoff blocks later items in that session,
       // while another session remains independently claimable.
-      const firstBySession = new Map();
+      const itemsBySession = new Map();
       const ordered = Object.values(draft.outbox).sort((a, b) => a.sequence - b.sequence);
       for (const item of ordered) {
-        if (TERMINAL_STATES.has(item.state) || firstBySession.has(item.sessionId)) continue;
-        firstBySession.set(item.sessionId, item);
+        if (TERMINAL_STATES.has(item.state)) continue;
+        if (!itemsBySession.has(item.sessionId)) itemsBySession.set(item.sessionId, []);
+        itemsBySession.get(item.sessionId).push(item);
       }
 
-      const candidates = [...firstBySession.values()]
+      const selected = [...itemsBySession.values()]
+        .map(items => typeof selectSessionItem === 'function'
+          ? selectSessionItem(items, draft, at)
+          : items[0])
+        .filter(Boolean);
+      const candidates = selected
         .filter(item => item.state === 'pending' && item.availableAt <= at)
         .sort((a, b) => a.sequence - b.sequence)
         .slice(0, limit);

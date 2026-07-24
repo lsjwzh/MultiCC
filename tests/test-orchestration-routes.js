@@ -89,6 +89,28 @@ function fixture(options = {}) {
       };
     },
   };
+  if (options.scheduler) {
+    runtime.sessionScheduler = {
+      async status(sessionId) {
+        calls.push({ type: 'queue.status', sessionId });
+        return options.queueStatus || {
+          sessionId,
+          state: 'frozen',
+          freezeReason: 'awaiting_user_input',
+          active: { entryId: 'entry-1', taskId: 'task-1' },
+          queued: [{ entryId: 'entry-2', position: 1 }],
+        };
+      },
+      async resolve(sessionId, input) {
+        calls.push({ type: 'queue.resolve', sessionId, input });
+        return options.queueResolve || { ok: true, action: input.action };
+      },
+    };
+    runtime.tick = async () => {
+      calls.push({ type: 'queue.tick' });
+      return { ok: true };
+    };
+  }
   const waitInjector = {
     listForSession(sessionId) {
       calls.push({ type: 'legacy.list', sessionId });
@@ -118,6 +140,10 @@ function fixture(options = {}) {
     toWaitDto: wait => ({ waitId: wait.id, status: wait.status || null }),
     withApiMeta: (payload, context) => ({ ...payload, apiVersion: '1', requestId: context.requestId }),
     requestContext: req => ({ requestId: req.id }),
+    cancelActiveTurn: async sessionId => {
+      calls.push({ type: 'queue.cancel-active', sessionId });
+      return { ok: true };
+    },
     v1Error(req, res, status, message, code) {
       return res.status(status).json({ ok: false, error: message, code, requestId: req.id });
     },
@@ -142,6 +168,57 @@ test('dependency and mount boundaries own exactly nine routes', () => {
     'POST /api/wait/:wid/resolve',
   ]);
   assert.throws(() => current.routes.mountRoutes(current.app), /already mounted/);
+});
+
+test('session FIFO status and explicit resolution require confirmation and remain idempotent', async () => {
+  const current = fixture({ scheduler: true });
+  assert.equal(current.app.routes.has('GET /api/sessions/:id/queue'), true);
+  assert.equal(current.app.routes.has('POST /api/sessions/:id/queue/action'), true);
+
+  const status = await invoke(current.app, 'GET', '/api/sessions/:id/queue', {
+    params: { id: 's1' },
+  });
+  assert.equal(status.response.statusCode, 200);
+  assert.equal(status.response.body.queue.state, 'frozen');
+  assert.equal(status.response.body.queue.freezeReason, 'awaiting_user_input');
+
+  const unconfirmed = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: { action: 'skip' },
+  });
+  assert.equal(unconfirmed.response.statusCode, 409);
+  assert.equal(unconfirmed.response.body.error, 'confirmation_required');
+
+  const resumed = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    headers: { 'idempotency-key': 'resume-once' },
+    body: {
+      action: 'resume',
+      confirm: true,
+      reason: 'operator verified state',
+      text: '继续当前任务',
+    },
+  });
+  assert.equal(resumed.response.statusCode, 200);
+  assert.deepEqual(current.calls.find(call => call.type === 'queue.resolve'), {
+    type: 'queue.resolve',
+    sessionId: 's1',
+    input: {
+      action: 'resume',
+      reason: 'operator verified state',
+      actor: 'user',
+      text: '继续当前任务',
+      idempotencyKey: 'resume-once',
+    },
+  });
+  assert.equal(current.calls.some(call => call.type === 'queue.tick'), true);
+
+  const cancelled = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: { action: 'cancel', confirm: true },
+  });
+  assert.equal(cancelled.response.statusCode, 200);
+  assert.equal(current.calls.some(call => call.type === 'queue.cancel-active'), true);
 });
 
 test('wait registration preserves validation payload, callback URL and errors', async () => {

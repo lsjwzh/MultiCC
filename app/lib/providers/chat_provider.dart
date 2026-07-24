@@ -372,6 +372,38 @@ class ChatProvider extends ChangeNotifier {
           break;
         }
 
+      case 'user_input_required':
+        {
+          final p = evt.payload as Map<String, dynamic>;
+          final question = (p['question'] ?? '').toString().trim();
+          final options = p['options'] is List
+              ? (p['options'] as List).map((value) => value.toString()).toList()
+              : <String>[];
+          final optionText = options.isEmpty
+              ? ''
+              : '\n${List.generate(options.length, (i) => '${i + 1}. ${options[i]}').join('\n')}';
+          _addSystemMsg(
+            '需要你的确认：${question.isEmpty ? '请补充必要信息' : question}$optionText',
+          );
+          break;
+        }
+
+      case 'session_queue':
+        {
+          final p = evt.payload as Map<String, dynamic>;
+          final event = (p['event'] ?? '').toString();
+          if (event == 'queued') {
+            final position = p['queuePosition'];
+            _statusText = position == null ? '消息已持久排队' : '消息已排队（第 $position 位）';
+          } else if (event == 'frozen') {
+            _statusText = '队列已冻结：${(p['freezeReason'] ?? '当前任务尚未成功完成')}';
+          } else if (event == 'started') {
+            _statusText = '正在执行队首任务';
+          }
+          notifyListeners();
+          break;
+        }
+
       case 'role_token_stats':
         // Server pushes per-role token accounting after each turn:
         // payload.role = { main: {…}, sub: {…}|null, subByProvider: […] }

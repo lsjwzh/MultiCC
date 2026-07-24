@@ -39,6 +39,8 @@
     const finishCancelledTurn = opts.finishCancelledTurn || (() => {});
     const setPendingCancel = opts.setPendingCancel || (() => {});
     const onTurnStarted = opts.onTurnStarted || (() => {});
+    const getUserInputRequestId = opts.getUserInputRequestId || (() => null);
+    const consumeUserInputRequestId = opts.consumeUserInputRequestId || (() => {});
     const resetHistory = opts.resetHistory || (() => {});
     const addUserMessage = opts.addUserMessage || (() => {});
     const goalWrap = opts.goalWrap || (task => task);
@@ -74,8 +76,6 @@
       const goalOptions = sendOptions && sendOptions.goal === true ? sendOptions : null;
       let text = inputEl.value.trim();
       if (!text) return false;
-
-      if (hasOpenTurn()) finishOpenTurn();
 
       if (text.startsWith('/')) {
         const command = text.split(/\s+/)[0].toLowerCase();
@@ -128,13 +128,15 @@
       debug('state', `send() — WS ▶ user_message (${text.length} chars)${goalOptions ? ' [goal]' : ''}`);
       try {
         const payload = { type: 'user_message', text, clientMsgId };
+        const userInputRequestId = getUserInputRequestId();
+        if (userInputRequestId) payload.userInputRequestId = userInputRequestId;
         if (goalOptions) {
           payload.goal = true;
           payload.goalLimits = goalOptions.goalLimits || {};
         }
         if (!transportSend(payload)) throw new Error('WebSocket is not open');
+        if (userInputRequestId) consumeUserInputRequestId(userInputRequestId);
         setPendingCancel(false);
-        onTurnStarted();
         return true;
       } catch (error) {
         addSystemMessage('发送失败，正在重连：' + error.message);
