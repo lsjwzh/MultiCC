@@ -199,9 +199,20 @@ assert.deepStrictEqual(
   opencode.buildInvocation(opencodeEnvelope).args,
   ['run', '--format', 'json', '--auto', '--model', 'open/model', '--variant', 'high', '--agent', 'build'],
 );
+// zcode 专用 adapter：不直调引擎，而是 spawn 树内 bridge（zcode-bridge.cjs）。
+// 首轮无 --session；payload 由 multicc 作为末尾 argv 传给 bridge。
+const zcodeInv = zcode.buildInvocation(opencodeEnvelope);
+assert.deepStrictEqual(zcodeInv.args, []);
+assert.ok(zcodeInv.cmd.endsWith('zcode-bridge.cjs'), 'zcode cmd 指向树内 bridge');
+assert.strictEqual(zcodeInv.payload, 'hello');
+// 续轮：带 cliSessionId → bridge 收到 --session（转成引擎 --resume）
 assert.deepStrictEqual(
-  zcode.buildInvocation(opencodeEnvelope).args,
-  ['run', '--format', 'json', '--auto', '--model', 'open/model'],
+  zcode.buildInvocation({ ...opencodeEnvelope, historyHandle: { isFirstTurn: false, cliSessionId: 'sess_abc' } }).args,
+  ['--session', 'sess_abc'],
+);
+// 首轮 + rolePrompt → payload 包裹角色设定
+assert.ok(
+  zcode.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' }).payload.includes('[角色设定]'),
 );
 const codexWithRouter = createCodexAdapter({
   cmd: 'codex',
@@ -264,9 +275,21 @@ assert.strictEqual(
   opencode.buildTerminalCmd({ model: 'open/model', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
   'opencode --model open/model --variant max --agent build --session ses_1',
 );
+// zcode buildTerminalCmd：走引擎 TUI（ZCODE_ENGINE 未设时回退到 cmd）
 assert.strictEqual(
-  zcode.buildTerminalCmd({ model: 'z/model', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
-  'zcode --model z/model --session ses_1',
+  zcode.buildTerminalCmd({ cliSessionId: 'ses_1' }),
+  'zcode tui --resume ses_1',
+);
+// zcode decodeEvent：bridge 输出 opencode raw shape，按 opencode-like 同款解码
+assert.strictEqual(zcode.decodeEvent({ sessionID: 'sess_z', type: 'step_start' })[0].type, 'session_started');
+assert.strictEqual(zcode.decodeEvent({ sessionID: 'sess_z', type: 'step_start' })[1].type, 'status');
+assert.strictEqual(zcode.decodeEvent({ type: 'text', part: { text: 'hi' } })[0].type, 'assistant_text');
+const zFinish = zcode.decodeEvent({
+  type: 'step_finish', part: { reason: 'stop', tokens: { input: 5, output: 2, cache: { read: 1, write: 0 } } },
+});
+assert.strictEqual(zFinish[zFinish.length - 1].type, 'complete');
+assert.strictEqual(
+  zcode.decodeEvent({ type: 'error', error: { message: 'boom' } }).pop().message, 'boom',
 );
 assert.strictEqual(
   claude.buildTerminalCmd({ model: 'opus', effort: null, agent: 'reviewer', cliSessionId: null }),
