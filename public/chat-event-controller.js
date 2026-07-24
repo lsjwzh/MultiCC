@@ -276,16 +276,7 @@
           break;
         case 'chat_history_reset': handleHistoryReset(message); break;
         case 'task_state': liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState); break;
-        case 'rate_limit_event': {
-          const limit = global.MultiCCChatRateLimit?.consumeRateLimitEvent(
-            message.rate_limit_info,
-            host.getSessionName?.(),
-          );
-          if (limit) {
-            state.claudeFiveHourRateLimit = limit;
-          }
-          break;
-        }
+        case 'rate_limit_event': break;
         case 'stream_end':
           if (state.isStreaming) {
             state.isStreaming = false;
