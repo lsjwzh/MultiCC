@@ -2,7 +2,7 @@
 
 const { renderPrompt } = require('../message-composer');
 
-function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = false }) {
+function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = false, includeThinking = false }) {
   return {
     name,
     cmd,
@@ -18,6 +18,7 @@ function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = fa
       const so = env.spawnOpts;
       const isFirstTurn = env.historyHandle.isFirstTurn;
       const args = ['run', '--format', 'json', '--auto'];
+      if (includeThinking) args.push('--thinking');
       if (so.rawModel) args.push('--model', so.rawModel);
       if (supportsAgentVariant && so.rawEffort) args.push('--variant', so.rawEffort);
       if (supportsAgentVariant && so.rawAgent) args.push('--agent', so.rawAgent);
@@ -41,6 +42,12 @@ function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = fa
         decoded.push({ type: 'status', status: 'thinking' });
       } else if (event.type === 'text' && part.text) {
         decoded.push({ type: 'assistant_text', text: part.text });
+      } else if (event.type === 'reasoning' && (part.text || part.reasoning)) {
+        decoded.push({
+          type: 'thinking',
+          id: part.id || part.partID || `reasoning_${event.sessionID || 'current'}`,
+          text: part.text || part.reasoning,
+        });
       } else if (event.type === 'tool_use' || event.type === 'tool_call') {
         const state = part.state || {};
         decoded.push({

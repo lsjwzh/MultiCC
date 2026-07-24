@@ -39,8 +39,10 @@ test('provider summaries are whitelisted and credential material is discarded', 
   assert.equal(provider.hasToken, true);
   assert.equal(provider.authToken, undefined);
   assert.equal(provider.apiKey, undefined);
-  assert.equal(provider.protocol, undefined);
-  assert.equal(provider.wireApi, undefined);
+  assert.equal(provider.protocol, 'anthropic');
+  assert.equal(provider.apiFormat, 'anthropic');
+  assert.deepEqual(provider.compatibleClis, ['claude', 'opencode']);
+  assert.equal(provider.wireApi, '');
   assert.equal(provider.settingsConfig, undefined);
   assert.equal(provider.headers, undefined);
   const serialized = JSON.stringify(provider);

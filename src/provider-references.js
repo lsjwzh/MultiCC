@@ -16,7 +16,9 @@ function findProviderReferences({ appType, providerId, sessions, defaults, aux }
     : (Array.isArray(sessions) ? sessions : []);
 
   for (const session of values) {
-    if (!session || appTypeForCli(session.cli) !== type) continue;
+    if (!session) continue;
+    const sessionType = appTypeForCli(session.cli);
+    if (session.cli !== 'opencode' && sessionType !== type) continue;
     if (session.provider === id) {
       references.push(Object.freeze({
         kind: 'main',

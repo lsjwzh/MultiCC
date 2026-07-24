@@ -1606,7 +1606,7 @@ async function loadSessionModel() {
     _sessionSubagent = info.subagent || null;
     _sessionAgent = info.agent || '';
     updateSubagentPill();
-    if (_sessionProvider && _sessionCli !== 'qoder' && _sessionCli !== 'zcode') await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude');
+  if (_sessionProvider && _sessionCli !== 'qoder' && _sessionCli !== 'zcode') await ensureProviderList(_sessionCli);
     updateProviderBtn();
     _sessionModel = info.model || '';
     _sessionEffectiveModel = info.effectiveModel || info.model || '';
@@ -1625,7 +1625,7 @@ modelBtn?.addEventListener('click', async () => {
   // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
   await loadSessionModel();
   if (_sessionCli !== 'qoder' && _sessionCli !== 'zcode') {
-    await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude', { loading: true });
+    await ensureProviderList(_sessionCli, { loading: true });
   }
   const picked = await showAIConfigPicker({
     provider: _sessionProvider,
@@ -1728,10 +1728,10 @@ function showLoadingOverlay(text) {
   return window.MultiCCChatAiConfig.showLoadingOverlay(text, { document });
 }
 
-async function ensureProviderList(appType, opts) {
+async function ensureProviderList(cli, opts) {
   const closeLoading = opts && opts.loading ? showLoadingOverlay('加载 Provider 列表…') : null;
   try {
-    const loaded = await window.MultiCCChatAiConfig.loadProviderList(appType);
+    const loaded = await window.MultiCCChatAiConfig.loadProviderList(cli);
     _providerList = Array.from(loaded.providers || []);
     _providerDefaults = loaded.defaults || _providerDefaults;
     return _providerList;
@@ -1750,7 +1750,7 @@ function showProviderPicker(current, list) {
 }
 
 providerBtn?.addEventListener('click', async () => {
-  const list = await ensureProviderList(_sessionCli === 'codex' ? 'codex' : 'claude', { loading: true });
+  const list = await ensureProviderList(_sessionCli, { loading: true });
   const picked = await showProviderPicker(_sessionProvider, list);
   if (picked === null) return;
   try {
