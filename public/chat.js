@@ -395,7 +395,7 @@ const CLI_META = {
 function applyCliUi(cli) {
   const next = CLI_META[cli] ? cli : 'claude';
   const meta = CLI_META[next];
-  currentCli = next; window.MultiCCChatRateLimit?.setCli(next);
+  currentCli = next;
   _sessionCli = next;
   const badge = document.querySelector('.badge');
   if (badge) {
