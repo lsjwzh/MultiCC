@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const liveUiApi = require('../public/chat-live-ui');
+require('../public/chat-rate-limit');
 const eventApi = require('../public/chat-event-controller');
 
 const ROOT = path.join(__dirname, '..');
@@ -138,6 +139,7 @@ function controllerFixture() {
     providerId: null,
     providerName: null,
     providerTokenWindows: null,
+    claudeFiveHourRateLimit: null,
     roleTokens: { main: null, sub: null, subByProvider: [] },
     currentMsgEl: null,
     currentTextContent: '',
@@ -252,6 +254,23 @@ test('only server init synchronizes streaming state and pending cancel ownership
   assert.equal(fixture.state.pendingCancel, false);
   assert.deepEqual(fixture.calls.find(call => Array.isArray(call) && call[0] === 'send'), ['send', { type: 'cancel' }]);
   assert.equal(fixture.state.providerTokenWindows.today, 1);
+});
+
+test('Claude five-hour limit consumes the structured SDK event without retaining billing fields', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'allowed_warning',
+      rateLimitType: 'five_hour',
+      utilization: 0.72,
+      resetsAt: Math.floor(Date.now() / 1000) + 60,
+      overageDisabledReason: 'out_of_credits',
+    },
+  }, generation);
+  assert.equal(fixture.state.claudeFiveHourRateLimit.usedPercentage, 72);
+  assert.equal('overageDisabledReason' in fixture.state.claudeFiveHourRateLimit, false);
 });
 
 test('Claude stream reuses one bubble and binds tool input/result without HTML interpretation', () => {
