@@ -309,6 +309,13 @@
           }
           break;
         }
+        case 'usage_balance_event': {
+          global.MultiCCChatRateLimit?.consumeBalanceEvent(
+            message.balance_info,
+            host.getSessionName?.(),
+          );
+          break;
+        }
         case 'stream_end':
           if (state.isStreaming) {
             state.isStreaming = false;

@@ -3467,6 +3467,16 @@ function chatBroadcast(sessionName, payload) {
   taskContextHost.broadcast(sessionName, payload);
 }
 
+// Usage-limit poller — the active-poll half of the limit subsystem. Claude 5h /
+// ChatGPT-codex report limits in response headers (extracted passively by the
+// proxy); GLM Coding Plan and DeepSeek expose quota only via a separate
+// authenticated request, polled at each turn boundary. Wiring lives in
+// src/chat/usage-limit-wiring so server.js stays thin. Best-effort throughout.
+const usageLimitPoller = require('./src/chat/usage-limit-wiring').createUsageLimitWiring({
+  persistedSessions, providers, chatBroadcast,
+  createPoller: require('./src/usage-limit-poller').createUsageLimitPoller,
+});
+
 // ── WeChat Bridge ──
 // Must come after chatSessions/chatBroadcast are declared (TDZ would crash otherwise).
 wechatBridge.init({
@@ -4448,6 +4458,10 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, provi
     // close/finalize boundary. The result event alone is not enough: history
     // persistence may have failed or a retry may still be planned.
     setSessionStatus(sessionName, { status: cs._resultSaved ? 'completed' : 'idle', currentFile: null });
+    // Turn boundary: refresh this session's provider usage limit if it exposes a
+    // poll-only quota surface (GLM window %, DeepSeek balance). Fire-and-forget,
+    // TTL-throttled and account-deduped inside the poller; never blocks the turn.
+    usageLimitPoller.onTurnComplete(sessionName);
   }
   // Drop claude's `system init` — server already sent its own (but keep the
   // runtime-reported model before discarding).
