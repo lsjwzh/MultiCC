@@ -57,6 +57,23 @@ function userMessageLine(text) {
   }) + '\n';
 }
 
+// Stable fingerprint of the ANTHROPIC_* routing keys in a child env. A running
+// `-p` process bakes these at spawn time (ANTHROPIC_BASE_URL carries the
+// provider id + session, plus auth token / model aliases), so once the desired
+// env's routing keys change — a provider / token / model-alias switch — the
+// live process is talking to the OLD upstream until it respawns. Only the
+// ANTHROPIC_* keys decide the upstream, so unrelated env churn never produces a
+// spurious recycle. Fingerprinting `s.env` (the source pump() compares) keeps
+// the "no env supplied" case an empty string on both sides → never recycles.
+function routeFingerprint(env) {
+  if (!env || typeof env !== 'object') return '';
+  return Object.keys(env)
+    .filter((k) => k.startsWith('ANTHROPIC_'))
+    .sort()
+    .map((k) => `${k}=${env[k]}`)
+    .join('\n');
+}
+
 // (re)spawn the persistent process for a session. Uses --session-id the first
 // time and --resume on any later respawn so context survives a process restart.
 function spawnProc(name, cfg) {
@@ -81,6 +98,10 @@ function spawnProc(name, cfg) {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   s.proc = proc;
+  // Record the routing fingerprint this process was actually spawned with, so a
+  // later provider/env switch (which updates s.env via ensure()) is detectable
+  // at the next turn boundary and triggers a --resume respawn.
+  s.spawnedFingerprint = routeFingerprint(s.env);
   s.lineBuf = '';
   s.stderrTail = '';
 
@@ -170,6 +191,10 @@ function onExit(name, code, signal, err) {
   s.proc = null;
   s.busy = false;
   s.current = null;
+  // A recycle-driven (or any) exit is done: no live process, no fingerprint to
+  // track, and pump() is free to respawn with the current env.
+  s.recycling = false;
+  s.spawnedFingerprint = null;
 
   // Detect "Session ID already in use" — the CLI refuses to start because
   // another process (or a stale lock) holds this session UUID. Generate a
@@ -205,9 +230,27 @@ function onExit(name, code, signal, err) {
 // Start the next queued message if the process is free.
 function pump(name) {
   const s = sessions.get(name);
-  if (!s || s.busy) return;
+  if (!s || s.busy || s.recycling) return;
   const next = s.queue.shift();
   if (!next) return;
+
+  // Provider/routing env changed since this process spawned. The live `-p`
+  // process still routes to the OLD upstream (env is baked at spawn), so recycle
+  // it at THIS turn boundary and let onExit → pump respawn with the fresh env.
+  // Safe by construction: we only reach here when !busy, so no in-flight turn is
+  // interrupted; the requeued message re-runs on the new process; and context is
+  // preserved because the respawn uses --resume <same session id>. SIGTERM (same
+  // as cancel()) gives a deterministic prompt exit — the transcript is already
+  // persisted, so nothing is lost.
+  if (isAlive(name) && s.spawnedFingerprint !== null &&
+      routeFingerprint(s.env) !== s.spawnedFingerprint) {
+    s.queue.unshift(next);
+    s.recycling = true;
+    clearIdle(s);
+    try { s.proc.kill('SIGTERM'); }
+    catch (_) { s.recycling = false; setImmediate(() => pump(name)); }
+    return;
+  }
 
   if (!isAlive(name)) {
     try { spawnProc(name, s); }
@@ -286,6 +329,7 @@ function ensure(name, cfg) {
       proc: null, started: false, busy: false,
       queue: [], current: null, lineBuf: '', stderrTail: '',
       idleTimer: null, idleHeldSince: 0,
+      recycling: false, spawnedFingerprint: null,
     };
     s.started = cfg.resume === true;
     sessions.set(name, s);
