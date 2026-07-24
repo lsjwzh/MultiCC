@@ -5,6 +5,7 @@
 // independent sessions is provided by a bounded, visible-text checkpoint.
 
 const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'codex', 'opencode', 'zcode', 'qoder']);
+const PROVIDERLESS_CLIS = new Set(['zcode', 'qoder']);
 
 function supportedCli(cli) {
   return SUPPORTED_CHAT_CLIS.includes(String(cli || ''));
@@ -16,13 +17,14 @@ function cloneValue(value) {
 }
 
 function activeState(session, now = Date.now()) {
+  const providerless = PROVIDERLESS_CLIS.has(session.cli || 'claude');
   return {
     cliSessionId: session.cliSessionId || null,
     streamSessionId: session._streamSessionId || null,
     model: session.model || null,
     effort: session.effort || null,
-    provider: session.provider || null,
-    subagent: cloneValue(session.subagent) || null,
+    provider: providerless ? null : (session.provider || null),
+    subagent: providerless ? null : (cloneValue(session.subagent) || null),
     agent: session.agent || null,
     reportedModel: session.reportedModel || null,
     updatedAt: now,
@@ -70,8 +72,8 @@ function activateCliState(session, targetCli, options = {}) {
     streamSessionId: null,
     model: defaults.model || null,
     effort: defaults.effort || null,
-    provider: defaults.provider || null,
-    subagent: cloneValue(defaults.subagent) || null,
+    provider: PROVIDERLESS_CLIS.has(targetCli) ? null : (defaults.provider || null),
+    subagent: PROVIDERLESS_CLIS.has(targetCli) ? null : (cloneValue(defaults.subagent) || null),
     agent: defaults.agent || null,
     reportedModel: null,
     updatedAt: now,
@@ -83,15 +85,21 @@ function activateCliState(session, targetCli, options = {}) {
   else delete session._streamSessionId;
   session.model = state.model || null;
   session.effort = state.effort || null;
-  session.provider = state.provider || null;
-  session.subagent = cloneValue(state.subagent) || null;
+  const providerless = PROVIDERLESS_CLIS.has(targetCli);
+  session.provider = providerless ? null : (state.provider || null);
+  session.subagent = providerless ? null : (cloneValue(state.subagent) || null);
   session.agent = state.agent || null;
   if (state.reportedModel) session.reportedModel = state.reportedModel;
   else delete session.reportedModel;
   session.streaming = targetCli === 'claude' && session.kind === 'chat';
   session.cliSwitchEpoch = Math.max(0, Number(session.cliSwitchEpoch) || 0) + 1;
 
-  session.cliStates[targetCli] = { ...state, lastActivatedAt: now };
+  session.cliStates[targetCli] = {
+    ...state,
+    provider: session.provider,
+    subagent: cloneValue(session.subagent) || null,
+    lastActivatedAt: now,
+  };
   return {
     fromCli,
     toCli: targetCli,
@@ -111,7 +119,7 @@ function stateSummary(session) {
       lastActivatedAt: state.lastActivatedAt || null,
       updatedAt: state.updatedAt || null,
       model: state.model || null,
-      provider: state.provider || null,
+      provider: PROVIDERLESS_CLIS.has(cli) ? null : (state.provider || null),
       effort: state.effort || null,
       agent: state.agent || null,
     };

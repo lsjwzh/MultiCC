@@ -41,6 +41,7 @@
     Object.freeze({ value: 'max', label: 'Max' }),
   ]);
   const QODER_MODEL_OPTIONS = Object.freeze(['', 'auto', 'ultimate', 'performance', 'efficient', 'lite']);
+  const ZCODE_MODEL_OPTIONS = Object.freeze(['', 'bigmodel/glm-5.2']);
 
   function defaultEffort(cli) {
     if (cli === 'codex') return 'xhigh';
@@ -142,6 +143,7 @@
       return (state.claudeModelOptions || []).map(option => option.value);
     }
     if (state && state.cli === 'qoder') return [...QODER_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     return ['', '__custom__'];
   }
 
@@ -172,6 +174,7 @@
     if (value === '') {
       if (state && state.cli === 'codex') return '默认（跟随 Provider）';
       if (state && state.cli === 'qoder') return '默认（跟随 Qoder CN 设置）';
+      if (state && state.cli === 'zcode') return '默认（跟随 ZCode 设置）';
       return translate(state, 'default');
     }
     if (state && state.cli === 'qoder') {
@@ -320,7 +323,7 @@
     const document = documentOf(state);
     const cli = state.cli || 'claude';
     const choicesForEffort = effortOptions(cli);
-    const supportsProvider = cli !== 'qoder';
+    const supportsProvider = cli !== 'qoder' && cli !== 'zcode';
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -328,7 +331,7 @@
       box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:94vw;color:#c9d1d9;';
       box.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。' : 'Qoder CN 使用自身账号与 BYOK 配置。'}</div>
+        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。' : `${cli === 'zcode' ? 'ZCode' : 'Qoder CN'} 使用自身账号与厂商配置。`}</div>
         <div id="ai-provider-section">
           <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
           <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>

@@ -40,8 +40,8 @@ function createSessionPolicy(options) {
 
   function effectiveSessionModel(session) {
     if (!session) return null;
-    if (session.cli === 'qoder') return session.model || session.reportedModel || null;
-    const appType = session.cli === 'codex' ? 'codex' : 'claude';
+    const appType = providers.appTypeForCli(session.cli);
+    if (!appType) return session.model || session.reportedModel || null;
     if (session.model) {
       const providerId = session.provider;
       if (providerId) {
@@ -99,9 +99,11 @@ function createSessionPolicy(options) {
   function sessionProviderName(session) {
     const providerId = session && session.provider;
     if (!providerId) return null;
+    const appType = providers.appTypeForCli(session.cli);
+    if (!appType) return null;
     try {
       return providerRouter.getProviderSummary(
-        providers.appTypeForCli(session.cli),
+        appType,
         providerId,
       )?.name || providerId;
     } catch (_) {

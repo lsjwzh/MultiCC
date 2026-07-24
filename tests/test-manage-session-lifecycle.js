@@ -112,6 +112,9 @@ test('session lifecycle classic script loads before manage facade and stays with
   const innerHtmlWrites = source.split(/\r?\n/).filter(line => line.includes('.innerHTML'));
   assert.deepEqual(innerHtmlWrites.map(line => line.trim()), ["modelSelect.innerHTML = '';"]);
   assert.match(source, /opt\.textContent\s*=/);
+  assert.match(source, /if \(cli === 'qoder'\) return QODER_MODEL_OPTIONS/);
+  assert.match(source, /if \(cli === 'zcode'\) return ZCODE_MODEL_OPTIONS/);
+  assert.match(source, /supportsManagedProvider\(cli\)/);
 });
 
 test('classic script exports every compatibility global used by inline handlers', () => {

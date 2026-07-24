@@ -51,12 +51,16 @@ const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
 
 const APP_TYPES = ['claude', 'codex'];
 
-// Map a session's cli to its provider pool (appType). codex owns its own pool;
-// every other cli (claude, opencode, zcode, …) shares the Anthropic-compatible
-// 'claude' pool. opencode/zcode honor ANTHROPIC_* env when using an anthropic
-// provider, so a chosen claude-pool provider routes correctly for them.
+// Map a session's cli to its MultiCC-managed provider pool (appType).
+// Qoder CN and ZCode own authentication/provider configuration in their vendor
+// clients, so they deliberately return null: MultiCC persists only their model
+// selection and must not inject Claude/Codex routing into those processes.
+// OpenCode remains on the existing Claude pool until its multi-protocol provider
+// contract is represented explicitly.
 function appTypeForCli(cli) {
-  return cli === 'codex' ? 'codex' : 'claude';
+  if (cli === 'codex') return 'codex';
+  if (cli === 'claude' || cli === 'opencode') return 'claude';
+  return null;
 }
 
 // Safe wire model used when a provider is "alias-only" — it declares only
@@ -756,6 +760,7 @@ function resolveSpawnEnv(session) {
   const providerId = session && session.provider;
   if (!providerId) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const appType = appTypeForCli(session.cli);
+  if (!appType) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const p = getProvider(appType, providerId);
   if (!p) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const cfg = parseConfig(p.settingsConfig);

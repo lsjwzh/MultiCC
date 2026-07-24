@@ -51,7 +51,9 @@ function createHarness(home, overrides = {}) {
   };
   const providers = overrides.providers || {
     WIRE_DEFAULT_MODEL: 'wire-default',
-    appTypeForCli: cli => cli === 'codex' ? 'codex' : 'claude',
+    appTypeForCli: cli => cli === 'codex'
+      ? 'codex'
+      : (cli === 'claude' || cli === 'opencode' ? 'claude' : null),
   };
   return createSessionPolicy({
     homeDir: () => home,
@@ -110,6 +112,8 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', reportedModel: 'runtime' }), 'claude-user');
   assert.equal(policy.effectiveSessionModel({ cli: 'codex', reportedModel: 'gpt-runtime' }), 'gpt-runtime');
   assert.equal(policy.effectiveSessionModel({ cli: 'qoder', reportedModel: 'performance' }), 'performance');
+  assert.equal(policy.effectiveSessionModel({ cli: 'zcode', model: 'bigmodel/glm-5.2' }), 'bigmodel/glm-5.2');
+  assert.equal(policy.effectiveSessionModel({ cli: 'zcode', reportedModel: 'vendor/default' }), 'vendor/default');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws', model: 'explicit' }), 'explicit');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws' }), 'claude-user');
   assert.equal(policy.effectiveSessionModel(null), null);
@@ -124,6 +128,7 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.providerDefaultModel('claude', null), 'claude-user');
   assert.equal(policy.sessionProviderName({ cli: 'claude', provider: 'primary' }), 'Primary');
   assert.equal(policy.sessionProviderName({ cli: 'claude', provider: 'throws' }), 'throws');
+  assert.equal(policy.sessionProviderName({ cli: 'zcode', provider: 'stale-provider' }), null);
 });
 
 test('effort, agent and disconnect policies preserve each CLI contract', t => {
