@@ -4904,6 +4904,9 @@ function runChatTurn(sessionName, text, opts = {}) {
   cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
   cs.streamReplay = [];
   cs._resultSaved = false;
+  // Auto-prune claude transcript JSONL before --resume if it exceeds the
+  // context-window threshold, preventing context_length_exceeded failures.
+  if (persisted.cli === 'claude') require('./src/chat/transcript-prune').maybePrune(persisted.cwd, persisted.cliSessionId);
   cs._adapterError = null;
   cs._sawApiError = false;
   cs._activeTurn = turn;
