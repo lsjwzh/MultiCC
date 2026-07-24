@@ -71,11 +71,29 @@ function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = fa
         }
       } else if (event.type === 'error') {
         const error = event.error || part.error;
+        const detail = error && typeof error === 'object' ? error : {};
+        const data = detail.data && typeof detail.data === 'object' ? detail.data : {};
         const message = (error && error.data && error.data.message)
           || (error && error.message)
           || (typeof error === 'string' ? error : '')
           || `${name} 出错`;
-        decoded.push({ type: 'error', label, message, kind: 'provider' });
+        decoded.push({
+          type: 'error',
+          label,
+          message,
+          kind: 'provider',
+          error: {
+            source: `${name}_event`,
+            provider: name,
+            code: data.code || detail.code || detail.name || event.code,
+            httpStatus: data.statusCode || data.status || detail.statusCode
+              || detail.status || event.statusCode || event.status,
+            headers: data.headers || detail.headers || event.headers,
+            requestId: data.requestID || data.requestId || detail.requestID
+              || detail.requestId || event.requestID || event.requestId,
+            message,
+          },
+        });
       }
       return decoded;
     },

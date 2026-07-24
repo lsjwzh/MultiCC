@@ -250,11 +250,27 @@ function createCodexAdapter(deps) {
         return [{ type: 'complete', cost: null, usage: normalizeCodexUsage(event.usage) }];
       }
       if (event.type === 'error' || event.type === 'turn.failed') {
-        const message = String(event.message || (event.error && event.error.message) || '未知错误');
+        const detail = event.error && typeof event.error === 'object' ? event.error : {};
+        const message = String(event.message || detail.message || '未知错误');
         const kind = isResponseCompletedDisconnect(message)
           ? 'response_completed_disconnect'
           : isTransportDisconnect(message) ? 'transport_disconnect' : 'provider';
-        return [{ type: 'error', label: 'Codex', message, kind }];
+        return [{
+          type: 'error',
+          label: 'Codex',
+          message,
+          kind,
+          error: {
+            source: 'codex_event',
+            provider: 'codex',
+            code: detail.code || event.code || detail.type || event.type,
+            httpStatus: detail.http_status || detail.status_code || detail.status
+              || event.http_status || event.status_code || event.status,
+            headers: detail.headers || event.headers,
+            requestId: detail.request_id || event.request_id,
+            message,
+          },
+        }];
       }
       return [];
     },

@@ -304,11 +304,46 @@ test('Aux failures never expose provider secrets or filesystem paths', async () 
     body: { prompt: 'safe user prompt' },
   });
   assert.deepEqual(res.body, { ok: false, error: 'aux failed', taskId: 'task-0' });
-  assert.deepEqual(observedErrors, ['aux failed']);
+  assert.equal(observedErrors.length, 1);
+  assert.equal(observedErrors[0].message, 'aux failed');
+  assert.doesNotMatch(JSON.stringify(observedErrors[0]), /secret-token|\/Users\/example/);
   assert.equal(harness.runtime.auxQueue.health.lastFailMsg, 'aux failed');
   assert.equal(harness.chat.at(-1).message.content, '[ERROR] aux failed');
   assert.equal(harness.broadcasts.at(-1).payload.error, 'aux failed');
   assert.equal(safeAuxErrorMessage(new Error('timeout')), 'timeout');
+});
+
+test('Aux authentication/configuration failures fail fast without recovery probes', async () => {
+  const harness = createHarness({
+    executeAuxHttp: async () => {
+      const error = new Error('permission denied');
+      error.status = 403;
+      throw error;
+    },
+    recordApiError(raw) {
+      assert.equal(raw.httpStatus, 403);
+      return {
+        action: 'fail_fast',
+        reason: 'authentication_permission_not_retryable',
+        error: {
+          category: 'authentication_permission',
+          provider: 'aux-openai',
+          code: null,
+          httpStatus: 403,
+          retryable: false,
+          retryAfterMs: null,
+        },
+      };
+    },
+  });
+  await assert.rejects(
+    harness.runtime.auxQueue.enqueue({ type: 'manual', prompt: 'safe', meta: {} }),
+    /permission denied/,
+  );
+  const health = harness.runtime.auxQueue.getStatus().health;
+  assert.equal(health.unhealthy, true);
+  assert.equal(health.retryable, false);
+  assert.equal(health.category, 'authentication_permission');
 });
 
 test('Goal helpers keep clamping, framing and defensive verdict parsing', () => {

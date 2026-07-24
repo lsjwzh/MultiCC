@@ -1,0 +1,188 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const {
+  normalizeApiError,
+  decideApiErrorPolicy,
+  createApiErrorPolicyRuntime,
+  parseRetryAfter,
+  retryNotice,
+} = require('../src/chat/api-error-policy');
+
+const fixture = JSON.parse(fs.readFileSync(
+  path.join(__dirname, 'fixtures', 'api-errors-sanitized.json'), 'utf8',
+));
+
+function decide(raw, context = {}, deps = {}) {
+  return decideApiErrorPolicy(raw, {
+    source: raw.source,
+    provider: raw.provider,
+    phase: 'before_first_token',
+    ...context,
+  }, { now: () => 1_000_000, random: () => 0, ...deps });
+}
+
+test('sanitized production fixture contains no secrets, accounts, paths, or user request bodies', () => {
+  assert.equal(fixture.sanitized, true);
+  const text = JSON.stringify(fixture);
+  assert.doesNotMatch(text, /authorization|bearer\s+|cookie|api[_-]?key|sk-[A-Za-z0-9]/i);
+  assert.doesNotMatch(text, /\/Users\/|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+  assert.equal(fixture.samples.every(sample => !('requestBody' in sample)), true);
+});
+
+test('real Claude and Codex samples converge on the same stable taxonomy', () => {
+  const categories = fixture.samples.map(sample => normalizeApiError(sample, {
+    source: sample.source,
+    provider: sample.provider,
+    phase: 'before_first_token',
+  }).category);
+  assert.deepEqual(categories, [
+    'authentication_permission',
+    'rate_limit',
+    'provider_transient',
+    'provider_transient',
+    'invalid_request_model',
+    'rate_limit',
+    'provider_transient',
+    'provider_transient',
+    'unknown',
+  ]);
+});
+
+test('401/403, billing, invalid request, context, tool/config errors fail fast', () => {
+  const cases = [
+    [{ httpStatus: 401, source: 'codex_event', provider: 'codex' }, 'authentication_permission'],
+    [{ httpStatus: 403, source: 'claude_result', provider: 'claude' }, 'authentication_permission'],
+    [{ httpStatus: 402, source: 'aux_http', provider: 'aux-openai' }, 'billing_quota'],
+    [{ httpStatus: 400, source: 'codex_event', provider: 'codex' }, 'invalid_request_model'],
+    [{ code: 'context_length_exceeded', source: 'claude_result', provider: 'claude' }, 'context_token_limit'],
+    [{ code: 'invalid_tool_arguments', source: 'codex_event', provider: 'codex' }, 'tool_protocol'],
+    [{ code: 'missing_base_url', source: 'process_stderr', provider: 'opencode' }, 'adapter_configuration'],
+  ];
+  for (const [raw, category] of cases) {
+    const result = decide(raw);
+    assert.equal(result.error.category, category);
+    assert.equal(result.action, 'fail_fast');
+  }
+});
+
+test('429 honors Retry-After without jitter and long reset windows do not short-loop', () => {
+  assert.equal(parseRetryAfter('7', 0), 7_000);
+  const short = decide({
+    httpStatus: 429, headers: { 'Retry-After': '7' },
+    source: 'claude_result', provider: 'claude',
+  });
+  assert.equal(short.action, 'retry');
+  assert.equal(short.delayMs, 7_000);
+  assert.equal(short.reason, 'server_retry_after');
+  const long = decide({
+    httpStatus: 429, retryAfterMs: 600_000,
+    source: 'codex_event', provider: 'codex',
+  });
+  assert.equal(long.action, 'wait_reset');
+  assert.equal(long.delayMs, 600_000);
+  const quota = decide({
+    httpStatus: 402, retryAfterMs: 3_600_000,
+    source: 'aux_http', provider: 'aux-openai',
+  });
+  assert.equal(quota.action, 'wait_reset');
+  assert.equal(quota.retryAt, 4_600_000);
+});
+
+test('5xx and network retry with bounded exponential backoff and budget', () => {
+  const first = decide({
+    httpStatus: 503, source: 'claude_result', provider: 'claude',
+  });
+  assert.equal(first.action, 'retry');
+  assert.equal(first.attempt, 1);
+  assert.equal(first.delayMs, 1_000);
+  const second = decide({
+    code: 'ECONNRESET', source: 'codex_event', provider: 'codex',
+  }, { attempt: 1 });
+  assert.equal(second.action, 'retry');
+  assert.equal(second.attempt, 2);
+  assert.equal(second.delayMs, 2_000);
+  const exhausted = decide({
+    httpStatus: 503, source: 'claude_result', provider: 'claude',
+  }, { attempt: 2 });
+  assert.equal(exhausted.action, 'fail_fast');
+  assert.equal(exhausted.reason, 'retry_budget_exhausted');
+});
+
+test('timeout phase and partial output/tool side effects forbid blind whole-turn replay', () => {
+  const connect = decide({
+    code: 'CONNECT_TIMEOUT', source: 'codex_event', provider: 'codex',
+  }, { phase: 'connect' });
+  assert.equal(connect.action, 'retry');
+  const partial = decide({
+    code: 'READ_TIMEOUT', source: 'claude_result', provider: 'claude',
+  }, { phase: 'stream', partialOutput: true });
+  assert.equal(partial.action, 'fail_fast');
+  assert.equal(partial.reason, 'unsafe_replay_boundary');
+  const tool = decide({
+    httpStatus: 503, source: 'codex_event', provider: 'codex',
+  }, { phase: 'before_first_token', sideEffects: true });
+  assert.equal(tool.action, 'fail_fast');
+  assert.equal(retryNotice(tool).includes('未自动重放'), true);
+});
+
+test('cancellation and shutdown never retry; unknown gets at most one controlled retry', () => {
+  for (const code of ['user_cancel', 'shutdown', 'SIGTERM']) {
+    const result = decide({ code, source: 'process_stderr', provider: 'codex' });
+    assert.equal(result.error.category, 'cancel_shutdown');
+    assert.equal(result.action, 'fail_fast');
+  }
+  const first = decide({ message: 'opaque upstream failure', source: 'opencode_event', provider: 'opencode' });
+  assert.equal(first.action, 'retry');
+  assert.equal(first.error.category, 'unknown');
+  const second = decide({
+    message: 'opaque upstream failure', source: 'opencode_event', provider: 'opencode',
+  }, { attempt: 1 });
+  assert.equal(second.action, 'fail_fast');
+});
+
+test('untrusted text cannot smuggle a retryable category and public messages are sanitized', () => {
+  const error = normalizeApiError({
+    message: '503 Bearer secret-token authorization=secret /Users/person/private.json',
+    source: 'browser_user_text',
+    provider: 'unknown',
+  }, { phase: 'before_first_token' });
+  assert.equal(error.category, 'unknown');
+  assert.doesNotMatch(error.sanitizedMessage, /secret-token|\/Users\/person/);
+});
+
+test('runtime deduplicates repeated events, opens provider circuit, and exposes aggregate metrics', () => {
+  const logs = [];
+  const metrics = new Map();
+  const runtime = createApiErrorPolicyRuntime({
+    now: () => 5_000,
+    random: () => 0,
+    circuitThreshold: 3,
+    logger: {
+      info(event, fields) { logs.push({ event, fields }); },
+      warn(event, fields) { logs.push({ event, fields }); },
+      error(event, fields) { logs.push({ event, fields }); },
+    },
+    metrics: {
+      inc(name) { metrics.set(name, (metrics.get(name) || 0) + 1); },
+      set() {},
+    },
+  });
+  const raw = { httpStatus: 503, source: 'claude_result', provider: 'claude' };
+  const one = runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-1' });
+  const duplicate = runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-1' });
+  assert.equal(one.action, 'retry');
+  assert.equal(duplicate.duplicate, true);
+  runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-2' });
+  const open = runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-3' });
+  assert.equal(open.action, 'wait_circuit');
+  assert.equal(runtime.snapshot().circuits[0].open, true);
+  assert.equal(logs.length, 3);
+  assert.equal(metrics.get('multicc_api_error_circuit_open_total'), 1);
+  runtime.recordSuccess('claude', { retryAttempt: 1 });
+  assert.equal(runtime.snapshot().circuits[0].open, false);
+  assert.equal(metrics.get('multicc_api_error_retry_succeeded_total'), 1);
+});
