@@ -117,6 +117,8 @@ const { createProviderRoutes } = require('./src/routes/providers');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
+const { createRoleWorkerService } = require('./src/session/role-worker');
+const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createAuthRuntime } = require('./src/routes/auth');
@@ -1837,7 +1839,7 @@ app.use(createMemoModule({
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, type = null, elasticWorker = false, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -1908,6 +1910,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     branch,
   };
   if (rp) session.rolePrompt = rp;
+  if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
   if (type === 'worker' && elasticWorker) session.elasticWorker = true;
   if (ephemeral) session.ephemeral = true;
@@ -1929,25 +1932,16 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   return { ok: true, id: sid, session };
 }
 
-app.post('/api/directories/:id/sessions', asyncHandler(async (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  const cli = (req.body.cli || '').trim();
-  const kind = (req.body.kind || '').trim();
-  const label = (req.body.label || '').trim() || null;
-  const model = (req.body.model || '').trim() || null;
-  const effort = req.body.effort === undefined ? null : req.body.effort;
-  const agent = req.body.agent === undefined ? null : req.body.agent;
-  // provider: omit → inherit global default; '' → explicit no-override; id → that provider.
-  const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
-  const rolePrompt = (req.body.rolePrompt || '').trim() || null;
-  const r = await createSessionRecord({
-    dir: d, cli, kind, label, model, provider, effort, agent, rolePrompt,
-    persistence: 'required', persistenceSource: 'http.create-session',
-  });
-  if (!r.ok) return res.status(400).json({ error: r.error });
-  res.json(r.session);
-}));
+const roleWorkerService = createRoleWorkerService({
+  records: persistedSessions,
+  mutate: (source, mutation) => sessionPersistence.mutate(source, mutation),
+  createSession: createSessionRecord,
+});
+mountSessionCreateRoutes(app, {
+  directories, createSessionRecord, asyncHandler,
+  ensureRoleWorker: input => roleWorkerService.ensure(input),
+  getAgentPreset: id => agentResources.agentPreset(id),
+});
 
 // Cross-CLI switching keeps one native state per CLI and emits a visible,
 // bounded handoff checkpoint. Provider defaults and the warm chat stream are
