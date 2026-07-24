@@ -6236,8 +6236,7 @@ const triggerRuntime = createSessionTriggers({
 triggerRuntime.mountRoutes(app);
 const teardownTriggers = triggerRuntime.teardownSession;
 
-// Migrate legacy worktrees and Commanders before recovery/readiness.
-const startupRepoReady = initWorktrees()
+const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(initWorktrees)
   .catch(error => console.error('[multicc] async repo startup failed:', error.message))
   .then(() => commanderMigrationRunner.run())
   .catch(error => {

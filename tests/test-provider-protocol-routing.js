@@ -57,6 +57,29 @@ test('CC-Switch import treats meta.apiFormat as the protocol source of truth', (
   assert.deepEqual(anthropic.compatibleClis, ['claude', 'opencode']);
 });
 
+test('startup migration upgrades old provider records once and is byte-idempotent', () => {
+  const storeFile = path.join(dataDir, 'providers.json');
+  const legacy = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+  for (const provider of legacy) delete provider.apiFormat;
+  const chat = legacy.find(provider => provider.id === 'cc-chat');
+  chat.settingsConfig = {
+    auth: { OPENAI_API_KEY: 'chat-secret' },
+    config: 'model = "chat-model"\nbase_url = "https://chat.example/v1"\nwire_api = "responses"\n',
+  };
+  fs.writeFileSync(storeFile, JSON.stringify(legacy, null, 2), { mode: 0o600 });
+
+  const first = providers.migrateLegacyProviderProtocols();
+  assert.deepEqual(first, { updated: 2, skipped: 0, total: 2 });
+  const migratedBytes = fs.readFileSync(storeFile, 'utf8');
+  const migrated = JSON.parse(migratedBytes);
+  assert.equal(migrated.find(provider => provider.id === 'cc-chat').apiFormat, 'openai_chat');
+  assert.equal(migrated.find(provider => provider.id === 'cc-chat').settingsConfig.proxyTarget.mode, 'chat-to-responses');
+  assert.equal(migrated.find(provider => provider.id === 'cc-anthropic').apiFormat, 'anthropic');
+
+  assert.deepEqual(providers.migrateLegacyProviderProtocols(), { updated: 0, skipped: 0, total: 2 });
+  assert.equal(fs.readFileSync(storeFile, 'utf8'), migratedBytes);
+});
+
 test('Codex selects the Chat-to-Responses proxy only for Chat providers', () => {
   const spawn = providers.resolveSpawnEnv({ cli: 'codex', provider: 'cc-chat', model: 'chat-model' });
   assert.ok(spawn.codexHome.startsWith(fakeHome));
