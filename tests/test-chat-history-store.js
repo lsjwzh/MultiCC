@@ -196,11 +196,14 @@ test('page size remains stable and immutable snapshots expose request generation
 });
 
 test('durable history reset broadcasts an authoritative page and invalidates every client cursor', () => {
-  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  // handleChatWs (which owns the history-reset WS message) now lives in the
+  // extracted chat turn engine; scan host + engine so the delegation shape resolves.
+  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8')
+    + '\n' + fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
   const historyRuntime = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'chat-history.js'), 'utf8');
   const events = fs.readFileSync(path.join(ROOT, 'public', 'chat-event-controller.js'), 'utf8');
 
-  assert.match(server, /await chatHistoryRuntime\.clearHistory\(sessionName, msg, cs\)/,
+  assert.match(server, /await (?:chatHistoryRuntime|getChatHistoryRuntime\(\))\.clearHistory\(sessionName, msg, cs\)/,
     'the WebSocket host must delegate clear ownership to the history runtime');
   assert.match(historyRuntime,
     /afterCommit:\s*\(\)\s*=>\s*\{[\s\S]*service\.paginate\(key,[\s\S]*type:\s*'chat_history_reset'/,

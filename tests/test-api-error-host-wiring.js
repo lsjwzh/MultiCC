@@ -6,7 +6,11 @@ const path = require('node:path');
 const test = require('node:test');
 
 const root = path.join(__dirname, '..');
-const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+// The chat turn engine (runChatTurn / runChatTurnStreaming / finalizeStreamingTurn)
+// now lives in src/chat/turn-engine.js; assertions that scan for those shapes read
+// the concatenated host + engine source.
+const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8')
+  + '\n' + fs.readFileSync(path.join(root, 'src', 'chat', 'turn-engine.js'), 'utf8');
 // The classify E-branch (with its classifier_legacy fallback) now lives in the
 // extracted classify state machine.
 const classifyStateMachine = fs.readFileSync(

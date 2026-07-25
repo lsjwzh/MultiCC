@@ -185,6 +185,6 @@ test('production server mounts only the injected memo module', () => {
   assert.equal((source.match(/createMemoModule\(\{/g) || []).length, 1);
   assert.doesNotMatch(source, /app\.(?:get|put|post)\('\/api\/directories\/:id\/memo/);
   assert.doesNotMatch(source, /const MEMO_(?:FILENAME|MAX_BYTES)/);
-  assert.match(source, /runTurn: \(id, text, options\) => admitChatWork\(id, text, options\)/);
+  assert.match(source, /runTurn: \(id, text, options\) => chatTurnEngine\.admitChatWork\(id, text, options\)/);
   assert.doesNotMatch(controllerSource, /require\(['"]express['"]\)|server\.js/);
 });
