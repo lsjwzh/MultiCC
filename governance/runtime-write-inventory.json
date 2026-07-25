@@ -9,7 +9,7 @@
       "rationale": "The package-root .env is writable configuration and may contain credentials; moving it changes installer and settings compatibility.",
       "migrationStrategy": "Introduce an explicit config root, copy forward atomically, keep a read-only legacy fallback for one release, then remove package-root writes.",
       "sources": [
-        { "file": "server.js", "anchor": "const ENV_PATH = path.join(__dirname, '.env');" }
+        { "file": "src/host-env.js", "anchor": "const ENV_PATH = path.join(__dirname, '..', '.env');" }
       ]
     },
     {

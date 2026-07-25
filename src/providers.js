@@ -1381,7 +1381,7 @@ function getProviderUsageStats() {
 
 // Candidate wire names probed to discover what an alias-only relay accepts.
 // All Anthropic-compatible relays accept claude-* names; this confirms which.
-const PROBE_CANDIDATES = ['claude-sonnet-4-5', 'claude-opus-4-8', 'claude-haiku-4-5', 'claude-sonnet-4.5', 'claude-sonnet-5'];
+const PROBE_CANDIDATES = ['claude-opus-5', 'claude-sonnet-5', 'claude-sonnet-4-5', 'claude-opus-4-8', 'claude-haiku-4-5', 'claude-sonnet-4.5'];
 
 // Env vars that select a model — stripped from the probe child so the candidate
 // `--model` is authoritative (otherwise an alias target would shadow it).
