@@ -32,6 +32,10 @@
       --elev-hi:0 1px 0 rgba(255,255,255,.07) inset, 0 18px 44px -22px rgba(0,0,0,.9);
       --mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
       --sans:'Inter',-apple-system,system-ui,'Segoe UI',sans-serif;
+      /* Home-indicator / gesture-bar inset. Resolves to 0px on desktop and on
+         any browser without safe areas, so it adds no stray whitespace there.
+         Indirected through a custom property so layout probes can override it. */
+      --mc-safe-bottom:env(safe-area-inset-bottom,0px);
     }
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     html,body{height:100%}
@@ -52,12 +56,34 @@
     ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.16)}
     a{color:inherit}
 
-    /* ── Left nav ── */
+    /* ── Left nav ──
+       Three regions, top to bottom: .brand (fixed) / #nav-scroll (the only
+       scrolling region) / .nav-bottom (fixed action row incl. the restart
+       button). The middle region MUST have min-height:0 — without it a flex
+       item refuses to shrink below its content height, the column grows past
+       the drawer, and the action row is pushed out of the viewport where it
+       cannot be tapped. This applies at every width: a short desktop window
+       hits the same wall as a phone. */
     #nav{
       position:relative;z-index:3;width:236px;flex-shrink:0;
       background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 30%);
       border-right:1px solid var(--line);
       display:flex;flex-direction:column;padding:16px 12px;
+      min-height:0;overflow:hidden;
+    }
+    #nav-scroll{
+      flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
+      -webkit-overflow-scrolling:touch;
+      /* Bleed to the drawer's padding box so .nav-item.active::before (left:-12px)
+         stays inside this scroll container's clip region and keeps painting. */
+      margin-inline:-12px;padding-inline:12px;
+      overscroll-behavior:contain;   /* no scroll chaining into the page behind */
+    }
+    .nav-bottom{
+      flex:0 0 auto;min-height:0;
+      /* Opaque so the scrolling list passes behind it, never through it. */
+      background:var(--bg);
+      padding-bottom:var(--mc-safe-bottom);
     }
     .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px;text-decoration:none}
     .brand .mark{
@@ -85,8 +111,12 @@
     .nav-item .badge{margin-left:auto;font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:20px;background:rgba(255,255,255,.07);color:var(--muted)}
     .nav-item.active .badge{background:rgba(58,214,197,.22);color:var(--accent)}
 
-    .nav-foot{margin-top:auto;padding-top:14px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:6px}
-    .nav-foot .hdr-btn{flex:1 1 calc(50% - 3px)}
+    /* margin-top:auto is gone: .nav-foot no longer has to fight the nav item
+       list for free space — .nav-bottom is pinned by the flex column instead. */
+    .nav-foot{padding-top:14px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:6px}
+    /* Two per row, but min-width:0 lets a long label (EN "Restart"/"Sign out")
+       shrink and wrap instead of forcing the row wider than the drawer. */
+    .nav-foot .hdr-btn{flex:1 1 calc(50% - 3px);min-width:0}
 
     .hdr-btn{
       padding:7px 10px;background:var(--panel);color:var(--muted);
@@ -387,8 +417,40 @@
     /* ── Responsive ── */
     @media (max-width:1100px){#kpi-row{grid-template-columns:repeat(2,1fr)}}
     @media (max-width:860px){
-      #nav{position:fixed;inset:0 auto 0 0;transform:translateX(-100%);transition:transform .25s;box-shadow:0 0 40px rgba(0,0,0,.6);z-index:10003;background:var(--bg)}
-      body.nav-open #nav{transform:none}
+      /* Height ladder, worst → best. `inset:0 auto 0 0` (top+bottom) used to
+         size the drawer, but on iOS Safari / Android Chrome a fixed element is
+         laid out against the LARGE viewport — the one with the address bar
+         collapsed — so its bottom ~70-90px sit under browser chrome whenever
+         the toolbar is showing, hiding the restart button.
+           1. 100vh                     legacy fallback, same large-viewport flaw
+           2. -webkit-fill-available    iOS Safari < 15.4: the *visible* height
+           3. 100dvh                    modern: tracks the toolbar as it moves
+         Only `top`/`left` are set: specifying top+bottom+height would be
+         over-constrained and the height would be ignored. */
+      #nav{
+        position:fixed;top:0;left:0;right:auto;bottom:auto;
+        height:100vh;height:-webkit-fill-available;height:100dvh;
+        max-height:100vh;max-height:-webkit-fill-available;max-height:100dvh;
+        transform:translateX(-100%);
+        /* `visibility` (inherited) takes the closed drawer's ~20 nav items and 5
+           action buttons out of the tab order and out of hit testing — a
+           transform alone leaves them focusable, so Tab from the topbar used to
+           walk invisibly through an off-screen drawer. Transitioning it keeps
+           the element visible for the whole .25s slide-out instead of blanking
+           it on frame one. */
+        visibility:hidden;transition:transform .25s,visibility .25s;
+        box-shadow:0 0 40px rgba(0,0,0,.6);z-index:10003;background:var(--bg);
+      }
+      body.nav-open #nav{transform:none;visibility:visible}
+      /* Touch targets: the drawer appears at 860px but the 40px min-height rule
+         below only applied under 640px, leaving 641-860px with 30px buttons. */
+      #nav .hdr-btn{min-height:40px;display:flex;align-items:center;justify-content:center}
+      /* Very short viewports (landscape phones): the version read-out is
+         informational, the action row is not — drop the former so the latter,
+         including 重启, always stays reachable. If the row itself still cannot
+         fit, it scrolls on its own; overscroll-behavior stops that turning into
+         a scroll trap for the list above. */
+      .nav-bottom{max-height:60vh;max-height:60dvh;overflow-y:auto;overscroll-behavior:contain}
       body.nav-open::before{content:"";position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:10002;pointer-events:auto}
       #nav-toggle{display:grid !important}
       /* minmax(0,1fr) prevents grid track from being forced wider by long
@@ -412,6 +474,13 @@
       #sidebar{padding:14px 12px 28px}
       #topbar .icon-btn{width:40px;height:40px;flex-basis:40px}
       #topbar .btn.primary{height:42px;padding:0 10px}
+    }
+    /* Landscape phones / split-screen: too little height for both the version
+       read-out and the action row. The read-out is informational and yields;
+       the actions (restart, logout) must stay reachable. */
+    @media (max-width:860px) and (max-height:520px){
+      #nav #version-bar{display:none}
+      .nav-foot{padding-top:8px}
     }
     #nav-toggle{display:none}
 
@@ -584,6 +653,10 @@
       </div>
     </a>
 
+    <!-- Middle region: the ONLY part that scrolls. Must carry min-height:0 so it
+         can shrink below its content height inside the flex column, otherwise it
+         pushes .nav-bottom (restart/logout) out of the viewport on phones. -->
+    <div id="nav-scroll">
     <div class="nav-label" data-i18n="workspace">Workspace</div>
     <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span data-i18n="overview">概览</span> <span class="badge" id="nav-dir-count">0</span></button>
     <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> <span data-i18n="memoryGraph">记忆图谱</span> <span class="badge" id="nav-memory-count">0</span></button>
@@ -600,32 +673,38 @@
     <button class="nav-item" data-view="resources" onclick="setView('resources')"><span class="ic">⊟</span> <span data-i18n="agentResources">Agent 资源</span></button>
     <button class="nav-item" data-view="skillsync" onclick="setView('skillsync')"><span class="ic">⟳</span> <span data-i18n="skillSync">技能同步</span> <span class="badge" id="nav-skillsync-count">0</span></button>
     <button class="nav-item" data-view="storage" onclick="setView('storage')"><span class="ic">⛁</span> <span data-i18n="temporaryUploads">临时上传</span></button>
+    </div><!-- /#nav-scroll -->
 
-    <!-- Version check: shown at the bottom of the sidebar, always visible -->
-    <div id="version-bar" style="margin-top:auto;padding:10px 4px 6px;border-top:1px solid var(--line)">
-      <div style="display:flex;align-items:center;gap:8px" onclick="checkVersion()" title="点击检查更新">
-        <span id="ver-icon" style="font-size:13px;opacity:.8">📦</span>
-        <span style="flex:1;min-width:0">
-          <div id="ver-current" style="font-family:var(--mono);font-size:11px;color:var(--text);line-height:1.3">v—</div>
-          <div id="ver-hint" style="font-family:var(--mono);font-size:10px;color:var(--faint);line-height:1.3">检查中…</div>
-        </span>
-        <span id="ver-badge" style="display:none;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;background:var(--accent-dim);color:var(--accent);font-weight:600">NEW</span>
+    <!-- Bottom region: never scrolls away with the list. Pinned by the flex
+         column (flex:0 0 auto) and given the safe-area inset so the home
+         indicator / mobile browser toolbar cannot sit on top of the buttons. -->
+    <div class="nav-bottom">
+      <!-- Version check: shown at the bottom of the sidebar, always visible -->
+      <div id="version-bar" style="padding:10px 4px 6px;border-top:1px solid var(--line)">
+        <div style="display:flex;align-items:center;gap:8px" onclick="checkVersion()" title="点击检查更新">
+          <span id="ver-icon" style="font-size:13px;opacity:.8">📦</span>
+          <span style="flex:1;min-width:0">
+            <div id="ver-current" style="font-family:var(--mono);font-size:11px;color:var(--text);line-height:1.3">v—</div>
+            <div id="ver-hint" style="font-family:var(--mono);font-size:10px;color:var(--faint);line-height:1.3">检查中…</div>
+          </span>
+          <span id="ver-badge" style="display:none;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;background:var(--accent-dim);color:var(--accent);font-weight:600">NEW</span>
+        </div>
       </div>
-    </div>
 
-    <div class="nav-foot">
-      <a class="hdr-btn" href="/multicc.apk" id="apk-btn" title="Download Android App">APK</a>
-      <button class="hdr-btn" id="qr-btn" onclick="showQR()" title="Scan QR to open on mobile">QR</button>
-      <button class="hdr-btn" id="push-toggle" onclick="togglePush()" title="Enable push notifications">Push</button>
-      <button class="hdr-btn" id="svc-restart-btn" onclick="restartMulticcService()" data-i18n-title="restartServiceHint" title="重启 multicc 服务">🔄 <span data-i18n="restartService">重启</span></button>
-      <a class="hdr-btn" href="/logout" data-i18n-title="logout"><span data-i18n="logout">退出登录</span></a>
+      <div class="nav-foot">
+        <a class="hdr-btn" href="/multicc.apk" id="apk-btn" title="Download Android App">APK</a>
+        <button class="hdr-btn" id="qr-btn" onclick="showQR()" title="Scan QR to open on mobile">QR</button>
+        <button class="hdr-btn" id="push-toggle" onclick="togglePush()" title="Enable push notifications">Push</button>
+        <button class="hdr-btn" id="svc-restart-btn" onclick="restartMulticcService()" data-i18n-title="restartServiceHint" title="重启 multicc 服务">🔄 <span data-i18n="restartService">重启</span></button>
+        <a class="hdr-btn" href="/logout" data-i18n-title="logout"><span data-i18n="logout">退出登录</span></a>
+      </div>
     </div>
   </aside>
 
   <!-- ── Main ── -->
   <main id="main">
     <header id="topbar">
-      <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" data-i18n-title="menu" title="菜单">☰</button>
+      <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" aria-controls="nav" aria-expanded="false" data-i18n-title="menu" title="菜单">☰</button>
       <div class="crumb" id="crumb"><span data-i18n="overview">概览</span> <small id="crumb-sub"></small></div>
       <div class="topspace"></div>
       <div class="search"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索Fleet / 会话…" oninput="filterDirs(this.value)" /></div>

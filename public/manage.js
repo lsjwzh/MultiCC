@@ -946,11 +946,22 @@ function showPrompt(message, value = '', opts = {}) { return _dialog({ message, 
 /* ── Keyboard shortcut: Esc to close focus panel or modal ── */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    // _dialog() consumes Escape in the capture phase and marks the event
+    // handled. Bail out so one keypress never dismisses two stacked layers.
+    if (e.defaultPrevented) return;
     const gcdModal = document.getElementById('git-commit-diff-modal');
     if (gcdModal && gcdModal.style.display === 'flex') { closeCommitDiff(); return; }
     const modal = document.getElementById('newdir-modal');
     if (modal && modal.style.display === 'flex') { closeNewDirectoryModal(); return; }
-    if (_focusedSessionId) closeFocusPanel();
+    if (_focusedSessionId) { closeFocusPanel(); return; }
+    // The mobile drawer is the outermost layer, so it closes last. Focus goes
+    // back to the toggle: without this a keyboard user is left focused on a
+    // drawer that just slid off-screen, with nothing visible to Tab from.
+    if (document.body.classList.contains('nav-open')) {
+      document.body.classList.remove('nav-open');
+      const toggle = document.getElementById('nav-toggle');
+      if (toggle) toggle.focus();
+    }
   }
   if (e.key === 'Enter') {
     const modal = document.getElementById('newdir-modal');
@@ -2725,6 +2736,21 @@ document.addEventListener('click', (e) => {
     }
   }
 });
+
+// `nav-open` is added and removed from four places: the toggle button, a
+// backdrop tap, setView(), and Escape. Watching the class keeps aria-expanded
+// honest for all of them, instead of asking every caller to remember.
+(() => {
+  const syncNavToggleAria = () => {
+    const toggle = document.getElementById('nav-toggle');
+    if (!toggle) return;
+    toggle.setAttribute('aria-expanded',
+      document.body.classList.contains('nav-open') ? 'true' : 'false');
+  };
+  new MutationObserver(syncNavToggleAria)
+    .observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  syncNavToggleAria();
+})();
 
 // Eye toggle for password fields (provider API keys, etc.) — works for both
 // static DOM fields and dynamically created editor dialogs.
