@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>server.js 代码结构图 (6525 lines)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
+h1 { font-size: 20px; color: #58a6ff; margin-bottom: 4px; }
+.subtitle { color: #8b949e; font-size: 13px; margin-bottom: 24px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }
+.panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+.panel h2 { font-size: 14px; color: #f0883e; margin-bottom: 12px; border-bottom: 1px solid #21262d; padding-bottom: 8px; }
+.block { display: flex; align-items: stretch; margin-bottom: 3px; border-radius: 4px; overflow: hidden; }
+.block .lines { min-width: 90px; padding: 6px 8px; font-size: 11px; color: #8b949e; background: #0d1117; display: flex; align-items: center; justify-content: flex-end; }
+.block .bar { flex: 1; padding: 6px 10px; font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.block .size { font-size: 10px; color: #8b949e; margin-left: auto; white-space: nowrap; }
+.cat-infra { background: #1c2128; border-left: 3px solid #484f58; }
+.cat-session { background: #1a2332; border-left: 3px solid #58a6ff; }
+.cat-chat { background: #1a2e1a; border-left: 3px solid #3fb950; }
+.cat-classify { background: #2e1a2e; border-left: 3px solid #bc8cff; }
+.cat-dispatch { background: #2e2a1a; border-left: 3px solid #d29922; }
+.cat-ws { background: #1a2e2e; border-left: 3px solid #39d353; }
+.cat-event { background: #2e1a1a; border-left: 3px solid #f85149; }
+.cat-shutdown { background: #21262d; border-left: 3px solid #6e7681; }
+.cat-bridge { background: #1a1a2e; border-left: 3px solid #a371f7; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+.extracted { margin-top: 16px; }
+.extracted h3 { font-size: 12px; color: #8b949e; margin-bottom: 8px; }
+.tag { display: inline-block; padding: 2px 8px; margin: 2px; font-size: 11px; border-radius: 10px; background: #21262d; border: 1px solid #30363d; color: #8b949e; }
+.tag.route { border-color: #1f6feb44; color: #58a6ff; }
+.tag.runtime { border-color: #3fb95044; color: #3fb950; }
+.recommend { margin-top: 20px; }
+.recommend h2 { font-size: 14px; color: #3fb950; margin-bottom: 12px; }
+.rec-item { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+.rec-item .title { font-size: 13px; color: #f0883e; font-weight: 600; }
+.rec-item .meta { font-size: 11px; color: #8b949e; margin: 4px 0; }
+.rec-item .desc { font-size: 12px; color: #c9d1d9; }
+.priority { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; margin-left: 8px; }
+.p-high { background: #f8514922; color: #f85149; }
+.p-med { background: #d2992222; color: #d29922; }
+.p-low { background: #388bfd22; color: #58a6ff; }
+.dep-graph { margin-top: 16px; font-size: 12px; line-height: 1.8; }
+.dep-graph .arrow { color: #484f58; }
+.dep-graph .mod { color: #58a6ff; }
+.dep-graph .still { color: #f0883e; }
+</style>
+</head>
+<body>
+<h1>multicc server.js 代码结构图</h1>
+<div class="subtitle">6525 lines · HEAD 751755f · 2026-07-25 · 已抽出 21 个路由模块 + 18 个 chat 运行时模块</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#484f58"></div>基础设施/初始化</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div>Session CRUD</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div>Chat Turn 引擎</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#bc8cff"></div>Classify 状态机</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div>Dispatch 系统</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#39d353"></div>WebSocket 层</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f85149"></div>事件/通知</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#a371f7"></div>Bridge 挂载</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#6e7681"></div>Shutdown</div>
+</div>
+
+<div class="grid">
+<div class="panel">
+<h2>server.js 内部功能块（按行号）</h2>
+
+<div class="block"><div class="lines">1–89</div><div class="bar cat-infra">Requires / Imports (80+ modules)<span class="size">89</span></div></div>
+<div class="block"><div class="lines">90–240</div><div class="bar cat-infra">State stores / Data dir / Provider shadow<span class="size">151</span></div></div>
+<div class="block"><div class="lines">241–384</div><div class="bar cat-infra">Cookies / Middleware / Health / Metrics<span class="size">144</span></div></div>
+<div class="block"><div class="lines">385–653</div><div class="bar cat-infra">Claude config / CLI availability / Tmux<span class="size">269</span></div></div>
+<div class="block"><div class="lines">654–935</div><div class="bar cat-infra">Git ready / Persistence / Commander / Destroy<span class="size">282</span></div></div>
+<div class="block"><div class="lines">936–1060</div><div class="bar cat-infra">Worktrees / CWD / Gateway prompt<span class="size">125</span></div></div>
+
+<div class="block"><div class="lines">1061–1365</div><div class="bar cat-dispatch">Dispatch: validate / strip / handle / finalize<span class="size">305</span></div></div>
+
+<div class="block"><div class="lines">1366–1690</div><div class="bar cat-session">Session ID / createSession / onStreamEnd<span class="size">325</span></div></div>
+<div class="block"><div class="lines">1691–1960</div><div class="bar cat-session">Express setup / createSessionRecord<span class="size">270</span></div></div>
+<div class="block"><div class="lines">1961–2230</div><div class="bar cat-session">PATCH /api/sessions/:id (label/model/codex)<span class="size">270</span></div></div>
+<div class="block"><div class="lines">2231–2490</div><div class="bar cat-session">Fork / Bundle encrypt / Export<span class="size">260</span></div></div>
+<div class="block"><div class="lines">2491–2690</div><div class="bar cat-session">Import / Delete / Relocate<span class="size">200</span></div></div>
+<div class="block"><div class="lines">2691–2870</div><div class="bar cat-session">Restart / Notes / Liveness GET<span class="size">180</span></div></div>
+<div class="block"><div class="lines">2871–2960</div><div class="bar cat-dispatch">Dispatch contract handler<span class="size">90</span></div></div>
+
+<div class="block"><div class="lines">2961–3140</div><div class="bar cat-infra">Env file / VAPID / Host control / WS utils<span class="size">180</span></div></div>
+<div class="block"><div class="lines">3141–3305</div><div class="bar cat-ws">WS broadcast / Terminal / TaskBoard busy<span class="size">165</span></div></div>
+<div class="block"><div class="lines">3306–3490</div><div class="bar cat-infra">Static serving / Chat msg / History<span class="size">185</span></div></div>
+<div class="block"><div class="lines">3491–3550</div><div class="bar cat-bridge">Bridge mounts (wechat/feishu/tg/dc/slack)<span class="size">60</span></div></div>
+
+<div class="block"><div class="lines">3551–3835</div><div class="bar cat-classify">TaskBoard goal / Classify state machine<span class="size">285</span></div></div>
+<div class="block"><div class="lines">3836–4050</div><div class="bar cat-classify">Classify helpers / scanAndReclassify<span class="size">215</span></div></div>
+<div class="block"><div class="lines">4051–4270</div><div class="bar cat-classify">Notes / Events / runClassifyNow<span class="size">220</span></div></div>
+
+<div class="block"><div class="lines">4271–4470</div><div class="bar cat-event">Notify / Turn outcome / applyClaudeChatEvent<span class="size">200</span></div></div>
+<div class="block"><div class="lines">4471–4700</div><div class="bar cat-event">applyAdapterChatEvent (codex/opencode/zcode)<span class="size">230</span></div></div>
+
+<div class="block"><div class="lines">4701–5400</div><div class="bar cat-chat">runChatTurn / spawn / handleLine / forward<span class="size">700</span></div></div>
+<div class="block"><div class="lines">5401–5760</div><div class="bar cat-chat">Streaming turn / finalizeStreamingTurn<span class="size">360</span></div></div>
+
+<div class="block"><div class="lines">5761–5980</div><div class="bar cat-ws">handleChatWs (per-session WS protocol)<span class="size">220</span></div></div>
+<div class="block"><div class="lines">5981–6210</div><div class="bar cat-ws">WSS connection / Upload / Global broadcast<span class="size">230</span></div></div>
+
+<div class="block"><div class="lines">6211–6525</div><div class="bar cat-shutdown">Quiesce / Graceful shutdown / Listen<span class="size">315</span></div></div>
+</div>
+
+<div class="panel">
+<h2>已抽出的模块（src/）</h2>
+<div class="extracted">
+<h3>路由模块 (src/routes/) — 21 个</h3>
+<span class="tag route">auth</span>
+<span class="tag route">scan</span>
+<span class="tag route">system</span>
+<span class="tag route">host-read</span>
+<span class="tag route">host-write</span>
+<span class="tag route">voice</span>
+<span class="tag route">aux-goal</span>
+<span class="tag route">task-board</span>
+<span class="tag route">file-transfer</span>
+<span class="tag route">skill-sync</span>
+<span class="tag route">providers</span>
+<span class="tag route">memory-browser</span>
+<span class="tag route">session-memory</span>
+<span class="tag route">agent-resources</span>
+<span class="tag route">session-create</span>
+<span class="tag route">orchestration</span>
+<span class="tag route">session-git</span>
+<span class="tag route">session-admin</span>
+<span class="tag route">chat-history</span>
+<span class="tag route">token-usage</span>
+<span class="tag route">share</span>
+</div>
+<div class="extracted">
+<h3>Chat 运行时 (src/chat/) — 18 个</h3>
+<span class="tag runtime">host-runtime</span>
+<span class="tag runtime">host-coordinator</span>
+<span class="tag runtime">turn-lifecycle</span>
+<span class="tag runtime">turn-request</span>
+<span class="tag runtime">retry-policy</span>
+<span class="tag runtime">api-error-policy</span>
+<span class="tag runtime">finalize-plan</span>
+<span class="tag runtime">finalize-host</span>
+<span class="tag runtime">post-turn-router</span>
+<span class="tag runtime">progress-heartbeat</span>
+<span class="tag runtime">background-task-runtime</span>
+<span class="tag runtime">proxy-broadcast</span>
+<span class="tag runtime">transcript-prune</span>
+<span class="tag runtime">usage-limit-wiring</span>
+<span class="tag runtime">runtime-store</span>
+<span class="tag runtime">ports</span>
+</div>
+<div class="extracted">
+<h3>其他核心模块</h3>
+<span class="tag">dispatch/targeting</span>
+<span class="tag">dispatch/markers</span>
+<span class="tag">classify/vocab</span>
+<span class="tag">cli-adapters/</span>
+<span class="tag">provider-router-*</span>
+<span class="tag">orchestration-*</span>
+<span class="tag">session-persistence</span>
+<span class="tag">network-policy</span>
+<span class="tag">shutdown</span>
+<span class="tag">liveness/</span>
+<span class="tag">workspace/</span>
+<span class="tag">memory/</span>
+</div>
+
+<h2 style="margin-top:20px;">依赖方向（简化）</h2>
+<div class="dep-graph">
+<span class="still">server.js</span> <span class="arrow">──owns──▶</span> <span class="mod">app (express)</span> + <span class="mod">wss</span> + <span class="mod">server (http)</span><br>
+<span class="still">server.js</span> <span class="arrow">──mounts──▶</span> 21 route modules<br>
+<span class="still">server.js</span> <span class="arrow">──creates──▶</span> chat runtime / classify / dispatch<br>
+<span class="still">runChatTurn()</span> <span class="arrow">──calls──▶</span> provider.buildInvocation / spawn<br>
+<span class="still">runChatTurn()</span> <span class="arrow">──emits──▶</span> applyClaudeChatEvent / applyAdapterChatEvent<br>
+<span class="still">applyXxxEvent()</span> <span class="arrow">──updates──▶</span> classify state (cs) / taskBoard<br>
+<span class="still">handleChatWs()</span> <span class="arrow">──drives──▶</span> runChatTurn / admitChatWork<br>
+<span class="still">dispatch*</span> <span class="arrow">──spawns──▶</span> createSession / runChatTurn<br>
+</div>
+</div>
+</div>
+
+<div class="panel recommend" style="grid-column: 1 / -1;">
+<h2>进一步模块化拆分建议</h2>
+
+<div class="rec-item">
+  <div class="title">1. Chat Turn 引擎 → src/chat/turn-engine.js <span class="priority p-high">HIGH · ~1060 lines</span></div>
+  <div class="meta">Lines 4701–5760 · runChatTurn + spawnChat + handleLine + forward + runChatTurnStreaming + finalizeStreamingTurn</div>
+  <div class="desc">
+    这是 server.js 中最大的单一功能块。已有 src/chat/ 目录和 host-runtime/turn-lifecycle 等模块，
+    但核心的「spawn CLI 进程 → 逐行解析 → 事件分发 → 流式转发」主循环仍在 server.js。
+    可抽为 createTurnEngine(deps) 返回 { admitChatWork, runChatTurn, runChatTurnStreaming, finalizeStreamingTurn }。
+    依赖注入：provider registry, chatStream, broadcast, classify hooks, orchestration outbox。
+  </div>
+</div>
+
+<div class="rec-item">
+  <div class="title">2. Session CRUD 路由 → src/routes/session-crud.js <span class="priority p-high">HIGH · ~1000 lines</span></div>
+  <div class="meta">Lines 1961–2870 · PATCH / fork / bundle / import / delete / relocate / restart / notes</div>
+  <div class="desc">
+    session-create 已抽出，但 session 的修改/删除/fork/导出/导入/迁移仍在 server.js。
+    可合并为 createSessionCrudRoutes(deps) 一次 mount。
+    注意：bundle encrypt/decrypt 可独立为 src/session-bundle.js 供 import/export 共用。
+  </div>
+</div>
+
+<div class="rec-item">
+  <div class="title">3. Classify 状态机 → src/classify/state-machine.js <span class="priority p-med">MED · ~720 lines</span></div>
+  <div class="meta">Lines 3551–4270 · recordTaskBoardGoal + dispatchStateAction + scanAndReclassify + runClassifyNow + classifyTurnEnd + ensureCurrentTask</div>
+  <div class="desc">
+    src/classify/ 目前只有 vocab.js 和 user-input-host.js。核心状态机（P/A/E/D 状态转换、
+    scan pass、reclassify 逻辑）全在 server.js。可抽为 createClassifyEngine(deps)。
+    注意与 taskBoard routes 的交互——routes 读写状态，engine 驱动转换。
+  </div>
+</div>
+
+<div class="rec-item">
+  <div class="title">4. 事件适配层 → src/chat/event-adapter.js <span class="priority p-med">MED · ~430 lines</span></div>
+  <div class="meta">Lines 4271–4700 · applyClaudeChatEvent + applyAdapterChatEvent + emitTurnOutcome + emitRunningNotify</div>
+  <div class="desc">
+    这层把 CLI 原始事件翻译成 classify/taskBoard/UI 能理解的结构化事件。
+    与 turn-engine 紧耦合但职责不同（解析 vs 执行），适合独立为 event-adapter。
+  </div>
+</div>
+
+<div class="rec-item">
+  <div class="title">5. Dispatch 系统 → src/dispatch/engine.js <span class="priority p-med">MED · ~395 lines</span></div>
+  <div class="meta">Lines 1061–1365 + 2871–2960 · dispatchToSession + finalizeDispatch + maybeDispatchFromChatTurn + contract handler</div>
+  <div class="desc">
+    src/dispatch/ 已有 targeting/markers/terminal-target-policy，但调度主循环仍在 server.js。
+    可抽为 createDispatchEngine(deps) 返回 { dispatchToSession, finalizeDispatch, maybeDispatchFromChatTurn }。
+  </div>
+</div>
+
+<div class="rec-item">
+  <div class="title">6. WebSocket 层 → src/ws/ <span class="priority p-low">LOW · ~450 lines</span></div>
+  <div class="meta">Lines 5761–6210 · handleChatWs + wss.on('connection') + upload + broadcast</div>
+  <div class="desc">
+    WS 是胶水层，连接前端和所有后端子系统。抽出收益中等，但能减少 server.js 对 ws 协议的直接管理。
+    可拆为 src/ws/chat-handler.js + src/ws/connection-manager.js。
+    风险：WS handler 大量闭包引用 server.js 局部变量，需要仔细梳理依赖注入。
+  </div>
+</div>
+
+<div class="rec-item">
+  <div class="title">7. Session 生命周期 → src/session/lifecycle.js <span class="priority p-low">LOW · ~325 lines</span></div>
+  <div class="meta">Lines 1366–1690 · allocateSessionId + createSession + onStreamEnd + livenessRolloutPath</div>
+  <div class="desc">
+    createSession 是全局最复杂的工厂函数之一（含 worktree 创建、CLI spawn、stream 监听）。
+    抽出后可与 session-crud routes 解耦。但依赖极多（~20 个外部引用），优先级放后。
+  </div>
+</div>
+</div>
+
+<div class="panel" style="grid-column: 1 / -1; margin-top: 16px;">
+<h2>拆分后预期效果</h2>
+<div class="dep-graph" style="font-size: 13px; line-height: 2;">
+  当前 server.js: <strong style="color:#f85149">6525 lines</strong><br>
+  完成 #1 + #2 后: ~4465 lines (−32%)<br>
+  完成 #1–#5 后: ~2920 lines (−55%)<br>
+  完成全部后: ~2145 lines (−67%) — 仅剩 glue: imports, state init, express/wss bootstrap, bridge mounts, shutdown<br>
+  <br>
+  <strong>约束（来自记忆）：</strong>抽路由时必须同步更新 3 类静态守卫：<br>
+  &nbsp;&nbsp;① tests/test-request-locality.js (isLocalRequest 计数)<br>
+  &nbsp;&nbsp;② tests/test-api-contracts.js (source.includes 断言)<br>
+  &nbsp;&nbsp;③ scripts/check-source-line-budget.js (MIGRATION_DEBT ceiling 棘轮)
+</div>
+</div>
+
+</body>
+</html>
