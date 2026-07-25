@@ -275,6 +275,25 @@
           host.applyHistoryPlan?.(historyStore.acceptHistory(message, historyView.visibleIds()));
           break;
         case 'chat_history_reset': handleHistoryReset(message); break;
+        case 'native_context_rotated':
+          host.addSystemMsg?.(message.reused
+            ? host.translate?.('rotateNativeContextReused')
+            : host.translate?.('rotateNativeContextDone'));
+          host.showNotifyToast?.(
+            message.reused
+              ? host.translate?.('rotateNativeContextReused')
+              : host.translate?.('rotateNativeContextDone'),
+            'completed',
+          );
+          break;
+        case 'native_context_rotation_rejected':
+          host.showNotifyToast?.(
+            message.code === 'background_tasks_running'
+              ? host.translate?.('rotateNativeContextBackgroundBusy')
+              : host.translate?.('rotateNativeContextBusy'),
+            'waiting',
+          );
+          break;
         case 'task_state': liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState); break;
         case 'user_input_required':
           state.pendingUserInputRequestId = message.requestId || null;

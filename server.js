@@ -2289,14 +2289,8 @@ createStaticAssetsRoutes({
 }).mountRoutes(app);
 
 // ── Chat mode: message history ──
-// Soft cap for full-history retention. chat_history is display-only (never fed
-// to the CLI - the CLI uses its own transcript via --resume), so we keep the
-// full conversation for pagination/scroll-back and only distill-into-memory at
-// this large backstop to bound disk/memory in pathological sessions.
+// Display history is paginated and independent from native CLI transcripts.
 const CHAT_HISTORY_SOFT_CAP = 10000;
-// How many messages the initial WS `chat_history` push sends (the newest page).
-// Older messages are fetched on demand via GET /history?before=<id>&limit=N as
-// the user scrolls up.
 const CHAT_HISTORY_PAGE = 5;
 
 // Chat history runtime owns persistence composition, pagination routes,
@@ -2324,6 +2318,9 @@ chatHistoryRuntime = createChatHistoryRuntime({
   buildHandoffCheckpoint,
   rememberActiveCliState,
   saveBestEffort: savePersistedSessionsBestEffort,
+  sessionPersistence, isSessionBusy: taskBoardSessionBusy,
+  getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle',
+  getActiveBackgroundTasks: id => backgroundTaskRuntime?.listActiveBackgroundTasks(id) || [],
   chatStream,
   trackPendingMemoryDistill: _trackPendingMemoryDistill,
   projectMessages: (_sessionId, messages) => projectHistoryUsage(messages),

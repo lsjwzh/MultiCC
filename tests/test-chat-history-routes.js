@@ -123,6 +123,7 @@ function fixture(overrides = {}) {
     chatStream: { close(sessionId) { events.push(`stream-close:${sessionId}`); } },
     clearAllNativeCliStates(session) {
       events.push(`clear-native:${session.id}`);
+      session.cliSessionId = null;
       return 2;
     },
     buildHandoffCheckpoint(input) {
@@ -131,6 +132,21 @@ function fixture(overrides = {}) {
     },
     rememberActiveCliState(session) { events.push(`remember:${session.id}`); },
     saveBestEffort(source) { events.push(`save:${source}`); },
+    isSessionBusy() {
+      return overrides.rotationBlock === 'session_busy';
+    },
+    getSessionRunState() {
+      return overrides.runState || 'idle';
+    },
+    getActiveBackgroundTasks() {
+      return overrides.rotationBlock === 'background_tasks_running' ? [{ id: 'bg-1' }] : [];
+    },
+    sessionPersistence: {
+      mutate(source, mutator) {
+        events.push(`persist:${source}`);
+        return mutator(persistedSessions);
+      },
+    },
     trackPendingMemoryDistill(sessionId, promise) {
       events.push(`track:${sessionId}`);
       return promise;
@@ -405,6 +421,138 @@ test('clear write failure is sanitized and cannot reset clients or native CLI st
   assert.equal(fx.chatState.chatTurnCount, 7);
   assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, undefined);
   assert.doesNotMatch(JSON.stringify(fx.logs), /abc|\/Users\/private/);
+});
+
+test('manual native context rotation preserves full history and commits a one-shot checkpoint', async () => {
+  const persistedSessions = new Map([
+    ['s1', {
+      id: 's1', kind: 'chat', cli: 'claude', branch: 'main',
+      cliSessionId: 'native-old',
+    }],
+  ]);
+  const fx = fixture({
+    persistedSessions,
+    initial: { s1: [
+      { id: 'm1', role: 'user', content: 'first' },
+      { id: 'm2', role: 'assistant', content: 'done' },
+    ] },
+  });
+  const before = clone(fx.history.records.get('s1'));
+  const result = await fx.runtime.rotateNativeContext('s1', fx.chatState);
+
+  assert.deepEqual(result, {
+    ok: true,
+    reused: false,
+    checkpointId: 'checkpoint_0011223344556677',
+    clearedNativeSessions: 2,
+  });
+  assert.deepEqual(fx.history.records.get('s1'), before);
+  assert.deepEqual(eventNames(fx.events), [
+    'git:s1',
+    'checkpoint:s1',
+    'persist:websocket.rotate-native-context',
+    'clear-native:s1',
+    'remember:s1',
+    'stream-close:s1',
+    'broadcast:native_context_rotated:s1',
+  ]);
+  assert.equal(fx.persistedSessions.get('s1').cliSessionId, null);
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff.status, 'pending');
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff.reason, 'manual_native_context_rotate');
+  assert.equal(
+    fx.persistedSessions.get('s1').pendingCliHandoff.checkpoint.reason,
+    'manual_native_context_rotate',
+  );
+  assert.equal(fx.chatState.chatTurnCount, 0);
+});
+
+test('manual native context rotation is idempotent while its checkpoint is pending', async () => {
+  const pending = {
+    id: 'checkpoint-existing',
+    status: 'pending',
+    reason: 'manual_native_context_rotate',
+  };
+  const persistedSessions = new Map([
+    ['s1', { id: 's1', kind: 'chat', cli: 'claude', pendingCliHandoff: pending }],
+  ]);
+  const fx = fixture({ persistedSessions });
+  const result = await fx.runtime.rotateNativeContext('s1', fx.chatState);
+  assert.deepEqual(result, {
+    ok: true,
+    reused: true,
+    checkpointId: 'checkpoint-existing',
+    clearedNativeSessions: 0,
+  });
+  assert.deepEqual(eventNames(fx.events), ['broadcast:native_context_rotated:s1']);
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, pending);
+});
+
+test('persisted manual rotation recovers after reload without clearing native state twice', async () => {
+  const first = fixture({
+    persistedSessions: new Map([
+      ['s1', { id: 's1', kind: 'chat', cli: 'claude', cliSessionId: 'native-old' }],
+    ]),
+    initial: { s1: [{ id: 'm1', role: 'assistant', content: 'tranche done' }] },
+  });
+  const rotated = await first.runtime.rotateNativeContext('s1', first.chatState);
+  const recoveredRecord = clone(first.persistedSessions.get('s1'));
+  const recovered = fixture({
+    persistedSessions: new Map([['s1', recoveredRecord]]),
+    initial: { s1: clone(first.history.records.get('s1')) },
+  });
+  const replay = await recovered.runtime.rotateNativeContext('s1', recovered.chatState);
+
+  assert.equal(replay.reused, true);
+  assert.equal(replay.checkpointId, rotated.checkpointId);
+  assert.equal(recoveredRecord.cliSessionId, null);
+  assert.equal(
+    eventNames(recovered.events).includes('persist:websocket.rotate-native-context'),
+    false,
+  );
+  assert.equal(eventNames(recovered.events).includes('clear-native:s1'), false);
+});
+
+test('manual native context rotation rejects busy sessions without changing history or native state', async () => {
+  const persistedSessions = new Map([
+    ['s1', { id: 's1', kind: 'chat', cli: 'claude', cliSessionId: 'native-old' }],
+  ]);
+  const fx = fixture({
+    persistedSessions,
+    rotationBlock: 'background_tasks_running',
+    initial: { s1: [{ id: 'm1', role: 'user', content: 'keep' }] },
+  });
+  const result = await fx.runtime.rotateNativeContext('s1', fx.chatState);
+  assert.deepEqual(result, { ok: false, code: 'background_tasks_running' });
+  assert.equal(fx.persistedSessions.get('s1').cliSessionId, 'native-old');
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, undefined);
+  assert.deepEqual(fx.history.records.get('s1'), [{ id: 'm1', role: 'user', content: 'keep' }]);
+  assert.deepEqual(eventNames(fx.events), ['broadcast:native_context_rotation_rejected:s1']);
+});
+
+test('manual native context rotation fails closed when durable session commit fails', async () => {
+  const persistedSessions = new Map([
+    ['s1', { id: 's1', kind: 'chat', cli: 'claude', cliSessionId: 'native-old' }],
+  ]);
+  const fx = fixture({
+    persistedSessions,
+    initial: { s1: [{ id: 'm1', role: 'user', content: 'keep' }] },
+    deps: {
+      sessionPersistence: {
+        mutate() {
+          throw new Error('api_key=secret /private/sessions.json');
+        },
+      },
+    },
+  });
+  await assert.rejects(
+    fx.runtime.rotateNativeContext('s1', fx.chatState),
+    error => error.code === 'NATIVE_CONTEXT_ROTATION_FAILED'
+      && error.message === 'native context rotation failed',
+  );
+  assert.equal(fx.persistedSessions.get('s1').cliSessionId, 'native-old');
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, undefined);
+  assert.deepEqual(eventNames(fx.events), ['git:s1', 'checkpoint:s1']);
+  assert.doesNotMatch(JSON.stringify(fx.logs), /secret|\/private\/sessions/);
 });
 
 test('incremental saves are single-flight, cancellable and drained on stop', () => {

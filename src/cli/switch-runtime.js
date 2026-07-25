@@ -394,8 +394,8 @@ function createCliSwitchRuntime(options) {
     options.chatBroadcast(sessionName, {
       type: 'system',
       subtype: 'cli_handoff_applied',
-      message: handoff.reason === 'history_clear_keep'
-        ? `✓ 保留的最近消息已由 ${handoff.toCli} 作为新上下文接收`
+      message: ['history_clear_keep', 'manual_native_context_rotate'].includes(handoff.reason)
+        ? `✓ 保留的上下文 checkpoint 已由 ${handoff.toCli} 的新原生会话接收`
         : `✓ ${handoff.fromCli} → ${handoff.toCli} 的上下文交接已由目标 CLI 接收`,
     });
     return true;
