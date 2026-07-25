@@ -2846,17 +2846,19 @@ async function loadZcodeAuth() {
     if (!statusEl || !actionsEl) return;
 
     if (d.configured) {
-      const providerName = d.provider === 'zai' ? 'Z.ai' : 'BigModel';
+      const providerName = d.provider === 'zai'
+        ? 'Z.ai'
+        : (d.provider === 'bigmodel' ? 'BigModel' : (d.provider || '自定义 Provider'));
       statusEl.innerHTML = '<span class="status-text ok">✓ 已配置</span> — Provider: <b>' + escapeHtml(providerName) + '</b> · Model: <code>' + escapeHtml(d.model || '') + '</code>';
       actionsEl.style.display = 'flex';
-      document.getElementById('zcode-sync-btn').textContent = '重新从桌面端同步';
+      document.getElementById('zcode-sync-btn').textContent = '重新同步桌面 API Key';
     } else if (d.source === 'desktop_available' && d.desktopProviders?.length > 0) {
       const dp = d.desktopProviders[0];
       const dpName = dp.id === 'zai' ? 'Z.ai' : 'BigModel';
       statusEl.innerHTML = '<span class="status-text" style="color:var(--warn)">⚠ 未配置</span> — 检测到桌面端有 ' + escapeHtml(dpName) + ' 的 API Key，可一键同步';
       actionsEl.style.display = 'flex';
     } else {
-      statusEl.innerHTML = '<span class="status-text err">✗ 未配置</span> — 请同步桌面端配置、登录或手动填写 API Key';
+      statusEl.innerHTML = '<span class="status-text err">✗ 原生连接未配置</span> — 可登录 Coding Plan、同步桌面 API Key，或为会话选择上方普通 Provider';
       actionsEl.style.display = 'flex';
     }
 
@@ -2900,7 +2902,7 @@ async function loginZcode() {
   } catch (e) {
     showToast('登录失败: ' + e.message, 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'ZCode 官方登录'; }
+    if (btn) { btn.disabled = false; btn.textContent = '登录 Z.ai Coding Plan'; }
     loadZcodeAuth();
   }
 }

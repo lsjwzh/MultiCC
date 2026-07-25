@@ -42,10 +42,19 @@ function createHarness(home, overrides = {}) {
       id: 'codex-primary', name: 'Codex Primary', model: 'gpt-primary',
       modelOptions: ['gpt-primary'],
     }],
+    ['claude:zcode-primary', {
+      id: 'zcode-primary', appType: 'claude', name: 'ZCode Primary', model: 'glm-zcode',
+      modelOptions: ['glm-zcode'],
+    }],
   ]);
   const router = overrides.providerRouter || {
     getProviderSummary(appType, providerId) {
       if (providerId === 'throws') throw new Error('provider unavailable');
+      if (appType == null) {
+        return summaries.get(`claude:${providerId}`)
+          || summaries.get(`codex:${providerId}`)
+          || null;
+      }
       return summaries.get(`${appType}:${providerId}`) || null;
     },
   };
@@ -118,6 +127,7 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.effectiveSessionModel({ cli: 'qoder', reportedModel: 'performance' }), 'performance');
   assert.equal(policy.effectiveSessionModel({ cli: 'zcode', model: 'bigmodel/glm-5.2' }), 'bigmodel/glm-5.2');
   assert.equal(policy.effectiveSessionModel({ cli: 'zcode', reportedModel: 'vendor/default' }), 'vendor/default');
+  assert.equal(policy.effectiveSessionModel({ cli: 'zcode', provider: 'zcode-primary' }), 'glm-zcode');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws', model: 'explicit' }), 'explicit');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws' }), 'claude-user');
   assert.equal(policy.effectiveSessionModel(null), null);
@@ -132,7 +142,8 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.providerDefaultModel('claude', null), 'claude-user');
   assert.equal(policy.sessionProviderName({ cli: 'claude', provider: 'primary' }), 'Primary');
   assert.equal(policy.sessionProviderName({ cli: 'claude', provider: 'throws' }), 'throws');
-  assert.equal(policy.sessionProviderName({ cli: 'zcode', provider: 'stale-provider' }), null);
+  assert.equal(policy.sessionProviderName({ cli: 'zcode', provider: 'zcode-primary' }), 'ZCode Primary');
+  assert.equal(policy.sessionProviderName({ cli: 'zcode', provider: 'stale-provider' }), 'stale-provider');
 });
 
 test('effort, agent and disconnect policies preserve each CLI contract', t => {

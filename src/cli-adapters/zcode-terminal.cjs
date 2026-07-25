@@ -28,7 +28,7 @@ for (let i = 0; i < argv.length; i++) {
 if (model) {
   try {
     const source = process.env.ZCODE_SETTINGS
-      || path.join(os.homedir(), '.zcode', 'cli', 'config.json');
+      || path.join(process.env.ZCODE_DATA_BASE_DIR || os.homedir(), '.zcode', 'cli', 'config.json');
     const config = JSON.parse(fs.readFileSync(source, 'utf8'));
     if (config && typeof config === 'object' && !Array.isArray(config)
         && config.model && config.model !== model) {

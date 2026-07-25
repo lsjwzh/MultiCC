@@ -41,7 +41,7 @@ test('provider summaries are whitelisted and credential material is discarded', 
   assert.equal(provider.apiKey, undefined);
   assert.equal(provider.protocol, 'anthropic');
   assert.equal(provider.apiFormat, 'anthropic');
-  assert.deepEqual(provider.compatibleClis, ['claude', 'opencode']);
+  assert.deepEqual(provider.compatibleClis, ['claude', 'opencode', 'zcode']);
   assert.equal(provider.wireApi, '');
   assert.equal(provider.settingsConfig, undefined);
   assert.equal(provider.headers, undefined);
@@ -49,6 +49,30 @@ test('provider summaries are whitelisted and credential material is discarded', 
   for (const secret of ['raw-token', 'raw-api-key', 'nested-secret', 'password']) {
     assert.equal(serialized.includes(secret), false);
   }
+
+  const oauthOnly = catalog.normalizeProvider({
+    id: 'codex-official',
+    appType: 'codex',
+    name: 'Codex Official',
+    apiFormat: 'openai_responses',
+    baseUrl: '',
+    hasToken: false,
+    isOfficial: true,
+  });
+  assert.deepEqual(oauthOnly.compatibleClis, ['codex', 'opencode'],
+    'ZCode cannot replay another CLI OAuth subscription');
+
+  const hostileOAuthDto = catalog.normalizeProvider({
+    id: 'codex-oauth-hostile',
+    appType: 'codex',
+    name: 'Codex OAuth',
+    apiFormat: 'openai_responses',
+    baseUrl: '',
+    hasToken: false,
+    compatibleClis: ['codex', 'opencode', 'zcode'],
+  });
+  assert.deepEqual(hostileOAuthDto.compatibleClis, ['codex', 'opencode'],
+    'the client boundary also rejects an injected ZCode OAuth compatibility flag');
 });
 
 test('catalog grouping, lookup and model options are deterministic', () => {

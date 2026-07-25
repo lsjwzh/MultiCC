@@ -107,7 +107,11 @@
     const apiFormat = API_FORMATS.has(value.apiFormat)
       ? value.apiFormat
       : (appType === 'claude' ? 'anthropic' : (value.useChatResponsesProxy ? 'openai_chat' : 'openai_responses'));
-    const defaultClis = apiFormat === 'anthropic' ? ['claude', 'opencode'] : ['codex', 'opencode'];
+    const zcodeCompatible = !!safeBaseUrl(value.baseUrl) && value.hasToken === true;
+    const defaultClis = [
+      ...(apiFormat === 'anthropic' ? ['claude', 'opencode'] : ['codex', 'opencode']),
+      ...(zcodeCompatible ? ['zcode'] : []),
+    ];
     return Object.freeze({
       id,
       appType,
@@ -117,7 +121,8 @@
       protocol: apiFormat,
       wireApi: ['messages', 'responses', 'chat_completions', 'chat-completions'].includes(value.wireApi) ? value.wireApi : '',
       compatibleClis: Object.freeze((Array.isArray(value.compatibleClis) ? value.compatibleClis : defaultClis)
-        .filter(cli => ['claude', 'codex', 'opencode'].includes(cli))),
+        .filter(cli => ['claude', 'codex', 'opencode', 'zcode'].includes(cli)
+          && (cli !== 'zcode' || zcodeCompatible))),
       requiresConversionFor: Object.freeze((Array.isArray(value.requiresConversionFor) ? value.requiresConversionFor : (apiFormat === 'openai_chat' ? ['codex'] : []))
         .filter(cli => cli === 'codex')),
       baseUrl: safeBaseUrl(value.baseUrl),

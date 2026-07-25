@@ -7,34 +7,37 @@ const path = require('node:path');
 
 const providers = require('../src/providers');
 
-test('Qoder and ZCode have no MultiCC provider pool while existing CLIs stay compatible', () => {
+test('Qoder stays providerless while ZCode resolves both MultiCC provider pools', () => {
   assert.equal(providers.appTypeForCli('claude'), 'claude');
   assert.equal(providers.appTypeForCli('opencode'), 'claude');
   assert.equal(providers.appTypeForCli('codex'), 'codex');
   assert.equal(providers.appTypeForCli('qoder'), null);
   assert.equal(providers.appTypeForCli('zcode'), null);
+  assert.deepEqual(providers.appTypesForCli('qoder'), []);
+  assert.deepEqual(providers.appTypesForCli('zcode'), ['claude', 'codex']);
 });
 
-test('stale vendor provider ids cannot produce routing environment', () => {
-  for (const cli of ['qoder', 'zcode']) {
-    assert.deepEqual(providers.resolveSpawnEnv({ cli, provider: 'stale-provider' }), {
-      env: {},
-      skipDefaultModel: false,
-      aliasOnly: false,
-      providerModel: null,
-      providerModels: [],
-      providerName: null,
-    });
-    const child = providers.buildChildEnv(
+test('stale vendor provider ids cannot silently fall through to another account', () => {
+  assert.deepEqual(providers.resolveSpawnEnv({ cli: 'qoder', provider: 'stale-provider' }), {
+    env: {},
+    skipDefaultModel: false,
+    aliasOnly: false,
+    providerModel: null,
+    providerModels: [],
+    providerName: null,
+  });
+  assert.throws(
+    () => providers.resolveSpawnEnv({ cli: 'zcode', provider: 'stale-provider' }),
+    /Provider 不存在、协议不兼容或缺少可用的 HTTP 凭证/,
+  );
+  assert.throws(
+    () => providers.buildChildEnv(
       { PATH: '/usr/bin' },
-      { cli, provider: 'stale-provider' },
-      { MULTICC_SESSION_ID: `${cli}-session` },
-    );
-    assert.deepEqual(child.env, {
-      PATH: '/usr/bin',
-      MULTICC_SESSION_ID: `${cli}-session`,
-    });
-  }
+      { cli: 'zcode', provider: 'stale-provider' },
+      { MULTICC_SESSION_ID: 'zcode-session' },
+    ),
+    /Provider 不存在、协议不兼容或缺少可用的 HTTP 凭证/,
+  );
 });
 
 test('host spawn paths route proxies by explicit provider capability', () => {

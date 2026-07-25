@@ -1,13 +1,36 @@
 'use strict';
 
-// ZCode auth management routes.
-// Provides L1-L4 endpoints for managing ZCode API key configuration.
+// ZCode native-auth management routes. Public DTOs intentionally exclude
+// credentials, local paths, raw child output, and OAuth URLs.
 
 function assertApp(app) {
   if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
     throw new TypeError('[zcode-auth] Express-compatible app is required');
   }
   return app;
+}
+
+function boundedText(value, max) {
+  const text = String(value == null ? '' : value)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim();
+  return text.slice(0, max);
+}
+
+function authStatusDto(status) {
+  const value = status && typeof status === 'object' ? status : {};
+  return {
+    configured: value.configured === true,
+    provider: boundedText(value.provider, 160) || null,
+    hasKey: value.hasKey === true,
+    source: ['none', 'cli_config', 'desktop_available'].includes(value.source)
+      ? value.source
+      : 'none',
+    kind: ['anthropic', 'openai-compatible', 'openai'].includes(value.kind)
+      ? value.kind
+      : null,
+    model: boundedText(value.model, 240) || null,
+  };
 }
 
 function mountZcodeAuthRoutes(app, deps = {}) {
@@ -21,18 +44,15 @@ function mountZcodeAuthRoutes(app, deps = {}) {
       const desktopKeys = zcodeAuth.detectDesktopApiKeys();
       const desktopProviders = Object.keys(desktopKeys).map(id => ({
         id,
-        baseURL: desktopKeys[id].baseURL,
         hasKey: true,
       }));
       res.json({
-        ...status,
+        ...authStatusDto(status),
         loginAvailable: zcodeAuth.isZcodeLoginAvailable(),
         desktopProviders,
-        cliConfigPath: zcodeAuth.CLI_CONFIG_PATH,
-        desktopConfigPath: zcodeAuth.DESKTOP_CONFIG_PATH,
       });
-    } catch (error) {
-      res.status(500).json({ error: 'zcode auth status failed', detail: error.message });
+    } catch (_) {
+      res.status(500).json({ error: 'zcode auth status failed' });
     }
   });
 
@@ -49,8 +69,8 @@ function mountZcodeAuthRoutes(app, deps = {}) {
           message: '未在 ZCode 桌面端配置中检测到 API Key。请先在桌面端设置 API Key，或手动填写。',
         });
       }
-    } catch (error) {
-      res.status(500).json({ error: 'zcode auth sync failed', detail: error.message });
+    } catch (_) {
+      res.status(500).json({ error: 'zcode auth sync failed' });
     }
   });
 
@@ -65,8 +85,8 @@ function mountZcodeAuthRoutes(app, deps = {}) {
       }
       const result = zcodeAuth.setZcodeApiKey(providerId, apiKey, { baseURL });
       res.json({ ok: true, ...result });
-    } catch (error) {
-      res.status(400).json({ error: error.message });
+    } catch (_) {
+      res.status(400).json({ error: 'invalid ZCode API key configuration' });
     }
   });
 
@@ -81,8 +101,6 @@ function mountZcodeAuthRoutes(app, deps = {}) {
         });
       }
       const child = zcodeAuth.spawnZcodeLogin();
-      let stdout = '';
-      let stderr = '';
       let resolved = false;
 
       const timeout = setTimeout(() => {
@@ -93,14 +111,9 @@ function mountZcodeAuthRoutes(app, deps = {}) {
             ok: true,
             code: 'login_timeout',
             message: '登录已启动但超时未完成。如果浏览器已打开，请在浏览器中完成授权。',
-            stdout: stdout.slice(-500),
-            stderr: stderr.slice(-500),
           });
         }
       }, 300000); // 5 min timeout
-
-      child.stdout.on('data', (d) => { stdout += d.toString(); });
-      child.stderr.on('data', (d) => { stderr += d.toString(); });
 
       child.on('close', (code) => {
         if (resolved) return;
@@ -112,16 +125,14 @@ function mountZcodeAuthRoutes(app, deps = {}) {
           res.json({
             ok: true,
             code: 'login_success',
-            ...status,
+            ...authStatusDto(status),
           });
         } else {
           res.json({
             ok: false,
             code: 'login_failed',
-            exitCode: code,
+            exitCode: Number.isInteger(code) ? code : null,
             message: 'ZCode 登录失败。',
-            stdout: stdout.slice(-500),
-            stderr: stderr.slice(-500),
           });
         }
       });
@@ -133,11 +144,11 @@ function mountZcodeAuthRoutes(app, deps = {}) {
         res.status(500).json({
           ok: false,
           code: 'spawn_error',
-          message: err.message,
+          message: '无法启动 ZCode 官方登录流程。',
         });
       });
-    } catch (error) {
-      res.status(500).json({ error: 'zcode login failed', detail: error.message });
+    } catch (_) {
+      res.status(500).json({ error: 'zcode login failed' });
     }
   });
 
@@ -145,9 +156,23 @@ function mountZcodeAuthRoutes(app, deps = {}) {
   app.get('/api/zcode/auth/check', (req, res) => {
     try {
       const result = zcodeAuth.ensureZcodeAuth();
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({ ok: false, code: 'check_failed', message: error.message });
+      if (result && result.ok) {
+        res.json({
+          ok: true,
+          provider: boundedText(result.provider, 160) || null,
+          source: ['cli_config', 'multicc_provider'].includes(result.source)
+            ? result.source
+            : 'cli_config',
+        });
+      } else {
+        res.json({
+          ok: false,
+          code: 'configuration_required',
+          message: 'ZCode 原生连接尚未配置。请选择 MultiCC Provider，或配置 Z.ai Coding Plan / API Key。',
+        });
+      }
+    } catch (_) {
+      res.status(500).json({ ok: false, code: 'check_failed', message: 'ZCode 配置检查失败' });
     }
   });
 }

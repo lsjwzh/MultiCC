@@ -753,50 +753,38 @@ function validEffortForCli(cli, effort) {
         }
       }
 
-      // (c,d,e) Reverse pool: claude/opencode/zcode + codex pool → should 400
-      const reverseTests = [
-        { cli: 'claude', label: 'claude+codex池→拒' },
-        { cli: 'opencode', label: 'opencode+codex池→拒' },
-        { cli: 'zcode', label: 'zcode+codex池→拒' },
-      ];
-      for (const { cli, label } of reverseTests) {
-        const res = await createSession(dirId, cli, 'chat', { provider: codexPoolIds[0] });
+      // (c) Native Claude remains bound to its own provider pool.
+      {
+        const res = await createSession(dirId, 'claude', 'chat', { provider: codexPoolIds[0] });
         if (res.status === 400) {
           const err = (res.body.error || '').toLowerCase();
           if (/provider|pool/.test(err)) {
-            ok(`T1.17 ${label}`, `400 — error 含 provider/pool: "${err.slice(0, 60)}"`);
+            ok('T1.17 claude+codex池→拒', `400 — error 含 provider/pool: "${err.slice(0, 60)}"`);
           } else {
-            diag(`T1.17 ${label}`, `400 but error=${(res.body.error || '').slice(0, 100)}`);
-            ok(`T1.17 ${label}`, `400（但 error 不含 provider/pool 关键词，可能被其他校验拦截）`);
+            diag('T1.17 claude+codex池→拒', `400 but error=${(res.body.error || '').slice(0, 100)}`);
+            ok('T1.17 claude+codex池→拒', '400（但 error 不含 provider/pool 关键词，可能被其他校验拦截）');
           }
         } else if (res.status === 200 || res.status === 201) {
           const sid = res.body.id || res.body.sessionId;
           if (sid) tier1Sessions.push(sid);
-          fail(`T1.17 ${label}`, `${cli} session 接受了 codex 池 provider（应 400）`);
+          fail('T1.17 claude+codex池→拒', `claude session 接受了 codex 池 provider（status ${res.status}）`);
         } else {
-          fail(`T1.17 ${label}`, `期望 400，实际 ${res.status}`);
+          fail('T1.17 claude+codex池→拒', `期望 400，实际 ${res.status}`);
         }
       }
 
-      // (f,g) Forward pool confirm: opencode/zcode + claude pool → ok
-      {
-        const res = await createSession(dirId, 'opencode', 'chat', { provider: claudePoolIds[0] });
-        if (res.status === 200 || res.status === 201) {
-          const sid = res.body.id || res.body.sessionId;
-          if (sid) tier1Sessions.push(sid);
-          ok('T1.17 opencode+claude池→允许', `201 — opencode 走 claude 池`);
-        } else {
-          fail('T1.17 opencode+claude池→允许', `status ${res.status} body=${JSON.stringify(res.body).slice(0, 80)}`);
-        }
-      }
-      {
-        const res = await createSession(dirId, 'zcode', 'chat', { provider: claudePoolIds[0] });
-        if (res.status === 200 || res.status === 201) {
-          const sid = res.body.id || res.body.sessionId;
-          if (sid) tier1Sessions.push(sid);
-          ok('T1.17 zcode+claude池→允许', `201 — zcode 走 claude 池`);
-        } else {
-          fail('T1.17 zcode+claude池→允许', `status ${res.status} body=${JSON.stringify(res.body).slice(0, 80)}`);
+      // (d-g) OpenCode and ZCode are multi-protocol clients: both pools are valid.
+      for (const cli of ['opencode', 'zcode']) {
+        for (const [poolName, providerId] of [['claude', claudePoolIds[0]], ['codex', codexPoolIds[0]]]) {
+          const res = await createSession(dirId, cli, 'chat', { provider: providerId });
+          const label = `${cli}+${poolName}池→允许`;
+          if (res.status === 200 || res.status === 201) {
+            const sid = res.body.id || res.body.sessionId;
+            if (sid) tier1Sessions.push(sid);
+            ok(`T1.17 ${label}`, `201 — ${cli} 走 ${poolName} 池`);
+          } else {
+            fail(`T1.17 ${label}`, `status ${res.status} body=${JSON.stringify(res.body).slice(0, 80)}`);
+          }
         }
       }
     }

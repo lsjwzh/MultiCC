@@ -18,7 +18,9 @@ function findProviderReferences({ appType, providerId, sessions, defaults, aux }
   for (const session of values) {
     if (!session) continue;
     const sessionType = appTypeForCli(session.cli);
-    if (session.cli !== 'opencode' && sessionType !== type) continue;
+    // OpenCode and ZCode can bind providers from either stored pool. Provider
+    // ids are globally unique, so an exact id match is sufficient for them.
+    if (session.cli !== 'opencode' && session.cli !== 'zcode' && sessionType !== type) continue;
     if (session.provider === id) {
       references.push(Object.freeze({
         kind: 'main',

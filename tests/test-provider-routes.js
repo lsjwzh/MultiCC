@@ -62,8 +62,14 @@ function createHarness(overrides = {}) {
       if (cli === 'claude' || cli === 'opencode') return 'claude';
       return null;
     },
+    appTypesForCli(cli) {
+      if (cli === 'opencode' || cli === 'zcode') return ['claude', 'codex'];
+      const type = this.appTypeForCli(cli);
+      return type ? [type] : [];
+    },
     providerSupportsCli(provider, cli) {
-      return !!provider && (cli === 'opencode' || provider.appType === (cli === 'codex' ? 'codex' : 'claude'));
+      return !!provider && (cli === 'opencode' || cli === 'zcode'
+        || provider.appType === (cli === 'codex' ? 'codex' : 'claude'));
     },
     getCcSwitchStatus: () => ({ available: true, dbFound: true, dbPath: '/private/cc-switch.db' }),
     listProviders(appType) {
@@ -112,7 +118,12 @@ function createHarness(overrides = {}) {
     },
     providers,
     providerRouterRuntime: {
-      getProviderSummary(appType, id) { return summaries.get(`${appType}:${id}`) || null; },
+      getProviderSummary(appType, id) {
+        if (appType == null) {
+          return summaries.get(`claude:${id}`) || summaries.get(`codex:${id}`) || null;
+        }
+        return summaries.get(`${appType}:${id}`) || null;
+      },
     },
     findProviderReferences: () => [],
     persistedSessions: new Map(),
@@ -231,7 +242,8 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     value: { claude: null, codex: 'codex-one' },
   }]);
   assert.deepEqual(harness.runtime.validProviderId('zcode', ''), { ok: true, value: null });
-  assert.deepEqual(harness.runtime.validProviderId('zcode', 'claude-one'), { ok: false });
+  assert.deepEqual(harness.runtime.validProviderId('zcode', 'claude-one'), { ok: true, value: 'claude-one' });
+  assert.deepEqual(harness.runtime.validProviderId('zcode', 'codex-one'), { ok: true, value: 'codex-one' });
   assert.deepEqual(harness.runtime.validProviderId('qoder', 'claude-one'), { ok: false });
 });
 
