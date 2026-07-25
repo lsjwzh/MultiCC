@@ -153,14 +153,22 @@ test('effort, agent and disconnect policies preserve each CLI contract', t => {
   assert.equal(policy.normalizeEffort('minimal'), 'minimal');
   assert.equal(policy.normalizeEffort('invalid'), undefined);
   assert.equal(policy.normalizeEffort(''), null);
+  assert.equal(policy.validEffortForCli('codex', 'none'), true);
+  assert.equal(policy.validEffortForCli('codex', 'minimal'), true);
   assert.equal(policy.validEffortForCli('codex', 'ultra'), true);
+  assert.equal(policy.validEffortForCli('codex', 'max'), true);
   assert.equal(policy.validEffortForCli('claude', 'ultra'), false);
   assert.equal(policy.validEffortForCli('opencode', 'minimal'), true);
   assert.equal(policy.validEffortForCli('zcode', 'low'), false);
   assert.equal(policy.validEffortForCli('qoder', 'xhigh'), true);
   assert.equal(policy.validEffortForCli('qoder', 'ultracode'), false);
   assert.equal(policy.cliEffortLevel({ effort: 'ultracode' }), 'xhigh');
-  assert.equal(policy.codexReasoningLevel({ effort: 'ultra' }), 'ultra');
+  assert.equal(policy.codexReasoningLevel({ effort: 'none' }), 'none');
+  assert.equal(policy.codexReasoningLevel({ effort: 'minimal' }), 'minimal');
+  assert.equal(policy.codexReasoningLevel({ effort: 'ultra' }), 'xhigh');
+  assert.equal(policy.codexReasoningLevel({ effort: 'max' }), 'xhigh');
+  assert.equal(policy.codexReasoningConfigArg({ effort: 'ultra' }), 'model_reasoning_effort="xhigh"');
+  assert.equal(policy.codexReasoningConfigArg({ effort: 'max' }), 'model_reasoning_effort="xhigh"');
   assert.equal(policy.codexReasoningConfigArg({ effort: 'high' }), 'model_reasoning_effort="high"');
   assert.equal(policy.codexModelConfigArg({ model: ' gpt-5 ' }), 'model="gpt-5"');
   assert.equal(policy.effectiveSessionEffort({ cli: 'opencode', effort: 'minimal' }), 'minimal');
@@ -195,7 +203,7 @@ test('explicit CODEX_HOME wins and invalid config falls through to the user home
   const env = { CODEX_HOME: explicit };
   const policy = createHarness(home, { env });
 
-  assert.equal(policy.codexDefaultReasoningLevel(), 'ultra');
+  assert.equal(policy.codexDefaultReasoningLevel(), 'xhigh');
   fs.writeFileSync(path.join(explicit, 'config.toml'), 'model_reasoning_effort = "not-valid"\n');
   assert.equal(policy.codexDefaultReasoningLevel(), 'high');
 });

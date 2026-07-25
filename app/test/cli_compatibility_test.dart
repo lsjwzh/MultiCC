@@ -28,6 +28,10 @@ void main() {
       expect(SessionCli.codex.supportsAgent, isFalse);
       expect(SessionCli.codex.supportsSubagent, isTrue);
       expect(SessionCli.codex.effortFieldLabel, 'Reasoning Level');
+      expect(
+        SessionCli.codex.effortOptions,
+        ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      );
 
       expect(SessionCli.opencode.supportsAgent, isTrue);
       expect(SessionCli.opencode.supportsSubagent, isFalse);

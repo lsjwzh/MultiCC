@@ -5,7 +5,11 @@ const os = require('node:os');
 const path = require('node:path');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
-const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+// Older MultiCC clients exposed `max` and `ultra`, although Codex does not
+// accept either value. Accept persisted/rolling-client values, but normalize
+// them before they reach model_reasoning_effort.
+const CODEX_REASONING_ALIASES = new Map([['max', 'xhigh'], ['ultra', 'xhigh']]);
 const OPENCODE_VARIANTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
 const QODER_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
@@ -120,6 +124,7 @@ function createSessionPolicy(options) {
     if (!normalized) return null;
     return EFFORT_LEVELS.has(normalized)
       || CODEX_REASONING_LEVELS.has(normalized)
+      || CODEX_REASONING_ALIASES.has(normalized)
       || OPENCODE_VARIANTS.has(normalized)
       ? normalized
       : undefined;
@@ -127,7 +132,9 @@ function createSessionPolicy(options) {
 
   function validEffortForCli(cli, effort) {
     if (!effort) return true;
-    if (cli === 'codex') return CODEX_REASONING_LEVELS.has(effort);
+    if (cli === 'codex') {
+      return CODEX_REASONING_LEVELS.has(effort) || CODEX_REASONING_ALIASES.has(effort);
+    }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
     if (cli === 'zcode') return false;
     if (cli === 'qoder') return QODER_REASONING_LEVELS.has(effort);
@@ -142,7 +149,9 @@ function createSessionPolicy(options) {
 
   function codexReasoningLevel(session) {
     const effort = normalizeEffort(session?.effort);
-    return effort && CODEX_REASONING_LEVELS.has(effort) ? effort : null;
+    if (!effort) return null;
+    return CODEX_REASONING_ALIASES.get(effort)
+      || (CODEX_REASONING_LEVELS.has(effort) ? effort : null);
   }
 
   function qoderEffortLevel(session) {
@@ -177,8 +186,8 @@ function createSessionPolicy(options) {
       try {
         const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
         const match = toml.match(/^\s*model_reasoning_effort\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*$/m);
-        const effort = normalizeEffort(match && match[1]);
-        if (effort && CODEX_REASONING_LEVELS.has(effort)) return effort;
+        const effort = codexReasoningLevel({ effort: match && match[1] });
+        if (effort) return effort;
       } catch (_) {}
     }
     return 'xhigh';

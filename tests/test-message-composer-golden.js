@@ -43,12 +43,15 @@ function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 // by the gate are stubbed with sentinels (gateway/dispatch/goal/notes).
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
-const CODEX_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const CODEX_REASONING_ALIASES = new Map([['max', 'xhigh'], ['ultra', 'xhigh']]);
 
 function normalizeEffort(v) {
   const s = (v == null ? '' : String(v)).trim().toLowerCase();
   if (!s) return null;
-  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) ? s : undefined;
+  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) || CODEX_REASONING_ALIASES.has(s)
+    ? s
+    : undefined;
 }
 function cliEffortLevel(session) {
   const e = normalizeEffort(session && session.effort);
@@ -57,7 +60,9 @@ function cliEffortLevel(session) {
 }
 function codexReasoningLevel(session) {
   const e = normalizeEffort(session && session.effort);
-  return e && CODEX_REASONING_LEVELS.has(e) ? e : null;
+  return e
+    ? (CODEX_REASONING_ALIASES.get(e) || (CODEX_REASONING_LEVELS.has(e) ? e : null))
+    : null;
 }
 function codexReasoningConfigArg(session) {
   const lvl = codexReasoningLevel(session);
