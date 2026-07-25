@@ -37,6 +37,7 @@ class SettingsService {
   static const _keyFontScale = 'multicc_font_scale';
   static const _keyLang = 'multicc_lang';
   static const _keyServerHistory = 'multicc_server_history';
+  static const _keyChatRuntimePrefix = 'multicc_chat_runtime_';
 
   /// How many past server connections to remember.
   static const _serverHistoryMax = 10;
@@ -135,6 +136,30 @@ class SettingsService {
   /// Wipe all remembered server connections (privacy: e.g. shared phone).
   Future<void> clearServerHistory() async {
     await _prefs.remove(_keyServerHistory);
+  }
+
+  /// Small per-session cache for server-issued usage limits/balances. Queue,
+  /// pending-input and API-error state are deliberately not cached: the server
+  /// replays those authoritative states on every chat reconnect.
+  Map<String, dynamic>? readChatRuntimeCache(String sessionId) {
+    final raw = _prefs.getString('$_keyChatRuntimePrefix$sessionId');
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> saveChatRuntimeCache(
+    String sessionId,
+    Map<String, dynamic> value,
+  ) async {
+    await _prefs.setString(
+      '$_keyChatRuntimePrefix$sessionId',
+      jsonEncode(value),
+    );
   }
 
   Future<void> save({

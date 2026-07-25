@@ -16,8 +16,10 @@ void main() {
 
     I18n.switchLang('en');
     expect(t('minutesAgo', {'n': '3'}), '3m ago');
-    expect(t('syncSuccess', {'base': 'main', 'n': '2'}),
-        '✓ Synced 2 commits from main');
+    expect(
+      t('syncSuccess', {'base': 'main', 'n': '2'}),
+      '✓ Synced 2 commits from main',
+    );
   });
 
   test('relative time follows the active language', () {
@@ -39,5 +41,23 @@ void main() {
 
     I18n.switchLang('en');
     expect(formatRunDuration(value), '3m 04s');
+  });
+
+  test('chat runtime queue and pending-input copy is bilingual', () {
+    I18n.switchLang('zh');
+    expect(t('queuedMessageCount', {'n': '2'}), '暂存消息 2');
+    expect(t('pendingInputTitle'), '等待你的回答');
+
+    I18n.switchLang('en');
+    expect(t('queuedMessageCount', {'n': '2'}), '2 queued messages');
+    expect(t('confirmQueueChangeBody'), contains('FIFO'));
+  });
+
+  test('legacy classify C degrades to waiting instead of auto-continue', () {
+    I18n.switchLang('zh');
+    final legacy = classifyBadge('C');
+    final waiting = classifyBadge('W');
+    expect(legacy?.label, waiting?.label);
+    expect(legacy?.emoji, waiting?.emoji);
   });
 }

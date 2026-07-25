@@ -15,12 +15,23 @@ class ChatEvent {
   ChatEvent(this.type, this.payload);
 }
 
+class QueueActionException implements Exception {
+  final int statusCode;
+  final String code;
+  const QueueActionException(this.statusCode, this.code);
+
+  @override
+  String toString() => code;
+}
+
 class ChatService {
   final SettingsService settings;
   final String sessionName;
   final String sessionCwd;
   final WsTicketConnectionGate _wsAuth;
   final WebSocketChannel Function(Uri) _connectChannel;
+  final http.Client _httpClient;
+  final bool _ownsHttpClient;
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
@@ -69,8 +80,11 @@ class ChatService {
     this.initialSessionId,
     WsTicketClient? wsTicketClient,
     WebSocketChannel Function(Uri)? channelFactory,
+    http.Client? httpClient,
   }) : _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
-       _connectChannel = channelFactory ?? WebSocketChannel.connect;
+       _connectChannel = channelFactory ?? WebSocketChannel.connect,
+       _httpClient = httpClient ?? http.Client(),
+       _ownsHttpClient = httpClient == null;
 
   Uri _buildChatUri({String? resumeId}) {
     final params = <String, String>{};
@@ -333,6 +347,24 @@ class ChatService {
         _emit('session_queue', msg);
         break;
 
+      case 'api_error_policy':
+        _emit('api_error_policy', msg);
+        break;
+
+      case 'rate_limit_event':
+        final info = msg['rate_limit_info'];
+        if (info is Map) {
+          _emit('rate_limit_event', Map<String, dynamic>.from(info));
+        }
+        break;
+
+      case 'usage_balance_event':
+        final info = msg['balance_info'];
+        if (info is Map) {
+          _emit('usage_balance_event', Map<String, dynamic>.from(info));
+        }
+        break;
+
       default:
         break;
     }
@@ -367,28 +399,30 @@ class ChatService {
     }
   }
 
-  /// Returns false if the socket isn't healthy — the caller should not show the
-  /// message as sent. Also kicks off a reconnect so the next attempt can work.
+  /// Returns the generated correlation id, or null if the socket isn't healthy.
+  /// The caller must not show a message as sent on null. The id is persisted
+  /// through the server FIFO and echoed by chat_msg_meta for exact reconciliation.
   ///
   /// When [goal] is true the message is flagged as a Goal-mode send and the
   /// server applies the per-send execution limits in [goalLimits] (maxRounds →
   /// claude --max-turns; maxBudget → advisory token budget). There is no global
   /// limit config — blank/0 means unlimited for that dimension.
-  bool send(
+  String? send(
     String text, {
     bool goal = false,
     Map<String, dynamic>? goalLimits,
   }) {
     if (_channel == null || _state != ChatConnectionState.connected) {
       connect();
-      return false;
+      return null;
     }
     try {
+      final clientMsgId =
+          'app-${DateTime.now().microsecondsSinceEpoch}-${_messageSequence++}';
       final payload = <String, dynamic>{
         'type': 'user_message',
         'text': text,
-        'clientMsgId':
-            'app-${DateTime.now().microsecondsSinceEpoch}-${_messageSequence++}',
+        'clientMsgId': clientMsgId,
       };
       final pendingRequestId = _pendingUserInputRequestId;
       if (pendingRequestId != null && pendingRequestId.isNotEmpty) {
@@ -401,10 +435,10 @@ class ChatService {
       _channel!.sink.add(jsonEncode(payload));
       if (pendingRequestId != null) _pendingUserInputRequestId = null;
       _cancelRequested = false; // New turn — clear any stale cancel guard
-      return true;
+      return clientMsgId;
     } catch (_) {
       _scheduleReconnect();
-      return false;
+      return null;
     }
   }
 
@@ -476,6 +510,47 @@ class ChatService {
 
   String _url(String path) => settings.buildHttpUrl(path);
 
+  /// Execute one explicit scheduler action. The endpoint itself requires
+  /// confirm:true because retry/resume/skip/cancel may advance the FIFO.
+  /// Nothing here changes local queue state optimistically; the authoritative
+  /// REST response/WS snapshot remains the only state source.
+  Future<Map<String, dynamic>> queueAction(
+    String action, {
+    String? entryId,
+    String? text,
+  }) async {
+    final body = <String, dynamic>{
+      'action': action,
+      'confirm': true,
+      if (entryId != null && entryId.isNotEmpty) 'entryId': entryId,
+      if (text != null && text.trim().isNotEmpty) 'text': text.trim(),
+      'reason': 'requested from Flutter app',
+    };
+    final res = await _httpClient
+        .post(
+          Uri.parse(
+            _url(
+              '/api/sessions/${Uri.encodeComponent(sessionName)}/queue/action',
+            ),
+          ),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 20));
+    Map<String, dynamic> data = const {};
+    try {
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      if (decoded is Map) data = Map<String, dynamic>.from(decoded);
+    } catch (_) {}
+    if (res.statusCode < 200 || res.statusCode >= 300 || data['ok'] != true) {
+      throw QueueActionException(
+        res.statusCode,
+        (data['code'] ?? data['error'] ?? 'queue_action_failed').toString(),
+      );
+    }
+    return data;
+  }
+
   /// Fetch one page of older history (strictly older than [beforeId]) from
   /// GET /api/sessions/:id/history?before={id}&limit={n}. Returns the parsed
   /// messages and whether even older history exists. Mirrors the web client's
@@ -492,7 +567,7 @@ class ChatService {
               '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
         )
         .join('&');
-    final res = await http
+    final res = await _httpClient
         .get(
           Uri.parse(
             _url(
@@ -530,5 +605,6 @@ class ChatService {
     _sub?.cancel();
     _channel?.sink.close();
     _controller.close();
+    if (_ownsHttpClient) _httpClient.close();
   }
 }

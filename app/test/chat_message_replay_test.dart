@@ -29,4 +29,15 @@ void main() {
 
     expect(streamingAssistantTail(messages), isNull);
   });
+
+  test('history keeps client correlation id for FIFO reconciliation', () {
+    final message = ChatMessage.fromHistory({
+      'id': 'user-1',
+      'role': 'user',
+      'content': 'queued',
+      'clientMsgId': 'app-123',
+    });
+
+    expect(message.clientMsgId, 'app-123');
+  });
 }
