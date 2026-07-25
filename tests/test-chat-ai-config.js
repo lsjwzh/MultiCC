@@ -47,6 +47,8 @@ test('effort policy is deterministic for every supported CLI', () => {
   assert.equal(ai.defaultEffort('opencode'), '');
   assert.equal(ai.effortLabel('codex'), 'Reasoning Level');
   assert.equal(ai.effortLabel('opencode'), 'Variant');
+  assert.deepEqual(ai.effortOptions('codex').map(item => item.value),
+    ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   assert.equal(ai.effortShortName('codex', 'xhigh'), 'Extra high');
   assert.equal(ai.effortShortName('opencode', 'high'), 'Variant high');
   assert.equal(ai.effortShortName('zcode', 'high'), '');
