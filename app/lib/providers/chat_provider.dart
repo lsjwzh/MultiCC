@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 import '../i18n.dart';
+import '../models/chat_runtime_state.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
 import '../services/notification_service.dart';
@@ -61,10 +62,32 @@ class ChatProvider extends ChangeNotifier {
 
   String _statusText = 'Disconnected';
   String get statusText => _statusText;
-  List<Map<String, dynamic>> _sessionQueueItems = const [];
-  List<Map<String, dynamic>> get sessionQueueItems => _sessionQueueItems;
-  String? _sessionQueueFreezeReason;
-  String? get sessionQueueFreezeReason => _sessionQueueFreezeReason;
+
+  SessionQueueState _sessionQueue = const SessionQueueState();
+  SessionQueueState get sessionQueue => _sessionQueue;
+  List<SessionQueueItem> get sessionQueueItems => _sessionQueue.items;
+  String? get sessionQueueFreezeReason => _sessionQueue.freezeReason;
+
+  PendingUserInput? _pendingUserInput;
+  PendingUserInput? get pendingUserInput => _pendingUserInput;
+
+  ApiErrorPolicyState? _apiErrorPolicy;
+  ApiErrorPolicyState? get apiErrorPolicy => _apiErrorPolicy;
+
+  UsageWindowLimit? _usageWindowLimit;
+  UsageWindowLimit? get usageWindowLimit {
+    final value = _usageWindowLimit;
+    if (value == null ||
+        !value.isActiveAt(DateTime.now()) ||
+        !value.matchesCli(_cli.name)) {
+      return null;
+    }
+    return value;
+  }
+
+  UsageBalance? _usageBalance;
+  UsageBalance? get usageBalance => _usageBalance;
+  Timer? _usageExpiryTimer;
 
   String _costText = '';
   String get costText => _costText;
@@ -107,7 +130,9 @@ class ChatProvider extends ChangeNotifier {
   String _classifyPhase = '';
   String get classifyPhase => _classifyPhase;
 
-  /// Live classify-state letter (D/C/W/B/E/P) - drives the bar's tint.
+  /// Live classify-state letter (D/W/B/E/P) - drives the bar's tint.
+  /// Legacy C is normalized to W because the server retired the ambiguous
+  /// continue state and now requires explicit user/scheduler progression.
   /// Server sends this as `classifyState` in the task_state event (the old
   /// `lifecycle` field was removed in 98c2674 / unified in 38bb6ce).
   String _classifyState = '';
@@ -126,7 +151,56 @@ class ChatProvider extends ChangeNotifier {
        dirName = dirName ?? '' {
     _cwd = sessionCwd;
     _cli = initialCli;
+    _restoreRuntimeCache();
     _initService();
+  }
+
+  void _restoreRuntimeCache() {
+    final cached = settings.readChatRuntimeCache(sessionName);
+    if (cached == null) return;
+    final limit = cached['limit'];
+    if (limit is Map) {
+      final parsed = UsageWindowLimit.fromCache(
+        Map<String, dynamic>.from(limit),
+      );
+      if (parsed?.isActiveAt(DateTime.now()) == true) {
+        _usageWindowLimit = parsed;
+        _armUsageExpiry();
+      }
+    }
+    final balance = cached['balance'];
+    if (balance is Map) {
+      _usageBalance = UsageBalance.fromJson(Map<String, dynamic>.from(balance));
+    }
+  }
+
+  void _persistRuntimeCache() {
+    unawaited(
+      settings.saveChatRuntimeCache(sessionName, {
+        if (_usageWindowLimit != null) 'limit': _usageWindowLimit!.toJson(),
+        if (_usageBalance != null) 'balance': _usageBalance!.toJson(),
+      }),
+    );
+  }
+
+  void _armUsageExpiry() {
+    _usageExpiryTimer?.cancel();
+    final reset = _usageWindowLimit?.resetsAtMs;
+    if (reset == null) return;
+    final delayMs = reset - DateTime.now().millisecondsSinceEpoch + 50;
+    if (delayMs <= 0) {
+      _usageWindowLimit = null;
+      _persistRuntimeCache();
+      return;
+    }
+    _usageExpiryTimer = Timer(
+      Duration(milliseconds: delayMs.clamp(1, 2147000000).toInt()),
+      () {
+        _usageWindowLimit = null;
+        _persistRuntimeCache();
+        notifyListeners();
+      },
+    );
   }
 
   void setDisplayName(String value) {
@@ -290,7 +364,7 @@ class ChatProvider extends ChangeNotifier {
             notifyListeners();
           }
         } else {
-          // Prefer the precise classifyState letter (D/C/W/B/E/P) when the
+          // Prefer the precise classifyState letter (D/W/B/E/P) when the
           // server provides it; fall back to the coarse notify state.
           final cls = (p['classifyState'] ?? '').toString().toUpperCase();
           String outcome;
@@ -301,6 +375,7 @@ class ChatProvider extends ChangeNotifier {
             case 'E':
               outcome = t('apiError');
               break;
+            case 'C': // Legacy server: retired C is safest as wait-for-user.
             case 'W':
               outcome = t('waitingAction');
               break;
@@ -337,6 +412,23 @@ class ChatProvider extends ChangeNotifier {
           final role = p['role']?.toString();
           if (id != null && id.isNotEmpty && role != null) {
             final wantUser = role == 'user';
+            final clientMsgId = p['clientMsgId']?.toString();
+            if (clientMsgId != null && clientMsgId.isNotEmpty) {
+              ChatMessage? exact;
+              for (final message in _messages) {
+                if (message.clientMsgId == clientMsgId &&
+                    message.role ==
+                        (wantUser ? MessageRole.user : MessageRole.assistant)) {
+                  exact = message;
+                  break;
+                }
+              }
+              if (exact != null) {
+                exact.id = id;
+                notifyListeners();
+                break;
+              }
+            }
             for (var i = _messages.length - 1; i >= 0; i--) {
               final m = _messages[i];
               final isUser = m.role == MessageRole.user;
@@ -371,7 +463,8 @@ class ChatProvider extends ChangeNotifier {
           final p = evt.payload as Map<String, dynamic>;
           _classifyGoal = (p['goal'] ?? '').toString().trim();
           _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
-          _classifyState = (p['classifyState'] ?? '').toString().toUpperCase();
+          final next = (p['classifyState'] ?? '').toString().toUpperCase();
+          _classifyState = next == 'C' ? 'W' : next;
           notifyListeners();
           break;
         }
@@ -379,16 +472,8 @@ class ChatProvider extends ChangeNotifier {
       case 'user_input_required':
         {
           final p = evt.payload as Map<String, dynamic>;
-          final question = (p['question'] ?? '').toString().trim();
-          final options = p['options'] is List
-              ? (p['options'] as List).map((value) => value.toString()).toList()
-              : <String>[];
-          final optionText = options.isEmpty
-              ? ''
-              : '\n${List.generate(options.length, (i) => '${i + 1}. ${options[i]}').join('\n')}';
-          _addSystemMsg(
-            '需要你的确认：${question.isEmpty ? '请补充必要信息' : question}$optionText',
-          );
+          _pendingUserInput = PendingUserInput.fromJson(p);
+          notifyListeners();
           break;
         }
 
@@ -396,16 +481,10 @@ class ChatProvider extends ChangeNotifier {
         {
           final p = evt.payload as Map<String, dynamic>;
           final event = (p['event'] ?? '').toString();
-          if (p.containsKey('items')) {
-            final rawItems = p['items'];
-            _sessionQueueItems = rawItems is List
-                ? rawItems.whereType<Map>().map((item) =>
-                    Map<String, dynamic>.from(item)).toList(growable: false)
-                : const [];
-          }
-          _sessionQueueFreezeReason = p['state'] == 'frozen'
-              ? (p['freezeReason'] ?? '当前任务需要处理').toString()
-              : null;
+          _sessionQueue = SessionQueueState.fromEvent(
+            p,
+            previous: _sessionQueue,
+          );
           if (event == 'queued') {
             final position = p['queuePosition'];
             _statusText = position == null ? '消息已持久排队' : '消息已排队（第 $position 位）';
@@ -414,6 +493,38 @@ class ChatProvider extends ChangeNotifier {
           } else if (event == 'started') {
             _statusText = '正在执行队首任务';
           }
+          notifyListeners();
+          break;
+        }
+
+      case 'api_error_policy':
+        _apiErrorPolicy = ApiErrorPolicyState.fromJson(
+          evt.payload as Map<String, dynamic>,
+        );
+        notifyListeners();
+        break;
+
+      case 'rate_limit_event':
+        {
+          final parsed = UsageWindowLimit.fromEvent(
+            evt.payload as Map<String, dynamic>,
+          );
+          if (parsed == null) break;
+          _usageWindowLimit = parsed;
+          _armUsageExpiry();
+          _persistRuntimeCache();
+          notifyListeners();
+          break;
+        }
+
+      case 'usage_balance_event':
+        {
+          final parsed = UsageBalance.fromJson(
+            evt.payload as Map<String, dynamic>,
+          );
+          if (parsed == null) break;
+          _usageBalance = parsed;
+          _persistRuntimeCache();
           notifyListeners();
           break;
         }
@@ -539,6 +650,7 @@ class ChatProvider extends ChangeNotifier {
     }
 
     _finishStreaming();
+    if (msg['is_error'] != true) _apiErrorPolicy = null;
 
     final cost = (msg['total_cost_usd'] as num?)?.toDouble();
     final ms = (msg['durationMs'] as num?)?.toInt();
@@ -792,19 +904,49 @@ class ChatProvider extends ChangeNotifier {
   }) {
     final message = text.trim();
     if (message.isEmpty) return;
-    final ok = _service.send(message, goal: goal, goalLimits: goalLimits);
-    if (!ok) {
+    final clientMsgId = _service.send(
+      message,
+      goal: goal,
+      goalLimits: goalLimits,
+    );
+    if (clientMsgId == null) {
       // Half-open / dead socket — don't pretend the message was sent.
       _addSystemMsg(t('connectionLostRetry'));
       notifyListeners();
       return;
     }
-    _messages.add(ChatMessage(role: MessageRole.user, content: message));
+    _messages.add(
+      ChatMessage(
+        role: MessageRole.user,
+        content: message,
+        clientMsgId: clientMsgId,
+      ),
+    );
+    _pendingUserInput = null;
+    _apiErrorPolicy = null;
     // User just sent a message -> resume auto-follow at the bottom, clear any
     // unread pill (mirrors the web client's forceScrollToBottom on send).
     _userPinnedAway = false;
     _unreadCount = 0;
     notifyListeners();
+  }
+
+  /// Explicit scheduler control. The APP never mutates or advances the queue
+  /// itself; even after a successful POST it only applies the returned server
+  /// schedule (and the following WS event will reconcile it again).
+  Future<void> queueAction(String action, {String? entryId}) async {
+    final result = await _service.queueAction(action, entryId: entryId);
+    final schedule = result['schedule'];
+    if (schedule is Map) {
+      final snapshot = Map<String, dynamic>.from(schedule);
+      snapshot['event'] = 'action';
+      snapshot['items'] = snapshot['queued'];
+      _sessionQueue = SessionQueueState.fromEvent(
+        snapshot,
+        previous: _sessionQueue,
+      );
+      notifyListeners();
+    }
   }
 
   /// Cancel the in-flight response. Matches the web client's cancelStreaming():
@@ -891,6 +1033,7 @@ class ChatProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _usageExpiryTimer?.cancel();
     _eventSub?.cancel();
     _service.dispose();
     super.dispose();
