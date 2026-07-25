@@ -1,6 +1,7 @@
 'use strict';
 
 const { sanitizePublicText } = require('./http/public-safety');
+const { isSettledLetter } = require('./classify/vocab');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;
@@ -123,7 +124,7 @@ function createPushRuntime(options) {
     const persisted = persistedSessions.get(sessionId);
     if (persisted) {
       const taskState = getTaskState(persisted);
-      if (taskState.classifyState === 'D' || taskState.classifyState === 'W') return;
+      if (isSettledLetter(taskState.classifyState)) return;
     }
 
     let queue;
@@ -209,7 +210,7 @@ function createPushRuntime(options) {
     const persisted = persistedSessions.get(sessionId);
     if (persisted) {
       const taskState = getTaskState(persisted);
-      if (taskState.classifyState === 'D' || taskState.classifyState === 'W') {
+      if (isSettledLetter(taskState.classifyState)) {
         setTaskState(sessionId, { classifyState: 'P' });
       }
     }

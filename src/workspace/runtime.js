@@ -1,6 +1,7 @@
 'use strict';
 
 const { createSessionStateService } = require('../session');
+const { classifyDisplay } = require('../classify/vocab');
 
 const EMPTY_STATUS = Object.freeze({
   status: 'idle',
@@ -71,7 +72,7 @@ function createWorkspaceRuntime(options) {
       if (!classifyState) continue;
       status.set(sessionId, {
         ...EMPTY_STATUS,
-        status: classifyState === 'D' ? 'completed' : 'waiting',
+        status: classifyDisplay(classifyState).cardStatus,
       });
     }
   }
