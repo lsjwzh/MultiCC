@@ -19,6 +19,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const core = require('../task-board');
+const { runStateForFreezeReason } = require('../session-work-scheduler');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
@@ -585,7 +586,9 @@ function createTaskBoardRuntime(deps) {
     else if (type === 'claimed' || type === 'started' || type === 'resumed') runState = 'running';
     else if (type === 'completed') runState = 'done';
     else if (type === 'frozen') {
-      runState = String(event.freezeReason || '').includes('error') ? 'error' : 'waiting';
+      // Explicit reason→state map, shared with getRunState. Not the old substring
+      // heuristic (mislabelled interruption/recovery/settling as "waiting").
+      runState = runStateForFreezeReason(event.freezeReason);
     } else if (type === 'cancelled' || type === 'skipped') runState = 'idle';
     if (!runState || task.runState === runState) return { ok: true, changed: false };
     task.runState = runState;

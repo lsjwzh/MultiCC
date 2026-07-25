@@ -140,7 +140,13 @@ test('task board display state follows classify runState for icon and status tex
   const runStateAdapter = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'session-work-host.js'), 'utf8');
   assert.match(runStateAdapter, /classifyDisplay\(classifyState\)\.cardStatus/);
-  assert.match(runStateAdapter, /classifyState === 'A'[\s\S]*?return 'running'/);
+  // The phantom `classifyState === 'A'` branch is removed — no code ever wrote
+  // 'A' (the D/C/W/B/E/P vocabulary never included it), so it was dead.
+  assert.doesNotMatch(runStateAdapter, /classifyState === 'A'/);
+  // Frozen sessions resolve their runState through the explicit reason map, not
+  // the old `includes('error')` substring heuristic.
+  assert.match(runStateAdapter, /runStateForFreezeReason\(state\.queueFreezeReason\)/);
+  assert.doesNotMatch(runStateAdapter, /queueFreezeReason \|\| ''\)\.includes\('error'\)/);
   assert.match(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
   assert.doesNotMatch(runStateAdapter, /classifyState === 'D' \|\| classifyState === 'C'/);
   // A task card must follow the session's persisted classify verdict, never a
