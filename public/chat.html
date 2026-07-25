@@ -918,6 +918,13 @@
     #aux-classify-bar .ac-mark-done:hover { background: #1c4529; border-color: #2ea04388; }
     #aux-classify-bar .ac-mark-done:disabled { opacity: .6; cursor: default; }
     #aux-classify-bar.can-mark-done .ac-mark-done { display: inline-flex; }
+    #aux-classify-bar .ac-cancel-task {
+      display: none; flex: none; padding: 1px 9px; border-radius: 9px; font-size: 10px; font-weight: 700;
+      background: #351314; color: #ff7b72; border: 1px solid #da363355; cursor: pointer; line-height: 1.5;
+    }
+    #aux-classify-bar .ac-cancel-task:hover { background: #4a1719; border-color: #f8514988; }
+    #aux-classify-bar .ac-cancel-task:disabled { opacity: .6; cursor: default; }
+    #aux-classify-bar.can-cancel-task .ac-cancel-task { display: inline-flex; }
     .worktree-conflict-bar {
       display: flex; align-items: center; gap: 8px;
       padding: 6px 12px; font-size: 12px;
@@ -1885,6 +1892,7 @@
     <span class="ac-goal" id="ac-goal"></span>
     <span class="ac-state" id="ac-state"></span>
     <span class="ac-phase" id="ac-phase"></span>
+    <button type="button" class="ac-cancel-task" id="ac-cancel-task" title="立即取消正在执行的任务">✕ 取消</button>
     <button type="button" class="ac-mark-done" id="ac-mark-done" title="把当前等待中的任务手动标记为完成">✓ 完成</button>
   </div>
 
