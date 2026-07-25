@@ -49,10 +49,9 @@ const STORE_FILE = RUNTIME_PATHS.providersFile;
 // point at different auth/config without clobbering the global ~/.codex.
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
 // ZCode 0.15.x advertises --settings but its parser rejects the flag. Provider
-// overrides therefore use ZCode's supported ZCODE_DATA_BASE_DIR boundary and
-// materialize one private config tree per MultiCC session. The native/default
-// route does not set this variable and keeps using ~/.zcode, including any
-// official Coding Plan login maintained by ZCode itself.
+// overrides therefore run the ZCode child with HOME pointed at a private home
+// containing a native ~/.zcode/cli/config.json. The native/default route keeps
+// the real HOME and any official Coding Plan login maintained by ZCode itself.
 const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');
 
 const APP_TYPES = ['claude', 'codex'];
@@ -922,16 +921,14 @@ const CLAUDE_ROUTING_KEYS = [...ANTHROPIC_ROUTING_KEYS, 'CLAUDE_CODE_SIMPLE'];
 // provider env is applied, so the chosen provider is authoritative:
 //   - default login (provider=null) → none set → real OAuth login from ~/.claude
 //   - a custom provider             → exactly its own ANTHROPIC_* values
-// codex sessions don't use ANTHROPIC_* (they route via CODEX_HOME), so their
-// inherited env is left untouched aside from the provider's CODEX_HOME.
+// codex sessions don't use ANTHROPIC_* (they route via CODEX_HOME).
 function buildChildEnv(base, session, extra = {}) {
   const env = { ...base };
   const appType = appTypeForCli(session && session.cli);
-  // Only the claude CLI itself needs inherited ANTHROPIC_* routing keys stripped
-  // (so the chosen provider is authoritative). opencode/zcode carry their own
-  // native config (opencode.json / auth.json) and codex routes via CODEX_HOME —
-  // for all of them the inherited env is left untouched, matching codex's behavior.
-  if (session && session.cli === 'claude') {
+  // Claude always needs inherited ANTHROPIC_* routing keys stripped. ZCode needs
+  // the same only for custom-provider sessions; provider-less ZCode must keep
+  // the native Coding Plan environment untouched.
+  if (session && (session.cli === 'claude' || (session.cli === 'zcode' && session.provider))) {
     for (const k of CLAUDE_ROUTING_KEYS) delete env[k];
   }
   if (session && session.cli === 'opencode') delete env.OPENCODE_CONFIG_CONTENT;
@@ -1045,14 +1042,11 @@ function zcodeProviderMaterial(provider) {
     const env = cfg.env || {};
     return {
       kind: 'anthropic',
-      baseURL: env.ANTHROPIC_BASE_URL || summary.baseUrl || '',
-      // ZCode's Anthropic provider deliberately distinguishes these fields:
-      // apiKey emits `x-api-key`, while authToken emits
-      // `Authorization: Bearer`. Preserve the source Provider's semantics
-      // exactly or Bearer-based relays such as BigModel reject a valid token.
-      ...(env.ANTHROPIC_AUTH_TOKEN
-        ? { authToken: env.ANTHROPIC_AUTH_TOKEN }
-        : (env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {})),
+      baseURL: anthropicSdkBaseUrl(env.ANTHROPIC_BASE_URL || summary.baseUrl || ''),
+      // ZCode's config schema only materializes options.apiKey for Anthropic
+      // providers. options.authToken passes validation but is ignored by the
+      // runtime, so both cc-switch credential variants must become apiKey here.
+      apiKey: env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '',
     };
   }
   return {
@@ -1083,7 +1077,6 @@ function buildZcodeRoute(provider, session) {
     options: {
       ...(material.baseURL ? { baseURL: material.baseURL } : {}),
       ...(material.apiKey ? { apiKey: material.apiKey } : {}),
-      ...(material.authToken ? { authToken: material.authToken } : {}),
     },
     models: Object.fromEntries(models.filter(Boolean).map(model => [model, { id: model }])),
   };
@@ -1100,9 +1093,10 @@ function buildZcodeRoute(provider, session) {
   secureFile(configFile);
   return {
     env: {
+      HOME: home,
       ZCODE_DATA_BASE_DIR: home,
       // The bridge reads the same file for its model-consistency check. ZCode
-      // itself ignores this helper variable and follows ZCODE_DATA_BASE_DIR.
+      // itself ignores this helper variable and follows HOME.
       ZCODE_SETTINGS: configFile,
     },
     qualifiedModel: selected ? `${id}/${selected}` : null,
