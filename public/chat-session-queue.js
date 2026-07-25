@@ -2,12 +2,14 @@
   'use strict';
 
   let configuredOnCancel = null;
+  let configuredOnInsert = null;
 
-  function configure({ onCancel = null } = {}) {
+  function configure({ onCancel = null, onInsert = null } = {}) {
     configuredOnCancel = typeof onCancel === 'function' ? onCancel : null;
+    configuredOnInsert = typeof onInsert === 'function' ? onInsert : null;
   }
 
-  function createCancelHandler({
+  function createActionHandler(action, {
     fetch: fetchImpl,
     withToken,
     getSessionName,
@@ -23,23 +25,33 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'cancel_queued',
+          action,
           entryId: cleanEntryId,
           confirm: true,
-          reason: 'cancelled from chat queue',
+          ...(action === 'cancel_queued' ? { reason: 'removed from chat queue' } : {}),
         }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok !== true) {
         const message = data.code === 'queued_entry_already_claimed'
-          ? '这条消息已经开始执行，无法从排队列表取消。'
-          : `取消失败：${data.error || data.code || response.status}`;
+          ? '这条消息已经开始执行，无法再调整。'
+          : `${action === 'insert_queued' ? '插入' : '移除'}失败：${data.error || data.code || response.status}`;
         notify(message, 'error');
         throw new Error(message);
       }
-      notify('已取消排队消息', 'completed');
+      notify(action === 'insert_queued'
+        ? '已移到队首；classify 允许后立即执行'
+        : '已移除暂存消息', 'completed');
       return true;
     };
+  }
+
+  function createCancelHandler(options) {
+    return createActionHandler('cancel_queued', options);
+  }
+
+  function createInsertHandler(options) {
+    return createActionHandler('insert_queued', options);
   }
 
   function render(rawItems, metadata = {}, documentRef = global.document) {
@@ -58,6 +70,8 @@
         : '当前回复完成后自动发送';
     const onCancel = typeof metadata.onCancel === 'function'
       ? metadata.onCancel : configuredOnCancel;
+    const onInsert = typeof metadata.onInsert === 'function'
+      ? metadata.onInsert : configuredOnInsert;
     list.replaceChildren();
     for (const [index, item] of items.entries()) {
       const row = documentRef.createElement('div');
@@ -70,30 +84,64 @@
       text.textContent = String(item?.text || '（暂存消息）');
       row.append(position, text);
       if (item?.entryId && item?.state === 'pending'
-          && typeof onCancel === 'function') {
-        const cancel = documentRef.createElement('button');
-        cancel.type = 'button';
-        cancel.className = 'session-queue-cancel';
-        cancel.textContent = '取消';
-        cancel.title = '取消这条尚未开始执行的消息';
-        cancel.setAttribute?.('aria-label', `取消第 ${Number(item.position) || index + 1} 条排队消息`);
-        cancel.addEventListener('click', async event => {
-          event.stopPropagation?.();
-          if (cancel.disabled) return;
-          cancel.disabled = true;
-          cancel.textContent = '取消中…';
-          try {
-            await onCancel(item.entryId);
-          } catch (_) {
-            cancel.disabled = false;
-            cancel.textContent = '取消';
-          }
-        });
-        row.appendChild(cancel);
+          && (typeof onCancel === 'function' || typeof onInsert === 'function')) {
+        const actions = documentRef.createElement('div');
+        actions.className = 'session-queue-actions';
+        if (typeof onInsert === 'function') {
+          const insert = documentRef.createElement('button');
+          insert.type = 'button';
+          insert.className = 'session-queue-insert';
+          insert.textContent = item.priority ? '队首' : '立刻插入';
+          insert.title = item.priority
+            ? '这条消息已经位于队首'
+            : '将这条消息移到队首；classify 允许时立即执行';
+          insert.disabled = item.priority === true;
+          insert.setAttribute?.('aria-label', `将第 ${Number(item.position) || index + 1} 条消息立刻插入队首`);
+          insert.addEventListener('click', async event => {
+            event.stopPropagation?.();
+            if (insert.disabled) return;
+            insert.disabled = true;
+            insert.textContent = '插入中…';
+            try {
+              await onInsert(item.entryId);
+            } catch (_) {
+              insert.disabled = false;
+              insert.textContent = '立刻插入';
+            }
+          });
+          actions.appendChild(insert);
+        }
+        if (typeof onCancel === 'function') {
+          const close = documentRef.createElement('button');
+          close.type = 'button';
+          close.className = 'session-queue-close';
+          close.textContent = '×';
+          close.title = '移除这条尚未开始执行的消息';
+          close.setAttribute?.('aria-label', `移除第 ${Number(item.position) || index + 1} 条暂存消息`);
+          close.addEventListener('click', async event => {
+            event.stopPropagation?.();
+            if (close.disabled) return;
+            close.disabled = true;
+            close.textContent = '…';
+            try {
+              await onCancel(item.entryId);
+            } catch (_) {
+              close.disabled = false;
+              close.textContent = '×';
+            }
+          });
+          actions.appendChild(close);
+        }
+        row.appendChild(actions);
       }
       list.appendChild(row);
     }
   }
 
-  global.MultiCCChatSessionQueue = Object.freeze({ configure, createCancelHandler, render });
+  global.MultiCCChatSessionQueue = Object.freeze({
+    configure,
+    createCancelHandler,
+    createInsertHandler,
+    render,
+  });
 })(typeof window !== 'undefined' ? window : globalThis);

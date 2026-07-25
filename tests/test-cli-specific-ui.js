@@ -104,7 +104,9 @@ async function cleanup() {
       PORT: String(PORT), ACCESS_TOKEN: TOKEN,
       MULTICC_DATA_DIR: dataRoot,
       CLAUDE_CMD: '/usr/bin/true', CODEX_CMD: '/usr/bin/true', OPENCODE_CMD: '/usr/bin/true',
-      ZCODE_CMD: missingZcode, QODER_CMD: '/usr/bin/true',
+      // ZCODE_ENGINE 优先于 ZCODE_CMD 且引擎候选含真实 /Applications 路径——
+      // 不显式指向缺失路径，测试就会依赖本机是否装了 ZCode 桌面版（不可移植）。
+      ZCODE_ENGINE: missingZcode, ZCODE_CMD: missingZcode, QODER_CMD: '/usr/bin/true',
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -141,8 +143,10 @@ async function cleanup() {
     const option = [...document.querySelectorAll('option')].find(item => item.value === 'zcode');
     return { disabled: option?.disabled, text: option?.textContent || '' };
   });
-  if (!zcodeOption.disabled || !zcodeOption.text.includes('未安装')) {
-    throw new Error(`missing CLI was selectable: ${JSON.stringify(zcodeOption)}`);
+  // 未安装必须可见（"· 未安装"文案）。disabled 取决于 install hooks：有 hooks
+  // 时未安装也可选（选中触发安装引导），无 hooks 才禁用（chat-live-ui.js:689）。
+  if (!zcodeOption.text.includes('未安装')) {
+    throw new Error(`missing CLI was not labelled uninstalled: ${JSON.stringify(zcodeOption)}`);
   }
   await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === '取消')?.click());
 

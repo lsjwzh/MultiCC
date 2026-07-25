@@ -45,16 +45,22 @@ function createSessionWorkHost(deps = {}) {
       return { ok: false, code: pending ? 'request_id_mismatch' : 'no_pending_request' };
     }
     const status = await runtime.sessionScheduler.status(sessionId);
+    const source = options.taskSource
+      || (options.originTrigger === true ? 'trigger'
+        : options.originContinue === true ? 'continuation' : 'direct');
+    const classifyState = deps.getTaskState(deps.getRecord(sessionId))?.classifyState || null;
+    const waitingContinuation = !requestId
+      && source === 'direct'
+      && classifyState === 'W'
+      && !!status?.active;
     const admitted = await runtime.admitSessionWork({
       sessionId,
       text,
       options,
-      source: options.taskSource
-        || (options.originTrigger === true ? 'trigger'
-          : options.originContinue === true ? 'continuation' : 'direct'),
-      workKind: requestId ? 'answer' : null,
+      source,
+      workKind: requestId ? 'answer' : waitingContinuation ? 'continuation' : null,
       requestId: requestId || null,
-      activeEntryId: requestId ? status?.active?.entryId || null : null,
+      activeEntryId: requestId || waitingContinuation ? status?.active?.entryId || null : null,
       idempotencyKey: options.idempotencyKey
         || options.clientMsgId || options.deliveryId || null,
     });
@@ -90,6 +96,11 @@ function createSessionWorkHost(deps = {}) {
     const record = deps.getRecord(sessionId);
     if (!record) return null;
     const state = record.taskState;
+    const classifyState = state?.classifyState;
+    if (classifyState) {
+      const cardStatus = deps.classifyDisplay(classifyState).cardStatus;
+      return cardStatus === 'completed' ? 'done' : cardStatus;
+    }
     if (state?.queueState === 'queued') return 'queued';
     if (state?.queueState === 'running') return 'running';
     if (state?.queueState === 'frozen') {
@@ -97,33 +108,25 @@ function createSessionWorkHost(deps = {}) {
       // substring heuristic that mislabelled interruption/recovery as "waiting".
       return runStateForFreezeReason(state.queueFreezeReason);
     }
-    const classifyState = state?.classifyState;
-    if (!classifyState) return 'idle';
-    const cardStatus = deps.classifyDisplay(classifyState).cardStatus;
-    return cardStatus === 'completed' ? 'done' : cardStatus;
+    return 'idle';
   }
 
-  function turnSucceeded(sessionId) {
+  function closeTurnForClassify(sessionId, failureReason = null) {
     const operation = (async () => {
       const runtime = schedulerRuntime();
       const target = runtime?.sessionScheduler;
       if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
+      if (failureReason) {
+        log.warn?.('session_scheduler_turn_failed_awaiting_classify', {
+          sessionId,
+          reason: failureReason,
+        });
+      }
       const current = await target.status(sessionId);
       if (!current?.active) return { ok: false, code: 'no_active_task' };
-      const pending = deps.pendingUserInput(sessionId);
-      // The FIFO gate is "is a turn executing". A durable provider result with
-      // no structured question and no explicit wait IS the completion boundary:
-      // advance the queue now. Aux classification (D/W/E…) owns task-card
-      // semantics only and must never re-gate it — a plain W just means the
-      // reply ended and the next user/dispatched message may run.
-      const result = pending && pending.resolved !== true
-        ? await target.freeze(sessionId, 'awaiting_user_input', {
-            requestId: pending.requestId,
-          })
-        : runtime.hasPending(sessionId)
-          ? await target.freeze(sessionId, 'awaiting_callback')
-          : await target.complete(sessionId, { reason: 'durable_turn_completed' });
-      if (result?.ok) await runtime.tick();
+      // A durable turn boundary only asks classify for a verdict. D/W/B/E/P is
+      // the sole semantic gate; transport completion must never advance FIFO.
+      const result = await target.turnEnded(sessionId);
       return result;
     })();
     turnClosures.set(sessionId, operation);
@@ -134,19 +137,17 @@ function createSessionWorkHost(deps = {}) {
     return operation;
   }
 
-  async function turnFailed(sessionId, reason = 'unknown_interruption') {
-    const target = scheduler();
-    if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
-    return target.freeze(sessionId, reason);
+  function turnSucceeded(sessionId) {
+    return closeTurnForClassify(sessionId);
   }
 
-  // Aux classification owns task/card semantics only — it must never gate the
-  // interaction FIFO. The turn boundary (turnSucceeded) already completed the
-  // active entry, so classifications usually arrive against an idle scheduler
-  // and no-op as stale. If a turn is nevertheless parked in `assessing`, a
-  // plain W still completes it: W means the reply ended and the next message
-  // (exactly the queue head) may run. Genuine faults and external waits keep
-  // their freeze.
+  function turnFailed(sessionId, reason = 'unknown_interruption') {
+    return closeTurnForClassify(sessionId, reason);
+  }
+
+  // Classify is the only semantic gate for the interaction FIFO. The scheduler
+  // persists ordering and active correlation, then applies exactly one of
+  // D/W/B/E/P here. No delivery, liveness or process status may complete work.
   async function classifyTransition(sessionId, taskId, result = {}) {
     const runtime = schedulerRuntime();
     const target = runtime?.sessionScheduler;
@@ -155,30 +156,32 @@ function createSessionWorkHost(deps = {}) {
       const closing = turnClosures.get(sessionId);
       if (closing) await closing;
       const current = await target.status(sessionId);
-      if (!current?.active || current.state !== 'assessing') {
+      if (!current?.active || !['assessing', 'frozen'].includes(current.state)) {
         return { ok: false, code: 'stale_classification' };
       }
       const expectedTaskId = taskId || current.active.taskId || null;
-      const plainWaiting = result.state === 'waiting'
-        && !result.error && !result.background && !runtime.hasPending(sessionId);
-      const transition = result.state === 'completed'
+      const pending = deps.pendingUserInput(sessionId);
+      const classifyState = result.error ? 'E'
+        : result.state === 'completed' ? 'D'
+          : result.background || runtime.hasPending(sessionId) ? 'B'
+            : result.state === 'waiting' ? 'W' : 'P';
+      const transition = classifyState === 'D'
         ? await target.complete(sessionId, {
             expectedTaskId,
             reason: 'classified_complete',
           })
-        : plainWaiting
-          ? await target.complete(sessionId, {
+        : await target.freeze(
+            sessionId,
+            classifyState === 'W' ? 'classify_waiting'
+              : classifyState === 'B' ? 'classify_background'
+                : classifyState === 'E' ? 'classify_error' : 'classify_running',
+            {
               expectedTaskId,
-              reason: 'classified_waiting_turn_boundary',
-            })
-          : await target.freeze(
-              sessionId,
-              result.error ? 'error'
-                : result.background || runtime.hasPending(sessionId) ? 'awaiting_callback'
-                  : result.state === 'continue' || result.state === 'running'
-                    ? 'incomplete_requires_resume' : 'classification_error',
-              { expectedTaskId },
-            );
+              classifyState,
+              requestId: classifyState === 'W' && pending?.resolved !== true
+                ? pending?.requestId || null : null,
+            },
+          );
       if (transition?.ok) await runtime.tick();
       return transition;
     } catch (error) {
@@ -192,7 +195,9 @@ function createSessionWorkHost(deps = {}) {
 
   async function classifyUnavailable(sessionId, taskId, reason) {
     log.warn?.('session_scheduler_classification_unavailable', { sessionId, reason });
-    return classifyTransition(sessionId, taskId, { state: 'unknown', error: false });
+    // Keep the active entry in assessing. The periodic classify loop retries P;
+    // inventing a scheduler error state here would create a second authority.
+    return { ok: true, deferred: true, code: 'classification_deferred', taskId: taskId || null };
   }
 
   function recoveryState(sessionId) {
@@ -211,7 +216,7 @@ function createSessionWorkHost(deps = {}) {
       : ['started', 'claimed', 'resumed'].includes(event.type) ? 'running'
         : event.type === 'frozen' ? 'frozen'
           : event.type === 'assessing' ? 'assessing' : event.type;
-    const queueState = event.type === 'queued_cancelled'
+    const queueState = ['queued_cancelled', 'queued_inserted'].includes(event.type)
       ? event.schedulerState || 'idle'
       : state;
     deps.broadcast(event.sessionId, {

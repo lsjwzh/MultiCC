@@ -26,6 +26,10 @@ test('runStateForFreezeReason maps each freeze reason to a truthful runState', (
   assert.equal(runStateForFreezeReason('delivery_recovery'), 'running');
   assert.equal(runStateForFreezeReason('continuation_ready'), 'running');
   assert.equal(runStateForFreezeReason('incomplete_requires_resume'), 'running');
+  assert.equal(runStateForFreezeReason('classify_waiting'), 'waiting');
+  assert.equal(runStateForFreezeReason('classify_background'), 'waiting');
+  assert.equal(runStateForFreezeReason('classify_error'), 'error');
+  assert.equal(runStateForFreezeReason('classify_running'), 'running');
   // Deferred claim → queued.
   assert.equal(runStateForFreezeReason('prelaunch_deferred'), 'queued');
   // Unknown reason falls back to the legacy heuristic (safe backstop).
@@ -214,7 +218,47 @@ test('identical messages without an idempotency key remain distinct FIFO entries
   );
 });
 
-test('restart freezes an unproven active run and legacy unresolved state conservatively', async t => {
+test('public FIFO exposes every pending kind and insertQueued promotes exactly one item', async t => {
+  const h = fixture(t);
+  const active = await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(h, await claimOne(h));
+  const first = await h.scheduler.admit({
+    sessionId: 's1', text: 'first normal', idempotencyKey: 'first',
+  });
+  const control = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'related continuation',
+    workKind: 'continuation',
+    activeEntryId: active.entry.id,
+    idempotencyKey: 'control',
+  });
+  const last = await h.scheduler.admit({
+    sessionId: 's1', text: 'last normal', idempotencyKey: 'last',
+  });
+
+  assert.deepEqual(
+    (await h.scheduler.status('s1')).queued.map(item => [item.text, item.workKind]),
+    [
+      ['first normal', 'task'],
+      ['related continuation', 'continuation'],
+      ['last normal', 'task'],
+    ],
+  );
+  const inserted = await h.scheduler.insertQueued('s1', last.entry.id);
+  assert.equal(inserted.ok, true);
+  assert.deepEqual(inserted.schedule.queued.map(item => item.entryId), [
+    last.entry.id, first.entry.id, control.entry.id,
+  ]);
+  assert.equal(inserted.schedule.queued[0].priority, true);
+  assert.equal(await claimOne(h), null, 'promotion never bypasses classify P');
+
+  await h.scheduler.complete('s1', { reason: 'classified_complete' });
+  assert.equal((await claimOne(h)).id, last.entry.id);
+});
+
+test('restart rebuilds the FIFO gate only from the recovered classify state', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
     sessionId: 's1', text: 'active', idempotencyKey: 'active',
@@ -232,7 +276,8 @@ test('restart freezes an unproven active run and legacy unresolved state conserv
   assert.equal(recovered.changes, 1);
   const state = await h.scheduler.status('s1');
   assert.equal(state.state, 'frozen');
-  assert.equal(state.freezeReason, 'unknown_interruption');
+  assert.equal(state.freezeReason, 'classify_running');
+  assert.equal(state.classifyState, 'P');
   assert.equal(await claimOne(h), null);
 
   const h2 = fixture(t);
@@ -248,7 +293,8 @@ test('restart freezes an unproven active run and legacy unresolved state conserv
   });
   const legacy = await h2.scheduler.status('legacy');
   assert.equal(legacy.state, 'frozen');
-  assert.equal(legacy.freezeReason, 'awaiting_user_input');
+  assert.equal(legacy.freezeReason, 'classify_waiting');
+  assert.equal(legacy.classifyState, 'W');
 
   const h3 = fixture(t);
   await h3.outbox.enqueue({
@@ -261,9 +307,10 @@ test('restart freezes an unproven active run and legacy unresolved state conserv
     stateForSession: () => ({ classifyState: null }),
   });
   const unknownLegacy = await h3.scheduler.status('unknown-legacy');
-  assert.equal(unknownLegacy.state, 'frozen');
-  assert.equal(unknownLegacy.freezeReason, 'legacy_unresolved');
-  assert.equal(await claimOne(h3, 'unknown-legacy'), null);
+  assert.equal(unknownLegacy.state, 'idle');
+  assert.equal(unknownLegacy.active, null);
+  assert.equal(unknownLegacy.freezeReason, null);
+  assert.equal((await claimOne(h3, 'unknown-legacy')).id, 'legacy-pending');
 });
 
 test('restart advances only when the active run has timestamped structured success', async t => {
@@ -321,11 +368,48 @@ test('restart advances only when the active run has timestamped structured succe
     }),
   });
   const staleState = await stale.scheduler.status('s2');
-  assert.equal(staleState.state, 'frozen');
-  assert.equal(staleState.freezeReason, 'unknown_interruption');
+  assert.equal(staleState.state, 'assessing');
+  assert.equal(staleState.freezeReason, null);
+  assert.equal(staleState.classifyState, 'P');
 });
 
-test('legacy classifier waiting is released, while structured wait and error remain frozen', async t => {
+test('persisted-delivery settlement uses only recovered classify and otherwise reassesses', async t => {
+  const waiting = fixture(t);
+  await waiting.scheduler.admit({
+    sessionId: 'waiting',
+    text: 'persisted waiting work',
+    idempotencyKey: 'persisted-waiting',
+  });
+  const waitingClaim = await claimOne(waiting, 'waiting');
+  const waitingResult = await waiting.scheduler.settlePersistedDelivery(
+    waitingClaim,
+    { classifyState: 'W' },
+  );
+  assert.equal(waitingResult.ok, true);
+  const waitingState = await waiting.scheduler.status('waiting');
+  assert.equal(waitingState.state, 'frozen');
+  assert.equal(waitingState.classifyState, 'W');
+  assert.equal(waitingState.freezeReason, 'classify_waiting');
+
+  const staleDone = fixture(t);
+  await staleDone.scheduler.admit({
+    sessionId: 'stale',
+    text: 'persisted work with stale D',
+    idempotencyKey: 'persisted-stale',
+  });
+  const staleClaim = await claimOne(staleDone, 'stale');
+  const staleResult = await staleDone.scheduler.settlePersistedDelivery(
+    staleClaim,
+    { classifyState: 'D', endedAt: 999 },
+  );
+  assert.equal(staleResult.ok, true);
+  const staleState = await staleDone.scheduler.status('stale');
+  assert.equal(staleState.state, 'assessing');
+  assert.equal(staleState.classifyState, 'P');
+  assert.equal(staleState.freezeReason, null);
+});
+
+test('W/B/E classifications remain the only gates until a matching control or D', async t => {
   const waiting = fixture(t);
   await waiting.scheduler.admit({
     sessionId: 'waiting', text: 'active', idempotencyKey: 'active',
@@ -341,11 +425,12 @@ test('legacy classifier waiting is released, while structured wait and error rem
     isBusy: () => false,
     stateForSession: () => ({ classifyState: 'W' }),
   });
-  const released = await waiting.scheduler.status('waiting');
-  assert.equal(released.state, 'idle');
-  assert.equal(released.active, null);
-  assert.equal(released.queued[0].text, '<img src=x onerror=alert(1)>\nqueued body');
-  assert.ok(await claimOne(waiting, 'waiting'));
+  const held = await waiting.scheduler.status('waiting');
+  assert.equal(held.state, 'frozen');
+  assert.ok(held.active);
+  assert.equal(held.classifyState, 'W');
+  assert.equal(held.queued[0].text, '<img src=x onerror=alert(1)>\nqueued body');
+  assert.equal(await claimOne(waiting, 'waiting'), null);
 
   const callback = fixture(t);
   await callback.scheduler.admit({
@@ -375,11 +460,11 @@ test('legacy classifier waiting is released, while structured wait and error rem
   await failed.scheduler.recover({ isBusy: () => false });
   const frozen = await failed.scheduler.status('failed');
   assert.equal(frozen.state, 'frozen');
-  assert.equal(frozen.freezeReason, 'error');
+  assert.equal(frozen.freezeReason, 'classify_error');
   assert.equal(await claimOne(failed, 'failed'), null);
 });
 
-test('chat input takes over post-turn assessing before older queued work without consuming that queue', async t => {
+test('direct input cannot bypass assessing and remains behind older FIFO work until classify D', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
     sessionId: 's1', text: 'active', idempotencyKey: 'active',
@@ -392,58 +477,66 @@ test('chat input takes over post-turn assessing before older queued work without
   const next = await h.scheduler.admit({
     sessionId: 's1', text: 'next user message', idempotencyKey: 'next',
   });
-  assert.equal(next.schedule.state, 'idle');
-  assert.equal(next.schedule.active, null);
-  assert.equal(next.schedule.lastDecision.action, 'supersede');
-  assert.equal(next.schedule.lastDecision.reason, 'direct-user-message');
-  assert.deepEqual(next.schedule.queued.map(item => item.text), ['already queued']);
-  const takeover = await claimOne(h);
-  assert.equal(takeover.id, next.entry.id);
-  await startClaim(h, takeover);
-  assert.deepEqual((await h.scheduler.status('s1')).queued.map(item => item.text), ['already queued']);
-  assert.equal(await claimOne(h), null, 'older queue remains paused behind the direct takeover');
+  assert.equal(next.schedule.state, 'assessing');
+  assert.ok(next.schedule.active);
+  assert.deepEqual(next.schedule.queued.map(item => item.text), [
+    'already queued', 'next user message',
+  ]);
+  assert.equal(await claimOne(h), null);
   assert.equal((await h.scheduler.complete('s1')).ok, true);
   assert.equal((await claimOne(h)).id, queued.entry.id);
 });
 
-test('direct takeover releases legacy waiting but preserves correlated input and callbacks', async t => {
+test('classify W permits a related continuation but never an unrelated queued task', async t => {
+  const waiting = fixture(t);
+  const active = await waiting.scheduler.admit({
+    sessionId: 'waiting', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(waiting, await claimOne(waiting, 'waiting'));
+  await waiting.scheduler.freeze('waiting', 'classify_waiting', { classifyState: 'W' });
+  const unrelated = await waiting.scheduler.admit({
+    sessionId: 'waiting', text: 'unrelated task', idempotencyKey: 'unrelated',
+  });
+  assert.equal(await claimOne(waiting, 'waiting'), null);
+  const resumed = await waiting.scheduler.admit({
+    sessionId: 'waiting',
+    text: 'user follow-up',
+    source: 'direct',
+    workKind: 'continuation',
+    activeEntryId: active.entry.id,
+    idempotencyKey: 'follow-up',
+  });
+  const resumedClaim = await claimOne(waiting, 'waiting');
+  assert.equal(resumedClaim.id, resumed.entry.id);
+  assert.notEqual(resumedClaim.id, unrelated.entry.id);
+});
+
+test('manual retry is admitted only for classify E', async t => {
   const waiting = fixture(t);
   await waiting.scheduler.admit({
     sessionId: 'waiting', text: 'active', idempotencyKey: 'active',
   });
   await startClaim(waiting, await claimOne(waiting, 'waiting'));
-  await waiting.scheduler.freeze('waiting', 'awaiting_user_input');
-  const resumed = await waiting.scheduler.admit({
-    sessionId: 'waiting', text: 'plain user follow-up', idempotencyKey: 'follow-up',
+  await waiting.scheduler.freeze('waiting', 'classify_waiting', { classifyState: 'W' });
+  const rejected = await waiting.scheduler.resolve('waiting', {
+    action: 'retry',
+    idempotencyKey: 'retry-waiting',
   });
-  assert.equal(resumed.schedule.state, 'idle',
-    'legacy W without a structured request id is immediately taken over');
-  assert.equal((await claimOne(waiting, 'waiting')).id, resumed.entry.id);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'active_task_not_retryable');
 
-  const structured = fixture(t);
-  await structured.scheduler.admit({
-    sessionId: 'structured', text: 'active', idempotencyKey: 'active',
+  const failed = fixture(t);
+  await failed.scheduler.admit({
+    sessionId: 'failed', text: 'active', idempotencyKey: 'active',
   });
-  await startClaim(structured, await claimOne(structured, 'structured'));
-  await structured.scheduler.freeze('structured', 'awaiting_user_input', { requestId: 'question-1' });
-  await structured.scheduler.admit({
-    sessionId: 'structured', text: 'uncorrelated follow-up', idempotencyKey: 'follow-up',
+  await startClaim(failed, await claimOne(failed, 'failed'));
+  await failed.scheduler.freeze('failed', 'classify_error', { classifyState: 'E' });
+  const admitted = await failed.scheduler.resolve('failed', {
+    action: 'retry',
+    idempotencyKey: 'retry-error',
   });
-  assert.equal((await structured.scheduler.status('structured')).state, 'frozen');
-  assert.equal(await claimOne(structured, 'structured'), null,
-    'a structured question still requires its correlated answer path');
-
-  const callback = fixture(t);
-  await callback.scheduler.admit({
-    sessionId: 'callback', text: 'active', idempotencyKey: 'active',
-  });
-  await startClaim(callback, await claimOne(callback, 'callback'));
-  await callback.scheduler.freeze('callback', 'awaiting_callback');
-  await callback.scheduler.admit({
-    sessionId: 'callback', text: 'unrelated follow-up', idempotencyKey: 'follow-up',
-  });
-  assert.equal((await callback.scheduler.status('callback')).state, 'frozen');
-  assert.equal(await claimOne(callback, 'callback'), null);
+  assert.equal(admitted.ok, true);
+  assert.equal((await claimOne(failed, 'failed')).payload.workKind, 'retry');
 });
 
 test('a pending queued entry can be cancelled individually but a leased entry cannot', async t => {
@@ -480,7 +573,7 @@ test('a pending queued entry can be cancelled individually but a leased entry ca
   assert.equal(tooLate.code, 'queued_entry_already_claimed');
 });
 
-test('plain user-input waiting never gates queued work: the pump releases it and starts the FIFO head', async t => {
+test('classify W gates normal queued work until classify D completes the active entry', async t => {
   const h = fixture(t);
   await h.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
   await startClaim(h, await claimOne(h));
@@ -489,22 +582,18 @@ test('plain user-input waiting never gates queued work: the pump releases it and
     sessionId: 's1', text: 'dispatched', source: 'operation', idempotencyKey: 'dispatched',
   });
   assert.equal(dispatched.queued, true);
-  // The turn ends and a legacy plain-W freeze (no requestId) is on record.
-  await h.scheduler.freeze('s1', 'awaiting_user_input');
-  // The next pump must release the finished turn and lease the queued head —
-  // without any new admission and without a restart (the staging regression).
+  await h.scheduler.freeze('s1', 'classify_waiting', { classifyState: 'W' });
+  assert.equal(await claimOne(h), null);
+  await h.scheduler.complete('s1', { reason: 'classified_complete' });
   const claim = await claimOne(h);
-  assert.ok(claim, 'queued work must start once the plain wait is released');
+  assert.ok(claim);
   assert.equal(claim.id, dispatched.entry.id);
   const status = await h.scheduler.status('s1');
   assert.equal(status.state, 'starting');
   assert.equal(status.freezeReason, null);
-  assert.equal(status.lastDecision?.reason, 'queued_work_release');
-  await startClaim(h, claim);
-  assert.equal((await h.scheduler.status('s1')).state, 'running');
 });
 
-test('structured questions and real errors still gate the queue despite the plain-W release', async t => {
+test('structured questions and classify errors keep normal FIFO work staged', async t => {
   const structured = fixture(t);
   await structured.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
   await startClaim(structured, await claimOne(structured));
