@@ -366,6 +366,9 @@ function createSessionWorkScheduler({
       };
     });
     if (result.ok) {
+      const queuedItems = result.queued
+        ? result.schedule.queued
+        : result.schedule.queued.filter(item => item.entryId !== result.entry.id);
       emit('queued', {
         sessionId: cleanSessionId,
         entryId: result.entry.id,
@@ -374,10 +377,10 @@ function createSessionWorkScheduler({
         workKind: inferredKind,
         duplicate: result.duplicate,
         queued: result.queued,
-        queuePosition: result.position || null,
+        queuePosition: result.queued ? result.position || null : null,
         schedulerState: result.schedule.state,
         freezeReason: result.schedule.freezeReason,
-        queuedItems: result.schedule.queued,
+        queuedItems,
       });
     }
     return result;

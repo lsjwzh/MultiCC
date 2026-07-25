@@ -298,10 +298,14 @@ test('structured user-input and FIFO events expose correlation and honest frozen
     type: 'session_queue',
     event: 'queued',
     queued: false,
+    entryId: 'immediate',
     queuePosition: 1,
     state: 'frozen',
     freezeReason: 'classify_error',
-    items: [],
+    items: [
+      { entryId: 'older-staged', text: 'older staged' },
+      { entryId: 'immediate', text: 'must never flash' },
+    ],
   }, generation);
   fixture.controller.handleEvent({
     type: 'session_queue',
@@ -319,7 +323,7 @@ test('structured user-input and FIFO events expose correlation and honest frozen
       ['queue', ['<b>literal staged body</b>'], {
         state: 'running', freezeReason: null,
       }],
-      ['queue', [], {
+      ['queue', ['older staged'], {
         state: 'frozen', freezeReason: 'classify_error',
       }],
       ['queue', [], {
