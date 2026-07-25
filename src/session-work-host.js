@@ -18,6 +18,7 @@ function createSessionWorkHost(deps = {}) {
     throw new TypeError('[session-work-host] chatStream port is required');
   }
   const log = deps.log || console;
+  const turnClosures = new Map();
 
   function schedulerRuntime() {
     return deps.runtime();
@@ -29,6 +30,8 @@ function createSessionWorkHost(deps = {}) {
 
   async function admit(sessionId, text, options = {}) {
     if (!deps.getRecord(sessionId)) return { ok: false, code: 'session_not_found' };
+    const closing = turnClosures.get(sessionId);
+    if (closing) await closing;
     const runtime = schedulerRuntime();
     if (!runtime?.admitSessionWork || !runtime.sessionScheduler) {
       return { ok: false, code: 'scheduler_not_ready' };
@@ -97,22 +100,30 @@ function createSessionWorkHost(deps = {}) {
     return cardStatus === 'completed' ? 'done' : cardStatus;
   }
 
-  async function turnSucceeded(sessionId) {
-    const runtime = schedulerRuntime();
-    const target = runtime?.sessionScheduler;
-    if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
-    const current = await target.status(sessionId);
-    if (!current?.active) return { ok: false, code: 'no_active_task' };
-    const pending = deps.pendingUserInput(sessionId);
-    const result = pending && pending.resolved !== true
-      ? await target.freeze(sessionId, 'awaiting_user_input', {
-          requestId: pending.requestId,
-        })
-      : runtime.hasPending(sessionId)
-        ? await target.freeze(sessionId, 'awaiting_callback')
-        : await target.complete(sessionId, { reason: 'durable_turn_completed' });
-    if (result?.ok) await runtime.tick();
-    return result;
+  function turnSucceeded(sessionId) {
+    const operation = (async () => {
+      const runtime = schedulerRuntime();
+      const target = runtime?.sessionScheduler;
+      if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
+      const current = await target.status(sessionId);
+      if (!current?.active) return { ok: false, code: 'no_active_task' };
+      const pending = deps.pendingUserInput(sessionId);
+      const result = pending && pending.resolved !== true
+        ? await target.freeze(sessionId, 'awaiting_user_input', {
+            requestId: pending.requestId,
+          })
+        : runtime.hasPending(sessionId)
+          ? await target.freeze(sessionId, 'awaiting_callback')
+          : await target.turnEnded(sessionId);
+      if (result?.ok && result.schedule?.state === 'frozen') await runtime.tick();
+      return result;
+    })();
+    turnClosures.set(sessionId, operation);
+    const clear = () => {
+      if (turnClosures.get(sessionId) === operation) turnClosures.delete(sessionId);
+    };
+    operation.then(clear, clear);
+    return operation;
   }
 
   async function turnFailed(sessionId, reason = 'unknown_interruption') {
@@ -121,13 +132,49 @@ function createSessionWorkHost(deps = {}) {
     return target.freeze(sessionId, reason);
   }
 
-  // Aux classification owns task/card semantics only. It must never gate the
-  // interaction FIFO: W means the provider turn already ended and is waiting
-  // for the next user message, which is exactly the queue head we must deliver.
-  function classifyTransition() {}
+  // A durable provider result first enters `assessing`. Only an explicit D may
+  // advance already-queued work. W and every unresolved outcome keep that
+  // queue paused; a later direct chat admission may supersede `assessing`/W.
+  async function classifyTransition(sessionId, taskId, result = {}) {
+    const runtime = schedulerRuntime();
+    const target = runtime?.sessionScheduler;
+    if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
+    try {
+      const closing = turnClosures.get(sessionId);
+      if (closing) await closing;
+      const current = await target.status(sessionId);
+      if (!current?.active || current.state !== 'assessing') {
+        return { ok: false, code: 'stale_classification' };
+      }
+      const expectedTaskId = taskId || current.active.taskId || null;
+      const transition = result.state === 'completed'
+        ? await target.complete(sessionId, {
+            expectedTaskId,
+            reason: 'classified_complete',
+          })
+        : await target.freeze(
+            sessionId,
+            result.error ? 'error'
+              : result.background || runtime.hasPending(sessionId) ? 'awaiting_callback'
+                : result.state === 'waiting' ? 'awaiting_user_input'
+                  : result.state === 'continue' || result.state === 'running'
+                    ? 'incomplete_requires_resume' : 'classification_error',
+            { expectedTaskId },
+          );
+      if (transition?.ok) await runtime.tick();
+      return transition;
+    } catch (error) {
+      log.warn?.('session_scheduler_classification_transition_failed', {
+        sessionId,
+        error: error.message,
+      });
+      return { ok: false, code: 'classification_transition_failed' };
+    }
+  }
 
-  function classifyUnavailable(sessionId, _taskId, reason) {
+  async function classifyUnavailable(sessionId, taskId, reason) {
     log.warn?.('session_scheduler_classification_unavailable', { sessionId, reason });
+    return classifyTransition(sessionId, taskId, { state: 'unknown', error: false });
   }
 
   function recoveryState(sessionId) {
@@ -144,11 +191,15 @@ function createSessionWorkHost(deps = {}) {
     const state = event.type === 'queued'
       ? event.schedulerState === 'idle' ? 'queued' : event.schedulerState || 'queued'
       : ['started', 'claimed', 'resumed'].includes(event.type) ? 'running'
-        : event.type === 'frozen' ? 'frozen' : event.type;
+        : event.type === 'frozen' ? 'frozen'
+          : event.type === 'assessing' ? 'assessing' : event.type;
+    const queueState = event.type === 'queued_cancelled'
+      ? event.schedulerState || 'idle'
+      : state;
     deps.broadcast(event.sessionId, {
       type: 'session_queue',
       event: event.type,
-      state,
+      state: queueState,
       entryId: event.entryId || null,
       taskId: event.taskId || null,
       queuePosition: event.queuePosition || null,
@@ -159,7 +210,7 @@ function createSessionWorkHost(deps = {}) {
       at: event.at,
     });
     deps.setTaskState(event.sessionId, {
-      queueState: state,
+      queueState,
       queueFreezeReason: event.freezeReason || null,
       queueUpdatedAt: event.at,
     });

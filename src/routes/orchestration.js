@@ -247,7 +247,7 @@ function createOrchestrationRoutes(rawDeps) {
       if (!session) return res.status(404).json({ error: 'session not found' });
       const body = req.body || {};
       const action = String(body.action || '').trim();
-      if (!['retry', 'resume', 'skip', 'cancel', 'resolve'].includes(action)) {
+      if (!['retry', 'resume', 'skip', 'cancel', 'cancel_queued', 'resolve'].includes(action)) {
         return res.status(400).json({ error: 'invalid_action' });
       }
       if (body.confirm !== true) {
@@ -257,6 +257,17 @@ function createOrchestrationRoutes(rawDeps) {
         });
       }
       try {
+        if (action === 'cancel_queued') {
+          const result = await deps.runtime.sessionScheduler.cancelQueued(
+            session.id,
+            body.entryId,
+            { actor: 'user', reason: body.reason },
+          );
+          if (result.ok) await deps.runtime.tick();
+          const status = result.ok ? 200
+            : result.code === 'queued_entry_not_found' ? 404 : 409;
+          return res.status(status).json(result);
+        }
         if (action === 'cancel' && typeof deps.cancelActiveTurn === 'function') {
           await deps.cancelActiveTurn(session.id);
         }

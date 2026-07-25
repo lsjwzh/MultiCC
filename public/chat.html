@@ -697,7 +697,8 @@
     }
     .session-queue-item {
       display: grid;
-      grid-template-columns: 24px minmax(0, 1fr);
+      grid-template-columns: 24px minmax(0, 1fr) auto;
+      align-items: start;
       gap: 7px;
       padding: 8px;
       border-top: 1px solid #30363d;
@@ -709,6 +710,31 @@
       line-height: 1.45;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+    .session-queue-cancel {
+      min-height: 28px;
+      padding: 3px 9px;
+      color: #f85149;
+      background: transparent;
+      border: 1px solid #6e3630;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .session-queue-cancel:hover:not(:disabled) {
+      color: #fff;
+      background: #da3633;
+      border-color: #f85149;
+    }
+    .session-queue-cancel:focus-visible {
+      outline: 2px solid #58a6ff;
+      outline-offset: 2px;
+    }
+    .session-queue-cancel:disabled {
+      color: #8b949e;
+      border-color: #3d444d;
+      cursor: wait;
+      opacity: .75;
     }
 
     /* ── Input bar ── */

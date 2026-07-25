@@ -331,6 +331,60 @@ test('staged-message dock renders canonical text with textContent only', () => {
   assert.equal(list.children[0].children.length, 2);
 });
 
+test('staged-message dock exposes cancellation only for pending entries', async () => {
+  const { document, ids } = fakeDocument();
+  const dock = new FakeElement('details');
+  const count = new FakeElement('strong');
+  const hint = new FakeElement('span');
+  const list = new FakeElement('div');
+  ids.set('session-queue-dock', dock);
+  ids.set('session-queue-count', count);
+  ids.set('session-queue-hint', hint);
+  ids.set('session-queue-list', list);
+  const cancelled = [];
+  global.MultiCCChatSessionQueue.render([
+    { entryId: 'pending-1', position: 1, state: 'pending', text: '可以取消' },
+    { entryId: 'leased-2', position: 2, state: 'leased', text: '已经领取' },
+  ], {
+    state: 'frozen',
+    freezeReason: 'awaiting_user_input',
+    async onCancel(entryId) { cancelled.push(entryId); },
+  }, document);
+
+  assert.equal(hint.textContent, '已暂停：awaiting_user_input');
+  assert.equal(list.children[0].children.length, 3);
+  assert.equal(list.children[1].children.length, 2);
+  const button = list.children[0].children[2];
+  assert.equal(button.textContent, '取消');
+  await button._onClick[0]({ stopPropagation() {} });
+  assert.deepEqual(cancelled, ['pending-1']);
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, '取消中…');
+});
+
+test('queue cancellation handler sends the confirmed entry-scoped action', async () => {
+  const requests = [];
+  const notices = [];
+  const handler = global.MultiCCChatSessionQueue.createCancelHandler({
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    },
+    withToken: url => `/tokenized${url}`,
+    getSessionName: () => 'session/1',
+    notify: (...args) => notices.push(args),
+  });
+  await handler('entry-1');
+  assert.equal(requests[0].url, '/tokenized/api/sessions/session%2F1/queue/action');
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    action: 'cancel_queued',
+    entryId: 'entry-1',
+    confirm: true,
+    reason: 'cancelled from chat queue',
+  });
+  assert.deepEqual(notices, [['已取消排队消息', 'completed']]);
+});
+
 test('Claude five-hour limit consumes the structured SDK event without retaining billing fields', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
