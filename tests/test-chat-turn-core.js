@@ -578,7 +578,11 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   assert.match(source, /persistAssistant\(context, append\) \{[\s\S]{0,120}persistFinalAssistantResult\(/,
     'server composition must inject the authoritative assistant writer');
   assert.match(source, /const resultDurable = persistFinalAssistantResult\(/);
-  assert.match(source, /if \(saved\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
+  // shutdown/lifecycle 抽取（bea1d0d）后，saved→_resultSaved 的落点在
+  // src/host-lifecycle.js——按合并文本校验，与其他跨模块治理守卫一致。
+  const lifecycleSource = fs.existsSync(path.join(__dirname, '..', 'src', 'host-lifecycle.js'))
+    ? fs.readFileSync(path.join(__dirname, '..', 'src', 'host-lifecycle.js'), 'utf8') : '';
+  assert.match(source + lifecycleSource, /if \(saved\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
   assert.match(source, /runPostTurn\(context, entry\) \{[\s\S]{0,160}runDurablePostTurn\(/);
   assert.match(source, /isCurrentTurnRunner\(cs, turn, runner\)/);
   assert.equal((source.match(/runnerHandedOff = true;/g) || []).length, 2,
