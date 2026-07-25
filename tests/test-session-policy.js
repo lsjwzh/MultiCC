@@ -169,6 +169,8 @@ test('effort, agent and disconnect policies preserve each CLI contract', t => {
   assert.equal(policy.validEffortForCli('codex', 'max'), true);
   assert.equal(policy.validEffortForCli('claude', 'ultra'), false);
   assert.equal(policy.validEffortForCli('opencode', 'minimal'), true);
+  assert.equal(policy.validEffortForCli('opencode', 'xhigh'), false);
+  assert.equal(policy.validEffortForCli('opencode', 'ultra'), false);
   assert.equal(policy.validEffortForCli('zcode', 'low'), false);
   assert.equal(policy.validEffortForCli('qoder', 'xhigh'), true);
   assert.equal(policy.validEffortForCli('qoder', 'ultracode'), false);
@@ -194,6 +196,7 @@ test('effort, agent and disconnect policies preserve each CLI contract', t => {
   assert.equal(policy.codexReasoningConfigArg({ effort: 'high' }), 'model_reasoning_effort="high"');
   assert.equal(policy.codexModelConfigArg({ model: ' gpt-5 ' }), 'model="gpt-5"');
   assert.equal(policy.effectiveSessionEffort({ cli: 'opencode', effort: 'minimal' }), 'minimal');
+  assert.equal(policy.effectiveSessionEffort({ cli: 'opencode', effort: 'xhigh' }), null);
   assert.equal(policy.effectiveSessionEffort({ cli: 'zcode', effort: 'high' }), null);
   assert.equal(policy.effectiveSessionEffort({ cli: 'qoder', effort: 'high' }), 'high');
   assert.equal(policy.effectiveSessionEffort({ cli: 'qoder' }), null);
