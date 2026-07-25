@@ -19,16 +19,14 @@
   ]);
   const ZCODE_MODEL_OPTIONS = Object.freeze([
     { value: '', label: '默认（跟随 ZCode 设置）' },
-    { value: 'bigmodel/glm-5.2', label: 'GLM-5.2' },
   ]);
 
   function supportsManagedProvider(cli) {
-    return cli === 'claude' || cli === 'codex' || cli === 'opencode';
+    return cli === 'claude' || cli === 'codex' || cli === 'opencode' || cli === 'zcode';
   }
 
   function vendorModelOptions(cli) {
     if (cli === 'qoder') return QODER_MODEL_OPTIONS;
-    if (cli === 'zcode') return ZCODE_MODEL_OPTIONS;
     return null;
   }
 
@@ -137,9 +135,13 @@
 
       // Alias-mapped relays: list the tiers directly, each reading
       // "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id); map a stored wire id back to its tier.
-      const tiers = providerAliasTiers(providerId);
+      const tiers = cli === 'zcode' ? [] : providerAliasTiers(providerId);
       const vendorOptions = vendorModelOptions(cli);
-      const optionList = vendorOptions
+      const provider = catalog.findProvider(_providerData, '', providerId);
+      const providerModels = provider ? catalog.modelsFor(provider) : [];
+      const optionList = providerModels.length
+        ? [...providerModels.map(value => ({ value, label: value })), { value: '__custom__', labelKey: 'custom' }]
+        : vendorOptions
         ? [...vendorOptions, { value: '__custom__', labelKey: 'custom' }]
         : tiers.length
         ? [
@@ -217,7 +219,9 @@
           await api.json(`/api/providers?cli=${encodeURIComponent(cli)}`),
         );
         providers = catalog.providersForCli(data, cli);
-        defaultProviderId = cli === 'opencode' ? '' : (data.defaults[appType] || '');
+        defaultProviderId = cli === 'opencode' || cli === 'zcode'
+          ? ''
+          : (data.defaults[appType] || '');
       } catch (_) {}
     }
 
@@ -292,6 +296,7 @@
   function applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId, cli }) {
     if (!preset) return;
     if (!supportsManagedProvider(cli)) return;
+    if (cli !== 'claude' && cli !== 'codex') return;
     const presetCli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
     const dialogCli = isClaude ? 'claude' : 'codex';
     if (presetCli && presetCli !== dialogCli) return;
@@ -332,7 +337,9 @@
     // "opus · GLM5.2 · glm-5.2". The tier key is the value — the server honors
     // session.model === opus/sonnet/haiku/fable as a wire model. Tier order +
     // filtering come from the shared aliasTiersFromMap helper.
-    const tiers = aliasTiersFromMap(prov && prov.aliasMap ? prov.aliasMap : null);
+    const tiers = cli === 'zcode'
+      ? []
+      : aliasTiersFromMap(prov && prov.aliasMap ? prov.aliasMap : null);
     let opts;
     let asyncFill = null;
     const vendorOptions = vendorModelOptions(cli);
@@ -344,6 +351,8 @@
     opts = catalog.modelsFor(prov).map(m => ({ value: m, label: m }));
     } else if (isClaude) {
       opts = CLAUDE_MODEL_OPTIONS;
+    } else if (cli === 'zcode') {
+      opts = ZCODE_MODEL_OPTIONS;
     } else if (cli === 'opencode' && typeof loadOpenCodeModels === 'function') {
       // opencode with no multicc-managed provider model list: show a loading
       // placeholder, then asynchronously append the local opencode CLI's model
@@ -516,7 +525,9 @@
       if (!defaultProvider) {
         const defOpt = document.createElement('option');
         defOpt.value = '';
-        defOpt.textContent = '默认登录 / 订阅（不覆盖）';
+        defOpt.textContent = cli === 'zcode'
+          ? 'ZCode 原生 / Coding Plan（不覆盖）'
+          : '默认登录 / 订阅（不覆盖）';
         provSelect.appendChild(defOpt);
       }
       providers.forEach(p => {

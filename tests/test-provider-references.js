@@ -19,8 +19,8 @@ test('provider deletion references include main, subagent, default and Aux with 
     defaults: { claude: 'p1', codex: null },
     aux: { protocol: 'anthropic', providerId: 'p1' },
   });
-  assert.deepEqual(references.map(item => item.kind), ['main', 'subagent', 'default', 'aux']);
-  assert.deepEqual(references.filter(item => item.sessionId).map(item => item.sessionId), ['main', 'sub']);
+  assert.deepEqual(references.map(item => item.kind), ['main', 'subagent', 'main', 'default', 'aux']);
+  assert.deepEqual(references.filter(item => item.sessionId).map(item => item.sessionId), ['main', 'sub', 'zcode']);
   assert.equal(Object.isFrozen(references), true);
   assert.equal(Object.isFrozen(references[0]), true);
 });

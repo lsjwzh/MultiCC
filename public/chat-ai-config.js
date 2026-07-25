@@ -41,7 +41,11 @@
     Object.freeze({ value: 'max', label: 'Max' }),
   ]);
   const QODER_MODEL_OPTIONS = Object.freeze(['', 'auto', 'ultimate', 'performance', 'efficient', 'lite']);
-  const ZCODE_MODEL_OPTIONS = Object.freeze(['', 'bigmodel/glm-5.2']);
+  // Provider-less ZCode follows its native config/Coding Plan. Do not hardcode
+  // a vendor/model pair here: the native provider may be Z.ai, BigModel, Start
+  // Plan, Team Plan, or a user-defined provider.
+  const ZCODE_MODEL_OPTIONS = Object.freeze(['']);
+  const ZCODE_SETUP_PROMPTED = new Set();
 
   function defaultEffort(cli) {
     if (cli === 'codex') return 'xhigh';
@@ -111,6 +115,9 @@
   }
 
   function providerAliasMap(providerId, state) {
+    // Alias tiers are Claude CLI routing concepts. ZCode needs the real model
+    // ids from its provider config.
+    if (state && state.cli === 'zcode') return null;
     const provider = findProvider(providerId, state);
     if (!provider || !provider.aliasMap || typeof provider.aliasMap !== 'object') return null;
     const entries = Object.entries(provider.aliasMap).filter(([, value]) => value && value.model);
@@ -370,7 +377,7 @@
     const document = documentOf(state);
     const cli = state.cli || 'claude';
     const choicesForEffort = effortOptions(cli);
-    const supportsProvider = cli !== 'qoder' && cli !== 'zcode';
+    const supportsProvider = cli !== 'qoder';
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -378,7 +385,7 @@
       box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:94vw;color:#c9d1d9;';
       box.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。' : `${cli === 'zcode' ? 'ZCode' : 'Qoder CN'} 使用自身账号与厂商配置。`}</div>
+        <div style="font-size:12px;color:#8b949e;line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : 'Qoder CN 使用自身账号与厂商配置。'}</div>
         <div id="ai-provider-section">
           <label style="display:block;font-size:12px;color:#8b949e;margin-bottom:5px;">Provider</label>
           <select id="ai-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
@@ -425,7 +432,9 @@
       const subSection = box.querySelector('#ai-sub-section');
       const defaultProvider = document.createElement('option');
       defaultProvider.value = '';
-      defaultProvider.textContent = translate(state, 'providerDefault');
+      defaultProvider.textContent = cli === 'zcode'
+        ? 'ZCode 原生 / Coding Plan'
+        : translate(state, 'providerDefault');
       providerSelect.appendChild(defaultProvider);
       for (const provider of providersOf(state)) {
         const option = document.createElement('option');
@@ -563,6 +572,68 @@
     });
   }
 
+  async function showZcodeSetupPrompt(options = {}) {
+    const status = await requiredApi(options).json('/api/zcode/auth/check');
+    if (status && status.ok) return null;
+    const document = documentOf(options);
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10020;display:flex;align-items:center;justify-content:center;padding:16px;';
+      const box = document.createElement('div');
+      box.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:460px;max-width:94vw;color:#c9d1d9;';
+      const title = document.createElement('div');
+      title.style.cssText = 'font-size:16px;font-weight:600;margin-bottom:8px;';
+      title.textContent = '配置 ZCode 连接';
+      const message = document.createElement('div');
+      message.style.cssText = 'font-size:12px;color:#8b949e;line-height:1.65;margin-bottom:14px;';
+      message.textContent = '可选择 MultiCC 中已有的三协议 Provider；或配置 ZCode 原生连接，使用官方 Coding Plan / API Key。原生登录状态由 ZCode 自己维护。';
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;';
+      const later = document.createElement('button');
+      later.className = 'btn';
+      later.textContent = '稍后';
+      const settings = document.createElement('button');
+      settings.className = 'btn';
+      settings.textContent = '配置 Coding Plan / API Key';
+      const provider = document.createElement('button');
+      provider.className = 'btn btn-green';
+      provider.textContent = options.hasProviders ? '选择已有 Provider' : '创建 Provider';
+      row.append(later, settings, provider);
+      box.append(title, message, row);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      const close = action => {
+        overlay.remove();
+        resolve(action);
+      };
+      later.onclick = () => close(null);
+      settings.onclick = () => close('settings');
+      provider.onclick = () => close(options.hasProviders ? 'provider' : 'settings');
+      overlay.onclick = event => { if (event.target === overlay) close(null); };
+    });
+  }
+
+  async function maybePromptZcodeSetup(options = {}) {
+    const sessionId = String(options.sessionId || '');
+    if (options.cli !== 'zcode' || options.provider || !sessionId
+        || ZCODE_SETUP_PROMPTED.has(sessionId)) return null;
+    ZCODE_SETUP_PROMPTED.add(sessionId);
+    try {
+      const providers = typeof options.loadProviders === 'function'
+        ? await options.loadProviders()
+        : [];
+      const action = await showZcodeSetupPrompt({
+        ...options,
+        hasProviders: Array.isArray(providers) && providers.length > 0,
+      });
+      if (action === 'provider' && typeof options.onProvider === 'function') options.onProvider();
+      if (action === 'settings' && typeof options.onSettings === 'function') options.onSettings();
+      return action;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function requiredApi(options) {
     const api = options && options.api || (root && root.MultiCCApi);
     if (!api || typeof api.json !== 'function') throw new Error('MultiCCApi is unavailable');
@@ -619,6 +690,8 @@
     showEffortPicker,
     showProviderPicker,
     showAIConfigPicker,
+    showZcodeSetupPrompt,
+    maybePromptZcodeSetup,
     loadProviderList,
     loadSession,
     saveSession,

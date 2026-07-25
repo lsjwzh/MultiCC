@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-07-18",
+  "reviewedAt": "2026-07-26",
   "entries": [
     {
       "id": "server-env",
@@ -54,6 +54,16 @@
       "migrationStrategy": "Version the materialized-home layout and add a per-provider copy-forward/rollback operation before changing its root.",
       "sources": [
         { "file": "src/providers.js", "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');" }
+      ]
+    },
+    {
+      "id": "provider-zcode-homes",
+      "classification": "migration-required",
+      "owner": "provider routing",
+      "rationale": "Per-session ZCode data roots contain private generated upstream credentials/config and isolate provider-backed sessions from ZCode's native Coding Plan state.",
+      "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
+      "sources": [
+        { "file": "src/providers.js", "anchor": "const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');" }
       ]
     },
     {

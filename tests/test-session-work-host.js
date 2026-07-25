@@ -10,7 +10,7 @@ function fixture(options = {}) {
   let pendingWait = false;
   let schedulerState = 'running';
   let releaseTurnEnded = options.releaseTurnEnded || null;
-  const record = { taskState: {} };
+  const record = { taskState: {}, ...(options.record || {}) };
   const chatState = options.chatState === undefined ? {} : options.chatState;
   const scheduler = {
     status: async () => ({
@@ -63,6 +63,7 @@ function fixture(options = {}) {
     appendMessage() {},
     cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
     chatStream: { isAlive: () => false, cancel() {} },
+    zcodeAuth: options.zcodeAuth || { ensureZcodeAuth: () => ({ ok: true }) },
     log: { warn: (...args) => calls.push(['warn', ...args]) },
   });
   return {
@@ -74,6 +75,49 @@ function fixture(options = {}) {
     setPendingWait(value) { pendingWait = value; },
   };
 }
+
+test('ZCode admission passes the full session to auth and provider-backed sessions can bypass native auth', async () => {
+  let checked = null;
+  const record = { cli: 'zcode', provider: 'provider-one' };
+  const h = fixture({
+    record,
+    zcodeAuth: {
+      ensureZcodeAuth(session) {
+        checked = session;
+        return session.provider ? { ok: true, source: 'multicc_provider' } : { ok: false };
+      },
+    },
+  });
+  const result = await h.host.admit('s1', 'hello');
+  assert.equal(result.ok, true);
+  assert.equal(checked.cli, record.cli);
+  assert.equal(checked.provider, record.provider);
+  assert.equal(h.calls.some(call => call[0] === 'admit'), true);
+});
+
+test('provider-less ZCode keeps the actionable native configuration gate', async () => {
+  const h = fixture({
+    record: { cli: 'zcode', provider: null },
+    zcodeAuth: {
+      ensureZcodeAuth: () => ({
+        ok: false,
+        code: 'configuration_required',
+        message: 'configure native ZCode',
+      }),
+    },
+  });
+  const result = await h.host.admit('s1', 'hello');
+  assert.deepEqual(result, {
+    ok: false,
+    code: 'configuration_required',
+    message: 'configure native ZCode',
+  });
+  assert.equal(h.calls.some(call => call[0] === 'admit'), false);
+  assert.deepEqual(h.calls.find(call => call[0] === 'broadcast').slice(1), [
+    's1',
+    { type: 'error', error: 'configure native ZCode', code: 'configuration_required' },
+  ]);
+});
 
 test('cancel publishes classify E before scheduler I/O and ends the active turn', async () => {
   const child = {

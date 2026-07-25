@@ -21,6 +21,10 @@ function createSessionWorkHost(deps = {}) {
     throw new TypeError('[session-work-host] chatStream port is required');
   }
   const log = deps.log || console;
+  const zcodeAuthRuntime = deps.zcodeAuth || zcodeAuth;
+  if (typeof zcodeAuthRuntime.ensureZcodeAuth !== 'function') {
+    throw new TypeError('[session-work-host] zcodeAuth.ensureZcodeAuth is required');
+  }
   const turnClosures = new Map();
 
   function schedulerRuntime() {
@@ -43,13 +47,12 @@ function createSessionWorkHost(deps = {}) {
         await cancelActiveTurn(sessionId);
       }
     }
-    // L4: ZCode auth pre-check -- if the session is a zcode session and auth
-    // is not configured (and can't be auto-synced from desktop), reject with
-    // configuration_required instead of letting the turn fail with a cryptic
-    // API error. This is a user-actionable state, not a transient fault.
+    // ZCode native auth pre-check. A selected MultiCC Provider materializes its
+    // own isolated config and bypasses this gate; provider-less sessions follow
+    // ZCode's official/native Coding Plan or API-key config.
     const sessionRecord = deps.getRecord(sessionId);
     if (sessionRecord && sessionRecord.cli === 'zcode') {
-      const authCheck = zcodeAuth.ensureZcodeAuth();
+      const authCheck = zcodeAuthRuntime.ensureZcodeAuth(sessionRecord);
       if (!authCheck.ok) {
         deps.broadcast(sessionId, {
           type: 'error',

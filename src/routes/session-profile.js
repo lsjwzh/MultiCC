@@ -256,24 +256,42 @@ function createSessionProfileRoutes(rawDeps) {
         // (or the user's /model default when switching back to the default login)
         // so the card always shows a concrete, correct model name instead of a
         // stale "默认" placeholder. The user can still re-set via /model afterwards.
-        const appType = providers.appTypeForCli(s.cli || 'claude');
-        if (appType && req.body.model === undefined) {
-          s.model = providerDefaultModel(appType, v.value) || null;
-        } else if (appType && !providers.modelValidForProvider(appType, v.value, s.model)) {
+        const sessionCli = s.cli || 'claude';
+        const appType = providers.appTypeForCli(sessionCli);
+        const globalProviderCli = sessionCli === 'opencode' || sessionCli === 'zcode';
+        const providerSummary = v.value
+          ? providerRouterRuntime.getProviderSummary(globalProviderCli ? undefined : appType, v.value)
+          : null;
+        // ZCode/OpenCode consume either pool directly. Their default must be the
+        // provider's real model id, never Claude's synthetic alias-tier fallback.
+        const nextDefaultModel = globalProviderCli
+          ? (providerSummary?.model || providerSummary?.modelOptions?.[0] || null)
+          : providerDefaultModel(appType, v.value);
+        const validationAppType = providerSummary?.appType || appType;
+        if ((appType || globalProviderCli) && req.body.model === undefined) {
+          s.model = nextDefaultModel || null;
+        } else if (validationAppType && !providers.modelValidForProvider(
+          validationAppType,
+          v.value,
+          s.model,
+          providerSummary,
+        )) {
           // The same PATCH carried a model (the AI-config dialog always submits
           // provider+model together), but the new provider doesn't serve it — a
           // stale value from the previous provider. Replace it with the new
           // provider's primary model instead of letting every subsequent spawn
           // 400/10404 against a model the provider never had.
           const stale = s.model;
-          s.model = providerDefaultModel(appType, v.value) || null;
+          s.model = nextDefaultModel || null;
           appendEvent(s.dirId, 'session_model_changed',
             `${s.label || s.id} → ${s.model || '默认'}（${stale} 与新 Provider 不兼容，已自动替换）`, s.id);
         }
         // Chat sessions pick it up on the next per-turn spawn; a warm streaming
         // process must be torn down so it relaunches with the new env.
         if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
-        const pname = appType && v.value ? (providerRouterRuntime.getProviderSummary(appType, v.value)?.name || v.value) : (appType ? '默认登录' : '厂商客户端设置');
+        const pname = v.value
+          ? (providerSummary?.name || v.value)
+          : (sessionCli === 'zcode' ? 'ZCode 原生 / Coding Plan' : (appType ? '默认登录' : '厂商客户端设置'));
         appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
         // Push current classify state to chat so the classify bar updates immediately
         // (otherwise the chat page shows stale / blank until the next classify run).
