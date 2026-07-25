@@ -479,3 +479,44 @@ test('a pending queued entry can be cancelled individually but a leased entry ca
   assert.equal(tooLate.ok, false);
   assert.equal(tooLate.code, 'queued_entry_already_claimed');
 });
+
+test('plain user-input waiting never gates queued work: the pump releases it and starts the FIFO head', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
+  await startClaim(h, await claimOne(h));
+  // A dispatch-like (non-direct) message admitted while running is queued.
+  const dispatched = await h.scheduler.admit({
+    sessionId: 's1', text: 'dispatched', source: 'operation', idempotencyKey: 'dispatched',
+  });
+  assert.equal(dispatched.queued, true);
+  // The turn ends and a legacy plain-W freeze (no requestId) is on record.
+  await h.scheduler.freeze('s1', 'awaiting_user_input');
+  // The next pump must release the finished turn and lease the queued head —
+  // without any new admission and without a restart (the staging regression).
+  const claim = await claimOne(h);
+  assert.ok(claim, 'queued work must start once the plain wait is released');
+  assert.equal(claim.id, dispatched.entry.id);
+  const status = await h.scheduler.status('s1');
+  assert.equal(status.state, 'starting');
+  assert.equal(status.freezeReason, null);
+  assert.equal(status.lastDecision?.reason, 'queued_work_release');
+  await startClaim(h, claim);
+  assert.equal((await h.scheduler.status('s1')).state, 'running');
+});
+
+test('structured questions and real errors still gate the queue despite the plain-W release', async t => {
+  const structured = fixture(t);
+  await structured.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
+  await startClaim(structured, await claimOne(structured));
+  await structured.scheduler.admit({ sessionId: 's1', text: 'queued', idempotencyKey: 'queued' });
+  await structured.scheduler.freeze('s1', 'awaiting_user_input', { requestId: 'question-1' });
+  assert.equal(await claimOne(structured), null, 'a requestId question keeps the queue staged');
+  assert.equal((await structured.scheduler.status('s1')).freezeReason, 'awaiting_user_input');
+
+  const errored = fixture(t);
+  await errored.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
+  await startClaim(errored, await claimOne(errored));
+  await errored.scheduler.admit({ sessionId: 's1', text: 'queued', idempotencyKey: 'queued' });
+  await errored.scheduler.freeze('s1', 'error');
+  assert.equal(await claimOne(errored), null, 'an error freeze keeps the queue staged');
+});
