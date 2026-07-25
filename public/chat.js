@@ -912,16 +912,15 @@ function applyHistoryPlan(plan) {
   forceScrollToBottom();
   setTimeout(() => autofillHistory(4), 0);
 }
-
 /* ── Thinking bubble ── */
 function showThinking() { return chatLiveUi.showThinking(); }
 function hideThinking() { return chatLiveUi.hideThinking(); }
-
 /* ── Composer compatibility surface ──
  * Message sending, attachments, keyboard/touch bindings and voice input are
  * owned by chat-composer.js. These wrappers preserve the classic globals used
  * by Goal mode, the native WebView bridge and older diagnostic snippets. */
 let chatComposer = null;
+const pendingUserInputController = window.MultiCCChatUserInputCard.createController({ document, isConnected: () => !!ws && ws.readyState === WebSocket.OPEN, submitAnswer: answer => { inputEl.value = answer; return chatComposer?.send() === true; } });
 function newClientMsgId() { return window.MultiCCChatComposer.defaultClientMessageId(); }
 function send(opts = {}) { return chatComposer?.send(opts); }
 function cancelStreaming() { return chatComposer?.cancelStreaming(); }
@@ -939,7 +938,6 @@ function showVoicePanel(raw) { return chatComposer?.showVoicePanel(raw); }
 function closeVoicePanel() { return chatComposer?.closeVoicePanel(); }
 function useVoiceText(text) { return chatComposer?.useVoiceText(text); }
 function fetchRefined(raw) { return chatComposer?.fetchRefined(raw); }
-
 /* ── UI helpers ── */
 function updateUI() {
   const connected = ws && ws.readyState === WebSocket.OPEN;
@@ -948,8 +946,8 @@ function updateUI() {
   sendBtn.style.display = 'flex';
   cancelBtn.classList.toggle('show', isStreaming);
   inputEl.disabled = !connected;
+  pendingUserInputController.setConnected();
 }
-
 function updateContextBar(usage, modelUsage) {
   // Extract context window from modelUsage if available
   if (modelUsage) {
@@ -2476,13 +2474,12 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     maybeScrollToBottom,
     renderCurrentText,
     renderSessionQueue: window.MultiCCChatSessionQueue.render,
+    renderPendingUserInput: message => pendingUserInputController.render(message),
     rearmUnread,
   },
 });
-
 updateRoleBtn();
 loadSessionModel();
-
 /* ── Clear / rotate native context controls ── */
 window.MultiCCChatContextControls.create({
   document, window, translate: tt,
@@ -2566,6 +2563,7 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   consumeUserInputRequestId: requestId => {
     if (chatEventState.pendingUserInputRequestId === requestId) {
       chatEventState.pendingUserInputRequestId = null;
+      pendingUserInputController.clear(requestId);
     }
   },
   hasOpenTurn: () => isStreaming || !!currentMsgEl,
