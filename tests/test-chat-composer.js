@@ -194,9 +194,11 @@ test('send appends durable attachment paths and waits for server start ownership
 });
 
 test('send never closes an active turn; the server queues the new message', () => {
-  const fixture = composerFixture({ openTurn: true });
+  const fixture = composerFixture({ openTurn: true, streaming: true });
   fixture.composer.send();
   assert.deepEqual(fixture.starts, []);
+  assert.deepEqual(fixture.users, ['hello']);
+  assert.equal(fixture.sent.length, 1);
 });
 
 test('a pending structured question is correlated with the next successful send only', () => {
