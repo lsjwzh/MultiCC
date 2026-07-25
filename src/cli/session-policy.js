@@ -41,11 +41,12 @@ function createSessionPolicy(options) {
   function effectiveSessionModel(session) {
     if (!session) return null;
     const appType = providers.appTypeForCli(session.cli);
-    if (!appType) return session.model || session.reportedModel || null;
-    const lookupType = session.cli === 'opencode' ? undefined : appType;
+    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode';
+    if (!appType && !globalProviderCli) return session.model || session.reportedModel || null;
+    const lookupType = globalProviderCli ? undefined : appType;
     if (session.model) {
       const providerId = session.provider;
-      if (providerId) {
+      if (providerId && session.cli !== 'zcode') {
         try {
           const aliasMap = providerRouter.getProviderSummary(lookupType, providerId)?.aliasMap;
           const entry = aliasMap && aliasMap[session.model];
@@ -62,7 +63,7 @@ function createSessionPolicy(options) {
         if (appType === 'claude' && provider && provider.baseUrl) return session.reportedModel || null;
       } catch (_) {}
     }
-    if (session.cli === 'opencode') return session.reportedModel || null;
+    if (globalProviderCli) return session.reportedModel || null;
     if (appType === 'claude') return claudeDefaultModel() || session.reportedModel || null;
     return session.reportedModel || null;
   }
@@ -102,10 +103,11 @@ function createSessionPolicy(options) {
     const providerId = session && session.provider;
     if (!providerId) return null;
     const appType = providers.appTypeForCli(session.cli);
-    if (!appType) return null;
+    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode';
+    if (!appType && !globalProviderCli) return null;
     try {
       return providerRouter.getProviderSummary(
-        session.cli === 'opencode' ? undefined : appType,
+        globalProviderCli ? undefined : appType,
         providerId,
       )?.name || providerId;
     } catch (_) {

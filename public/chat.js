@@ -1581,11 +1581,11 @@ function showAIConfigPicker(config) {
 function updateModelBtn() {
   if (!modelBtn) return;
   const shown = _sessionEffectiveModel || _sessionModel;
-  const provider = _sessionCli === 'qoder' || _sessionCli === 'zcode'
-    ? (_sessionCli === 'zcode' ? 'ZCode' : 'Qoder CN')
+  const provider = _sessionCli === 'qoder'
+    ? 'Qoder CN'
     : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
       || _sessionProviderDisplayName
-      || tt('default'));
+      || (_sessionCli === 'zcode' ? 'ZCode 原生' : tt('default')));
   const model = shown ? modelDisplayName(shown, _sessionProvider) : tt('default');
   const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
   const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder') && _sessionAgent
@@ -1620,7 +1620,7 @@ async function loadSessionModel() {
     _sessionSubagent = info.subagent || null;
     _sessionAgent = info.agent || '';
     updateSubagentPill();
-  if (_sessionProvider && _sessionCli !== 'qoder' && _sessionCli !== 'zcode') await ensureProviderList(_sessionCli);
+    if (_sessionProvider && _sessionCli !== 'qoder') await ensureProviderList(_sessionCli);
     updateProviderBtn();
     _sessionModel = info.model || '';
     _sessionEffectiveModel = info.effectiveModel || info.model || '';
@@ -1632,13 +1632,17 @@ async function loadSessionModel() {
     updateAutoCommitBtn();
     _sessionAutoDispatch = !!info.autoDispatch;
     updateAutoDispatchCheck();
+    void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
+      cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
+      onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
+    });
   } catch (_) {}
 }
 
 modelBtn?.addEventListener('click', async () => {
   // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
   await loadSessionModel();
-  if (_sessionCli !== 'qoder' && _sessionCli !== 'zcode') {
+  if (_sessionCli !== 'qoder') {
     await ensureProviderList(_sessionCli, { loading: true });
   }
   const picked = await showAIConfigPicker({
@@ -1755,7 +1759,6 @@ async function ensureProviderList(cli, opts) {
     if (closeLoading) closeLoading();
   }
 }
-
 function showProviderPicker(current, list) {
   return window.MultiCCChatAiConfig.showProviderPicker(current, list, {
     document,

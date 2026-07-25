@@ -1,19 +1,21 @@
 'use strict';
 
-// ZCode authentication module -- bridges desktop app auth and CLI engine config.
+// ZCode native authentication module.
 //
-// Architecture (see memory [fact] ZCode 桌面端 auth 存储机制):
+// Architecture:
 //   • Desktop app stores API keys in plaintext in ~/.zcode/v2/config.json under
 //     provider["builtin:zai"].options.apiKey (or builtin:bigmodel).
 //   • CLI engine (zcode.cjs) reads ~/.zcode/cli/config.json (hardcoded:
 //     Tnr="~/.zcode/cli", Cnr="config.json") -- a completely separate file.
-//   • credentials.json (OAuth shared store) is only created by 'zcode login'.
+//   • Official Coding Plan login owns ~/.zcode/v2/credentials.json and resolves
+//     an effective API key into the CLI config. MultiCC invokes that official
+//     flow but never decrypts, copies, or refreshes ZCode OAuth credentials.
+//   • A session with a selected MultiCC Provider uses an isolated ZCode config
+//     built by src/providers.js and does not depend on this global/native state.
 //
-// This module provides four layers:
-//   L1: Auto-detect desktop API key -> sync to CLI config
-//   L2: Manual API key entry (provider management UI)
-//   L3: Invoke 'zcode login' for official OAuth
-//   L4: Pre-check before turn admission (configuration_required)
+// Desktop API-key sync remains an explicit user action. It is deliberately not
+// attempted during turn admission because that would overwrite the user's
+// native Coding Plan/default route behind their back.
 
 const fs = require('fs');
 const path = require('path');
@@ -23,6 +25,7 @@ const { atomicWriteJson } = require('../runtime-security');
 
 const HOME = os.homedir();
 const DESKTOP_CONFIG_PATH = path.join(HOME, '.zcode', 'v2', 'config.json');
+const CREDENTIALS_PATH = path.join(HOME, '.zcode', 'v2', 'credentials.json');
 const CLI_CONFIG_PATH = path.join(HOME, '.zcode', 'cli', 'config.json');
 const CLI_CONFIG_DIR = path.dirname(CLI_CONFIG_PATH);
 
@@ -145,8 +148,10 @@ function syncDesktopKeyToCli() {
 }
 
 /**
- * Check if the CLI config has a valid API key for any provider.
- * Returns { configured, provider, hasKey, source }
+ * Check if the native CLI config has a valid API key for its selected provider.
+ * Custom providers and all three ZCode kinds are accepted; Coding Plan is a
+ * credential source, not a fourth wire protocol, and its official flow also
+ * writes an effective key into this config.
  */
 function getZcodeAuthStatus() {
   const config = readCliConfig();
@@ -155,7 +160,14 @@ function getZcodeAuthStatus() {
     return { configured: false, provider: null, hasKey: false, source: 'none' };
   }
 
-  for (const [providerId, info] of Object.entries(PROVIDER_BASE_URLS)) {
+  const selectedProvider = typeof config.model === 'string' && config.model.includes('/')
+    ? config.model.slice(0, config.model.indexOf('/'))
+    : '';
+  const providerIds = [
+    selectedProvider,
+    ...Object.keys(config.provider),
+  ].filter((value, index, values) => value && values.indexOf(value) === index);
+  for (const providerId of providerIds) {
     const provider = config.provider[providerId];
     if (provider && provider.options) {
       const apiKey = (provider.options.apiKey || '').trim();
@@ -165,7 +177,8 @@ function getZcodeAuthStatus() {
           provider: providerId,
           hasKey: true,
           source: 'cli_config',
-          baseURL: provider.options.baseURL || info,
+          kind: provider.kind || null,
+          baseURL: provider.options.baseURL || PROVIDER_BASE_URLS[providerId] || '',
           model: config.model || null,
         };
       }
@@ -228,37 +241,39 @@ function isZcodeLoginAvailable() {
 function spawnZcodeLogin() {
   const engine = process.env.ZCODE_ENGINE
     || '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
+  const env = { ...process.env };
+  // Official login owns the native ~/.zcode tree, never a per-session
+  // MultiCC provider override inherited from an unusual launcher environment.
+  delete env.ZCODE_DATA_BASE_DIR;
+  delete env.ZCODE_SETTINGS;
   const child = spawn(process.execPath, [engine, 'login'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
+    // The web API needs only the exit status. Raw login output may contain an
+    // OAuth URL or local paths and must not be retained or returned.
+    stdio: 'ignore',
+    env,
     detached: false,
   });
   return child;
 }
 
 /**
- * L4: Pre-check auth before admitting a turn for a zcode session.
- * Returns { ok: true } if auth is configured, or { ok: false, code, message } if not.
- * If desktop key is available, auto-syncs it first (L1 auto-heal).
+ * Pre-check auth before admitting a turn for a ZCode session.
+ * Provider-backed sessions own an isolated, per-session config and bypass the
+ * native gate. Provider-less sessions intentionally follow ZCode's native
+ * config / Coding Plan state.
  */
-function ensureZcodeAuth() {
-  // First check if CLI config already has a key.
-  const status = getZcodeAuthStatus();
-  if (status.configured) return { ok: true, provider: status.provider };
-
-  // L1 auto-heal: try syncing from desktop config.
-  if (status.source === 'desktop_available') {
-    const result = syncDesktopKeyToCli();
-    if (result.synced) {
-      return { ok: true, provider: result.provider, autoSynced: true };
-    }
+function ensureZcodeAuth(session) {
+  if (session && session.provider) {
+    return { ok: true, provider: session.provider, source: 'multicc_provider' };
   }
 
-  // No auth available.
+  const status = getZcodeAuthStatus();
+  if (status.configured) return { ok: true, provider: status.provider, source: status.source };
+
   return {
     ok: false,
     code: 'configuration_required',
-    message: 'ZCode 尚未配置 API Key。请在 Provider 设置中配置 ZCode API Key，或使用 ZCode 官方登录。',
+    message: 'ZCode 原生连接尚未配置。请选择一个 MultiCC Provider，或在 Provider 设置中完成 ZCode Coding Plan 登录 / API Key 配置。',
     desktopLoginAvailable: isZcodeLoginAvailable(),
   };
 }
@@ -274,6 +289,7 @@ module.exports = {
   spawnZcodeLogin,
   ensureZcodeAuth,
   DESKTOP_CONFIG_PATH,
+  CREDENTIALS_PATH,
   CLI_CONFIG_PATH,
   PROVIDER_BASE_URLS,
 };

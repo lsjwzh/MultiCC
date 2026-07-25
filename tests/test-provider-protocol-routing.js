@@ -49,12 +49,12 @@ test('CC-Switch import treats meta.apiFormat as the protocol source of truth', (
   const chat = providers.getProviderSummary('codex', 'cc-chat');
   assert.equal(chat.apiFormat, 'openai_chat');
   assert.equal(chat.wireApi, 'chat_completions');
-  assert.deepEqual(chat.compatibleClis, ['codex', 'opencode']);
+  assert.deepEqual(chat.compatibleClis, ['codex', 'opencode', 'zcode']);
   assert.deepEqual(chat.requiresConversionFor, ['codex']);
 
   const anthropic = providers.getProviderSummary('claude', 'cc-anthropic');
   assert.equal(anthropic.apiFormat, 'anthropic');
-  assert.deepEqual(anthropic.compatibleClis, ['claude', 'opencode']);
+  assert.deepEqual(anthropic.compatibleClis, ['claude', 'opencode', 'zcode']);
 });
 
 test('startup migration upgrades old provider records once and is byte-idempotent', () => {
@@ -112,13 +112,62 @@ test('OpenCode maps all three protocols to their native AI SDK packages', () => 
   }
 });
 
-test('protocol compatibility keeps vendor CLIs providerless and old providers readable', () => {
+test('ZCode maps all three protocols to isolated native provider kinds', () => {
+  const responsesId = providers.createProvider({
+    appType: 'codex', name: 'ZCode Responses', baseUrl: 'https://responses-zcode.example/v1',
+    authToken: 'zcode-responses-secret', model: 'gpt-zcode', apiFormat: 'openai_responses',
+  }).id;
+  const cases = [
+    ['cc-anthropic', 'anthropic', 'https://anthropic.example', 'anthropic-secret', 'claude-test'],
+    ['cc-chat', 'openai-compatible', 'https://chat.example/v1', 'chat-secret', 'chat-model'],
+    [responsesId, 'openai', 'https://responses-zcode.example/v1', 'zcode-responses-secret', 'gpt-zcode'],
+  ];
+
+  const configPaths = new Set();
+  for (const [providerId, kind, baseURL, apiKey, model] of cases) {
+    const spawn = providers.resolveSpawnEnv({
+      id: `zcode-${kind}`,
+      cli: 'zcode',
+      provider: providerId,
+      model,
+    });
+    assert.ok(spawn.env.ZCODE_DATA_BASE_DIR.startsWith(fakeHome));
+    assert.ok(spawn.env.ZCODE_SETTINGS.startsWith(spawn.env.ZCODE_DATA_BASE_DIR));
+    assert.equal(spawn.qualifiedModel.endsWith(`/${model}`), true);
+    const config = JSON.parse(fs.readFileSync(spawn.env.ZCODE_SETTINGS, 'utf8'));
+    const routeId = config.model.slice(0, config.model.indexOf('/'));
+    assert.equal(config.provider[routeId].kind, kind);
+    assert.equal(config.provider[routeId].options.baseURL, baseURL);
+    assert.equal(config.provider[routeId].options.apiKey, apiKey);
+    assert.deepEqual(config.provider[routeId].models[model], { id: model });
+    assert.equal(fs.statSync(spawn.env.ZCODE_SETTINGS).mode & 0o777, 0o600);
+    configPaths.add(spawn.env.ZCODE_SETTINGS);
+  }
+  assert.equal(configPaths.size, 3, 'each session receives an isolated ZCode config tree');
+
+  const native = providers.resolveSpawnEnv({ id: 'zcode-native', cli: 'zcode', provider: null });
+  assert.deepEqual(native.env, {}, 'provider-less ZCode keeps its official/native Coding Plan state');
+});
+
+test('protocol compatibility gives ZCode both pools while Qoder stays providerless', () => {
   assert.deepEqual(providers.appTypesForCli('opencode'), ['claude', 'codex']);
   assert.deepEqual(providers.appTypesForCli('qoder'), []);
-  assert.deepEqual(providers.appTypesForCli('zcode'), []);
+  assert.deepEqual(providers.appTypesForCli('zcode'), ['claude', 'codex']);
   assert.equal(providers.normalizeApiFormat(null, 'claude', {}), 'anthropic');
   assert.equal(providers.normalizeApiFormat(null, 'codex', {}), 'openai_responses');
   assert.equal(providers.normalizeApiFormat(null, 'codex', { proxyTarget: { mode: 'chat-to-responses' } }), 'openai_chat');
   assert.equal(providers.providerSupportsCli({ appType: 'claude' }, 'codex'), false);
   assert.equal(providers.providerSupportsCli({ appType: 'codex' }, 'claude'), false);
+  assert.equal(providers.providerSupportsCli({
+    appType: 'claude', apiFormat: 'anthropic',
+    baseUrl: 'https://anthropic.example', hasToken: true,
+  }, 'zcode'), true);
+  assert.equal(providers.providerSupportsCli({
+    appType: 'codex', apiFormat: 'openai_responses',
+    baseUrl: 'https://responses.example/v1', hasToken: true,
+  }, 'zcode'), true);
+  assert.equal(providers.providerSupportsCli({
+    appType: 'codex', apiFormat: 'openai_responses',
+    baseUrl: '', hasToken: false, isOfficial: true,
+  }, 'zcode'), false, 'another CLI cannot replay Codex OAuth');
 });

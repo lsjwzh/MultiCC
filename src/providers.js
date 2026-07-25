@@ -48,6 +48,12 @@ const STORE_FILE = RUNTIME_PATHS.providersFile;
 // Per-provider CODEX_HOME dirs materialized on demand so codex sessions can
 // point at different auth/config without clobbering the global ~/.codex.
 const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');
+// ZCode 0.15.x advertises --settings but its parser rejects the flag. Provider
+// overrides therefore use ZCode's supported ZCODE_DATA_BASE_DIR boundary and
+// materialize one private config tree per MultiCC session. The native/default
+// route does not set this variable and keeps using ~/.zcode, including any
+// official Coding Plan login maintained by ZCode itself.
+const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');
 
 const APP_TYPES = ['claude', 'codex'];
 const API_FORMATS = Object.freeze({
@@ -67,22 +73,27 @@ function normalizeApiFormat(value, appType, cfg = {}) {
 }
 
 function compatibleClisForFormat(apiFormat) {
-  if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'opencode'];
-  return ['codex', 'opencode'];
+  if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'opencode', 'zcode'];
+  return ['codex', 'opencode', 'zcode'];
 }
 
 function providerSupportsCli(provider, cli) {
   if (!provider || !cli) return false;
   const format = normalizeApiFormat(provider.apiFormat || provider.protocol, provider.appType, parseConfig(provider.settingsConfig));
-  return compatibleClisForFormat(format).includes(String(cli));
+  if (!compatibleClisForFormat(format).includes(String(cli))) return false;
+  if (cli !== 'zcode') return true;
+  // Claude/Codex OAuth subscriptions cannot be replayed by an unrelated CLI.
+  // ZCode-backed MultiCC providers must expose ordinary HTTP credentials;
+  // ZCode's own Coding Plan stays on the provider-less native route.
+  const summary = provider.settingsConfig ? summarize(provider) : provider;
+  return !!(summary && summary.baseUrl && summary.hasToken);
 }
 
 // Map a session's cli to its MultiCC-managed provider pool (appType).
-// Qoder CN and ZCode own authentication/provider configuration in their vendor
-// clients, so they deliberately return null: MultiCC persists only their model
-// selection and must not inject Claude/Codex routing into those processes.
-// OpenCode resolves globally by provider id and then maps the stored protocol
-// to its matching AI SDK package; appTypeForCli remains a legacy default only.
+// Qoder CN owns authentication/provider configuration in its vendor client, so
+// it deliberately returns null. OpenCode and ZCode can consume both provider
+// pools and therefore resolve globally by provider id; appTypeForCli remains a
+// legacy single-pool default only.
 function appTypeForCli(cli) {
   if (cli === 'codex') return 'codex';
   if (cli === 'claude' || cli === 'opencode') return 'claude';
@@ -90,7 +101,7 @@ function appTypeForCli(cli) {
 }
 
 function appTypesForCli(cli) {
-  if (cli === 'opencode') return ['claude', 'codex'];
+  if (cli === 'opencode' || cli === 'zcode') return ['claude', 'codex'];
   const type = appTypeForCli(cli);
   return type ? [type] : [];
 }
@@ -529,7 +540,8 @@ function summarize(p, opts = {}) {
     wireApi: apiFormat === API_FORMATS.ANTHROPIC
       ? 'messages'
       : (apiFormat === API_FORMATS.OPENAI_CHAT ? 'chat_completions' : 'responses'),
-    compatibleClis: compatibleClisForFormat(apiFormat),
+    compatibleClis: compatibleClisForFormat(apiFormat)
+      .filter(cli => cli !== 'zcode' || (!!baseUrl && !!token)),
     requiresConversionFor: apiFormat === API_FORMATS.OPENAI_CHAT ? ['codex'] : [],
     name: p.name,
     source: p.source || 'local', // 'local' | 'ccswitch'
@@ -934,6 +946,7 @@ function buildChildEnv(base, session, extra = {}) {
     qualifiedModel: spawn.qualifiedModel || null,
     providerName: spawn.providerName,
     codexHome: spawn.codexHome,
+    zcodeHome: spawn.zcodeHome,
     tools: spawn.tools,
   };
 }
@@ -1009,6 +1022,90 @@ function buildOpenCodeRoute(provider, session) {
   };
 }
 
+function zcodeProviderId(provider) {
+  return `multicc-${String(provider && provider.id || 'provider')}`
+    .toLowerCase().replace(/[^a-z0-9._-]+/g, '-').slice(0, 96);
+}
+
+function zcodeSessionHome(session) {
+  const rawId = session && (session.id || session.sessionId);
+  if (!rawId) throw new Error('ZCode provider routing requires a stable session id');
+  const raw = String(rawId);
+  const slug = raw.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 72)
+    || 'session';
+  const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 12);
+  return path.join(ZCODE_HOMES_DIR, `${slug}-${digest}`);
+}
+
+function zcodeProviderMaterial(provider) {
+  const cfg = parseConfig(provider.settingsConfig);
+  const summary = summarize(provider);
+  const format = summary.apiFormat;
+  if (format === API_FORMATS.ANTHROPIC) {
+    const env = cfg.env || {};
+    return {
+      kind: 'anthropic',
+      baseURL: env.ANTHROPIC_BASE_URL || summary.baseUrl || '',
+      apiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || '',
+    };
+  }
+  return {
+    // These are ZCode's exact provider-kind names. "openai-compatible" uses
+    // /chat/completions; "openai" uses /responses.
+    kind: format === API_FORMATS.OPENAI_CHAT ? 'openai-compatible' : 'openai',
+    baseURL: (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl)
+      || summary.baseUrl || tomlValue(cfg.config, 'base_url') || '',
+    apiKey: (cfg.proxyTarget && cfg.proxyTarget.apiKey)
+      || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
+  };
+}
+
+function buildZcodeRoute(provider, session) {
+  const summary = summarize(provider);
+  const id = zcodeProviderId(provider);
+  let selected = String(session && session.model || summary.model || '').trim();
+  if (selected.startsWith(`${id}/`)) selected = selected.slice(id.length + 1);
+  const models = uniqueModels([
+    selected,
+    summary.model,
+    ...(summary.modelOptions || []),
+  ]);
+  if (!selected) selected = models[0] || '';
+  const material = zcodeProviderMaterial(provider);
+  const providerConfig = {
+    kind: material.kind,
+    options: {
+      ...(material.baseURL ? { baseURL: material.baseURL } : {}),
+      ...(material.apiKey ? { apiKey: material.apiKey } : {}),
+    },
+    models: Object.fromEntries(models.filter(Boolean).map(model => [model, { id: model }])),
+  };
+  const home = zcodeSessionHome(session);
+  const configDir = path.join(home, '.zcode', 'cli');
+  const configFile = path.join(configDir, 'config.json');
+  ensurePrivateDir(home);
+  ensurePrivateDir(path.join(home, '.zcode'));
+  ensurePrivateDir(configDir);
+  atomicWriteJson(configFile, {
+    ...(selected ? { model: `${id}/${selected}` } : {}),
+    provider: { [id]: providerConfig },
+  });
+  secureFile(configFile);
+  return {
+    env: {
+      ZCODE_DATA_BASE_DIR: home,
+      // The bridge reads the same file for its model-consistency check. ZCode
+      // itself ignores this helper variable and follows ZCODE_DATA_BASE_DIR.
+      ZCODE_SETTINGS: configFile,
+    },
+    qualifiedModel: selected ? `${id}/${selected}` : null,
+    providerModel: summary.model || null,
+    providerModels: models,
+    providerName: provider.name,
+    zcodeHome: home,
+  };
+}
+
 // Compute env overrides + flags to apply when spawning a child for `session`.
 //   - env: object merged into the child's process env (only this child).
 //   - skipDefaultModel: claude routes elsewhere → don't force the global --model.
@@ -1016,12 +1113,26 @@ function resolveSpawnEnv(session) {
   const providerId = session && session.provider;
   if (!providerId) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
   const appType = appTypeForCli(session.cli);
-  if (!appType) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
-  const p = getProvider(session.cli === 'opencode' ? undefined : appType, providerId);
-  if (!p) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
-  if (!providerSupportsCli(p, session.cli)) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
+  const globalPoolCli = session.cli === 'opencode' || session.cli === 'zcode';
+  if (!appType && !globalPoolCli) return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
+  const p = getProvider(globalPoolCli ? undefined : appType, providerId);
+  if (!p || !providerSupportsCli(p, session.cli)) {
+    if (session.cli === 'zcode') {
+      // Never turn a stale or OAuth-only managed binding into an implicit
+      // native/Coding Plan request: that could charge or expose the wrong
+      // account. Normal mutation routes reject this before it is persisted;
+      // this guard covers legacy/corrupt state at the final spawn boundary.
+      throw new Error('ZCode Provider 不存在、协议不兼容或缺少可用的 HTTP 凭证');
+    }
+    return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
+  }
   if (session.cli === 'opencode') {
     return { ...buildOpenCodeRoute(p, session), skipDefaultModel: false, aliasOnly: false };
+  }
+  if (session.cli === 'zcode') {
+    // Fail closed: silently falling back to the native/Coding Plan config after
+    // a materialization error would send the turn to the wrong account.
+    return { ...buildZcodeRoute(p, session), skipDefaultModel: false, aliasOnly: false };
   }
   const cfg = p.appType === 'codex' ? effectiveCodexSettings(p) : parseConfig(p.settingsConfig);
 
@@ -1498,6 +1609,7 @@ module.exports = {
   CLAUDE_ROUTING_KEYS,
   ANTHROPIC_ROUTING_KEYS,
   CODEX_HOMES_DIR,
+  ZCODE_HOMES_DIR,
   WIRE_DEFAULT_MODEL,
   probeRelayModels,
 };
