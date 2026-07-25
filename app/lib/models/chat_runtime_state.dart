@@ -1,4 +1,7 @@
-enum SessionQueueRunState { idle, queued, running, waiting, error }
+import '../utils/status_presentation.dart';
+
+// 队列的运行状态不再自带枚举：它就是 canonical 状态域里的会话状态，词表、别名和
+// freezeReason 映射统一由 utils/status_presentation.dart 提供。
 
 class SessionQueueItem {
   final String entryId;
@@ -32,20 +35,6 @@ class SessionQueueItem {
 }
 
 class SessionQueueState {
-  static const _freezeRunStates = <String, SessionQueueRunState>{
-    'awaiting_user_input': SessionQueueRunState.waiting,
-    'awaiting_callback': SessionQueueRunState.waiting,
-    'waiting': SessionQueueRunState.waiting,
-    'error': SessionQueueRunState.error,
-    'classification_error': SessionQueueRunState.error,
-    'unknown_interruption': SessionQueueRunState.error,
-    'legacy_unresolved': SessionQueueRunState.error,
-    'delivery_recovery': SessionQueueRunState.running,
-    'continuation_ready': SessionQueueRunState.running,
-    'incomplete_requires_resume': SessionQueueRunState.running,
-    'prelaunch_deferred': SessionQueueRunState.queued,
-  };
-
   final String event;
   final String state;
   final String? freezeReason;
@@ -62,24 +51,20 @@ class SessionQueueState {
 
   bool get isFrozen => state == 'frozen';
 
-  SessionQueueRunState get runState {
-    if (isFrozen) {
-      final reason = freezeReason ?? '';
-      return _freezeRunStates[reason] ??
-          (reason.contains('error')
-              ? SessionQueueRunState.error
-              : SessionQueueRunState.waiting);
-    }
+  /// 队列状态 → canonical 会话状态。冻结时由 freezeReason 决定（整表在 registry
+  /// 里，认不出来的原因落 waiting 并记诊断——不再用 `reason.contains('error')`
+  /// 这类字符串嗅探去猜，那既会把 unknown_interruption 之外的新原因误判成故障，
+  /// 也会漏掉不含 "error" 字样的故障原因）。
+  CanonicalStatus get runState {
+    if (isFrozen) return freezeReasonStatusOf(freezeReason);
     if (state == 'starting' || state == 'running' || state == 'assessing') {
-      return SessionQueueRunState.running;
+      return CanonicalStatus.running;
     }
-    if (state == 'queued' || items.isNotEmpty) {
-      return SessionQueueRunState.queued;
-    }
-    return SessionQueueRunState.idle;
+    if (state == 'queued' || items.isNotEmpty) return CanonicalStatus.queued;
+    return CanonicalStatus.idle;
   }
 
-  bool get canRetry => isFrozen && runState == SessionQueueRunState.error;
+  bool get canRetry => isFrozen && runState == CanonicalStatus.error;
 
   bool get canResume =>
       isFrozen &&

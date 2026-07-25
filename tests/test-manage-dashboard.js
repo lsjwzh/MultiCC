@@ -100,6 +100,11 @@ function createHarness(overrides = {}) {
   context.addEventListener = () => {};
   context.speechSynthesis = { speak() {}, cancel() {} };
   vm.createContext(context);
+  // manage.html loads the status registry before the dashboard script; the
+  // harness mirrors that so session cards resolve their badges the same way.
+  vm.runInContext(read('public/status-presentation.js'), context, {
+    filename: 'status-presentation.js',
+  });
   vm.runInContext(read('public/manage-dashboard.js'), context, {
     filename: 'manage-dashboard.js',
   });

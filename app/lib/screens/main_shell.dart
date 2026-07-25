@@ -16,6 +16,7 @@ import '../services/workspace_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 import '../widgets/directory_card.dart';
 import '../widgets/session_card.dart';
 import '../widgets/session_badges.dart';
@@ -935,25 +936,18 @@ void _showSessionSheet(
     return '';
   }
 
-  /// Derive a status colour + text from the live workspace status (full 7-state
-  /// mapping, aligned to web), falling back to the aggregate id sets / s.active.
-  ({Color color, String text}) statusInfo(Session s, SessionStatus? live) {
-    if (live != null) {
-      return (
-        color: wbStatusColor(live.status),
-        text: wbStatusLabel(live.status),
-      );
-    }
-    if (mgr.runningSessionIds.contains(s.id)) {
-      return (color: const Color(0xFF7fd49a), text: t('running'));
-    }
-    if (mgr.waitingSessionIds.contains(s.id)) {
-      return (color: const Color(0xFFf0936b), text: t('waiting'));
-    }
-    if (s.active) {
-      return (color: const Color(0xFF3ad6c5), text: t('active'));
-    }
-    return (color: const Color(0xFF5b616c), text: t('idle'));
+  /// 会话状态 → 统一展示 spec。live 状态优先，其次是 manager 的聚合集合；两者
+  /// 都没有时才用 s.active 区分 idle/offline —— 进程活着不等于「运行中」，那是
+  /// 把 liveness 当业务状态。色/图标/文案全部出自同一个 registry。
+  StatusSpec statusInfo(Session s, SessionStatus? live) {
+    final aggregate = mgr.runningSessionIds.contains(s.id)
+        ? 'running'
+        : (mgr.waitingSessionIds.contains(s.id) ? 'waiting' : null);
+    return statusPresentation[sessionCardStatusOf(
+      monitorStatus: live?.status,
+      workspaceStatus: aggregate,
+      active: s.active,
+    )]!;
   }
 
   showModalBottomSheet<void>(
@@ -1087,12 +1081,11 @@ void _showSessionSheet(
                             // Row 1: status dot + cli/kind badges + status label + time
                             Row(
                               children: [
-                                Container(
-                                  width: 7,
-                                  height: 7,
-                                  decoration: BoxDecoration(
-                                    color: st.color,
-                                    shape: BoxShape.circle,
+                                Semantics(
+                                  label: st.semanticLabel,
+                                  child: Text(
+                                    st.icon,
+                                    style: const TextStyle(fontSize: 11),
                                   ),
                                 ),
                                 const SizedBox(width: 6),
@@ -1107,7 +1100,7 @@ void _showSessionSheet(
                                 ),
                                 const SizedBox(width: 6),
                                 Text(
-                                  st.text,
+                                  st.label,
                                   style: TextStyle(
                                     color: st.color,
                                     fontSize: 10,
