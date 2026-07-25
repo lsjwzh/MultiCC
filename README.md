@@ -36,7 +36,7 @@
 
 ## What is MultiCC?
 
-**MultiCC** is a self-hosted orchestration layer that turns your locally-installed AI coding CLIs (Claude Code, OpenAI Codex) into a multi-client, multi-session platform. Start a task on your laptop, monitor it from your phone, and get notified on IM when it finishes — all against the same persistent sessions.
+**MultiCC** is a self-hosted orchestration layer that turns your locally-installed AI coding CLIs (Claude Code, OpenAI Codex, OpenCode, ZCode, Qoder CN) into a multi-client, multi-session platform. Start a task on your laptop, monitor it from your phone, and get notified on IM when it finishes — all against the same persistent sessions.
 
 It was built around four observations:
 
@@ -279,17 +279,19 @@ Both modes share the same session registry, auth, and notifications. Reconnect r
 
 ### Multi-provider support
 
-Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, or `qoder`). Claude/Codex/OpenCode/ZCode can use MultiCC provider routing; Qoder CN keeps its own signed-in account or BYOK configuration.
+Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, or `qoder`). Claude/Codex/OpenCode can use MultiCC provider routing; ZCode drives its own engine config (`~/.zcode/cli/config.json`); Qoder CN keeps its own signed-in account or BYOK configuration.
 
 | CLI | Terminal mode | Chat mode | Provider isolation |
 |-----|---------------|-----------|--------------------|
 | **Claude Code** | `claude` inside `tmux`, resumed by session id | `claude -p --output-format stream-json` | Per-session `ANTHROPIC_*` env vars; clean default login for sessions without a provider override |
 | **Codex** | `codex` / `codex resume <id>` inside `tmux` | `codex exec --json` | Per-provider `CODEX_HOME` under `~/.multicc/codex-homes`; local proxy for non-OpenAI endpoints |
 | **OpenCode** | `opencode --session <id>` inside `tmux` | `opencode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
-| **ZCode** | `zcode --session <id>` inside `tmux` | `zcode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
+| **ZCode** | ZCode TUI (engine) inside `tmux` | in-tree bridge → `zcode.cjs --prompt --json` | Drives the headless engine inside the ZCode.app bundle; provider/auth owned by ZCode in `~/.zcode/cli/config.json`, located via `ZCODE_ENGINE` |
 | **Qoder CN** | `qoderclicn --resume <id>` inside `tmux` | `qoderclicn -p --output-format stream-json` | Uses Qoder's own login/BYOK settings; native session id, model tier, reasoning effort, and agent retained per logical chat |
 
 For Qoder CN, install the official CLI (`curl -fsSL https://qoder.cn/install | bash`), then run `qoderclicn` once to sign in or set `QODERCN_PERSONAL_ACCESS_TOKEN`. MultiCC auto-detects the `qoderclicn` executable and deliberately leaves Qoder account/BYOK management to Qoder itself. See the [Qoder CN quick start](https://docs.qoder.cn/cli/qoder-cli-cn-get-started-quickly).
+
+For ZCode, install the official desktop app from [zcode.z.ai](https://zcode.z.ai), then point MultiCC at the headless engine bundled inside it: set `ZCODE_ENGINE` to `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs` (the macOS default). ZCode owns its provider/auth in `~/.zcode/cli/config.json` — sign in via the desktop app or configure a provider (e.g. BigModel/GLM) there. In chat mode MultiCC does not invoke the Electron GUI; an in-tree bridge runs the engine headlessly and flattens its whole-JSON output into the streaming JSONL the chat UI consumes.
 
 - Providers are managed from `/manage` or the provider API — create, edit, import from `cc-switch`, set per-CLI defaults.
 - **Per-session model selection**: each session can override the provider's default model; the chat UI shows a model picker with provider-specific options.
@@ -598,6 +600,7 @@ All settings are environment variables in `.env`. Voice and TTS settings hot-rel
 | `CODEX_CMD` | *(auto-detected)* | Override path to `codex` binary |
 | `CODEX_ARGS` | *(none)* | Extra args passed to every `codex` spawn |
 | `QODER_CMD` | *(auto-detected)* | Override path to the Qoder CN `qoderclicn` binary (`QODERCN_CMD` is also accepted) |
+| `ZCODE_ENGINE` | *(macOS default inside `ZCode.app`)* | Path to the ZCode headless engine (`zcode.cjs`) driven via the in-tree bridge |
 
 ### Providers
 
