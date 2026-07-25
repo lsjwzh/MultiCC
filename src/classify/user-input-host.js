@@ -1,6 +1,80 @@
 'use strict';
 
+const crypto = require('crypto');
 const { applyUserInputEvidence } = require('./vocab');
+
+// Bounds mirror the MCP request_user_input tool (router-tool-runtime) so a signal
+// synthesized from a CLI's built-in ask tool is sanitized identically.
+const MAX_QUESTION_LENGTH = 16 * 1024;
+const MAX_REASON_LENGTH = 4 * 1024;
+const MAX_OPTION_LENGTH = 512;
+const MAX_OPTIONS = 12;
+
+function sanitizeOptions(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of value) {
+    const text = String(raw == null ? '' : raw).trim().slice(0, MAX_OPTION_LENGTH);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= MAX_OPTIONS) break;
+  }
+  return out;
+}
+
+// Build a request_user_input signal from an adapter-decoded ask event (e.g.
+// codex's built-in AskUserQuestion). This lands a non-MCP ask on the SAME
+// structured waiting path (pendingUserInput → waiting → interactive options) as
+// the MCP tool, instead of silently degrading to plain text. Returns null when
+// there is no usable question text. requestId shape ("usrq-<hash>") matches the
+// MCP path so dedup/resolve behave identically.
+function buildAdapterUserInputSignal(
+  { sessionId, turnId, question, reason, options, allowMultiple } = {},
+  cryptoImpl = crypto,
+) {
+  const q = String(question == null ? '' : question).trim().slice(0, MAX_QUESTION_LENGTH);
+  if (!q) return null;
+  const r = String(reason == null ? '' : reason).trim().slice(0, MAX_REASON_LENGTH);
+  const opts = sanitizeOptions(options);
+  const multi = allowMultiple === true && opts.length >= 2;
+  const requestId = `usrq-${cryptoImpl.createHash('sha256')
+    .update([sessionId, turnId, q, r, opts.join('\0'), multi]
+      .map((v) => String(v == null ? '' : v)).join('\0'), 'utf8')
+    .digest('hex').slice(0, 24)}`;
+  return {
+    requestId,
+    sessionId: String(sessionId || ''),
+    turnId: String(turnId || ''),
+    question: q,
+    reason: r,
+    options: opts,
+    allowMultiple: multi,
+  };
+}
+
+// Record an adapter ask event as a structured waiting signal via the provided
+// recordInput port (server wires it to sessionWorkHost.recordInput, the same
+// port the MCP tool uses). On any failure it returns the event's fallbackText so
+// the caller can degrade to a plain-text passthrough — the question is never lost.
+function recordAdapterUserInput({ evt, sessionId, turnId, recordInput } = {}) {
+  const signal = buildAdapterUserInputSignal({
+    sessionId,
+    turnId,
+    question: evt?.question,
+    reason: evt?.reason,
+    options: evt?.options,
+    allowMultiple: evt?.allowMultiple,
+  });
+  const rec = signal && typeof recordInput === 'function' ? recordInput(signal) : null;
+  const ok = !!(rec && rec.ok === true);
+  return {
+    ok,
+    requestId: ok ? signal.requestId : null,
+    fallbackText: ok ? '' : (evt?.fallbackText || ''),
+  };
+}
 
 const USER_INPUT_SIGNAL_PROMPT = Object.freeze([
   '【等待用户输入信号】仅当缺少用户决定、确认、选择或必要信息，导致当前任务无法安全继续时，调用 MultiCC MCP 的 request_user_input 工具记录结构化等待信号。',
@@ -115,5 +189,7 @@ function createUserInputSignalHost({
 module.exports = {
   USER_INPUT_SIGNAL_PROMPT,
   buildCodexUserInputConstraint,
+  buildAdapterUserInputSignal,
+  recordAdapterUserInput,
   createUserInputSignalHost,
 };

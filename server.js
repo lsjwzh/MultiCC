@@ -145,7 +145,7 @@ const {
   phaseLabel,
 } = require('./src/classify/vocab');
 const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint,
-  createUserInputSignalHost } = require('./src/classify/user-input-host');
+  recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const {
   DISPATCH_RE,
   DISPATCH_CONFIRM_RE,
@@ -4475,7 +4475,7 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
   if (!isCurrentTurnRunner(cs, turn, runner)) return;
   turnProgressHeartbeat.touchActivity(sessionName, turn.turnId);
   const decoded = provider.decodeEvent(rawEvent) || [];
-  for (const evt of (Array.isArray(decoded) ? decoded : [decoded])) {
+  for (let evt of (Array.isArray(decoded) ? decoded : [decoded])) {
     if (!evt) continue;
     if (evt.type === 'claude_event') {
       applyClaudeChatEvent(cs, sessionName, evt.raw, forward, turn, runner, provider.name);
@@ -4528,6 +4528,18 @@ function applyAdapterChatEvent(provider, cs, persisted, sessionName, rawEvent, f
       });
       setSessionStatus(sessionName, { status: 'running', currentFile: null });
       continue;
+    }
+    if (evt.type === 'user_input_signal') {
+      // A CLI's built-in ask tool (codex AskUserQuestion). Land it on the same
+      // structured waiting path as the MCP request_user_input tool; only if that
+      // fails fall through to a plain-text passthrough so the question is shown.
+      const landed = sessionWorkHost && recordAdapterUserInput({
+        evt, sessionId: sessionName, turnId: turn.turnId,
+        recordInput: (signal) => sessionWorkHost.recordInput(signal),
+      });
+      if (evt.log) console.warn(`[multicc/chat] [${sessionName}] ${provider.name} ${evt.log}`);
+      if (landed && landed.ok) continue;
+      evt = { type: 'assistant_text', text: (landed && landed.fallbackText) || evt.fallbackText || '' };
     }
     if (evt.type === 'assistant_text') {
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
