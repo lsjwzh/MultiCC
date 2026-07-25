@@ -247,6 +247,16 @@ test('cancel remains idempotent and remembers an offline intent', () => {
   assert.deepEqual(idle.starts, []);
 });
 
+test('typing cancel is a control command that resets to E without entering FIFO', () => {
+  const fixture = composerFixture({ text: '  CaNcEl  ', streaming: true });
+  assert.equal(fixture.composer.send(), true);
+  assert.deepEqual(fixture.sent, [{ type: 'cancel' }]);
+  assert.deepEqual(fixture.users, []);
+  assert.deepEqual(fixture.pending, [false]);
+  assert.deepEqual(fixture.starts, ['cancelled']);
+  assert.equal(fixture.inputEl.value, '');
+});
+
 test('double streaming-voice start shares one pending ticket and one microphone', async () => {
   const ticket = deferred();
   const fixture = voiceFixture([ticket]);

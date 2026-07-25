@@ -314,10 +314,14 @@ test('pending gate wraps rejection and an older completion cannot erase a newer 
 
 test('host composition resolves history and rebound workspace broadcasting lazily', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const turnEngine = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'),
+    'utf8',
+  );
   assert.match(server, /loadHistory:\s*sessionId\s*=>\s*chatHistoryRuntime\.load\(sessionId\)/);
   assert.match(server,
     /workspaceBroadcast:\s*\(dirId, payload\)\s*=>\s*workspaceBroadcast\(dirId, payload\)/);
   assert.match(server, /const memoryRuntime = createMemoryRuntime[\s\S]*chatHistoryRuntime = createChatHistoryRuntime/);
-  assert.match(server,
+  assert.match(turnEngine,
     /const pendingMemory = getPendingMemoryDistill\(sessionName\);[\s\S]*const deliver = \(\) => taskContextHost\.deliverSessionMessage[\s\S]*pendingMemory\.finally\(deliver\)/);
 });

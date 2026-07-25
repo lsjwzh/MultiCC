@@ -217,7 +217,7 @@ const {
 const { envEnabled, resolveNetworkPolicy, selectListenPort } = require('./src/network-policy');
 const { isLocalRequest } = require('./src/request-locality');
 const { createObservability, installConsoleRedaction } = require('./src/observability');
-const { installWsBackpressure } = require('./src/ws-backpressure');
+const { mountWsConnectionRouter } = require('./src/ws/connection-router');
 const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
@@ -2752,238 +2752,39 @@ createOrchestrationRoutes({
 
 
 
-// ── WebSocket connections ──
-wss.on('connection', async (ws, req) => {
-  if (_shuttingDown) {
-    ws.close(1012, 'server shutting down');
-    return;
-  }
-  const urlObj = new URL(req.url, 'http://localhost');
-  installWsBackpressure(ws, {
-    onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
-    onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
-  });
-
-  // Share-scoped chat WS: a valid share token for the requested session grants
-  // access WITHOUT ACCESS_TOKEN, scoped to that one session at its access level.
-  // ws._sharePerm ('view'|'operate') drives the read-only / read-write gate in
-  // handleChatWs. (Re-validated inside handleChatWs as the authority.)
-  let sharePerm = null;
-  if (urlObj.pathname === '/ws/chat' && urlObj.searchParams.get('share')) {
-    const a = share.access(urlObj.searchParams.get('share'), { cookies: parseCookies(req.headers.cookie) });
-    if (a && a.sessionId === urlObj.searchParams.get('session')) sharePerm = a.access;
-    if (!sharePerm) { ws.close(4003, 'Forbidden'); return; }
-  }
-
-  // External WebSockets exchange the normal HTTP auth for a one-use, path-bound
-  // ticket. Local bridges remain ticket-free. Old cookie/query WS auth is an
-  // explicit migration opt-in and is counted so operators can remove it.
-  if (!sharePerm) {
-    const ip = req.socket.remoteAddress;
-    const isLocal = isLocalRequest(req);
-    const cookies = parseCookies(req.headers.cookie);
-    const ticket = ACCESS_TOKEN && authSecurity.consumeWsTicket(urlObj.searchParams.get('ticket'), urlObj.pathname);
-    const legacyCookie = ACCESS_TOKEN && ALLOW_LEGACY_WS_COOKIE && cookies.multicc_auth && authSecurity.verifyCookie(cookies.multicc_auth);
-    const legacyToken = ACCESS_TOKEN && ALLOW_LEGACY_WS_TOKEN && authSecurity.verifyAccessToken(urlObj.searchParams.get('token'));
-    if (ticket) ws._correlationId = ticket.correlationId || ticket.requestId;
-    if (legacyCookie || legacyToken) {
-      metrics.inc('multicc_ws_legacy_auth_total');
-      logger.warn('legacy_ws_auth', { path: urlObj.pathname, mode: legacyToken ? 'query' : 'cookie', ip });
-    }
-    if (!isLocal && (!ACCESS_TOKEN || (!ticket && !legacyCookie && !legacyToken))) {
-      metrics.inc('multicc_ws_auth_denied_total');
-      ws.close(4003, 'Forbidden');
-      return;
-    }
-  }
-
-  // Route to chat handler if path matches
-  if (urlObj.pathname === '/ws/chat') {
-    ws._sharePerm = sharePerm; // null for normal (full) clients
-    return chatTurnEngine.handleChatWs(ws, req, urlObj);
-  }
-
-  // Route to streaming voice (ASR) proxy
-  if (urlObj.pathname === '/ws/voice') {
-    return voiceAsr.handleVoiceWs(ws, req, urlObj);
-  }
-
-  // Route to streaming TTS proxy
-  if (urlObj.pathname === '/ws/tts') {
-    return ttsService.handleTtsWs(ws, req);
-  }
-
-  // Route to the per-directory workspace status board
-  if (urlObj.pathname === '/ws/workspace') {
-    return workspaceRuntime.attachWorkspace(ws, urlObj);
-  }
-
-  // Route to the global meta event bus (all directories, all sessions).
-  // Subscribers receive every workspace event fleet-wide, plus an initial
-  // snapshot of every session across every directory. The voice/meta assistant
-  // subscribes here to hold the whole board.
-  if (urlObj.pathname === '/ws/meta') {
-    return workspaceRuntime.attachMeta(ws);
-  }
-
-  // Route to aux queue monitor (read-only WebSocket for __aux__ session)
-  if (urlObj.pathname === '/ws/aux') {
-    auxQueue.attachClient(ws);
-    ws.isAlive = true;
-    ws.on('pong', () => { ws.isAlive = true; });
-    // Send current status + recent history on connect
-    sendWs(ws, { type: 'aux_init', status: auxQueue.getStatus(), health: { ...auxQueue.health } });
-    const history = loadChatHistory(AUX_SESSION_ID);
-    sendWs(ws, { type: 'aux_history', messages: history.slice(-100) });
-    return;
-  }
-
-  let sessionId = urlObj.searchParams.get('id') || '';
-  let session;
-
-  if (sessionId && sessions.has(sessionId)) {
-    session = sessions.get(sessionId);
-    console.log(`[multicc] Client attached to session ${sessionId} (${session.clients.size + 1} total)`);
-  } else {
-    const persisted = persistedSessions.get(sessionId);
-    if (!persisted) {
-      sendWs(ws, { type: 'error', data:
-        `Session ${sessionId} does not exist.\r\n` +
-        `Create one in the dashboard first (Manage → pick a directory → + Terminal).\r\n` });
-      ws.close();
-      return;
-    }
-    if (persisted.kind && persisted.kind !== 'terminal') {
-      sendWs(ws, { type: 'error', data:
-        `Session ${sessionId} is a ${persisted.kind} session, not a terminal.\r\n` });
-      ws.close();
-      return;
-    }
-    console.log(`[multicc] Spawning terminal session ${sessionId}`);
-    try {
-      session = await createSession(sessionId);
-    } catch (err) {
-      const cliLabel = persisted.cli || 'claude';
-      const msg = `Failed to launch ${cliLabel}: ${err.message}\r\n` +
-        `Make sure "${cliLabel === 'qoder' ? 'qoderclicn' : cliLabel}" is installed and available in PATH.\r\n` +
-        `You can also set the ${cliLabel.toUpperCase()}_CMD environment variable.\r\n`;
-      sendWs(ws, { type: 'error', data: msg });
-      ws.close();
-      return;
-    }
-  }
-
-  session.clients.add(ws);
-
-  // Keep-alive tracking (server pings periodically)
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
-
-  // Tell client its session ID
-  sendWs(ws, { type: 'session_id', id: sessionId, cli: session.cli || 'claude' });
-
-  // Don't replay buffered output — the toggle-resize trick below forces a full TUI
-  // redraw at the client's actual dimensions, which is the only way to get correct layout.
-
-  // WebSocket messages → PTY input / resize
-  // Resize ownership: only the "primary" client (most recent input sender) controls resize.
-  // This prevents multi-window resize wars (e.g. desktop + mobile).
-  let inputBuf = '';
-  let firstResize = true;
-  ws.on('message', (raw) => {
-    try {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type === 'input') {
-        // Track cd commands to keep session.cwd up to date
-        for (const ch of msg.data) {
-          if (ch === '\r' || ch === '\n') {
-            const line = inputBuf.trim();
-            // Strip ANSI/VT escape sequences (e.g. bracketed-paste \x1b[200~…\x1b[201~)
-            const cleanLine = line.replace(/\x1b(?:\[[0-9;?]*[A-Za-z~]|.)/g, '');
-            const cdMatch = cleanLine.match(/^cd(?:\s+(.+))?$/);
-            if (cdMatch) {
-              const arg = (cdMatch[1] || '').trim().replace(/^["']|["']$/g, '');
-              const newCwd = resolveCwd(session.cwd, arg);
-              session.cwd = newCwd;
-              // Note: directory path is NOT updated — cwd drift within a shell is local to the session.
-              console.log(`[multicc] Session ${session.id} cwd → ${newCwd}`);
-            }
-            inputBuf = '';
-          } else if (ch === '\x03' || ch === '\x15') {
-            // Ctrl+C or Ctrl+U clears the line
-            inputBuf = '';
-          } else if (ch === '\x7f' || ch === '\b') {
-            inputBuf = inputBuf.slice(0, -1);
-          } else if (ch >= ' ') {
-            inputBuf += ch;
-          }
-        }
-        // Mark this client as primary (it's actively typing → it controls resize)
-        session.primaryClient = ws;
-        tmuxWriteInput(session.id, msg.data);
-        session.lastActivity = new Date();
-        // Reset push monitor on user input (Enter key)
-        if (msg.data.includes('\r') || msg.data.includes('\n')) {
-          pushOnInput(session.id);
-        }
-      } else if (msg.type === 'resize') {
-        const cols = Math.max(1, msg.cols);
-        const rows = Math.max(1, msg.rows);
-        ws._desiredCols = cols;
-        ws._desiredRows = rows;
-
-        // Tmux pane = max across all attached clients. On a sole-client first
-        // resize, send a +1 toggle to force the TUI to redraw at the right size.
-        if (firstResize && session.clients.size <= 1) {
-          firstResize = false;
-          tmuxResize(session.id, cols + 1, rows);
-          session.appliedCols = cols + 1;
-          session.appliedRows = rows;
-        }
-        applyMaxClientSize(session);
-      } else if (msg.type === 'upload') {
-        const { tempId, name, mime, data } = msg;
-        const origExt = (name && path.extname(name).replace(/^\./, '')) || '';
-        const ext = origExt.replace(/[^a-z0-9]/gi, '').slice(0, 10)
-          || (mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8);
-        const safeName = `multicc_${Date.now()}.${ext}`;
-        const tmpPath = path.join(os.tmpdir(), safeName);
-        fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'), { mode: 0o600 });
-        console.log(`[multicc] Saved upload: ${tmpPath}`);
-        sendWs(ws, { type: 'file_saved', tempId, path: tmpPath, name });
-      }
-    } catch (e) {
-      console.error('[multicc] Bad message:', e.message, e.stack);
-    }
-  });
-
-  ws.on('close', () => {
-    session.clients.delete(ws);
-    if (session.primaryClient === ws) session.primaryClient = null;
-    // The departing client may have been the widest/tallest — recompute and
-    // shrink tmux if the remaining clients all want a smaller pane.
-    applyMaxClientSize(session);
-    console.log(`[multicc] Client left session ${sessionId} (${session.clients.size} remaining)`);
-  });
-
-  ws.on('error', (err) => {
-    console.error('[multicc] WebSocket error:', err.message);
-    session.clients.delete(ws);
-    if (session.primaryClient === ws) session.primaryClient = null;
-    applyMaxClientSize(session);
-  });
+// WebSocket authentication, endpoint routing, terminal attachment and keep-alive
+// live behind one transport boundary. Mutable auth/shutdown state stays lazy.
+mountWsConnectionRouter(wss, {
+  metrics,
+  logger,
+  share,
+  parseCookies,
+  isLocalRequest,
+  authSecurity,
+  voiceAsr,
+  ttsService,
+  workspaceRuntime,
+  auxQueue,
+  auxSessionId: AUX_SESSION_ID,
+  loadChatHistory,
+  sessions,
+  persistedSessions,
+  createSession,
+  sendWs,
+  resolveCwd,
+  tmuxWriteInput,
+  tmuxResize,
+  applyMaxClientSize,
+  pushOnInput,
+  handleChatWs: (ws, req, urlObj) => chatTurnEngine.handleChatWs(ws, req, urlObj),
+  getShuttingDown: () => _shuttingDown,
+  getAccessToken: () => ACCESS_TOKEN,
+  allowLegacyWsCookie: ALLOW_LEGACY_WS_COOKIE,
+  allowLegacyWsToken: ALLOW_LEGACY_WS_TOKEN,
+  fs,
+  path,
+  os,
 });
-
-// WebSocket keep-alive: ping clients every 30s, terminate unresponsive ones
-const wsPingInterval = setInterval(() => {
-  wss.clients.forEach(client => {
-    if (client.isAlive === false) return client.terminate();
-    client.isAlive = false;
-    client.ping();
-  });
-}, 30000);
-
-wss.on('close', () => clearInterval(wsPingInterval));
 
 // Initialize AuxQueue (loads history, registers __aux__ session)
 auxQueue.init();

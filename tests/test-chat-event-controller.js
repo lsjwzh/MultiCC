@@ -425,7 +425,7 @@ test('queue cancellation handler sends the confirmed entry-scoped action', async
   assert.deepEqual(notices, [['已移除暂存消息', 'completed']]);
 });
 
-test('queue immediate insert handler promotes the selected entry', async () => {
+test('queue immediate insert handler executes the selected entry now', async () => {
   const requests = [];
   const notices = [];
   const handler = global.MultiCCChatSessionQueue.createInsertHandler({
@@ -443,7 +443,7 @@ test('queue immediate insert handler promotes the selected entry', async () => {
     entryId: 'entry-2',
     confirm: true,
   });
-  assert.deepEqual(notices, [['已移到队首；classify 允许后立即执行', 'completed']]);
+  assert.deepEqual(notices, [['已停止当前回复并直接执行所选消息', 'completed']]);
 });
 
 test('Claude five-hour limit consumes the structured SDK event without retaining billing fields', () => {
