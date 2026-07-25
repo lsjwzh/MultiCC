@@ -681,16 +681,20 @@ test('taskId boundaries keep intervening events on the current task and open a s
 });
 
 test('streaming classify path creates or merges the task-board card before returning', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  // recordTaskBoardGoal / applyClassifyResult / scanAndReclassify now live in the
+  // extracted classify state machine.
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'classify', 'state-machine.js'), 'utf8');
   const taskContextHostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'task-context-host.js'), 'utf8');
-  assert.match(source, /function recordTaskBoardGoal[\s\S]*?taskContextHost\.recordGoal/);
+  assert.match(source, /function recordTaskBoardGoal[\s\S]*?getTaskContextHost\(\)\.recordGoal/);
   assert.match(taskContextHostSource, /function recordGoal[\s\S]*?getTaskBoard\(\)\?\.onClassifyGoal/);
   const start = source.indexOf('function applyClassifyResult(');
-  const end = source.indexOf('\nfunction scanAndReclassify()', start);
+  const end = source.indexOf('\n  function scanAndReclassify()', start);
+  assert.ok(start >= 0 && end > start, 'applyClassifyResult slice anchors must resolve');
   const body = source.slice(start, end);
   const streaming = body.indexOf('if (cs && cs.isStreaming)');
   const create = body.indexOf('recordTaskBoardGoal(', streaming);
-  const earlyReturn = body.indexOf('\n    return;', streaming);
+  const earlyReturn = body.indexOf('\n      return;', streaming);
   assert.ok(streaming >= 0 && create > streaming && earlyReturn > create);
 });
 
