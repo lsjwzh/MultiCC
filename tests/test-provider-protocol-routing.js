@@ -117,16 +117,30 @@ test('ZCode maps all three protocols to isolated native provider kinds', () => {
     appType: 'codex', name: 'ZCode Responses', baseUrl: 'https://responses-zcode.example/v1',
     authToken: 'zcode-responses-secret', model: 'gpt-zcode', apiFormat: 'openai_responses',
   }).id;
+  const anthropicApiKeyId = providers.createProvider({
+    appType: 'claude',
+    name: 'ZCode Anthropic API Key',
+    apiFormat: 'anthropic',
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: 'https://anthropic-api-key.example',
+        ANTHROPIC_API_KEY: 'anthropic-api-key-secret',
+        ANTHROPIC_MODEL: 'claude-api-key-test',
+      },
+      modelCatalog: { models: [{ model: 'claude-api-key-test' }] },
+    },
+  }).id;
   const cases = [
-    ['cc-anthropic', 'anthropic', 'https://anthropic.example', 'anthropic-secret', 'claude-test'],
-    ['cc-chat', 'openai-compatible', 'https://chat.example/v1', 'chat-secret', 'chat-model'],
-    [responsesId, 'openai', 'https://responses-zcode.example/v1', 'zcode-responses-secret', 'gpt-zcode'],
+    ['cc-anthropic', 'anthropic', 'https://anthropic.example', 'authToken', 'anthropic-secret', 'claude-test'],
+    [anthropicApiKeyId, 'anthropic', 'https://anthropic-api-key.example', 'apiKey', 'anthropic-api-key-secret', 'claude-api-key-test'],
+    ['cc-chat', 'openai-compatible', 'https://chat.example/v1', 'apiKey', 'chat-secret', 'chat-model'],
+    [responsesId, 'openai', 'https://responses-zcode.example/v1', 'apiKey', 'zcode-responses-secret', 'gpt-zcode'],
   ];
 
   const configPaths = new Set();
-  for (const [providerId, kind, baseURL, apiKey, model] of cases) {
+  for (const [providerId, kind, baseURL, credentialField, credential, model] of cases) {
     const spawn = providers.resolveSpawnEnv({
-      id: `zcode-${kind}`,
+      id: `zcode-${kind}-${providerId}`,
       cli: 'zcode',
       provider: providerId,
       model,
@@ -138,12 +152,14 @@ test('ZCode maps all three protocols to isolated native provider kinds', () => {
     const routeId = config.model.slice(0, config.model.indexOf('/'));
     assert.equal(config.provider[routeId].kind, kind);
     assert.equal(config.provider[routeId].options.baseURL, baseURL);
-    assert.equal(config.provider[routeId].options.apiKey, apiKey);
+    assert.equal(config.provider[routeId].options[credentialField], credential);
+    const otherCredential = credentialField === 'apiKey' ? 'authToken' : 'apiKey';
+    assert.equal(config.provider[routeId].options[otherCredential], undefined);
     assert.deepEqual(config.provider[routeId].models[model], { id: model });
     assert.equal(fs.statSync(spawn.env.ZCODE_SETTINGS).mode & 0o777, 0o600);
     configPaths.add(spawn.env.ZCODE_SETTINGS);
   }
-  assert.equal(configPaths.size, 3, 'each session receives an isolated ZCode config tree');
+  assert.equal(configPaths.size, 4, 'each session receives an isolated ZCode config tree');
 
   const native = providers.resolveSpawnEnv({ id: 'zcode-native', cli: 'zcode', provider: null });
   assert.deepEqual(native.env, {}, 'provider-less ZCode keeps its official/native Coding Plan state');

@@ -1046,7 +1046,13 @@ function zcodeProviderMaterial(provider) {
     return {
       kind: 'anthropic',
       baseURL: env.ANTHROPIC_BASE_URL || summary.baseUrl || '',
-      apiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || '',
+      // ZCode's Anthropic provider deliberately distinguishes these fields:
+      // apiKey emits `x-api-key`, while authToken emits
+      // `Authorization: Bearer`. Preserve the source Provider's semantics
+      // exactly or Bearer-based relays such as BigModel reject a valid token.
+      ...(env.ANTHROPIC_AUTH_TOKEN
+        ? { authToken: env.ANTHROPIC_AUTH_TOKEN }
+        : (env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {})),
     };
   }
   return {
@@ -1077,6 +1083,7 @@ function buildZcodeRoute(provider, session) {
     options: {
       ...(material.baseURL ? { baseURL: material.baseURL } : {}),
       ...(material.apiKey ? { apiKey: material.apiKey } : {}),
+      ...(material.authToken ? { authToken: material.authToken } : {}),
     },
     models: Object.fromEntries(models.filter(Boolean).map(model => [model, { id: model }])),
   };
