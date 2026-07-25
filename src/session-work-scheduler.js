@@ -494,7 +494,10 @@ function createSessionWorkScheduler({
         schedule.active.deliveryId = schedule.active.entryId;
         schedule.active.workKind = 'task';
         schedule.state = 'frozen';
-        schedule.freezeReason = freezeReasonForClassify(classifyStateForSchedule(schedule));
+        // Delivery-protection freeze (the active delivery was released mid-flight),
+        // NOT a classify freeze — classify no longer freezes the queue. The
+        // scheduler drives this forward, so it reads as 'running' to the UI.
+        schedule.freezeReason = 'incomplete_requires_resume';
       }
       schedule.updatedAt = at;
       return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId)) };
@@ -613,15 +616,15 @@ function createSessionWorkScheduler({
     }
     const recoveredClassify = CLASSIFY_STATES.has(recoveredState.classifyState)
       ? recoveredState.classifyState : null;
-    if (recoveredClassify && recoveredClassify !== 'D') {
-      return freeze(
-        item.sessionId,
-        freezeReasonForClassify(recoveredClassify),
-        {
-          expectedTaskId: item.payload?.taskId || null,
-          classifyState: recoveredClassify,
-        },
-      );
+    // Recovery follows the same rule as the live path (T1): every verdict
+    // releases the active slot via complete(). D drains FIFO; W/B/E leave it.
+    // No classify-driven freeze on restart either.
+    if (recoveredClassify) {
+      return complete(item.sessionId, {
+        expectedTaskId: item.payload?.taskId || null,
+        reason: `recovered_${recoveredClassify}`,
+        classifyState: recoveredClassify,
+      });
     }
     // Delivery durability only settles the outbox lease. Without a correlated
     // classify verdict, park the active entry for a fresh classify pass.

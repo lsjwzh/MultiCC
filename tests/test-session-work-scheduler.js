@@ -418,9 +418,11 @@ test('persisted-delivery settlement uses only recovered classify and otherwise r
   );
   assert.equal(waitingResult.ok, true);
   const waitingState = await waiting.scheduler.status('waiting');
-  assert.equal(waitingState.state, 'frozen');
+  // T1: recovery follows the live path — W releases the active slot via
+  // complete() (no freeze). FIFO is left untouched.
+  assert.equal(waitingState.state, 'idle');
   assert.equal(waitingState.classifyState, 'W');
-  assert.equal(waitingState.freezeReason, 'classify_waiting');
+  assert.equal(waitingState.freezeReason, null);
 
   const staleDone = fixture(t);
   await staleDone.scheduler.admit({
@@ -435,8 +437,10 @@ test('persisted-delivery settlement uses only recovered classify and otherwise r
   );
   assert.equal(staleResult.ok, true);
   const staleState = await staleDone.scheduler.status('stale');
-  assert.equal(staleState.state, 'assessing');
-  assert.equal(staleState.classifyState, 'P');
+  // A recovered D completes the active slot (drains FIFO); it no longer
+  // re-assesses, because D is terminal.
+  assert.equal(staleState.state, 'idle');
+  assert.equal(staleState.classifyState, 'D');
   assert.equal(staleState.freezeReason, null);
 });
 
