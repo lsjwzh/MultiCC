@@ -476,15 +476,17 @@
       }
     }
 
-    // Token-level delta sidecar from the codex proxy (see server.js onDelta). The
-    // proxy sits between codex CLI and the provider and forwards each upstream
-    // text/reasoning/tool delta here, so a codex turn renders incrementally —
+    // Token-level delta sidecar from the provider proxy (see server.js onDelta).
+    // Claude already emits the same text/tool deltas through native stream-json,
+    // so consuming this sidecar too would render every fragment twice. Codex and
+    // OpenCode use the sidecar to render upstream deltas incrementally —
     // text streams token-by-token, reasoning shows live, tools update as they
     // run — instead of everything appearing at once at item.completed. This
     // mirrors opencode's part-stream model. Deltas are pure UX; the authoritative
     // blocks still arrive via finalizeAssistantMsg, which will overwrite/complete
     // whatever these deltas previewed.
     function handlePartDelta(message) {
+      if (state.currentCli === 'claude') return;
       const d = message && message.delta;
       if (!d) return;
       if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();

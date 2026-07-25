@@ -198,10 +198,15 @@ test('direct messages and dispatch requests share one success-gated FIFO', async
   const first = await runtime.admitSessionWork({
     sessionId: 'worker',
     text: 'direct one',
+    options: { clientMsgId: 'browser-direct-1' },
     idempotencyKey: 'direct-1',
   });
   assert.equal(first.ok, true);
   assert.deepEqual(injections.map(entry => entry.text), ['direct one']);
+  assert.equal(injections[0].opts.clientMsgId, 'browser-direct-1',
+    'the committed message must reconcile the browser optimistic bubble');
+  assert.match(injections[0].opts.deliveryId, /^session-work:/,
+    'durable delivery identity remains owned by the scheduler');
 
   await runtime.admitSessionWork({
     sessionId: 'worker',
@@ -229,6 +234,8 @@ test('direct messages and dispatch requests share one success-gated FIFO', async
   await runtime.sessionScheduler.complete('worker');
   await runtime.tick();
   assert.deepEqual(injections.map(entry => entry.text), ['direct one', 'direct two']);
+  assert.equal(injections[1].opts.clientMsgId, injections[1].opts.deliveryId,
+    'legacy/session work without a browser correlation key keeps the durable fallback');
   await runtime.sessionScheduler.complete('worker');
   await runtime.tick();
   assert.deepEqual(injections.map(entry => entry.text), [

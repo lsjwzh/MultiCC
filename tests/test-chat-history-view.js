@@ -175,6 +175,31 @@ test('view upserts persisted ids and keeps user content text-only', () => {
   assert.equal(messagesEl.children[0].textContent, 'authoritative');
 });
 
+test('committed user message replaces its optimistic bubble and preserves per-turn controls', () => {
+  const { document, messagesEl, view } = fixture();
+  const optimistic = document.createElement('div');
+  optimistic.className = 'msg user';
+  optimistic.dataset.clientMsgId = 'browser-1';
+  optimistic.textContent = 'send once';
+  const autoCommit = document.createElement('label');
+  autoCommit.className = 'msg-auto-commit';
+  optimistic.appendChild(autoCommit);
+  messagesEl.appendChild(optimistic);
+
+  const committed = view.commitMessage({
+    id: 'user-1',
+    role: 'user',
+    content: 'send once',
+    clientMsgId: 'browser-1',
+  }, { lastUserElement: optimistic });
+
+  assert.equal(messagesEl.querySelectorAll('.msg.user').length, 1);
+  assert.equal(committed.node.dataset.msgId, 'user-1');
+  assert.equal(committed.node.dataset.clientMsgId, 'browser-1');
+  assert.equal(committed.node.querySelector('.msg-auto-commit'), autoCommit);
+  assert.equal(committed.lastUserElement, committed.node);
+});
+
 test('assistant Markdown uses the one safe boundary and tool cards stay text-only', () => {
   let markdownCalls = 0;
   const { view } = fixture({
