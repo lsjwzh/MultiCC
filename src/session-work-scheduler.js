@@ -12,6 +12,12 @@ const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
 const LEGACY_TURN_ENDED_REASONS = new Set([
   'waiting',
+  // A plain classify-W freeze without a structured requestId is a finished
+  // turn ("waiting for the next user message"), not a queue gate. Release it
+  // the same way legacy `waiting` is released. releaseLegacyTurnEnd still
+  // refuses any freeze carrying an awaitingRequestId, so genuine structured
+  // questions remain frozen.
+  'awaiting_user_input',
   'incomplete_requires_resume',
   'classification_error',
 ]);
@@ -257,7 +263,12 @@ function createSessionWorkScheduler({
   // future work only to resume the currently frozen active task. The active
   // delivery itself may also be reclaimed after a crash between canonical
   // history persistence and outbox acknowledgement.
-  function selectSessionItem(items, draft) {
+  // Called inside the outbox store mutation. Normal work obeys the oldest
+  // admission sequence. A related answer/approval/callback may bypass queued
+  // future work only to resume the currently frozen active task. The active
+  // delivery itself may also be reclaimed after a crash between canonical
+  // history persistence and outbox acknowledgement.
+  function selectSessionItem(items, draft, at) {
     if (!items.length) return null;
     const schedule = draft.sessionSchedules[items[0].sessionId];
     if (!schedule || !schedule.active || schedule.state === 'idle') {
@@ -267,9 +278,17 @@ function createSessionWorkScheduler({
       return items[0];
     }
     if (schedule.state !== 'frozen') return null;
-    return items.find(item => isActiveReplay(schedule, item))
-      || items.find(item => relatedControl(schedule, item))
-      || null;
+    const replay = items.find(item => isActiveReplay(schedule, item));
+    if (replay) return replay;
+    const control = items.find(item => relatedControl(schedule, item));
+    if (control) return control;
+    // A turn-ended wait (plain classify W / legacy waiting) with no structured
+    // question pending is a finished turn, not a queue gate. Release it here —
+    // atomically inside the claim mutation — so work queued BEFORE the freeze
+    // advances on the next pump instead of waiting for a future admission or a
+    // restart. Genuinely blocked freezes (requestId, error, callback) stay.
+    const released = releaseLegacyTurnEnd(schedule, Number(at) || 0, 'queued_work_release');
+    return released ? items[0] : null;
   }
 
   function stableEntryId(sessionId, key, payload) {

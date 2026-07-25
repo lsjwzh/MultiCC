@@ -111,14 +111,19 @@ function createSessionWorkHost(deps = {}) {
       const current = await target.status(sessionId);
       if (!current?.active) return { ok: false, code: 'no_active_task' };
       const pending = deps.pendingUserInput(sessionId);
+      // The FIFO gate is "is a turn executing". A durable provider result with
+      // no structured question and no explicit wait IS the completion boundary:
+      // advance the queue now. Aux classification (D/W/E…) owns task-card
+      // semantics only and must never re-gate it — a plain W just means the
+      // reply ended and the next user/dispatched message may run.
       const result = pending && pending.resolved !== true
         ? await target.freeze(sessionId, 'awaiting_user_input', {
             requestId: pending.requestId,
           })
         : runtime.hasPending(sessionId)
           ? await target.freeze(sessionId, 'awaiting_callback')
-          : await target.turnEnded(sessionId);
-      if (result?.ok && result.schedule?.state === 'frozen') await runtime.tick();
+          : await target.complete(sessionId, { reason: 'durable_turn_completed' });
+      if (result?.ok) await runtime.tick();
       return result;
     })();
     turnClosures.set(sessionId, operation);
@@ -135,9 +140,13 @@ function createSessionWorkHost(deps = {}) {
     return target.freeze(sessionId, reason);
   }
 
-  // A durable provider result first enters `assessing`. Only an explicit D may
-  // advance already-queued work. W and every unresolved outcome keep that
-  // queue paused; a later direct chat admission may supersede `assessing`/W.
+  // Aux classification owns task/card semantics only — it must never gate the
+  // interaction FIFO. The turn boundary (turnSucceeded) already completed the
+  // active entry, so classifications usually arrive against an idle scheduler
+  // and no-op as stale. If a turn is nevertheless parked in `assessing`, a
+  // plain W still completes it: W means the reply ended and the next message
+  // (exactly the queue head) may run. Genuine faults and external waits keep
+  // their freeze.
   async function classifyTransition(sessionId, taskId, result = {}) {
     const runtime = schedulerRuntime();
     const target = runtime?.sessionScheduler;
@@ -150,20 +159,26 @@ function createSessionWorkHost(deps = {}) {
         return { ok: false, code: 'stale_classification' };
       }
       const expectedTaskId = taskId || current.active.taskId || null;
+      const plainWaiting = result.state === 'waiting'
+        && !result.error && !result.background && !runtime.hasPending(sessionId);
       const transition = result.state === 'completed'
         ? await target.complete(sessionId, {
             expectedTaskId,
             reason: 'classified_complete',
           })
-        : await target.freeze(
-            sessionId,
-            result.error ? 'error'
-              : result.background || runtime.hasPending(sessionId) ? 'awaiting_callback'
-                : result.state === 'waiting' ? 'awaiting_user_input'
+        : plainWaiting
+          ? await target.complete(sessionId, {
+              expectedTaskId,
+              reason: 'classified_waiting_turn_boundary',
+            })
+          : await target.freeze(
+              sessionId,
+              result.error ? 'error'
+                : result.background || runtime.hasPending(sessionId) ? 'awaiting_callback'
                   : result.state === 'continue' || result.state === 'running'
                     ? 'incomplete_requires_resume' : 'classification_error',
-            { expectedTaskId },
-          );
+              { expectedTaskId },
+            );
       if (transition?.ok) await runtime.tick();
       return transition;
     } catch (error) {
