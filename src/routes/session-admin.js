@@ -1,6 +1,7 @@
 'use strict';
 
 const { createSessionQueryService, createWorkspaceService } = require('../session');
+const { isTerminalLetter, isSettledLetter } = require('../classify/vocab');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[session-admin] ${name} must be a function`);
@@ -428,7 +429,7 @@ function createSessionAdminRuntime(rawDeps) {
       if (queue.isUnhealthy()) return res.status(503).json({ error: 'aux 服务不可用，无法重判' });
       const task = deps.getTaskState(record);
       const force = String(req.query.force).toLowerCase() === 'true';
-      if ((task.classifyState === 'D' || task.classifyState === 'W') && !force) {
+      if (isSettledLetter(task.classifyState) && !force) {
         return res.json({
           ok: true,
           skipped: true,
@@ -455,7 +456,7 @@ function createSessionAdminRuntime(rawDeps) {
         return res.status(400).json({ error: 'not a chat session' });
       }
       const task = deps.getTaskState(record);
-      if (task.classifyState === 'D') {
+      if (isTerminalLetter(task.classifyState)) {
         return res.json({ ok: true, alreadyDone: true, classifyState: 'D' });
       }
       const cs = deps.chatSessions.get(id);
@@ -477,7 +478,7 @@ function createSessionAdminRuntime(rawDeps) {
       for (const [sessionId, record] of deps.records) {
         if (!record || record.type === 'aux' || record.type === 'gateway') continue;
         const task = deps.getTaskState(record);
-        if (task.classifyState === 'D' || task.classifyState === 'W') continue;
+        if (isSettledLetter(task.classifyState)) continue;
         if (onlyJunk && !deps.isInjectedOrJunkGoal(task.goal)) continue;
         const reply = classificationReply(sessionId);
         if (reply.length < 20) continue;
@@ -527,7 +528,7 @@ function createSessionAdminRuntime(rawDeps) {
       if (!chat) return res.status(400).json({ error: 'session not active' });
       const task = deps.getTaskState(record);
       const force = String(req.query.force).toLowerCase() === 'true';
-      if ((task.classifyState === 'D' || task.classifyState === 'W') && !force) {
+      if (isSettledLetter(task.classifyState) && !force) {
         return res.status(409).json({
           error: `session is ${task.classifyState}; use ?force=true to override`,
           classifyState: task.classifyState,

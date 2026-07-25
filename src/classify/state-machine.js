@@ -19,6 +19,7 @@ const {
   buildClassifySystemPrompt,
   classifyDisplay,
   phaseLabel,
+  isSettledLetter,
 } = require('./vocab');
 
 function assertFunction(value, name) {
@@ -376,7 +377,7 @@ function createClassifyStateMachine(rawDeps) {
       // re-enters the turn flow, so W naturally leaves without scan's help.
       // Only C/B/E/P/null need re-judging — those advance on SYSTEM-side events
       // (auto-continue, background done, API recovered, interrupted resume).
-      if (ts.classifyState === 'D' || ts.classifyState === 'W') {
+      if (isSettledLetter(ts.classifyState)) {
         note(sid, ts.classifyState, 'skipped-DW-guard', ts.classifyState === 'D' ? 'done (terminal)' : 'waiting on user');
         continue;
       }
