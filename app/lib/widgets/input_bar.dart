@@ -1022,12 +1022,6 @@ class _InputBarState extends State<InputBar> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (provider.pendingUserInput != null)
-              PendingUserInputPanel(
-                input: provider.pendingUserInput!,
-                enabled: isConnected,
-                onAnswer: provider.sendMessage,
-              ),
             SessionQueuePanel(
               queue: provider.sessionQueue,
               enabled: isConnected,

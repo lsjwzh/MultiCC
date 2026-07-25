@@ -344,19 +344,37 @@ function createSessionWorkScheduler({
     const result = await store.mutate(draft => {
       const at = Number(now());
       const schedule = ensure(draft, cleanSessionId, at);
+      const atRestAnswer = !schedule.active
+        && inferredKind === 'answer'
+        && !!requestId
+        && classifyStateForSchedule(schedule) !== 'D'
+        && (!schedule.awaitingRequestId || schedule.awaitingRequestId === requestId);
       if (CONTROL_KINDS.has(inferredKind)) {
-        if (!schedule.active) {
+        // A structured answer is a new, correlated control turn. The previous
+        // provider turn has already released its active slot after classify W;
+        // ordinary queued work remains gated, while this direct answer may
+        // become the next active entry. awaitingRequestId is retained when the
+        // W verdict is committed, but the empty check keeps pre-migration
+        // pending questions answerable after a server upgrade.
+        if (!schedule.active && !atRestAnswer) {
           return { ok: false, code: 'no_active_task', schedule: publicSchedule(schedule) };
         }
-        if (activeEntryId && activeEntryId !== schedule.active.entryId) {
+        if (schedule.active && activeEntryId && activeEntryId !== schedule.active.entryId) {
           return { ok: false, code: 'active_task_mismatch', schedule: publicSchedule(schedule) };
         }
         if (inferredKind === 'answer' && schedule.awaitingRequestId
             && requestId !== schedule.awaitingRequestId) {
           return { ok: false, code: 'request_id_mismatch', schedule: publicSchedule(schedule) };
         }
-        payload.activeEntryId = schedule.active.entryId;
-        if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
+        if (schedule.active) {
+          // An answer is its own control turn even when submitted before the
+          // asking turn finishes. Validate against the current entry above,
+          // but do not inherit that entry id into delivery ownership.
+          payload.activeEntryId = inferredKind === 'answer'
+            ? null
+            : schedule.active.entryId;
+          if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
+        }
       }
       const admitted = admitOutboxItem(draft, {
         id,
@@ -369,7 +387,9 @@ function createSessionWorkScheduler({
       // tagged directRun so selectSessionItem returns it right away — it never
       // waits behind stale FIFO items (which only drain on D). This tag does
       // NOT touch priorityEntryId, so the queued LIST order is preserved.
-      if (!schedule.active && !CONTROL_KINDS.has(inferredKind) && draft.outbox[admitted.item.id]) {
+      if (draft.outbox[admitted.item.id]
+          && (inferredKind === 'answer'
+            || (!schedule.active && (!CONTROL_KINDS.has(inferredKind) || atRestAnswer)))) {
         draft.outbox[admitted.item.id].directRun = true;
       }
       schedule.updatedAt = at;
@@ -563,7 +583,12 @@ function createSessionWorkScheduler({
     return result;
   }
 
-  async function complete(sessionId, { expectedTaskId = null, reason = 'successful', classifyState = 'D' } = {}) {
+  async function complete(sessionId, {
+    expectedTaskId = null,
+    reason = 'successful',
+    classifyState = 'D',
+    awaitingRequestId = null,
+  } = {}) {
     const result = await store.mutate(draft => {
       const schedule = draft.sessionSchedules[sessionId];
       if (!schedule?.active) return { ok: false, code: 'no_active_task' };
@@ -575,7 +600,9 @@ function createSessionWorkScheduler({
       schedule.active = null;
       schedule.state = 'idle';
       schedule.freezeReason = null;
-      schedule.awaitingRequestId = null;
+      schedule.awaitingRequestId = classifyState !== 'D' && awaitingRequestId
+        ? String(awaitingRequestId)
+        : null;
       if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
       // classifyState is the LETTER (D/W/B/E). D = terminal-done (drains FIFO);
       // W/B/E = released but at-rest (FIFO only drains on D, see selectSessionItem).

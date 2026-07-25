@@ -42,8 +42,10 @@
     const getUserInputRequestId = opts.getUserInputRequestId || (() => null);
     const consumeUserInputRequestId = opts.consumeUserInputRequestId || (() => {});
     const resetHistory = opts.resetHistory || (() => {});
-    const addUserMessage = opts.addUserMessage || (() => {})
-  const stageUserMessage = opts.stageUserMessage || (() => {});
+    const addUserMessage = opts.addUserMessage || (() => {});
+    const stageUserMessage = typeof opts.stageUserMessage === 'function'
+      ? opts.stageUserMessage
+      : addUserMessage;
     const goalWrap = opts.goalWrap || (task => task);
     const debug = opts.debug || (() => {});
     const webSocketOpen = opts.webSocketOpen == null ? 1 : opts.webSocketOpen;
@@ -134,8 +136,7 @@
 
       const clientMsgId = newClientMsgId();
       const userInputRequestId = getUserInputRequestId();
-      if (typeof stageUserMessage === 'function') stageUserMessage(text, clientMsgId);
-      else addUserMessage(text, clientMsgId);
+      stageUserMessage(text, clientMsgId);
       clearInput();
       debug('state', `send() — WS ▶ user_message (${text.length} chars)${goalOptions ? ' [goal]' : ''}`);
       try {
