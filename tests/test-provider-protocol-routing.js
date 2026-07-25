@@ -131,8 +131,8 @@ test('ZCode maps all three protocols to isolated native provider kinds', () => {
     },
   }).id;
   const cases = [
-    ['cc-anthropic', 'anthropic', 'https://anthropic.example', 'authToken', 'anthropic-secret', 'claude-test'],
-    [anthropicApiKeyId, 'anthropic', 'https://anthropic-api-key.example', 'apiKey', 'anthropic-api-key-secret', 'claude-api-key-test'],
+    ['cc-anthropic', 'anthropic', 'https://anthropic.example/v1', 'apiKey', 'anthropic-secret', 'claude-test'],
+    [anthropicApiKeyId, 'anthropic', 'https://anthropic-api-key.example/v1', 'apiKey', 'anthropic-api-key-secret', 'claude-api-key-test'],
     ['cc-chat', 'openai-compatible', 'https://chat.example/v1', 'apiKey', 'chat-secret', 'chat-model'],
     [responsesId, 'openai', 'https://responses-zcode.example/v1', 'apiKey', 'zcode-responses-secret', 'gpt-zcode'],
   ];
@@ -146,6 +146,7 @@ test('ZCode maps all three protocols to isolated native provider kinds', () => {
       model,
     });
     assert.ok(spawn.env.ZCODE_DATA_BASE_DIR.startsWith(fakeHome));
+    assert.equal(spawn.env.HOME, spawn.env.ZCODE_DATA_BASE_DIR);
     assert.ok(spawn.env.ZCODE_SETTINGS.startsWith(spawn.env.ZCODE_DATA_BASE_DIR));
     assert.equal(spawn.qualifiedModel.endsWith(`/${model}`), true);
     const config = JSON.parse(fs.readFileSync(spawn.env.ZCODE_SETTINGS, 'utf8'));
