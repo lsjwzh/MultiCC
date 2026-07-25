@@ -98,6 +98,11 @@ class ChatMessage {
   /// chat_history; shown under each assistant bubble as "任务耗时".
   int? durationMs;
 
+  /// Client-generated correlation id carried through the durable FIFO. Unlike
+  /// [id] this exists before persistence, so delayed chat_msg_meta events can
+  /// tag the exact optimistic bubble instead of whichever user bubble is last.
+  final String? clientMsgId;
+
   ChatMessage({
     required this.role,
     this.content = '',
@@ -108,6 +113,7 @@ class ChatMessage {
     this.usage,
     this.id,
     this.durationMs,
+    this.clientMsgId,
   }) : toolCalls = toolCalls ?? [],
        timestamp = timestamp ?? DateTime.now();
 
@@ -126,7 +132,10 @@ class ChatMessage {
       id = (json['id']?.toString().isNotEmpty ?? false)
           ? json['id'].toString()
           : null,
-      durationMs = (json['durationMs'] as num?)?.toInt();
+      durationMs = (json['durationMs'] as num?)?.toInt(),
+      clientMsgId = (json['clientMsgId']?.toString().isNotEmpty ?? false)
+          ? json['clientMsgId'].toString()
+          : null;
 
   static List<ToolCall> _parseHistoryTools(dynamic tools) {
     if (tools is! List) return [];
