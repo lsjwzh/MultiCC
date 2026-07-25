@@ -30,6 +30,26 @@
     return null;
   }
 
+  function effortLabelForCli(cli, isClaude) {
+    if (cli === 'qoder') return 'Reasoning Effort';
+    if (cli === 'opencode') return 'Variant';
+    return isClaude ? 'Effort' : 'Reasoning Level';
+  }
+
+  function effortOptionsForCli(cli, isClaude) {
+    if (cli === 'zcode') return [];
+    if (cli === 'qoder') return ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+    if (cli === 'opencode') return ['', 'minimal', 'low', 'medium', 'high', 'max'];
+    return isClaude
+      ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
+      : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  }
+
+  function defaultEffortForCli(cli, isClaude) {
+    if (cli === 'qoder' || cli === 'opencode' || cli === 'zcode') return '';
+    return isClaude ? 'medium' : 'xhigh';
+  }
+
   function beginMutation(ownerKey) {
     const epoch = ++nextMutationEpoch;
     mutationEpoch.set(ownerKey, epoch);
@@ -573,24 +593,18 @@
       // ── Effort / Reasoning level ──
       const effortLabel = document.createElement('div');
       effortLabel.style.cssText = 'font-size:11px;color:#8b949e;margin-bottom:4px;';
-      effortLabel.textContent = cli === 'qoder' ? 'Reasoning Effort' : (isClaude ? 'Effort' : 'Reasoning Level');
+      effortLabel.textContent = effortLabelForCli(cli, isClaude);
       box.appendChild(effortLabel);
       const effortSelect = document.createElement('select');
       effortSelect.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;box-sizing:border-box;';
-      const effortOptions = cli === 'zcode'
-        ? []
-        : cli === 'qoder'
-          ? ['', 'low', 'medium', 'high', 'xhigh', 'max']
-          : isClaude
-        ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
-        : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+      const effortOptions = effortOptionsForCli(cli, isClaude);
       for (const v of effortOptions) {
         const opt = document.createElement('option');
         opt.value = v;
         opt.textContent = v;
         effortSelect.appendChild(opt);
       }
-      effortSelect.value = cli === 'qoder' ? '' : (isClaude ? 'medium' : 'xhigh');
+      effortSelect.value = defaultEffortForCli(cli, isClaude);
       if (!effortOptions.length) {
         effortLabel.style.display = 'none';
         effortSelect.style.display = 'none';
@@ -786,7 +800,13 @@
     await loadDashboard();
   }
 
-  root.MultiCCManageSessionLifecycle = Object.freeze({ ownedJson, buildSessionCreatePayload });
+  root.MultiCCManageSessionLifecycle = Object.freeze({
+    ownedJson,
+    buildSessionCreatePayload,
+    effortLabelForCli,
+    effortOptionsForCli,
+    defaultEffortForCli,
+  });
 
   Object.assign(root, {
     providerAliasMap,
@@ -807,6 +827,9 @@
     changeSessionRole,
     changeDirectoryRole,
     renameSession,
-    buildSessionCreatePayload
+    buildSessionCreatePayload,
+    effortLabelForCli,
+    effortOptionsForCli,
+    defaultEffortForCli,
   });
 })(typeof window !== 'undefined' ? window : null);
