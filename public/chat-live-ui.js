@@ -101,11 +101,19 @@
     // Optional host hook: manual "mark task done" from the classify bar. The bar
     // only reveals the button while the aux state is waiting-for-user (W).
     const onMarkTaskDone = opts.onMarkTaskDone || null;
+    const onCancelTask = opts.onCancelTask || null;
     const _markDoneBtn = doc.getElementById('ac-mark-done');
     if (_markDoneBtn) {
       _markDoneBtn.addEventListener('click', () => {
         _markDoneBtn.disabled = true;
         try { if (onMarkTaskDone) onMarkTaskDone(); } catch (_) {}
+      });
+    }
+    const _cancelTaskBtn = doc.getElementById('ac-cancel-task');
+    if (_cancelTaskBtn) {
+      _cancelTaskBtn.addEventListener('click', () => {
+        _cancelTaskBtn.disabled = true;
+        try { if (onCancelTask) onCancelTask(); } catch (_) {}
       });
     }
 
@@ -246,7 +254,7 @@
       const bar = doc.getElementById('aux-classify-bar');
       if (!bar) return;
       const normalizedGoal = String(goal || '').trim();
-      if (!normalizedGoal) { bar.classList.remove('show', 'can-mark-done'); return; }
+      if (!normalizedGoal) { bar.classList.remove('show', 'can-mark-done', 'can-cancel-task'); return; }
       const goalEl = doc.getElementById('ac-goal');
       const phaseEl = doc.getElementById('ac-phase');
       const stateEl = doc.getElementById('ac-state');
@@ -263,6 +271,8 @@
       if (stateEl) { stateEl.textContent = display.label; stateEl.style.display = ''; }
       bar.classList.add(`st-${display.barTint}`);
       bar.classList.toggle('can-mark-done', (classifyState || 'P') === 'W');
+      bar.classList.toggle('can-cancel-task', (classifyState || 'P') === 'P');
+      if ((classifyState || 'P') !== 'P' && _cancelTaskBtn) _cancelTaskBtn.disabled = false;
       bar.classList.add('show');
     }
 

@@ -544,6 +544,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
   getBaseTitle: () => _baseTitle,
   debug: dbg,
   onMarkTaskDone: markTaskDone,
+  onCancelTask: cancelTaskFromBar,
 });
 let chatEventController = null;
 let _eventGeneration = 0;
@@ -764,6 +765,10 @@ async function markTaskDone() {
     const b = document.getElementById('ac-mark-done');
     if (b) b.disabled = false;
   }
+}
+function cancelTaskFromBar() {
+  cancelStreaming();
+  addSystemMsg('已请求取消当前任务');
 }
 function attachUsageLine(bubbleEl, usage, roleBreakdown) {
   return chatLiveUi.attachUsageLine(bubbleEl, usage, roleBreakdown);
