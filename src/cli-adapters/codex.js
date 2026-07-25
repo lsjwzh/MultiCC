@@ -125,7 +125,11 @@ function createCodexAdapter(deps) {
     },
     buildInvocation(env) {
       const so = env.spawnOpts;
-      const session = { effort: so.rawEffort, model: so.rawModel };
+      const session = {
+        effort: so.rawEffort,
+        model: so.rawModel,
+        effectiveModel: so.effectiveModel,
+      };
       const isFirstTurn = env.historyHandle.isFirstTurn;
       const prompt = renderPrompt(env);
       let payload = isFirstTurn ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt }) : prompt;

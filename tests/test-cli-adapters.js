@@ -226,6 +226,30 @@ assert.deepStrictEqual(
 assert.ok(
   zcode.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' }).payload.includes('[角色设定]'),
 );
+let codexReasoningSession = null;
+const codexModelAware = createCodexAdapter({
+  cmd: 'codex',
+  codexReasoningConfigArg: session => {
+    codexReasoningSession = session;
+    return null;
+  },
+  codexModelConfigArg: () => null,
+  multiccImgHint: 'hint',
+});
+codexModelAware.buildInvocation({
+  ...opencodeEnvelope,
+  spawnOpts: {
+    ...opencodeEnvelope.spawnOpts,
+    rawModel: null,
+    rawEffort: 'ultra',
+    effectiveModel: 'gpt-5.6-sol',
+  },
+});
+assert.deepStrictEqual(codexReasoningSession, {
+  effort: 'ultra',
+  model: null,
+  effectiveModel: 'gpt-5.6-sol',
+});
 const codexWithRouter = createCodexAdapter({
   cmd: 'codex',
   codexReasoningConfigArg: () => null,
