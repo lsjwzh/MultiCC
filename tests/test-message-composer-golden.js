@@ -44,12 +44,12 @@ function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
-const CODEX_REASONING_ALIASES = new Map([['max', 'xhigh'], ['ultra', 'xhigh']]);
+const CODEX_REASONING_56_LEVELS = new Set(['max', 'ultra']);
 
 function normalizeEffort(v) {
   const s = (v == null ? '' : String(v)).trim().toLowerCase();
   if (!s) return null;
-  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) || CODEX_REASONING_ALIASES.has(s)
+  return EFFORT_LEVELS.has(s) || CODEX_REASONING_LEVELS.has(s) || CODEX_REASONING_56_LEVELS.has(s)
     ? s
     : undefined;
 }
@@ -60,9 +60,12 @@ function cliEffortLevel(session) {
 }
 function codexReasoningLevel(session) {
   const e = normalizeEffort(session && session.effort);
-  return e
-    ? (CODEX_REASONING_ALIASES.get(e) || (CODEX_REASONING_LEVELS.has(e) ? e : null))
-    : null;
+  if (!e) return null;
+  if (CODEX_REASONING_LEVELS.has(e)) return e;
+  if (!CODEX_REASONING_56_LEVELS.has(e)) return null;
+  return /^gpt[-_.]?5[.]6(?:$|[-_.])/.test(String(session.effectiveModel || session.model || '').split('/').pop())
+    ? e
+    : 'xhigh';
 }
 function codexReasoningConfigArg(session) {
   const lvl = codexReasoningLevel(session);
