@@ -55,6 +55,33 @@ retry timer is cancelled on shutdown, deletion, a new user message, or runner
 supersession. A turn with partial output or a non-thinking tool call is never
 automatically replayed.
 
+## Claude CLI stream-watchdog envelopes
+
+When the Claude CLI (2.1.x) stream watchdog kills a stalled stream, errors
+mid-response, or observes the connection close, it finalizes the turn as an
+ordinary result — no `is_error`/`subtype` evidence — whose assistant text is a
+short `API Error: …` envelope. The result boundary
+(`claudeErrorEnvelope()` in `src/chat/api-error-policy.js`, called from the
+claude/qoder result handler in `server.js`) recognizes the pinned envelope
+wording and routes it through the normal policy path instead of persisting the
+error text as the answer. Version-pinned mapping:
+
+| User-visible message | Normalized code | Category |
+| --- | --- | --- |
+| `API Error: Response stalled mid-stream. The response above may be incomplete.` | `response_stalled_mid_stream` | `timeout` |
+| `API Error: Response stalled while thinking, before producing a response. Try again.` | `response_stalled_before_response` | `timeout` |
+| `API Error: Server error mid-response. The response above may be incomplete.` | `server_error_mid_response` | `provider_transient` |
+| `API Error: Connection closed mid-response. The response above may be incomplete.` | `connection_closed_mid_response` | `network` |
+| `API Error: Connection closed while thinking, before producing a response. Try again.` | `connection_closed_before_response` | `network` |
+
+A "stalled while thinking" envelope is pre-output and may take one bounded
+retry; a "mid-stream"/"mid-response" envelope means real output exists above,
+so the replay boundary fails fast and keeps the partial answer. Detection only
+fires on error-only assistant text, never on turns with meaningful content.
+The CLI also reports the internal watchdog cause as `watchdog` /
+`stale_connection` / `network_down` / `server_error`, which the structured
+code sets map to the same categories.
+
 ## Structured observability
 
 Decision logs expose only category, provider, code, HTTP status, phase,

@@ -10,6 +10,7 @@ const {
   createApiErrorPolicyRuntime,
   parseRetryAfter,
   retryNotice,
+  claudeErrorEnvelope,
 } = require('../src/chat/api-error-policy');
 
 const fixture = JSON.parse(fs.readFileSync(
@@ -152,6 +153,69 @@ test('untrusted text cannot smuggle a retryable category and public messages are
   }, { phase: 'before_first_token' });
   assert.equal(error.category, 'unknown');
   assert.doesNotMatch(error.sanitizedMessage, /secret-token|\/Users\/person/);
+});
+
+test('Claude CLI 2.1.x stream-watchdog envelopes are detected and classified', () => {
+  const cases = [
+    ['API Error: Response stalled mid-stream. The response above may be incomplete.', 'timeout', 'response_stalled_mid_stream'],
+    ['API Error: Response stalled while thinking, before producing a response. Try again.', 'timeout', 'response_stalled_before_response'],
+    ['API Error: Server error mid-response. The response above may be incomplete.', 'provider_transient', 'server_error_mid_response'],
+    ['API Error: Connection closed mid-response. The response above may be incomplete.', 'network', 'connection_closed_mid_response'],
+    ['API Error: Connection closed while thinking, before producing a response. Try again.', 'network', 'connection_closed_before_response'],
+  ];
+  for (const [message, category, code] of cases) {
+    const envelope = claudeErrorEnvelope('claude', message);
+    assert.ok(envelope, `envelope must be detected: ${message}`);
+    assert.equal(envelope.code, code);
+    assert.equal(envelope.source, 'claude_result');
+    assert.equal(envelope.provider, 'claude');
+    const normalized = normalizeApiError(envelope, {
+      source: envelope.source, provider: 'claude', phase: 'before_first_token',
+    });
+    assert.equal(normalized.category, category, message);
+    assert.equal(normalized.retryable, true, message);
+  }
+  assert.equal(claudeErrorEnvelope('qoder', 'API Error: Response stalled mid-stream. The response above may be incomplete.').source, 'qoder_result');
+});
+
+test('watchdog envelope detection never fires on meaningful assistant output', () => {
+  assert.equal(claudeErrorEnvelope('claude', '好的，我来解释 API Error 的处理方式，以及重试策略。'), null);
+  assert.equal(claudeErrorEnvelope('claude', ''), null);
+  assert.equal(claudeErrorEnvelope('claude', null), null);
+  const withRealOutput = '已经完成了第一步。\nAPI Error: Response stalled mid-stream. The response above may be incomplete.';
+  assert.equal(claudeErrorEnvelope('claude', withRealOutput), null);
+  assert.equal(claudeErrorEnvelope('claude', `${'x'.repeat(700)} API Error: Response stalled mid-stream.`), null);
+});
+
+test('stalled mid-stream with partial output fails fast at the replay boundary; stalled while thinking retries once', () => {
+  const midStream = claudeErrorEnvelope('claude', 'API Error: Response stalled mid-stream. The response above may be incomplete.');
+  const partial = decide({ ...midStream }, { phase: 'stream', partialOutput: true });
+  assert.equal(partial.action, 'fail_fast');
+  assert.equal(partial.reason, 'unsafe_replay_boundary');
+  const whileThinking = claudeErrorEnvelope('claude', 'API Error: Response stalled while thinking, before producing a response. Try again.');
+  const first = decide({ ...whileThinking });
+  assert.equal(first.action, 'retry');
+  assert.equal(first.attempt, 1);
+  assert.equal(first.error.maxAttempts, 1);
+  const second = decide({ ...whileThinking }, { attempt: 1 });
+  assert.equal(second.action, 'fail_fast');
+  assert.equal(second.reason, 'retry_budget_exhausted');
+});
+
+test('structured watchdog, stale-connection and server_error codes classify without text evidence', () => {
+  const cases = [
+    [{ code: 'watchdog', source: 'claude_result', provider: 'claude', message: '' }, 'timeout'],
+    [{ code: 'stream_idle_timeout', source: 'claude_result', provider: 'claude', message: '' }, 'timeout'],
+    [{ code: 'stale_connection', source: 'claude_result', provider: 'claude', message: '' }, 'network'],
+    [{ code: 'network_down', source: 'claude_result', provider: 'claude', message: '' }, 'network'],
+    [{ code: 'server_error', source: 'claude_result', provider: 'claude', message: '' }, 'provider_transient'],
+    [{ code: 'overloaded_error', source: 'claude_result', provider: 'claude', message: '' }, 'provider_transient'],
+  ];
+  for (const [raw, category] of cases) {
+    assert.equal(normalizeApiError(raw, {
+      source: raw.source, provider: raw.provider, phase: 'before_first_token',
+    }).category, category, String(raw.code));
+  }
 });
 
 test('runtime deduplicates repeated events, opens provider circuit, and exposes aggregate metrics', () => {

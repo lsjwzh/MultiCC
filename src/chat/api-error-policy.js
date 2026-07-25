@@ -40,10 +40,14 @@ const CANCELLATION_CODES = new Set([
 const NETWORK_CODES = new Set([
   'econnreset', 'econnrefused', 'econnaborted', 'enotfound', 'eai_again',
   'epipe', 'err_network', 'fetch_failed', 'socket_hang_up',
+  'stale_connection', 'network_down', 'stream_suspended',
+  'connection_closed_mid_response', 'connection_closed_before_response',
 ]);
 const TIMEOUT_CODES = new Set([
   'etimedout', 'timeout', 'connect_timeout', 'read_timeout', 'overall_timeout',
   'deadline_exceeded', 'und_err_connect_timeout', 'headers_timeout',
+  'watchdog', 'stream_idle_timeout',
+  'response_stalled_mid_stream', 'response_stalled_before_response',
 ]);
 const CONTEXT_CODES = new Set([
   'context_length_exceeded', 'context_window_exceeded', 'too_many_tokens',
@@ -58,6 +62,10 @@ const BILLING_CODES = new Set([
   'quota_exceeded', 'usage_limit_exceeded', 'credit_balance_exhausted',
 ]);
 const RATE_CODES = new Set(['rate_limit_error', 'rate_limited', 'too_many_requests']);
+const PROVIDER_TRANSIENT_CODES = new Set([
+  'server_error', 'api_error', 'overloaded', 'overloaded_error',
+  'internal_error', 'internal_server_error', 'server_error_mid_response',
+]);
 const CONFIG_CODES = new Set([
   'provider_unavailable', 'provider_config_invalid', 'missing_provider',
   'missing_base_url', 'spawn_failed', 'cli_not_installed', 'cli_resume_mismatch',
@@ -105,6 +113,34 @@ function isErrorOnlyText(value) {
   const text = String(value || '').trim();
   if (!text || text.length > 600) return false;
   return /^(?:api\s*error|error:|codex\s*(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i.test(text);
+}
+
+// Claude CLI (2.1.x) stream watchdog: when a stream stalls, errors, or the
+// connection drops mid-response, the CLI finalizes the turn as an ordinary
+// result whose assistant text is one of these short "API Error: …" envelopes
+// — with no is_error/subtype evidence on the result event. The envelope text
+// is therefore the only structured signal. Wording is version-pinned to the
+// CLI 2.1.x watchdog; keep the codes aligned with the category sets above.
+const CLAUDE_ERROR_ENVELOPE_CODES = Object.freeze([
+  { code: 'response_stalled_mid_stream', pattern: /response stalled mid-stream/i },
+  { code: 'response_stalled_before_response', pattern: /response stalled while thinking/i },
+  { code: 'server_error_mid_response', pattern: /server error mid-response/i },
+  { code: 'connection_closed_mid_response', pattern: /connection closed mid-response/i },
+  { code: 'connection_closed_before_response', pattern: /connection closed while thinking/i },
+]);
+
+function claudeErrorEnvelope(provider, text) {
+  if (!isErrorOnlyText(text)) return null;
+  const message = String(text).trim();
+  const matched = CLAUDE_ERROR_ENVELOPE_CODES.find(entry => entry.pattern.test(message));
+  if (!matched) return null;
+  const providerName = String(provider || 'claude').toLowerCase();
+  return Object.freeze({
+    source: providerName === 'qoder' ? 'qoder_result' : 'claude_result',
+    provider: providerName,
+    code: matched.code,
+    message,
+  });
 }
 
 function headerValue(headers, name) {
@@ -160,6 +196,7 @@ function structuredCategory(status, code, rawCategory) {
   if (AUTH_CODES.has(code) || status === 401 || status === 403) return 'authentication_permission';
   if (BILLING_CODES.has(code) || status === 402) return 'billing_quota';
   if (RATE_CODES.has(code) || status === 429) return 'rate_limit';
+  if (PROVIDER_TRANSIENT_CODES.has(code)) return 'provider_transient';
   if (CONTEXT_CODES.has(code)) return 'context_token_limit';
   if (TOOL_CODES.has(code)) return 'tool_protocol';
   if (CONFIG_CODES.has(code)) return 'adapter_configuration';
@@ -179,9 +216,9 @@ function textFallbackCategory(message) {
   if (/invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error/.test(text)) return 'tool_protocol';
   if (/cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint/.test(text)) return 'cancel_shutdown';
   if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed/.test(text)) return 'adapter_configuration';
-  if (/etimedout|timed? out|timeout|deadline exceeded/.test(text)) return 'timeout';
+  if (/etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle/.test(text)) return 'timeout';
   if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection refused|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
-  if (/\b(?:500|502|503|504|529)\b|overloaded|internal server error|service unavailable|bad gateway|system is busy/.test(text)) return 'provider_transient';
+  if (/\b(?:500|502|503|504|529)\b|overloaded|server error|internal server error|service unavailable|bad gateway|system is busy/.test(text)) return 'provider_transient';
   if (/\b(?:400|404|409|422)\b|invalid request|validation error|unsupported model|model not found|unprocessable/.test(text)) return 'invalid_request_model';
   return 'unknown';
 }
@@ -483,4 +520,5 @@ module.exports = {
   retryNotice,
   sanitizeMessage,
   isErrorOnlyText,
+  claudeErrorEnvelope,
 };
