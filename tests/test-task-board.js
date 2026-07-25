@@ -150,10 +150,10 @@ test('task board display state follows classify runState for icon and status tex
   assert.match(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
   assert.doesNotMatch(runStateAdapter, /classifyState === 'D' \|\| classifyState === 'C'/);
   // A task card must follow the session's persisted classify verdict, never a
-  // momentary session-busy flag. The `if (taskBoardSessionBusy(sid)) return
-  // 'running'` short-circuit used to make every historical card light up as
-  // 「进行中」whenever its owning session ran any new turn — do not reintroduce it.
-  assert.doesNotMatch(runStateAdapter, /taskBoardSessionBusy/);
+  // momentary session-busy flag. The `if (sessionBusy(sid)) return 'running'`
+  // short-circuit used to make every historical card light up as「进行中」
+  // whenever its owning session ran any new turn — do not reintroduce it.
+  assert.doesNotMatch(runStateAdapter, /Busy\(/);
 });
 
 test('task board UI hides the Commander routing chip on the card', () => {
@@ -704,18 +704,21 @@ test('host task-board dispatch rejects busy targets before durable admission', (
     path.join(__dirname, '..', 'src', 'dispatch', 'gateway-host.js'),
     'utf8',
   );
-  assert.match(source, /function taskBoardSessionBusy\(sid\)[\s\S]*?chatTurnPreparationRuntime\.snapshot\(sid\)[\s\S]*?orchestrationChatBusy\(sid\)/);
-  assert.match(source, /createTaskBoardRuntime\([\s\S]*?isSessionBusy: taskBoardSessionBusy/);
+  // Busy is a classify verdict plus the repo lease — see the liveness→classify
+  // invariants in tests/test-architecture-boundaries.js.
+  assert.match(source, /function dispatchTargetBusy\(sid\)[\s\S]*?isRunActive\(sid\)[\s\S]*?isLeased\(sid\)/);
+  // The task board reads the run state directly; it has no busy port of its own.
+  assert.doesNotMatch(source, /createTaskBoardRuntime\([\s\S]*?isSessionBusy:/);
   // The dispatch admission path lives in src/dispatch/gateway-host.js now.
   const start = gatewayHost.indexOf('async function dispatchToSession(');
   const end = gatewayHost.indexOf('\n  // ── Dispatch ↔', start);
   const body = gatewayHost.slice(start, end);
-  const guard = body.indexOf('opts.requireIdle && taskBoardSessionBusy(chatId)');
+  const guard = body.indexOf('opts.requireIdle && isTargetBusy(chatId)');
   const admission = body.indexOf('getOrchestrationRuntime().admitDispatch(');
   assert.ok(guard >= 0 && admission > guard);
   assert.match(gatewayHost, /validateDispatchTarget\(targetId, fromSessionId = null, allowCommander = false\)/);
   assert.match(gatewayHost, /rec\.type === 'commander' && !allowCommander/);
-  assert.match(source, /isBusy: taskBoardSessionBusy/);
+  assert.match(source, /isBusy: dispatchTargetBusy/);
   assert.match(gatewayHost, /oneWay: !!opts\.oneWay/);
   assert.match(source, /replayRecoveredDispatchEffects: \(\) => \{\}/);
 });
