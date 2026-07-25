@@ -14,31 +14,38 @@ Commander ───────┤
 dispatch/route ──┼─> durable admission/outbox ─> session gate ─> canonical
 wait/trigger ────┤        (sequence + key)          claim        chat turn
 retry/answer ────┘                                      │
-                                                       └─ turn-end boundary
-                                                          advances the queue;
-                                                          Aux classify is
-                                                          card semantics only
+                                                       └─ turn-end ─> assessing
+                                                                      │
+                                                                      v
+                                                               classify verdict
+                                                               D/W/B/E/P
 ```
 
 The outbox owns the canonical pending payload and admission sequence.
-`sessionSchedules` stores only the active reference, state, freeze reason and
-last explicit decision. Once the user message is durably present in canonical
-chat history, the delivered outbox payload is reduced to a history reference.
+`sessionSchedules` stores the active reference, classify-backed state, optional
+queue-head override and last explicit decision. Once the user message is
+durably present in canonical chat history, the delivered outbox payload is
+reduced to a history reference.
 
 ## The FIFO gate
 
-The gate is **"is a turn executing"**, not "is the whole task done". A durable
-provider result with no structured `request_user_input` pending and no explicit
-wait/callback registered completes the active entry at the turn boundary and
-the outbox pump claims the next FIFO head. Aux classification (D/W/E/B/P) owns
-task-card display only and never gates the queue: a plain `W` just means the
-reply ended and the next user or dispatched message may run. Freezing is
-reserved for structured signals — an open `request_user_input` (with its
-requestId), an explicit wait/callback, a real provider error, or an unknown
-interruption. Turn-ended freezes without a requestId (plain `W`, legacy
-`waiting`, `classification_error`, `incomplete_requires_resume`) are released
-automatically when queued work exists — both at admission time and on the next
-pump tick — so work queued before such a freeze is never stuck behind it.
+Classify is the **only semantic gate**. FIFO owns ordering, durable delivery and
+the active-task correlation; it does not independently infer success from a
+provider exit, process liveness, delivery acknowledgement, pending queue length
+or UI state.
+
+At every turn boundary the active entry enters `assessing`. Only the canonical
+classify verdict may decide what happens next:
+
+- `D` completes the active entry and permits the next queue item.
+- `P` keeps the active entry parked as still processing.
+- `W` permits only a correlated answer, approval or direct continuation.
+- `B` permits only a correlated callback or continuation.
+- `E` permits only a correlated retry or resume.
+
+If classify is unavailable, the entry remains in assessment and the classify
+loop retries. Transport failures release their delivery claim for retry; they
+do not create a second FIFO completion/freeze authority.
 
 ## State transitions
 
@@ -46,20 +53,26 @@ pump tick — so work queued before such a freeze is never stuck behind it.
 | --- | --- | --- | --- |
 | `idle` | FIFO head claimed | `starting` | No |
 | `starting` | canonical turn accepted | `running` | No |
-| `running` | durable turn result (no open request/wait) | `idle`, then claim one head | Yes |
-| `running` | turn ended with unresolved `request_user_input` | `frozen: awaiting_user_input` (requestId) | No |
-| `running` | turn ended with an explicit wait pending | `frozen: awaiting_callback` | No |
-| `assessing` (defensive; not set by the normal boundary) | D or plain W | `idle`, then claim one head | Yes |
-| `assessing` (defensive) | error / interrupted / explicit wait | `frozen` | No |
-| `frozen` | correlated answer/approval/callback/retry | `starting` for the same active task | No |
+| `running` | turn ends for any reason | `assessing: P` | No |
+| `assessing` | classify `D` | `idle`, then claim one head | Yes |
+| `assessing` | classify `P/W/B/E` | `frozen: classify_*` | No |
+| `frozen: W` | correlated answer/approval/direct continuation | `starting` for the same active task | No |
+| `frozen: B` | correlated callback/continuation | `starting` for the same active task | No |
+| `frozen: E` | correlated retry/resume | `starting` for the same active task | No |
 | `frozen` | explicit skip/cancel/resolve | `idle`, then claim one head | Yes |
-| `frozen` (turn-ended wait, no requestId) | queued item present at admission or next pump | `idle`, then claim one head | Yes |
-| any active state | restart without a live process | `frozen: unknown_interruption` | No |
+| active after restart | recovered classify `D/W/B/E/P` | corresponding classify transition | Only for `D` |
+| active after restart | no reliable classify fact | `assessing` | No |
+| no durable active pointer | pending FIFO items only | `idle`, then claim one head | Yes |
 
 A control item may bypass queued future work only when it identifies the current
-active entry/task/request. It resumes that task; it does not create a new FIFO
-task boundary. Ordinary messages admitted while genuinely frozen (requestId
-question, callback wait, error) remain behind the existing queue head.
+active entry/task/request and its kind is permitted by the current classify
+state. It resumes that task; it does not create a new FIFO task boundary.
+Ordinary queued messages never advance while the active classify state is
+`P/W/B/E`.
+
+The public queue contains every pending/leased item, including normal tasks and
+correlated controls. This is the same complete list sent in queue snapshots and
+queue events.
 
 ## Idempotency and recovery
 
@@ -72,14 +85,25 @@ question, callback wait, error) remain behind the existing queue head.
   changing the active schedule and recording a completion/decision therefore
   cannot race into two active turns.
 - Duplicate completion is harmless after the active reference is cleared.
-- Legacy queued work without a reliable successful terminal fact is
-  conservatively frozen after restart.
+- A recovered `D` completes only when its task/timestamp facts correlate to the
+  current active entry. A stale or missing verdict returns to assessment.
+- Pending outbox entries alone never fabricate a legacy active task. Only an
+  explicit recovered non-D classify fact can rebuild one.
+- Delivery recovery may briefly hold a lease while acknowledgement is settled,
+  but it cannot manufacture a classify verdict.
 
 ## User operations
 
 `GET /api/sessions/:id/queue` returns the server-owned queue state.
 
 `POST /api/sessions/:id/queue/action` accepts `retry`, `resume`, `skip`,
-`cancel`, or `resolve`. Every action requires `{ "confirm": true }`; retry and
-resume continue the current task, while skip/cancel/resolve record an explicit
-operator decision before the scheduler may advance.
+`cancel`, `resolve`, `cancel_queued`, or `insert_queued`. Every action requires
+`{ "confirm": true }`.
+
+- Retry/resume continue the current task only when classify `E` permits them.
+- Skip/cancel/resolve record an explicit operator decision before advancing.
+- `cancel_queued` removes one pending queue entry; the UI exposes this as a
+  close icon rather than a textual “cancel” action.
+- `insert_queued` promotes one pending entry to the queue head and immediately
+  ticks the pump. It never interrupts active work or bypasses classify; it
+  starts immediately only when the classify gate already permits a normal item.

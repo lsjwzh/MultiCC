@@ -10,21 +10,7 @@ const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
 const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
-const LEGACY_TURN_ENDED_REASONS = new Set([
-  'waiting',
-  // A plain classify-W freeze without a structured requestId is a finished
-  // turn ("waiting for the next user message"), not a queue gate. Release it
-  // the same way legacy `waiting` is released. releaseLegacyTurnEnd still
-  // refuses any freeze carrying an awaitingRequestId, so genuine structured
-  // questions remain frozen.
-  'awaiting_user_input',
-  'incomplete_requires_resume',
-  'classification_error',
-]);
-const DIRECT_TAKEOVER_BLOCKED_REASONS = new Set([
-  'awaiting_callback',
-  'continuation_ready',
-]);
+const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
 
 // Explicit freezeReason → display runState map. Replaces the old
 // `String(reason).includes('error') ? 'error' : 'waiting'` substring heuristic,
@@ -49,6 +35,10 @@ const FREEZE_REASON_RUN_STATE = Object.freeze({
   incomplete_requires_resume: 'running',
   // Claim released; work is pending re-run.
   prelaunch_deferred: 'queued',
+  classify_waiting: 'waiting',
+  classify_background: 'waiting',
+  classify_error: 'error',
+  classify_running: 'running',
 });
 
 function runStateForFreezeReason(reason) {
@@ -98,6 +88,41 @@ function activeTaskId(schedule) {
   return schedule?.active?.taskId || null;
 }
 
+function classifyStateForSchedule(schedule) {
+  if (CLASSIFY_STATES.has(schedule?.classifyState)) return schedule.classifyState;
+  if (schedule?.freezeReason === 'awaiting_user_input' || schedule?.freezeReason === 'waiting') return 'W';
+  if (schedule?.freezeReason === 'awaiting_callback') return 'B';
+  if (schedule?.freezeReason === 'error' || schedule?.freezeReason === 'classification_error'
+      || schedule?.freezeReason === 'unknown_interruption') return 'E';
+  if (schedule?.active) return 'P';
+  return 'D';
+}
+
+function freezeReasonForClassify(classifyState) {
+  if (classifyState === 'W') return 'classify_waiting';
+  if (classifyState === 'B') return 'classify_background';
+  if (classifyState === 'E') return 'classify_error';
+  return 'classify_running';
+}
+
+function classifyStateForReason(reason) {
+  const key = String(reason || '');
+  if (key === 'awaiting_user_input' || key === 'waiting' || key === 'classify_waiting') return 'W';
+  if (key === 'awaiting_callback' || key === 'classify_background') return 'B';
+  if (key === 'error' || key === 'classification_error' || key === 'unknown_interruption'
+      || key === 'classify_error') return 'E';
+  if (key === 'incomplete_requires_resume' || key === 'classify_running') return 'P';
+  return null;
+}
+
+function controlAllowedByClassify(item, classifyState) {
+  const kind = workKind(item);
+  if (classifyState === 'W') return kind === 'answer' || kind === 'approval' || kind === 'continuation';
+  if (classifyState === 'B') return kind === 'callback' || kind === 'continuation';
+  if (classifyState === 'E') return kind === 'retry' || kind === 'resume';
+  return false;
+}
+
 function recoveredSuccessProven(schedule, recoveredState = {}) {
   if (!schedule?.active) return false;
   const activeStartedAt = Number(schedule.active.startedAt || schedule.active.claimedAt);
@@ -116,7 +141,8 @@ function newSchedule(sessionId, at) {
     state: 'idle',
     freezeReason: null,
     awaitingRequestId: null,
-    takeoverEntryId: null,
+    classifyState: null,
+    priorityEntryId: null,
     active: null,
     lastDecision: null,
     updatedAt: at,
@@ -136,6 +162,7 @@ function publicSchedule(schedule, queue = []) {
     state: schedule.state,
     freezeReason: schedule.freezeReason || null,
     awaitingRequestId: schedule.awaitingRequestId || null,
+    classifyState: classifyStateForSchedule(schedule),
     active: schedule.active ? clone(schedule.active) : null,
     queued: queue.map((item, index) => ({
       entryId: item.id,
@@ -143,6 +170,8 @@ function publicSchedule(schedule, queue = []) {
       source: item.payload?.source || item.source?.type || 'legacy',
       sequence: item.sequence,
       state: item.state,
+      workKind: workKind(item),
+      priority: item.id === schedule.priorityEntryId,
       position: index + 1,
       admittedAt: item.createdAt,
       text: queuedText(item),
@@ -180,62 +209,16 @@ function createSessionWorkScheduler({
   function queueForDraft(draft, sessionId) {
     const schedule = draft.sessionSchedules[sessionId];
     const activeDeliveryId = schedule?.active?.deliveryId || schedule?.active?.entryId || null;
-    const takeoverEntryId = schedule?.takeoverEntryId || null;
+    const priorityEntryId = schedule?.priorityEntryId || null;
     return Object.values(draft.outbox)
       .filter(item => item.sessionId === sessionId)
       .filter(item => item.state === 'pending' || item.state === 'leased')
-      .filter(item => !isControlItem(item))
       .filter(item => !activeDeliveryId || item.id !== activeDeliveryId)
-      .filter(item => !takeoverEntryId || item.id !== takeoverEntryId)
-      .sort((a, b) => a.sequence - b.sequence);
-  }
-
-  function releaseLegacyTurnEnd(
-    schedule,
-    at,
-    reason = 'legacy-turn-ended-migration',
-    { allowAwaitingCallback = false } = {},
-  ) {
-    if (!schedule?.active || schedule.state !== 'frozen'
-        || schedule.awaitingRequestId
-        || (!LEGACY_TURN_ENDED_REASONS.has(schedule.freezeReason)
-          && !(allowAwaitingCallback && schedule.freezeReason === 'awaiting_callback'))) return null;
-    const completed = clone(schedule.active);
-    schedule.active = null;
-    schedule.state = 'idle';
-    schedule.freezeReason = null;
-    schedule.awaitingRequestId = null;
-    schedule.lastDecision = {
-      action: 'complete',
-      reason,
-      entryId: completed.entryId,
-      taskId: completed.taskId || null,
-      at,
-    };
-    schedule.updatedAt = at;
-    return completed;
-  }
-
-  function releaseFrozenForDirectInput(schedule, at, takeoverEntryId) {
-    if (!schedule?.active || !['assessing', 'frozen'].includes(schedule.state)
-        || schedule.awaitingRequestId
-        || (schedule.state === 'frozen'
-          && DIRECT_TAKEOVER_BLOCKED_REASONS.has(schedule.freezeReason))) return null;
-    const superseded = clone(schedule.active);
-    schedule.active = null;
-    schedule.state = 'idle';
-    schedule.freezeReason = null;
-    schedule.awaitingRequestId = null;
-    schedule.takeoverEntryId = takeoverEntryId || null;
-    schedule.lastDecision = {
-      action: 'supersede',
-      reason: 'direct-user-message',
-      entryId: superseded.entryId,
-      taskId: superseded.taskId || null,
-      at,
-    };
-    schedule.updatedAt = at;
-    return superseded;
+      .sort((a, b) => {
+        if (a.id === priorityEntryId && b.id !== priorityEntryId) return -1;
+        if (b.id === priorityEntryId && a.id !== priorityEntryId) return 1;
+        return a.sequence - b.sequence;
+      });
   }
 
   function relatedControl(schedule, item) {
@@ -258,37 +241,26 @@ function createSessionWorkScheduler({
     return !!activeDeliveryId && item.id === activeDeliveryId;
   }
 
-  // Called inside the outbox store mutation. Normal work obeys the oldest
-  // admission sequence. A related answer/approval/callback may bypass queued
-  // future work only to resume the currently frozen active task. The active
-  // delivery itself may also be reclaimed after a crash between canonical
-  // history persistence and outbox acknowledgement.
-  // Called inside the outbox store mutation. Normal work obeys the oldest
-  // admission sequence. A related answer/approval/callback may bypass queued
-  // future work only to resume the currently frozen active task. The active
-  // delivery itself may also be reclaimed after a crash between canonical
-  // history persistence and outbox acknowledgement.
+  // Classify is the sole semantic gate. FIFO owns only ordering, the active
+  // pointer and delivery leases. D/no-active advances normal work; W/B/E allow
+  // only the correlated control kinds for that classify state. P/unknown waits.
   function selectSessionItem(items, draft, at) {
     if (!items.length) return null;
     const schedule = draft.sessionSchedules[items[0].sessionId];
+    const priorityEntryId = schedule?.priorityEntryId || null;
+    const ordered = [...items].sort((a, b) => {
+      if (a.id === priorityEntryId && b.id !== priorityEntryId) return -1;
+      if (b.id === priorityEntryId && a.id !== priorityEntryId) return 1;
+      return a.sequence - b.sequence;
+    });
     if (!schedule || !schedule.active || schedule.state === 'idle') {
-      if (schedule?.takeoverEntryId) {
-        return items.find(item => item.id === schedule.takeoverEntryId) || null;
-      }
-      return items[0];
+      return ordered[0];
     }
-    if (schedule.state !== 'frozen') return null;
-    const replay = items.find(item => isActiveReplay(schedule, item));
+    const replay = ordered.find(item => isActiveReplay(schedule, item));
     if (replay) return replay;
-    const control = items.find(item => relatedControl(schedule, item));
-    if (control) return control;
-    // A turn-ended wait (plain classify W / legacy waiting) with no structured
-    // question pending is a finished turn, not a queue gate. Release it here —
-    // atomically inside the claim mutation — so work queued BEFORE the freeze
-    // advances on the next pump instead of waiting for a future admission or a
-    // restart. Genuinely blocked freezes (requestId, error, callback) stay.
-    const released = releaseLegacyTurnEnd(schedule, Number(at) || 0, 'queued_work_release');
-    return released ? items[0] : null;
+    const classifyState = classifyStateForSchedule(schedule);
+    return ordered.find(item => relatedControl(schedule, item)
+      && controlAllowedByClassify(item, classifyState)) || null;
   }
 
   function stableEntryId(sessionId, key, payload) {
@@ -361,22 +333,13 @@ function createSessionWorkScheduler({
         source: { type: 'session-admission', kind: inferredKind },
         now: at,
       });
-      if (!CONTROL_KINDS.has(inferredKind)) {
-        const directTakeover = inferredKind === 'task'
-          && payload.source === 'direct'
-          && admitted.item.state === 'pending'
-          ? releaseFrozenForDirectInput(schedule, at, admitted.item.id)
-          : null;
-        if (!directTakeover) releaseLegacyTurnEnd(schedule, at);
-      }
       schedule.updatedAt = at;
       const queue = queueForDraft(draft, cleanSessionId);
       return {
         ok: true,
         duplicate: admitted.idempotent,
         entry: clone(admitted.item),
-        queued: schedule.takeoverEntryId !== admitted.item.id
-          && (!!schedule.active || queue[0]?.id !== admitted.item.id),
+        queued: !!schedule.active || queue[0]?.id !== admitted.item.id,
         position: queue.findIndex(item => item.id === admitted.item.id) + 1,
         schedule: publicSchedule(schedule, queue),
       };
@@ -419,7 +382,7 @@ function createSessionWorkScheduler({
           startedAt: null,
           attempt: item.attempts,
         };
-        schedule.takeoverEntryId = null;
+        if (schedule.priorityEntryId === item.id) schedule.priorityEntryId = null;
       } else if (isActiveReplay(schedule, item) || relatedControl(schedule, item)) {
         schedule.active.deliveryId = item.id;
         schedule.active.workKind = workKind(item);
@@ -452,6 +415,7 @@ function createSessionWorkScheduler({
       schedule.state = 'running';
       schedule.freezeReason = null;
       schedule.awaitingRequestId = null;
+      schedule.classifyState = 'P';
       schedule.active.startedAt = schedule.active.startedAt || at;
       schedule.active.attempt = item.attempts;
       schedule.updatedAt = at;
@@ -480,12 +444,13 @@ function createSessionWorkScheduler({
         schedule.state = 'idle';
         schedule.freezeReason = null;
         schedule.awaitingRequestId = null;
-        schedule.takeoverEntryId = null;
+        schedule.classifyState = schedule.classifyState || 'D';
+        if (schedule.priorityEntryId === item.id) schedule.priorityEntryId = null;
       } else {
         schedule.active.deliveryId = schedule.active.entryId;
         schedule.active.workKind = 'task';
         schedule.state = 'frozen';
-        schedule.freezeReason = String(reason || 'prelaunch_deferred').slice(0, 160);
+        schedule.freezeReason = freezeReasonForClassify(classifyStateForSchedule(schedule));
       }
       schedule.updatedAt = at;
       return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId)) };
@@ -497,6 +462,12 @@ function createSessionWorkScheduler({
       const schedule = draft.sessionSchedules[sessionId];
       if (!schedule?.active || !ACTIVE_STATES.has(schedule.state)) return { ok: false, code: 'no_active_task' };
       schedule.state = 'assessing';
+      // P is classify's non-terminal "still processing / awaiting verdict"
+      // state. Resetting a stale recovered D here prevents display or recovery
+      // from treating an uncorrelated prior success as the current verdict.
+      schedule.classifyState = 'P';
+      schedule.freezeReason = null;
+      schedule.awaitingRequestId = null;
       schedule.updatedAt = Number(now());
       return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)) };
     });
@@ -511,7 +482,11 @@ function createSessionWorkScheduler({
     return result;
   }
 
-  async function freeze(sessionId, reason, { requestId = null, expectedTaskId = null } = {}) {
+  async function freeze(sessionId, reason, {
+    requestId = null,
+    expectedTaskId = null,
+    classifyState = null,
+  } = {}) {
     const result = await store.mutate(draft => {
       const schedule = draft.sessionSchedules[sessionId];
       if (!schedule?.active) return { ok: false, code: 'no_active_task' };
@@ -522,6 +497,9 @@ function createSessionWorkScheduler({
       schedule.state = 'frozen';
       schedule.freezeReason = String(reason || 'unknown_interruption').slice(0, 160);
       schedule.awaitingRequestId = requestId || null;
+      const classified = CLASSIFY_STATES.has(classifyState)
+        ? classifyState : classifyStateForReason(reason);
+      if (classified) schedule.classifyState = classified;
       schedule.updatedAt = at;
       return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)) };
     });
@@ -544,28 +522,12 @@ function createSessionWorkScheduler({
         return { ok: false, code: 'active_task_mismatch' };
       }
       const at = Number(now());
-      const continuation = Object.values(draft.outbox)
-        .filter(item => item.sessionId === sessionId)
-        .filter(item => item.state === 'pending' || item.state === 'leased')
-        .sort((a, b) => a.sequence - b.sequence)
-        .find(item => relatedControl(schedule, item));
-      if (continuation) {
-        schedule.state = 'frozen';
-        schedule.freezeReason = 'continuation_ready';
-        schedule.updatedAt = at;
-        return {
-          ok: true,
-          advanced: false,
-          continuationEntryId: continuation.id,
-          schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
-        };
-      }
       const completed = clone(schedule.active);
       schedule.active = null;
       schedule.state = 'idle';
       schedule.freezeReason = null;
       schedule.awaitingRequestId = null;
-      schedule.takeoverEntryId = null;
+      schedule.classifyState = 'D';
       schedule.lastDecision = {
         action: 'complete',
         reason,
@@ -581,15 +543,7 @@ function createSessionWorkScheduler({
         schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
       };
     });
-    if (result.ok && result.advanced === false) emit('resumed', {
-      sessionId,
-      entryId: result.schedule.active?.entryId,
-      taskId: result.schedule.active?.taskId || null,
-      deliveryId: result.continuationEntryId,
-      queued: result.schedule.queued.length,
-      queuedItems: result.schedule.queued,
-    });
-    if (result.ok && result.advanced !== false) emit('completed', {
+    if (result.ok) emit('completed', {
       sessionId,
       entryId: result.completed.entryId,
       taskId: result.completed.taskId || null,
@@ -610,9 +564,21 @@ function createSessionWorkScheduler({
         reason: 'recovered-success',
       });
     }
-    return freeze(item.sessionId, 'unknown_interruption', {
-      expectedTaskId: item.payload?.taskId || null,
-    });
+    const recoveredClassify = CLASSIFY_STATES.has(recoveredState.classifyState)
+      ? recoveredState.classifyState : null;
+    if (recoveredClassify && recoveredClassify !== 'D') {
+      return freeze(
+        item.sessionId,
+        freezeReasonForClassify(recoveredClassify),
+        {
+          expectedTaskId: item.payload?.taskId || null,
+          classifyState: recoveredClassify,
+        },
+      );
+    }
+    // Delivery durability only settles the outbox lease. Without a correlated
+    // classify verdict, park the active entry for a fresh classify pass.
+    return turnEnded(item.sessionId);
   }
 
   async function resolve(sessionId, {
@@ -626,6 +592,9 @@ function createSessionWorkScheduler({
       const current = await status(sessionId);
       if (!current?.active) return { ok: false, code: 'no_active_task' };
       if (current.state !== 'frozen') return { ok: false, code: 'active_task_not_frozen' };
+      if (current.classifyState !== 'E') {
+        return { ok: false, code: 'active_task_not_retryable' };
+      }
       return admit({
         sessionId,
         text: String(text || '').trim() || '请继续刚才未完成的任务。',
@@ -653,6 +622,7 @@ function createSessionWorkScheduler({
       schedule.state = 'idle';
       schedule.freezeReason = null;
       schedule.awaitingRequestId = null;
+      schedule.classifyState = 'D';
       schedule.lastDecision = {
         action,
         reason: String(reason || '').slice(0, 500),
@@ -694,7 +664,7 @@ function createSessionWorkScheduler({
     if (!cleanEntryId) throw new TypeError('queued cancellation requires entryId');
     const result = await store.mutate(draft => {
       const item = draft.outbox[cleanEntryId];
-      if (!item || item.sessionId !== sessionId || isControlItem(item)) {
+      if (!item || item.sessionId !== sessionId) {
         return { ok: false, code: 'queued_entry_not_found' };
       }
       const schedule = ensure(draft, sessionId, Number(now()));
@@ -713,7 +683,7 @@ function createSessionWorkScheduler({
       item.cancelledAt = at;
       item.updatedAt = at;
       item.lastError = String(reason || 'cancelled before start').slice(0, 500);
-      if (schedule.takeoverEntryId === cleanEntryId) schedule.takeoverEntryId = null;
+      if (schedule.priorityEntryId === cleanEntryId) schedule.priorityEntryId = null;
       schedule.updatedAt = at;
       return {
         ok: true,
@@ -728,6 +698,50 @@ function createSessionWorkScheduler({
     if (result.ok) emit('queued_cancelled', {
       sessionId,
       entryId: result.cancelled.entryId,
+      actor,
+      schedulerState: result.schedule.state,
+      queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
+      freezeReason: result.schedule.freezeReason,
+    });
+    return result;
+  }
+
+  async function insertQueued(sessionId, entryId, { actor = 'user' } = {}) {
+    const cleanEntryId = String(entryId || '').trim();
+    if (!cleanEntryId) throw new TypeError('queued insertion requires entryId');
+    const result = await store.mutate(draft => {
+      const item = draft.outbox[cleanEntryId];
+      if (!item || item.sessionId !== sessionId) {
+        return { ok: false, code: 'queued_entry_not_found' };
+      }
+      const schedule = ensure(draft, sessionId, Number(now()));
+      const activeIds = new Set([
+        schedule.active?.entryId,
+        schedule.active?.deliveryId,
+      ].filter(Boolean));
+      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
+        return { ok: false, code: 'queued_entry_already_claimed' };
+      }
+      if (item.state !== 'pending') {
+        return { ok: false, code: 'queued_entry_not_pending' };
+      }
+      const at = Number(now());
+      schedule.priorityEntryId = cleanEntryId;
+      schedule.updatedAt = at;
+      return {
+        ok: true,
+        inserted: {
+          entryId: cleanEntryId,
+          actor: String(actor || 'user').slice(0, 80),
+          at,
+        },
+        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
+      };
+    });
+    if (result.ok) emit('queued_inserted', {
+      sessionId,
+      entryId: result.inserted.entryId,
       actor,
       schedulerState: result.schedule.state,
       queued: result.schedule.queued.length,
@@ -776,8 +790,6 @@ function createSessionWorkScheduler({
 
   async function recover({
     stateForSession = () => null,
-    isBusy = () => false,
-    hasPendingWait = () => false,
   } = {}) {
     const events = await store.mutate(draft => {
       const at = Number(now());
@@ -789,13 +801,20 @@ function createSessionWorkScheduler({
           .map(item => item.sessionId),
       ]);
       for (const sessionId of sessionIds) {
-        const queued = queueForDraft(draft, sessionId);
         let schedule = draft.sessionSchedules[sessionId];
         const recoveredState = stateForSession(sessionId) || {};
+        const recoveredClassify = CLASSIFY_STATES.has(recoveredState.classifyState)
+          ? recoveredState.classifyState
+          : null;
         if (!schedule) {
           schedule = ensure(draft, sessionId, at);
-          const classification = recoveredState.classifyState || null;
-          if (queued.length && classification !== 'D') {
+          schedule.classifyState = recoveredClassify;
+          // A pending outbox item is not evidence of an active task. This is
+          // especially important now that the public FIFO includes callbacks:
+          // a lone task.interrupted notification must remain deliverable.
+          // Rebuild a legacy active pointer only from an explicit non-D
+          // classify fact.
+          if (recoveredClassify && recoveredClassify !== 'D') {
             schedule.active = {
               entryId: `legacy-active:${sessionId}`,
               deliveryId: null,
@@ -807,51 +826,49 @@ function createSessionWorkScheduler({
               attempt: 0,
               legacy: true,
             };
-            schedule.state = 'frozen';
-            schedule.freezeReason = classification === 'W' ? 'awaiting_user_input'
-              : classification === 'E' ? 'error'
-                : classification === 'B' ? 'awaiting_callback'
-                  : 'legacy_unresolved';
+            schedule.state = recoveredClassify ? 'frozen' : 'assessing';
+            schedule.freezeReason = recoveredClassify
+              ? freezeReasonForClassify(recoveredClassify) : null;
             schedule.updatedAt = at;
-            changes.push({ type: 'frozen', sessionId, reason: schedule.freezeReason });
+            changes.push({
+              type: 'frozen',
+              sessionId,
+              reason: schedule.freezeReason,
+            });
           }
           continue;
         }
-        if (schedule.active && schedule.state === 'frozen' && queued.length
-            && !isBusy(sessionId)
-            && !(schedule.freezeReason === 'awaiting_callback' && hasPendingWait(sessionId))
-            && (LEGACY_TURN_ENDED_REASONS.has(schedule.freezeReason)
-              || schedule.freezeReason === 'awaiting_callback')) {
-          const completed = releaseLegacyTurnEnd(
-            schedule,
-            at,
-            'recovered-legacy-turn-ended',
-            { allowAwaitingCallback: true },
-          );
-          if (completed) {
+        if (recoveredClassify) schedule.classifyState = recoveredClassify;
+        const classifyState = classifyStateForSchedule(schedule);
+        if (!schedule.active) {
+          schedule.state = 'idle';
+          schedule.freezeReason = null;
+          schedule.awaitingRequestId = null;
+          schedule.updatedAt = at;
+          continue;
+        }
+        const activeDelivery = schedule.active.deliveryId
+          ? draft.outbox[schedule.active.deliveryId]
+          : null;
+        const deliveryNeedsAck = activeDelivery
+          && (activeDelivery.state === 'pending' || activeDelivery.state === 'leased');
+        if (classifyState === 'D') {
+          if (!recoveredSuccessProven(schedule, recoveredState)) {
+            schedule.classifyState = 'P';
+            schedule.state = 'assessing';
+            schedule.freezeReason = null;
+            schedule.updatedAt = at;
             changes.push({
-              type: 'completed',
+              type: 'assessing',
               sessionId,
-              entryId: completed.entryId,
-              taskId: completed.taskId || null,
+              entryId: schedule.active.entryId,
+              taskId: schedule.active.taskId || null,
               queued: queueForDraft(draft, sessionId).length,
-              queuedItems: publicSchedule(
-                schedule,
-                queueForDraft(draft, sessionId),
-              ).queued,
+              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
             });
             continue;
           }
-        }
-        if (schedule.active && ['starting', 'running', 'assessing'].includes(schedule.state)
-            && !isBusy(sessionId)) {
-          const activeDelivery = schedule.active.deliveryId
-            ? draft.outbox[schedule.active.deliveryId]
-            : null;
-          const deliveryNeedsAck = activeDelivery
-            && (activeDelivery.state === 'pending' || activeDelivery.state === 'leased');
-          const successProven = recoveredSuccessProven(schedule, recoveredState);
-          if (successProven && deliveryNeedsAck) {
+          if (deliveryNeedsAck) {
             schedule.state = 'frozen';
             schedule.freezeReason = 'delivery_recovery';
             schedule.updatedAt = at;
@@ -861,37 +878,37 @@ function createSessionWorkScheduler({
               entryId: schedule.active.entryId,
               taskId: schedule.active.taskId || null,
               reason: schedule.freezeReason,
-              queued: queued.length,
+              queued: queueForDraft(draft, sessionId).length,
               queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
             });
             continue;
           }
-          if (successProven) {
-            const completed = clone(schedule.active);
-            schedule.active = null;
-            schedule.state = 'idle';
-            schedule.freezeReason = null;
-            schedule.awaitingRequestId = null;
-            schedule.lastDecision = {
-              action: 'complete',
-              reason: 'recovered-success',
-              entryId: completed.entryId,
-              taskId: completed.taskId || null,
-              at,
-            };
-            schedule.updatedAt = at;
-            changes.push({
-              type: 'completed',
-              sessionId,
-              entryId: completed.entryId,
-              taskId: completed.taskId || null,
-              queued: queued.length,
-              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
-            });
-            continue;
-          }
+          const completed = clone(schedule.active);
+          schedule.active = null;
+          schedule.state = 'idle';
+          schedule.freezeReason = null;
+          schedule.awaitingRequestId = null;
+          schedule.lastDecision = {
+            action: 'complete',
+            reason: 'recovered-classify-D',
+            entryId: completed.entryId,
+            taskId: completed.taskId || null,
+            at,
+          };
+          schedule.updatedAt = at;
+          changes.push({
+            type: 'completed',
+            sessionId,
+            entryId: completed.entryId,
+            taskId: completed.taskId || null,
+            queued: queueForDraft(draft, sessionId).length,
+            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
+          });
+          continue;
+        }
+        if (CLASSIFY_STATES.has(classifyState)) {
           schedule.state = 'frozen';
-          schedule.freezeReason = 'unknown_interruption';
+          schedule.freezeReason = freezeReasonForClassify(classifyState);
           schedule.updatedAt = at;
           changes.push({
             type: 'frozen',
@@ -899,10 +916,16 @@ function createSessionWorkScheduler({
             entryId: schedule.active.entryId,
             taskId: schedule.active.taskId || null,
             reason: schedule.freezeReason,
-            queued: queued.length,
+            queued: queueForDraft(draft, sessionId).length,
             queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
           });
+          continue;
         }
+        // Process liveness is not a FIFO semantic. An unknown legacy state must
+        // wait for classify instead of inventing a running/frozen decision.
+        schedule.state = 'assessing';
+        schedule.freezeReason = null;
+        schedule.updatedAt = at;
       }
       return changes;
     });
@@ -928,6 +951,7 @@ function createSessionWorkScheduler({
     complete,
     resolve,
     cancelQueued,
+    insertQueued,
     status,
     noteQueued,
     list,

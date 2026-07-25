@@ -113,6 +113,14 @@ function fixture(options = {}) {
           schedule: { state: 'frozen', queued: [] },
         };
       },
+      async insertQueued(sessionId, entryId, input) {
+        calls.push({ type: 'queue.insert-queued', sessionId, entryId, input });
+        return options.queueInsertQueued || {
+          ok: true,
+          inserted: { entryId },
+          schedule: { state: 'frozen', queued: [{ entryId, position: 1 }] },
+        };
+      },
     };
     runtime.tick = async () => {
       calls.push({ type: 'queue.tick' });
@@ -243,6 +251,22 @@ test('session FIFO status and explicit resolution require confirmation and remai
     sessionId: 's1',
     entryId: 'entry-2',
     input: { actor: 'user', reason: 'duplicate' },
+  });
+
+  const inserted = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: {
+      action: 'insert_queued',
+      entryId: 'entry-3',
+      confirm: true,
+    },
+  });
+  assert.equal(inserted.response.statusCode, 200);
+  assert.deepEqual(current.calls.find(call => call.type === 'queue.insert-queued'), {
+    type: 'queue.insert-queued',
+    sessionId: 's1',
+    entryId: 'entry-3',
+    input: { actor: 'user' },
   });
 });
 
