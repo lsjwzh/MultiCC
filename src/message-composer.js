@@ -47,6 +47,7 @@
  * @property {'per-turn'|'streaming'} mode
  * @property {string|null} rawModel          - persisted.model (raw; shape resolves via helpers)
  * @property {string|null} rawEffort         - persisted.effort (raw; shape resolves via helpers)
+ * @property {string|null|undefined} effectiveModel - host-resolved model used by model-aware effort policy
  * @property {number} maxTurns               - goalLimits.maxRounds || 0
  * @property {boolean} ultracode             - !bare && type!=='aux' && normalizeEffort(effort)==='ultracode'
  * @property {string[]} disallowedTools      - claude-only
