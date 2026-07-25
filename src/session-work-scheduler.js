@@ -117,6 +117,10 @@ function classifyStateForReason(reason) {
 
 function controlAllowedByClassify(item, classifyState) {
   const kind = workKind(item);
+  const directContinuation = item?.payload?.type === 'session.work'
+    && item.payload.source === 'direct'
+    && kind === 'continuation';
+  if (directContinuation) return classifyState !== 'P';
   if (classifyState === 'W') return kind === 'answer' || kind === 'approval' || kind === 'continuation';
   if (classifyState === 'B') return kind === 'callback' || kind === 'continuation';
   if (classifyState === 'E') return kind === 'retry' || kind === 'resume';
@@ -186,6 +190,7 @@ function createSessionWorkScheduler({
   now = Date.now,
   cryptoImpl = crypto,
   onEvent = () => {},
+  getClassifyState = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
@@ -221,6 +226,21 @@ function createSessionWorkScheduler({
       });
   }
 
+  function canonicalClassifyState(sessionId, schedule) {
+    if (typeof getClassifyState === 'function') {
+      try {
+        const state = getClassifyState(sessionId);
+        return CLASSIFY_STATES.has(state) ? state : null;
+      } catch (error) {
+        log(`[session-work] classify read failed for ${sessionId}: ${error.message}`);
+        return null;
+      }
+    }
+    // Standalone/legacy callers without the canonical classify port retain the
+    // persisted recovery fallback. Production always supplies the port.
+    return classifyStateForSchedule(schedule);
+  }
+
   function relatedControl(schedule, item) {
     if (!schedule?.active || !isControlItem(item)) return false;
     const payload = item.payload || {};
@@ -241,9 +261,9 @@ function createSessionWorkScheduler({
     return !!activeDeliveryId && item.id === activeDeliveryId;
   }
 
-  // Classify is the sole semantic gate. FIFO owns only ordering, the active
-  // pointer and delivery leases. D/no-active advances normal work; W/B/E allow
-  // only the correlated control kinds for that classify state. P/unknown waits.
+  // Classify is the sole semantic gate. Only P stages typed chat input. A direct
+  // continuation in every non-P state is immediately selectable; queued work
+  // accumulated during P still advances only after classify D completes active.
   function selectSessionItem(items, draft, at) {
     if (!items.length) return null;
     const schedule = draft.sessionSchedules[items[0].sessionId];
@@ -258,7 +278,7 @@ function createSessionWorkScheduler({
     }
     const replay = ordered.find(item => isActiveReplay(schedule, item));
     if (replay) return replay;
-    const classifyState = classifyStateForSchedule(schedule);
+    const classifyState = canonicalClassifyState(schedule.sessionId, schedule);
     return ordered.find(item => relatedControl(schedule, item)
       && controlAllowedByClassify(item, classifyState)) || null;
   }
@@ -335,11 +355,12 @@ function createSessionWorkScheduler({
       });
       schedule.updatedAt = at;
       const queue = queueForDraft(draft, cleanSessionId);
+      const selected = selectSessionItem(queue, draft, at);
       return {
         ok: true,
         duplicate: admitted.idempotent,
         entry: clone(admitted.item),
-        queued: !!schedule.active || queue[0]?.id !== admitted.item.id,
+        queued: selected?.id !== admitted.item.id,
         position: queue.findIndex(item => item.id === admitted.item.id) + 1,
         schedule: publicSchedule(schedule, queue),
       };
@@ -352,6 +373,7 @@ function createSessionWorkScheduler({
         source: result.entry.payload?.source || 'direct',
         workKind: inferredKind,
         duplicate: result.duplicate,
+        queued: result.queued,
         queuePosition: result.position || null,
         schedulerState: result.schedule.state,
         freezeReason: result.schedule.freezeReason,
@@ -652,7 +674,10 @@ function createSessionWorkScheduler({
   async function status(sessionId) {
     return store.read(draft => {
       const schedule = draft.sessionSchedules[sessionId];
-      return publicSchedule(schedule || newSchedule(sessionId, 0), queueForDraft(draft, sessionId));
+      const current = schedule || newSchedule(sessionId, 0);
+      const result = publicSchedule(current, queueForDraft(draft, sessionId));
+      result.classifyState = canonicalClassifyState(sessionId, current);
+      return result;
     });
   }
 

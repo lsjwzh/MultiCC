@@ -60,6 +60,7 @@ function fixture(t, options = {}) {
     store,
     now: () => clock,
     onEvent: event => events.push(event),
+    getClassifyState: options.getClassifyState,
   });
   return {
     store,
@@ -509,6 +510,39 @@ test('classify W permits a related continuation but never an unrelated queued ta
   const resumedClaim = await claimOne(waiting, 'waiting');
   assert.equal(resumedClaim.id, resumed.entry.id);
   assert.notEqual(resumedClaim.id, unrelated.entry.id);
+});
+
+test('canonical classify makes only P stage direct chat input', async t => {
+  const classify = new Map([['s1', 'P']]);
+  const h = fixture(t, {
+    getClassifyState: sessionId => classify.get(sessionId) || null,
+  });
+  const active = await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(h, await claimOne(h));
+  const staged = await h.scheduler.admit({
+    sessionId: 's1', text: 'typed during process', source: 'direct',
+    idempotencyKey: 'staged',
+  });
+  assert.equal(staged.queued, true);
+  assert.equal(await claimOne(h), null);
+
+  // The scheduler's persisted mirror is still P here. Canonical E must win and
+  // make the newly typed continuation immediately deliverable.
+  classify.set('s1', 'E');
+  const immediate = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'typed after API error',
+    source: 'direct',
+    workKind: 'continuation',
+    activeEntryId: active.entry.id,
+    idempotencyKey: 'direct-error',
+  });
+  assert.equal(immediate.queued, false);
+  const claim = await claimOne(h);
+  assert.equal(claim.id, immediate.entry.id);
+  assert.notEqual(claim.id, staged.entry.id);
 });
 
 test('manual retry is admitted only for classify E', async t => {

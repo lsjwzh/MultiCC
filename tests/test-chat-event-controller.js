@@ -294,6 +294,22 @@ test('structured user-input and FIFO events expose correlation and honest frozen
     state: 'running',
     items: [{ position: 1, text: '<b>literal staged body</b>' }],
   }, generation);
+  fixture.controller.handleEvent({
+    type: 'session_queue',
+    event: 'queued',
+    queued: false,
+    queuePosition: 1,
+    state: 'frozen',
+    freezeReason: 'classify_error',
+    items: [],
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'session_queue',
+    event: 'snapshot',
+    state: 'frozen',
+    freezeReason: 'classify_error',
+    items: [],
+  }, generation);
   assert.deepEqual(
     fixture.calls.filter(call => Array.isArray(call) && call[0] === 'queue'),
     [
@@ -303,12 +319,22 @@ test('structured user-input and FIFO events expose correlation and honest frozen
       ['queue', ['<b>literal staged body</b>'], {
         state: 'running', freezeReason: null,
       }],
+      ['queue', [], {
+        state: 'frozen', freezeReason: 'classify_error',
+      }],
+      ['queue', [], {
+        state: 'frozen', freezeReason: 'classify_error',
+      }],
     ],
   );
   assert.ok(fixture.calls.some(call => Array.isArray(call)
     && call[0] === 'system' && call[1] === '队列已冻结：awaiting_user_input'));
   assert.ok(fixture.calls.some(call => Array.isArray(call)
     && call[0] === 'toast' && call[1] === '消息已排队（第 2 位）'));
+  assert.equal(fixture.calls.filter(call => Array.isArray(call)
+    && call[0] === 'toast' && call[1].startsWith('消息已')).length, 1);
+  assert.equal(fixture.calls.some(call => Array.isArray(call)
+    && call[0] === 'system' && call[1].startsWith('队列保持冻结')), false);
 });
 
 test('staged-message dock renders canonical text with textContent only', () => {

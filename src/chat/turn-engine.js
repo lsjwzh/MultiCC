@@ -524,6 +524,7 @@ function createChatTurnEngine(deps) {
     const deliveryId = turnRequest.identity.deliveryId || '';
     const originDispatchId = turnRequest.origin.operationId;
     const originContinue = turnRequest.launch.reason === 'continue';
+    const directUserInput = opts.directUserInput === true;
     const goalLimits = turnRequest.goalLimits;
     const bgTaskIds = turnRequest.background.taskIds;
     const bgToolUseIds = turnRequest.background.toolUseIds;
@@ -588,7 +589,7 @@ function createChatTurnEngine(deps) {
     // continuations were already held at admission until recordApiSuccess resumes them.
     // A real (non-auto-continue) message means the user/trigger is driving again →
     // reset the D auto-continue guard so a future background-wait gets fresh budget.
-    if (!originContinue) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
+    if (!originContinue || directUserInput) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
     // Ensure session-level state exists even when no WS client is connected.
     if (!cs) {
       const csCli = persisted.cli || 'claude';
@@ -617,7 +618,7 @@ function createChatTurnEngine(deps) {
     }
 
     cancelClassify(cs);
-    if (!originContinue) {
+    if (!originContinue || directUserInput) {
       apiErrorHost.cancelRetry(sessionName, cs);
       cs._apiRetryAttempt = 0;
       cs._lastApiErrorDecision = null;
@@ -661,7 +662,10 @@ function createChatTurnEngine(deps) {
       preparationFailure = messageMarked.code || 'message-proof-rejected';
       throw new Error(`turn message proof rejected: ${preparationFailure}`);
     }
-    userInputSignalHost.beginTurn(sessionName, { originContinue, turnId });
+    userInputSignalHost.beginTurn(sessionName, {
+      originContinue: originContinue && !directUserInput,
+      turnId,
+    });
 
     // Reset accumulators
     cs.currentAssistantText = '';
