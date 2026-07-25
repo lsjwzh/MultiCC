@@ -169,6 +169,25 @@ test('keep-history reset renders a context checkpoint instead of a fake CLI swit
   assert.doesNotMatch(prompt, /logical conversation switched/);
 });
 
+test('manual native rotation renders a context checkpoint without a fake CLI switch', () => {
+  const checkpoint = buildHandoffCheckpoint({
+    session: {}, fromCli: 'claude', toCli: 'claude',
+    history: [{ role: 'assistant', content: 'tranche complete', ts: 1 }],
+  });
+  checkpoint.reason = 'manual_native_context_rotate';
+  const prompt = renderHandoffPrompt({
+    id: 'checkpoint-manual',
+    fromCli: 'claude',
+    toCli: 'claude',
+    reason: 'manual_native_context_rotate',
+    checkpoint,
+  });
+  assert.match(prompt, /MultiCC context checkpoint v1/);
+  assert.match(prompt, /preserving the full MultiCC display history/);
+  assert.match(prompt, /tranche complete/);
+  assert.doesNotMatch(prompt, /logical conversation switched/);
+});
+
 test('checkpoint contains bounded visible transcript and no native ids', () => {
   const session = {
     summary: 'summary',
