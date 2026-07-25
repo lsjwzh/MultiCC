@@ -274,7 +274,14 @@ function createOrchestrationRoutes(rawDeps) {
             body.entryId,
             { actor: 'user' },
           );
-          if (result.ok) await deps.runtime.tick();
+          if (result.ok) {
+            // "Insert now" is literal: stop/release the current turn (recording
+            // E) and let the selected directRun entry claim the slot at once.
+            if (typeof deps.cancelActiveTurn === 'function') {
+              await deps.cancelActiveTurn(session.id);
+            }
+            await deps.runtime.tick();
+          }
           const status = result.ok ? 200
             : result.code === 'queued_entry_not_found' ? 404 : 409;
           return res.status(status).json(result);

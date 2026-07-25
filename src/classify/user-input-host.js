@@ -175,7 +175,7 @@ function createUserInputSignalHost({
     if (!pending(sessionId)) return null;
     const state = getState(sessionId) || {};
     return {
-      state: 'waiting',
+      state: 'W',
       goal: currentTask?.goal || state.goal || '',
       phase: currentTask?.phase || state.phase || 'planning',
       background: false,

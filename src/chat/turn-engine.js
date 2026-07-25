@@ -1653,6 +1653,14 @@ function createChatTurnEngine(deps) {
         if (msg.type === 'user_message' && msg.text) {
           // Gateway: a bare 确认/取消 resolves a pending dispatch without running the LLM.
           if (persisted.type === 'gateway' && handleGatewayControl(msg.text)) return;
+          // Non-browser clients may still send the input-box control as a
+          // user_message. Treat it exactly like the cancel transport event so
+          // it resets the active scheduler slot to classify E without reaching
+          // the model or joining FIFO.
+          if (/^cancel$/i.test(String(msg.text).trim())) {
+            await getSessionWorkHost().cancelActiveTurn(sessionName, { resolveQueue: true });
+            return;
+          }
           const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};
           if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) turnOpts.clientMsgId = msg.clientMsgId;
           if (typeof msg.userInputRequestId === 'string' && msg.userInputRequestId.trim()) {

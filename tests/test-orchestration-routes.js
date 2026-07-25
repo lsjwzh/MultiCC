@@ -268,6 +268,11 @@ test('session FIFO status and explicit resolution require confirmation and remai
     entryId: 'entry-3',
     input: { actor: 'user' },
   });
+  assert.equal(
+    current.calls.filter(call => call.type === 'queue.cancel-active').length,
+    2,
+    'insert now cancels/releases the current turn before ticking the selected entry',
+  );
 });
 
 test('wait registration preserves validation payload, callback URL and errors', async () => {

@@ -99,11 +99,14 @@ test('an untracked dispatch detaches from the prior task and survives history re
 });
 
 test('production detaches every new untracked scheduler task from the prior taskId', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(source,
+  const turnEngine = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'),
+    'utf8',
+  );
+  assert.match(turnEngine,
     /const detachTaskContext = \(!requestedTask\.id && opts\.schedulerWorkKind === 'task'\)\s*\|\| \(!!originDispatchId && !requestedTask\.id\)/);
-  assert.match(source, /beginTurn\(cs,\s*requestedTask,\s*\{\s*detach:\s*detachTaskContext\s*\}\)/);
-  assert.match(source, /messageMetadata\(requestedTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
+  assert.match(turnEngine, /beginTurn\(cs,\s*requestedTask,\s*\{\s*detach:\s*detachTaskContext\s*\}\)/);
+  assert.match(turnEngine, /messageMetadata\(requestedTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
 });
 
 test('Commander input routes once, persists a standard source message, and emits no assistant copy', async () => {
@@ -194,9 +197,13 @@ test('canonical session ingress runs both ordinary and Commander sessions throug
 
 test('production wires task board and WebSocket chat to the same session ingress', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const turnEngine = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'),
+    'utf8',
+  );
   assert.match(source,
     /sendSessionMessage:\s*\(\.\.\.args\)\s*=>\s*taskContextHost\.deliverSessionMessage\(\.\.\.args\)/);
-  assert.match(source,
+  assert.match(turnEngine,
     /const deliver\s*=\s*\(\)\s*=>\s*taskContextHost\.deliverSessionMessage\(sessionName,\s*msg\.text,\s*turnOpts\)/);
-  assert.match(source, /else await deliver\(\)/);
+  assert.match(turnEngine, /else await deliver\(\)/);
 });
