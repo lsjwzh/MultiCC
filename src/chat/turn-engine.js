@@ -767,6 +767,7 @@ function createChatTurnEngine(deps) {
         skipDefaultModel: provEnv.skipDefaultModel,
         providerModel: provEnv.providerModel,
         providerModels: provEnv.providerModels,
+        effectiveModel: effectiveSessionModel(persisted),
         rawModel: provEnv.qualifiedModel || envelope.spawnOpts.rawModel,
       },
     };

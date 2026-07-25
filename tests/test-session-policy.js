@@ -42,6 +42,10 @@ function createHarness(home, overrides = {}) {
       id: 'codex-primary', name: 'Codex Primary', model: 'gpt-primary',
       modelOptions: ['gpt-primary'],
     }],
+    ['codex:codex-56', {
+      id: 'codex-56', name: 'Codex 5.6', model: 'gpt-5.6-sol',
+      modelOptions: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+    }],
     ['claude:zcode-primary', {
       id: 'zcode-primary', appType: 'claude', name: 'ZCode Primary', model: 'glm-zcode',
       modelOptions: ['glm-zcode'],
@@ -86,12 +90,18 @@ test('user configuration defaults are read on demand for Claude and Codex', t =>
   writeJson(path.join(home, '.claude', 'settings.json'), { model: 'claude-user', effort: 'high' });
   writeJson(path.join(home, '.claude', 'settings.local.json'), { thinkingEffort: 'low' });
   fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
-  fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model_reasoning_effort = "medium"\n');
+  fs.writeFileSync(path.join(home, '.codex', 'config.toml'),
+    'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n');
   const policy = createHarness(home);
 
   assert.equal(policy.claudeDefaultModel(), 'claude-user');
+  assert.equal(policy.codexDefaultModel(), 'gpt-5.6-sol');
   assert.equal(policy.claudeDefaultEffort(), 'low', 'settings.local wins');
   assert.equal(policy.codexDefaultReasoningLevel(), 'medium');
+  assert.equal(policy.effectiveSessionModel({ cli: 'codex' }), 'gpt-5.6-sol');
+  assert.equal(policy.codexReasoningConfigArg({
+    cli: 'codex', effort: 'ultra',
+  }), 'model_reasoning_effort="ultra"');
   assert.equal(policy.effectiveSessionEffort({ cli: 'claude' }), 'low');
   assert.equal(policy.effectiveSessionEffort({ cli: 'codex' }), 'medium');
 
@@ -169,6 +179,18 @@ test('effort, agent and disconnect policies preserve each CLI contract', t => {
   assert.equal(policy.codexReasoningLevel({ effort: 'max' }), 'xhigh');
   assert.equal(policy.codexReasoningConfigArg({ effort: 'ultra' }), 'model_reasoning_effort="xhigh"');
   assert.equal(policy.codexReasoningConfigArg({ effort: 'max' }), 'model_reasoning_effort="xhigh"');
+  assert.equal(policy.codexReasoningConfigArg({
+    effort: 'max', model: 'gpt-5.6-sol',
+  }), 'model_reasoning_effort="max"');
+  assert.equal(policy.codexReasoningConfigArg({
+    effort: 'ultra', effectiveModel: 'openai/gpt-5.6-terra',
+  }), 'model_reasoning_effort="ultra"');
+  assert.equal(policy.codexReasoningConfigArg({
+    cli: 'codex', provider: 'codex-56', effort: 'ultra',
+  }), 'model_reasoning_effort="ultra"');
+  assert.equal(policy.codexReasoningConfigArg({
+    effort: 'max', model: 'gpt-5.60-sol',
+  }), 'model_reasoning_effort="xhigh"');
   assert.equal(policy.codexReasoningConfigArg({ effort: 'high' }), 'model_reasoning_effort="high"');
   assert.equal(policy.codexModelConfigArg({ model: ' gpt-5 ' }), 'model="gpt-5"');
   assert.equal(policy.effectiveSessionEffort({ cli: 'opencode', effort: 'minimal' }), 'minimal');
@@ -204,6 +226,9 @@ test('explicit CODEX_HOME wins and invalid config falls through to the user home
   const policy = createHarness(home, { env });
 
   assert.equal(policy.codexDefaultReasoningLevel(), 'xhigh');
+  fs.writeFileSync(path.join(explicit, 'config.toml'),
+    'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "ultra"\n');
+  assert.equal(policy.codexDefaultReasoningLevel(), 'ultra');
   fs.writeFileSync(path.join(explicit, 'config.toml'), 'model_reasoning_effort = "not-valid"\n');
   assert.equal(policy.codexDefaultReasoningLevel(), 'high');
 });

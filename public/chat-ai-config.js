@@ -21,8 +21,8 @@
     Object.freeze({ value: 'medium', label: 'Medium', desc: 'Balances speed and reasoning depth for everyday tasks' }),
     Object.freeze({ value: 'high', label: 'High', desc: 'Greater reasoning depth for complex problems' }),
     Object.freeze({ value: 'xhigh', label: 'Extra high', desc: 'Extra high reasoning depth for complex problems' }),
-    Object.freeze({ value: 'max', label: 'Max', desc: 'Compatibility alias for extra-high Codex reasoning' }),
-    Object.freeze({ value: 'ultra', label: 'Ultra', desc: 'Extra-high Codex reasoning with MultiCC delegation when available' }),
+    Object.freeze({ value: 'max', label: 'Max', desc: 'Native on Codex 5.6; otherwise uses Extra high' }),
+    Object.freeze({ value: 'ultra', label: 'Ultra', desc: 'Native on Codex 5.6; otherwise uses Extra high' }),
   ]);
   const OPENCODE_VARIANT_OPTIONS = Object.freeze([
     Object.freeze({ value: '', label: 'Default', desc: 'Use the selected model/provider default' }),

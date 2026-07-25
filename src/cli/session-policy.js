@@ -6,10 +6,10 @@ const path = require('node:path');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
-// Older MultiCC clients exposed `max` and `ultra`, although Codex does not
-// accept either value. Accept persisted/rolling-client values, but normalize
-// them before they reach model_reasoning_effort.
-const CODEX_REASONING_ALIASES = new Map([['max', 'xhigh'], ['ultra', 'xhigh']]);
+// Codex 5.6 supports the product tiers `max` and `ultra`; older models top out
+// at `xhigh`. Keep the tiers in persisted state and normalize only at the wire
+// boundary, using the model that will actually handle the turn.
+const CODEX_REASONING_56_LEVELS = new Set(['max', 'ultra']);
 const OPENCODE_VARIANTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
 const QODER_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
@@ -42,6 +42,18 @@ function createSessionPolicy(options) {
     }
   }
 
+  function codexDefaultModel() {
+    const homes = [env.CODEX_HOME, path.join(homeDir(), '.codex')].filter(Boolean);
+    for (const home of homes) {
+      try {
+        const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+        const match = toml.match(/^\s*model\s*=\s*["']([^"']+)["']\s*$/m);
+        if (match && match[1]) return match[1];
+      } catch (_) {}
+    }
+    return null;
+  }
+
   function effectiveSessionModel(session) {
     if (!session) return null;
     const appType = providers.appTypeForCli(session.cli);
@@ -69,6 +81,7 @@ function createSessionPolicy(options) {
     }
     if (globalProviderCli) return session.reportedModel || null;
     if (appType === 'claude') return claudeDefaultModel() || session.reportedModel || null;
+    if (appType === 'codex') return codexDefaultModel() || session.reportedModel || null;
     return session.reportedModel || null;
   }
 
@@ -124,7 +137,7 @@ function createSessionPolicy(options) {
     if (!normalized) return null;
     return EFFORT_LEVELS.has(normalized)
       || CODEX_REASONING_LEVELS.has(normalized)
-      || CODEX_REASONING_ALIASES.has(normalized)
+      || CODEX_REASONING_56_LEVELS.has(normalized)
       || OPENCODE_VARIANTS.has(normalized)
       ? normalized
       : undefined;
@@ -133,7 +146,7 @@ function createSessionPolicy(options) {
   function validEffortForCli(cli, effort) {
     if (!effort) return true;
     if (cli === 'codex') {
-      return CODEX_REASONING_LEVELS.has(effort) || CODEX_REASONING_ALIASES.has(effort);
+      return CODEX_REASONING_LEVELS.has(effort) || CODEX_REASONING_56_LEVELS.has(effort);
     }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
     if (cli === 'zcode') return false;
@@ -147,11 +160,19 @@ function createSessionPolicy(options) {
     return effort === 'ultracode' ? 'xhigh' : effort;
   }
 
+  function isCodex56Model(model) {
+    const normalized = String(model || '').trim().toLowerCase().replace(/\[[^\]]*\]$/, '');
+    const basename = normalized.split('/').pop();
+    return /^gpt[-_.]?5[.]6(?:$|[-_.])/.test(basename);
+  }
+
   function codexReasoningLevel(session) {
     const effort = normalizeEffort(session?.effort);
     if (!effort) return null;
-    return CODEX_REASONING_ALIASES.get(effort)
-      || (CODEX_REASONING_LEVELS.has(effort) ? effort : null);
+    if (CODEX_REASONING_LEVELS.has(effort)) return effort;
+    if (!CODEX_REASONING_56_LEVELS.has(effort)) return null;
+    const model = session?.effectiveModel || effectiveSessionModel(session);
+    return isCodex56Model(model) ? effort : 'xhigh';
   }
 
   function qoderEffortLevel(session) {
@@ -186,7 +207,11 @@ function createSessionPolicy(options) {
       try {
         const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
         const match = toml.match(/^\s*model_reasoning_effort\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*$/m);
-        const effort = codexReasoningLevel({ effort: match && match[1] });
+        const modelMatch = toml.match(/^\s*model\s*=\s*["']([^"']+)["']\s*$/m);
+        const effort = codexReasoningLevel({
+          effort: match && match[1],
+          effectiveModel: modelMatch && modelMatch[1],
+        });
         if (effort) return effort;
       } catch (_) {}
     }
@@ -244,6 +269,7 @@ function createSessionPolicy(options) {
   return Object.freeze({
     codexSessionsDir: path.join(homeDir(), '.codex', 'sessions'),
     claudeDefaultModel,
+    codexDefaultModel,
     effectiveSessionModel,
     effectiveSubagentModel,
     serializeSubagent,
