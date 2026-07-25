@@ -64,41 +64,38 @@ if (!fs.existsSync(ZCODE_ENGINE)) {
   process.exit(0);
 }
 
-// ── 3. 可选模型覆盖 ────────────────────────────────────────────────────────
-// ZCode owns provider/auth configuration in ~/.zcode/cli/config.json. Its
-// headless CLI has no --model flag, but does support --settings. To honor the
-// per-session MultiCC model without duplicating provider credentials, clone the
-// vendor config into a private temporary file and override only `model`.
-let settingsDir = null;
-let settingsFile = null;
+// ── 3. 模型一致性检查（不做临时覆盖）──────────────────────────────────────
+// 引擎 0.15.2 的 parser 实际拒绝 --settings（help 广告了但未实现：所有子命令、
+// 所有位置、等号形式全部 "Unknown option"，2026-07-25 实测），临时注入覆盖配置
+// 这条路在引擎侧根本不存在。因此改为：
+//   - 会话 model 与厂商默认配置一致 → 不传任何覆盖，引擎自动读默认配置
+//     （"不传就用默认配置"）；
+//   - 不一致 → 明确报错。静默用厂商默认 model 跑会让 multicc 的 per-session
+//     model 形同虚设，比失败更糟；
+//   - 厂商配置读不到 → 直接放行，让引擎报它自己的原生错误（如 Model config
+//     is missing），不在此处二次包装。
 if (model) {
   try {
     const source = process.env.ZCODE_SETTINGS
       || path.join(os.homedir(), '.zcode', 'cli', 'config.json');
     const config = JSON.parse(fs.readFileSync(source, 'utf8'));
-    if (!config || typeof config !== 'object' || Array.isArray(config)) {
-      throw new Error('vendor settings must be a JSON object');
+    if (config && typeof config === 'object' && !Array.isArray(config)
+        && config.model && config.model !== model) {
+      process.stdout.write(JSON.stringify({
+        sessionID: 'zcode-settings', type: 'error',
+        error: { message: `ZCode 0.15.2 不支持 model 覆盖（--settings 未实现）：会话模型是 ${model}，但 ${source} 里是 ${config.model}。请把该文件的 model 改成 ${model}，或在 multicc 把会话模型切回 ${config.model}。` },
+      }) + '\n');
+      process.exit(0);
     }
-    settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-'));
-    settingsFile = path.join(settingsDir, 'config.json');
-    fs.writeFileSync(settingsFile, JSON.stringify({ ...config, model }), { mode: 0o600 });
-  } catch (error) {
-    process.stdout.write(JSON.stringify({
-      sessionID: 'zcode-settings', type: 'error',
-      error: { message: `ZCode 模型配置失败：${error.message}` },
-    }) + '\n');
-    process.exit(0);
+  } catch (_) {
+    // 配置读不到/解析不了 → 交给引擎自己报错，不阻断。
   }
 }
 
 // ── 4. 调用 zcode.cjs 引擎（整体 JSON 输出）────────────────────────────────
 const zargs = [ZCODE_ENGINE, '--json', '--prompt', prompt];
 if (cliSessionId && /^sess_/.test(cliSessionId)) zargs.push('--resume', cliSessionId);
-if (settingsFile) zargs.push('--settings', settingsFile);
 const res = spawnSync('node', zargs, { encoding: 'utf8', env: process.env, maxBuffer: 1e8 });
-if (settingsDir) {
-  try { fs.rmSync(settingsDir, { recursive: true, force: true }); } catch (_) {}
-}
 
 if (res.status !== 0) {
   const msg = ((res.stdout || '') + (res.stderr || '')).split('\n').slice(0, 3).join(' ').slice(0, 300);
