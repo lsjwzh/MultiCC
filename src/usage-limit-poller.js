@@ -23,6 +23,9 @@
 //   balance → { kind:'balance', available, currency, total, granted, toppedUp }
 
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const POLL_TIMEOUT_MS = 6000;
 // Window quota moves with usage → refresh often. Money balance moves slowly →
@@ -31,7 +34,17 @@ const POLL_TIMEOUT_MS = 6000;
 const TTL_BY_STRATEGY = Object.freeze({
   'glm-monitor': 60 * 1000,
   'deepseek-balance': 5 * 60 * 1000,
+  // Codex's weekly window moves slowly, but the read is free (a plain GET, no
+  // quota consumed) so refresh once a minute to keep the bar current per turn.
+  'codex-oauth-usage': 60 * 1000,
 });
+
+// A weekly window is any rolling window at least ~a day long. The ChatGPT usage
+// endpoint names windows primary/secondary, but which slot holds the weekly cap
+// is PLAN-DEPENDENT (on "prolite" the only window is a 7-day one in the primary
+// slot; other plans put 5h in primary and weekly in secondary). So we classify
+// by window length, never by slot name.
+const WEEKLY_MIN_WINDOW_SECONDS = 24 * 60 * 60;
 
 function keyHash(apiKey) {
   return crypto.createHash('sha256').update(String(apiKey || '')).digest('hex').slice(0, 16);
@@ -111,9 +124,78 @@ async function pollDeepseekBalance(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
   };
 }
 
+// Official codex OAuth credential lives on disk in ~/.codex/auth.json and is
+// rotated by the codex CLI itself; we read it fresh each poll (never cache the
+// token) so a refresh is picked up automatically. Returns null on any problem →
+// the poll shows nothing rather than fabricating.
+function readCodexAuth() {
+  try {
+    const file = path.join(os.homedir(), '.codex', 'auth.json');
+    const auth = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const tokens = auth && auth.tokens;
+    if (!tokens || !tokens.access_token) return null;
+    return { accessToken: tokens.access_token, accountId: tokens.account_id || '' };
+  } catch (_) {
+    return null;
+  }
+}
+
+// Codex (real ChatGPT backend). Weekly quota comes from the same usage read the
+// codex CLI's /status uses: GET chatgpt.com/backend-api/wham/usage with the OAuth
+// bearer + ChatGPT-Account-Id. This is a read (no messages consumed). We surface
+// the WEEKLY window only (per product decision: codex's binding limit is weekly,
+// and on the prolite plan there is no 5h window at all).
+async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAuth = readCodexAuth) {
+  const auth = readAuth();
+  if (!auth) return null;
+  const body = await fetchJson(
+    'https://chatgpt.com/backend-api/wham/usage',
+    {
+      Authorization: `Bearer ${auth.accessToken}`,
+      'ChatGPT-Account-Id': auth.accountId,
+      originator: 'codex_cli_rs',
+      Accept: 'application/json',
+    },
+    timeoutMs,
+  );
+  const rl = body && typeof body === 'object' ? body.rate_limit : null;
+  if (!rl || typeof rl !== 'object') return null;
+  // Collect the top-level windows present, then pick the longest one that is at
+  // least a day — that is the weekly cap regardless of primary/secondary slot.
+  const windows = [rl.primary_window, rl.secondary_window].filter(
+    (w) => w && typeof w === 'object'
+      && finite(w.used_percent) !== null
+      && finite(w.limit_window_seconds) !== null,
+  );
+  const weekly = windows
+    .filter((w) => finite(w.limit_window_seconds) >= WEEKLY_MIN_WINDOW_SECONDS)
+    .sort((a, b) => finite(b.limit_window_seconds) - finite(a.limit_window_seconds))[0];
+  if (!weekly) return null; // no weekly window exposed → show nothing
+  const pct = finite(weekly.used_percent);
+  if (pct === null) return null;
+  // reset_at is epoch SECONDS (front-end multiplies ×1000, like Claude's resetsAt);
+  // fall back to now + reset_after_seconds when the absolute stamp is absent.
+  let resetsAt = finite(weekly.reset_at);
+  if (resetsAt === null) {
+    const after = finite(weekly.reset_after_seconds);
+    resetsAt = after !== null ? Math.trunc(nowMs / 1000) + after : null;
+  }
+  const rejected = rl.limit_reached === true || pct >= 100;
+  return {
+    kind: 'window',
+    provider: 'codex',
+    rateLimitType: 'weekly',
+    status: rejected ? 'rejected' : (pct >= 80 ? 'allowed_warning' : 'allowed'),
+    utilization: Math.max(0, Math.min(1, pct / 100)),
+    resetsAt,
+    tier: typeof body.plan_type === 'string' ? body.plan_type : null,
+  };
+}
+
 const ADAPTERS = Object.freeze({
   'glm-monitor': pollGlmMonitor,
   'deepseek-balance': pollDeepseekBalance,
+  'codex-oauth-usage': pollCodexUsage,
 });
 
 // ── Poller: dedup by account, TTL cache, best-effort broadcast. ──
@@ -127,7 +209,9 @@ function createUsageLimitPoller({ resolveTarget, broadcast, now = () => Date.now
   const inflight = new Map();
 
   async function refresh(target, nowMs) {
-    const cacheKey = `${target.providerId}:${keyHash(target.apiKey)}`;
+    // keyHashSeed lets a keyless account (codex OAuth, credential read from disk)
+    // still dedup deterministically across sessions; otherwise hash the apiKey.
+    const cacheKey = `${target.providerId}:${keyHash(target.keyHashSeed || target.apiKey)}`;
     const ttl = TTL_BY_STRATEGY[target.strategy] || 60 * 1000;
     const cached = cache.get(cacheKey);
     if (cached && nowMs - cached.at < ttl) return cached.dto;
@@ -168,6 +252,7 @@ module.exports = {
   createUsageLimitPoller,
   pollGlmMonitor,
   pollDeepseekBalance,
+  pollCodexUsage,
   keyHash,
   TTL_BY_STRATEGY,
 };
