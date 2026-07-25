@@ -414,7 +414,9 @@ function createOrchestrationRuntime({
         ...(payload.options || {}),
         originContinue: payload.workKind !== 'task',
         deliveryId: item.id,
-        clientMsgId: item.id,
+        // Keep the browser correlation key so chat_msg_meta can replace the
+        // optimistic user bubble. The durable outbox id remains deliveryId.
+        clientMsgId: payload.options?.clientMsgId || item.id,
         schedulerEntryId: payload.activeEntryId || item.id,
         schedulerWorkKind: payload.workKind || 'task',
         userInputRequestId: payload.requestId || undefined,
