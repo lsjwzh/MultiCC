@@ -167,9 +167,12 @@ test('classify C is retired: no dispatch branch persists it, it falls through to
 });
 
 test('optimistic completion cannot overwrite a pending structured question', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  // emitTurnOutcome now lives in the extracted classify state machine; slice it
+  // there (the '// Turn-boundary hook' anchor comment moved with it).
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'classify', 'state-machine.js'), 'utf8');
   const start = source.indexOf('function emitTurnOutcome');
   const end = source.indexOf('// Turn-boundary hook', start);
   assert.match(source.slice(start, end),
-    /if \(userInputSignalHost\.pending\(sessionName\)\).*setTaskState.*return;/);
+    /if \(getUserInputSignalHost\(\)\.pending\(sessionName\)\).*setTaskState.*return;/);
 });
