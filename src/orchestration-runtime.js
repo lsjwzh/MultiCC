@@ -103,6 +103,7 @@ function createOrchestrationRuntime({
     store,
     now,
     onEvent: onSchedulerEvent,
+    getClassifyState: sessionId => getSessionRecoveryState(sessionId)?.classifyState || null,
     log,
   });
   const pendingBySession = new Map();
@@ -419,6 +420,7 @@ function createOrchestrationRuntime({
         clientMsgId: payload.options?.clientMsgId || item.id,
         schedulerEntryId: payload.activeEntryId || item.id,
         schedulerWorkKind: payload.workKind || 'task',
+        directUserInput: payload.source === 'direct',
         userInputRequestId: payload.requestId || undefined,
       };
     }
@@ -666,7 +668,7 @@ function createOrchestrationRuntime({
     return {
       ...admitted,
       status: current?.state || null,
-      queued: !!current?.active && current.active.entryId !== admitted.entry?.id,
+      queued: admitted.ok ? admitted.queued : false,
       schedule: current,
     };
   }

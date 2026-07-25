@@ -309,7 +309,7 @@
             Array.isArray(message.items) ? message.items : [],
             { state: message.state, freezeReason: message.freezeReason || null },
           );
-          if (message.event === 'queued') {
+          if (message.event === 'queued' && message.queued !== false) {
             host.showNotifyToast?.(
               message.queuePosition ? `消息已排队（第 ${message.queuePosition} 位）` : '消息已持久排队',
               'running',
@@ -318,8 +318,6 @@
             host.addSystemMsg?.(`队列已冻结：${message.freezeReason || '当前任务尚未成功完成'}`);
           } else if (message.event === 'started') {
             host.showNotifyToast?.('已开始执行队首任务', 'running');
-          } else if (message.event === 'snapshot' && message.state === 'frozen') {
-            host.addSystemMsg?.(`队列保持冻结：${message.freezeReason || '当前任务尚未解决'}`);
           }
           break;
         case 'rate_limit_event': {

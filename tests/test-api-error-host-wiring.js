@@ -56,3 +56,10 @@ test('host persistence and broadcast expose only stable policy fields', () => {
   assert.equal(server.includes("logger.warn('chat_provider_stderr'"), true);
   assert.equal(server.includes('[multicc/chat] stderr:'), false);
 });
+
+test('typed continuations clear stale API error ownership before launching', () => {
+  assert.match(server, /const directUserInput = opts\.directUserInput === true/);
+  assert.match(server, /if \(!originContinue \|\| directUserInput\) \{\s*apiErrorHost\.cancelRetry/);
+  assert.match(server,
+    /originContinue: originContinue && !directUserInput,\s*turnId/);
+});

@@ -49,21 +49,34 @@ function createSessionWorkHost(deps = {}) {
       || (options.originTrigger === true ? 'trigger'
         : options.originContinue === true ? 'continuation' : 'direct');
     const classifyState = deps.getTaskState(deps.getRecord(sessionId))?.classifyState || null;
-    const waitingContinuation = !requestId
+    // Only PROCESS (P) stages typed chat input behind the active turn. In every
+    // other classify state a typed message is an immediate, correlated
+    // continuation of the current native conversation.
+    const directContinuation = !requestId
       && source === 'direct'
-      && classifyState === 'W'
+      && classifyState !== 'P'
       && !!status?.active;
-    const admitted = await runtime.admitSessionWork({
+    const admission = {
       sessionId,
       text,
       options,
       source,
-      workKind: requestId ? 'answer' : waitingContinuation ? 'continuation' : null,
+      workKind: requestId ? 'answer' : directContinuation ? 'continuation' : null,
       requestId: requestId || null,
-      activeEntryId: requestId || waitingContinuation ? status?.active?.entryId || null : null,
+      activeEntryId: requestId || directContinuation ? status?.active?.entryId || null : null,
       idempotencyKey: options.idempotencyKey
         || options.clientMsgId || options.deliveryId || null,
-    });
+    };
+    let admitted = await runtime.admitSessionWork(admission);
+    // D may clear the active pointer between status() and admission. Nothing was
+    // persisted on this rejection, so retry once as fresh immediate work.
+    if (!admitted.ok && directContinuation && admitted.code === 'no_active_task') {
+      admitted = await runtime.admitSessionWork({
+        ...admission,
+        workKind: null,
+        activeEntryId: null,
+      });
+    }
     if (!admitted.ok) {
       deps.broadcast(sessionId, {
         type: 'error',
