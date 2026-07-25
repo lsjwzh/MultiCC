@@ -187,6 +187,7 @@ const {
   createApiErrorHost,
   retryNotice,
   sanitizeMessage: sanitizeApiErrorMessage,
+  claudeErrorEnvelope,
 } = require('./src/chat');
 const {
   createErrorDto,
@@ -4382,14 +4383,14 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, provi
   if (evt.type === 'result') {
     turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
     cs.currentCost = evt.total_cost_usd || null;
-    const apiFailure = evt.is_error === true
-      || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype));
-    if (apiFailure) {
+    const apiFailure = evt.is_error === true || (evt.subtype && evt.subtype !== 'success' && /error|abort|timeout/i.test(evt.subtype));
+    const envelopeError = apiFailure ? null : claudeErrorEnvelope(providerName, cs.currentAssistantText);
+    if (apiFailure || envelopeError) {
       chatHistoryRuntime.clearIncrementalSave(sessionName);
       cs._sawApiError = true;
       runner.sawApiError = true;
       const detail = evt.error && typeof evt.error === 'object' ? evt.error : {};
-      runner.apiErrorRaw = {
+      runner.apiErrorRaw = envelopeError || {
         source: providerName === 'qoder' ? 'qoder_result' : 'claude_result',
         provider: providerName,
         code: detail.code || evt.subtype || detail.type,
@@ -4403,14 +4404,11 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, provi
       recordApiSuccess(providerName, { retryAttempt: runner.apiRetryAttempt || 0 });
       clearSessionApiErrorState(sessionName, cs);
     }
-    // Hoisted out of the if-block below: forward() at the end of this branch
-    // also needs it. Block-scoping it inside the if made the forward line throw
-    // ReferenceError (swallowed by handleLine's catch), so live clients never
-    // received the result event — token/timing footers only appeared after a
-    // reload replayed chat_history.
+    // Hoisted out of the if-block: forward() below also needs usage. Block
+    // scoping it made live clients miss the result event entirely.
     const usage = evt.usage || {};
     runner.pendingUsage = usage;
-    if (!apiFailure && (cs.currentAssistantText || cs.currentToolCalls.length)) {
+    if (!apiFailure && !envelopeError && (cs.currentAssistantText || cs.currentToolCalls.length)) {
       const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
         role: 'assistant', content: cs.currentAssistantText,
         tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
@@ -4419,11 +4417,8 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, provi
       if (resultDurable) {
         recordDurableTurnUsage(sessionName, runner, usage);
         cs.chatTurnCount++;
-        // Mark this turn as having a durable persisted result so the classify
-        // P+no-turn-in-flight branch (server.js ~3610) does not mistake a
-        // normally-completed turn for an unknown interruption and resume it —
-        // which would re-run `claude --resume` and produce duplicate replies
-        // with cumulative usage (the 1x/2x/3x symptom).
+        // Durable result marks the turn complete so classify does not resume
+        // it as an unknown interruption (duplicate replies, 1x/2x/3x usage).
         cs._resultSaved = true;
       }
       // Cancel any pending incremental-save timer: the final message is now
@@ -4431,7 +4426,7 @@ function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, provi
       // AFTER the final — a duplicate bubble on reconnect. Mirrors the cancel
       // in the child-process close handler.
       chatHistoryRuntime.clearIncrementalSave(sessionName);
-    } else if (!apiFailure) {
+    } else if (!apiFailure && !envelopeError) {
       recordResultEvent(turn, runner, { current: true, persisted: false });
     } else {
       // An error result is a turn boundary, not a durable successful answer.
