@@ -353,6 +353,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('memo-send-btn')?.addEventListener('click', memoOpenPicker);
 });
 let isStreaming = false;
+let stagedUserBubbles = new Map(); // clientMsgId -> text for queued user messages
+window.stagedUserBubbles = stagedUserBubbles;
 let _pendingCancel = false; // cancel requested while WS was disconnected
 
 // Context window tracking
@@ -2550,6 +2552,7 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   transportSend: payload => chatTransport.send(payload),
   retryTransport: () => chatTransport.retryNow(),
   addSystemMessage: addSystemMsg,
+  stageUserMessage: (text, id) => stagedUserBubbles.set(id, text),
   addUserMessage: addUserMsg,
   resetHistory: () => {
     resetHistoryPagination();

@@ -309,6 +309,16 @@
           const visibleItems = message.event === 'queued' && message.queued === false
             ? items.filter(item => item?.entryId !== message.entryId)
             : items;
+          // Insert user bubble now if queued=false (immediate), otherwise stage it
+          if (message.event === 'queued') {
+            const text = message.message;
+            const clientMsgId = message.clientMsgId;
+            if (message.queued === false && text && clientMsgId) {
+              if (typeof host.addUserMessage === 'function') host.addUserMessage(text, clientMsgId);
+            } else if (message.queued && text && clientMsgId) {
+              if (window.stagedUserBubbles) window.stagedUserBubbles.set(clientMsgId, text);
+            }
+          }
           host.renderSessionQueue?.(
             visibleItems,
             { state: message.state, freezeReason: message.freezeReason || null },
