@@ -214,6 +214,7 @@ const { createObservability, installConsoleRedaction } = require('./src/observab
 const { installWsBackpressure } = require('./src/ws-backpressure');
 const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
+const { createHostEnv } = require('./src/host-env');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
@@ -2288,40 +2289,12 @@ mountFileTransferRoutes(app, {
   log: message => console.log(message),
 });
 
-// ── Voice settings API ──
-const ENV_PATH = path.join(__dirname, '.env');
-
-function readEnvFile() {
-  const vars = {};
-  try {
-    fs.readFileSync(ENV_PATH, 'utf8').split('\n').forEach(line => {
-      const m = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
-      if (m) vars[m[1]] = m[2];
-    });
-  } catch (_) {}
-  return vars;
-}
-
-function writeEnvFile(updates) {
-  let lines = [];
-  try { lines = fs.readFileSync(ENV_PATH, 'utf8').split('\n'); } catch (_) {}
-  const written = new Set();
-  lines = lines.map(line => {
-    const m = line.match(/^\s*([^#=]+?)\s*=/);
-    if (m && updates.hasOwnProperty(m[1])) {
-      written.add(m[1]);
-      if (updates[m[1]] == null) return '';
-      return `${m[1]}=${updates[m[1]]}`;
-    }
-    return line;
-  }).filter(l => l.trim() !== '');
-  for (const [k, v] of Object.entries(updates)) {
-    if (!written.has(k) && v != null) lines.push(`${k}=${v}`);
-  }
-  let parentMode = 0o755;
-  try { parentMode = fs.statSync(path.dirname(ENV_PATH)).mode & 0o777; } catch (_) {}
-  atomicWriteText(ENV_PATH, lines.join('\n') + '\n', { dirMode: parentMode });
-}
+// ── Host .env management + Web Push (PWA notifications) ──
+// .env read/write helpers and VAPID key provisioning extracted to src/host-env.js.
+// The startup order below is preserved verbatim: DEFAULT_CLI migration, voice
+// route wiring, then VAPID key provisioning + setVapidDetails.
+const hostEnv = createHostEnv({ webpush });
+const { readEnvFile, writeEnvFile, ensureVapidKeys } = hostEnv;
 
 // DEFAULT_CLI belonged to the removed Aux CLI fallback. Migrate persisted
 // installations as well as the in-memory environment to the protocol config.
@@ -2341,27 +2314,6 @@ mountVoiceRoutes(app, {
   getAuxQueue: () => auxQueue,
   reportFailure: (stage, category) => reportHostControlFailure('voice_settings', stage, category),
 });
-
-// ── Web Push (PWA notifications) ──
-// VAPID key management: auto-generate and persist in .env
-function ensureVapidKeys() {
-  let pubKey = process.env.VAPID_PUBLIC_KEY;
-  let privKey = process.env.VAPID_PRIVATE_KEY;
-  if (pubKey && privKey) return { pubKey, privKey };
-
-  console.log('[multicc/push] Generating VAPID keys...');
-  const keys = webpush.generateVAPIDKeys();
-  pubKey = keys.publicKey;
-  privKey = keys.privateKey;
-
-  // Persist to .env
-  const updates = { VAPID_PUBLIC_KEY: pubKey, VAPID_PRIVATE_KEY: privKey };
-  writeEnvFile(updates);
-  process.env.VAPID_PUBLIC_KEY = pubKey;
-  process.env.VAPID_PRIVATE_KEY = privKey;
-  console.log('[multicc/push] VAPID keys generated and saved to .env');
-  return { pubKey, privKey };
-}
 
 const vapidKeys = ensureVapidKeys();
 webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.privKey);
