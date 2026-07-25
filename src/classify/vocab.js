@@ -125,6 +125,15 @@ const PHASE_LABELS = {
 function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
 function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 
+// Semantic predicates over the classify LETTER — the single source for "what
+// does this state mean for my subsystem?". Downstream code MUST use these
+// instead of inline `=== 'D'` / `=== 'W'` checks, so the meaning lives here.
+//   isTerminalLetter: D — task genuinely finished (the only terminal state).
+//   isSettledLetter:  D or W — won't change without new user input; safe to skip
+//                     for re-classify/push (the user is in charge either way).
+function isTerminalLetter(cls) { return cls === 'D'; }
+function isSettledLetter(cls) { return cls === 'D' || cls === 'W'; }
+
 // Structured tool evidence is authoritative for "waiting on user". The Aux
 // classifier still owns goal/phase and remains the legacy fallback when no
 // signal exists, but it cannot override an unresolved explicit request.
@@ -188,6 +197,8 @@ module.exports = {
   classifyDisplay,
   phaseLabel,
   applyUserInputEvidence,
+  isTerminalLetter,
+  isSettledLetter,
   CLASSIFY_DISPLAY,
   PHASE_LABELS,
 };
