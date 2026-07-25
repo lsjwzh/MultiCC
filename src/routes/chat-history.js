@@ -434,12 +434,132 @@ function createChatHistoryRuntime(rawDeps) {
   }
 
   async function clearHistory(sessionId, message, chatState) {
+    if (message && message.preserveHistory === true) {
+      return rotateNativeContext(sessionId, chatState);
+    }
     try {
       return await clearHistoryUnsafe(sessionId, message, chatState);
     } catch (error) {
       logFailure('chat_history_clear_failed', error, sessionId);
       const failure = new Error('chat history clear failed');
       failure.code = 'CHAT_HISTORY_CLEAR_FAILED';
+      throw failure;
+    }
+  }
+
+  async function rotateNativeContextUnsafe(sessionId, chatState) {
+    const key = String(sessionId);
+    const persisted = deps.persistedSessions.get(key);
+    if (!persisted) {
+      return Object.freeze({ ok: false, code: 'session_not_found' });
+    }
+    if (persisted.kind && persisted.kind !== 'chat') {
+      return Object.freeze({ ok: false, code: 'not_chat_session' });
+    }
+
+    const existing = persisted.pendingCliHandoff;
+    if (existing && existing.status === 'pending') {
+      if (existing.reason !== 'manual_native_context_rotate') {
+        deps.chatBroadcast(key, {
+          type: 'native_context_rotation_rejected',
+          code: 'handoff_pending',
+        });
+        return Object.freeze({ ok: false, code: 'handoff_pending' });
+      }
+      const reused = Object.freeze({
+        ok: true,
+        reused: true,
+        checkpointId: existing.id,
+        clearedNativeSessions: 0,
+      });
+      deps.chatBroadcast(key, {
+        type: 'native_context_rotated',
+        checkpointId: existing.id,
+        clearedNativeSessions: 0,
+        historyPreserved: true,
+        reused: true,
+      });
+      return reused;
+    }
+
+    const rotationReady = typeof deps.isSessionBusy === 'function'
+      && typeof deps.getSessionRunState === 'function'
+      && typeof deps.getActiveBackgroundTasks === 'function'
+      && typeof deps.sessionPersistence?.mutate === 'function';
+    const runState = rotationReady ? deps.getSessionRunState(key) : 'running';
+    const activeBackground = rotationReady ? deps.getActiveBackgroundTasks(key) : [];
+    const blockCode = !rotationReady || deps.isSessionBusy(key)
+      || ['queued', 'running', 'assessing'].includes(runState)
+      ? 'session_busy'
+      : Array.isArray(activeBackground) && activeBackground.length
+        ? 'background_tasks_running'
+        : null;
+    if (blockCode) {
+      deps.chatBroadcast(key, {
+        type: 'native_context_rotation_rejected',
+        code: blockCode,
+      });
+      return Object.freeze({
+        ok: false,
+        code: blockCode,
+      });
+    }
+
+    const history = load(key);
+    const gitSnapshot = await deps.cliSwitchGitSnapshot(persisted);
+    const cli = (chatState && chatState.cli) || persisted.cli;
+    const checkpoint = deps.buildHandoffCheckpoint({
+      session: persisted,
+      fromCli: cli,
+      toCli: cli,
+      history,
+      git: gitSnapshot,
+    });
+    checkpoint.reason = 'manual_native_context_rotate';
+    const handoff = {
+      id: `checkpoint_${randomBytes(8).toString('hex')}`,
+      fromCli: cli,
+      toCli: cli,
+      createdAt: checkpoint.createdAt,
+      status: 'pending',
+      reason: 'manual_native_context_rotate',
+      reusedTarget: false,
+      checkpoint,
+    };
+
+    const clearedNativeSessions = deps.sessionPersistence.mutate(
+      'websocket.rotate-native-context',
+      () => {
+        const cleared = deps.clearAllNativeCliStates(persisted);
+        persisted.pendingCliHandoff = handoff;
+        deps.rememberActiveCliState(persisted);
+        return cleared;
+      },
+    );
+    deps.chatStream.close(key);
+    if (chatState) chatState.chatTurnCount = 0;
+    deps.chatBroadcast(key, {
+      type: 'native_context_rotated',
+      checkpointId: handoff.id,
+      clearedNativeSessions,
+      historyPreserved: true,
+      reused: false,
+    });
+    return Object.freeze({
+      ok: true,
+      reused: false,
+      checkpointId: handoff.id,
+      clearedNativeSessions,
+    });
+  }
+
+  async function rotateNativeContext(sessionId, chatState) {
+    try {
+      return await rotateNativeContextUnsafe(sessionId, chatState);
+    } catch (error) {
+      logFailure('native_context_rotation_failed', error, sessionId);
+      const failure = new Error('native context rotation failed');
+      failure.code = 'NATIVE_CONTEXT_ROTATION_FAILED';
       throw failure;
     }
   }
@@ -508,6 +628,7 @@ function createChatHistoryRuntime(rawDeps) {
     load,
     mountRoutes,
     paginate,
+    rotateNativeContext,
     scheduleIncrementalSave,
     service,
     stop,
