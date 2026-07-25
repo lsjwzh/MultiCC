@@ -334,6 +334,7 @@
     // filtering come from the shared aliasTiersFromMap helper.
     const tiers = aliasTiersFromMap(prov && prov.aliasMap ? prov.aliasMap : null);
     let opts;
+    let asyncFill = null;
     const vendorOptions = vendorModelOptions(cli);
     if (vendorOptions) {
       opts = vendorOptions;
@@ -341,8 +342,20 @@
       opts = tiers.map(([t, m]) => ({ value: t, label: formatAliasTierLabel(t, m) }));
   } else if (prov && catalog.modelsFor(prov).length) {
     opts = catalog.modelsFor(prov).map(m => ({ value: m, label: m }));
+    } else if (isClaude) {
+      opts = CLAUDE_MODEL_OPTIONS;
+    } else if (cli === 'opencode' && typeof loadOpenCodeModels === 'function') {
+      // opencode with no multicc-managed provider model list: show a loading
+      // placeholder, then asynchronously append the local opencode CLI's model
+      // list (cached 1 day server- and client-side). The full <provider>/<model>
+      // value pairs directly with opencode's -m provider/model arg.
+      opts = [{ value: '', label: '加载 OpenCode 模型中…' }];
+      asyncFill = loadOpenCodeModels().then(models => {
+        if (!Array.isArray(models) || !models.length) return [];
+        return models.map(m => ({ value: `${m.provider}/${m.model}`, label: m.label || `${m.provider}/${m.model}` }));
+      }).catch(() => []);
     } else {
-      opts = isClaude ? CLAUDE_MODEL_OPTIONS : [];
+      opts = [];
     }
     for (const o of opts) {
       const opt = document.createElement('option');
@@ -358,6 +371,41 @@
     modelSelect.value = hasVal ? prev : (opts.length ? opts[0].value : '__custom__');
     const syncCustom = () => { modelCustom.style.display = modelSelect.value === '__custom__' ? '' : 'none'; };
     syncCustom();
+    if (asyncFill) {
+      asyncFill.then(loaded => {
+        if (!loaded || !loaded.length) {
+          // No models returned — drop the "loading…" placeholder so only
+          // __custom__ remains, mirroring the previous empty behavior.
+          const ph = [...modelSelect.options].find(o => o.value === '' && /加载|loading|OpenCode/i.test(o.textContent || ''));
+          if (ph) modelSelect.removeChild(ph);
+          if (modelSelect.value === '') modelSelect.value = '__custom__';
+          syncCustom();
+          return;
+        }
+        // Remove the placeholder, append the loaded entries (dedup vs existing).
+        const existing = new Set([...modelSelect.options].map(o => o.value));
+        const ph = [...modelSelect.options].find(o => o.value === '' && /加载|loading|OpenCode/i.test(o.textContent || ''));
+        const preservePrev = prev && modelSelect.value === prev;
+        if (ph) modelSelect.removeChild(ph);
+        // Insert loaded entries before the __custom__ sentinel.
+        const customIndex = [...modelSelect.options].findIndex(o => o.value === '__custom__');
+        for (const item of loaded) {
+          if (existing.has(item.value)) continue;
+          existing.add(item.value);
+          const opt = document.createElement('option');
+          opt.value = item.value; opt.textContent = item.label;
+          if (customIndex >= 0) modelSelect.insertBefore(opt, modelSelect.options[customIndex]);
+          else modelSelect.appendChild(opt);
+        }
+        // Preserve the user's current selection unless it was the placeholder.
+        if (preservePrev && [...modelSelect.options].some(o => o.value === prev)) {
+          modelSelect.value = prev;
+        } else if (!modelSelect.value || [...modelSelect.options].findIndex(o => o.value === modelSelect.value) === -1) {
+          modelSelect.value = loaded[0].value;
+        }
+        syncCustom();
+      });
+    }
     modelSelect.onchange = () => { syncCustom(); if (modelSelect.value === '__custom__') modelCustom.focus(); };
   }
 

@@ -144,7 +144,51 @@
     }
     if (state && state.cli === 'qoder') return [...QODER_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'opencode') {
+      // No multicc-managed provider chosen: list the local opencode CLI's
+      // available provider/model pairs. Sync-read the 1-day localStorage cache
+      // populated by loadOpenCodeModels() (see public/shared/models.js); the
+      // first picker open may return [] here, then refreshOpenCodeModels()
+      // fires a rebuild once the fetch resolves.
+      const cached = readOpenCodeModelsSync();
+      if (cached.length) return ['', ...cached.map(m => `${m.provider}/${m.model}`), '__custom__'];
+      return ['', '__custom__'];
+    }
     return ['', '__custom__'];
+  }
+
+  // Synchronous read of the OpenCode model cache populated by
+  // loadOpenCodeModels() in shared/models.js. Returns [] when the cache is
+  // missing/stale so callers can render a placeholder option without blocking.
+  function readOpenCodeModelsSync() {
+    try {
+      const ls = root && root.localStorage;
+      if (!ls) return [];
+      const raw = ls.getItem('multicc.opencode.models.v1');
+      if (!raw) return [];
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object') return [];
+      const at = Number(obj.at) || 0;
+      const models = Array.isArray(obj.models) ? obj.models : [];
+      const TTL = 24 * 60 * 60 * 1000;
+      if (!at || (Date.now() - at) >= TTL) return [];
+      return models;
+    } catch (_) { return []; }
+  }
+
+  // Background-refresh the OpenCode model list (1-day cache, shared with
+  // shared/models.js via the same localStorage key). The chat page should call
+  // this once on init when `cli === 'opencode'`; on completion it triggers a
+  // UI re-resolve so the picker shows the freshly fetched entries.
+  async function refreshOpenCodeModels(rebuildCallback) {
+    try {
+      if (typeof loadOpenCodeModels !== 'function') return;
+      const prev = readOpenCodeModelsSync();
+      await loadOpenCodeModels();
+      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+        try { rebuildCallback(); } catch (_) { /* noop */ }
+      }
+    } catch (_) { /* swallow — picker keeps the placeholder */ }
   }
 
   function stripModelSuffix(model) {
@@ -578,5 +622,6 @@
     loadProviderList,
     loadSession,
     saveSession,
+    refreshOpenCodeModels,
   };
 });

@@ -408,6 +408,15 @@ function applyCliUi(cli) {
     cliBtn.title = `当前 ${meta.label}；点击切换 CLI（通过结构化 checkpoint 交接上下文）`;
   }
   document.title = `MultiCC Chat · ${meta.label}`;
+  // OpenCode: kick off background refresh of the local opencode CLI's model
+  // list so the AI-config picker dropdown is populated by the next open.
+  // loadOpenCodeModels() caches 1 day in localStorage (see shared/models.js);
+  // the rebuild callback re-resolves the picker once the fetch completes.
+  if (next === 'opencode' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshOpenCodeModels === 'function') {
+    window.MultiCCChatAiConfig.refreshOpenCodeModels(() => {
+      try { window.MultiCCChatAiConfig && MultiCCChatAiConfig.showProviderPicker && MultiCCChatAiConfig.showProviderPicker(); } catch (_) {}
+    });
+  }
 }
 let _mergeReady = false;
 let _syncConflict = false;
