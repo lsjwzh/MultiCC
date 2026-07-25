@@ -67,6 +67,17 @@ test('production request paths do not run synchronous child processes', () => {
 });
 
 test('session bundle import never resets a worktree with reset --hard', () => {
-  const source = fs.readFileSync('server.js', 'utf8');
-  assert.doesNotMatch(source, /reset["'`,\s]+--hard/);
+  const files = ['server.js'];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(target);
+      else if (entry.name.endsWith('.js')) files.push(target);
+    }
+  };
+  visit('src');
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    assert.doesNotMatch(source, /reset["'`,\s]+--hard/, file);
+  }
 });
