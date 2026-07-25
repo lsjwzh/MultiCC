@@ -31,7 +31,10 @@
 
   function normalizeFiveHourRateLimit(info, nowMs) {
     if (!info || typeof info !== 'object' || Array.isArray(info)) return null;
-    if (info.rateLimitType !== 'five_hour') return null;
+    // A window limit is either a rolling 5h window (Claude, GLM) or a weekly one
+    // (Codex — its binding, and on some plans only, window). Same DTO shape; the
+    // provider drives the label (5h vs 周) so no extra field is needed here.
+    if (!['five_hour', 'weekly'].includes(info.rateLimitType)) return null;
     if (!['allowed', 'allowed_warning', 'rejected'].includes(info.status)) return null;
     const utilization = finiteNumber(info.utilization);
     const usedPercentage = utilization === null
@@ -39,9 +42,9 @@
       : Math.round(Math.max(0, Math.min(100, utilization * 100)) * 1000) / 1000;
     // Provider of this window limit. Claude 5h arrives from the proxy's
     // response-header extraction (no provider field → 'claude'); GLM Coding Plan
-    // arrives from the poller carrying provider:'glm'. It drives both the bar
-    // label and the source↔cli gate below.
-    const provider = info.provider === 'glm' ? 'glm' : 'claude';
+    // (5h) and Codex (weekly) arrive from the poller carrying provider:'glm' /
+    // 'codex'. It drives both the bar label and the source↔cli gate below.
+    const provider = info.provider === 'glm' ? 'glm' : info.provider === 'codex' ? 'codex' : 'claude';
     return Object.freeze({
       schemaVersion: 1,
       kind: 'five_hour',
@@ -89,7 +92,10 @@
 
     const used = finiteNumber(value.usedPercentage);
     const rejected = value.status === 'rejected';
-    const label = value.provider === 'glm' ? 'GLM 5h' : 'Claude 5h';
+    // Codex reports a WEEKLY window (no 5h); Claude/GLM report 5h.
+    const label = value.provider === 'glm' ? 'GLM 5h'
+      : value.provider === 'codex' ? 'Codex 周'
+        : 'Claude 5h';
     let text = rejected ? `${label} 已达上限` : label;
     if (!rejected && used !== null) {
       const rounded = Math.round(used * 10) / 10;
@@ -114,7 +120,9 @@
       color,
       title: value.provider === 'glm'
         ? 'GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）'
-        : 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
+        : value.provider === 'codex'
+          ? 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）'
+          : 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
     });
   }
 
@@ -133,7 +141,8 @@
   // codex proxy). This preserves the original guard (a codex session never shows
   // stale Claude data) while letting GLM's own window bar render.
   function providerMatchesCli(provider, cli) {
-    if (provider === 'glm') return cli === 'codex' || cli === 'opencode';
+    // GLM (5h) and Codex (weekly) both run under the codex CLI; Claude under claude.
+    if (provider === 'glm' || provider === 'codex') return cli === 'codex' || cli === 'opencode';
     return cli === 'claude' || cli === 'opencode';
   }
 

@@ -653,6 +653,17 @@ function getProviderLimitTarget(appType, id) {
       || tomlValue(cfg.config, 'base_url') || '';
     apiKey = (cfg.proxyTarget && cfg.proxyTarget.apiKey)
       || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '';
+    // Official ChatGPT-OAuth codex has no relay base_url and no API key: it logs
+    // in through ~/.codex/auth.json and talks straight to the ChatGPT backend,
+    // bypassing our proxy (so no response-header extraction is possible). Its
+    // quota — a single WEEKLY window on this plan family, no 5h — is pollable from
+    // that backend with the on-disk OAuth token; the adapter sources the
+    // credential itself, so no key travels through this seam. keyHashSeed is a
+    // constant because there is one ChatGPT account per machine → all sessions on
+    // this provider dedup to one poll.
+    if (!baseUrl && !apiKey) {
+      return { providerId: id, appType: 'codex', host: 'chatgpt.com', apiKey: null, keyHashSeed: 'codex-oauth', strategy: 'codex-oauth-usage' };
+    }
   } else {
     const env = cfg.env || {};
     baseUrl = env.ANTHROPIC_BASE_URL || '';
