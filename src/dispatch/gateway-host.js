@@ -50,7 +50,7 @@ function createGatewayHost(rawDeps) {
     dispatchTargetHintFor,
     cwdForSession,
     getSetSessionStatus,
-    taskBoardSessionBusy,
+    isTargetBusy,
     getOrchestrationRuntime,
     getTaskContextHost,
     getCreateSessionRecord,
@@ -75,7 +75,7 @@ function createGatewayHost(rawDeps) {
     [appendEvent, 'appendEvent'], [getWaitInjector, 'getWaitInjector'], [getChatHistoryService, 'getChatHistoryService'],
     [normalizeEffort, 'normalizeEffort'], [dispatchTargetHintFor, 'dispatchTargetHintFor'],
     [cwdForSession, 'cwdForSession'], [getSetSessionStatus, 'getSetSessionStatus'],
-    [taskBoardSessionBusy, 'taskBoardSessionBusy'],
+    [isTargetBusy, 'isTargetBusy'],
     [getOrchestrationRuntime, 'getOrchestrationRuntime'],
     [getTaskContextHost, 'getTaskContextHost'],
     [getCreateSessionRecord, 'getCreateSessionRecord'],
@@ -87,17 +87,17 @@ function createGatewayHost(rawDeps) {
     const sessionsForPrompt = [...persistedSessions.values()]
       .filter(s => s.type !== 'aux' && s.type !== 'gateway')
       .slice(0, 30)
-      .map(s => {
-        const activeChat = chatSessions.get(s.id);
-        return {
-          id: s.id,
-          label: s.label || '',
-          cli: s.cli || 'claude',
-          kind: s.kind || 'terminal',
-          cwd: cwdForSession(s),
-          active: !!activeChat && (activeChat.clients.size > 0 || activeChat.isStreaming),
-        };
-      });
+      .map(s => ({
+        id: s.id,
+        label: s.label || '',
+        cli: s.cli || 'claude',
+        kind: s.kind || 'terminal',
+        cwd: cwdForSession(s),
+        // Same classify-derived answer the requireIdle gate below uses, so the
+        // routing LLM and the admission check cannot disagree. Never isStreaming
+        // or connected-client count — a watching browser is not busy work.
+        active: !!isTargetBusy(s.id),
+      }));
     const context = JSON.stringify(sessionsForPrompt);
     return [
       '[MultiCC Gateway system prompt]',
@@ -273,7 +273,7 @@ function createGatewayHost(rawDeps) {
       chatId = created.id;
     }
 
-    if (opts.requireIdle && taskBoardSessionBusy(chatId)) {
+    if (opts.requireIdle && isTargetBusy(chatId)) {
       return { ok: false, error: 'target_busy', code: 'target_busy', chatId };
     }
     const ownerSessionId = opts.ownerSessionId || opts.replyTo || GATEWAY_ID;

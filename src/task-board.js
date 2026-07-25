@@ -768,7 +768,6 @@ function routingRelevanceScore(contextTerms, rec) {
 function recordAppearsAvailable(rec, sid, options = {}) {
   try {
     if (typeof options.isAvailable === 'function') return !!options.isAvailable(sid, rec);
-    if (typeof options.isBusy === 'function') return !options.isBusy(sid, rec);
   } catch (_) {
     return false;
   }

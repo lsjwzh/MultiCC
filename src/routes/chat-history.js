@@ -482,13 +482,15 @@ function createChatHistoryRuntime(rawDeps) {
       return reused;
     }
 
-    const rotationReady = typeof deps.isSessionBusy === 'function'
-      && typeof deps.getSessionRunState === 'function'
+    const rotationReady = typeof deps.getSessionRunState === 'function'
       && typeof deps.getActiveBackgroundTasks === 'function'
       && typeof deps.sessionPersistence?.mutate === 'function';
     const runState = rotationReady ? deps.getSessionRunState(key) : 'running';
     const activeBackground = rotationReady ? deps.getActiveBackgroundTasks(key) : [];
-    const blockCode = !rotationReady || deps.isSessionBusy(key)
+    // Classify alone gates rotation. 'assessing' stays blocked here (unlike the
+    // dispatch predicate): rotation rewrites native context, so waiting for the
+    // verdict is the safe side, and a user can always retry.
+    const blockCode = !rotationReady
       || ['queued', 'running', 'assessing'].includes(runState)
       ? 'session_busy'
       : Array.isArray(activeBackground) && activeBackground.length
