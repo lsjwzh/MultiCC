@@ -705,6 +705,7 @@ function createOrchestrationRuntime({
     await sessionScheduler.recover({
       stateForSession: getSessionRecoveryState,
       isBusy,
+      hasPendingWait: hasPending,
     });
     await reconcileDispatchesOnStartup();
     await reconcileDetached();

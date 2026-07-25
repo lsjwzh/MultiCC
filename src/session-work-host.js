@@ -97,55 +97,37 @@ function createSessionWorkHost(deps = {}) {
     return cardStatus === 'completed' ? 'done' : cardStatus;
   }
 
-  function updateSchedule(sessionId, taskId, action, reason, options = {}) {
+  async function turnSucceeded(sessionId) {
     const runtime = schedulerRuntime();
     const target = runtime?.sessionScheduler;
-    if (!target || !sessionId) return;
-    const operation = action === 'complete'
-      ? target.complete(sessionId, { expectedTaskId: taskId || null, reason })
-      : target.freeze(sessionId, reason, {
-          expectedTaskId: taskId || null,
-          ...options,
-        });
-    Promise.resolve(operation).then(result => {
-      if (action === 'complete' && result?.ok) return runtime.tick();
-      return null;
-    }).catch(error => {
-      log.warn?.('session_scheduler_classify_transition_failed', {
-        sessionId,
-        action,
-        reason,
-        error: error.message,
-      });
-    });
-  }
-
-  function classifyTransition(sessionId, taskId, result = {}) {
-    if (result.state === 'completed') {
-      updateSchedule(sessionId, taskId, 'complete', 'classified_completed');
-      return;
-    }
-    if (result.state === 'continue') {
-      updateSchedule(sessionId, taskId, 'freeze', 'incomplete_requires_resume');
-      return;
-    }
+    if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
+    const current = await target.status(sessionId);
+    if (!current?.active) return { ok: false, code: 'no_active_task' };
     const pending = deps.pendingUserInput(sessionId);
-    updateSchedule(sessionId, taskId, 'freeze',
-      result.state === 'running' ? 'unknown_interruption'
-        : result.error ? 'error'
-          : pending && pending.resolved !== true ? 'awaiting_user_input'
-            : result.background ? 'awaiting_callback' : 'waiting',
-      pending && pending.resolved !== true ? { requestId: pending.requestId } : {});
+    const result = pending && pending.resolved !== true
+      ? await target.freeze(sessionId, 'awaiting_user_input', {
+          requestId: pending.requestId,
+        })
+      : runtime.hasPending(sessionId)
+        ? await target.freeze(sessionId, 'awaiting_callback')
+        : await target.complete(sessionId, { reason: 'durable_turn_completed' });
+    if (result?.ok) await runtime.tick();
+    return result;
   }
 
-  function classifyUnavailable(sessionId, taskId, reason) {
-    Promise.resolve(scheduler()?.freeze(sessionId, reason, {
-      expectedTaskId: taskId || null,
-    })).catch(() => {});
+  async function turnFailed(sessionId, reason = 'unknown_interruption') {
+    const target = scheduler();
+    if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
+    return target.freeze(sessionId, reason);
   }
 
-  function turnEnded(sessionId) {
-    Promise.resolve(scheduler()?.turnEnded(sessionId)).catch(() => {});
+  // Aux classification owns task/card semantics only. It must never gate the
+  // interaction FIFO: W means the provider turn already ended and is waiting
+  // for the next user message, which is exactly the queue head we must deliver.
+  function classifyTransition() {}
+
+  function classifyUnavailable(sessionId, _taskId, reason) {
+    log.warn?.('session_scheduler_classification_unavailable', { sessionId, reason });
   }
 
   function recoveryState(sessionId) {
@@ -172,6 +154,7 @@ function createSessionWorkHost(deps = {}) {
       queuePosition: event.queuePosition || null,
       workKind: event.workKind || null,
       queued: event.queued == null ? null : event.queued,
+      items: Array.isArray(event.queuedItems) ? event.queuedItems : [],
       freezeReason: event.freezeReason || null,
       at: event.at,
     });
@@ -219,6 +202,7 @@ function createSessionWorkHost(deps = {}) {
         event: 'snapshot',
         state: queue.state,
         queued: queue.queued.length,
+        items: queue.queued,
         freezeReason: queue.freezeReason,
         active: queue.active,
       });
@@ -278,7 +262,8 @@ function createSessionWorkHost(deps = {}) {
     recoveryState,
     replayState,
     resolveTask,
-    turnEnded,
+    turnFailed,
+    turnSucceeded,
   });
 }
 

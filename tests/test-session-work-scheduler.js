@@ -73,6 +73,14 @@ test('idle starts one item and running work keeps later messages in strict FIFO 
   const third = await h.scheduler.admit({
     sessionId: 's1', text: 'third', idempotencyKey: 'third',
   });
+  assert.deepEqual(
+    (await h.scheduler.status('s1')).queued.map(item => item.text),
+    ['second', 'third'],
+  );
+  assert.deepEqual(
+    h.events.find(event => event.entryId === third.entry.id)?.queuedItems.map(item => item.text),
+    ['second', 'third'],
+  );
   assert.equal(h.events.find(event => event.entryId === second.entry.id)?.schedulerState, 'running');
   assert.equal(await claimOne(h), null, 'an active task closes normal delivery admission');
 
@@ -289,4 +297,73 @@ test('restart advances only when the active run has timestamped structured succe
   const staleState = await stale.scheduler.status('s2');
   assert.equal(staleState.state, 'frozen');
   assert.equal(staleState.freezeReason, 'unknown_interruption');
+});
+
+test('legacy classifier waiting is released, while structured wait and error remain frozen', async t => {
+  const waiting = fixture(t);
+  await waiting.scheduler.admit({
+    sessionId: 'waiting', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(waiting, await claimOne(waiting, 'waiting'));
+  await waiting.scheduler.admit({
+    sessionId: 'waiting',
+    text: '<img src=x onerror=alert(1)>\nqueued body',
+    idempotencyKey: 'queued',
+  });
+  await waiting.scheduler.freeze('waiting', 'waiting');
+  await waiting.scheduler.recover({
+    isBusy: () => false,
+    stateForSession: () => ({ classifyState: 'W' }),
+  });
+  const released = await waiting.scheduler.status('waiting');
+  assert.equal(released.state, 'idle');
+  assert.equal(released.active, null);
+  assert.equal(released.queued[0].text, '<img src=x onerror=alert(1)>\nqueued body');
+  assert.ok(await claimOne(waiting, 'waiting'));
+
+  const callback = fixture(t);
+  await callback.scheduler.admit({
+    sessionId: 'callback', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(callback, await claimOne(callback, 'callback'));
+  await callback.scheduler.admit({
+    sessionId: 'callback', text: 'future', idempotencyKey: 'future',
+  });
+  await callback.scheduler.freeze('callback', 'awaiting_callback');
+  await callback.scheduler.recover({
+    isBusy: () => false,
+    hasPendingWait: () => true,
+  });
+  assert.equal((await callback.scheduler.status('callback')).state, 'frozen');
+  assert.equal(await claimOne(callback, 'callback'), null);
+
+  const failed = fixture(t);
+  await failed.scheduler.admit({
+    sessionId: 'failed', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(failed, await claimOne(failed, 'failed'));
+  await failed.scheduler.admit({
+    sessionId: 'failed', text: 'future', idempotencyKey: 'future',
+  });
+  await failed.scheduler.freeze('failed', 'error');
+  await failed.scheduler.recover({ isBusy: () => false });
+  const frozen = await failed.scheduler.status('failed');
+  assert.equal(frozen.state, 'frozen');
+  assert.equal(frozen.freezeReason, 'error');
+  assert.equal(await claimOne(failed, 'failed'), null);
+});
+
+test('new admission releases a legacy waiting gate without waiting for restart', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(h, await claimOne(h));
+  await h.scheduler.freeze('s1', 'incomplete_requires_resume');
+  const next = await h.scheduler.admit({
+    sessionId: 's1', text: 'next user message', idempotencyKey: 'next',
+  });
+  assert.equal(next.schedule.state, 'idle');
+  assert.equal(next.schedule.active, null);
+  assert.equal((await claimOne(h)).id, next.entry.id);
 });

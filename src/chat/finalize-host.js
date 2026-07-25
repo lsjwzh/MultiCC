@@ -9,6 +9,7 @@ const REQUIRED_PORTS = Object.freeze([
   'cancelClassify',
   'clearIncrementalSave',
   'setStatus',
+  'completeSessionTurn',
   'classifyTurnEnd',
   'resetInterrupted',
   'resumeInterrupted',
@@ -113,6 +114,11 @@ function createTurnFinalizationExecutor(rawPorts) {
         break;
       case 'classify-turn-end':
         ports.classifyTurnEnd(cs, sessionName);
+        break;
+      case 'complete-session-turn':
+        Promise.resolve(ports.completeSessionTurn(sessionName)).catch(error => {
+          logError('complete-session-turn-failed', { sessionName, error });
+        });
         break;
       case 'reset-interrupted-resume':
         ports.resetInterrupted(sessionName);
