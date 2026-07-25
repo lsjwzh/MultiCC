@@ -68,6 +68,33 @@ try {
     qoder: '/custom/qoderclicn',
   }, 'explicit command overrides are returned verbatim');
 
+  const engineOverride = path.join(root, 'custom-zcode.cjs');
+  assert.strictEqual(resolveCliCommands({
+    isWindows: false,
+    env: { PATH: '', ZCODE_ENGINE: engineOverride, ZCODE_CMD: '/stale/zcode' },
+    homeDir: path.join(root, 'empty-home'),
+    logger: silentLogger(),
+  }).zcode, engineOverride, 'ZCODE_ENGINE takes priority over a stale command override');
+
+  const desktopEngine = '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
+  const desktopOnlyFs = {
+    accessSync(file) {
+      if (file !== desktopEngine) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+    statSync(file) {
+      if (file !== desktopEngine) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return { isFile: () => true };
+    },
+    readdirSync() { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+  };
+  assert.strictEqual(resolveCliCommands({
+    isWindows: false,
+    env: { PATH: '' },
+    fsImpl: desktopOnlyFs,
+    homeDir: path.join(root, 'empty-home'),
+    logger: silentLogger(),
+  }).zcode, desktopEngine, 'desktop-only ZCode installs resolve their bundled engine');
+
   const missingFs = {
     accessSync() { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
     statSync() { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
