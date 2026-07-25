@@ -77,15 +77,21 @@ const post = (p, b)    => _req('POST', p, b);
 // ── Helper: read server code ──────────────────────────────────────────
 function readServerCode() {
   // The classify parser and system prompt were extracted to src/classify/vocab.js
-  // (parseClassifyResult, buildClassifySystemPrompt). Concatenate both so the
-  // prompt-keyword and code-path text checks below still see the source of truth.
+  // (parseClassifyResult, buildClassifySystemPrompt); the classify state machine
+  // (dispatchStateAction, scanAndReclassify, the E-branch fallback) lives in
+  // src/classify/state-machine.js. Concatenate all three so the prompt-keyword
+  // and code-path text checks below still see the source of truth.
   try {
     const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
     let vocab = '';
+    let stateMachine = '';
     try {
       vocab = fs.readFileSync(path.join(__dirname, '..', 'src', 'classify', 'vocab.js'), 'utf8');
     } catch (_) { /* optional */ }
-    return `${server}\n${vocab}`;
+    try {
+      stateMachine = fs.readFileSync(path.join(__dirname, '..', 'src', 'classify', 'state-machine.js'), 'utf8');
+    } catch (_) { /* optional */ }
+    return `${server}\n${vocab}\n${stateMachine}`;
   } catch (_) { return ''; }
 }
 

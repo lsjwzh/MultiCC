@@ -7,6 +7,10 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+// The classify E-branch (with its classifier_legacy fallback) now lives in the
+// extracted classify state machine.
+const classifyStateMachine = fs.readFileSync(
+  path.join(root, 'src', 'classify', 'state-machine.js'), 'utf8');
 const apiErrorHost = fs.readFileSync(
   path.join(root, 'src', 'chat', 'api-error-host.js'), 'utf8');
 const waitInjector = fs.readFileSync(path.join(root, 'src', 'wait-injector.js'), 'utf8');
@@ -15,7 +19,7 @@ test('Classify no longer owns an uncapped API retry or error-text pruning channe
   assert.equal(server.includes('API error -> retry (uncapped)'), false);
   assert.equal(server.includes('pruneErrorTurnPairs'), false);
   assert.equal(server.includes('API_RETRY_DELAY_MS'), false);
-  assert.equal(server.includes("source: 'classifier_legacy'"), true);
+  assert.equal(classifyStateMachine.includes("source: 'classifier_legacy'"), true);
   assert.equal(waitInjector.includes('API retries now live in src/chat/api-error-policy.js'), true);
 });
 
