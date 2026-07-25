@@ -203,16 +203,29 @@ function readServerCode() {
   if (!serverCode) {
     skip('Code path check', 'cannot read server.js');
   } else {
-    // Verify: E detection → dispatchStateAction → error branch → safeInject
+    // The retry path is now centralized in apiErrorHost/evaluateTurnApiError:
+    // the runner boundary owns the single bounded retry (or fail-fast), and
+    // classify's E branch only delegates as a legacy fallback — it must NEVER
+    // open a second retry channel. The old safeInject('继续') + API_RETRY_DELAY_MS
+    // mechanism is fully retired.
     const checks = [
-      { name: 'parseClassifyResult returns error=true on E', pattern: /first === 'E'.*error = true/i },
-      { name: 'dispatchStateAction error branch calls safeInject', pattern: /if \(error\).*\n.*safeInject/s },
-      { name: 'API_RETRY_DELAY_MS = 0 (immediate)', pattern: /API_RETRY_DELAY_MS\s*=\s*0/ },
-      { name: 'safeInject used for retry/continue', pattern: /safeInject\(sessionName,\s*['"`]继续|safeInject\(sid,\s*resumeMsg\)/ },
+      { name: 'centralized API-error policy host wired (createApiErrorHost)', pattern: /createApiErrorHost/ },
+      { name: 'classify E branch delegates to evaluateTurnApiError as legacy fallback', pattern: /if \(error\)[\s\S]{0,120}_lastApiErrorDecision[\s\S]{0,160}evaluateTurnApiError/ },
+      { name: 'retry vs fail_fast gated by policy decision .action', pattern: /_lastApiErrorDecision\?\.action/ },
+      { name: 'wait message driven by retryNotice(decision), not injection', pattern: /retryNotice\(cs\._lastApiErrorDecision\)/ },
     ];
     for (const c of checks) {
       if (c.pattern.test(serverCode)) ok(c.name);
       else fail(c.name, 'pattern not found in server.js');
+    }
+    // Negative guards: the retired auto-continue retry machinery must stay gone.
+    const retired = [
+      { name: 'no API_RETRY_DELAY_MS constant remains', pattern: /API_RETRY_DELAY_MS/ },
+      { name: "no safeInject('继续') auto-continue retry remains", pattern: /safeInject\([^)]*['"`]继续/ },
+    ];
+    for (const c of retired) {
+      if (!c.pattern.test(serverCode)) ok(c.name);
+      else fail(c.name, 'retired retry mechanism still present in server.js');
     }
   }
 
@@ -255,7 +268,7 @@ function readServerCode() {
   console.log('    aux 恢复 → reclassifySessionsWithMissingGoals()');
   console.log('      → 遍历 lifecycle=running/interrupted/waiting 的 session');
   console.log('      → 最近 classify >5min 的 → 重判');
-  console.log('      → dispatchStateAction 处理结果（E→retry, W→waiting, C→done）');
+  console.log('      → dispatchStateAction 处理结果（E→policy retry/fail-fast, W→waiting, D→done；C 已退役并归一为 W）');
 
   ok('Retry flow documented', 'both normal and recovery paths');
 
