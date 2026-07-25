@@ -54,6 +54,12 @@ test('manage task detail renders clickable session links in chips and message ro
     clearTimeout: () => {},
     Date,
   });
+  // Same script order as manage.html: the shared status registry loads first, and
+  // the board renders its badges through it rather than through a local map.
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, '..', 'public', 'status-presentation.js'), 'utf8'),
+    context,
+  );
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   vm.runInContext(source, context);
   vm.runInContext(`
@@ -109,30 +115,42 @@ test('task board UI keeps pending modules first and sorts tasks by last activity
 });
 
 test('task board display state follows classify runState for icon and status text', () => {
+  // Icons, tones, copy keys and the animation policy come from the shared
+  // registry (public/status-presentation.js) — the board no longer keeps its own
+  // table. `label` is an i18n key here because no translator is installed in the
+  // node lane; tests/test-status-presentation.js proves the keys exist in zh+en.
   const cases = [
-    [{ status: 'active', runState: 'done' }, ['done', '✅', '已完成', true, false]],
-    [{ status: 'active', runState: 'running' }, ['running', '🟢', '进行中', false, true]],
-    [{ status: 'active', runState: 'queued' }, ['queued', '📥', '排队中', false, false]],
-    [{ status: 'active', runState: 'waiting' }, ['waiting', '⏳', '等待中', false, false]],
-    [{ status: 'active', runState: 'error' }, ['error', '❌', '异常', false, false]],
-    [{ status: 'active', runState: 'idle' }, ['idle', '⚪', '待处理', false, false]],
-    [{ status: 'done', runState: 'running' }, ['done', '✅', '已完成', true, false]],
-    [{ status: 'archived', runState: 'done' }, ['archived', '🗄', '已归档', false, false]],
+    [{ status: 'active', runState: 'done' }, ['done', '✅', 'statusDone', 'success', true, false]],
+    [{ status: 'active', runState: 'running' }, ['running', '🔄', 'statusRunning', 'running', false, true]],
+    [{ status: 'active', runState: 'queued' }, ['queued', '📥', 'statusQueued', 'info', false, false]],
+    [{ status: 'active', runState: 'waiting' }, ['waiting', '⏸️', 'statusWaiting', 'waiting', false, false]],
+    [{ status: 'active', runState: 'error' }, ['error', '❌', 'statusError', 'danger', false, false]],
+    [{ status: 'active', runState: 'idle' }, ['idle', '⚪', 'statusIdle', 'neutral', false, false]],
+    [{ status: 'done', runState: 'running' }, ['done', '✅', 'statusDone', 'success', true, false]],
+    [{ status: 'archived', runState: 'done' }, ['archived', '🗄', 'statusArchived', 'muted', false, false]],
+    // A value this build does not know lands neutrally — never on done, never on
+    // running, and never on the error glyph.
+    [{ status: 'active', runState: 'teleporting' }, ['unknown', '❔', 'statusUnknown', 'neutral', false, false]],
   ];
   for (const [task, expected] of cases) {
     const display = taskBoardUi.taskDisplayState(task);
     assert.deepEqual(
-      [display.key, display.icon, display.label, display.done, display.running],
+      [display.key, display.icon, display.label, display.tone, display.done, display.running],
       expected,
     );
+    // Only `running` may animate: an errored card stops spinning the moment it
+    // turns red, which is the whole point of routing through the registry.
+    assert.equal(display.running, display.key === 'running');
   }
 
   const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
   for (const source of [manage, meta]) {
     assert.match(source, /MultiCCTaskBoardUi\.taskDisplayState\(t\)/);
-    assert.match(source, /tb-run-state \$\{display\.key\}[\s\S]*?\$\{display\.label\}/);
-    assert.match(source, /tb-icon[^\n]*\$\{display\.icon\}/);
+    assert.match(source, /tb-run-state st-tone-\$\{display\.tone\}[\s\S]*?\$\{(?:_tbEsc|esc)\(display\.label\)\}/);
+    // The row glyph is the shared badge, not a locally chosen emoji.
+    assert.match(source, /statusBadgeHtml\('task', display\.status/);
+    assert.match(source, /className: 'tb-icon'/);
     assert.match(source, /moduleAssignment/);
     assert.doesNotMatch(source, /\.classification\b|classificationLabel|waiting_reply|retry_wait/);
   }

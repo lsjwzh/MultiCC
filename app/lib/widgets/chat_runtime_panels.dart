@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../i18n.dart';
 import '../models/chat_runtime_state.dart';
+import '../utils/status_presentation.dart';
 
 class PendingUserInputPanel extends StatefulWidget {
   final PendingUserInput input;
@@ -176,13 +177,8 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
   bool _expanded = false;
   bool _busy = false;
 
-  String _runStateLabel(SessionQueueRunState state) => switch (state) {
-    SessionQueueRunState.idle => t('queueIdle'),
-    SessionQueueRunState.queued => t('queueQueued'),
-    SessionQueueRunState.running => t('queueRunning'),
-    SessionQueueRunState.waiting => t('queueWaiting'),
-    SessionQueueRunState.error => t('queueError'),
-  };
+  // 文案/图标/色彩全部取自中心 registry，队列面板不再自带一套状态词表。
+  StatusSpec _spec(CanonicalStatus state) => statusPresentation[state]!;
 
   Future<void> _run(Future<void> Function() action) async {
     if (_busy || !widget.enabled) return;
@@ -207,7 +203,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
       decoration: BoxDecoration(
         color: const Color(0xFF161b22),
         border: Border.all(
-          color: queue.runState == SessionQueueRunState.error
+          color: queue.runState == CanonicalStatus.error
               ? const Color(0xFF8b2f36)
               : const Color(0xFF3d444d),
         ),
@@ -245,17 +241,30 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      queue.isFrozen && queue.freezeReason != null
-                          ? '${_runStateLabel(queue.runState)} · ${queue.freezeReason}'
-                          : _runStateLabel(queue.runState),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.end,
-                      style: const TextStyle(
-                        color: Color(0xFF8a909b),
-                        fontSize: 11,
-                      ),
+                    child: Builder(
+                      builder: (_) {
+                        final spec = _spec(queue.runState);
+                        // freezeReason 会出现在用户可见文案里，必须先脱敏：
+                        // 已知枚举键原样透出，其余去掉路径/URL/长 token 并截断。
+                        final reason = queue.isFrozen
+                            ? sanitizeReason(queue.freezeReason)
+                            : '';
+                        return Semantics(
+                          label: spec.semanticLabel,
+                          child: Text(
+                            reason.isEmpty
+                                ? '${spec.icon} ${spec.label}'
+                                : '${spec.icon} ${spec.label} · $reason',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.end,
+                            style: const TextStyle(
+                              color: Color(0xFF8a909b),
+                              fontSize: 11,
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                   Icon(

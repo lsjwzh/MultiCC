@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 import '../providers/session_manager.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -53,10 +54,15 @@ class SessionCard extends StatelessWidget {
     final live = liveStatus;
     final lastInteraction = sessionLastInteractionAt(session, live);
     final ago = formatRelativeTime(lastInteraction);
-    final statusColor = live != null
-        ? wbStatusColor(live.status)
-        : (session.active ? const Color(0xFF7fd49a) : const Color(0xFF5b616c));
-    final isRunning = live != null && isRunningStatus(live.status);
+    // 一张卡只折叠一次状态，之后色/图标/文案都从同一个 spec 取——分头判断正是
+    // error 会话在卡片上没有错误图标的成因。
+    final cardStatus = sessionCardStatusOf(
+      monitorStatus: live?.status,
+      active: session.active,
+    );
+    final statusSpec = statusPresentation[cardStatus]!;
+    final statusColor = statusSpec.color;
+    final isRunning = statusSpec.spinner;
     final mergeReady = live?.mergeReady == true;
     final title = session.label?.isNotEmpty == true
         ? session.label!
@@ -123,24 +129,26 @@ class SessionCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: statusColor,
-                        shape: BoxShape.circle,
+                    // 图标 + 无障碍名，不靠颜色单通道传达状态（WCAG 1.4.1）：
+                    // 出错的会话在这里就是 ❌，而不是一个红色小圆点。
+                    Semantics(
+                      label: statusSpec.semanticLabel,
+                      child: Text(
+                        statusSpec.icon,
+                        style: const TextStyle(fontSize: 11),
                       ),
                     ),
-                    const SizedBox(width: 7),
+                    const SizedBox(width: 6),
                     if (classifyBadge(live?.classifyState) != null) ...[
                       classifyChip(live, showLabel: false),
                       const SizedBox(width: 6),
                     ],
                     MiniBadge(label: session.cli.name, color: cliColor),
-                    if (live != null && live.status != 'idle') ...[
+                    if (cardStatus != CanonicalStatus.idle &&
+                        cardStatus != CanonicalStatus.unknown) ...[
                       const SizedBox(width: 6),
                       Text(
-                        wbStatusLabel(live.status),
+                        statusSpec.label,
                         style: TextStyle(
                           color: statusColor,
                           fontSize: 10,

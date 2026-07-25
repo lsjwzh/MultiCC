@@ -231,6 +231,19 @@ function openBellForExistingSessionsOnce(sessions) {
 // Tracks each session's display status: 'waiting' | 'completed' | null
 const _sessionStatus = new Map();
 
+// Fold every live signal we hold for a session into one canonical status, using
+// the shared registry (public/status-presentation.js). Every session surface on
+// this page goes through here, so a card, its summary line and its KPI popup row
+// cannot disagree. `active` is process liveness, not a business state: it only
+// decides idle vs offline when no business signal exists.
+function sessionCardStatusFor(sessionId, active) {
+  return window.MultiCCStatusPresentation.sessionCardStatus({
+    workspaceStatus: _workspaceStatus.get(sessionId)?.status,
+    monitorStatus: _sessionStatus.get(sessionId),
+    active,
+  });
+}
+
 function setSessionStatus(sessionId, type) {
   if (_sessionStatus.get(sessionId) === type) return; // no change
   _sessionStatus.set(sessionId, type);
@@ -963,21 +976,13 @@ function jumpToSession(s) {
 
 // 会话的「实时运行状态 + 最近任务简介」，供 KPI 弹层各块统一展示。
 function sessionStatusBrief(s) {
-  const wb = _workspaceStatus.get(s.id);
-  let text, cls;
-  if (wb) {
-    const info = wbStatusInfo(wb.status); text = info.text; cls = info.cls;
-  } else if (s.active) {
-    text = tt('active'); cls = 'active';
-  } else {
-    const ms = _sessionStatus.get(s.id);
-    if (ms === 'waiting') { text = tt('waiting'); cls = 'waiting'; }
-    else if (ms === 'completed') { text = tt('completed'); cls = 'completed'; }
-    else if (ms === 'error') { text = tt('error'); cls = 'error'; }
-    else if (ms === 'running') { text = tt('running'); cls = 'active'; }
-    else { text = tt('idle'); cls = ''; }
-  }
-  const emoji = cls === 'active' ? '🟢' : (cls === 'waiting' ? '⏳' : (cls === 'completed' ? '✅' : (cls === 'error' ? '❌' : '⚪')));
+  // Same registry, same fold as the session card — this list used to have its own
+  // precedence and its own emoji table, which is how a card and its popup row
+  // could disagree about the same session.
+  const cls = sessionCardStatusFor(s.id, s.active);
+  const spec = window.MultiCCStatusPresentation.presentation('session', cls);
+  const text = tt(spec.labelKey);
+  const emoji = spec.icon;
   const sm = _workspaceSummaries.get(s.id);
   let summary = sm && sm.summary ? sm.summary : '';
   if (summary.length > 40) summary = summary.slice(0, 40) + '…';
@@ -1267,8 +1272,10 @@ function renderTaskProgressScroller(sessions) {
 
   // 任务进度卡片（单行紧凑布局，每行 56px）
   const cards = activeTasks.map(task => {
+    // The old 3-colour dot could not express error at all — a failed worker looked
+    // exactly like an idle one. Both the indicator and the chip now come from the
+    // registry, so error shows ❌ + danger tone here too.
     const info = wbStatusInfo(task.status);
-    const statusColor = info.cls === 'active' ? '#6aa3ff' : (info.cls === 'waiting' ? '#e3b341' : '#5b616c');
     const activityText = task.currentFile
       ? `📝 ${task.currentFile.split('/').pop()}`
       : (task.summary || defaultActivityText(task.status));
@@ -1277,12 +1284,14 @@ function renderTaskProgressScroller(sessions) {
       <div class="task-progress-card" data-session-id="${escapeHtml(task.sessionId)}"
            style="height:56px;display:flex;align-items:center;gap:12px;padding:0 16px;cursor:pointer;"
            onclick="event.stopPropagation(); openSessionInline('${escapeHtml(task.sessionId)}')">
-        <!-- 状态指示灯 -->
-        <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};box-shadow:0 0 6px ${statusColor};flex-shrink:0;"></span>
+        <!-- 状态指示灯（图标 + 无障碍名称，不再只靠颜色） -->
+        ${window.MultiCCStatusPresentation.statusBadgeHtml('session', info.status, {
+          translate: tt, showLabel: false,
+        })}
         <!-- 会话标签（+所属Fleet） -->
         <span style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;flex-shrink:0;">${escapeHtml(task.label)}${task.dirName ? `<span style="color:var(--faint);font-weight:400;"> · ${escapeHtml(task.dirName)}</span>` : ''}</span>
         <!-- 状态标签 -->
-        <span style="padding:3px 8px;font-size:10px;color:${statusColor};background:${statusColor}33;border:1px solid ${statusColor}55;border-radius:4px;flex-shrink:0;">${escapeHtml(info.text)}</span>
+        <span class="mc-status-pill st-tone-${escapeHtml(info.tone)}">${escapeHtml(info.text)}</span>
         <!-- 当前活动 -->
         <span style="flex:1;min-width:0;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(activityText)}</span>
       </div>
@@ -1653,16 +1662,12 @@ function renderSessionRow(s) {
   // own CLI chip. Unknown CLIs fall back to a neutral 'other' style.
   const cli = (s.cli || 'claude').toLowerCase();
   const cliClass = ['claude', 'codex', 'opencode', 'zcode', 'qoder'].includes(cli) ? cli : 'other';
-  const monStatus = _sessionStatus.get(s.id);
-  const mon = monitors.get(s.id);
-  let statusText = tt('idle'), statusCls = '';
-  if (s.active) { statusCls = 'active'; statusText = tt('active'); }
-  if (monStatus === 'waiting') { statusCls = 'waiting'; statusText = tt('waiting'); }
-  else if (monStatus === 'completed') { statusCls = 'completed'; statusText = tt('completed'); }
-  else if (mon && mon.state === 'active') { statusCls = 'active'; statusText = tt('running'); }
   // Live workspace status (from /ws/workspace) takes precedence when available.
   const wb = _workspaceStatus.get(s.id);
-  if (wb) { const info = wbStatusInfo(wb.status); statusText = info.text; statusCls = info.cls; }
+  // One canonical verdict for the card, folded by the shared registry. It also
+  // guarantees an `error` signal cannot be overwritten by a parallel optimistic
+  // one, and that `s.active` (process liveness) only decides idle vs offline.
+  const cardStatus = sessionCardStatusFor(s.id, s.active);
   const pendingNotes = _workspaceNotes.get(s.id) || 0;
   const mergeState = wb?.mergeState || s.mergeState || {};
   const mergeReady = !!mergeState.mergeReady;
@@ -1688,11 +1693,9 @@ function renderSessionRow(s) {
   const sm = _workspaceSummaries.get(s.id);
   const summary = sm && sm.summary ? sm.summary : '';
   // Status icon for the summary line: makes "状态 + 任务简介" visible at a glance.
-  // statusCls ∈ active(waiting/running) / waiting / completed / '' (idle).
-  const summaryIco = statusCls === 'active' ? '🔵'
-    : statusCls === 'waiting' ? '⏳'
-    : statusCls === 'completed' ? '✅'
-    : '🗒';
+  // Same registry as the dot, so the two can never disagree — this line used to
+  // have its own ternary that had no error glyph at all.
+  const summaryIco = window.MultiCCStatusPresentation.presentation('session', cardStatus).icon;
   const runtimeText = sessionRunTimeText(s.id);
 
   const openBtn = s.kind === 'chat'
@@ -1705,7 +1708,9 @@ function renderSessionRow(s) {
   // live in the ⋯ menu / title attribute.
   return `
     <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
-      <span class="dot ${statusCls}" id="sess-status-${escapeHtml(s.id)}" title="${escapeHtml(statusText)}"></span>
+      ${window.MultiCCStatusPresentation.statusBadgeHtml('session', cardStatus, {
+        translate: tt, showLabel: false, className: 'dot', id: `sess-status-${s.id}`,
+      })}
       <span class="classify-badge" id="sess-classify-${escapeHtml(s.id)}" style="display:none"></span>
       <div class="lean-main">
         <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}${s.type === 'commander' ? '<span class="cmdr-badge" title="指挥官：只分发任务、不亲自执行；不可单独删除">🎖 指挥</span>' : ''}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>

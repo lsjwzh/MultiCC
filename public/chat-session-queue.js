@@ -4,6 +4,13 @@
   let configuredOnCancel = null;
   let configuredOnInsert = null;
 
+  // Shared status registry (public/status-presentation.js), resolved lazily so
+  // this module keeps working in Node tests and before the script tag is reached.
+  function statusRegistry() {
+    return global.MultiCCStatusPresentation
+      || (typeof require === 'function' ? require('./status-presentation.js') : null);
+  }
+
   function configure({ onCancel = null, onInsert = null } = {}) {
     configuredOnCancel = typeof onCancel === 'function' ? onCancel : null;
     configuredOnInsert = typeof onInsert === 'function' ? onInsert : null;
@@ -63,11 +70,20 @@
     const items = Array.isArray(rawItems) ? rawItems : [];
     count.textContent = String(items.length);
     dock.hidden = items.length === 0;
-    hint.textContent = metadata.state === 'frozen'
-      ? `已暂停：${metadata.freezeReason || '等待当前任务继续'}`
+    // The dock used to be text-only, so a queue frozen on a configuration problem
+    // looked exactly like one waiting for a reply. The glyph comes from the shared
+    // registry — ⏸️ for a pause, 🔒 for something the user must go fix — and it is
+    // written as text so this element keeps its textContent-only XSS property.
+    const registry = statusRegistry();
+    const dockStatus = metadata.state === 'frozen'
+      ? registry.freezeReasonStatus(metadata.freezeReason)
+      : (metadata.state === 'assessing' ? 'running' : 'queued');
+    const dockIcon = registry.presentation('session', dockStatus).icon;
+    hint.textContent = `${dockIcon} ` + (metadata.state === 'frozen'
+      ? `已暂停：${registry.sanitizeReason(metadata.freezeReason) || '等待当前任务继续'}`
       : metadata.state === 'assessing'
         ? '等待完成判定，队列已暂停'
-        : '当前回复完成后自动发送';
+        : '当前回复完成后自动发送');
     const onCancel = typeof metadata.onCancel === 'function'
       ? metadata.onCancel : configuredOnCancel;
     const onInsert = typeof metadata.onInsert === 'function'

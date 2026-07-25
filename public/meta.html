@@ -83,14 +83,13 @@
   .tb-class-state { font-size: 10px; padding: 1px 6px; border-radius: 9px; background: #21262d; color: #8b949e; }
   .tb-class-state.running { color: #58a6ff; }
   .tb-class-state.failed { color: #f85149; }
-  .tb-run-state { font-size: 10px; white-space: nowrap; color: #8b949e; }
-  .tb-run-state.done, .tb-run-state.running { color: #3fb950; }
-  .tb-run-state.waiting { color: #d29922; }
-  .tb-run-state.error { color: #f85149; }
+  /* Colour comes from the shared tone token (status-badge.css); the row always
+     renders the status icon too, so this text is never the only signal. */
+  .tb-run-state { font-size: 10px; white-space: nowrap; color: var(--st-fg, #8b949e); }
   .tb-reclassify, .tb-quick-archive { padding: 1px 6px; font-size: 10px; background: #21262d; border-color: #30363d; }
-  @keyframes tb-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  /* No status animation here: whether a status may animate is decided once, in
+     status-presentation.js (.st-spin, running only). */
   .tb-task .tb-icon { font-size: 11px; line-height: 1; }
-  .tb-task.running .tb-icon { animation: tb-blink 2s ease-in-out infinite; }
   .tb-empty { padding: 10px 12px; color: #6e7681; font-size: 12px; }
 
   /* ── 任务详情列 ──────────────────────────────────────────── */
@@ -100,8 +99,8 @@
   .td-crumb { font-size: 11px; color: #8b949e; }
   .td-title-row { display: flex; align-items: center; gap: 10px; margin-top: 2px; flex-wrap: wrap; }
   .td-title { font-size: 15px; font-weight: 600; color: #e7eaee; }
-  .td-badge { font-size: 10px; padding: 1px 8px; border-radius: 10px; border: 1px solid #30363d; color: #8b949e; }
-  .td-badge.active { color: #3fb950; border-color: #238636; }
+  .td-badge { font-size: 10px; padding: 1px 8px; border-radius: 10px; border: 1px solid #30363d; color: var(--st-fg, #8b949e); }
+  .td-badge.active { border-color: var(--st-fg, #238636); }
   .td-actions { margin-left: auto; display: flex; gap: 6px; }
   .td-actions button { padding: 2px 10px; font-size: 11px; }
   .td-chips { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
@@ -127,6 +126,8 @@
                        padding: 5px 8px; font-size: 12px; max-width: 180px; }
   .td-compose .hint { font-size: 11px; color: #6e7681; }
 </style>
+<!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
+<link rel="stylesheet" href="status-badge.css" />
 </head>
 <body>
 <header>
@@ -158,6 +159,9 @@
   </aside>
 </main>
 <script src="auth-client.js"></script>
+<script src="i18n-catalog.js"></script>
+<script src="i18n.js"></script>
+<script src="status-presentation.js"></script>
 <script src="task-board-ui.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -165,6 +169,13 @@ let ws = null, selected = null;
 const dirMap = new Map();      // dirId → {label, sessions: Map, events: []}
 const SESSION_SOURCE_ID = new URLSearchParams(location.search).get('from') || '';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Status glyph for a task row — same shared registry as manage.html and the app,
+// so an errored task always renders ❌ with an accessible name.
+const statusIconHtml = (display) =>
+  window.MultiCCStatusPresentation.statusBadgeHtml('task', display.status, {
+    translate: window.t, showLabel: false, className: 'tb-icon',
+  });
 
 async function connect() {
   const rawUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws/meta';
@@ -434,9 +445,9 @@ function renderTaskBoard() {
       row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
       const assignment = t.moduleAssignment;
       row.innerHTML = `
-        <span class="tb-icon">${display.icon}</span>
+        ${statusIconHtml(display)}
         <span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span>
-        <span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
+        <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(t)}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
       row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
       row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
       const retry = row.querySelector('.tb-reclassify');
@@ -454,7 +465,7 @@ function renderTaskBoard() {
     const clsRun = display.running ? ' running' : '';
     const row = document.createElement('div');
     row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
-    row.innerHTML = `<span class="tb-icon">${display.icon}</span><span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span><span class="tb-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${taskRoutingHtml(t)}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮</span></span>`;
+    row.innerHTML = `${statusIconHtml(display)}<span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span><span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(t)}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮</span></span>`;
     row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
     row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
     bindQuickTaskArchive(row, t);
@@ -502,7 +513,10 @@ function renderTaskDetail(d) {
     <div class="td-crumb">${esc(mod ? mod.name : '未分组')} ›</div>
     <div class="td-title-row">
       <span class="td-title">${esc(t.title)}</span>
-      <span class="td-badge ${display.running ? 'active' : ''}">${display.label}</span>
+      ${window.MultiCCStatusPresentation.statusBadgeHtml('task', display.status, {
+        translate: window.t,
+        className: `td-badge ${display.running ? 'active' : ''}`,
+      })}
       <span class="td-actions">
         ${t.moduleAssignment ? `<button class="btn-sec" id="td-reclassify"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>` : ''}
         ${t.status === 'active'

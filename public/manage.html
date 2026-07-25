@@ -522,16 +522,11 @@
     .lean{display:flex;align-items:center;gap:9px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;cursor:pointer;transition:border-color .12s,background .12s}
     .lean:hover{border-color:var(--accent-line);background:rgba(58,214,197,.05)}
     .lean.focused{background:var(--accent-dim);border-color:var(--accent-line)}
-    .lean .dot{flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:var(--muted)}
-    .lean .dot.active{background:var(--codex);box-shadow:0 0 0 3px rgba(127,212,154,.18)}
-    .lean .dot.waiting{background:#e3b341;box-shadow:0 0 0 3px rgba(227,179,65,.18)}
-    .lean .dot.completed{background:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
-    .lean .dot.error{background:var(--danger);box-shadow:0 0 0 3px rgba(255,107,99,.18)}
-    .classify-badge{flex:0 0 auto;font-size:14px;line-height:1;margin-right:6px;opacity:.85}
-    .classify-badge.classify-running{opacity:1}
-    .classify-badge.classify-completed{opacity:.8}
-    .classify-badge.classify-waiting{opacity:.9}
-    .classify-badge.classify-error{opacity:1}
+    /* Session status: an icon badge, not a coloured dot. The colour-only circle
+     * could not tell error from idle for colour-blind users and had no glyph at
+     * all in the error state; tone colours now come from status-badge.css. */
+    .lean .dot{flex:0 0 auto;font-size:13px;line-height:1}
+    .classify-badge{flex:0 0 auto;font-size:14px;line-height:1;margin-right:6px}
     .lean-main{flex:1;min-width:0}
     .lean-name{font-weight:600;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
     .lean-meta{font-size:11px;color:var(--muted);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
@@ -583,10 +578,9 @@
     .tb-class-state{font-size:10px;padding:1px 6px;border-radius:9px;color:var(--muted);background:var(--panel);white-space:nowrap}
     .tb-class-state.running{color:var(--codex)}
     .tb-class-state.failed{color:var(--danger)}
-    .tb-run-state{font-size:10px;white-space:nowrap;color:var(--muted)}
-    .tb-run-state.done,.tb-run-state.running{color:var(--codex)}
-    .tb-run-state.waiting{color:var(--amber)}
-    .tb-run-state.error{color:var(--danger)}
+    /* Colour comes from the shared tone token (status-badge.css); the row also
+       always renders the status icon, so this text is never the only signal. */
+    .tb-run-state{font-size:10px;white-space:nowrap;color:var(--st-fg,var(--muted))}
     .tb-reclassify,.tb-reclassify-all,.tb-quick-archive{padding:1px 6px!important;font-size:10px!important;white-space:nowrap}
     .tb-task{display:grid;grid-template-columns:8px 1fr auto;gap:8px;align-items:center;padding:5px 14px 5px 24px;border-top:1px solid var(--line);cursor:pointer;font-size:12px;color:var(--text)}
     .tb-task:hover{background:var(--panel)}
@@ -600,16 +594,17 @@
     .tb-body-fold pre,.tb-body-detail pre{margin:5px 0 0;padding:7px 9px;max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);font-family:inherit}
     .tb-body-detail{margin-top:8px}
     .tb-body-pending{font-size:10px;color:var(--faint);font-style:italic}
-    @keyframes tb-blink{0%,100%{opacity:1}50%{opacity:0.3}}
+    /* No status animation here: whether a status may animate is decided once, in
+       status-presentation.js (.st-spin, running only), so an errored row cannot
+       keep spinning. */
     .tb-task .tb-icon{font-size:11px;line-height:1}
-    .tb-task.running .tb-icon{animation:tb-blink 2s ease-in-out infinite}
     .tb-empty{padding:10px 14px;color:var(--faint);font-size:12px}
     #tb-detail-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
     .tb-d-head{padding:12px 18px;border-bottom:1px solid var(--line)}
     .tb-d-title-row{display:flex;align-items:center;gap:10px;margin-top:2px;flex-wrap:wrap}
     .tb-d-title{font-size:15px;font-weight:650;color:var(--text)}
-    .tb-badge{font-size:10px;padding:1px 8px;border-radius:10px;border:1px solid var(--line-strong);color:var(--muted)}
-    .tb-badge.on{color:var(--codex);border-color:var(--codex)}
+    .tb-badge{font-size:10px;padding:1px 8px;border-radius:10px;border:1px solid var(--line-strong);color:var(--st-fg,var(--muted))}
+    .tb-badge.on{border-color:var(--st-fg,var(--codex))}
     .tb-d-actions{margin-left:auto;display:flex;gap:6px}
     .tb-chips{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
     .tb-chip{font-size:10px;padding:1px 7px;border-radius:9px;background:var(--panel-2);color:var(--muted)}
@@ -641,6 +636,8 @@
     .tb-goalrow{display:flex;gap:14px;align-items:center;margin:6px 0 2px;flex-wrap:wrap}
     .tb-goalrow input{width:90px;background:var(--well);color:var(--text);border:1px solid var(--line-strong);border-radius:6px;padding:3px 6px;font-size:11.5px}
   </style>
+  <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
+  <link rel="stylesheet" href="status-badge.css" />
 </head>
 <body data-view="overview">
   <!-- ── Left navigation ── -->
@@ -1928,6 +1925,7 @@
   <script src="manage-bridges.js"></script>
   <script src="manage-host-settings.js"></script>
   <script src="manage-session-lifecycle.js"></script>
+  <script src="status-presentation.js"></script>
   <script src="task-board-ui.js"></script>
   <script src="manage-taskboard.js"></script>
   <script src="manage-dashboard.js"></script>
