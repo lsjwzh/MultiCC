@@ -15,6 +15,10 @@ const LEGACY_TURN_ENDED_REASONS = new Set([
   'incomplete_requires_resume',
   'classification_error',
 ]);
+const DIRECT_TAKEOVER_BLOCKED_REASONS = new Set([
+  'awaiting_callback',
+  'continuation_ready',
+]);
 const MAX_PUBLIC_MESSAGE_LENGTH = 20_000;
 
 function clone(value) {
@@ -167,6 +171,26 @@ function createSessionWorkScheduler({
     return completed;
   }
 
+  function releaseFrozenForDirectInput(schedule, at) {
+    if (!schedule?.active || schedule.state !== 'frozen'
+        || schedule.awaitingRequestId
+        || DIRECT_TAKEOVER_BLOCKED_REASONS.has(schedule.freezeReason)) return null;
+    const superseded = clone(schedule.active);
+    schedule.active = null;
+    schedule.state = 'idle';
+    schedule.freezeReason = null;
+    schedule.awaitingRequestId = null;
+    schedule.lastDecision = {
+      action: 'supersede',
+      reason: 'direct-user-message',
+      entryId: superseded.entryId,
+      taskId: superseded.taskId || null,
+      at,
+    };
+    schedule.updatedAt = at;
+    return superseded;
+  }
+
   function relatedControl(schedule, item) {
     if (!schedule?.active || !isControlItem(item)) return false;
     const payload = item.payload || {};
@@ -254,7 +278,10 @@ function createSessionWorkScheduler({
       const at = Number(now());
       const schedule = ensure(draft, cleanSessionId, at);
       if (!CONTROL_KINDS.has(inferredKind)) {
-        releaseLegacyTurnEnd(schedule, at);
+        const directTakeover = inferredKind === 'task' && payload.source === 'direct'
+          ? releaseFrozenForDirectInput(schedule, at)
+          : null;
+        if (!directTakeover) releaseLegacyTurnEnd(schedule, at);
       }
       if (CONTROL_KINDS.has(inferredKind)) {
         if (!schedule.active) {

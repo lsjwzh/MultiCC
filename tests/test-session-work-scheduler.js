@@ -353,17 +353,63 @@ test('legacy classifier waiting is released, while structured wait and error rem
   assert.equal(await claimOne(failed, 'failed'), null);
 });
 
-test('new admission releases a legacy waiting gate without waiting for restart', async t => {
+test('direct user admission takes over an interrupted frozen turn and preserves queued FIFO', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
     sessionId: 's1', text: 'active', idempotencyKey: 'active',
   });
   await startClaim(h, await claimOne(h));
-  await h.scheduler.freeze('s1', 'incomplete_requires_resume');
+  const queued = await h.scheduler.admit({
+    sessionId: 's1', text: 'already queued', idempotencyKey: 'queued',
+  });
+  await h.scheduler.freeze('s1', 'unknown_interruption');
   const next = await h.scheduler.admit({
     sessionId: 's1', text: 'next user message', idempotencyKey: 'next',
   });
   assert.equal(next.schedule.state, 'idle');
   assert.equal(next.schedule.active, null);
-  assert.equal((await claimOne(h)).id, next.entry.id);
+  assert.equal(next.schedule.lastDecision.action, 'supersede');
+  assert.equal(next.schedule.lastDecision.reason, 'direct-user-message');
+  assert.deepEqual(next.schedule.queued.map(item => item.text), ['already queued', 'next user message']);
+  assert.equal((await claimOne(h)).id, queued.entry.id);
+});
+
+test('direct takeover releases legacy waiting but preserves correlated input and callbacks', async t => {
+  const waiting = fixture(t);
+  await waiting.scheduler.admit({
+    sessionId: 'waiting', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(waiting, await claimOne(waiting, 'waiting'));
+  await waiting.scheduler.freeze('waiting', 'awaiting_user_input');
+  const resumed = await waiting.scheduler.admit({
+    sessionId: 'waiting', text: 'plain user follow-up', idempotencyKey: 'follow-up',
+  });
+  assert.equal(resumed.schedule.state, 'idle',
+    'legacy W without a structured request id is immediately taken over');
+  assert.equal((await claimOne(waiting, 'waiting')).id, resumed.entry.id);
+
+  const structured = fixture(t);
+  await structured.scheduler.admit({
+    sessionId: 'structured', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(structured, await claimOne(structured, 'structured'));
+  await structured.scheduler.freeze('structured', 'awaiting_user_input', { requestId: 'question-1' });
+  await structured.scheduler.admit({
+    sessionId: 'structured', text: 'uncorrelated follow-up', idempotencyKey: 'follow-up',
+  });
+  assert.equal((await structured.scheduler.status('structured')).state, 'frozen');
+  assert.equal(await claimOne(structured, 'structured'), null,
+    'a structured question still requires its correlated answer path');
+
+  const callback = fixture(t);
+  await callback.scheduler.admit({
+    sessionId: 'callback', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(callback, await claimOne(callback, 'callback'));
+  await callback.scheduler.freeze('callback', 'awaiting_callback');
+  await callback.scheduler.admit({
+    sessionId: 'callback', text: 'unrelated follow-up', idempotencyKey: 'follow-up',
+  });
+  assert.equal((await callback.scheduler.status('callback')).state, 'frozen');
+  assert.equal(await claimOne(callback, 'callback'), null);
 });
