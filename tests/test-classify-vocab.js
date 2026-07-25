@@ -23,7 +23,8 @@ const {
 test('state letter maps to the correct runtime state, background, and error flags', () => {
   const cases = [
     ['P', { state: 'running', background: false, error: false }],
-    ['C', { state: 'continue', background: false, error: false }],
+    // C is RETIRED — it now collapses to plain waiting (W), never 'continue'.
+    ['C', { state: 'waiting', background: false, error: false }],
     ['W', { state: 'waiting', background: false, error: false }],
     ['B', { state: 'waiting', background: true, error: false }],
     ['E', { state: 'waiting', background: false, error: true }],
@@ -93,7 +94,7 @@ test('DeepSeek thinking guards: unicode marker strips preceding text, think-tags
   // so the real goal that follows becomes line 1.
   const r2 = parseClassifyResult('junk reasoning<｜end▁of▁thinking｜>清理缓存\n实现中\nC');
   assert.equal(r2.goal, '清理缓存');
-  assert.equal(r2.state, 'continue');
+  assert.equal(r2.state, 'waiting'); // C retired → collapses to W
   // <think></think> tags themselves are stripped (their content is NOT removed —
   // the classifier relies on the unicode marker above for that), so empty tags
   // just leave the goal line intact.
@@ -105,8 +106,10 @@ test('DeepSeek thinking guards: unicode marker strips preceding text, think-tags
 test('buildClassifySystemPrompt embeds the prior goal and the full state vocabulary', () => {
   const p = buildClassifySystemPrompt('给目录卡片加 git 状态行');
   assert.match(p, /给目录卡片加 git 状态行/);
-  // All six state letters must be documented in the prompt.
-  for (const kw of ['D = ', 'C = ', 'W = ', 'E = ', 'P = ']) assert.ok(p.includes(kw), kw);
+  // Live state letters must be documented in the prompt. C is RETIRED (collapses
+  // to W) and B was retired earlier, so neither is offered to the model anymore.
+  for (const kw of ['D = ', 'W = ', 'E = ', 'P = ']) assert.ok(p.includes(kw), kw);
+  assert.ok(!p.includes('C = '), 'retired C must not be offered to the classifier');
   // E-detection keywords the classifier relies on.
   for (const kw of ['API Error', '503', 'Connection closed', 'Overloaded']) assert.ok(p.includes(kw), kw);
   // Empty prior goal renders the placeholder, not "undefined".
@@ -141,15 +144,18 @@ test('phaseLabel maps known phases to Chinese and unknown to empty string', () =
   assert.equal(phaseLabel(undefined), '');
 });
 
-test('host preserves classify C instead of coercing it into waiting W', () => {
+test('classify C is retired: no dispatch branch persists it, it falls through to W', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  const start = source.indexOf("if (state === 'continue')");
-  const end = source.indexOf('// ── W / B / E', start);
-  const continueBranch = source.slice(start, end);
-  assert.match(continueBranch, /classifyState: 'C'/);
-  assert.match(continueBranch, /setSessionStatus\(sessionName, \{ status: 'idle'/);
-  assert.match(continueBranch, /return;/);
-  assert.doesNotMatch(continueBranch, /classifyState: 'W'/);
+  // The old `if (state === 'continue')` branch that persisted classifyState 'C'
+  // and parked the CLI idle must be gone entirely.
+  assert.equal(source.indexOf("if (state === 'continue')"), -1,
+    'dead continue branch must be removed');
+  assert.equal(source.indexOf("classifyState: 'C'"), -1,
+    'server must never persist classifyState C');
+  // parseClassifyResult is the single retirement point: C → plain waiting.
+  assert.equal(parseClassifyResult('目标\n实现中\nC').state, 'waiting');
+  assert.equal(parseClassifyResult('目标\n实现中\nC').background, false);
+  assert.equal(parseClassifyResult('目标\n实现中\nC').error, false);
 });
 
 test('optimistic completion cannot overwrite a pending structured question', () => {

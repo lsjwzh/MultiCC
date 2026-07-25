@@ -3637,19 +3637,11 @@ function dispatchStateAction(result, ctx) {
     return;
   }
 
-  if (state === 'continue') {
-    // C stays C without auto-injection. Fault recovery remains E/P-only.
-    setTaskState(sessionName, { classifyState: 'C', endedAt: Date.now() });
-    if (cs && cs.isStreaming) {
-      const ph = phaseLabel(phase);
-      const label = finalGoal ? `处理中：${finalGoal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
-      emitRunningNotify(sessionName, label);
-      return;
-    }
-    // No user-input signal: keep the task card running, but leave the CLI idle.
-    setSessionStatus(sessionName, { status: 'idle', currentFile: null });
-    return;
-  }
+  // C (Continue) is RETIRED: parseClassifyResult now collapses C→W, so
+  // state === 'continue' can no longer occur. The old branch persisted C +
+  // parked the CLI idle while showing a phantom "running" card that scan could
+  // never flush. A C-judged turn now falls straight through to the W path below
+  // (cls = 'W'), which is exactly the 2026-07-12 "C rests as W" design intent.
 
   // ── W / B / E (plus exhausted P recovery) → waiting (user-facing) ───────
 
