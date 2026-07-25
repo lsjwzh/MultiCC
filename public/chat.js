@@ -2446,6 +2446,7 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     speakNotify,
     maybeScrollToBottom,
     renderCurrentText,
+    renderSessionQueue: window.MultiCCChatSessionQueue.render,
     rearmUnread,
   },
 });

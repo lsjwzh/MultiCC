@@ -286,6 +286,10 @@
           ].filter(Boolean).join('\n'));
           break;
         case 'session_queue':
+          host.renderSessionQueue?.(
+            Array.isArray(message.items) ? message.items : [],
+            { state: message.state, freezeReason: message.freezeReason || null },
+          );
           if (message.event === 'queued') {
             host.showNotifyToast?.(
               message.queuePosition ? `消息已排队（第 ${message.queuePosition} 位）` : '消息已持久排队',

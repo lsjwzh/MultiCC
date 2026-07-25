@@ -61,6 +61,10 @@ class ChatProvider extends ChangeNotifier {
 
   String _statusText = 'Disconnected';
   String get statusText => _statusText;
+  List<Map<String, dynamic>> _sessionQueueItems = const [];
+  List<Map<String, dynamic>> get sessionQueueItems => _sessionQueueItems;
+  String? _sessionQueueFreezeReason;
+  String? get sessionQueueFreezeReason => _sessionQueueFreezeReason;
 
   String _costText = '';
   String get costText => _costText;
@@ -392,6 +396,16 @@ class ChatProvider extends ChangeNotifier {
         {
           final p = evt.payload as Map<String, dynamic>;
           final event = (p['event'] ?? '').toString();
+          if (p.containsKey('items')) {
+            final rawItems = p['items'];
+            _sessionQueueItems = rawItems is List
+                ? rawItems.whereType<Map>().map((item) =>
+                    Map<String, dynamic>.from(item)).toList(growable: false)
+                : const [];
+          }
+          _sessionQueueFreezeReason = p['state'] == 'frozen'
+              ? (p['freezeReason'] ?? '当前任务需要处理').toString()
+              : null;
           if (event == 'queued') {
             final position = p['queuePosition'];
             _statusText = position == null ? '消息已持久排队' : '消息已排队（第 $position 位）';
