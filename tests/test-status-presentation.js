@@ -345,10 +345,10 @@ test('toggling the visible label on and off does not strand a node', () => {
 // ── 6. Reason safety ────────────────────────────────────────────────────────
 
 test('reasons reaching a tooltip carry no token, path or URL', () => {
-  const dirty = 'failed at /Users/someone/secret/project/app.js with key sk_live_ABCDEFGHIJKLMNOPQRSTUVWXYZ012 see https://internal.example.com/logs/42';
+  const dirty = 'failed at /Users/someone/secret/project/app.js with key TESTKEY_FAKE_PLACEHOLDER_DO_NOT_USE_0123 see https://internal.example.com/logs/42';
   const safe = SP.sanitizeReason(dirty);
   assert.ok(!safe.includes('/Users/someone'), 'filesystem path leaked');
-  assert.ok(!safe.includes('sk_live_ABCDEFGHIJKLMNOPQRSTUVWXYZ012'), 'token leaked');
+  assert.ok(!safe.includes('TESTKEY_FAKE_PLACEHOLDER_DO_NOT_USE_0123'), 'token leaked');
   assert.ok(!safe.includes('https://'), 'URL leaked');
   assert.ok(safe.length <= 120);
   assert.ok(safe.includes('failed at'), 'the human-readable part survives');
