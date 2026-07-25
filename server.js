@@ -124,6 +124,7 @@ const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
 const { createSessionBundleRoutes } = require('./src/routes/session-bundle');
 const { createSessionLifecycleRuntime } = require('./src/routes/session-lifecycle');
+const { createSessionMetaRuntime } = require('./src/routes/session-meta');
 const { createAuthRuntime } = require('./src/routes/auth');
 const {
   listInstalledSkills,
@@ -2111,46 +2112,21 @@ app.post('/api/restart', (req, res) => {
   return res.status(202).json({ ok: true, status: 'scheduled', activeStreaming });
 });
 
-// ── Inter-agent notes ──
-app.post('/api/sessions/:id/notes', (req, res) => {
-  const from = persistedSessions.get(req.params.id);
-  if (!from) return res.status(404).json({ error: 'session not found' });
-  const toId = (req.body.toSessionId || '').trim();
-  const body = (req.body.body || '').trim();
-  if (!toId || !body) return res.status(400).json({ error: 'toSessionId 和 body 必填' });
-  const to = persistedSessions.get(toId);
-  if (!to) return res.status(404).json({ error: 'target session not found' });
-  if (to.dirId !== from.dirId) return res.status(400).json({ error: '只能给同一目录下的会话留言' });
-
-  const note = {
-    id: crypto.randomUUID(), dirId: from.dirId,
-    fromSessionId: from.id, fromLabel: from.label || from.id,
-    toSessionId: to.id, body: body.slice(0, 4000),
-    ts: Date.now(), delivered: false, deliveredAt: null,
-  };
-  notes.push(note);
-  saveNotes();
-  appendEvent(from.dirId, 'note', `→ ${to.label || to.id}`, from.id);
-  workspaceBroadcast(from.dirId, { type: 'note_pending', sessionId: to.id, count: pendingNotesFor(to.id).length });
-  res.json(note);
-});
-
-// Session liveness: working (producing / awaiting model) vs idle vs stalled.
-// ?probe=0 skips the process-level lsof/rollout check for a cheap event-only read.
-app.get('/api/sessions/:id/liveness', asyncHandler(async (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const wantProbe = req.query.probe !== '0';
-  const v = await livenessRuntime.assess(req.params.id, { probe: wantProbe });
-  res.json(v);
-}));
-
-// Inbox + outbox for a session.
-app.get('/api/sessions/:id/notes', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  res.json(notes.filter(n => n.toSessionId === s.id || n.fromSessionId === s.id));
-});
+// ── Per-session metadata: inter-agent notes + liveness ──
+// Handler logic lives in src/routes/session-meta.js; only host wiring stays
+// here. `notes` is a let-bound array that loadNotes/purgeNotesForSession
+// reassign wholesale, so the module receives getNotes()/saveNotes()/
+// pendingNotesFor() and never the array itself.
+createSessionMetaRuntime({
+  persistedSessions,
+  asyncHandler,
+  appendEvent,
+  workspaceBroadcast,
+  saveNotes,
+  pendingNotesFor,
+  getNotes: () => notes,
+  getLivenessRuntime: () => livenessRuntime,
+}).mountRoutes(app);
 
 // Curl-friendly dispatch: same semantics as the <<dispatch>> reply marker, but
 // callable mid-turn. Every other multicc capability (wait/run-detached/notes)
