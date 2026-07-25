@@ -53,9 +53,57 @@
     return `${tier}${e.name ? ` · ${e.name}` : ''} · ${e.model}`;
   }
 
+  // ── OpenCode live model list ────────────────────────────────────────────
+  // GET /api/opencode/models enumerates the local opencode CLI's available
+  // provider/model pairs (cached server-side for 1 day). We mirror that in the
+  // browser for 1 day too, so repeated picker opens stay snappy. Returns an
+  // array of {provider, model, label} entries; see routes/opencode-models.js.
+  const OPENCODE_MODELS_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+  const OPENCODE_MODELS_KEY = 'multicc.opencode.models.v1';
+  let opencodeModelsPromise = null;
+
+  function readOpenCodeCache() {
+    try {
+      const raw = window.localStorage && window.localStorage.getItem(OPENCODE_MODELS_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object') return null;
+      const at = Number(obj.at) || 0;
+      const models = Array.isArray(obj.models) ? obj.models : [];
+      if (!at || (Date.now() - at) >= OPENCODE_MODELS_TTL_MS) return null;
+      if (!models.length) return null;
+      return { at, models };
+    } catch (_) { return null; }
+  }
+
+  function writeOpenCodeCache(models) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(OPENCODE_MODELS_KEY, JSON.stringify({ at: Date.now(), models }));
+      }
+    } catch (_) { /* ignore quota / disabled storage */ }
+  }
+
+  async function loadOpenCodeModels() {
+    const cached = readOpenCodeCache();
+    if (cached) return cached.models;
+    if (opencodeModelsPromise) return opencodeModelsPromise;
+    opencodeModelsPromise = (async () => {
+      try {
+        const data = await window.fetch('/api/opencode/models', { credentials: 'same-origin' })
+          .then(r => (r && r.ok ? r.json() : null));
+        const models = data && Array.isArray(data.models) ? data.models : [];
+        if (models.length) writeOpenCodeCache(models);
+        return models;
+      } catch (_) { return []; } finally { opencodeModelsPromise = null; }
+    })();
+    return opencodeModelsPromise;
+  }
+
   window.CLAUDE_MODEL_OPTIONS = CLAUDE_MODEL_OPTIONS;
   window.ALIAS_TIERS = ALIAS_TIERS;
   window.modelShortName = modelShortName;
   window.aliasTiersFromMap = aliasTiersFromMap;
   window.formatAliasTierLabel = formatAliasTierLabel;
+  window.loadOpenCodeModels = loadOpenCodeModels;
 })();

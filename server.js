@@ -114,6 +114,7 @@ const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
+const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
@@ -2264,6 +2265,11 @@ commanderMigrationRunner = createCommanderMigrationHost({
   sessionPersistence, createSessionRecord, logger,
 });
 providerRoutes.mountCatalogRoutes(app);
+
+// GET /api/opencode/models — list models the local opencode CLI exposes
+// (provider/model strings, cached for 1 day). Used by the chat picker when an
+// opencode session has no multicc-managed provider's model list to render.
+mountOpenCodeModelRoutes(app);
 
 // Token APIs remain between the two Provider route phases so the established
 // route ordering stays byte-compatible while accounting lives in one runtime.
