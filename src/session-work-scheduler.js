@@ -39,6 +39,8 @@ const FREEZE_REASON_RUN_STATE = Object.freeze({
   classify_background: 'waiting',
   classify_error: 'error',
   classify_running: 'running',
+  // Auth/config not set up -- user must act, not a transient error.
+  configuration_required: 'waiting',
 });
 
 function runStateForFreezeReason(reason) {

@@ -2835,3 +2835,110 @@ document.addEventListener('visibilitychange', () => {
     window.checkVersion();
   }
 });
+
+// ── ZCode Auth Management ─────────────────────────────────────────────────
+async function loadZcodeAuth() {
+  try {
+    const r = await fetch('/api/zcode/auth');
+    const d = await r.json();
+    const statusEl = document.getElementById('zcode-auth-status');
+    const actionsEl = document.getElementById('zcode-auth-actions');
+    if (!statusEl || !actionsEl) return;
+
+    if (d.configured) {
+      const providerName = d.provider === 'zai' ? 'Z.ai' : 'BigModel';
+      statusEl.innerHTML = '<span class="status-text ok">✓ 已配置</span> — Provider: <b>' + escapeHtml(providerName) + '</b> · Model: <code>' + escapeHtml(d.model || '') + '</code>';
+      actionsEl.style.display = 'flex';
+      document.getElementById('zcode-sync-btn').textContent = '重新从桌面端同步';
+    } else if (d.source === 'desktop_available' && d.desktopProviders?.length > 0) {
+      const dp = d.desktopProviders[0];
+      const dpName = dp.id === 'zai' ? 'Z.ai' : 'BigModel';
+      statusEl.innerHTML = '<span class="status-text" style="color:var(--warn)">⚠ 未配置</span> — 检测到桌面端有 ' + escapeHtml(dpName) + ' 的 API Key，可一键同步';
+      actionsEl.style.display = 'flex';
+    } else {
+      statusEl.innerHTML = '<span class="status-text err">✗ 未配置</span> — 请同步桌面端配置、登录或手动填写 API Key';
+      actionsEl.style.display = 'flex';
+    }
+
+    const loginBtn = document.getElementById('zcode-login-btn');
+    if (loginBtn) loginBtn.style.display = d.loginAvailable ? '' : 'none';
+  } catch (e) {
+    const el = document.getElementById('zcode-auth-status');
+    if (el) el.textContent = '加载失败: ' + e.message;
+  }
+}
+
+async function syncZcodeAuth() {
+  try {
+    const r = await fetch('/api/zcode/auth/sync', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      const providerName = d.provider === 'zai' ? 'Z.ai' : 'BigModel';
+      showToast('已从桌面端同步 ' + providerName + ' API Key', 'success');
+    } else {
+      showToast(d.message || '同步失败：未检测到桌面端 API Key', 'error');
+    }
+    loadZcodeAuth();
+  } catch (e) {
+    showToast('同步失败: ' + e.message, 'error');
+  }
+}
+
+async function loginZcode() {
+  const btn = document.getElementById('zcode-login-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '登录中…（请在浏览器完成授权）'; }
+  try {
+    const r = await fetch('/api/zcode/auth/login', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('ZCode 登录成功', 'success');
+    } else if (d.code === 'login_timeout') {
+      showToast('登录超时，如浏览器已打开请完成授权', 'info');
+    } else {
+      showToast(d.message || '登录失败', 'error');
+    }
+  } catch (e) {
+    showToast('登录失败: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'ZCode 官方登录'; }
+    loadZcodeAuth();
+  }
+}
+
+function toggleZcodeManualForm() {
+  const form = document.getElementById('zcode-manual-form');
+  if (form) form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+}
+
+async function saveZcodeManualKey() {
+  const providerId = document.getElementById('zcode-manual-provider')?.value;
+  const apiKey = document.getElementById('zcode-manual-key')?.value?.trim();
+  const statusEl = document.getElementById('zcode-manual-status');
+  if (!providerId || !apiKey) {
+    if (statusEl) statusEl.textContent = '请填写 Provider 和 API Key';
+    return;
+  }
+  try {
+    const r = await fetch('/api/zcode/auth', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, apiKey }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('ZCode API Key 已保存', 'success');
+      document.getElementById('zcode-manual-key').value = '';
+      document.getElementById('zcode-manual-form').style.display = 'none';
+      loadZcodeAuth();
+    } else {
+      if (statusEl) statusEl.textContent = d.error || '保存失败';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '保存失败: ' + e.message;
+  }
+}
+
+// Load ZCode auth status when provider view is shown
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => loadZcodeAuth(), 500);
+});
