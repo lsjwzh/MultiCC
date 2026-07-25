@@ -127,13 +127,14 @@ async function test(name, fn) {
     const root = path.join(__dirname, '..');
     const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
     const source = fs.readFileSync(path.join(root, 'src/chat/background-task-runtime.js'), 'utf8');
+    const turnEngine = fs.readFileSync(path.join(root, 'src/chat/turn-engine.js'), 'utf8');
     // shutdown/lifecycle 已抽到 src/host-lifecycle.js（bea1d0d），stopAll 的调用点
     // 随之迁移——按合并文本校验，与其他跨模块治理守卫一致。
     const lifecycle = fs.existsSync(path.join(root, 'src/host-lifecycle.js'))
       ? fs.readFileSync(path.join(root, 'src/host-lifecycle.js'), 'utf8') : '';
     assert.match(server, /createBackgroundTaskRuntime\s*\(\s*\{/);
-    assert.match(server, /backgroundTaskRuntime\.handleEvent\(/);
-    assert.match(server, /backgroundTaskRuntime\.markTaskOutputAwaiting\(/);
+    assert.match(turnEngine, /getBackgroundTaskRuntime\(\)\.handleEvent\(/);
+    assert.match(turnEngine, /getBackgroundTaskRuntime\(\)\.markTaskOutputAwaiting\(/);
     assert.match(server, /backgroundTaskRuntime\.stopSession\(/);
     assert.match(server + lifecycle, /backgroundTaskRuntime\.stopAll\(/);
     assert.doesNotMatch(server, /function\s+(?:handleBackgroundTaskEvent|startMonitorShadow|stopMonitorShadow)\b/);

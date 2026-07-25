@@ -194,9 +194,14 @@ test('status transitions coalesce unchanged events and pending dispatch forces w
 
 test('production composition delegates workspace/meta ownership to the runtime', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const wsRouter = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'ws', 'connection-router.js'),
+    'utf8',
+  );
   assert.match(source, /createWorkspaceRuntime\s*\(\s*\{/);
-  assert.match(source, /workspaceRuntime\.attachWorkspace\(ws, urlObj\)/);
-  assert.match(source, /workspaceRuntime\.attachMeta\(ws\)/);
+  assert.match(source, /mountWsConnectionRouter\(wss,/);
+  assert.match(wsRouter, /workspaceRuntime\.attachWorkspace\(ws, urlObj\)/);
+  assert.match(wsRouter, /workspaceRuntime\.attachMeta\(ws\)/);
   assert.doesNotMatch(source, /function\s+workspaceBroadcast\s*\(/);
   assert.doesNotMatch(source, /function\s+handleWorkspaceWs\s*\(/);
   assert.doesNotMatch(source, /function\s+handleMetaWs\s*\(/);
