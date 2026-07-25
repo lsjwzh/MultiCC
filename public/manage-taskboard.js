@@ -19,6 +19,18 @@ let _tbPendingTaskIds = [];         // 等待定位的新任务 id
 const _tbEsc = (s) => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Status glyph for a task row. Delegates to the shared registry so the icon,
+// tone and "may it animate" policy are the same here, on the fleet cards, in the
+// chat bars and in the app — and so an errored task always renders ❌ with an
+// accessible name instead of a bare colour.
+function _tbStatusIcon(display) {
+  return window.MultiCCStatusPresentation.statusBadgeHtml('task', display.status, {
+    translate: window.t,
+    showLabel: false,
+    className: 'tb-icon',
+  });
+}
+
 function _tbTimeAgo(ts) {
   if (!ts) return '';
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -122,9 +134,9 @@ function renderTaskBoardSection(dirId, opts) {
       const clsRun = display.running ? ' running' : '';
       rowsHtml.push(`
         <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-          <span class="tb-icon">${display.icon}</span>
+          ${_tbStatusIcon(display)}
           <span class="tb-title">${_tbEsc(t.title)}</span>
-          <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
+          <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
         </div>`);
     }
   }
@@ -135,12 +147,12 @@ function renderTaskBoardSection(dirId, opts) {
     const clsRun = display.running ? ' running' : '';
     rowsHtml.push(`
       <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-        <span class="tb-icon">${display.icon}</span>
+        ${_tbStatusIcon(display)}
         <span class="tb-title-cell">
           <span class="tb-title">${_tbEsc(t.title)}</span>
           ${t.body ? `<details class="tb-body-fold" onclick="event.stopPropagation()"><summary>任务正文</summary><pre>${_tbEsc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}
         </span>
-        <span class="tb-task-meta"><span class="tb-run-state ${display.key}">${display.label}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
+        <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
       </div>`);
   }
   const body = rowsHtml.length
@@ -500,7 +512,10 @@ function renderTaskBoardDetail(d) {
       <div class="tb-dim">${_tbEsc(mod ? mod.name : '未分组')} ›</div>
       <div class="tb-d-title-row">
         <span class="tb-d-title">${_tbEsc(t.title)}</span>
-        <span class="tb-badge${display.running ? ' on' : ''}">${display.label}</span>
+        ${window.MultiCCStatusPresentation.statusBadgeHtml('task', display.status, {
+          translate: window.t,
+          className: `tb-badge${display.running ? ' on' : ''}`,
+        })}
         <span class="tb-d-actions">
           ${t.moduleAssignment
             ? `<button class="btn btn-sm" onclick="reclassifyTaskBoardTask(event,'${_tbEsc(t.id)}')"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>`

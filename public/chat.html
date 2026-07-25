@@ -904,13 +904,16 @@
     }
     #aux-classify-bar .ac-state {
       flex: none; padding: 1px 8px; border-radius: 9px; font-size: 10px; font-weight: 700;
-      background: #16202b; color: #8b949e; border: 1px solid #30363d55;
+      background: #16202b; color: var(--st-fg, #8b949e); border: 1px solid #30363d55;
     }
-    /* classify-state tints — state badge gets the dominant color */
-    #aux-classify-bar.st-running   .ac-state { color: #6cb6ff; border-color: #1f6feb55; }
-    #aux-classify-bar.st-completed .ac-state { color: #56d364; border-color: #23863655; background: #0f2417; }
-    #aux-classify-bar.st-waiting   .ac-state { color: #e3b341; border-color: #e3b34155; background: #241c08; }
-    #aux-classify-bar.st-error     .ac-state { color: #f85149; border-color: #da363355; background: #2a1213; }
+    /* classify-state tints — the text colour and the glyph come from the shared
+     * registry (--st-fg, set by applyStatusBadge); only the chip's border/背景
+     * nuance is page-local. Class names are canonical statuses, not a second
+     * vocabulary. */
+    #aux-classify-bar.st-running .ac-state { border-color: #1f6feb55; }
+    #aux-classify-bar.st-done    .ac-state { border-color: #23863655; background: #0f2417; }
+    #aux-classify-bar.st-waiting .ac-state { border-color: #e3b34155; background: #241c08; }
+    #aux-classify-bar.st-error   .ac-state { border-color: #da363355; background: #2a1213; }
     #aux-classify-bar .ac-mark-done {
       display: none; flex: none; padding: 1px 9px; border-radius: 9px; font-size: 10px; font-weight: 700;
       background: #14331f; color: #56d364; border: 1px solid #23863655; cursor: pointer; line-height: 1.5;
@@ -1814,6 +1817,8 @@
       .dm-dot-running { animation: none; }
     }
   </style>
+  <!-- Loaded after the inline styles so the shared tone tokens win same-specificity ties. -->
+  <link rel="stylesheet" href="status-badge.css" />
 </head>
 <body>
 
@@ -2147,6 +2152,7 @@
   <script src="auth-client.js"></script>
   <script src="api-client.js"></script>
   <script src="provider-catalog.js"></script>
+  <script src="status-presentation.js"></script>
   <script src="chat-ai-config.js"></script>
   <script src="chat-transport.js"></script>
   <script src="chat-history-store.js"></script>

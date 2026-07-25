@@ -238,16 +238,31 @@
       if (line) content.appendChild(line);
     }
 
+    // Shared status registry (public/status-presentation.js). Resolved lazily so
+    // this module still loads in Node tests and in a page that has not reached the
+    // script tag yet.
+    function statusRegistry() {
+      return global.MultiCCStatusPresentation
+        || (typeof require === 'function' ? require('./status-presentation.js') : null);
+    }
+
+    // Voice/ding are audio concerns and stay here; the visual half (canonical
+    // status → glyph/tone) comes from the registry so the chat bar cannot drift
+    // from the session card and the task board.
     function classifyDisplay(classifyState) {
       const map = {
-        D: { label: translate('classifyDone'), barTint: 'completed', voice: translate('voiceTaskCompleted'), ding: 'completed' },
-        C: { label: translate('classifyContinuing'), barTint: 'running', voice: null, ding: null },
-        W: { label: translate('classifyWaitingUser'), barTint: 'waiting', voice: translate('voiceWaitingAction'), ding: 'waiting' },
-        B: { label: translate('classifyWaitingBackground'), barTint: 'waiting', voice: translate('voiceWaitingBackground'), ding: 'waiting' },
-        E: { label: translate('classifyApiError'), barTint: 'error', voice: translate('voiceApiInterrupted'), ding: 'error' },
-        P: { label: translate('classifyProcessing'), barTint: 'running', voice: null, ding: null },
+        D: { label: translate('classifyDone'), voice: translate('voiceTaskCompleted'), ding: 'completed' },
+        C: { label: translate('classifyContinuing'), voice: null, ding: null },
+        W: { label: translate('classifyWaitingUser'), voice: translate('voiceWaitingAction'), ding: 'waiting' },
+        B: { label: translate('classifyWaitingBackground'), voice: translate('voiceWaitingBackground'), ding: 'waiting' },
+        E: { label: translate('classifyApiError'), voice: translate('voiceApiInterrupted'), ding: 'error' },
+        P: { label: translate('classifyProcessing'), voice: null, ding: null },
       };
-      return map[classifyState] || map.W;
+      const entry = map[classifyState] || map.W;
+      const status = statusRegistry().classifyStatus(map[classifyState] ? classifyState : 'W');
+      // barTint is kept for callers that still read it; it now equals the
+      // canonical status rather than a second, hand-maintained vocabulary.
+      return { ...entry, status, barTint: status };
     }
 
     function renderAuxClassify(goal, phase, classifyState) {
@@ -267,9 +282,17 @@
       if (phaseEl) { phaseEl.textContent = phaseLabel; phaseEl.style.display = phaseLabel ? '' : 'none'; }
       const display = classifyDisplay(classifyState || 'P');
       bar.classList.remove('lc-running', 'lc-completed', 'lc-waiting', 'lc-interrupted',
-        'st-running', 'st-completed', 'st-waiting', 'st-error');
-      if (stateEl) { stateEl.textContent = display.label; stateEl.style.display = ''; }
-      bar.classList.add(`st-${display.barTint}`);
+        'st-running', 'st-completed', 'st-waiting', 'st-error', 'st-done', 'st-idle',
+        'st-blocked', 'st-cancelled', 'st-unknown');
+      if (stateEl) {
+        // Idempotent badge: an E turn drops the spinner and gains ❌ + an
+        // accessible name here exactly as it does on the cards.
+        statusRegistry().applyStatusBadge(stateEl, 'session', display.status, {
+          translate: global.t, label: display.label, document: doc,
+        });
+        stateEl.style.display = '';
+      }
+      bar.classList.add(`st-${display.status}`);
       bar.classList.toggle('can-mark-done', (classifyState || 'P') === 'W');
       bar.classList.toggle('can-cancel-task', (classifyState || 'P') === 'P');
       if ((classifyState || 'P') !== 'P' && _cancelTaskBtn) _cancelTaskBtn.disabled = false;

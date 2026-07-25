@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/models/chat_runtime_state.dart';
+import 'package:multicc_app/utils/status_presentation.dart';
 
 void main() {
   test(
@@ -25,7 +26,7 @@ void main() {
         ],
       });
 
-      expect(state.runState, SessionQueueRunState.queued);
+      expect(state.runState, CanonicalStatus.queued);
       expect(state.items.map((item) => item.text), ['first', 'second']);
       expect(state.items.first.canCancel, isTrue);
       expect(state.items.last.canCancel, isFalse);
@@ -47,7 +48,7 @@ void main() {
     }, previous: queued);
 
     expect(waiting.items.single.text, 'keep me');
-    expect(waiting.runState, SessionQueueRunState.waiting);
+    expect(waiting.runState, CanonicalStatus.waiting);
     expect(waiting.canResume, isFalse);
     expect(waiting.canSkip, isTrue);
     expect(waiting.canCancelActive, isTrue);
@@ -56,7 +57,7 @@ void main() {
       'state': 'frozen',
       'freezeReason': 'unknown_interruption',
     }, previous: waiting);
-    expect(interrupted.runState, SessionQueueRunState.error);
+    expect(interrupted.runState, CanonicalStatus.error);
     expect(interrupted.canRetry, isTrue);
     expect(interrupted.canResume, isTrue);
   });

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../i18n.dart';
+import '../utils/status_presentation.dart';
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
@@ -1248,46 +1249,13 @@ class _AuxClassifyBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // classifyState letter (D/W/B/E/P) drives the tint - aligned with the
-    // workspace _classifyBadge and web CLASSIFY_DISPLAY barTint.
-    final cs = classifyState.toUpperCase();
-    final Color phaseColor;
-    final Color phaseBg;
-    final Color phaseBorder;
-    final String stateEmoji;
-    switch (cs) {
-      case 'P': // processing
-        phaseColor = const Color(0xFF6cb6ff);
-        phaseBg = const Color(0xFF0d1a2e);
-        phaseBorder = const Color(0x551f6feb);
-        stateEmoji = '⚡';
-        break;
-      case 'D': // done
-        phaseColor = const Color(0xFF56d364);
-        phaseBg = const Color(0xFF0f2417);
-        phaseBorder = const Color(0x55238636);
-        stateEmoji = '✅';
-        break;
-      case 'C': // legacy continue, retired server-side: render safely as wait
-      case 'W': // wait-user
-      case 'B': // wait-bg
-        phaseColor = const Color(0xFFe3b341);
-        phaseBg = const Color(0xFF241c08);
-        phaseBorder = const Color(0x55e3b341);
-        stateEmoji = cs == 'B' ? '⏳' : '⏸';
-        break;
-      case 'E': // error
-        phaseColor = const Color(0xFFf85149);
-        phaseBg = const Color(0xFF2a1213);
-        phaseBorder = const Color(0x55da3633);
-        stateEmoji = '⚠';
-        break;
-      default:
-        phaseColor = const Color(0xFF8a909b);
-        phaseBg = const Color(0xFF0f1115);
-        phaseBorder = const Color(0xFF20242b);
-        stateEmoji = '•';
-    }
+    // classify 字母 → canonical 状态 → 图标/色彩，全部走中心 registry：这条
+    // bar 曾自带一套色表（E 是 ⚠、卡片却是 ❌），现在与会话卡、任务面板同源。
+    final spec = statusPresentation[classifyStatusOf(classifyState)]!;
+    final phaseColor = spec.color;
+    final phaseBg = phaseColor.withValues(alpha: 0.12);
+    final phaseBorder = phaseColor.withValues(alpha: 0.34);
+    final stateEmoji = spec.icon;
     final phaseLabel = _phaseLabel(phase);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),

@@ -7,6 +7,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../services/workspace_service.dart';
 import '../theme.dart';
+import 'status_presentation.dart';
 
 /// Brand color for a session's CLI.
 Color cliBrandColor(SessionCli cli) => switch (cli) {
@@ -17,86 +18,39 @@ Color cliBrandColor(SessionCli cli) => switch (cli) {
   SessionCli.qoder => AppColors.qoder,
 };
 
-// Workspace status board: map a live agent status to a colour / label.
-Color wbStatusColor(String? status) {
-  switch (status) {
-    case 'thinking':
-      return const Color(0xFF6aa3ff);
-    case 'editing':
-      return const Color(0xFFe3b341);
-    case 'running':
-      return const Color(0xFF7fd49a);
-    case 'waiting':
-      return const Color(0xFFf0936b);
-    case 'completed':
-      return const Color(0xFF3ad6c5);
-    case 'error':
-      return const Color(0xFFff6b63);
-    default:
-      return const Color(0xFF5b616c);
-  }
-}
+// Workspace status board: 一律走中心 registry（utils/status_presentation.dart），
+// 本文件不再自带状态色表/图标表——那正是 error 会话在卡片上只有一个灰点、没有
+// 错误图标的成因。
+StatusSpec wbStatusSpec(String? status) =>
+    statusSpecOf(StatusDomain.session, status);
 
-String wbStatusLabel(String? status) {
-  switch (status) {
-    case 'thinking':
-      return t('thinking');
-    case 'editing':
-      return t('editing');
-    case 'running':
-      return t('running');
-    case 'waiting':
-      return t('waiting');
-    case 'completed':
-      return t('completed');
-    case 'error':
-      return t('error');
-    default:
-      return t('idle');
-  }
-}
+Color wbStatusColor(String? status) => wbStatusSpec(status).color;
 
-/// Live classify-state (aux-AI intent classifier) badge styling, aligned to the
-/// web fleet cards (manage.js _CLASSIFY_BADGE). Returns null for sessions with
-/// no classify verdict yet, so the badge is simply hidden.
+String wbStatusLabel(String? status) => wbStatusSpec(status).label;
+
+/// 状态图标：颜色之外必须还有一个非颜色通道（WCAG 1.4.1），异常处必为 ❌。
+String wbStatusIcon(String? status) => wbStatusSpec(status).icon;
+
+/// classify 字母的专用文案（比通用状态名更具体：「等待用户」而非「等待中」）。
+/// 图标与色彩仍取自 registry，保证与其它展示面同源。返回 null 表示尚无判定，
+/// 徽章直接隐藏。
 ///   D=done · W=wait-user · B=wait-bg · E=api-error · P=processing
-/// Legacy C is rendered as W; it must never imply client-side continuation.
+/// Legacy C 保留仅为渲染历史记录；它不得暗示客户端自行续跑。
+const Map<String, String> _classifyLabelKey = {
+  'D': 'classifyDone',
+  'C': 'classifyContinuing',
+  'W': 'classifyWaitingUser',
+  'B': 'classifyWaitingBackground',
+  'E': 'classifyApiError',
+  'P': 'classifyProcessing',
+};
+
 ({Color color, String label, String emoji})? classifyBadge(String? s) {
-  switch (s) {
-    case 'D':
-      return (
-        color: const Color(0xFF56d364),
-        label: t('classifyDone'),
-        emoji: '✅',
-      );
-    case 'C':
-    case 'W':
-      return (
-        color: const Color(0xFFe3b341),
-        label: t('classifyWaitingUser'),
-        emoji: '⏸️',
-      );
-    case 'B':
-      return (
-        color: const Color(0xFFe3b341),
-        label: t('classifyWaitingBackground'),
-        emoji: '⏳',
-      );
-    case 'E':
-      return (
-        color: const Color(0xFFf85149),
-        label: t('classifyApiError'),
-        emoji: '⚠️',
-      );
-    case 'P':
-      return (
-        color: const Color(0xFF6cb6ff),
-        label: t('classifyProcessing'),
-        emoji: '🔄',
-      );
-    default:
-      return null;
-  }
+  final key = (s ?? '').trim().toUpperCase();
+  final labelKey = _classifyLabelKey[key];
+  if (labelKey == null) return null;
+  final spec = statusPresentation[classifyStatusOf(key)]!;
+  return (color: spec.color, label: t(labelKey), emoji: spec.icon);
 }
 
 /// A small classify-state pill. Shows the state emoji (+ optional label) tinted
@@ -223,8 +177,9 @@ String formatRelativeTime(DateTime value, {DateTime? now}) {
 // ── 任务运行时长 ────────────────────────────────────────────────────────────
 // 从用户发出消息（runStartedAt）算起任务执行了多久；进行中实时累加，终止/等待
 // 时冻结到 runEndedAt。返回 null 表示无可用数据。
-bool isRunningStatus(String? s) =>
-    s == 'thinking' || s == 'editing' || s == 'running';
+// 「还在跑吗」与「要不要转圈」是同一个判断，所以读 registry 的 spinner 位，而不
+// 是再列一遍 thinking/editing/running 之类的别名。
+bool isRunningStatus(String? s) => wbStatusSpec(s).spinner;
 
 Duration? runDuration(SessionStatus? live) {
   if (live == null || live.runStartedAt <= 0) return null;
