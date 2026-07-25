@@ -207,26 +207,48 @@ function createCodexAdapter(deps) {
           }];
         }
         if (item.type === 'function_call' && /^(request_user_input|AskUserQuestion)$/i.test(item.name || '')) {
-          let questionText = '';
+          // Codex's built-in ask tool can't drive an interactive prompt in exec
+          // mode. Rather than degrade it to plain text (which leaves the session
+          // looking "done"), decode it into a neutral user_input_signal so the
+          // server can land it on the SAME structured waiting path as MultiCC's
+          // MCP request_user_input. fallbackText preserves the text passthrough
+          // for when recording the signal fails.
+          let question = '';
+          let options = [];
+          let fallbackText = '';
           try {
             const parsed = JSON.parse(item.arguments || '{}');
             const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
-            questionText = questions.map((question) => {
-              const heading = question.header || question.title || '';
-              const body = question.question || question.text || '';
-              const options = Array.isArray(question.options)
-                ? question.options.map(option => `  - ${option.label || option.text || ''}${option.description ? `：${option.description}` : ''}`).join('\n')
+            // First question drives the structured prompt; extra questions (rare)
+            // fold into the text body so nothing is dropped.
+            const first = questions[0] || parsed;
+            const heading = first.header || first.title || '';
+            const body = first.question || first.text || parsed.question || '';
+            question = [heading, body].filter(Boolean).join('\n');
+            options = (Array.isArray(first.options) ? first.options : [])
+              .map(o => (typeof o === 'string' ? o : (o && (o.label || o.text)) || ''))
+              .filter(Boolean);
+            fallbackText = questions.map((q) => {
+              const h = q.header || q.title || '';
+              const b = q.question || q.text || '';
+              const opts = Array.isArray(q.options)
+                ? q.options.map(o => `  - ${(typeof o === 'string' ? o : (o.label || o.text || ''))}${o && o.description ? `：${o.description}` : ''}`).join('\n')
                 : '';
-              return `${heading ? `**${heading}**\n` : ''}${body}${options ? `\n${options}` : ''}`;
-            }).join('\n\n');
+              return `${h ? `**${h}**\n` : ''}${b}${opts ? `\n${opts}` : ''}`;
+            }).join('\n\n') || question;
           } catch (_) {
-            questionText = String(item.arguments || '');
+            fallbackText = String(item.arguments || '');
+            question = fallbackText;
           }
-          if (!questionText) return [];
+          if (!question && !fallbackText) return [];
           return [{
-            type: 'assistant_text',
-            text: `\n\n> [提问工具 ${item.name} 在非交互环境不可用，已转为文本透传]\n${questionText}\n`,
-            log: `ask-tool ${item.name} degraded to text`,
+            type: 'user_input_signal',
+            toolName: item.name,
+            question,
+            options,
+            allowMultiple: false,
+            fallbackText: `\n\n> [提问工具 ${item.name} 在非交互环境不可用，已转为文本透传]\n${fallbackText}\n`,
+            log: `ask-tool ${item.name} decoded to user_input_signal`,
           }];
         }
         if (item.type === 'function_call' || item.type === 'custom_tool_call') {
