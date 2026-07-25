@@ -173,31 +173,21 @@ function createSessionWorkHost(deps = {}) {
         return { ok: false, code: 'stale_classification' };
       }
       const expectedTaskId = taskId || current.active.taskId || null;
-      const pending = deps.pendingUserInput(sessionId);
-      // result.state is now the letter (D/W/B/E/P) — single source. hasPending
-      // can still force B (an unresolved structured question waits on callback).
+      // result.state is the letter (D/W/B/E/P) — single source. hasPending can
+      // still force B (an unresolved structured question waits on callback).
       const resultLetter = result?.state || 'W';
       const classifyState = resultLetter === 'E' ? 'E'
         : resultLetter === 'D' ? 'D'
           : resultLetter === 'B' || runtime.hasPending(sessionId) ? 'B'
-            : resultLetter === 'W' ? 'W' : 'P';
-      const transition = classifyState === 'D'
-        ? await target.complete(sessionId, {
-            expectedTaskId,
-            reason: 'classified_complete',
-          })
-        : await target.freeze(
-            sessionId,
-            classifyState === 'W' ? 'classify_waiting'
-              : classifyState === 'B' ? 'classify_background'
-                : classifyState === 'E' ? 'classify_error' : 'classify_running',
-            {
-              expectedTaskId,
-              classifyState,
-              requestId: classifyState === 'W' && pending?.resolved !== true
-                ? pending?.requestId || null : null,
-            },
-          );
+            : 'W';   // W, or P-misjudged-at-turn-end → at-rest
+      // Queue rule: P enqueues, D drains, W/B/E leave the FIFO alone. Every
+      // turn-end verdict releases the active slot via complete(); FIFO draining
+      // is gated by classifyState==='D' inside selectSessionItem. No classify freeze.
+      const transition = await target.complete(sessionId, {
+        expectedTaskId,
+        reason: `classified_${classifyState}`,
+        classifyState,
+      });
       if (transition?.ok) await runtime.tick();
       return transition;
     } catch (error) {
