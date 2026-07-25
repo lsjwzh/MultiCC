@@ -172,6 +172,8 @@ test('process effects preserve durability, classification, stream_end and post-t
   assert.ok(at('append-assistant-result') < at('commit-usage'));
   assert.ok(at('commit-usage') < at('capture-final-text'));
   assert.ok(at('capture-final-text') < at('reset-turn-output'));
+  assert.ok(at('reset-turn-output') < at('complete-session-turn'));
+  assert.ok(at('complete-session-turn') < at('classify-turn-end'));
   assert.ok(at('reset-turn-output') < at('classify-turn-end'));
   assert.ok(at('classify-turn-end') < at('stream-end'));
   assert.ok(at('stream-end') < at('run-post-turn'));
@@ -219,6 +221,8 @@ test('clean stream completion resets interruption, classifies, emits outcome the
   })), { resultDurable: true });
   const order = types(resolved);
   assert.ok(order.indexOf('reset-interrupted-resume') < order.indexOf('classify-turn-end'));
+  assert.ok(order.indexOf('reset-interrupted-resume') < order.indexOf('complete-session-turn'));
+  assert.ok(order.indexOf('complete-session-turn') < order.indexOf('classify-turn-end'));
   assert.ok(order.indexOf('classify-turn-end') < order.indexOf('emit-turn-outcome'));
   assert.ok(order.indexOf('emit-turn-outcome') < order.indexOf('stream-end'));
   assert.ok(order.indexOf('stream-end') < order.indexOf('run-post-turn'));
@@ -232,6 +236,8 @@ test('API stream classification wins; explicit kills never auto-resume', () => {
   })));
   assert.equal(types(api).includes('try-resume-interrupted'), false);
   assert.equal(types(api).includes('classify-turn-end'), true);
+  assert.deepEqual(api.effects.find(entry => entry.type === 'freeze-interrupted'),
+    { type: 'freeze-interrupted', reason: 'error' });
 
   const killed = resolveTurnFinalization(planTurnFinalization(base({
     runnerKind: 'stream', cli: 'claude', resultEvent: false,
@@ -239,6 +245,23 @@ test('API stream classification wins; explicit kills never auto-resume', () => {
   })));
   assert.equal(types(killed).includes('try-resume-interrupted'), false);
   assert.equal(killed.effects.find(e => e.type === 'set-status').reason, 'explicit-kill');
+});
+
+test('process API, adapter and nonzero failures freeze instead of advancing FIFO', () => {
+  for (const override of [
+    { apiError: true },
+    { adapterError: true },
+    { code: 1 },
+    { signal: 'SIGPIPE' },
+  ]) {
+    const resolved = resolveTurnFinalization(planTurnFinalization(base(override)), {
+      appendPersisted: true,
+      resultDurable: true,
+    });
+    assert.equal(types(resolved).includes('complete-session-turn'), false);
+    assert.deepEqual(resolved.effects.find(entry => entry.type === 'freeze-interrupted'),
+      { type: 'freeze-interrupted', reason: 'error' });
+  }
 });
 
 test('unknown stream interruption freezes instead of automatically resuming', () => {

@@ -660,6 +660,57 @@
     }
     #auto-dispatch-label:hover { color: #c9d1d9; }
 
+    /* ── Durable messages staged behind the active turn ── */
+    #session-queue-dock {
+      flex-shrink: 0;
+      width: min(calc(100% - 20px), 960px);
+      align-self: center;
+      margin: 0 10px 6px;
+      color: #c9d1d9;
+      background: rgba(22, 27, 34, .96);
+      border: 1px solid #3d444d;
+      border-radius: 10px;
+      box-shadow: 0 -6px 22px rgba(0, 0, 0, .28);
+      overflow: hidden;
+    }
+    #session-queue-dock[hidden] { display: none; }
+    #session-queue-dock summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 11px;
+      color: #d29922;
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+    }
+    #session-queue-dock summary::-webkit-details-marker { display: none; }
+    #session-queue-dock summary::after { content: '⌄'; color: #8b949e; }
+    #session-queue-dock[open] summary::after { content: '⌃'; }
+    #session-queue-hint { margin-left: auto; color: #8b949e; font-weight: 400; }
+    #session-queue-list {
+      max-height: min(34vh, 320px);
+      overflow: auto;
+      padding: 0 8px 8px;
+    }
+    .session-queue-item {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      gap: 7px;
+      padding: 8px;
+      border-top: 1px solid #30363d;
+    }
+    .session-queue-position { color: #8b949e; font-size: 11px; text-align: right; }
+    .session-queue-text {
+      color: #c9d1d9;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
     /* ── Input bar ── */
     #input-bar {
       flex-shrink: 0;
@@ -1192,7 +1243,7 @@
     }
 
     @media (max-width: 760px) {
-      #messages, #attach-area, #pre-input-bar, #input-bar, #cost-bar {
+      #messages, #attach-area, #pre-input-bar, #session-queue-dock, #input-bar, #cost-bar {
         width: 100%;
         max-width: none;
       }
@@ -1853,6 +1904,15 @@
     <span id="liveness-pill" title="" style="display:none;margin-left:8px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span></span>
   </div>
 
+  <!-- Messages durably staged while the current provider turn is running. -->
+  <details id="session-queue-dock" hidden>
+    <summary>
+      <span>暂存消息 <strong id="session-queue-count">0</strong></span>
+      <span id="session-queue-hint">当前回复完成后自动发送</span>
+    </summary>
+    <div id="session-queue-list"></div>
+  </details>
+
   <!-- Input bar -->
   <div id="input-bar">
     <button id="mic-btn" class="input-action-btn" title="Voice input">&#127908;</button>
@@ -2038,8 +2098,9 @@
   <script src="chat-notifications.js"></script>
   <script src="chat-composer.js"></script>
   <script src="chat-live-ui.js"></script>
-  <script src="chat-rate-limit.js"></script>
-  <script src="chat-event-controller.js"></script>
+<script src="chat-rate-limit.js"></script>
+<script src="chat-session-queue.js"></script>
+<script src="chat-event-controller.js"></script>
   <script src="chat-diff.js"></script>
   <script src="chat.js"></script>
   <script src="tour.js"></script>
