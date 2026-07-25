@@ -105,6 +105,14 @@ function fixture(options = {}) {
         calls.push({ type: 'queue.resolve', sessionId, input });
         return options.queueResolve || { ok: true, action: input.action };
       },
+      async cancelQueued(sessionId, entryId, input) {
+        calls.push({ type: 'queue.cancel-queued', sessionId, entryId, input });
+        return options.queueCancelQueued || {
+          ok: true,
+          cancelled: { entryId },
+          schedule: { state: 'frozen', queued: [] },
+        };
+      },
     };
     runtime.tick = async () => {
       calls.push({ type: 'queue.tick' });
@@ -219,6 +227,23 @@ test('session FIFO status and explicit resolution require confirmation and remai
   });
   assert.equal(cancelled.response.statusCode, 200);
   assert.equal(current.calls.some(call => call.type === 'queue.cancel-active'), true);
+
+  const queuedCancelled = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: {
+      action: 'cancel_queued',
+      entryId: 'entry-2',
+      confirm: true,
+      reason: 'duplicate',
+    },
+  });
+  assert.equal(queuedCancelled.response.statusCode, 200);
+  assert.deepEqual(current.calls.find(call => call.type === 'queue.cancel-queued'), {
+    type: 'queue.cancel-queued',
+    sessionId: 's1',
+    entryId: 'entry-2',
+    input: { actor: 'user', reason: 'duplicate' },
+  });
 });
 
 test('wait registration preserves validation payload, callback URL and errors', async () => {
