@@ -84,7 +84,7 @@ test('turn boundary parks FIFO until classify D is the sole completion verdict',
   );
   assert.equal(classification.ok, true);
   assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
-    'complete', { expectedTaskId: 'task-1', reason: 'classified_complete' },
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_D', classifyState: 'D' },
   ]);
   assert.equal(h.calls.some(call => call[0] === 'tick'), true);
   assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
@@ -115,8 +115,12 @@ test('failed turn closure is serialized before its classify verdict', async () =
   release();
   await Promise.all([closing, classification]);
   const assessingIndex = h.calls.findIndex(call => call[0] === 'assessing');
-  const freezeIndex = h.calls.findIndex(call => call[0] === 'freeze');
-  assert.ok(assessingIndex >= 0 && freezeIndex > assessingIndex);
+  // No classify-driven freeze anymore: every verdict (incl. E) releases the
+  // active slot via complete(). The failed turn's closure still serializes
+  // before its verdict, so complete lands after assessing.
+  const completeIndex = h.calls.findIndex(call => call[0] === 'complete');
+  assert.ok(assessingIndex >= 0 && completeIndex > assessingIndex);
+  assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
 });
 
 test('only classify P stages direct input; every non-P state continues immediately', async () => {
@@ -141,42 +145,25 @@ test('only classify P stages direct input; every non-P state continues immediate
   assert.equal(staged.activeEntryId, null);
 });
 
-test('classify W/B/E/P pause FIFO and unavailable classify leaves assessment pending', async () => {
+test('classify W/B/E release the active slot (no freeze); unavailable leaves assessment pending', async () => {
+  // Queue rule (T1): every turn-end verdict releases the active slot via
+  // complete(). FIFO draining is D-only and lives in selectSessionItem, not
+  // here. W/B/E never freeze the queue anymore.
   const waiting = fixture();
   waiting.forceState('assessing');
   await waiting.host.classifyTransition('s1', 'task-1', { state: 'W' });
-  assert.deepEqual(waiting.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'classify_waiting', {
-      expectedTaskId: 'task-1', classifyState: 'W', requestId: null,
-    },
+  assert.deepEqual(waiting.calls.find(call => call[0] === 'complete'), [
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_W', classifyState: 'W' },
   ]);
+  assert.equal(waiting.calls.some(call => call[0] === 'freeze'), false);
 
   const assessingError = fixture();
   assessingError.forceState('assessing');
   await assessingError.host.classifyTransition('s1', 'task-1', { state: 'E' });
-  assert.deepEqual(assessingError.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'classify_error', {
-      expectedTaskId: 'task-1', classifyState: 'E', requestId: null,
-    },
+  assert.deepEqual(assessingError.calls.find(call => call[0] === 'complete'), [
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_E', classifyState: 'E' },
   ]);
-
-  const conflicting = fixture();
-  conflicting.forceState('assessing');
-  await conflicting.host.classifyTransition(
-    's1', 'task-1', { state: 'E' },
-  );
-  assert.equal(conflicting.calls.some(call => call[0] === 'complete'), false);
-  assert.equal(conflicting.calls.find(call => call[0] === 'freeze')[1], 'classify_error');
-
-  const userInput = fixture();
-  userInput.setPending({ requestId: 'request-1', resolved: false });
-  userInput.forceState('assessing');
-  await userInput.host.classifyTransition('s1', 'task-1', { state: 'W' });
-  assert.deepEqual(userInput.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'classify_waiting', {
-      expectedTaskId: 'task-1', classifyState: 'W', requestId: 'request-1',
-    },
-  ]);
+  assert.equal(assessingError.calls.some(call => call[0] === 'freeze'), false);
 
   const callback = fixture();
   callback.setPendingWait(true);
@@ -184,11 +171,10 @@ test('classify W/B/E/P pause FIFO and unavailable classify leaves assessment pen
   await callback.host.classifyTransition('s1', 'task-1', {
     state: 'B',
   });
-  assert.deepEqual(callback.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'classify_background', {
-      expectedTaskId: 'task-1', classifyState: 'B', requestId: null,
-    },
+  assert.deepEqual(callback.calls.find(call => call[0] === 'complete'), [
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_B', classifyState: 'B' },
   ]);
+  assert.equal(callback.calls.some(call => call[0] === 'freeze'), false);
 
   const failed = fixture();
   await failed.host.turnFailed('s1', 'error');
