@@ -21,6 +21,7 @@ function createHarness(options = {}) {
     cancelClassify() { calls.push(['cancel-classify']); },
     clearIncrementalSave() { calls.push(['clear-timer']); },
     setStatus(sessionName, status) { calls.push(['status', status]); },
+    completeSessionTurn() { calls.push(['complete-session-turn']); },
     classifyTurnEnd() { calls.push(['classify']); },
     resetInterrupted() { calls.push(['reset-interrupted']); },
     resumeInterrupted() { calls.push(['resume-interrupted']); return options.resumed === true; },
@@ -77,7 +78,8 @@ test('host executor crosses the real append boundary before usage, classify, str
   assert.equal(ctx.cs.currentAssistantText, '');
   assert.ok(at('clear-timer') < at('persist'));
   assert.ok(at('persist') < at('usage'));
-  assert.ok(at('usage') < at('classify'));
+  assert.ok(at('usage') < at('complete-session-turn'));
+  assert.ok(at('complete-session-turn') < at('classify'));
   assert.ok(at('classify') < at('broadcast:stream_end'));
   assert.ok(at('broadcast:stream_end') < at('post-turn'));
   assert.deepEqual(harness.calls.at(-1), ['post-turn', 'current-runner-and-durable-final-result', true]);

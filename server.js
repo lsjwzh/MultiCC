@@ -4222,7 +4222,6 @@ function runClassifyNow(cs, sessionName) {
 // runClassifyNow handles the empty-reply case itself (falls back to user msg).
 function classifyTurnEnd(cs, sessionName) {
   cancelClassify(cs);
-  sessionWorkHost.turnEnded(sessionName);
   runClassifyNow(cs, sessionName);
   taskBoardRuntime.onTurnEnd(cs, sessionName);
 }
@@ -5641,12 +5640,12 @@ const turnFinalizationExecutor = createTurnFinalizationExecutor({
   setStatus(sessionName, status) {
     setSessionStatus(sessionName, { status, currentFile: null });
   },
+  completeSessionTurn: s => sessionWorkHost.turnSucceeded(s),
   classifyTurnEnd,
   resetInterrupted: sessionName => waitInjector.resetInterrupted(sessionName),
   resumeInterrupted: sessionName => waitInjector.resumeInterrupted(sessionName),
   freezeInterrupted(sessionName, reason) {
-    Promise.resolve(orchestrationRuntime?.sessionScheduler?.freeze(sessionName, reason))
-      .catch(() => {});
+    Promise.resolve(sessionWorkHost.turnFailed(sessionName, reason)).catch(() => {});
   },
   emitTurnOutcome,
   runPostTurn(context, entry) {

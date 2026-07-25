@@ -35,6 +35,7 @@ class _InputBarState extends State<InputBar> {
   final _ctrl = TextEditingController();
   final _focusNode = FocusNode();
   bool _hasText = false;
+  bool _queueExpanded = false;
 
   // Attachments: list of {path, name} from server upload
   final List<Map<String, String>> _attachments = [];
@@ -674,7 +675,7 @@ class _InputBarState extends State<InputBar> {
     final subagentModelLabel = subReal;
     final isStreaming = provider.isStreaming;
     final isConnected = provider.connectionState == ChatConnectionState.connected;
-    final canSend = (_hasText || _attachments.isNotEmpty) && isConnected && !isStreaming;
+    final canSend = (_hasText || _attachments.isNotEmpty) && isConnected;
 
     return SafeArea(
       top: false,
@@ -688,6 +689,87 @@ class _InputBarState extends State<InputBar> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (provider.sessionQueueItems.isNotEmpty)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 7),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF161b22),
+                  border: Border.all(color: const Color(0xFF3d444d)),
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x55000000), blurRadius: 14, offset: Offset(0, -4)),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => setState(() => _queueExpanded = !_queueExpanded),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.schedule_send_rounded, size: 15, color: Color(0xFFd29922)),
+                            const SizedBox(width: 6),
+                            Text(
+                              '暂存消息 ${provider.sessionQueueItems.length}',
+                              style: const TextStyle(color: Color(0xFFd29922), fontSize: 12),
+                            ),
+                            const Spacer(),
+                            Flexible(
+                              child: Text(
+                                provider.sessionQueueFreezeReason == null
+                                    ? '当前回复完成后自动发送'
+                                    : '已冻结：${provider.sessionQueueFreezeReason}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+                              ),
+                            ),
+                            Icon(
+                              _queueExpanded ? Icons.expand_less : Icons.expand_more,
+                              size: 18,
+                              color: const Color(0xFF8a909b),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (_queueExpanded)
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 240),
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                          child: Column(
+                            children: provider.sessionQueueItems.asMap().entries.map((entry) {
+                              final item = entry.value;
+                              final position = item['position'] ?? entry.key + 1;
+                              final text = (item['text'] ?? '（暂存消息）').toString();
+                              return Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                                decoration: const BoxDecoration(
+                                  border: Border(top: BorderSide(color: Color(0xFF30363d))),
+                                ),
+                                child: Text(
+                                  '$position. $text',
+                                  style: const TextStyle(
+                                    color: Color(0xFFc9d1d9),
+                                    fontSize: 12,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+
             // Attachment chips
             if (_attachments.isNotEmpty)
               Padding(
@@ -852,20 +934,21 @@ class _InputBarState extends State<InputBar> {
                 ),
                 const SizedBox(width: 6),
 
-                // Send / Cancel button
+                // Keep both actions available while streaming: Send stages the
+                // message durably; Stop remains an explicit cancellation.
                 if (isStreaming)
                   _ActionButton(
                     onTap: provider.cancel,
                     color: const Color(0xFFff6b63),
                     icon: Icons.stop_rounded,
-                  )
-                else
-                  _ActionButton(
-                    onTap: canSend ? () => _send(provider) : null,
-                    color: canSend ? const Color(0xFF22ab9c) : const Color(0xFF14171c),
-                    icon: Icons.send_rounded,
-                    iconColor: canSend ? Colors.white : const Color(0xFF454b54),
                   ),
+                if (isStreaming) const SizedBox(width: 4),
+                _ActionButton(
+                  onTap: canSend ? () => _send(provider) : null,
+                  color: canSend ? const Color(0xFF22ab9c) : const Color(0xFF14171c),
+                  icon: Icons.send_rounded,
+                  iconColor: canSend ? Colors.white : const Color(0xFF454b54),
+                ),
               ],
             ),
           ],

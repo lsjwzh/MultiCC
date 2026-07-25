@@ -7,6 +7,7 @@ const test = require('node:test');
 
 const liveUiApi = require('../public/chat-live-ui');
 require('../public/chat-rate-limit'); // registers global.MultiCCChatRateLimit for the rate_limit_event case
+require('../public/chat-session-queue');
 const eventApi = require('../public/chat-event-controller');
 
 const ROOT = path.join(__dirname, '..');
@@ -39,6 +40,11 @@ class FakeElement {
   }
 
   append(...children) { children.forEach(child => this.appendChild(child)); }
+  replaceChildren(...children) {
+    this.children.forEach(child => { child.parentNode = null; });
+    this.children = [];
+    this.append(...children);
+  }
   appendChild(child) {
     if (child == null) return child;
     child.parentNode = this;
@@ -183,6 +189,9 @@ function controllerFixture() {
     speakNotify() {},
     maybeScrollToBottom() {},
     renderCurrentText() { calls.push(['render', state.currentTextContent]); },
+    renderSessionQueue(items, metadata) {
+      calls.push(['queue', items.map(item => item.text), metadata]);
+    },
     rearmUnread() {},
   };
   const controller = eventApi.createEventController({ state, host, liveUi, historyStore, historyView });
@@ -276,16 +285,50 @@ test('structured user-input and FIFO events expose correlation and honest frozen
     event: 'frozen',
     state: 'frozen',
     freezeReason: 'awaiting_user_input',
+    items: [{ position: 1, text: '<img src=x onerror=alert(2)>' }],
   }, generation);
   fixture.controller.handleEvent({
     type: 'session_queue',
     event: 'queued',
     queuePosition: 2,
+    state: 'running',
+    items: [{ position: 1, text: '<b>literal staged body</b>' }],
   }, generation);
-  assert.deepEqual(fixture.calls.slice(-2), [
-    ['system', '队列已冻结：awaiting_user_input'],
-    ['toast', '消息已排队（第 2 位）', 'running'],
-  ]);
+  assert.deepEqual(
+    fixture.calls.filter(call => Array.isArray(call) && call[0] === 'queue'),
+    [
+      ['queue', ['<img src=x onerror=alert(2)>'], {
+        state: 'frozen', freezeReason: 'awaiting_user_input',
+      }],
+      ['queue', ['<b>literal staged body</b>'], {
+        state: 'running', freezeReason: null,
+      }],
+    ],
+  );
+  assert.ok(fixture.calls.some(call => Array.isArray(call)
+    && call[0] === 'system' && call[1] === '队列已冻结：awaiting_user_input'));
+  assert.ok(fixture.calls.some(call => Array.isArray(call)
+    && call[0] === 'toast' && call[1] === '消息已排队（第 2 位）'));
+});
+
+test('staged-message dock renders canonical text with textContent only', () => {
+  const { document, ids } = fakeDocument();
+  const dock = new FakeElement('details');
+  const count = new FakeElement('strong');
+  const hint = new FakeElement('span');
+  const list = new FakeElement('div');
+  ids.set('session-queue-dock', dock);
+  ids.set('session-queue-count', count);
+  ids.set('session-queue-hint', hint);
+  ids.set('session-queue-list', list);
+  global.MultiCCChatSessionQueue.render([
+    { position: 1, text: '<img src=x onerror=alert(1)>\n真实正文' },
+  ], { state: 'running' }, document);
+  assert.equal(dock.hidden, false);
+  assert.equal(count.textContent, '1');
+  assert.equal(list.children[0].children[1].textContent,
+    '<img src=x onerror=alert(1)>\n真实正文');
+  assert.equal(list.children[0].children.length, 2);
 });
 
 test('Claude five-hour limit consumes the structured SDK event without retaining billing fields', () => {
@@ -499,7 +542,7 @@ test('chat host loads new controllers before chat and reaches the 3000-line budg
   const chat = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
   const live = fs.readFileSync(path.join(ROOT, 'public/chat-live-ui.js'), 'utf8');
   const events = fs.readFileSync(path.join(ROOT, 'public/chat-event-controller.js'), 'utf8');
-  for (const script of ['chat-live-ui.js', 'chat-event-controller.js']) {
+  for (const script of ['chat-live-ui.js', 'chat-session-queue.js', 'chat-event-controller.js']) {
     assert.ok(html.indexOf(`<script src="${script}"></script>`) < html.indexOf('<script src="chat.js"></script>'));
   }
   assert.ok(chat.split(/\r?\n/).length <= 3000, 'chat host must stay within the hard migration target');
