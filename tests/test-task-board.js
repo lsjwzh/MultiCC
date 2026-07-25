@@ -696,31 +696,39 @@ test('streaming classify path creates or merges the task-board card before retur
 
 test('host task-board dispatch rejects busy targets before durable admission', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const gatewayHost = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dispatch', 'gateway-host.js'),
+    'utf8',
+  );
   assert.match(source, /function taskBoardSessionBusy\(sid\)[\s\S]*?chatTurnPreparationRuntime\.snapshot\(sid\)[\s\S]*?orchestrationChatBusy\(sid\)/);
   assert.match(source, /createTaskBoardRuntime\([\s\S]*?isSessionBusy: taskBoardSessionBusy/);
-  const start = source.indexOf('async function dispatchToSession(');
-  const end = source.indexOf('\n// ── Dispatch ↔', start);
-  const body = source.slice(start, end);
+  // The dispatch admission path lives in src/dispatch/gateway-host.js now.
+  const start = gatewayHost.indexOf('async function dispatchToSession(');
+  const end = gatewayHost.indexOf('\n  // ── Dispatch ↔', start);
+  const body = gatewayHost.slice(start, end);
   const guard = body.indexOf('opts.requireIdle && taskBoardSessionBusy(chatId)');
-  const admission = body.indexOf('orchestrationRuntime.admitDispatch(');
+  const admission = body.indexOf('getOrchestrationRuntime().admitDispatch(');
   assert.ok(guard >= 0 && admission > guard);
-  assert.match(source, /validateDispatchTarget\(targetId, fromSessionId = null, allowCommander = false\)/);
-  assert.match(source, /rec\.type === 'commander' && !allowCommander/);
+  assert.match(gatewayHost, /validateDispatchTarget\(targetId, fromSessionId = null, allowCommander = false\)/);
+  assert.match(gatewayHost, /rec\.type === 'commander' && !allowCommander/);
   assert.match(source, /isBusy: taskBoardSessionBusy/);
-  assert.match(source, /oneWay: !!opts\.oneWay/);
+  assert.match(gatewayHost, /oneWay: !!opts\.oneWay/);
   assert.match(source, /replayRecoveredDispatchEffects: \(\) => \{\}/);
 });
 
 test('legacy Commander marker admission uses the canonical task source and honest queue receipt', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const gatewayHost = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dispatch', 'gateway-host.js'),
+    'utf8',
+  );
   const legacyRoute = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'dispatch', 'legacy-commander-route.js'),
     'utf8',
   );
-  const start = source.indexOf('function maybeDispatchFromChatTurn(');
-  const end = source.indexOf('\n// ── Session management', start);
-  const body = source.slice(start, end);
-  assert.ok(start >= 0 && end > start);
+  const start = gatewayHost.indexOf('function maybeDispatchFromChatTurn(');
+  const body = gatewayHost.slice(start);
+  assert.ok(start >= 0);
   assert.match(body, /routeLegacyCommanderMarkers/);
   assert.match(legacyRoute, /taskSource: 'commander'/);
   assert.doesNotMatch(legacyRoute, /taskSource: 'commander-route'/);

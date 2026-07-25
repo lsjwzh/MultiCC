@@ -64,18 +64,27 @@ test('natural-language dispatch narration is inert without a structured marker',
 
 test('chat host parses both dispatch and route markers from assistant prose', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const gatewayHost = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dispatch', 'gateway-host.js'),
+    'utf8',
+  );
   const legacyRoute = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'dispatch', 'legacy-commander-route.js'),
     'utf8',
   );
-  assert.doesNotMatch(source, /ULTRA_DISPATCH_INTENT_RE|maybeNudgeUltracodeDispatch|lastUltraNudgeAt/);
-  assert.match(source, /parseAllDispatchMarkers\(finalText\)/);
-  assert.match(source, /parseAllRouteMarkers\(finalText\)/);
-  assert.doesNotMatch(source, /if \(from\.type === 'commander'\) return;/,
-    'old Commander turns retain a bounded <<route>> compatibility reader');
+  // The ultracode auto-nudge reader is gone from BOTH the host and the
+  // extracted gateway/dispatch orchestration module.
+  for (const src of [source, gatewayHost]) {
+    assert.doesNotMatch(src, /ULTRA_DISPATCH_INTENT_RE|maybeNudgeUltracodeDispatch|lastUltraNudgeAt/);
+    assert.doesNotMatch(src, /if \(from\.type === 'commander'\) return;/,
+      'old Commander turns retain a bounded <<route>> compatibility reader');
+  }
+  // The marker sweep itself now lives in src/dispatch/gateway-host.js.
+  assert.match(gatewayHost, /parseAllDispatchMarkers\(finalText\)/);
+  assert.match(gatewayHost, /parseAllRouteMarkers\(finalText\)/);
   assert.match(legacyRoute, /oneWay:\s*true/,
     'legacy route markers use one-way dispatch with system-generated taskId');
-  assert.match(source, /oneWay:\s*false/,
+  assert.match(gatewayHost, /oneWay:\s*false/,
     'ordinary dispatch markers remain the explicit two-way path');
 });
 
