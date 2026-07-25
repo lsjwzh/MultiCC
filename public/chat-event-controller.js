@@ -304,9 +304,13 @@
               : '',
           ].filter(Boolean).join('\n'));
           break;
-        case 'session_queue':
+        case 'session_queue': {
+          const items = Array.isArray(message.items) ? message.items : [];
+          const visibleItems = message.event === 'queued' && message.queued === false
+            ? items.filter(item => item?.entryId !== message.entryId)
+            : items;
           host.renderSessionQueue?.(
-            Array.isArray(message.items) ? message.items : [],
+            visibleItems,
             { state: message.state, freezeReason: message.freezeReason || null },
           );
           if (message.event === 'queued' && message.queued !== false) {
@@ -320,6 +324,7 @@
             host.showNotifyToast?.('已开始执行队首任务', 'running');
           }
           break;
+        }
         case 'rate_limit_event': {
           const limit = global.MultiCCChatRateLimit?.consumeRateLimitEvent(
             message.rate_limit_info,
