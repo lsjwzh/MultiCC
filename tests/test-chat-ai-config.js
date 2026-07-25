@@ -94,17 +94,30 @@ test('plain provider models and CLI fallback choices never retain a stale provid
   assert.equal(ai.modelChoiceLabel('performance', '', qoder), 'Performance（性能）');
 
   const zcode = state({ providers: [], defaults: {}, cli: 'zcode' });
-  assert.deepEqual(ai.buildModelChoices('', zcode),
-    ['', 'bigmodel/glm-5.2', '__custom__']);
+  assert.deepEqual(ai.buildModelChoices('', zcode), ['', '__custom__']);
   assert.equal(ai.modelChoiceLabel('', '', zcode), '默认（跟随 ZCode 设置）');
+
+  const zcodeProvider = state({
+    cli: 'zcode',
+    defaults: {},
+    providers: [{
+      id: 'zai', appType: 'claude', name: 'Z.ai', model: 'glm-5.2',
+      modelOptions: ['glm-5.2', 'glm-5-turbo'],
+      aliasMap: { sonnet: { model: 'glm-5.2', name: 'GLM' } },
+    }],
+  });
+  assert.deepEqual(ai.buildModelChoices('zai', zcodeProvider),
+    ['glm-5.2', 'glm-5-turbo', '__custom__']);
+  assert.equal(ai.defaultModelChoice('zai', zcodeProvider), 'glm-5.2');
 });
 
-test('Qoder and ZCode are rendered as vendor-managed model selectors', () => {
+test('Qoder stays vendor-managed while ZCode exposes MultiCC providers', () => {
   const source = fs.readFileSync(path.join(ROOT, 'public', 'chat-ai-config.js'), 'utf8');
   const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
-  assert.match(source, /cli !== 'qoder' && cli !== 'zcode'/);
-  assert.match(source, /ZCode.*使用自身账号与厂商配置/);
-  assert.match(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
+  assert.match(source, /const supportsProvider = cli !== 'qoder'/);
+  assert.match(source, /ZCode 原生 \/ Coding Plan/);
+  assert.match(page, /if \(_sessionCli !== 'qoder'\)/);
+  assert.doesNotMatch(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
 });
 
 test('provider and session transport use MultiCCApi with token-free relative URLs', async () => {
@@ -141,6 +154,30 @@ test('provider and session transport use MultiCCApi with token-free relative URL
     { url: '/api/sessions/s%2F1', options: { method: 'PATCH', json: { model: 'm2' } } },
   ]);
   assert.equal(JSON.stringify(calls).includes('token='), false);
+});
+
+test('ZCode first-open setup check is native-only and once per session', async () => {
+  const calls = [];
+  const api = {
+    async json(url) {
+      calls.push(url);
+      return { ok: true };
+    },
+  };
+  const loadProviders = async () => {
+    calls.push('providers');
+    return [];
+  };
+  assert.equal(await ai.maybePromptZcodeSetup({
+    cli: 'zcode', provider: 'managed', sessionId: 'z-managed', api, loadProviders,
+  }), null);
+  assert.equal(await ai.maybePromptZcodeSetup({
+    cli: 'zcode', provider: '', sessionId: 'z-native', api, loadProviders,
+  }), null);
+  assert.equal(await ai.maybePromptZcodeSetup({
+    cli: 'zcode', provider: '', sessionId: 'z-native', api, loadProviders,
+  }), null);
+  assert.deepEqual(calls, ['providers', '/api/zcode/auth/check']);
 });
 
 test('chat page loads the classic config boundary before chat.js and chat delegates the domain', () => {

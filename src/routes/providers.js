@@ -222,12 +222,17 @@ function createProviderRoutes(rawDeps) {
 
   function validProviderId(cli, id) {
     if (id == null || id === '') return { ok: true, value: null };
-    // Qoder CN and ZCode own authentication/provider configuration in their
-    // vendor clients and do not consume MultiCC's Claude/Codex provider store.
+    // Qoder CN remains vendor-managed. OpenCode and ZCode both support the two
+    // MultiCC pools, so their provider ids are looked up globally and then
+    // constrained by the provider's declared protocol compatibility.
     const appType = deps.providers.appTypeForCli(cli);
-    if (!appType) return { ok: false };
+    const appTypes = typeof deps.providers.appTypesForCli === 'function'
+      ? deps.providers.appTypesForCli(cli)
+      : (appType ? [appType] : []);
+    if (!appTypes.length) return { ok: false };
+    const globalPoolCli = appTypes.length > 1;
     const summary = deps.providerRouterRuntime.getProviderSummary(
-      cli === 'opencode' ? undefined : appType,
+      globalPoolCli ? undefined : appType,
       String(id),
     );
     if (!summary || !deps.providers.providerSupportsCli(summary, cli)) return { ok: false };

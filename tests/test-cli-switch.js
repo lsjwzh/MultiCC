@@ -97,33 +97,38 @@ test('fresh switch discards only the target native state', () => {
   assert.strictEqual(stateSummary(session).codex.hasNativeSession, false);
 });
 
-test('Qoder and ZCode never restore or persist MultiCC provider bindings', () => {
-  for (const cli of ['qoder', 'zcode']) {
-    const session = {
-      kind: 'chat',
-      cli: 'claude',
-      provider: 'claude-provider',
-      subagent: { providerId: 'sub', model: 'mini' },
-      cliStates: {
-        [cli]: {
-          cliSessionId: `${cli}-native`,
-          model: `${cli}/model`,
-          provider: 'stale-provider',
-          subagent: { providerId: 'stale-sub', model: 'stale-model' },
-        },
+test('Qoder stays providerless while ZCode restores its per-CLI provider binding', () => {
+  const qoder = {
+    kind: 'chat', cli: 'claude', provider: 'claude-provider',
+    subagent: { providerId: 'sub', model: 'mini' },
+    cliStates: {
+      qoder: {
+        cliSessionId: 'qoder-native', model: 'qoder/model',
+        provider: 'stale-provider', subagent: { providerId: 'stale-sub', model: 'stale-model' },
       },
-    };
-    const switched = activateCliState(session, cli, {
-      now: 450,
-      defaults: { provider: 'default-provider', subagent: { providerId: 'default-sub', model: 'm' } },
-    });
-    assert.strictEqual(switched.reused, true);
-    assert.strictEqual(session.provider, null);
-    assert.strictEqual(session.subagent, null);
-    assert.strictEqual(session.cliStates[cli].provider, null);
-    assert.strictEqual(session.cliStates[cli].subagent, null);
-    assert.strictEqual(stateSummary(session)[cli].provider, null);
-  }
+    },
+  };
+  activateCliState(qoder, 'qoder', {
+    now: 450,
+    defaults: { provider: 'default-provider', subagent: { providerId: 'default-sub', model: 'm' } },
+  });
+  assert.strictEqual(qoder.provider, null);
+  assert.strictEqual(qoder.subagent, null);
+  assert.strictEqual(stateSummary(qoder).qoder.provider, null);
+
+  const zcode = {
+    kind: 'chat', cli: 'claude', provider: 'claude-provider',
+    cliStates: {
+      zcode: {
+        cliSessionId: 'zcode-native', model: 'glm-zcode',
+        provider: 'zcode-provider', subagent: null,
+      },
+    },
+  };
+  const switched = activateCliState(zcode, 'zcode', { now: 451 });
+  assert.strictEqual(switched.reused, true);
+  assert.strictEqual(zcode.provider, 'zcode-provider');
+  assert.strictEqual(stateSummary(zcode).zcode.provider, 'zcode-provider');
 });
 
 test('rememberActiveCliState captures a newly assigned native id', () => {

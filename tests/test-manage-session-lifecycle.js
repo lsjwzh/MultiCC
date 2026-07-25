@@ -113,7 +113,9 @@ test('session lifecycle classic script loads before manage facade and stays with
   assert.deepEqual(innerHtmlWrites.map(line => line.trim()), ["modelSelect.innerHTML = '';"]);
   assert.match(source, /opt\.textContent\s*=/);
   assert.match(source, /if \(cli === 'qoder'\) return QODER_MODEL_OPTIONS/);
-  assert.match(source, /if \(cli === 'zcode'\) return ZCODE_MODEL_OPTIONS/);
+  assert.match(source, /cli === 'zcode'\s*\?\s*\[\]\s*:\s*providerAliasTiers/);
+  assert.match(source, /cli === 'zcode'\s*\?\s*'ZCode 原生 \/ Coding Plan（不覆盖）'/);
+  assert.match(source, /cli === 'opencode' \|\| cli === 'zcode'/);
   assert.match(source, /supportsManagedProvider\(cli\)/);
 });
 
