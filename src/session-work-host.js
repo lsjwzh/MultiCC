@@ -154,6 +154,27 @@ function createSessionWorkHost(deps = {}) {
     return 'idle';
   }
 
+  // Admission asks one question: is this session's work still in flight? The
+  // answer is a classify verdict qualified by the scheduler queue — never a
+  // liveness observation (isStreaming / claudeProc / proxy activity). Liveness
+  // may only be read by the shutdown drain, which cannot wait on classify
+  // because classify is produced by the very Aux queue the drain is draining.
+  //
+  // The 'assessing' carve-out is load-bearing: a turn that ends while Aux is
+  // unhealthy keeps classifyState 'P' forever (classifyUnavailable defers by
+  // design, scanAndReclassify bails on an unhealthy Aux, and the process
+  // watchdog deliberately skips 'assessing'). Reading that stuck P as busy
+  // would wedge every dispatch for the whole outage. 'assessing' means the
+  // runner is already gone and only the verdict is outstanding, so it is not
+  // busy — and a fresh turn always moves the queue off 'assessing' first.
+  function isRunActive(sessionId) {
+    const state = deps.getRecord(sessionId)?.taskState;
+    if (!state) return false;
+    if (state.queueState === 'assessing') return false;
+    const runState = getRunState(sessionId);
+    return runState === 'running' || runState === 'queued';
+  }
+
   function closeTurnForClassify(sessionId, failureReason = null) {
     const operation = (async () => {
       const runtime = schedulerRuntime();
@@ -390,6 +411,7 @@ function createSessionWorkHost(deps = {}) {
     classifyTransition,
     classifyUnavailable,
     getRunState,
+    isRunActive,
     onSchedulerEvent,
     recordInput,
     recoveryState,

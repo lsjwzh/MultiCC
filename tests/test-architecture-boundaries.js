@@ -81,3 +81,70 @@ test('session bundle import never resets a worktree with reset --hard', () => {
     assert.doesNotMatch(source, /reset["'`,\s]+--hard/, file);
   }
 });
+
+// ── liveness → classify is a one-way dependency ──────────────────────────────
+// liveness observes physical transport facts (isStreaming, claudeProc, proxy
+// activity). classify is the semantic verdict (D/W/B/E/P) and is the ONLY thing
+// allowed to answer "is this session busy" or "is this work done". classify may
+// read liveness; nothing else may read liveness to make a work decision.
+
+test('dispatch admission derives busy from classify plus the repo lease, never from liveness', () => {
+  const source = fs.readFileSync('server.js', 'utf8');
+  const start = source.indexOf('function dispatchTargetBusy(sid) {');
+  assert.ok(start >= 0, 'the single dispatch busy predicate must exist');
+  const predicate = source.slice(start, source.indexOf('}', start));
+  // Classify answers "is work in flight"; the repo lease is a resource lock on
+  // the session worktree (gitMergeBack rewrites the very path the CLI runs in),
+  // which classify structurally cannot see — so it, and only it, is OR'd in.
+  assert.match(predicate, /sessionWorkHost\?\.isRunActive\(sid\)/);
+  assert.match(predicate, /defaultRepoActor\.isLeased\(sid\)/);
+  for (const liveness of [/isStreaming/, /orchestrationChatBusy/, /chatTurnPreparationRuntime/, /claudeProc/]) {
+    assert.doesNotMatch(predicate, liveness, 'dispatch admission must not read liveness');
+  }
+  // Every admission consumer is wired to that one predicate — no second opinion.
+  assert.match(source, /createCommanderRoutingHost\([\s\S]*?isBusy: dispatchTargetBusy/);
+  assert.match(source, /createOrchestrationRuntime\([\s\S]*?isBusy: dispatchTargetBusy/);
+  assert.match(source, /isTargetBusy: dispatchTargetBusy/);
+});
+
+test('the classify-derived busy predicate exempts assessing so an unhealthy Aux cannot wedge dispatch', () => {
+  const source = fs.readFileSync('src/session-work-host.js', 'utf8');
+  const start = source.indexOf('function isRunActive(sessionId) {');
+  assert.ok(start >= 0);
+  const body = source.slice(start, source.indexOf('\n  }', start));
+  // A turn that ends while Aux is unhealthy keeps classifyState 'P' forever:
+  // classifyUnavailable defers by design, scanAndReclassify bails on an
+  // unhealthy Aux, and the process watchdog deliberately skips 'assessing'.
+  // Without this exemption that stuck P reads as busy and blocks every dispatch
+  // for the whole outage. Do not remove it.
+  assert.match(body, /queueState === 'assessing'/);
+  assert.doesNotMatch(body, /isStreaming|claudeProc|chatStream/);
+});
+
+test('only the shutdown drain reads raw liveness for a work decision', () => {
+  // The drain cannot wait on classify: classify is produced by the Aux queue the
+  // drain is draining, so depending on it would be circular. Every other
+  // consumer goes through classify.
+  const drain = fs.readFileSync('src/host-lifecycle.js', 'utf8');
+  assert.match(drain, /shutdownCoordinator\.onDrain/);
+  assert.match(drain, /cs\.claudeProc \|\| isStreamingBusy\(name, cs\)/);
+  const gateway = fs.readFileSync('src/dispatch/gateway-host.js', 'utf8');
+  assert.match(gateway, /active: !!isTargetBusy\(s\.id\)/);
+  assert.doesNotMatch(gateway, /activeChat\.isStreaming|clients\.size > 0/);
+  for (const file of ['src/commander-router.js', 'src/task-board.js', 'src/routes/task-board.js']) {
+    assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);
+  }
+});
+
+test('liveness never becomes a display state and never completes work', () => {
+  const workHost = fs.readFileSync('src/session-work-host.js', 'utf8');
+  const start = workHost.indexOf('function getRunState(sessionId) {');
+  const runState = workHost.slice(start, workHost.indexOf('\n  }', start));
+  assert.doesNotMatch(runState, /isStreaming|claudeProc|liveness/);
+  // The liveness verdict (working|idle|stalled|unknown) has its own pill and must
+  // never leak into the run-state vocabulary the cards and bars render from.
+  assert.doesNotMatch(workHost, /'(?:working|stalled)'/);
+  // Only classify may mark work done: 'done' comes from a D verdict, never from
+  // a process exiting or a stream ending.
+  assert.match(runState, /cardStatus === 'completed' \? 'done' : cardStatus/);
+});

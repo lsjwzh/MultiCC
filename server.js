@@ -1062,7 +1062,7 @@ const gatewayHost = createGatewayHost({
   persistedSessions, chatSessions, directories, logger,
   getChatHistoryService: () => chatHistoryService,
   appendEvent, normalizeEffort, dispatchTargetHintFor, cwdForSession,
-  getSetSessionStatus: () => setSessionStatus, taskBoardSessionBusy,
+  getSetSessionStatus: () => setSessionStatus, isTargetBusy: dispatchTargetBusy,
   getWaitInjector: () => waitInjector,
   getOrchestrationRuntime: () => orchestrationRuntime,
   getTaskContextHost: () => taskContextHost,
@@ -2185,12 +2185,21 @@ const {
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
 
-function taskBoardSessionBusy(sid) {
-  const prep = chatTurnPreparationRuntime.snapshot(sid);
-  return prep.phase !== 'idle' || !!chatSessions.get(sid)?.isStreaming || chatTurnEngine.orchestrationChatBusy(sid) || !!defaultRepoActor.isLeased(sid);
+// Dispatch admission reads classify (sessionWorkHost.isRunActive), never
+// liveness: no prep phase, no isStreaming, no orchestrationChatBusy. Those are
+// strict subsets of classifyState 'P', which is written synchronously at turn
+// start and only clears on the Aux verdict — earlier in, later out, so the
+// classify answer is at least as conservative as the liveness one was.
+//
+// The repo lease is NOT liveness and stays: gitMergeBack commits and ff-merges
+// the session's own worktree, which is the same path the CLI runs in, and
+// classify cannot see a git lock. Dropping it would let a dispatch land in a
+// worktree git is concurrently rewriting.
+function dispatchTargetBusy(sid) {
+  return !!sessionWorkHost?.isRunActive(sid) || !!defaultRepoActor.isLeased(sid);
 }
 const commanderRouter = createCommanderRoutingHost({
-  records: persistedSessions, directories, isBusy: taskBoardSessionBusy,
+  records: persistedSessions, directories, isBusy: dispatchTargetBusy,
   sessionPersistence, createSessionRecord, dispatchToSession,
   maxElasticWorkers: process.env.MULTICC_COMMANDER_MAX_ELASTIC_WORKERS, logger,
 });
@@ -2204,7 +2213,6 @@ const taskBoardRuntime = createTaskBoardRuntime({
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
-  isSessionBusy: taskBoardSessionBusy,
   resolveSessionQueue: (...args) => sessionWorkHost.resolveTask(...args),
   getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
   getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle',
@@ -2330,7 +2338,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
   buildHandoffCheckpoint,
   rememberActiveCliState,
   saveBestEffort: savePersistedSessionsBestEffort,
-  sessionPersistence, isSessionBusy: taskBoardSessionBusy,
+  sessionPersistence,
   getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle',
   getActiveBackgroundTasks: id => backgroundTaskRuntime?.listActiveBackgroundTasks(id) || [],
   chatStream,
@@ -2716,7 +2724,7 @@ services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile,
   runChatTurn: chatTurnEngine.runChatTurn,
-  isBusy: taskBoardSessionBusy,
+  isBusy: dispatchTargetBusy,
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
   probe: chatTurnEngine.probeExplicitWait,
