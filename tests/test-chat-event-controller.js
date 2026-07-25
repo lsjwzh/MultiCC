@@ -587,21 +587,27 @@ test('live UI progress refreshes one stable row until the terminal update', () =
   assert.equal(body.children[0].className, 'dm-row dm-done');
 });
 
-test('classify bar reveals the manual mark-done button only while waiting for user', () => {
+test('classify bar reveals mark-done for W and cancel-task for P', () => {
   const { document, ids } = fakeDocument();
   const bar = new FakeElement('div'); ids.set('aux-classify-bar', bar);
   ids.set('ac-goal', new FakeElement('span'));
   ids.set('ac-phase', new FakeElement('span'));
   ids.set('ac-state', new FakeElement('span'));
   const markBtn = new FakeElement('button'); ids.set('ac-mark-done', markBtn);
+  const cancelBtn = new FakeElement('button'); ids.set('ac-cancel-task', cancelBtn);
   const marks = [];
+  const cancels = [];
   const liveUi = liveUiApi.createLiveUi({
-    document, messagesEl: new FakeElement('div'), onMarkTaskDone: () => marks.push(1),
+    document,
+    messagesEl: new FakeElement('div'),
+    onMarkTaskDone: () => marks.push(1),
+    onCancelTask: () => cancels.push(1),
   });
 
   liveUi.renderAuxClassify('实现登录', 'implementing', 'W');
   assert.equal(bar.classList.contains('show'), true);
   assert.equal(bar.classList.contains('can-mark-done'), true);
+  assert.equal(bar.classList.contains('can-cancel-task'), false);
 
   markBtn.click();
   assert.deepEqual(marks, [1]);
@@ -609,10 +615,15 @@ test('classify bar reveals the manual mark-done button only while waiting for us
 
   liveUi.renderAuxClassify('实现登录', 'implementing', 'P');
   assert.equal(bar.classList.contains('can-mark-done'), false);
+  assert.equal(bar.classList.contains('can-cancel-task'), true);
+  cancelBtn.click();
+  assert.deepEqual(cancels, [1]);
+  assert.equal(cancelBtn.disabled, true);
 
   liveUi.renderAuxClassify('', 'idle', 'W');
   assert.equal(bar.classList.contains('show'), false);
   assert.equal(bar.classList.contains('can-mark-done'), false);
+  assert.equal(bar.classList.contains('can-cancel-task'), false);
 });
 
 function makeDanmakuUi(extra = {}) {

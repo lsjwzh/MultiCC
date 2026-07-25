@@ -170,6 +170,7 @@ const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createClassifyStateMachine } = require('./src/classify/state-machine');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
+const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
 const { createPushRuntime } = require('./src/push-runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
@@ -2479,7 +2480,8 @@ const cleanupPushMonitor = pushRuntime.cleanup;
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
 //     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory,
-//     pendingUserInput, userInputSignalVersion, apiError }
+//     pendingUserInput, userInputSignalVersion, apiError,
+//     classifyUpdatedAt, cancelledAt, cancelReason }
 //   classifyState ∈ D | C | W | B | E | P | null  (D=done; B=terminal only; null=never classified)
 //   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
 const TASK_STATE_DEFAULTS = {
@@ -2489,6 +2491,7 @@ const TASK_STATE_DEFAULTS = {
   classifyHistory: [],
   pendingUserInput: null, userInputSignalVersion: 0, userInputSignalTurnId: null,
   apiError: null,
+  classifyUpdatedAt: null, cancelledAt: null, cancelReason: null,
 };
 
 function getTaskState(persisted) {
@@ -2503,7 +2506,14 @@ function setTaskState(sessionId, patch, opts = {}) {
   const persisted = persistedSessions.get(sessionId);
   if (!persisted) return null;
   const cur = getTaskState(persisted);
-  const next = { ...cur, ...patch };
+  const classifyChanged = Object.prototype.hasOwnProperty.call(patch, 'classifyState')
+    && patch.classifyState !== cur.classifyState;
+  const next = {
+    ...cur,
+    ...patch,
+    ...(classifyChanged && !Object.prototype.hasOwnProperty.call(patch, 'classifyUpdatedAt')
+      ? { classifyUpdatedAt: Date.now() } : {}),
+  };
   persisted.taskState = next;
   if (opts.save !== false) savePersistedSessionsBestEffort('runtime.task-state');
   // Push the aux classify result to the chat client so it can show what the
@@ -2548,6 +2558,12 @@ sessionWorkHost = createSessionWorkHost({
   chatStream,
   assignKillReason,
   appendMessage: appendChatMessage,
+  cancelPreparation(sessionId, reason) {
+    const preparation = chatTurnPreparationRuntime.snapshot(sessionId);
+    if (preparation.phase === 'preparing' && preparation.turnId) {
+      chatTurnPreparationRuntime.abortPreparation(sessionId, preparation.turnId, reason);
+    }
+  },
   log: logger,
 });
 
@@ -2711,6 +2727,19 @@ orchestrationRuntime = createOrchestrationRuntime({
   onSchedulerEvent: event => sessionWorkHost.onSchedulerEvent(event),
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
+});
+const processingWatchdog = createProcessingWatchdog({
+  listRecords: () => persistedSessions.entries(),
+  getTaskState,
+  getChatSession: id => chatSessions.get(id),
+  getStreamStatus: id => chatStream.status(id),
+  getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
+  getSchedulerStatus: id => orchestrationRuntime.sessionScheduler.status(id),
+  isPidAlive(pid) {
+    try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
+  },
+  cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
+  logger,
 });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession,
   orchestrationRuntime, taskBoard: taskBoardRuntime,
@@ -2922,6 +2951,11 @@ app.use(safeErrorHandler(logger));
     // old one-shot startup reconcile - restart just means the first tick runs.
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
+    trackServiceTimer(setInterval(() => {
+      processingWatchdog.sweep().catch(error => {
+        logger.warn('processing_watchdog_sweep_failed', { error: error.message });
+      });
+    }, PROCESS_WATCHDOG_INTERVAL_MS));
     artifacts.cleanup();
     trackServiceTimer(setInterval(() => artifacts.cleanup(), 6 * 3600 * 1000));
     // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).

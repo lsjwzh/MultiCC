@@ -11,6 +11,7 @@ function fixture(options = {}) {
   let schedulerState = 'running';
   let releaseTurnEnded = options.releaseTurnEnded || null;
   const record = { taskState: {} };
+  const chatState = options.chatState === undefined ? {} : options.chatState;
   const scheduler = {
     status: async () => ({
       state: schedulerState,
@@ -46,17 +47,21 @@ function fixture(options = {}) {
   const host = createSessionWorkHost({
     runtime: () => runtime,
     getRecord: () => record,
-    getChatSession: () => ({}),
+    getChatSession: () => chatState,
     getTaskState: value => value?.taskState || {},
     pendingUserInput: () => pending,
     recordUserInput: () => ({ ok: true }),
     broadcast: (...args) => calls.push(['broadcast', ...args]),
-    setTaskState: (...args) => calls.push(['task-state', ...args]),
+    setTaskState: (sessionId, patch) => {
+      record.taskState = { ...record.taskState, ...patch };
+      calls.push(['task-state', sessionId, patch]);
+    },
     onTaskBoardQueueEvent() {},
     classifyDisplay: () => ({ cardStatus: 'running' }),
     cancelClassify() {},
     assignKillReason() {},
     appendMessage() {},
+    cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
     chatStream: { isAlive: () => false, cancel() {} },
     log: { warn: (...args) => calls.push(['warn', ...args]) },
   });
@@ -69,6 +74,45 @@ function fixture(options = {}) {
     setPendingWait(value) { pendingWait = value; },
   };
 }
+
+test('cancel publishes classify E before scheduler I/O and ends the active turn', async () => {
+  const child = {
+    pid: 123,
+    exitCode: null,
+    signalCode: null,
+    killed: false,
+    kill(signal) { this.killed = true; this.signal = signal; },
+  };
+  const state = {
+    cli: 'codex',
+    claudeProc: child,
+    isStreaming: true,
+    currentAssistantText: '',
+    currentToolCalls: [],
+    streamReplay: ['partial'],
+    _activeRunner: {},
+  };
+  const h = fixture({ chatState: state });
+  // The E write occurs synchronously before cancelActiveTurn reaches its first
+  // scheduler await.
+  const cancellation = h.host.cancelActiveTurn('s1');
+  const immediate = h.calls.find(call => call[0] === 'task-state');
+  assert.equal(immediate[2].classifyState, 'E');
+  assert.equal(immediate[2].cancelReason, 'user_cancelled');
+  assert.ok(Number.isFinite(immediate[2].cancelledAt));
+  assert.deepEqual(h.calls.find(call => call[0] === 'cancel-preparation'), [
+    'cancel-preparation', 's1', 'user_cancelled',
+  ]);
+  assert.equal(child.signal, 'SIGTERM');
+  assert.equal(state.isStreaming, false);
+  assert.deepEqual(state.streamReplay, []);
+
+  const result = await cancellation;
+  assert.equal(result.ok, true);
+  assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
+    'complete', { reason: 'user_cancelled', classifyState: 'E' },
+  ]);
+});
 
 test('turn boundary parks FIFO until classify D is the sole completion verdict', async () => {
   const h = fixture();
