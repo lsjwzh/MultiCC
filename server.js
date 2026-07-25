@@ -121,6 +121,10 @@ const { createRoleWorkerService } = require('./src/session/role-worker');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
+const { createSessionProfileRoutes } = require('./src/routes/session-profile');
+const { createSessionBundleRoutes } = require('./src/routes/session-bundle');
+const { createSessionLifecycleRuntime } = require('./src/routes/session-lifecycle');
+const { createSessionMetaRuntime } = require('./src/routes/session-meta');
 const { createAuthRuntime } = require('./src/routes/auth');
 const {
   listInstalledSkills,
@@ -1957,229 +1961,37 @@ const cliSwitchGitSnapshot = cliSwitchRuntime.cliSwitchGitSnapshot;
 const consumePendingCliHandoff = cliSwitchRuntime.consumePendingCliHandoff;
 cliSwitchRuntime.mountRoutes(app, asyncHandler);
 
-// PATCH a session — supports display-name edits via label.
-app.patch('/api/sessions/:id', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  if (s.type === 'aux' || s.type === 'gateway') {
-    return res.status(400).json({ error: 'system session cannot be renamed' });
-  }
-  if (req.body.cli !== undefined) {
-    return res.status(400).json({
-      error: 'cli cannot be changed with PATCH; use POST /api/sessions/:id/switch-cli',
-    });
-  }
-  const mutation = sessionPersistence.begin('http.patch-session');
-  const rejectMutation = (status, body) => {
-    mutation.rollback();
-    return res.status(status).json(body);
-  };
-  try {
-  if (req.body.label !== undefined) {
-    const label = (req.body.label || '').toString().trim();
-    if (label.length > 80) return rejectMutation(400, { error: 'label too long (max 80)' });
-    s.label = label || null;
-    appendEvent(s.dirId, 'session_renamed', s.label || s.id, s.id);
-  }
-  if (req.body.model !== undefined) {
-    const model = (req.body.model || '').toString().trim();
-    // Allow `/` and `:` for OpenRouter-style ids and provider:model forms.
-    if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
-      return rejectMutation(400, { error: 'invalid model' });
-    }
-    s.model = model || null;
-    // Non-Claude chat sessions spawn per turn. Claude chat keeps a warm
-    // process, so close it now or the UI would report the new model while the
-    // next turn still runs on the old one. Terminal sessions still need a
-    // manual restart to relaunch their CLI with it.
-    if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
-    appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
-  }
-  if (req.body.effort !== undefined) {
-    const effort = normalizeEffort(req.body.effort);
-    if (effort === undefined) return rejectMutation(400, { error: 'invalid effort' });
-    if (!validEffortForCli(s.cli || 'claude', effort)) return rejectMutation(400, { error: 'invalid reasoning level' });
-    s.effort = effort || null;
-    if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
-    appendEvent(s.dirId, 'session_effort_changed', `${s.label || s.id} → ${effectiveSessionEffort(s) || effortLabel(s.effort)}`, s.id);
-  }
-  if (req.body.agent !== undefined) {
-    const agent = normalizeCliAgent(s.cli || 'claude', req.body.agent);
-    if (agent === undefined) return rejectMutation(400, { error: 'agent is only supported by Claude/OpenCode and must be a valid agent name' });
-    s.agent = agent;
-    if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
-    appendEvent(s.dirId, 'session_agent_changed', `${s.label || s.id} → ${s.agent || '默认 agent'}`, s.id);
-  }
-  if (req.body.rolePrompt !== undefined) {
-    const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
-    if (rp.length > 40000) return rejectMutation(400, { error: 'rolePrompt too long (max 40000)' });
-    // null clears the session override → it falls back to the directory default.
-    s.rolePrompt = rp.trim() || null;
-    if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
-    appendEvent(s.dirId, 'session_role_changed', s.rolePrompt ? (s.label || s.id) : `${s.label || s.id}（清除，继承目录）`, s.id);
-  }
-  if (req.body.memory !== undefined) {
-    // Session memory: structured entries (array of {type,text,ts}).
-    // Accept both new array format and legacy string (auto-converted).
-    const normalized = normalizeManualMemory(req.body.memory);
-    if (normalized.error) return rejectMutation(400, { error: normalized.error });
-    const { entries } = normalized;
-    s.memory = entries;
-    appendEvent(s.dirId, 'memory_updated', s.memory ? '手动编辑会话记忆' : '清空会话记忆', s.id);
-    workspaceBroadcast(s.dirId, { type: 'memory', sessionId: s.id, memory: s.memory || [] });
-  }
-  // streaming (流式常驻) is no longer user-configurable: claude chat always runs
-  // in persistent-streaming mode. Any legacy `streaming` field in the PATCH body
-  // is ignored — the routing guard in runChatTurn keys on cli only.
-  if (req.body.autoContinue !== undefined) {
-    // autoContinue is no longer user-configurable (the streaming picker dropped
-    // this toggle). Accept the field for back-compat with older clients but pin
-    // it true. The old auto-drive paths are
-    // retired; classify's D/W guards are the safety rails now.
-    s.autoContinue = true;
-  }
-  if (req.body.autoCommit !== undefined) {
-    // Auto-commit and merge worktree back to base branch after task completion.
-    s.autoCommit = !!req.body.autoCommit;
-    appendEvent(s.dirId, 'session_autocommit_changed', `${s.label || s.id} → ${s.autoCommit ? '自动提交合并' : '关闭'}`, s.id);
-  }
-  if (req.body.autoDispatch !== undefined) {
-    // Per-session toggle: inject dispatch context prompt only when explicitly enabled.
-    s.autoDispatch = !!req.body.autoDispatch;
-    appendEvent(s.dirId, 'session_autodispatch_changed', `${s.label || s.id} → ${s.autoDispatch ? '允许派发' : '禁止派发'}`, s.id);
-  }
-  if (req.body.provider !== undefined) {
-    // Per-session cc-switch provider. '' / null clears the override → default login.
-    const v = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
-    if (!v.ok) return rejectMutation(400, { error: 'invalid provider' });
-    const prevProvider = s.provider;
-    s.provider = v.value;
-    // Codex keeps each provider's threads under its own CODEX_HOME
-    // (sessions/YYYY/MM/DD/rollout-<ts>-<cliSessionId>.jsonl). Switching provider
-    // repoints the next spawn at a different home, so `codex exec resume <id>`
-    // would no longer find this session's rollout and silently start a fresh
-    // thread. Carry the rollout over to the new home so resume keeps working.
-    if (s.cli === 'codex' && s.cliSessionId && prevProvider !== v.value) {
-      try {
-        const codexHomeFor = (pid) => pid
-          ? path.join(providers.CODEX_HOMES_DIR, pid)
-          : path.join(os.homedir(), '.codex');
-        const srcSessions = path.join(codexHomeFor(prevProvider), 'sessions');
-        let srcFile = null;
-        if (fs.existsSync(srcSessions)) {
-          const walk = (d) => {
-            if (srcFile) return;
-            let entries;
-            try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
-            for (const e of entries) {
-              if (srcFile) return;
-              if (e.isDirectory()) walk(path.join(d, e.name));
-              else if (e.isFile() && e.name.endsWith(`-${s.cliSessionId}.jsonl`)) srcFile = path.join(d, e.name);
-            }
-          };
-          walk(srcSessions);
-        }
-        if (srcFile) {
-          const dstFile = path.join(codexHomeFor(v.value), 'sessions', path.relative(srcSessions, srcFile));
-          if (!fs.existsSync(dstFile)) {
-            fs.mkdirSync(path.dirname(dstFile), { recursive: true });
-            fs.copyFileSync(srcFile, dstFile);
-            console.log(`[multicc/provider] migrated codex rollout ${s.cliSessionId}: ${prevProvider || '默认'} -> ${v.value || '默认'}`);
-          }
-        }
-      } catch (e) {
-        console.warn(`[multicc/provider] codex rollout migration failed for ${s.id}:`, e.message);
-      }
-    }
-    // When switching provider the old session.model may hold a model that
-    // only works with the previous backend (e.g. claude-opus-4-8 set while
-    // on Anthropic Official, then switching to DeepSeek/GLM which don't
-    // ship that model). Replace it with the new provider's primary model
-    // (or the user's /model default when switching back to the default login)
-    // so the card always shows a concrete, correct model name instead of a
-    // stale "默认" placeholder. The user can still re-set via /model afterwards.
-    const appType = providers.appTypeForCli(s.cli || 'claude');
-    if (appType && req.body.model === undefined) {
-      s.model = providerDefaultModel(appType, v.value) || null;
-    } else if (appType && !providers.modelValidForProvider(appType, v.value, s.model)) {
-      // The same PATCH carried a model (the AI-config dialog always submits
-      // provider+model together), but the new provider doesn't serve it — a
-      // stale value from the previous provider. Replace it with the new
-      // provider's primary model instead of letting every subsequent spawn
-      // 400/10404 against a model the provider never had.
-      const stale = s.model;
-      s.model = providerDefaultModel(appType, v.value) || null;
-      appendEvent(s.dirId, 'session_model_changed',
-        `${s.label || s.id} → ${s.model || '默认'}（${stale} 与新 Provider 不兼容，已自动替换）`, s.id);
-    }
-    // Chat sessions pick it up on the next per-turn spawn; a warm streaming
-    // process must be torn down so it relaunches with the new env.
-    if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
-    const pname = appType && v.value ? (providerRouterRuntime.getProviderSummary(appType, v.value)?.name || v.value) : (appType ? '默认登录' : '厂商客户端设置');
-    appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
-    // Push current classify state to chat so the classify bar updates immediately
-    // (otherwise the chat page shows stale / blank until the next classify run).
-    try {
-      const ts = getTaskState(s);
-      if (ts && (ts.goal || ts.classifyState)) {
-        chatBroadcast(s.id, { type: 'task_state', goal: ts.goal || '', phase: ts.phase || 'idle', classifyState: ts.classifyState || null });
-      }
-    } catch (_) {}
-  }
-  if (req.body.subagent !== undefined) {
-    // Per-session subagent provider+model. Claude encodes the route in its model;
-    // Codex materializes native default/worker/explorer agent config layers that
-    // select a second model_provider. null / '' / {} clears the override.
-    const sa = req.body.subagent;
-    const cli = s.cli || 'claude';
-    const clearing = sa === null || sa === '' || (typeof sa === 'object' && Object.keys(sa).length === 0);
-    if (!clearing && cli !== 'claude' && cli !== 'codex') {
-      return rejectMutation(400, { error: 'subagent routing is only supported by Claude and Codex' });
-    }
-    if (clearing) {
-      s.subagent = null;
-    } else if (typeof sa === 'object') {
-      const subApp = (s.cli === 'codex') ? 'codex' : 'claude';
-      const v = validProviderId(subApp, (sa.providerId || '').toString().trim());
-      if (!v.ok) return rejectMutation(400, { error: 'invalid subagent provider' });
-      const model = (sa.model || '').toString().trim();
-      if (!model) return rejectMutation(400, { error: 'subagent model required' });
-      if (s.cli === 'codex') {
-        if (!s.provider) return rejectMutation(400, { error: 'Codex subagent routing requires a selected main provider' });
-        if (!providers.codexProviderProxyable(v.value)) {
-          return rejectMutation(400, { error: 'Codex subagent provider has no callable HTTP endpoint' });
-        }
-      }
-      s.subagent = { providerId: v.value, model };
-    } else {
-      return rejectMutation(400, { error: 'invalid subagent' });
-    }
-    // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
-    if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
-    const subApp2 = (s.cli === 'codex') ? 'codex' : 'claude';
-    const saName = s.subagent
-      ? `${providerRouterRuntime.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
-      : '默认(随主)';
-    appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
-  }
-  rememberActiveCliState(s);
-  mutation.commit();
-  res.json({
-    ...s,
-    // The full checkpoint can contain recent visible conversation text. Keep
-    // it server-side and expose only lifecycle metadata in ordinary responses.
-    cliStates: cliStateSummary(s),
-    cliAvailability: cliAvailabilitySummary(),
-    pendingCliHandoff: cliHandoffSummary(s),
-    subagent: serializeSubagent(s.subagent),
-    effectiveModel: effectiveSessionModel(s),
-    effectiveEffort: effectiveSessionEffort(s),
-  });
-  } catch (error) {
-    mutation.rollback();
-    throw error;
-  }
-});
+// PATCH + fork profile routes: label/model/effort/agent/rolePrompt/memory/provider/
+// subagent edits, and Happier-parity transcript fork. Handler logic lives in
+// src/routes/session-profile.js; only host wiring stays here.
+createSessionProfileRoutes({
+  persistedSessions,
+  directories,
+  sessionPersistence,
+  sessionPolicy,
+  providers,
+  providerRouterRuntime,
+  // chatStream / providerRoutes are composed further down this file; resolve
+  // them lazily or mounting would hit the const TDZ before boot finishes.
+  getChatStream: () => chatStream,
+  validProviderId: (...args) => validProviderId(...args),
+  asyncHandler,
+  appendEvent,
+  workspaceBroadcast,
+  chatBroadcast,
+  getTaskState,
+  rememberActiveCliState,
+  buildHandoffCheckpoint,
+  cliStateSummary,
+  cliAvailabilitySummary,
+  cliHandoffSummary,
+  createSessionRecord,
+  loadChatHistory,
+  newChatMsgId,
+  getChatHistoryService: () => chatHistoryService,
+  getFolderMemory: () => folderMemory,
+  getCliSwitchGitSnapshot: () => cliSwitchGitSnapshot,
+}).mountRoutes(app);
 
 // Folder memory owns filesystem layout, seed files and the frozen prompt snapshot.
 // Session routes consume that service plus the existing curated-memory primitives.
@@ -2217,534 +2029,55 @@ mountMemoryBrowserRoutes(app, {
   now: Date.now,
 });
 
-// Delete a single message from this session's persisted chat history.
-// Display-history only: the CLI's own transcript/context is not rewritten,
-// so the model may still "remember" the content in an ongoing conversation.
-// ── Session fork (Happier-parity: branch a session at any message) ──
-// Creates a NEW live session that inherits the source's provider/model/effort/
-// rolePrompt and replays the transcript up to (and including) the chosen message
-// as its starting context — like Happier's forkedTranscriptSnapshot + replaySeed.
-// The 50-message rolling window means old messages may already be distilled into
-// memory; we therefore also copy the source session's private memory folder so the
-// forked session isn't blind to pre-window context. A `forkedFrom` meta record is
-// stamped as the first message of the new history.
-app.post('/api/sessions/:id/fork', asyncHandler(async (req, res) => {
-  const src = persistedSessions.get(req.params.id);
-  if (!src) return res.status(404).json({ error: 'session not found' });
-  if (src.type === 'aux' || src.type === 'gateway') {
-    return res.status(400).json({ error: 'system session cannot be forked' });
-  }
-  const b = req.body || {};
-  const label = (b.label || '').toString().trim() || null;
-  const includeMemory = b.includeMemory !== false; // default true
-  const atMessageId = b.atMessageId ? String(b.atMessageId) : null;
-
-  // Slice source history up to (and including) the chosen message id.
-  // If atMessageId is null/omitted, fork from the latest message.
-  const history = loadChatHistory(src.id);
-  let sliced;
-  if (!atMessageId) {
-    sliced = history.map(m => ({ ...m }));
-  } else {
-    const idx = history.findIndex(m => m && m.id === atMessageId);
-    if (idx < 0) return res.status(400).json({ error: 'atMessageId not found in history' });
-    sliced = history.slice(0, idx + 1).map(m => ({ ...m }));
-  }
-
-  // Create the forked session record, inheriting the source's CLI/provider/model/
-  // effort/native-agent/rolePrompt so it continues from the same backend.
-  const dir = directories.get(src.dirId);
-  const r = await createSessionRecord({
-    dir, cli: src.cli, kind: 'chat', label: label || `${src.label || src.id} · fork`,
-    provider: src.provider == null ? undefined : src.provider,
-    model: src.model, effort: src.effort, agent: src.agent, rolePrompt: src.rolePrompt,
-    persistence: 'required', persistenceSource: 'http.fork-session-create',
-  });
-  if (!r.ok) return res.status(400).json({ error: r.error });
-  const newSid = r.id;
-
-  // Seed the new session's chat history with the sliced transcript. The forkedFrom
-  // meta message goes first so the agent and UI can see this is a fork.
-  const forkMeta = {
-    id: newChatMsgId(),
-    role: 'system',
-    content: `Forked from session \`${src.id}\` (label: ${src.label || '—'}) at message \`${atMessageId || 'latest'}\`. ` +
-             `This session continues from that point; prior context above is the replayed transcript, ` +
-             `and the source session's distilled memory has been copied into this session's memory folder.`,
-    ts: Date.now(),
-    forkedFrom: { sessionId: src.id, atMessageId: atMessageId || null, atTs: sliced.length ? sliced[sliced.length - 1].ts : null },
-  };
-  const newHistory = [forkMeta, ...sliced];
-  chatHistoryService.replace(newSid, newHistory, { reason: 'fork' });
-
-  // A fork has a fresh vendor-native session, so copying display history alone
-  // is not context continuation. Seed the same one-shot checkpoint mechanism
-  // used by cross-CLI switches; it is consumed only after the fork produces a
-  // successful result.
-  const forkGitSnapshot = await cliSwitchGitSnapshot(r.session);
-  const forkCheckpoint = buildHandoffCheckpoint({
-    session: src,
-    fromCli: src.cli,
-    toCli: r.session.cli,
-    history: sliced,
-    git: forkGitSnapshot,
-  });
-  sessionPersistence.mutate('http.fork-session-finalize', () => {
-    if (src.subagent && src.subagent.providerId && src.subagent.model) {
-      r.session.subagent = { providerId: src.subagent.providerId, model: src.subagent.model };
-    }
-    r.session.pendingCliHandoff = {
-      id: `fork_${crypto.randomBytes(8).toString('hex')}`,
-      fromCli: src.cli,
-      toCli: r.session.cli,
-      createdAt: forkCheckpoint.createdAt,
-      status: 'pending',
-      reusedTarget: false,
-      checkpoint: forkCheckpoint,
-    };
-    rememberActiveCliState(r.session);
-  });
-
-  // Copy the source session's private memory folder (CLAUDE.md/AGENTS.md + any
-  // notes) so pre-window distilled context survives into the fork. Best-effort.
-  if (includeMemory) {
-    try {
-      const srcMemDir = folderMemory.sessionDir(src);
-      const dstMemDir = folderMemory.sessionDir(r.session);
-      if (fs.existsSync(srcMemDir)) {
-        fs.mkdirSync(dstMemDir, { recursive: true });
-        fs.cpSync(srcMemDir, dstMemDir, { recursive: true });
-      }
-    } catch (e) {
-      console.error(`[multicc/fork] memory copy failed ${src.id}→${newSid}:`, e.message);
-    }
-  }
-
-  appendEvent(src.dirId, 'session_forked', `${src.label || src.id} → ${newSid}`, newSid);
-  res.json({
-    ok: true,
-    sessionId: newSid,
-    session: {
-      ...r.session,
-      cliStates: cliStateSummary(r.session),
-      pendingCliHandoff: cliHandoffSummary(r.session),
-    },
-             forkedFrom: forkMeta.forkedFrom, replayedMessages: sliced.length });
-}));
 
 // ── Cross-machine handoff (Happier-parity: move a live session to another machine) ──
-// Export an encrypted bundle carrying: session metadata, chat history, the
-// session's private memory files, the provider state (env, and for codex the
-// auth.json/config.toml files), and a `git bundle` of the session's worktree
-// branch. The bundle is AES-256-GCM encrypted with a passphrase-derived key
-// (PBKDF2), so it is safe to move over email/syncthing/cloud. The import side
-// (POST /api/sessions/import) rebuilds the session on another machine.
-//
-// Limitation: the target machine must already have (or create) a directory
-// backed by the same git repo, so `git fetch` from the bundle can land the
-// branch and `git worktree add` can check it out. multicc is single-machine by
-// design; this is the file-shuffle equivalent of Happier's direct_peer handoff.
-function bundleEncrypt(passphrase, plaintextBuf) {
-  const salt = crypto.randomBytes(16);
-  const key = crypto.pbkdf2Sync(passphrase, salt, 200000, 32, 'sha256');
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-  const ct = Buffer.concat([cipher.update(plaintextBuf), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return { salt: salt.toString('base64'), iv: iv.toString('base64'),
-           ct: ct.toString('base64'), tag: tag.toString('base64') };
-}
-
-function bundleDecrypt(passphrase, enc) {
-  const salt = Buffer.from(enc.salt, 'base64');
-  const key = crypto.pbkdf2Sync(passphrase, salt, 200000, 32, 'sha256');
-  const iv = Buffer.from(enc.iv, 'base64');
-  const tag = Buffer.from(enc.tag, 'base64');
-  const ct = Buffer.from(enc.ct, 'base64');
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(ct), decipher.final()]);
-}
-
-app.get('/api/sessions/:id/bundle', asyncHandler(async (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  if (s.type === 'aux' || s.type === 'gateway') {
-    return res.status(400).json({ error: 'system session cannot be bundled' });
-  }
-  const passphrase = req.query.passphrase;
-  if (!passphrase || passphrase.length < 6) {
-    return res.status(400).json({ error: 'passphrase required (≥6 chars) — use ?passphrase=...' });
-  }
-  try {
-    // 1) Messages + memory files.
-    const messages = loadChatHistory(s.id);
-    const memoryFiles = {};
-    try {
-      const memDir = folderMemory.sessionDir(s);
-      if (fs.existsSync(memDir)) {
-        for (const entry of fs.readdirSync(memDir, { withFileTypes: true })) {
-          if (entry.isFile()) {
-            const rel = entry.name;
-            const abs = path.join(memDir, entry.name);
-            memoryFiles[rel] = fs.readFileSync(abs, 'utf8');
-          }
-        }
-      }
-    } catch (e) { /* best-effort */ }
-
-    // 2) Provider state: env (claude ANTHROPIC_*, codex CODEX_HOME pointer)
-    //    plus, for codex, the auth.json/config.toml file contents so the
-    //    target machine can reconstruct the codex home.
-    const provEnv = providerRouterRuntime.resolveSpawnEnv(s);
-    const providerState = {
-      providerId: s.provider, providerName: provEnv.providerName,
-      env: provEnv.env || {}, codexFiles: {},
-    };
-    if (s.cli === 'codex' && s.provider) {
-      try {
-        const home = path.join(providers.CODEX_HOMES_DIR, s.provider);
-        if (fs.existsSync(home)) {
-          for (const fn of ['auth.json', 'config.toml']) {
-            const fp = path.join(home, fn);
-            if (fs.existsSync(fp)) {
-              providerState.codexFiles[fn] = fs.readFileSync(fp, 'utf8');
-            }
-          }
-        }
-      } catch (e) { /* best-effort */ }
-    }
-
-    // 3) git bundle of the session's worktree branch — but ONLY the commits
-    //    unique to this session (baseBranch..branch). Bundling the full branch
-    //    history would pull in the entire main lineage (100MB+ for a mature
-    //    repo) and OOM the process when base64'd into the JSON payload. If the
-    //    session has no unique commits (already merged back), there is nothing
-    //    to carry — the target machine's main already has the work.
-    let gitBundleB64 = null;
-    let gitBundleNote = null;
-    const MAX_BUNDLE_BYTES = 100 * 1024 * 1024;  // 100MB hard cap
-    try {
-      if (s.worktreePath && s.branch && fs.existsSync(s.worktreePath)) {
-        const dir = directories.get(s.dirId);
-        if (!dir) {
-          gitBundleNote = 'directory metadata missing — bundle has no git payload';
-        } else {
-          const tmp = path.join(os.tmpdir(), `multicc-bundle-${s.id}-${Date.now()}.bundle`);
-          const result = await gitExportSessionBundle(dir, s, tmp, MAX_BUNDLE_BYTES);
-          if (result.unique === 0) {
-            gitBundleNote = `no unique commits vs ${result.baseBranch} (already merged) — target's main has the work; no git payload needed`;
-          } else if (result.tooLarge) {
-            gitBundleNote = `git bundle too large (${(result.size/1024/1024).toFixed(1)}MB > ${MAX_BUNDLE_BYTES/1024/1024}MB cap) — skipped; merge excess back to base first`;
-          } else if (result.bundlePath) {
-            try {
-              gitBundleB64 = (await fs.promises.readFile(result.bundlePath)).toString('base64');
-              gitBundleNote = `${result.unique} unique commits, ${(result.size/1024).toFixed(0)}KB bundle`;
-            } finally {
-              await fs.promises.rm(result.bundlePath, { force: true });
-            }
-          }
-        }
-      } else {
-        gitBundleNote = 'no worktree/branch on disk — bundle has no git payload';
-      }
-    } catch (e) {
-      gitBundleNote = 'git bundle failed: ' + e.message;
-    }
-
-    // 4) Assemble + encrypt.
-    const payload = {
-      v: 1, exportedAt: new Date().toISOString(),
-      sessionMeta: {
-        id: s.id, cli: s.cli, kind: s.kind, label: s.label,
-        model: s.model, effort: s.effort, agent: s.agent || null, rolePrompt: s.rolePrompt || null,
-        branch: s.branch, worktreePath: s.worktreePath, dirId: s.dirId,
-        // dirId/branch/worktreePath are hints; target rebuilds its own paths.
-      },
-      messages, memoryFiles, providerState, gitBundleB64, gitBundleNote,
-    };
-    const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
-    const enc = bundleEncrypt(String(passphrase), plaintext);
-    appendEvent(s.dirId, 'session_bundled', `${s.label || s.id} → export`, s.id);
-    res.json({
-      ok: true, ...enc,
-      meta: { v: 1, sessionId: s.id, label: s.label, messages: messages.length,
-              hasGitBundle: !!gitBundleB64, hasMemory: Object.keys(memoryFiles).length,
-              note: gitBundleNote },
-    });
-  } catch (e) {
-    res.status(500).json({ error: 'bundle failed: ' + e.message });
-  }
-}));
-
-// Import an encrypted bundle produced by GET /api/sessions/:id/bundle and
-// rebuild the session on THIS machine. The target directory (dirId) must be a
-// git repo (we recreate the worktree from the bundle's git payload). Provider
-// credentials are NOT auto-injected: pass targetProviderId to attach the new
-// session to an already-configured provider on this machine, or omit to use the
-// default login. The bundle's provider env/codex files are kept in the session's
-// memory folder as `.handoff-provider.json` for reference/manual setup.
-app.post('/api/sessions/import', asyncHandler(async (req, res) => {
-  const b = req.body || {};
-  const { salt, iv, ct, tag } = b;
-  const passphrase = b.passphrase;
-  const dirId = b.dirId;
-  const targetProviderId = b.targetProviderId || undefined;
-  const labelOverride = (b.label || '').toString().trim() || null;
-  if (!salt || !iv || !ct || !tag) return res.status(400).json({ error: 'missing bundle fields (salt/iv/ct/tag)' });
-  if (!passphrase) return res.status(400).json({ error: 'passphrase required' });
-  const dir = directories.get(dirId);
-  if (!dir) return res.status(404).json({ error: 'target directory not found' });
-
-  let payload;
-  try {
-    const plaintext = bundleDecrypt(String(passphrase), { salt, iv, ct, tag });
-    payload = JSON.parse(plaintext.toString('utf8'));
-  } catch (e) {
-    return res.status(400).json({ error: 'decrypt failed (wrong passphrase or corrupt bundle): ' + e.message });
-  }
-  if (!payload || payload.v !== 1 || !payload.sessionMeta) {
-    return res.status(400).json({ error: 'unsupported bundle version' });
-  }
-  const meta = payload.sessionMeta;
-
-  // Create the session record — this also creates a fresh empty worktree from
-  // the dir's base branch. We then overlay the bundle's git content onto it.
-  const r = await createSessionRecord({
-    dir, cli: meta.cli, kind: 'chat',
-    label: labelOverride || (meta.label ? `${meta.label} · imported` : null),
-    provider: targetProviderId === undefined ? undefined : (targetProviderId || ''),
-    model: meta.model, effort: meta.effort, agent: meta.agent, rolePrompt: meta.rolePrompt,
-    persistence: 'required', persistenceSource: 'http.bundle-import-create',
-  });
-  if (!r.ok) return res.status(400).json({ error: r.error });
-  const newSid = r.id;
-  const newSession = r.session;
-
-  try {
-    // 1) Restore chat history.
-    if (Array.isArray(payload.messages)) {
-      chatHistoryService.replace(newSid, payload.messages, { reason: 'bundle-import' });
-    }
-
-    // 2) Restore memory files.
-    if (payload.memoryFiles && typeof payload.memoryFiles === 'object') {
-      const memDir = folderMemory.sessionDir(newSession);
-      fs.mkdirSync(memDir, { recursive: true });
-      for (const [rel, content] of Object.entries(payload.memoryFiles)) {
-        const safe = String(rel).replace(/[^A-Za-z0-9._-]/g, '_');
-        if (!safe || safe === '.' || safe === '..') continue;
-        fs.writeFileSync(path.join(memDir, safe), content, 'utf8');
-      }
-      // Stash the source provider state for reference (creds the user must wire
-      // up on this machine — never auto-injected into the provider pool).
-      try {
-        fs.writeFileSync(path.join(memDir, '.handoff-provider.json'),
-          JSON.stringify({ sourceProviderId: meta.providerId || null,
-                           sourceProviderName: payload.providerState?.providerName || null,
-                           env: payload.providerState?.env || {},
-                           codexFiles: payload.providerState?.codexFiles || {} }, null, 2),
-          'utf8');
-      } catch (_) {}
-    }
-
-    // 3) Replay the bundle's unique commits onto the freshly-created worktree.
-    //    The Git adapter holds one RepoActor lease for fetch + replay, aborts
-    //    conflicts, and always deletes its temporary ref. Linear histories use
-    //    cherry-pick; histories containing merges preserve their topology.
-    let gitRestored = false, gitNote = null;
-    if (payload.gitBundleB64 && newSession.worktreePath && newSession.branch) {
-      const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);
-      try {
-        await fs.promises.writeFile(tmpBundle, Buffer.from(payload.gitBundleB64, 'base64'));
-        const srcBranch = meta.branch || `multicc/${meta.id}`;
-        const result = await gitImportSessionBundle(dir, newSession, tmpBundle, srcBranch);
-        gitRestored = !!result.restored;
-        if (!result.ok) gitNote = 'git restore failed: ' + (result.error || 'unknown error');
-        else if (!result.restored) gitNote = result.note || 'bundle contained no new commits';
-      } catch (e) {
-        gitNote = 'git restore failed: ' + e.message;
-      } finally {
-        await fs.promises.rm(tmpBundle, { force: true }).catch(() => {});
-      }
-    } else {
-      gitNote = payload.gitBundleNote || 'no git payload in bundle';
-    }
-
-    appendEvent(dir.id, 'session_imported', `${newSid} ← bundle`, newSid);
-    res.json({ ok: true, sessionId: newSid, session: newSession,
-               restored: { messages: Array.isArray(payload.messages) ? payload.messages.length : 0,
-                           memoryFiles: payload.memoryFiles ? Object.keys(payload.memoryFiles).length : 0,
-                           gitRestored, gitNote } });
-  } catch (e) {
-    res.status(500).json({ error: 'import failed (session record created): ' + e.message, sessionId: newSid });
-  }
-}));
+// Export/import of the encrypted session bundle (metadata + chat history + memory
+// files + provider state + git bundle of the worktree branch) lives in
+// src/routes/session-bundle.js; only host wiring stays here.
+createSessionBundleRoutes({
+  persistedSessions,
+  directories,
+  providers,
+  providerRouterRuntime,
+  asyncHandler,
+  appendEvent,
+  createSessionRecord,
+  loadChatHistory,
+  getChatHistoryService: () => chatHistoryService,
+  getFolderMemory: () => folderMemory,
+}).mountRoutes(app);
 
 sessionGitRuntime.mountRoutes(app);
 
-app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
-  const id = req.params.id;
-  const session = sessions.get(id);
-  const chat = chatSessions.get(id);
-  const persisted = persistedSessions.get(id);
-  if (!session && !chat && !persisted) {
-    return res.status(404).json({ error: 'Session not found' });
-  }
-  const force = req.query.force === '1' || req.body?.force === true;
-  // Commander is the fleet's dispatcher — it can only be removed by deleting its
-  // whole directory (which cascades through destroySessionCascade), never on its
-  // own. Guard here on the single-session route only, unconditional of force.
-  if (persisted?.type === 'commander') {
-    return res.status(400).json({ error: 'commander 会话不可单独删除，只能随其所属 fleet 一起删除' });
-  }
-  if (persisted) {
-    const dir = directories.get(persisted.dirId);
-    if (!dir) return res.status(404).json({ error: 'directory not found' });
-    const result = await destroySessionCascade(persisted, dir, { force, removeRecord: false });
-    if (!result.ok) return res.status(409).json(result);
-    sessionPersistence.mutate('http.delete-session', records => records.delete(id));
-    appendEvent(persisted.dirId, 'session_deleted', persisted.label || persisted.id, null);
-    return res.json({ ...result, forced: force });
-  } else {
-    if (session) { await tmuxKillSession(id); for (const client of session.clients || []) try { client.terminate(); } catch (_) {} }
-    if (chat) { if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {} chatStream.close(id); for (const client of chat.clients || []) try { client.terminate(); } catch (_) {} }
-    sessions.delete(id);
-    chatSessions.delete(id);
-  }
-  res.json({ ok: true, forced: force });
-}));
-
-// Relocate: moves a session to a different directory. Caller passes the target dirId.
-// (Old "change cwd" semantics are gone — cwd lives on the directory now.)
-app.post('/api/sessions/:id/relocate', asyncHandler(async (req, res) => {
-  const id = req.params.id;
-  const targetDirId = (req.body.dirId || '').trim();
-  if (!targetDirId) return res.status(400).json({ error: 'dirId required (cwd is now owned by the directory)' });
-  const targetDir = directories.get(targetDirId);
-  if (!targetDir) return res.status(404).json({ error: 'target directory not found' });
-  const persisted = persistedSessions.get(id);
-  if (!persisted) return res.status(404).json({ error: 'session not found' });
-  if (persisted.dirId === targetDirId) return res.json({ ok: true, unchanged: true, cwd: targetDir.path });
-  if (!fs.existsSync(targetDir.path)) return res.status(400).json({ error: `directory path missing on disk: ${targetDir.path}` });
-  const force = req.query.force === '1' || req.body.force === true;
-  const activeTerminal = sessions.get(id);
-  const activeChat = chatSessions.get(id);
-  const active = !!activeTerminal || !!(activeChat && (activeChat.claudeProc || activeChat.isStreaming || activeChat.clients?.size));
-  if (active && !force) {
-    return res.status(409).json({ ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be relocated' });
-  }
-
-  // The session's worktree belongs to the OLD directory's repo — relocate means
-  // a fresh worktree in the target directory.
-  const oldDir = directories.get(persisted.dirId);
-  const readyTarget = await ensureDirGitReady(targetDir);
-  if (!readyTarget.ok) {
-    return res.status(400).json({ error: `目标目录 git 未就绪: ${readyTarget.reason}` });
-  }
-
-  const oldSession = sessions.get(id);
-  const relocated = await gitRelocateWorktree(oldDir, targetDir, persisted, {
-    force, active,
-    activeCheck: force ? null : () => sessionGitRuntime.isWorktreeActive(id),
-    beforeRemove: async () => {
-      if (oldSession) {
-        broadcastTo(oldSession.clients, { type: 'relocate', cwd: targetDir.path });
-        await stopOutputCapture(oldSession);
-        await tmuxKillSession(oldSession.id);
-        sessions.delete(id);
-      }
-      if (activeChat && force) {
-        assignKillReason(activeChat._activeRunner, 'relocate');
-        if (activeChat.claudeProc) try { activeChat.claudeProc.kill('SIGTERM'); } catch (_) {}
-        chatStream.close(id);
-        chatSessions.delete(id);
-      }
-    },
-  });
-  if (!relocated.ok) return res.status(relocated.blocked ? 409 : 500).json(relocated);
-
-  sessionPersistence.mutate('http.relocate-session', () => {
-    persisted.worktreePath = relocated.worktreePath;
-    persisted.branch = relocated.branch;
-    persisted.dirId = targetDirId;
-    // Clear cliSessionId so the new instance starts fresh in the new directory.
-    persisted.cliSessionId = null;
-  });
-  invalidSessions.delete(id);
-
-  if (persisted.kind === 'terminal') {
-    try {
-      await createSession(id);
-    } catch (err) {
-      return res.status(500).json({ error: err.message });
-    }
-  }
-  res.json({ ok: true, cwd: targetDir.path, forced: force,
-    operationId: relocated.operationId,
-    queueDepth: relocated.queueDepth,
-    backup: relocated.backup || null });
-}));
-
-// ── Restart session (kill tmux + respawn CLI in same directory, fresh conversation) ──
-app.post('/api/sessions/:id/restart', asyncHandler(async (req, res) => {
-  const id = req.params.id;
-  const oldSession = sessions.get(id);
-  const persisted = persistedSessions.get(id);
-  if (!oldSession && !persisted) return res.status(404).json({ error: 'Session not found' });
-  if (persisted && persisted.kind && persisted.kind !== 'terminal') {
-    return res.status(400).json({ error: 'restart only applies to terminal sessions' });
-  }
-
-  const cwd = cwdForSession(persisted);
-  const oldClients = oldSession ? [...oldSession.clients] : [];
-
-  sessions.delete(id);
-  if (oldSession) {
-    await stopOutputCapture(oldSession);
-    if (oldSession.exitCheckTimer) clearInterval(oldSession.exitCheckTimer);
-    if (oldSession.captureTimer) clearInterval(oldSession.captureTimer);
-    cleanupPushMonitor(id);
-    oldSession.clients.clear();
-  }
-  await tmuxKillSession(id);
-
-  // Clear cliSessionId so a brand-new conversation starts (claude allocates a fresh UUID,
-  // codex generates a fresh thread on first turn). The worktree is kept across restarts;
-  // only recreate it if it has gone missing.
-  if (persisted) {
-    let nextWorktreePath = persisted.worktreePath;
-    let nextBranch = persisted.branch;
-    const dir = directories.get(persisted.dirId);
-    if (dir && (!persisted.worktreePath || !fs.existsSync(persisted.worktreePath))) {
-      const ready = await ensureDirGitReady(dir);
-      if (ready.ok) {
-        try {
-          const { worktreePath, branch } = await gitWorktreeAdd(dir.path, id, dir.baseBranch);
-          nextWorktreePath = worktreePath;
-          nextBranch = branch;
-        } catch (e) {
-          console.warn(`[multicc] restart: worktree recreate failed for ${id}: ${e.message}`);
-        }
-      }
-    }
-    sessionPersistence.mutate('http.restart-session', () => {
-      persisted.cliSessionId = null;
-      persisted.worktreePath = nextWorktreePath;
-      persisted.branch = nextBranch;
-    });
-  }
-
-  try {
-    await createSession(id);
-    console.log(`[multicc] Session ${id} restarted in ${cwd}`);
-    broadcastTo(oldClients, { type: 'restart' });
-    res.json({ ok: true, cwd });
-  } catch (err) {
-    console.error('[multicc] Restart failed:', err);
-    res.status(500).json({ error: err.message });
-  }
-}));
+// ── Single-session lifecycle: delete / relocate / restart ──
+// Handler logic lives in src/routes/session-lifecycle.js; only host wiring
+// stays here. The whole-server POST /api/restart below deliberately remains
+// inline — its detached-scheduler debounce is host process state.
+createSessionLifecycleRuntime({
+  sessions,
+  chatSessions,
+  persistedSessions,
+  directories,
+  invalidSessions,
+  sessionPersistence,
+  getChatStream: () => chatStream,
+  asyncHandler,
+  destroySessionCascade,
+  tmuxKillSession,
+  appendEvent,
+  ensureDirGitReady,
+  gitRelocateWorktree,
+  gitWorktreeAdd,
+  fs,
+  broadcastTo,
+  stopOutputCapture,
+  assignKillReason,
+  createSession,
+  cwdForSession,
+  // pushRuntime is composed further down this file; forward lazily past the TDZ.
+  cleanupPushMonitor: (id) => cleanupPushMonitor(id),
+  getSessionGitRuntime: () => sessionGitRuntime,
+}).mountRoutes(app);
 
 // ── Restart the whole multicc server (graceful) ──
 // A detached child re-launches us after we exit. Auth-gated (deliberately NOT
@@ -2819,46 +2152,21 @@ app.post('/api/restart', (req, res) => {
   return res.status(202).json({ ok: true, status: 'scheduled', activeStreaming });
 });
 
-// ── Inter-agent notes ──
-app.post('/api/sessions/:id/notes', (req, res) => {
-  const from = persistedSessions.get(req.params.id);
-  if (!from) return res.status(404).json({ error: 'session not found' });
-  const toId = (req.body.toSessionId || '').trim();
-  const body = (req.body.body || '').trim();
-  if (!toId || !body) return res.status(400).json({ error: 'toSessionId 和 body 必填' });
-  const to = persistedSessions.get(toId);
-  if (!to) return res.status(404).json({ error: 'target session not found' });
-  if (to.dirId !== from.dirId) return res.status(400).json({ error: '只能给同一目录下的会话留言' });
-
-  const note = {
-    id: crypto.randomUUID(), dirId: from.dirId,
-    fromSessionId: from.id, fromLabel: from.label || from.id,
-    toSessionId: to.id, body: body.slice(0, 4000),
-    ts: Date.now(), delivered: false, deliveredAt: null,
-  };
-  notes.push(note);
-  saveNotes();
-  appendEvent(from.dirId, 'note', `→ ${to.label || to.id}`, from.id);
-  workspaceBroadcast(from.dirId, { type: 'note_pending', sessionId: to.id, count: pendingNotesFor(to.id).length });
-  res.json(note);
-});
-
-// Session liveness: working (producing / awaiting model) vs idle vs stalled.
-// ?probe=0 skips the process-level lsof/rollout check for a cheap event-only read.
-app.get('/api/sessions/:id/liveness', asyncHandler(async (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const wantProbe = req.query.probe !== '0';
-  const v = await livenessRuntime.assess(req.params.id, { probe: wantProbe });
-  res.json(v);
-}));
-
-// Inbox + outbox for a session.
-app.get('/api/sessions/:id/notes', (req, res) => {
-  const s = persistedSessions.get(req.params.id);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  res.json(notes.filter(n => n.toSessionId === s.id || n.fromSessionId === s.id));
-});
+// ── Per-session metadata: inter-agent notes + liveness ──
+// Handler logic lives in src/routes/session-meta.js; only host wiring stays
+// here. `notes` is a let-bound array that loadNotes/purgeNotesForSession
+// reassign wholesale, so the module receives getNotes()/saveNotes()/
+// pendingNotesFor() and never the array itself.
+createSessionMetaRuntime({
+  persistedSessions,
+  asyncHandler,
+  appendEvent,
+  workspaceBroadcast,
+  saveNotes,
+  pendingNotesFor,
+  getNotes: () => notes,
+  getLivenessRuntime: () => livenessRuntime,
+}).mountRoutes(app);
 
 // Curl-friendly dispatch: same semantics as the <<dispatch>> reply marker, but
 // callable mid-turn. Every other multicc capability (wait/run-detached/notes)

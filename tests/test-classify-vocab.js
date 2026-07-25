@@ -145,13 +145,21 @@ test('phaseLabel maps known phases to Chinese and unknown to empty string', () =
 });
 
 test('classify C is retired: no dispatch branch persists it, it falls through to W', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const root = path.join(__dirname, '..');
+  const files = [path.join(root, 'server.js')];
+  for (const entry of fs.readdirSync(path.join(root, 'src', 'classify'), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.js')) files.push(path.join(root, 'src', 'classify', entry.name));
+  }
   // The old `if (state === 'continue')` branch that persisted classifyState 'C'
-  // and parked the CLI idle must be gone entirely.
-  assert.equal(source.indexOf("if (state === 'continue')"), -1,
-    'dead continue branch must be removed');
-  assert.equal(source.indexOf("classifyState: 'C'"), -1,
-    'server must never persist classifyState C');
+  // and parked the CLI idle must be gone entirely — from server.js AND from any
+  // extracted classify module it may migrate into.
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    assert.equal(source.indexOf("if (state === 'continue')"), -1,
+      `dead continue branch must be removed (${file})`);
+    assert.equal(source.indexOf("classifyState: 'C'"), -1,
+      `must never persist classifyState C (${file})`);
+  }
   // parseClassifyResult is the single retirement point: C → plain waiting.
   assert.equal(parseClassifyResult('目标\n实现中\nC').state, 'waiting');
   assert.equal(parseClassifyResult('目标\n实现中\nC').background, false);
