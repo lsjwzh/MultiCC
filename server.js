@@ -119,6 +119,7 @@ const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
 const { createRoleWorkerService } = require('./src/session/role-worker');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
+const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createChatTurnEngine } = require('./src/chat/turn-engine');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
@@ -2276,6 +2277,10 @@ mountOpenCodeModelRoutes(app);
 tokenUsageRuntime.mountRoutes(app);
 
 providerRoutes.mountManagementRoutes(app);
+
+// ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
+// pre-turn auth check). Mounted after provider routes for logical grouping.
+mountZcodeAuthRoutes(app);
 
 // Temp artifacts produced by the multicc-artifact skill (served from
 // ~/.multicc/artifacts). Mounted before the public static handler so /artifacts
