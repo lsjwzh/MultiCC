@@ -515,19 +515,17 @@ function createOrchestrationRuntime({
           : runChatTurn(descriptor.sessionId, descriptor.text, descriptor.opts),
       );
       if (!accepted) {
-        await sessionScheduler.freeze(item.sessionId, 'delivery_rejected', {
-          expectedTaskId: item.payload?.taskId || null,
-        });
+        // Delivery is transport state, never FIFO/classify state. Roll back the
+        // lease-side claim and retry this item without freezing the session.
+        await sessionScheduler.releaseClaim(item, 'delivery_deferred');
         return outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery', {
-          retryable: false,
+          retryable: true,
         });
       }
       if (!await hasPersistedDelivery(item.sessionId, deliveryId)) {
-        await sessionScheduler.freeze(item.sessionId, 'message_not_durable', {
-          expectedTaskId: item.payload?.taskId || null,
-        });
+        await sessionScheduler.releaseClaim(item, 'message_not_durable');
         return outbox.fail(item.id, item.leaseToken, 'chat history did not persist delivery', {
-          retryable: false,
+          retryable: true,
         });
       }
       const acknowledged = await acknowledgeDelivery(item);
@@ -536,11 +534,9 @@ function createOrchestrationRuntime({
     } catch (error) {
       log(`[orchestration] delivery ${item.id} failed: ${error.message}`);
       if (schedulerClaimed) {
-        await sessionScheduler.freeze(item.sessionId, 'delivery_error', {
-          expectedTaskId: item.payload?.taskId || null,
-        }).catch(() => {});
+        await sessionScheduler.releaseClaim(item, 'delivery_error').catch(() => {});
       }
-      return outbox.fail(item.id, item.leaseToken, error, { retryable: false });
+      return outbox.fail(item.id, item.leaseToken, error, { retryable: true });
     }
   }
 

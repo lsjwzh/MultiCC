@@ -227,6 +227,7 @@ function statusEffects(plan, durableAfterAppend) {
     if (facts.killReason) return [
       effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
       effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
+      effect('classify-turn-end', { classification: 'interrupted' }),
     ];
     if (facts.apiError || facts.adapterError
         || facts.exitKind === 'nonzero_exit' || facts.exitKind === 'signaled') {
@@ -248,6 +249,7 @@ function statusEffects(plan, durableAfterAppend) {
     return [
       effect('set-status', { status: 'waiting', reason: facts.exitKind }),
       effect('freeze-interrupted', { reason: 'unknown_interruption' }),
+      effect('classify-turn-end', { classification: 'unknown-interruption' }),
     ];
   }
 
@@ -256,6 +258,7 @@ function statusEffects(plan, durableAfterAppend) {
       effect('reset-interrupted-resume'),
       effect('set-status', { status: 'idle', reason: 'handoff-resume-failed' }),
       effect('freeze-interrupted', { reason: 'handoff_resume_failed' }),
+      effect('classify-turn-end', { classification: 'handoff-resume-failed' }),
       effect('report-handoff-resume-failure', { preserveHandoff: true }),
     ];
   }
@@ -275,6 +278,7 @@ function statusEffects(plan, durableAfterAppend) {
     return [
       effect('set-status', { status: 'idle', reason: 'result-not-durable' }),
       effect('freeze-interrupted', { reason: 'message_not_durable' }),
+      effect('classify-turn-end', { classification: 'result-not-durable' }),
       effect('report-result-persistence-failure'),
     ];
   }
@@ -282,11 +286,13 @@ function statusEffects(plan, durableAfterAppend) {
     return [
       effect('set-status', { status: 'waiting', reason: 'unknown-interruption' }),
       effect('freeze-interrupted', { reason: 'unknown_interruption' }),
+      effect('classify-turn-end', { classification: 'unknown-interruption' }),
     ];
   }
   return [
     effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
     effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
+    effect('classify-turn-end', { classification: 'interrupted' }),
   ];
 }
 
