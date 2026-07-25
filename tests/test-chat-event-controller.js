@@ -360,6 +360,9 @@ test('Claude stream reuses one bubble and binds tool input/result without HTML i
   fixture.controller.handleEvent({ type: 'stream_event', event: {
     type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '<b>literal</b>' },
   } }, generation);
+  fixture.controller.handleEvent({
+    type: 'part_delta', delta: { type: 'text', text: '<b>literal</b>' },
+  }, generation);
   fixture.controller.handleEvent({ type: 'stream_event', event: {
     type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tool-1', name: 'Read' },
   } }, generation);
@@ -370,11 +373,23 @@ test('Claude stream reuses one bubble and binds tool input/result without HTML i
     type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: '<img onerror=boom>' }] },
   }, generation);
   assert.equal(fixture.calls.filter(call => call === 'create-bubble').length, 1);
-  assert.equal(fixture.state.currentTextContent, '<b>literal</b>');
+  assert.equal(fixture.state.currentTextContent, '<b>literal</b>',
+    'Claude must consume native stream-json once and ignore the duplicate proxy sidecar');
   assert.deepEqual(fixture.calls.find(call => Array.isArray(call) && call[0] === 'tool-result'),
     ['tool-result', 'tool-1', '<img onerror=boom>', false]);
   assert.equal(fixture.state.liveStreamUsage.inputTokens, 12);
   assert.equal(fixture.state.liveStreamUsage.cacheRead, 3);
+});
+
+test('Codex still consumes proxy text deltas for token-level rendering', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'codex';
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'part_delta', delta: { type: 'text', text: 'token' },
+  }, generation);
+  assert.equal(fixture.state.currentTextContent, 'token');
+  assert.equal(fixture.calls.filter(call => call === 'create-bubble').length, 1);
 });
 
 test('Codex assistant path appends text and materializes tool cards without Claude stream events', () => {
