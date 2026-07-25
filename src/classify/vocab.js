@@ -34,29 +34,23 @@ function parseClassifyResult(text) {
     || Object.entries(PHASE_LABELS).find(([, v]) => v === phaseRaw.toLowerCase())?.[0]
     || null;
 
-  // State (line 3). Single letter: D/C/W/B/E/P.
+  // State (line 3). Single letter: D/W/B/E/P. The letter IS the state — single
+  // source of truth. C is RETIRED (collapsed to W here); unknown → W (safe
+  // default, NEVER completed). No word+flags intermediate: downstream reads the
+  // letter directly via classifyDisplay() / the helpers in CLASSIFY_DISPLAY.
   const stateRaw = (lines[2] || '')
     .toUpperCase()
     .replace(/^(第3行[:：]|状态[:：]|state[:：]?)\s*/i, '')
     .trim();
   const first = stateRaw.slice(0, 1);
 
-  let state, background = false, error = false;
-  if (first === 'P') state = 'running';
-  // C (Continue) is RETIRED. Per the 2026-07-12 "retire C-autopush" design, a
-  // normally-ended-but-unfinished turn is never auto-pushed — it rests as W with
-  // the user in charge. C carried no auto-continue behaviour anymore, only a
-  // phantom "running" card for an idle CLI that scan could never flush (same
-  // input → same C forever). We collapse it into W here so no new C is ever
-  // produced; the letter is still recognized only to render legacy persisted C.
-  else if (first === 'C') state = 'waiting';
-  else if (first === 'W') state = 'waiting';
-  else if (first === 'B') { state = 'waiting'; background = true; }
-  else if (first === 'E') { state = 'waiting'; error = true; }
-  else if (first === 'D') state = 'completed';
-  // Unknown/unparseable → safe default: wait for user. NEVER default to
-  // 'completed' — an unparseable verdict must not falsely mark a task done.
-  else state = 'waiting';
+  let state;
+  if (first === 'P') state = 'P';
+  else if (first === 'D') state = 'D';
+  else if (first === 'E') state = 'E';
+  else if (first === 'B') state = 'B';
+  // C retired → W (see CLASSIFY_DISPLAY.C note). W and unknown both → W.
+  else state = 'W';   // W, C, or unparseable — safe default, never D
 
   // Garbage filter for goal — block model regurgitation of system prompts,
   // classify-template phrases, API errors, and other non-task noise.
@@ -71,7 +65,7 @@ function parseClassifyResult(text) {
   }
   const finalGoal = goalOk ? goal : '';
 
-  return { state, goal: finalGoal, phase, background, error };
+  return { state, goal: finalGoal, phase };
 }
 
 // ── Unified classify display map ────────────────────────────────────────────
@@ -138,9 +132,7 @@ function applyUserInputEvidence(result, pendingUserInput) {
   if (!pendingUserInput || pendingUserInput.resolved === true) return result;
   return {
     ...result,
-    state: 'waiting',
-    background: false,
-    error: false,
+    state: 'W',
     evidence: 'request_user_input',
   };
 }

@@ -174,10 +174,13 @@ function createSessionWorkHost(deps = {}) {
       }
       const expectedTaskId = taskId || current.active.taskId || null;
       const pending = deps.pendingUserInput(sessionId);
-      const classifyState = result.error ? 'E'
-        : result.state === 'completed' ? 'D'
-          : result.background || runtime.hasPending(sessionId) ? 'B'
-            : result.state === 'waiting' ? 'W' : 'P';
+      // result.state is now the letter (D/W/B/E/P) — single source. hasPending
+      // can still force B (an unresolved structured question waits on callback).
+      const resultLetter = result?.state || 'W';
+      const classifyState = resultLetter === 'E' ? 'E'
+        : resultLetter === 'D' ? 'D'
+          : resultLetter === 'B' || runtime.hasPending(sessionId) ? 'B'
+            : resultLetter === 'W' ? 'W' : 'P';
       const transition = classifyState === 'D'
         ? await target.complete(sessionId, {
             expectedTaskId,
