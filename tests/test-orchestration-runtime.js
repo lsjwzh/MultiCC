@@ -151,7 +151,7 @@ test('dispatch delivery carries canonical task metadata into runChatTurn', async
   await runtime.stop();
 });
 
-test('busy work waits, while a rejected start freezes until an explicit retry', async t => {
+test('busy and rejected delivery defer transport without changing the classify gate', async t => {
   let busy = true;
   let accept = false;
   const calls = [];
@@ -178,19 +178,16 @@ test('busy work waits, while a rejected start freezes until an explicit retry', 
   busy = false;
   await runtime.tick();
   assert.equal(calls.length, 1);
-  assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'dead-letter');
-  assert.equal((await runtime.sessionScheduler.status('A')).state, 'frozen');
+  assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'pending');
+  const afterReject = await runtime.sessionScheduler.status('A');
+  assert.equal(afterReject.state, 'idle');
+  assert.equal(afterReject.active, null);
 
   accept = true;
-  const retried = await runtime.sessionScheduler.resolve('A', {
-    action: 'retry',
-    text: 'explicit retry',
-    idempotencyKey: 'retry-wait',
-  });
-  assert.equal(retried.ok, true);
   await runtime.tick();
   assert.equal(calls.length, 2);
-  assert.equal(calls[1].text, 'explicit retry');
+  assert.match(calls[1].text, /^\[等待的数据已返回\]/);
+  assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'delivered');
 });
 
 test('direct messages and dispatch requests share one success-gated FIFO', async t => {
@@ -303,7 +300,9 @@ test('durable poll resolution and timeout use the outbox delivery path', async t
 });
 
 test('startup recovers an expired lease and stop clears the worker timer', async t => {
-  const { runtime, clock, scheduled } = fixture(t);
+  const { runtime, clock, scheduled } = fixture(t, {
+    getSessionRecoveryState: () => ({ classifyState: 'D' }),
+  });
   const registered = await runtime.register({ session: 'A', mode: 'callback' });
   await runtime.resolveCallback(registered.id, registered.token, 'ready');
   const [claim] = await runtime.outbox.claim({ workerId: 'lost' });

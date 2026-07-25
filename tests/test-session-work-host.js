@@ -4,11 +4,13 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createSessionWorkHost } = require('../src/session-work-host');
 
-function fixture() {
+function fixture(options = {}) {
   const calls = [];
   let pending = null;
   let pendingWait = false;
   let schedulerState = 'running';
+  let releaseTurnEnded = options.releaseTurnEnded || null;
+  const record = { taskState: {} };
   const scheduler = {
     status: async () => ({
       state: schedulerState,
@@ -20,6 +22,7 @@ function fixture() {
       return { ok: true };
     },
     turnEnded: async () => {
+      if (releaseTurnEnded) await releaseTurnEnded;
       calls.push(['assessing']);
       schedulerState = 'assessing';
       return { ok: true, schedule: { state: 'assessing' } };
@@ -42,13 +45,13 @@ function fixture() {
   };
   const host = createSessionWorkHost({
     runtime: () => runtime,
-    getRecord: () => ({ taskState: {} }),
+    getRecord: () => record,
     getChatSession: () => ({}),
-    getTaskState: () => ({}),
+    getTaskState: value => value?.taskState || {},
     pendingUserInput: () => pending,
     recordUserInput: () => ({ ok: true }),
-    broadcast() {},
-    setTaskState() {},
+    broadcast: (...args) => calls.push(['broadcast', ...args]),
+    setTaskState: (...args) => calls.push(['task-state', ...args]),
     onTaskBoardQueueEvent() {},
     classifyDisplay: () => ({ cardStatus: 'running' }),
     cancelClassify() {},
@@ -61,87 +64,151 @@ function fixture() {
     calls,
     host,
     forceState,
+    setClassifyState(value) { record.taskState.classifyState = value; },
     setPending(value) { pending = value; },
     setPendingWait(value) { pendingWait = value; },
   };
 }
 
-test('durable provider completion advances the FIFO at the turn boundary; Aux classification never gates it', async () => {
+test('turn boundary parks FIFO until classify D is the sole completion verdict', async () => {
   const h = fixture();
   const closing = h.host.turnSucceeded('s1');
   const result = await closing;
   assert.equal(result.ok, true);
+  assert.deepEqual(h.calls.find(call => call[0] === 'assessing'), ['assessing']);
+  assert.equal(h.calls.some(call => call[0] === 'complete'), false);
+  assert.equal(h.calls.some(call => call[0] === 'tick'), false);
+
+  const classification = await h.host.classifyTransition(
+    's1', 'task-1', { state: 'completed' },
+  );
+  assert.equal(classification.ok, true);
   assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
-    'complete', { reason: 'durable_turn_completed' },
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_complete' },
   ]);
   assert.equal(h.calls.some(call => call[0] === 'tick'), true);
-
-  // Classification arrives after the turn boundary completed the session: it
-  // sees an idle scheduler and must not re-freeze it, whatever the letter.
-  for (const state of ['completed', 'waiting', 'continue']) {
-    const classification = await h.host.classifyTransition('s1', 'task-1', { state });
-    assert.equal(classification.code, 'stale_classification', state);
-  }
   assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
 });
 
-test('chat admission waits for the closing turn to complete', async () => {
+test('chat admission waits for the closing turn to enter classify assessment', async () => {
   const h = fixture();
   const closing = h.host.turnSucceeded('s1');
   const admitted = h.host.admit('s1', 'new direct message', { clientMsgId: 'client-1' });
   await Promise.all([closing, admitted]);
-  const completeIndex = h.calls.findIndex(call => call[0] === 'complete');
+  const assessingIndex = h.calls.findIndex(call => call[0] === 'assessing');
   const admitIndex = h.calls.findIndex(call => call[0] === 'admit');
-  assert.ok(completeIndex >= 0 && admitIndex > completeIndex);
+  assert.ok(assessingIndex >= 0 && admitIndex > assessingIndex);
   assert.equal(h.calls[admitIndex][1].source, 'direct');
 });
 
-test('plain W completes the turn boundary; structured requests, callbacks and real failures freeze', async () => {
-  // Plain classify W against a turn still parked in assessing completes it:
-  // W means the reply ended and the queue head is exactly the next message.
+test('failed turn closure is serialized before its classify verdict', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = fixture({ releaseTurnEnded: gate });
+  const closing = h.host.turnFailed('s1', 'provider_error');
+  const classification = h.host.classifyTransition(
+    's1', 'task-1', { state: 'waiting', error: true },
+  );
+  await Promise.resolve();
+  assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
+
+  release();
+  await Promise.all([closing, classification]);
+  const assessingIndex = h.calls.findIndex(call => call[0] === 'assessing');
+  const freezeIndex = h.calls.findIndex(call => call[0] === 'freeze');
+  assert.ok(assessingIndex >= 0 && freezeIndex > assessingIndex);
+});
+
+test('direct input in classify W is admitted as a correlated continuation', async () => {
+  const h = fixture();
+  h.setClassifyState('W');
+  await h.host.admit('s1', '补充回答', { clientMsgId: 'client-w' });
+  const admission = h.calls.find(call => call[0] === 'admit')[1];
+  assert.equal(admission.source, 'direct');
+  assert.equal(admission.workKind, 'continuation');
+  assert.equal(admission.activeEntryId, 'entry-1');
+});
+
+test('classify W/B/E/P pause FIFO and unavailable classify leaves assessment pending', async () => {
   const waiting = fixture();
   waiting.forceState('assessing');
   await waiting.host.classifyTransition('s1', 'task-1', { state: 'waiting' });
-  assert.deepEqual(waiting.calls.find(call => call[0] === 'complete'), [
-    'complete', { expectedTaskId: 'task-1', reason: 'classified_waiting_turn_boundary' },
+  assert.deepEqual(waiting.calls.find(call => call[0] === 'freeze'), [
+    'freeze', 'classify_waiting', {
+      expectedTaskId: 'task-1', classifyState: 'W', requestId: null,
+    },
   ]);
-  assert.equal(waiting.calls.some(call => call[0] === 'freeze'), false);
 
-  // A genuine classifier failure from assessing still freezes as an error.
   const assessingError = fixture();
   assessingError.forceState('assessing');
   await assessingError.host.classifyTransition('s1', 'task-1', { state: 'waiting', error: true });
   assert.deepEqual(assessingError.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'error', { expectedTaskId: 'task-1' },
+    'freeze', 'classify_error', {
+      expectedTaskId: 'task-1', classifyState: 'E', requestId: null,
+    },
   ]);
 
-  // Structured request_user_input freezes with its requestId (answer routing).
+  const conflicting = fixture();
+  conflicting.forceState('assessing');
+  await conflicting.host.classifyTransition(
+    's1', 'task-1', { state: 'completed', error: true },
+  );
+  assert.equal(conflicting.calls.some(call => call[0] === 'complete'), false);
+  assert.equal(conflicting.calls.find(call => call[0] === 'freeze')[1], 'classify_error');
+
   const userInput = fixture();
   userInput.setPending({ requestId: 'request-1', resolved: false });
-  await userInput.host.turnSucceeded('s1');
+  userInput.forceState('assessing');
+  await userInput.host.classifyTransition('s1', 'task-1', { state: 'waiting' });
   assert.deepEqual(userInput.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'awaiting_user_input', { requestId: 'request-1' },
+    'freeze', 'classify_waiting', {
+      expectedTaskId: 'task-1', classifyState: 'W', requestId: 'request-1',
+    },
   ]);
 
-  // Explicit wait/callback still freezes.
   const callback = fixture();
   callback.setPendingWait(true);
-  await callback.host.turnSucceeded('s1');
+  callback.forceState('assessing');
+  await callback.host.classifyTransition('s1', 'task-1', {
+    state: 'waiting', background: true,
+  });
   assert.deepEqual(callback.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'awaiting_callback', {},
+    'freeze', 'classify_background', {
+      expectedTaskId: 'task-1', classifyState: 'B', requestId: null,
+    },
   ]);
 
-  // Real failures still freeze.
   const failed = fixture();
   await failed.host.turnFailed('s1', 'error');
-  assert.deepEqual(failed.calls.find(call => call[0] === 'freeze'), [
-    'freeze', 'error', {},
-  ]);
+  assert.deepEqual(failed.calls.find(call => call[0] === 'assessing'), ['assessing']);
+  assert.equal(failed.calls.some(call => call[0] === 'freeze'), false);
 
-  // Aux unavailability after a completed turn boundary is a no-op, not a freeze.
   const unavailable = fixture();
   await unavailable.host.turnSucceeded('s1');
   const unavail = await unavailable.host.classifyUnavailable('s1', 'task-1', 'aux down');
-  assert.equal(unavail.code, 'stale_classification');
+  assert.equal(unavail.code, 'classification_deferred');
   assert.equal(unavailable.calls.some(call => call[0] === 'freeze'), false);
+});
+
+test('queued insert events preserve the scheduler state in queue projections', () => {
+  const h = fixture();
+  h.host.onSchedulerEvent({
+    type: 'queued_inserted',
+    sessionId: 's1',
+    entryId: 'queued-2',
+    schedulerState: 'frozen',
+    queued: 2,
+    queuedItems: [{ entryId: 'queued-2' }, { entryId: 'queued-1' }],
+    at: 123,
+  });
+  const projected = h.calls.find(call => call[0] === 'task-state');
+  assert.deepEqual(projected, [
+    'task-state',
+    's1',
+    {
+      queueState: 'frozen',
+      queueFreezeReason: null,
+      queueUpdatedAt: 123,
+    },
+  ]);
 });

@@ -331,7 +331,7 @@ test('staged-message dock renders canonical text with textContent only', () => {
   assert.equal(list.children[0].children.length, 2);
 });
 
-test('staged-message dock exposes cancellation only for pending entries', async () => {
+test('staged-message dock exposes close icon and immediate insert only for pending entries', async () => {
   const { document, ids } = fakeDocument();
   const dock = new FakeElement('details');
   const count = new FakeElement('strong');
@@ -342,24 +342,34 @@ test('staged-message dock exposes cancellation only for pending entries', async 
   ids.set('session-queue-hint', hint);
   ids.set('session-queue-list', list);
   const cancelled = [];
+  const inserted = [];
   global.MultiCCChatSessionQueue.render([
-    { entryId: 'pending-1', position: 1, state: 'pending', text: '可以取消' },
+    { entryId: 'pending-1', position: 1, state: 'pending', text: '可以移除' },
     { entryId: 'leased-2', position: 2, state: 'leased', text: '已经领取' },
   ], {
     state: 'frozen',
     freezeReason: 'awaiting_user_input',
     async onCancel(entryId) { cancelled.push(entryId); },
+    async onInsert(entryId) { inserted.push(entryId); },
   }, document);
 
   assert.equal(hint.textContent, '已暂停：awaiting_user_input');
   assert.equal(list.children[0].children.length, 3);
   assert.equal(list.children[1].children.length, 2);
-  const button = list.children[0].children[2];
-  assert.equal(button.textContent, '取消');
-  await button._onClick[0]({ stopPropagation() {} });
+  const actions = list.children[0].children[2];
+  assert.equal(actions.children.length, 2);
+  const insert = actions.children[0];
+  const close = actions.children[1];
+  assert.equal(insert.textContent, '立刻插入');
+  assert.equal(close.textContent, '×');
+  await insert._onClick[0]({ stopPropagation() {} });
+  assert.deepEqual(inserted, ['pending-1']);
+  assert.equal(insert.disabled, true);
+  assert.equal(insert.textContent, '插入中…');
+  await close._onClick[0]({ stopPropagation() {} });
   assert.deepEqual(cancelled, ['pending-1']);
-  assert.equal(button.disabled, true);
-  assert.equal(button.textContent, '取消中…');
+  assert.equal(close.disabled, true);
+  assert.equal(close.textContent, '…');
 });
 
 test('queue cancellation handler sends the confirmed entry-scoped action', async () => {
@@ -380,9 +390,30 @@ test('queue cancellation handler sends the confirmed entry-scoped action', async
     action: 'cancel_queued',
     entryId: 'entry-1',
     confirm: true,
-    reason: 'cancelled from chat queue',
+    reason: 'removed from chat queue',
   });
-  assert.deepEqual(notices, [['已取消排队消息', 'completed']]);
+  assert.deepEqual(notices, [['已移除暂存消息', 'completed']]);
+});
+
+test('queue immediate insert handler promotes the selected entry', async () => {
+  const requests = [];
+  const notices = [];
+  const handler = global.MultiCCChatSessionQueue.createInsertHandler({
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    },
+    withToken: url => `/tokenized${url}`,
+    getSessionName: () => 'session/1',
+    notify: (...args) => notices.push(args),
+  });
+  await handler('entry-2');
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    action: 'insert_queued',
+    entryId: 'entry-2',
+    confirm: true,
+  });
+  assert.deepEqual(notices, [['已移到队首；classify 允许后立即执行', 'completed']]);
 });
 
 test('Claude five-hour limit consumes the structured SDK event without retaining billing fields', () => {
