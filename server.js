@@ -1971,8 +1971,10 @@ createSessionProfileRoutes({
   sessionPolicy,
   providers,
   providerRouterRuntime,
-  chatStream,
-  validProviderId,
+  // chatStream / providerRoutes are composed further down this file; resolve
+  // them lazily or mounting would hit the const TDZ before boot finishes.
+  getChatStream: () => chatStream,
+  validProviderId: (...args) => validProviderId(...args),
   asyncHandler,
   appendEvent,
   workspaceBroadcast,
@@ -1990,6 +1992,43 @@ createSessionProfileRoutes({
   getFolderMemory: () => folderMemory,
   getCliSwitchGitSnapshot: () => cliSwitchGitSnapshot,
 }).mountRoutes(app);
+
+// Folder memory owns filesystem layout, seed files and the frozen prompt snapshot.
+// Session routes consume that service plus the existing curated-memory primitives.
+const folderMemory = createFolderMemoryService({
+  fs,
+  path,
+  memoryStoreRoot: MEMORY_STORE_ROOT,
+  directories,
+  readMemoryFolder: readFolderMemory,
+  getMemoryEntries,
+});
+mountSessionMemoryRoutes(app, {
+  fs,
+  path,
+  records: persistedSessions,
+  folderMemory,
+  getMemoryEntries,
+  scanMemoryContent,
+  atomicWriteMemoryFile,
+  applyCuratedMemoryAction,
+  appendEvent,
+  workspaceBroadcast,
+});
+
+// Memory graph/tree and generic file editing share one filesystem boundary.
+// Session-level curated memory routes above retain their separate semantics.
+mountMemoryBrowserRoutes(app, {
+  fs,
+  path,
+  memoryStoreRoot: MEMORY_STORE_ROOT,
+  directories,
+  persistedSessions,
+  workspaceBroadcast,
+  atomicWriteText,
+  now: Date.now,
+});
+
 
 // ── Cross-machine handoff (Happier-parity: move a live session to another machine) ──
 // Export/import of the encrypted session bundle (metadata + chat history + memory
@@ -2035,7 +2074,8 @@ createSessionLifecycleRuntime({
   assignKillReason,
   createSession,
   cwdForSession,
-  cleanupPushMonitor,
+  // pushRuntime is composed further down this file; forward lazily past the TDZ.
+  cleanupPushMonitor: (id) => cleanupPushMonitor(id),
   getSessionGitRuntime: () => sessionGitRuntime,
 }).mountRoutes(app);
 

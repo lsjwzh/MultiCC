@@ -32,7 +32,7 @@ function createSessionProfileRoutes(rawDeps) {
     sessionPolicy,
     providers,
     providerRouterRuntime,
-    chatStream,
+    getChatStream,
     validProviderId,
     asyncHandler,
     appendEvent,
@@ -84,10 +84,8 @@ function createSessionProfileRoutes(rawDeps) {
   if (!providerRouterRuntime || typeof providerRouterRuntime.getProviderSummary !== 'function') {
     throw new TypeError('[session-profile] providerRouterRuntime.getProviderSummary is required');
   }
-  if (!chatStream || typeof chatStream.close !== 'function') {
-    throw new TypeError('[session-profile] chatStream.close is required');
-  }
   for (const [fn, name] of [
+    [getChatStream, 'getChatStream'],
     [validProviderId, 'validProviderId'], [asyncHandler, 'asyncHandler'],
     [appendEvent, 'appendEvent'], [workspaceBroadcast, 'workspaceBroadcast'],
     [chatBroadcast, 'chatBroadcast'], [getTaskState, 'getTaskState'],
@@ -100,6 +98,10 @@ function createSessionProfileRoutes(rawDeps) {
     [getChatHistoryService, 'getChatHistoryService'], [getFolderMemory, 'getFolderMemory'],
     [getCliSwitchGitSnapshot, 'getCliSwitchGitSnapshot'],
   ]) assertFunction(fn, name);
+
+  // chatStream is composed further down server.js (after route mounting), so it
+  // arrives as a getter and resolves per call.
+  const chatStream = () => getChatStream();
 
   const {
     normalizeEffort,
@@ -148,7 +150,7 @@ function createSessionProfileRoutes(rawDeps) {
         // process, so close it now or the UI would report the new model while the
         // next turn still runs on the old one. Terminal sessions still need a
         // manual restart to relaunch their CLI with it.
-        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream().close(s.id);
         appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
       }
       if (req.body.effort !== undefined) {
@@ -156,14 +158,14 @@ function createSessionProfileRoutes(rawDeps) {
         if (effort === undefined) return rejectMutation(400, { error: 'invalid effort' });
         if (!validEffortForCli(s.cli || 'claude', effort)) return rejectMutation(400, { error: 'invalid reasoning level' });
         s.effort = effort || null;
-        if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
+        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
         appendEvent(s.dirId, 'session_effort_changed', `${s.label || s.id} → ${effectiveSessionEffort(s) || effortLabel(s.effort)}`, s.id);
       }
       if (req.body.agent !== undefined) {
         const agent = normalizeCliAgent(s.cli || 'claude', req.body.agent);
         if (agent === undefined) return rejectMutation(400, { error: 'agent is only supported by Claude/OpenCode and must be a valid agent name' });
         s.agent = agent;
-        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream().close(s.id);
         appendEvent(s.dirId, 'session_agent_changed', `${s.label || s.id} → ${s.agent || '默认 agent'}`, s.id);
       }
       if (req.body.rolePrompt !== undefined) {
@@ -171,7 +173,7 @@ function createSessionProfileRoutes(rawDeps) {
         if (rp.length > 40000) return rejectMutation(400, { error: 'rolePrompt too long (max 40000)' });
         // null clears the session override → it falls back to the directory default.
         s.rolePrompt = rp.trim() || null;
-        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream.close(s.id);
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') chatStream().close(s.id);
         appendEvent(s.dirId, 'session_role_changed', s.rolePrompt ? (s.label || s.id) : `${s.label || s.id}（清除，继承目录）`, s.id);
       }
       if (req.body.memory !== undefined) {
@@ -270,7 +272,7 @@ function createSessionProfileRoutes(rawDeps) {
         }
         // Chat sessions pick it up on the next per-turn spawn; a warm streaming
         // process must be torn down so it relaunches with the new env.
-        if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
+        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
         const pname = appType && v.value ? (providerRouterRuntime.getProviderSummary(appType, v.value)?.name || v.value) : (appType ? '默认登录' : '厂商客户端设置');
         appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
         // Push current classify state to chat so the classify bar updates immediately
@@ -311,7 +313,7 @@ function createSessionProfileRoutes(rawDeps) {
           return rejectMutation(400, { error: 'invalid subagent' });
         }
         // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
-        if ((s.cli || 'claude') === 'claude') chatStream.close(s.id);
+        if ((s.cli || 'claude') === 'claude') chatStream().close(s.id);
         const subApp2 = (s.cli === 'codex') ? 'codex' : 'claude';
         const saName = s.subagent
           ? `${providerRouterRuntime.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
