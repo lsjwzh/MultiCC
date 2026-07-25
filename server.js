@@ -126,6 +126,7 @@ const { createSessionBundleRoutes } = require('./src/routes/session-bundle');
 const { createSessionLifecycleRuntime } = require('./src/routes/session-lifecycle');
 const { createSessionMetaRuntime } = require('./src/routes/session-meta');
 const { createAuthRuntime } = require('./src/routes/auth');
+const { createNotesStore } = require('./src/notes-store');
 const {
   listInstalledSkills,
   listClaudeHistory,
@@ -876,6 +877,32 @@ async function destroySessionCascade(s, d, opts = {}) {
   };
 }
 
+// Notes/events store (src/notes-store.js): event ring + append-only per-dir
+// logs and the shared inter-agent notes pool. Owns its mutable `notes` array
+// (never exported by reference) and hydrates it here at boot, exactly where the
+// inline loadNotes() ran before extraction. Created before every consumer —
+// seedCommanderSession/destroySessionCascade/directoryModule all take
+// appendEvent/purgeNotesForSession by value — and before `directories` exists,
+// so the route mount happens after the directory module is composed.
+const notesStore = createNotesStore({
+  eventsDir: MULTICC_PATHS.eventsDir,
+  notesFile: MULTICC_PATHS.notesFile,
+  persistedSessions,
+  directories: _state.directories,
+  atomicWriteJson,
+  ensurePrivateDir,
+  getWorkspaceBroadcast: () => workspaceBroadcast,
+});
+const {
+  loadNotes,
+  saveNotes,
+  recentEvents,
+  appendEvent,
+  pendingNotesFor,
+  purgeNotesForSession,
+} = notesStore;
+loadNotes();
+
 const directoryModule = createDirectoryModule({
   repository: { file: DIRECTORIES_FILE, map: _state.directories, store: directoriesStore },
   git: {
@@ -928,6 +955,9 @@ const directoryModule = createDirectoryModule({
 });
 const directories = directoryModule.repo.map();
 function saveDirectories() { directoryModule.repo.save(); }
+// Directory event log route (GET /api/directories/:id/events) — mounted where
+// the inline handler lived, now that `directories` exists and app routing is up.
+notesStore.mountRoutes(app);
 if (_state.needsSave) {
   saveDirectories();
   sessionPersistence.mutate('startup.schema-migration', () => {});
@@ -2154,9 +2184,8 @@ app.post('/api/restart', (req, res) => {
 
 // ── Per-session metadata: inter-agent notes + liveness ──
 // Handler logic lives in src/routes/session-meta.js; only host wiring stays
-// here. `notes` is a let-bound array that loadNotes/purgeNotesForSession
-// reassign wholesale, so the module receives getNotes()/saveNotes()/
-// pendingNotesFor() and never the array itself.
+// here. `notes` lives inside src/notes-store.js and is never exposed by
+// reference — the module receives getNotes()/saveNotes()/pendingNotesFor().
 createSessionMetaRuntime({
   persistedSessions,
   asyncHandler,
@@ -2164,7 +2193,7 @@ createSessionMetaRuntime({
   workspaceBroadcast,
   saveNotes,
   pendingNotesFor,
-  getNotes: () => notes,
+  getNotes: () => notesStore.getNotes(),
   getLivenessRuntime: () => livenessRuntime,
 }).mountRoutes(app);
 
@@ -2245,13 +2274,6 @@ function dispatchContractHandler(req, res) {
 
 app.post('/api/sessions/:id/dispatch', dispatchContractHandler);
 app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler);
-
-// Directory event log.
-app.get('/api/directories/:id/events', (req, res) => {
-  const d = directories.get(req.params.id);
-  if (!d) return res.status(404).json({ error: 'directory not found' });
-  res.json({ events: recentEvents(d.id) });
-});
 
 // ── File browser, download and upload lifecycle ──
 mountFileTransferRoutes(app, {
@@ -3333,75 +3355,6 @@ function scanAndReclassify() {
 // with its per-session enqueue/skip decisions + reasons. In-memory ring only.
 //   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
 mountScanRoutes(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
-
-// ── Event log + passive inter-agent notes ──
-// Each directory has an append-only event log (events/<dirId>.jsonl) and a shared
-// pool of notes. A note left for another agent is delivered passively — prepended
-// to that agent's next chat turn.
-const EVENTS_DIR = MULTICC_PATHS.eventsDir;
-try { ensurePrivateDir(EVENTS_DIR); } catch (_) {}
-const NOTES_FILE = MULTICC_PATHS.notesFile;
-const eventRing = new Map();   // dirId → event[] (last 200, lazy-loaded)
-let notes = [];                // [{ id, dirId, fromSessionId, fromLabel, toSessionId, body, ts, delivered, deliveredAt }]
-
-function loadNotes() {
-  try {
-    if (fs.existsSync(NOTES_FILE)) notes = JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8'));
-  } catch (e) {
-    console.error('[multicc] load notes.json failed:', e.message);
-    notes = [];
-  }
-}
-function saveNotes() {
-  try { atomicWriteJson(NOTES_FILE, notes); }
-  catch (e) { console.error('[multicc] save notes.json failed:', e.message); }
-}
-loadNotes();
-
-// Lazy-load a directory's recent events from disk into the ring buffer.
-function recentEvents(dirId) {
-  if (eventRing.has(dirId)) return eventRing.get(dirId);
-  const ring = [];
-  try {
-    const file = path.join(EVENTS_DIR, `${dirId}.jsonl`);
-    if (fs.existsSync(file)) {
-      for (const l of fs.readFileSync(file, 'utf8').trim().split('\n').slice(-200)) {
-        try { ring.push(JSON.parse(l)); } catch (_) {}
-      }
-    }
-  } catch (_) {}
-  eventRing.set(dirId, ring);
-  return ring;
-}
-
-// Append an event to a directory's log + ring buffer, and broadcast it live.
-function appendEvent(dirId, type, detail, sessionId) {
-  if (!dirId) return;
-  const session = sessionId ? persistedSessions.get(sessionId) : null;
-  const evt = {
-    ts: Date.now(), type,
-    sessionId: sessionId || null,
-    sessionLabel: session ? (session.label || session.id) : (sessionId || null),
-    detail: detail || null,
-  };
-  const ring = recentEvents(dirId);
-  ring.push(evt);
-  if (ring.length > 200) ring.shift();
-  try { fs.appendFileSync(path.join(EVENTS_DIR, `${dirId}.jsonl`), JSON.stringify(evt) + '\n', { mode: 0o600 }); }
-  catch (_) {}
-  workspaceBroadcast(dirId, { type: 'event', event: evt });
-}
-
-function pendingNotesFor(sessionId) {
-  return notes.filter(n => n.toSessionId === sessionId && !n.delivered);
-}
-
-// Drop all notes referencing a session (called when it is deleted).
-function purgeNotesForSession(sessionId) {
-  const before = notes.length;
-  notes = notes.filter(n => n.toSessionId !== sessionId && n.fromSessionId !== sessionId);
-  if (notes.length !== before) saveNotes();
-}
 
 // ── Unified classify — the single source of truth for task state ────────────
 // goal/phase/D/C/W/E/P all come from ONE aux call per invocation. Call sites:
