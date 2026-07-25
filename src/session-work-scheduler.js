@@ -276,9 +276,14 @@ function createSessionWorkScheduler({
       return a.sequence - b.sequence;
     });
     if (!schedule || !schedule.active || schedule.state === 'idle') {
-      // At-rest verdicts (W/E/B) leave the FIFO untouched — the queue does
-      // nothing until the user's next message. Every other state (D done,
-      // never-classified, P exhausted) drains normally in FIFO order.
+      // A direct (non-P) admit runs immediately, jumping any stale FIFO items
+      // (those only drain on D). directRun is a per-item tag, not priority, so
+      // the queued list order is preserved.
+      const direct = ordered.find(it => it.directRun);
+      if (direct) return direct;
+      // At-rest verdicts (W/E/B) leave stale FIFO items untouched — the queue
+      // does nothing until the user's next direct admit or a D verdict. Every
+      // other state (D done, never-classified, P exhausted) drains in FIFO order.
       const cls = schedule && schedule.classifyState;
       if (cls === 'W' || cls === 'E' || cls === 'B') return null;
       return ordered[0];
@@ -360,6 +365,13 @@ function createSessionWorkScheduler({
         source: { type: 'session-admission', kind: inferredKind },
         now: at,
       });
+      // "Non-P runs immediately": a task admitted while no turn is active is
+      // tagged directRun so selectSessionItem returns it right away — it never
+      // waits behind stale FIFO items (which only drain on D). This tag does
+      // NOT touch priorityEntryId, so the queued LIST order is preserved.
+      if (!schedule.active && !CONTROL_KINDS.has(inferredKind) && draft.outbox[admitted.item.id]) {
+        draft.outbox[admitted.item.id].directRun = true;
+      }
       schedule.updatedAt = at;
       const queue = queueForDraft(draft, cleanSessionId);
       const selected = selectSessionItem(queue, draft, at);
