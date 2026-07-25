@@ -43,7 +43,13 @@ function parseClassifyResult(text) {
 
   let state, background = false, error = false;
   if (first === 'P') state = 'running';
-  else if (first === 'C') state = 'continue';
+  // C (Continue) is RETIRED. Per the 2026-07-12 "retire C-autopush" design, a
+  // normally-ended-but-unfinished turn is never auto-pushed — it rests as W with
+  // the user in charge. C carried no auto-continue behaviour anymore, only a
+  // phantom "running" card for an idle CLI that scan could never flush (same
+  // input → same C forever). We collapse it into W here so no new C is ever
+  // produced; the letter is still recognized only to render legacy persisted C.
+  else if (first === 'C') state = 'waiting';
   else if (first === 'W') state = 'waiting';
   else if (first === 'B') { state = 'waiting'; background = true; }
   else if (first === 'E') { state = 'waiting'; error = true; }
@@ -79,7 +85,10 @@ const CLASSIFY_DISPLAY = {
     voiceText: '任务已完成', ding: 'completed',
     cardStatus: 'completed', barTint: 'completed',
   },
-  C: {  // Continue — AI is continuing (display only; dispatcher no longer auto-injects)
+  C: {  // Continue — RETIRED. parseClassifyResult collapses C→W, so no new C is
+        // ever produced. Retained ONLY so a legacy persisted 'C' (older taskState /
+        // classifyHistory) still renders without falling through classifyDisplay's
+        // W fallback; the periodic scan re-judges any live C into W within one pass.
     label: '继续中',
     pushType: null, pushTitle: null,
     voiceText: null, ding: null,
@@ -142,7 +151,7 @@ function buildClassifySystemPrompt(priorGoal) {
 
 【背景】一个会话里可能先后讨论过多个不同任务（任务A做完后用户又提了任务B）。你只关心【最后一个任务】，不要被前面已结束的旧任务干扰。
 
-【步骤1·分组】在脑内把对话记录按任务切分成若干段：每当用户提出一个全新的、与上文不同的需求时，就开启一个新段。连续围绕同一需求的几轮对话属于同一段。系统注入消息（🔇开头、"检测到任务""[自动恢复""继续："开头）不是新任务，归入当前段；而且它们是系统自动发出的、【不代表真人用户在催促或推动继续】——判定第3行 C/W 时必须忽略这些注入消息的"推进"含义，只依据真人用户的真实意图判断。
+【步骤1·分组】在脑内把对话记录按任务切分成若干段：每当用户提出一个全新的、与上文不同的需求时，就开启一个新段。连续围绕同一需求的几轮对话属于同一段。系统注入消息（🔇开头、"检测到任务""[自动恢复""继续："开头）不是新任务，归入当前段；而且它们是系统自动发出的、【不代表真人用户在催促或推动继续】——判定第3行 D/W 时必须忽略这些注入消息的"推进"含义，只依据真人用户的真实意图判断。
 
 【步骤2·定位】找出最后一条消息所属的段，那就是"当前任务"。前面已结束的段全部忽略--哪怕它们判定结果是"已完成"，也不代表当前状态。
 
@@ -161,21 +170,19 @@ function buildClassifySystemPrompt(priorGoal) {
 
 第3行：仅一个字母，判断【当前任务段】接下来该谁行动：
        D = 任务已完成（助手把当前任务的所有要求都做完了，正常收尾、没有反问、也不需要再继续；用户可以验收）
-       C = AI 应继续（用户发来新需求、纠错、认可、确认、继续执行等推进类消息，任务还没做完，AI 应接着做；AI 不需要等用户做决定）
-       W = 等用户（助手在反问、征求意见、让用户做选择；或用户表达了犹豫需要时间考虑）
+       W = 等用户（本轮助手已停下，主动权在用户手里）：助手在反问/征求意见/让用户做选择；或用户表达了犹豫；或任务还没全部做完但助手这一轮已结束——本系统不会自动替用户续接，未完成的部分一律等用户明确指示再继续，所以都判 W
        E = API 异常中断（助手回复末尾含 "API Error"、"503"、"Connection closed"、"Overloaded"、"Internal server error"、"The system is busy" 等故障信息，回答被截断而非正常完成）
        P = AI 还在处理中（回复为空、或明显话没说完，还没到判断的时候）
 
-关键区分 D vs C：
-  · 助手已把任务做完、正常收尾、没有后续动作 → D（完成）
-  · 任务还没做完，且用户/对话在推动继续（新指令、纠错、"继续""再试试"、确认后要接着做）→ C（应继续）
-  · 最新一条是用户的推进消息、AI 还没回应 → 这是 C（AI 该继续干），绝不是 D
+关键区分 D vs W：
+  · 助手已把任务所有要求做完、正常收尾、没有后续动作 → D（完成，用户可验收）
+  · 任务还没全部做完、但助手这一轮已经停下（在反问、阶段性停顿、或等用户指示）→ W（交回用户；系统不自动续接）
+  · 最新一条是用户的推进消息、AI 还没回应 → 判 P（还在处理），不要判 D
 判断时看当前任务段的整体走向，不是看最后一句有没有问号。回复为空/话没说完判 P。API故障截断判 E。
 
-关键区分 C vs W（【W 优先于 C】）：
-  · 只要助手在回复末尾向用户提出了"需要用户拿主意/做决定"的请求——二选一、"要不要我做X"、"先做哪个"、"请指定优先级/范围"、"要我现在就动手吗"、"等你确认后再做"——一律判 W，【即使当前任务整体还没做完】。"等用户决定"高于"任务没做完→C"。
-  · 只有当对话在无歧义地推动继续、且助手并没有在等用户任何决定时，才判 C。
-  · 拿不准是 C 还是 W 时，判 W（宁可等用户，也不要自作主张替用户继续）。
+判 W 的典型信号（出现其一即判 W，即使任务整体还没做完）：
+  · 助手在回复末尾向用户提出"需要用户拿主意/做决定"的请求——二选一、"要不要我做X"、"先做哪个"、"请指定优先级/范围"、"要我现在就动手吗"、"等你确认后再做"。
+  · 拿不准该判什么时，判 W（宁可等用户，也不要自作主张替用户继续）。
 
 ⚠️ 若对话明显还在进行中（最后是助手消息且话没说完、或助手正在执行操作），第3行直接判 P，不要硬猜。
 ⚠️ 只有真正做完当前任务才判 D；AI 在等用户回复、或任务还没收尾，都不能判 D。
