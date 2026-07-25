@@ -109,12 +109,16 @@ assert.strictEqual(
   })[0].isError,
   true,
 );
-// request_user_input / AskUserQuestion must still degrade to text (special-cased
-// before the generic function_call → tool_result path).
-assert.strictEqual(
-  codex.decodeEvent({ type: 'item.completed', item: { type: 'function_call', name: 'request_user_input', arguments: '{"questions":[{"question":"go?"}]}' } })[0].type,
-  'assistant_text',
-);
+// request_user_input / AskUserQuestion is decoded into a neutral
+// user_input_signal (special-cased before the generic function_call →
+// tool_result path). The server lands it on the structured waiting path, or
+// degrades to fallbackText if recording fails.
+{
+  const ask = codex.decodeEvent({ type: 'item.completed', item: { type: 'function_call', name: 'request_user_input', arguments: '{"questions":[{"question":"go?"}]}' } })[0];
+  assert.strictEqual(ask.type, 'user_input_signal');
+  assert.strictEqual(ask.question, 'go?');
+  assert.match(ask.fallbackText, /文本透传/);
+}
 assert.deepStrictEqual(
   codex.decodeEvent({
     type: 'item.started',
