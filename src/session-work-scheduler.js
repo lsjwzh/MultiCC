@@ -274,6 +274,11 @@ function createSessionWorkScheduler({
       return a.sequence - b.sequence;
     });
     if (!schedule || !schedule.active || schedule.state === 'idle') {
+      // At-rest verdicts (W/E/B) leave the FIFO untouched — the queue does
+      // nothing until the user's next message. Every other state (D done,
+      // never-classified, P exhausted) drains normally in FIFO order.
+      const cls = schedule && schedule.classifyState;
+      if (cls === 'W' || cls === 'E' || cls === 'B') return null;
       return ordered[0];
     }
     const replay = ordered.find(item => isActiveReplay(schedule, item));
@@ -539,7 +544,7 @@ function createSessionWorkScheduler({
     return result;
   }
 
-  async function complete(sessionId, { expectedTaskId = null, reason = 'successful' } = {}) {
+  async function complete(sessionId, { expectedTaskId = null, reason = 'successful', classifyState = 'D' } = {}) {
     const result = await store.mutate(draft => {
       const schedule = draft.sessionSchedules[sessionId];
       if (!schedule?.active) return { ok: false, code: 'no_active_task' };
@@ -552,7 +557,10 @@ function createSessionWorkScheduler({
       schedule.state = 'idle';
       schedule.freezeReason = null;
       schedule.awaitingRequestId = null;
-      schedule.classifyState = 'D';
+      if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
+      // classifyState is the LETTER (D/W/B/E). D = terminal-done (drains FIFO);
+      // W/B/E = released but at-rest (FIFO only drains on D, see selectSessionItem).
+      schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
       schedule.lastDecision = {
         action: 'complete',
         reason,
