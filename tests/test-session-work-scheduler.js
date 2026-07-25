@@ -126,6 +126,32 @@ test('idle starts one item and running work keeps later messages in strict FIFO 
   assert.equal(thirdClaim.id, third.entry.id);
 });
 
+test('non-P direct admit jumps stale FIFO; stale items only drain on D (T1)', async t => {
+  const h = fixture(t);
+  // A is active (P).
+  const a = await h.scheduler.admit({ sessionId: 's1', text: 'A', idempotencyKey: 'A' });
+  const aClaim = await claimOne(h);
+  assert.equal(aClaim.id, a.entry.id);
+  await startClaim(h, aClaim);
+  // B queues behind A (P → enqueue, not directRun).
+  const b = await h.scheduler.admit({ sessionId: 's1', text: 'B', idempotencyKey: 'B' });
+
+  // A ends W (at-rest). B is stale FIFO; W must not drain it.
+  await h.scheduler.complete('s1', { classifyState: 'W' });
+  assert.equal(await claimOne(h), null, 'W leaves stale FIFO item B untouched');
+
+  // User sends C while non-P → directRun → runs immediately, jumping B.
+  const c = await h.scheduler.admit({ sessionId: 's1', text: 'C', idempotencyKey: 'C' });
+  const cClaim = await claimOne(h);
+  assert.equal(cClaim && cClaim.id, c.entry.id, 'direct admit C jumps stale B and runs');
+  await startClaim(h, cClaim);
+
+  // C ends D → stale B finally drains.
+  await h.scheduler.complete('s1', { classifyState: 'D' });
+  const bClaim = await claimOne(h);
+  assert.equal(bClaim && bClaim.id, b.entry.id, 'stale B drains only after a D verdict');
+});
+
 test('error and user-input waiting freeze future work while a correlated control resumes active', async t => {
   const h = fixture(t);
   const active = await h.scheduler.admit({
