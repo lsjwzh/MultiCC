@@ -25,7 +25,7 @@ const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
   'routeCommanderTask', 'sendSessionMessage',
   'workspaceBroadcast', 'atomicWriteJson', 'isSystemInjected',
-  'getSessionRunState', 'isSessionBusy',
+  'getSessionRunState',
 ];
 
 function assertTaskBoardDeps(deps) {
@@ -43,7 +43,7 @@ function createTaskBoardRuntime(deps) {
     file, auxQueue, records, loadHistory, dispatchToSession, routeCommanderTask,
     sendSessionMessage,
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
-    getSessionRunState, isSessionBusy,
+    getSessionRunState,
   } = deps;
   const resolveSessionQueue = typeof deps.resolveSessionQueue === 'function'
     ? deps.resolveSessionQueue

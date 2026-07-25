@@ -702,11 +702,9 @@ function createOrchestrationRuntime({
     await outbox.recoverExpired();
     await refreshPending();
     await operations.interruptActiveTasks();
-    await sessionScheduler.recover({
-      stateForSession: getSessionRecoveryState,
-      isBusy,
-      hasPendingWait: hasPending,
-    });
+    // recover() reads only stateForSession — the persisted classify/queue state.
+    // It never consulted isBusy/hasPendingWait, so they are not passed.
+    await sessionScheduler.recover({ stateForSession: getSessionRecoveryState });
     await reconcileDispatchesOnStartup();
     await reconcileDetached();
     await tick();
