@@ -9,6 +9,7 @@ import '../utils/status_presentation.dart';
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
+import '../services/chat_service.dart';
 import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -326,6 +327,24 @@ class _ChatViewState extends State<ChatView> {
               ),
             ),
             _CwdBar(mergeStatus: _mergeStatus),
+            if (provider.pendingUserInput != null)
+              _CenteredChatLane(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(context).height * 0.38,
+                  ),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
+                    child: PendingUserInputPanel(
+                      input: provider.pendingUserInput!,
+                      enabled:
+                          provider.connectionState ==
+                          ChatConnectionState.connected,
+                      onAnswer: provider.sendMessage,
+                    ),
+                  ),
+                ),
+              ),
             if (livenessBadge(_liveness?['state'] as String?) != null)
               Align(
                 alignment: Alignment.centerLeft,

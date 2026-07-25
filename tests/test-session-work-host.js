@@ -233,6 +233,28 @@ test('only classify P stages direct input; every non-P state continues immediate
   assert.equal(staged.activeEntryId, null);
 });
 
+test('a released W turn admits its correlated structured answer as a new control entry', async () => {
+  const h = fixture();
+  h.forceState('idle');
+  h.setClassifyState('W');
+  h.setPending({
+    requestId: 'usrq-1',
+    taskId: 'task-1',
+    resolved: false,
+  });
+
+  const result = await h.host.admit('s1', '继续', {
+    userInputRequestId: 'usrq-1',
+    clientMsgId: 'client-answer',
+  });
+  assert.equal(result.ok, true);
+  const admission = h.calls.find(call => call[0] === 'admit')[1];
+  assert.equal(admission.workKind, 'answer');
+  assert.equal(admission.requestId, 'usrq-1');
+  assert.equal(admission.activeEntryId, null);
+  assert.equal(admission.options.taskId, 'task-1');
+});
+
 test('classify W/B/E release the active slot (no freeze); unavailable leaves assessment pending', async () => {
   // Queue rule (T1): every turn-end verdict releases the active slot via
   // complete(). FIFO draining is D-only and lives in selectSessionItem, not
@@ -244,6 +266,23 @@ test('classify W/B/E release the active slot (no freeze); unavailable leaves ass
     'complete', { expectedTaskId: 'task-1', reason: 'classified_W', classifyState: 'W' },
   ]);
   assert.equal(waiting.calls.some(call => call[0] === 'freeze'), false);
+
+  const structured = fixture();
+  structured.setPending({
+    requestId: 'usrq-1',
+    taskId: 'task-1',
+    resolved: false,
+  });
+  structured.forceState('assessing');
+  await structured.host.classifyTransition('s1', 'task-1', { state: 'W' });
+  assert.deepEqual(structured.calls.find(call => call[0] === 'complete'), [
+    'complete', {
+      expectedTaskId: 'task-1',
+      reason: 'classified_W',
+      classifyState: 'W',
+      awaitingRequestId: 'usrq-1',
+    },
+  ]);
 
   const assessingError = fixture();
   assessingError.forceState('assessing');

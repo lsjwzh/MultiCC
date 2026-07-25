@@ -297,12 +297,14 @@
         case 'task_state': liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState); break;
         case 'user_input_required':
           state.pendingUserInputRequestId = message.requestId || null;
-          host.addSystemMsg?.([
-            '需要你的确认：' + (message.question || '请补充必要信息'),
-            Array.isArray(message.options) && message.options.length
-              ? message.options.map((option, index) => `${index + 1}. ${option}`).join('\n')
-              : '',
-          ].filter(Boolean).join('\n'));
+          if (host.renderPendingUserInput?.(message) !== true) {
+            host.addSystemMsg?.([
+              '需要你的确认：' + (message.question || '请补充必要信息'),
+              Array.isArray(message.options) && message.options.length
+                ? message.options.map((option, index) => `${index + 1}. ${option}`).join('\n')
+                : '',
+            ].filter(Boolean).join('\n'));
+          }
           break;
         case 'session_queue': {
           const items = Array.isArray(message.items) ? message.items : [];
