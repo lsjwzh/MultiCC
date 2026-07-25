@@ -33,6 +33,16 @@ function createSessionWorkHost(deps = {}) {
 
   async function admit(sessionId, text, options = {}) {
     if (!deps.getRecord(sessionId)) return { ok: false, code: 'session_not_found' };
+    // Force-insert ("强行插入"): interrupt the active turn first — it ends as E
+    // (abnormal termination), releasing the slot. This admit then lands on a
+    // non-P session and runs immediately via directRun. Silent per design (the
+    // interrupted turn just shows E in the status bar).
+    if (options.interrupt) {
+      const rt = schedulerRuntime();
+      if (rt?.sessionScheduler && (await rt.sessionScheduler.status(sessionId))?.active) {
+        await cancelActiveTurn(sessionId);
+      }
+    }
     // L4: ZCode auth pre-check -- if the session is a zcode session and auth
     // is not configured (and can't be auto-synced from desktop), reject with
     // configuration_required instead of letting the turn fail with a cryptic
@@ -337,15 +347,18 @@ function createSessionWorkHost(deps = {}) {
       state.currentAssistantText = '';
       state.currentToolCalls = [];
     }
-    if (!resolveQueue || !scheduler()) return { ok: true };
+    if (!scheduler()) return { ok: true };
     const runtime = schedulerRuntime();
-    const resolved = await runtime.sessionScheduler.resolve(sessionId, {
-      action: 'cancel',
-      reason: 'explicit user cancellation',
-      actor: 'user',
+    // User cancellation is an abnormal termination → verdict E, active slot
+    // released. FIFO is left untouched (E doesn't drain, per the state machine).
+    // The killed proc's close handler later finds no active entry and no-ops, so
+    // this E verdict is the one that sticks (LLM classify is bypassed).
+    const completed = await runtime.sessionScheduler.complete(sessionId, {
+      reason: 'user_cancelled',
+      classifyState: 'E',
     });
-    if (resolved.ok) await runtime.tick();
-    return resolved;
+    if (completed.ok) await runtime.tick();
+    return completed.ok ? { ok: true } : completed;
   }
 
   return Object.freeze({
