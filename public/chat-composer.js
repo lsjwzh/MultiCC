@@ -123,12 +123,12 @@
       if (paths.length) text += ' ' + paths.join(' ');
 
       const clientMsgId = newClientMsgId();
+      const userInputRequestId = getUserInputRequestId();
       addUserMessage(text, clientMsgId);
       clearInput();
       debug('state', `send() — WS ▶ user_message (${text.length} chars)${goalOptions ? ' [goal]' : ''}`);
       try {
         const payload = { type: 'user_message', text, clientMsgId };
-        const userInputRequestId = getUserInputRequestId();
         if (userInputRequestId) payload.userInputRequestId = userInputRequestId;
         if (goalOptions) {
           payload.goal = true;

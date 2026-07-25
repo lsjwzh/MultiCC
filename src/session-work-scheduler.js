@@ -10,6 +10,12 @@ const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
 const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
+const LEGACY_TURN_ENDED_REASONS = new Set([
+  'waiting',
+  'incomplete_requires_resume',
+  'classification_error',
+]);
+const MAX_PUBLIC_MESSAGE_LENGTH = 20_000;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -70,6 +76,12 @@ function newSchedule(sessionId, at) {
   };
 }
 
+function queuedText(item) {
+  const payload = item?.payload || {};
+  const value = payload.message || payload.taskText || payload.deliveryText || '';
+  return String(value).slice(0, MAX_PUBLIC_MESSAGE_LENGTH);
+}
+
 function publicSchedule(schedule, queue = []) {
   if (!schedule) return null;
   return {
@@ -86,6 +98,7 @@ function publicSchedule(schedule, queue = []) {
       state: item.state,
       position: index + 1,
       admittedAt: item.createdAt,
+      text: queuedText(item),
     })),
     lastDecision: schedule.lastDecision ? clone(schedule.lastDecision) : null,
     updatedAt: schedule.updatedAt,
@@ -118,11 +131,40 @@ function createSessionWorkScheduler({
   }
 
   function queueForDraft(draft, sessionId) {
+    const schedule = draft.sessionSchedules[sessionId];
+    const activeDeliveryId = schedule?.active?.deliveryId || schedule?.active?.entryId || null;
     return Object.values(draft.outbox)
       .filter(item => item.sessionId === sessionId)
       .filter(item => item.state === 'pending' || item.state === 'leased')
       .filter(item => !isControlItem(item))
+      .filter(item => !activeDeliveryId || item.id !== activeDeliveryId)
       .sort((a, b) => a.sequence - b.sequence);
+  }
+
+  function releaseLegacyTurnEnd(
+    schedule,
+    at,
+    reason = 'legacy-turn-ended-migration',
+    { allowAwaitingCallback = false } = {},
+  ) {
+    if (!schedule?.active || schedule.state !== 'frozen'
+        || schedule.awaitingRequestId
+        || (!LEGACY_TURN_ENDED_REASONS.has(schedule.freezeReason)
+          && !(allowAwaitingCallback && schedule.freezeReason === 'awaiting_callback'))) return null;
+    const completed = clone(schedule.active);
+    schedule.active = null;
+    schedule.state = 'idle';
+    schedule.freezeReason = null;
+    schedule.awaitingRequestId = null;
+    schedule.lastDecision = {
+      action: 'complete',
+      reason,
+      entryId: completed.entryId,
+      taskId: completed.taskId || null,
+      at,
+    };
+    schedule.updatedAt = at;
+    return completed;
   }
 
   function relatedControl(schedule, item) {
@@ -211,6 +253,9 @@ function createSessionWorkScheduler({
     const result = await store.mutate(draft => {
       const at = Number(now());
       const schedule = ensure(draft, cleanSessionId, at);
+      if (!CONTROL_KINDS.has(inferredKind)) {
+        releaseLegacyTurnEnd(schedule, at);
+      }
       if (CONTROL_KINDS.has(inferredKind)) {
         if (!schedule.active) {
           return { ok: false, code: 'no_active_task', schedule: publicSchedule(schedule) };
@@ -253,6 +298,8 @@ function createSessionWorkScheduler({
         duplicate: result.duplicate,
         queuePosition: result.position || null,
         schedulerState: result.schedule.state,
+        freezeReason: result.schedule.freezeReason,
+        queuedItems: result.schedule.queued,
       });
     }
     return result;
@@ -295,6 +342,8 @@ function createSessionWorkScheduler({
       sessionId: item.sessionId,
       entryId: item.id,
       taskId: result.schedule.active?.taskId || null,
+      queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
     });
     return result;
   }
@@ -319,6 +368,8 @@ function createSessionWorkScheduler({
       entryId: result.schedule.active?.entryId,
       deliveryId: item.id,
       taskId: result.schedule.active?.taskId || null,
+      queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
     });
     return result;
   }
@@ -376,6 +427,7 @@ function createSessionWorkScheduler({
       taskId: result.schedule.active?.taskId || null,
       freezeReason: result.schedule.freezeReason,
       queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
     });
     return result;
   }
@@ -429,12 +481,15 @@ function createSessionWorkScheduler({
       entryId: result.schedule.active?.entryId,
       taskId: result.schedule.active?.taskId || null,
       deliveryId: result.continuationEntryId,
+      queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
     });
     if (result.ok && result.advanced !== false) emit('completed', {
       sessionId,
       entryId: result.completed.entryId,
       taskId: result.completed.taskId || null,
       queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
     });
     return result;
   }
@@ -514,6 +569,7 @@ function createSessionWorkScheduler({
       action,
       actor,
       queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
     });
     return result;
   }
@@ -535,6 +591,7 @@ function createSessionWorkScheduler({
         item: clone(item),
         position: queue.findIndex(candidate => candidate.id === item.id) + 1,
         schedulerState: schedule.state,
+        schedule: publicSchedule(schedule, queue),
       };
     });
     if (!info) return { ok: false, code: 'entry_not_found' };
@@ -547,6 +604,8 @@ function createSessionWorkScheduler({
       duplicate: false,
       queuePosition: info.position || null,
       schedulerState: info.schedulerState,
+      freezeReason: info.schedule.freezeReason,
+      queuedItems: info.schedule.queued,
     });
     return { ok: true, position: info.position || null };
   }
@@ -559,7 +618,11 @@ function createSessionWorkScheduler({
       )));
   }
 
-  async function recover({ stateForSession = () => null, isBusy = () => false } = {}) {
+  async function recover({
+    stateForSession = () => null,
+    isBusy = () => false,
+    hasPendingWait = () => false,
+  } = {}) {
     const events = await store.mutate(draft => {
       const at = Number(now());
       const changes = [];
@@ -598,6 +661,32 @@ function createSessionWorkScheduler({
           }
           continue;
         }
+        if (schedule.active && schedule.state === 'frozen' && queued.length
+            && !isBusy(sessionId)
+            && !(schedule.freezeReason === 'awaiting_callback' && hasPendingWait(sessionId))
+            && (LEGACY_TURN_ENDED_REASONS.has(schedule.freezeReason)
+              || schedule.freezeReason === 'awaiting_callback')) {
+          const completed = releaseLegacyTurnEnd(
+            schedule,
+            at,
+            'recovered-legacy-turn-ended',
+            { allowAwaitingCallback: true },
+          );
+          if (completed) {
+            changes.push({
+              type: 'completed',
+              sessionId,
+              entryId: completed.entryId,
+              taskId: completed.taskId || null,
+              queued: queueForDraft(draft, sessionId).length,
+              queuedItems: publicSchedule(
+                schedule,
+                queueForDraft(draft, sessionId),
+              ).queued,
+            });
+            continue;
+          }
+        }
         if (schedule.active && ['starting', 'running', 'assessing'].includes(schedule.state)
             && !isBusy(sessionId)) {
           const activeDelivery = schedule.active.deliveryId
@@ -617,6 +706,7 @@ function createSessionWorkScheduler({
               taskId: schedule.active.taskId || null,
               reason: schedule.freezeReason,
               queued: queued.length,
+              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
             });
             continue;
           }
@@ -640,6 +730,7 @@ function createSessionWorkScheduler({
               entryId: completed.entryId,
               taskId: completed.taskId || null,
               queued: queued.length,
+              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
             });
             continue;
           }
@@ -653,6 +744,7 @@ function createSessionWorkScheduler({
             taskId: schedule.active.taskId || null,
             reason: schedule.freezeReason,
             queued: queued.length,
+            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
           });
         }
       }
@@ -663,6 +755,7 @@ function createSessionWorkScheduler({
       entryId: event.entryId || null,
       taskId: event.taskId || null,
       queued: event.queued == null ? null : event.queued,
+      queuedItems: event.queuedItems || [],
       freezeReason: event.type === 'frozen' ? event.reason : null,
       recovered: true,
     });

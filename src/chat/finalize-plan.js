@@ -228,9 +228,20 @@ function statusEffects(plan, durableAfterAppend) {
       effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
       effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
     ];
-    if (durableAfterAppend || facts.apiError || facts.adapterError
+    if (facts.apiError || facts.adapterError
         || facts.exitKind === 'nonzero_exit' || facts.exitKind === 'signaled') {
-      const effects = [effect('classify-turn-end')];
+      const effects = [
+        effect('freeze-interrupted', { reason: 'error' }),
+        effect('classify-turn-end'),
+      ];
+      if (facts.auxUnhealthy) effects.push(effect('set-status', { status: 'idle', reason: 'aux-unhealthy' }));
+      return effects;
+    }
+    if (durableAfterAppend) {
+      const effects = [
+        effect('complete-session-turn'),
+        effect('classify-turn-end'),
+      ];
       if (facts.auxUnhealthy) effects.push(effect('set-status', { status: 'idle', reason: 'aux-unhealthy' }));
       return effects;
     }
@@ -244,13 +255,18 @@ function statusEffects(plan, durableAfterAppend) {
     return [
       effect('reset-interrupted-resume'),
       effect('set-status', { status: 'idle', reason: 'handoff-resume-failed' }),
+      effect('freeze-interrupted', { reason: 'handoff_resume_failed' }),
       effect('report-handoff-resume-failure', { preserveHandoff: true }),
     ];
   }
-  if (facts.apiError) return [effect('classify-turn-end', { classification: 'api-error' })];
+  if (facts.apiError) return [
+    effect('freeze-interrupted', { reason: 'error' }),
+    effect('classify-turn-end', { classification: 'api-error' }),
+  ];
   if (durableAfterAppend) {
     return [
       effect('reset-interrupted-resume'),
+      effect('complete-session-turn'),
       effect('classify-turn-end', { classification: 'completed' }),
       effect('emit-turn-outcome', { status: 'completed', notifyState: 'completed' }),
     ];
@@ -258,6 +274,7 @@ function statusEffects(plan, durableAfterAppend) {
   if (facts.resultEvent) {
     return [
       effect('set-status', { status: 'idle', reason: 'result-not-durable' }),
+      effect('freeze-interrupted', { reason: 'message_not_durable' }),
       effect('report-result-persistence-failure'),
     ];
   }
