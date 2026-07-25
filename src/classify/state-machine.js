@@ -308,6 +308,14 @@ function createClassifyStateMachine(rawDeps) {
   // once the turn ends dispatchStateAction owns the definitive state verdict.
   function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = {}) {
     res = getUserInputSignalHost().apply(sessionName, res);
+    const currentState = getTaskState(persistedSessions.get(sessionName));
+    // Explicit user/watchdog cancellation owns the turn boundary. An Aux job
+    // already in flight may finish later; never let that stale verdict replace
+    // the immediate E. The next real user turn clears cancelledAt before spawn.
+    if (currentState.classifyState === 'E' && currentState.cancelledAt) {
+      logger.info('classify_result_ignored_after_cancel', { sessionId: sessionName, source });
+      return;
+    }
     if (cs && cs.isStreaming) {
       if (cs.currentTask) {
         cs.currentTask.goal = (res.goal && res.goal !== '-') ? res.goal : '';
@@ -370,6 +378,10 @@ function createClassifyStateMachine(rawDeps) {
       // (auto-continue, background done, API recovered, interrupted resume).
       if (ts.classifyState === 'D' || ts.classifyState === 'W') {
         note(sid, ts.classifyState, 'skipped-DW-guard', ts.classifyState === 'D' ? 'done (terminal)' : 'waiting on user');
+        continue;
+      }
+      if (ts.classifyState === 'E' && ts.cancelledAt) {
+        note(sid, ts.classifyState, 'skipped-cancelled', 'explicit cancellation remains authoritative until next user turn');
         continue;
       }
 
@@ -623,7 +635,7 @@ function createClassifyStateMachine(rawDeps) {
       if (canonicalContinuation && prev.phase === 'done') prev.phase = 'planning';
       // Refresh persisted state: a continued turn means the closed-loop task
       // is still running (classify will refine shortly).
-      setTaskState(sessionName, { classifyState: 'P' });
+      setTaskState(sessionName, { classifyState: 'P', cancelledAt: null, cancelReason: null });
       return prev;
     }
     // Preserve only an unfinished classify-refined legacy goal.
@@ -634,7 +646,7 @@ function createClassifyStateMachine(rawDeps) {
     setTaskState(sessionName, {
       goal: cs.currentTask.goal, phase: cs.currentTask.phase,
       startedAt: cs.currentTask.startedAt, endedAt: null,
-      classifyState: 'P',
+      classifyState: 'P', cancelledAt: null, cancelReason: null,
     });
     return cs.currentTask;
   }

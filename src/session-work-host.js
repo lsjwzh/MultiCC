@@ -14,7 +14,7 @@ function createSessionWorkHost(deps = {}) {
     'runtime', 'getRecord', 'getChatSession', 'getTaskState',
     'pendingUserInput', 'recordUserInput', 'broadcast', 'setTaskState',
     'onTaskBoardQueueEvent', 'classifyDisplay', 'cancelClassify',
-    'assignKillReason', 'appendMessage',
+    'assignKillReason', 'appendMessage', 'cancelPreparation',
   ]) requireFunction(deps, name);
   if (!deps.chatStream || typeof deps.chatStream.isAlive !== 'function'
       || typeof deps.chatStream.cancel !== 'function') {
@@ -316,36 +316,51 @@ function createSessionWorkHost(deps = {}) {
     }).catch(() => {});
   }
 
-  async function cancelActiveTurn(sessionId, { resolveQueue = false } = {}) {
+  async function cancelActiveTurn(sessionId, {
+    resolveQueue = false,
+    reason = 'user_cancelled',
+    killReason = 'user_cancel',
+  } = {}) {
+    const record = deps.getRecord(sessionId);
+    if (!record) return { ok: false, code: 'session_not_found' };
+    // This write is deliberately the first mutation: setTaskState persists and
+    // broadcasts synchronously, so every cancel surface flips the classify bar
+    // to E before process shutdown or scheduler I/O can delay the response.
+    deps.setTaskState(sessionId, {
+      classifyState: 'E',
+      endedAt: Date.now(),
+      cancelledAt: Date.now(),
+      cancelReason: reason,
+    });
     const state = deps.getChatSession(sessionId);
-    if (!state) return { ok: false, code: 'chat_state_not_found' };
-    deps.cancelClassify(state);
-    if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
-      log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested by user`);
-      deps.assignKillReason(state._activeRunner, 'user_cancel');
-      deps.chatStream.cancel(sessionId);
+    deps.cancelPreparation(sessionId, reason);
+    if (state) {
+      deps.cancelClassify(state);
+      deps.assignKillReason(state._activeRunner, killReason);
+      if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
+        log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
+        deps.chatStream.cancel(sessionId);
+      }
+      if (state.claudeProc) {
+        log.log?.(`[multicc/chat] [${sessionId}] Cancel requested (${reason}), killing child process`);
+        try { state.claudeProc.kill('SIGTERM'); } catch (_) {}
+        state.claudeProc = null;
+        state.lineBuf = '';
+      }
       state.isStreaming = false;
       state.streamReplay = [];
-    }
-    if (state.claudeProc) {
-      log.log?.(`[multicc/chat] [${sessionId}] Cancel requested by user, killing child process`);
-      deps.assignKillReason(state._activeRunner, 'user_cancel');
-      try { state.claudeProc.kill('SIGTERM'); } catch (_) {}
-      state.claudeProc = null;
-      state.lineBuf = '';
-      state.isStreaming = false;
-      state.streamReplay = [];
-    }
-    if (state.currentAssistantText || state.currentToolCalls.length) {
-      deps.appendMessage(sessionId, {
-        role: 'assistant',
-        content: state.currentAssistantText,
-        tools: state.currentToolCalls.length ? state.currentToolCalls : undefined,
-        ts: Date.now(),
-        cancelled: true,
-      });
-      state.currentAssistantText = '';
-      state.currentToolCalls = [];
+      const tools = Array.isArray(state.currentToolCalls) ? state.currentToolCalls : [];
+      if (state.currentAssistantText || tools.length) {
+        deps.appendMessage(sessionId, {
+          role: 'assistant',
+          content: state.currentAssistantText || '',
+          tools: tools.length ? tools : undefined,
+          ts: Date.now(),
+          cancelled: true,
+        });
+        state.currentAssistantText = '';
+        state.currentToolCalls = [];
+      }
     }
     if (!scheduler()) return { ok: true };
     const runtime = schedulerRuntime();
@@ -354,10 +369,15 @@ function createSessionWorkHost(deps = {}) {
     // The killed proc's close handler later finds no active entry and no-ops, so
     // this E verdict is the one that sticks (LLM classify is bypassed).
     const completed = await runtime.sessionScheduler.complete(sessionId, {
-      reason: 'user_cancelled',
+      reason,
       classifyState: 'E',
     });
     if (completed.ok) await runtime.tick();
+    // A stale persisted P can have no active scheduler entry. The synchronous E
+    // write above still repaired it, so cancellation is successful/idempotent.
+    if (!completed.ok && completed.code === 'no_active_task') {
+      return { ok: true, alreadyIdle: true };
+    }
     return completed.ok ? { ok: true } : completed;
   }
 
