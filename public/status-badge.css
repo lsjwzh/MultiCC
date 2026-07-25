@@ -1,0 +1,113 @@
+/* Status badge — the one visual treatment for every canonical status.
+ * Vocabulary and tone assignment live in public/status-presentation.js; this file
+ * only resolves a tone token to pixels. Do not add per-page status colours.
+ *
+ * Rules this stylesheet exists to enforce:
+ *   · status is never carried by colour alone — the icon is always rendered, and
+ *     every badge has an accessible name (WCAG 1.4.1 / colour-vision deficiency);
+ *   · only `running` may animate (.st-spin), so an errored card stops spinning
+ *     the instant it turns red;
+ *   · the badge stays inside a 44px-wide touch target on small screens and never
+ *     forces a card to reflow.
+ */
+
+.mc-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: middle;
+  line-height: 1.2;
+  font-size: 12px;
+  color: var(--st-fg, inherit);
+}
+
+.mc-status-ico {
+  flex: 0 0 auto;
+  display: inline-block;
+  font-size: 1em;
+  /* Emoji glyphs vary in advance width; a fixed box keeps rows from jittering
+   * when a status changes (⚪ → ❌ must not shift the label). */
+  width: 1.15em;
+  text-align: center;
+  font-variant-emoji: text;
+}
+
+.mc-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Tone tokens ─────────────────────────────────────────────────────────────
+ * Deliberately NOT scoped to .mc-status: plain text status labels that sit
+ * next to a badge (task-board run-state text, chat status bars) take the same
+ * class and therefore the same colour, so one status can never render in two
+ * different hues on the same card. Fallbacks keep the tone legible on pages that
+ * do not define the palette variables. */
+.st-tone-neutral  { --st-fg: var(--muted, #8b949e); color: var(--st-fg); }
+.st-tone-muted    { --st-fg: var(--muted, #8b949e); color: var(--st-fg); opacity: .8; }
+.st-tone-info     { --st-fg: var(--blue, #6aa3ff); color: var(--st-fg); }
+.st-tone-running  { --st-fg: var(--codex, #3fb950); color: var(--st-fg); }
+.st-tone-waiting  { --st-fg: var(--amber, #e3b341); color: var(--st-fg); }
+.st-tone-blocked  { --st-fg: #d29922; color: var(--st-fg); }
+.st-tone-success  { --st-fg: var(--accent, #3fb950); color: var(--st-fg); }
+.st-tone-danger   { --st-fg: var(--danger, #f85149); color: var(--st-fg); }
+
+/* Error is the one status that also gets weight, so it reads as a fault at a
+ * glance without relying on hue. */
+.mc-status.st-tone-danger .mc-status-label { font-weight: 600; }
+
+/* Pill variant — for surfaces that show the status as a filled chip next to an
+ * icon badge (fleet task rows, queue rows). Put it on a plain <span> alongside a
+ * tone class so the chip does not duplicate the badge's accessible name. */
+.mc-status-pill {
+  display: inline-block;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--st-fg, inherit);
+  background: color-mix(in srgb, var(--st-fg, currentColor) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st-fg, currentColor) 34%, transparent);
+}
+
+@supports not (background: color-mix(in srgb, red 20%, transparent)) {
+  .mc-status-pill { background: transparent; border-color: currentColor; }
+}
+
+/* ── Animation ───────────────────────────────────────────────────────────────
+ * Scoped to .st-spin, which status-presentation.js sets only for `running` and
+ * clears on every update — that is what kills a stale spinner on running→error. */
+@keyframes mc-status-spin { to { transform: rotate(360deg); } }
+
+.mc-status.st-spin .mc-status-ico {
+  animation: mc-status-spin 2.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-status.st-spin .mc-status-ico { animation: none; opacity: .85; }
+}
+
+/* ── High contrast / forced colours ──────────────────────────────────────────
+ * Windows high-contrast and forced-colors modes drop our custom hues entirely;
+ * the icon and the text label are what survive, which is why they are mandatory. */
+@media (forced-colors: active) {
+  .mc-status { color: CanvasText; }
+  .mc-status.st-tone-muted { opacity: 1; }
+}
+
+/* ── Small screens ───────────────────────────────────────────────────────────
+ * Icon-only badges (rendered without .mc-status-label) still need a tappable
+ * box when they are interactive; text badges shrink rather than wrap. */
+@media (max-width: 640px) {
+  .mc-status { font-size: 11px; }
+  .mc-status-label { max-width: 8em; }
+  a.mc-status, button.mc-status, .mc-status[tabindex] {
+    min-height: 32px;
+    padding: 0 4px;
+  }
+}

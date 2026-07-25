@@ -494,27 +494,31 @@ const _workspaceEvents = new Map();    // dirId → event[]
 const _workspaceNotes = new Map();     // sessionId → pending note count
 const _workspaceSummaries = new Map(); // sessionId → { summary, ts } — 最近任务 one-liner
 
-// Mirrors server.js CLASSIFY_DISPLAY — one-letter state → display info
-const _CLASSIFY_BADGE = {
-  D: { label: '✅', tint: 'completed', title: tt('classifyDone') },
-  C: { label: '▶️', tint: 'running', title: tt('classifyContinuing') },
-  W: { label: '⏸️', tint: 'waiting', title: tt('classifyWaitingUser') },
-  B: { label: '⏳', tint: 'waiting', title: tt('classifyWaitingBackground') },
-  E: { label: '⚠️', tint: 'error', title: tt('classifyApiError') },
-  P: { label: '🔄', tint: 'running', title: tt('classifyProcessing') },
+// Per-letter tooltip copy for the classify badge. The glyph, colour and label all
+// come from the shared registry (window.MultiCCStatusPresentation) — only the
+// "why" sentence is classify-specific, so this table holds nothing but titles.
+const _CLASSIFY_TITLE = {
+  D: 'classifyDone',
+  C: 'classifyContinuing',
+  W: 'classifyWaitingUser',
+  B: 'classifyWaitingBackground',
+  E: 'classifyApiError',
+  P: 'classifyProcessing',
 };
 
+// Status vocabulary for every session surface on this page. `cls` is now a
+// canonical status name (idle/queued/running/waiting/blocked/error/done/offline/
+// unknown) rather than the old ad-hoc active/waiting/completed triple, so callers
+// get the same glyph and tone as the task board.
 function wbStatusInfo(status) {
-  switch (status) {
-    case 'thinking': return { text: tt('thinking'), cls: 'active' };
-    case 'editing':  return { text: tt('editing'), cls: 'active' };
-    case 'running':  return { text: tt('running'), cls: 'active' };
-    case 'waiting':  return { text: tt('waiting'), cls: 'waiting' };
-    case 'completed': return { text: tt('completed'), cls: 'completed' };
-    case 'error':    return { text: tt('error'), cls: 'error' };
-    default:         return { text: tt('idle'), cls: '' };
-  }
+  const reg = window.MultiCCStatusPresentation;
+  const canonical = reg.coerceStatus('session', status);
+  const spec = reg.presentation('session', canonical);
+  return { status: canonical, cls: canonical, text: tt(spec.labelKey), icon: spec.icon, tone: spec.tone };
 }
+
+// sessionCardStatusFor() — the one fold from live signals to a canonical status —
+// lives in manage-dashboard.js next to the `_sessionStatus` map it reads.
 
 async function connectWorkspace(dirId) {
   if (_workspaceWs.has(dirId)) return;  // idempotent
@@ -598,9 +602,13 @@ function updateSessionStatusDom(sessionId) {
   if (!st) return;
   const chip = document.getElementById(`sess-status-${sessionId}`);
   if (chip) {
-    const info = wbStatusInfo(st.status);
-    chip.className = 'dot ' + info.cls;   // dot conveys status by colour
-    chip.title = info.text;               // text on hover
+    // applyStatusBadge is idempotent: it clears every tone class and the spinner
+    // flag before applying the current one, so a WebSocket replay or a
+    // running→error flip can never leave a stale glyph or a spinning error card.
+    window.MultiCCStatusPresentation.applyStatusBadge(
+      chip, 'session', sessionCardStatusFor(sessionId), { translate: tt, showLabel: false },
+    );
+    chip.classList.add('dot');
   }
   const fileEl = document.getElementById(`sess-file-${sessionId}`);
   if (fileEl) {
@@ -674,15 +682,10 @@ function updateSessionSummaryDom(sessionId) {
   if (!el) return;
   const s = _workspaceSummaries.get(sessionId);
   const text = s && s.summary ? s.summary : '';
-  // Derive the status icon the same way renderSessionCard does, so the live
-  // update keeps "状态 + 任务简介" instead of falling back to a flat 🗒.
-  const wb = _workspaceStatus.get(sessionId);
-  let cls = '';
-  if (wb && wb.status) { const info = wbStatusInfo(wb.status); cls = info.cls; }
-  const monStatus = _sessionStatus.get(sessionId);
-  if (monStatus === 'waiting') cls = 'waiting';
-  else if (monStatus === 'completed') cls = 'completed';
-  const ico = cls === 'active' ? '🔵' : cls === 'waiting' ? '⏳' : cls === 'completed' ? '✅' : '🗒';
+  // Same fold as the card's status badge, so the summary line can never show a
+  // different verdict from the badge sitting 20px above it.
+  const ico = window.MultiCCStatusPresentation
+    .presentation('session', sessionCardStatusFor(sessionId)).icon;
   el.textContent = text ? ico + ' ' + text : '';
   el.title = text ? `最近任务：${text}` : '';
   el.style.display = text ? '' : 'none';
@@ -696,10 +699,18 @@ function updateSessionClassifyDom(sessionId) {
   const c = _workspaceClassify.get(sessionId);
   const cls = c && c.classifyState ? c.classifyState : null;
   if (cls) {
-    const b = _CLASSIFY_BADGE[cls] || _CLASSIFY_BADGE['P'];
-    el.textContent = b.label;
-    el.title = b.title + (c.goal ? '：' + c.goal : '');
-    el.className = 'classify-badge classify-' + b.tint;
+    const reg = window.MultiCCStatusPresentation;
+    const status = reg.classifyStatus(cls);
+    // `label` carries the classify-specific "why" into the tooltip; `reason` is
+    // the model-authored goal, which the registry sanitizes (no tokens, no paths)
+    // before it reaches the DOM. The accessible name stays the canonical状态 copy.
+    reg.applyStatusBadge(el, 'session', status, {
+      translate: tt,
+      showLabel: false,
+      label: tt(_CLASSIFY_TITLE[String(cls).toUpperCase()] || 'classifyProcessing'),
+      reason: c.goal,
+    });
+    el.classList.add('classify-badge');
     el.style.display = '';
   } else {
     el.style.display = 'none';
@@ -1898,15 +1909,20 @@ function renderAuxModal() {
     const taskType = t.input.taskType || 'unknown';
     const meta = t.input.meta || {};
     const metaStr = meta.sessionName ? `session=${escapeHtml(meta.sessionName)}` : '';
-    let resultHtml = '<span style="color:#d29922;">pending...</span>';
+    // Result column: the registry decides glyph and tone. A finished job shows its
+    // own text next to ✅ instead of relying on green alone, an errored one gets ❌
+    // (it used to be the bare word "ERR" in red), and a cancelled one gets 🚫
+    // instead of sharing "pending"'s amber.
+    const _reg = window.MultiCCStatusPresentation;
+    let resultHtml = _reg.statusBadgeHtml('task', 'running', { translate: tt });
     let durationHtml = '';
     if (t.output) {
-      const isErr = t.output.error;
-      const isCancelled = t.output.cancelled;
-      const text = escapeHtml((t.output.content || '').trim());
-      const color = isErr ? '#f85149' : isCancelled ? '#d29922' : '#3fb950';
-      const label = isErr ? 'ERR' : isCancelled ? 'CANCELLED' : text;
-      resultHtml = `<span style="color:${color};font-weight:600;">${label}</span>`;
+      const outStatus = t.output.error ? 'error' : (t.output.cancelled ? 'cancelled' : 'done');
+      const text = (t.output.content || '').trim();
+      resultHtml = _reg.statusBadgeHtml('task', outStatus, {
+        translate: tt,
+        label: outStatus === 'done' && text ? text : undefined,
+      });
       if (t.output.durationMs) durationHtml = `<span style="color:#484f58;margin-left:8px;">${(t.output.durationMs / 1000).toFixed(1)}s</span>`;
     }
     const promptPreview = escapeHtml((t.input.content || '').split('\n').pop().slice(0, 80));
@@ -2010,15 +2026,20 @@ function renderAuxPanel() {
     const meta = t.input.meta || {};
     const metaStr = meta.sessionName ? `session=${escapeHtml(meta.sessionName)}` : '';
 
-    let resultHtml = '<span style="color:#d29922;">pending...</span>';
+    // Result column: the registry decides glyph and tone. A finished job shows its
+    // own text next to ✅ instead of relying on green alone, an errored one gets ❌
+    // (it used to be the bare word "ERR" in red), and a cancelled one gets 🚫
+    // instead of sharing "pending"'s amber.
+    const _reg = window.MultiCCStatusPresentation;
+    let resultHtml = _reg.statusBadgeHtml('task', 'running', { translate: tt });
     let durationHtml = '';
     if (t.output) {
-      const isErr = t.output.error;
-      const isCancelled = t.output.cancelled;
-      const text = escapeHtml((t.output.content || '').trim());
-      const color = isErr ? '#f85149' : isCancelled ? '#d29922' : '#3fb950';
-      const label = isErr ? 'ERR' : isCancelled ? 'CANCELLED' : text;
-      resultHtml = `<span style="color:${color};font-weight:600;">${label}</span>`;
+      const outStatus = t.output.error ? 'error' : (t.output.cancelled ? 'cancelled' : 'done');
+      const text = (t.output.content || '').trim();
+      resultHtml = _reg.statusBadgeHtml('task', outStatus, {
+        translate: tt,
+        label: outStatus === 'done' && text ? text : undefined,
+      });
       if (t.output.durationMs) durationHtml = `<span style="color:#484f58;margin-left:8px;">${(t.output.durationMs / 1000).toFixed(1)}s</span>`;
     }
 
@@ -2054,14 +2075,26 @@ function renderAuxTaskEvent(msg) {
   // For real-time events, just show a transient notification at top of panel
   const panel = document.getElementById('aux-panel');
   if (!panel) return;
-  const statusColors = { queued: '#d29922', processing: '#58a6ff', done: '#3fb950', error: '#f85149', cancelled: '#6e7681' };
-  const color = statusColors[msg.status] || '#8b949e';
+  // Aux jobs are task-domain work: same registry, same glyphs as the task board.
+  // It used to render the raw upper-cased status with a colour-only border.
+  const reg = window.MultiCCStatusPresentation;
+  const status = reg.coerceStatus('task', msg.status);
+  const spec = reg.presentation('task', status);
   const existing = document.getElementById('aux-live-status');
   if (existing) existing.remove();
   const div = document.createElement('div');
   div.id = 'aux-live-status';
-  div.style.cssText = `padding:8px 12px;margin-bottom:12px;background:#21262d;border-radius:6px;border:1px solid ${color};color:${color};font-weight:600;`;
-  div.textContent = `${msg.status.toUpperCase()}: ${msg.task?.type || ''}${msg.result ? ' → ' + msg.result : ''}${msg.error ? ' → ' + msg.error : ''}`;
+  div.className = `st-tone-${spec.tone}`;
+  div.style.cssText = 'padding:8px 12px;margin-bottom:12px;background:#21262d;border-radius:6px;'
+    + 'border:1px solid currentColor;font-weight:600;display:flex;align-items:center;gap:6px;';
+  div.innerHTML = reg.statusBadgeHtml('task', status, { translate: tt })
+    + '<span class="aux-live-detail" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>';
+  div.querySelector('.aux-live-detail').textContent = [
+    msg.task?.type || '',
+    msg.result ? '→ ' + msg.result : '',
+    // Job errors are backend strings: sanitize before showing (no tokens/paths).
+    msg.error ? '→ ' + reg.sanitizeReason(msg.error) : '',
+  ].filter(Boolean).join(' ');
   panel.prepend(div);
   // Auto-remove after 10s
   setTimeout(() => { if (div.parentNode) div.remove(); }, 10000);

@@ -383,7 +383,8 @@ test('staged-message dock exposes close icon and immediate insert only for pendi
     async onInsert(entryId) { inserted.push(entryId); },
   }, document);
 
-  assert.equal(hint.textContent, '已暂停：awaiting_user_input');
+  // ⏸️ = canonical `waiting` glyph: awaiting_user_input is a pause, not a fault.
+  assert.equal(hint.textContent, '⏸️ 已暂停：awaiting_user_input');
   assert.equal(list.children[0].children.length, 3);
   assert.equal(list.children[1].children.length, 2);
   const actions = list.children[0].children[2];

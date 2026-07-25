@@ -34,16 +34,35 @@
     });
   }
 
+  function statusRegistry() {
+    return global.MultiCCStatusPresentation || (typeof require === 'function'
+      ? require('./status-presentation.js')
+      : null);
+  }
+
+  function translate(key) {
+    return typeof global.t === 'function' ? global.t(key) : key;
+  }
+
+  // Task-card status. The vocabulary, icons, tones and animation policy all come
+  // from the shared registry (public/status-presentation.js) — this only keeps the
+  // legacy `{done, running}` shape the existing card templates and CSS bind to.
   function taskDisplayState(task) {
-    const status = String(task?.status || 'active');
-    const runState = String(task?.runState || 'idle');
-    if (status === 'archived') return { key: 'archived', icon: '🗄', label: '已归档', done: false, running: false };
-    if (status === 'done' || runState === 'done') return { key: 'done', icon: '✅', label: '已完成', done: true, running: false };
-    if (runState === 'running') return { key: 'running', icon: '🟢', label: '进行中', done: false, running: true };
-    if (runState === 'queued') return { key: 'queued', icon: '📥', label: '排队中', done: false, running: false };
-    if (runState === 'waiting') return { key: 'waiting', icon: '⏳', label: '等待中', done: false, running: false };
-    if (runState === 'error') return { key: 'error', icon: '❌', label: '异常', done: false, running: false };
-    return { key: 'idle', icon: '⚪', label: '待处理', done: false, running: false };
+    const registry = statusRegistry();
+    const status = registry.taskStatus({ status: task?.status, runState: task?.runState });
+    const spec = registry.presentation('task', status);
+    return {
+      key: status,
+      status,
+      icon: spec.icon,
+      tone: spec.tone,
+      label: translate(spec.labelKey),
+      ariaLabel: translate(spec.ariaKey),
+      // `running` gates the blink/spin CSS, so it must follow the registry's
+      // spinner policy rather than the status name: error never animates.
+      running: spec.spinner,
+      done: spec.terminal && status === 'done',
+    };
   }
 
   function taskRoutingLabel(task) {

@@ -7,6 +7,7 @@ import '../models/message.dart';
 import '../services/workspace_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 
 /// Dashboard task carousel for sessions used today.
 ///
@@ -203,12 +204,14 @@ class _TaskProgressCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final live = task.live;
-    final statusColor = live != null
-        ? wbStatusColor(live.status)
-        : (task.active ? const Color(0xFF6aa3ff) : const Color(0xFF5b616c));
-    final statusLabel = live != null
-        ? wbStatusLabel(live.status)
-        : (task.active ? '运行中' : '空闲');
+    // 同一个 spec 供色/图标/文案，避免这里再长出一套「活着=运行中」的判断：
+    // 进程活着但没活干是 idle，不是 running。
+    final statusSpec = statusPresentation[sessionCardStatusOf(
+      monitorStatus: live?.status,
+      active: task.active,
+    )]!;
+    final statusColor = statusSpec.color;
+    final statusLabel = statusSpec.label;
     final runtime = runTimeText(live);
     // Activity text aligns to the web fleet scroller priority:
     // current file -> summary -> status/runtime text.
@@ -230,22 +233,16 @@ class _TaskProgressCard extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(
           children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: statusColor,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: statusColor.withValues(alpha: 0.5),
-                    blurRadius: 6,
-                    spreadRadius: 1,
-                  ),
-                ],
+            // 圆点换成状态图标：颜色之外还有第二个通道，异常时是 ❌ 而不是
+            // 一个更红的点。
+            Semantics(
+              label: statusSpec.semanticLabel,
+              child: Text(
+                statusSpec.icon,
+                style: const TextStyle(fontSize: 12),
               ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             Flexible(
               child: RichText(
                 maxLines: 1,

@@ -15,6 +15,7 @@ import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 
 /// Task-board view for one directory: the AI-tagged module->task tree, filtered
 /// to [dirId], with 60s polling + manual refresh, plus the interactions layered
@@ -740,19 +741,16 @@ class _TaskRow extends StatelessWidget {
     );
   }
 
+  /// 行内状态图标。图标表来自中心 registry —— 列表行和详情页曾各写一份，
+  /// running 一处是脉冲点、一处是 🟢，queued/archived 两处都没有。
+  /// 只有 spinner 状态才动：出错的任务立刻停止脉冲，换成 ❌。
   Widget _runStateIcon(String runState, bool isDone) {
-    switch (runState) {
-      case 'running':
-        return const _RunningDot();
-      case 'waiting':
-        return const _EmojiDot('⏳');
-      case 'error':
-        return const _EmojiDot('❌');
-      default:
-        if (isDone) return const _EmojiDot('✅');
-        if (runState == 'done') return const _EmojiDot('✅');
-        return const _EmojiDot('⚪');
-    }
+    final spec = statusPresentation[taskStatusOf(
+      status: isDone ? 'done' : null,
+      runState: runState,
+    )]!;
+    if (spec.spinner) return const _RunningDot();
+    return _EmojiDot(spec.icon, semanticLabel: spec.semanticLabel);
   }
 }
 
@@ -817,11 +815,17 @@ class _RunningDotState extends State<_RunningDot>
 
 class _EmojiDot extends StatelessWidget {
   final String emoji;
-  const _EmojiDot(this.emoji);
+  final String? semanticLabel;
+  const _EmojiDot(this.emoji, {this.semanticLabel});
 
   @override
-  Widget build(BuildContext context) =>
-      Text(emoji, style: const TextStyle(fontSize: 12));
+  Widget build(BuildContext context) {
+    final glyph = Text(emoji, style: const TextStyle(fontSize: 12));
+    // 状态不能只靠颜色/字形传达：读屏用户要听到「状态：出错」。
+    return semanticLabel == null
+        ? glyph
+        : Semantics(label: semanticLabel, child: glyph);
+  }
 }
 
 // ── Task detail sheet ────────────────────────────────────────────────────────
@@ -1000,34 +1004,10 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
     open(m.sessionId, focusMessageId: mid);
   }
 
-  ({String label, Color color, String emoji}) _runStateInfo(
-    String runState,
-    bool isDone,
-  ) {
-    switch (runState) {
-      case 'running':
-        return (
-          label: t('tbRunRunning'),
-          color: const Color(0xFF7fd49a),
-          emoji: '🟢',
-        );
-      case 'waiting':
-        return (
-          label: t('tbRunWaiting'),
-          color: const Color(0xFFe3b341),
-          emoji: '⏳',
-        );
-      case 'error':
-        return (label: t('tbRunError'), color: AppColors.danger, emoji: '❌');
-      case 'done':
-        return (label: t('tbRunDone'), color: AppColors.faint, emoji: '✅');
-      default:
-        if (isDone) {
-          return (label: t('tbRunDone'), color: AppColors.faint, emoji: '✅');
-        }
-        return (label: t('tbRunIdle'), color: AppColors.muted, emoji: '⚪');
-    }
-  }
+  /// 详情页状态 spec。与列表行 _runStateIcon 同源，两处不会再各说各话。
+  StatusSpec _runStateInfo(String runState, bool isDone) => statusPresentation[
+    taskStatusOf(status: isDone ? 'done' : null, runState: runState)
+  ]!;
 
   @override
   Widget build(BuildContext context) {
@@ -1094,12 +1074,15 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
                     runSpacing: 4,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Text(
-                        '${rs.emoji} ${rs.label}',
-                        style: TextStyle(
-                          color: rs.color,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
+                      Semantics(
+                        label: rs.semanticLabel,
+                        child: Text(
+                          '${rs.icon} ${rs.label}',
+                          style: TextStyle(
+                            color: rs.color,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                       Text(
