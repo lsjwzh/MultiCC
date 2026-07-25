@@ -22,10 +22,10 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { DEFAULT_ZCODE_ENGINE } = require('./zcode-engine');
 
 // 引擎路径：优先 ZCODE_ENGINE env（可移植、可追溯），回退到本机 .app 内的默认位置。
-const DEFAULT_ENGINE = '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
-const ZCODE_ENGINE = process.env.ZCODE_ENGINE || DEFAULT_ENGINE;
+const ZCODE_ENGINE = process.env.ZCODE_ENGINE || DEFAULT_ZCODE_ENGINE;
 
 // ── 1. 解析 multicc 传入的参数：--session <id> 用于续轮，末尾位置参数 = prompt ─
 // multicc 以 `node bridge [--session sid] <prompt>` 形式 spawn（payload 是末尾 argv）。

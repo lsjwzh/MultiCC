@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { zcodeEngineCandidates } = require('./zcode-engine');
 
 const WINDOWS_DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
 
@@ -164,8 +165,10 @@ function resolveOpencode(context) {
 
 function resolveZcode(context) {
   const { isWindows, env, homeDir } = context;
+  if (env.ZCODE_ENGINE) return env.ZCODE_ENGINE;
   if (env.ZCODE_CMD) return env.ZCODE_CMD;
   const directHit = firstRunnable([
+    ...zcodeEngineCandidates({ isWindows, homeDir }),
     '/opt/homebrew/bin/zcode',
     '/usr/local/bin/zcode',
     path.join(homeDir, '.local', 'bin', 'zcode'),
