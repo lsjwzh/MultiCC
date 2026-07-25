@@ -257,10 +257,12 @@ test('preparation lease settles after runner handoff and releases every failure 
 });
 
 test('production cutover keeps duplicate, proof and runner ordering explicit', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  // runChatTurn now lives in src/chat/turn-engine.js; the ordering assertions scan
+  // the extracted engine body up to the next engine function's banner comment.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
   const start = source.indexOf('function runChatTurn(sessionName, text, opts = {})');
-  const end = source.indexOf("bus.on('chat:run'", start);
-  assert.ok(start >= 0 && end > start, 'runChatTurn host boundary must exist');
+  const end = source.indexOf('// ── Wait injector: continue a session', start);
+  assert.ok(start >= 0 && end > start, 'runChatTurn engine boundary must exist');
   const body = source.slice(start, end);
   const at = (needle) => {
     const index = body.indexOf(needle);
@@ -566,7 +568,12 @@ test('shutdown partial checkpoint is durable but never a final result proof', ()
 });
 
 test('production lifecycle uses append return, runner ownership and one guarded post-turn boundary', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  // Turn-finalization composition (persistAssistant / turnFinalizationExecutor /
+  // runChatTurn / runner-handoff) now lives in src/chat/turn-engine.js; scan the
+  // concatenated host + engine source so host-only negatives and engine positives
+  // both resolve.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
+    + '\n' + fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
   assert.equal(source.includes('cs._killReason'), false, 'kill reason must not be session-global');
   assert.doesNotMatch(source, /function (?:persistFinalAssistantResult|recordDurableTurnUsage|runDurablePostTurn)\(/,
     'host lifecycle composition must live outside the God file');
@@ -578,7 +585,7 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   assert.match(source, /persistAssistant\(context, append\) \{[\s\S]{0,120}persistFinalAssistantResult\(/,
     'server composition must inject the authoritative assistant writer');
   assert.match(source, /const resultDurable = persistFinalAssistantResult\(/);
-  assert.match(source, /if \(saved\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
+  assert.match(source, /if \(resultDurable\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
   assert.match(source, /runPostTurn\(context, entry\) \{[\s\S]{0,160}runDurablePostTurn\(/);
   assert.match(source, /isCurrentTurnRunner\(cs, turn, runner\)/);
   assert.equal((source.match(/runnerHandedOff = true;/g) || []).length, 2,
