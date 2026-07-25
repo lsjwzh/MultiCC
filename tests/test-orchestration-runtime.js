@@ -202,6 +202,8 @@ test('direct messages and dispatch requests share one success-gated FIFO', async
   assert.deepEqual(injections.map(entry => entry.text), ['direct one']);
   assert.equal(injections[0].opts.clientMsgId, 'browser-direct-1',
     'the committed message must reconcile the browser optimistic bubble');
+  assert.equal(injections[0].opts.directUserInput, true,
+    'typed input must remain distinguishable from automatic continuations');
   assert.match(injections[0].opts.deliveryId, /^session-work:/,
     'durable delivery identity remains owned by the scheduler');
 

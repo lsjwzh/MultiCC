@@ -119,14 +119,26 @@ test('failed turn closure is serialized before its classify verdict', async () =
   assert.ok(assessingIndex >= 0 && freezeIndex > assessingIndex);
 });
 
-test('direct input in classify W is admitted as a correlated continuation', async () => {
-  const h = fixture();
-  h.setClassifyState('W');
-  await h.host.admit('s1', '补充回答', { clientMsgId: 'client-w' });
-  const admission = h.calls.find(call => call[0] === 'admit')[1];
-  assert.equal(admission.source, 'direct');
-  assert.equal(admission.workKind, 'continuation');
-  assert.equal(admission.activeEntryId, 'entry-1');
+test('only classify P stages direct input; every non-P state continues immediately', async () => {
+  for (const classifyState of ['D', 'W', 'B', 'E', null]) {
+    const h = fixture();
+    h.setClassifyState(classifyState);
+    await h.host.admit('s1', `direct ${classifyState}`, {
+      clientMsgId: `client-${classifyState}`,
+    });
+    const admission = h.calls.find(call => call[0] === 'admit')[1];
+    assert.equal(admission.source, 'direct');
+    assert.equal(admission.workKind, 'continuation', `classify ${classifyState}`);
+    assert.equal(admission.activeEntryId, 'entry-1', `classify ${classifyState}`);
+  }
+
+  const processing = fixture();
+  processing.setClassifyState('P');
+  await processing.host.admit('s1', 'stage during process', { clientMsgId: 'client-p' });
+  const staged = processing.calls.find(call => call[0] === 'admit')[1];
+  assert.equal(staged.source, 'direct');
+  assert.equal(staged.workKind, null);
+  assert.equal(staged.activeEntryId, null);
 });
 
 test('classify W/B/E/P pause FIFO and unavailable classify leaves assessment pending', async () => {
