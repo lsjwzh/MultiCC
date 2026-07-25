@@ -24,7 +24,8 @@ class SessionStatus {
 
   /// Live classify/task state from the aux-AI intent classifier, broadcast by
   /// the server over /ws/workspace (snapshot fields + `task_state` events).
-  /// classifyState ∈ D=done · C=continue · W=wait-user · B=wait-bg · E=error · P=processing.
+  /// classifyState ∈ D=done · W=wait-user · B=wait-bg · E=error · P=processing.
+  /// Legacy C may still arrive from old servers and is displayed as W.
   final String? classifyState;
 
   /// The aux-AI's current guess at this session's task goal (一句话目标).

@@ -14,6 +14,7 @@ import '../services/settings_service.dart';
 import '../utils/session_status_helpers.dart';
 import '../widgets/ai_config_sheet.dart';
 import '../widgets/chat_header.dart';
+import '../widgets/chat_runtime_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
@@ -77,14 +78,24 @@ class _ChatViewState extends State<ChatView> {
   /// Mirrors the web's ac-mark-done button (POST /api/sessions/:id/mark-task-done).
   Future<void> _markTaskDone(ChatProvider provider) async {
     try {
-      await ManageService(settings: widget.settings)
-          .markTaskDone(provider.sessionName);
+      await ManageService(
+        settings: widget.settings,
+      ).markTaskDone(provider.sessionName);
       if (!mounted) return;
       // The server will push a task_state update via WS; no manual refresh needed.
     } catch (e) {
       if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
+  Future<void> _retryApiError(ChatProvider provider) async {
+    try {
+      await provider.queueAction('retry');
+    } catch (error) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$e')),
+        SnackBar(content: Text(t('queueActionFailed', {'error': '$error'}))),
       );
     }
   }
@@ -250,9 +261,9 @@ class _ChatViewState extends State<ChatView> {
       }
       if (!found) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(t('messageNotFound'))),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(t('messageNotFound'))));
         return; // fall back to normal bottom
       }
     }
@@ -318,7 +329,11 @@ class _ChatViewState extends State<ChatView> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: Padding(
-                  padding: const EdgeInsets.only(left: 12, right: 12, bottom: 2),
+                  padding: const EdgeInsets.only(
+                    left: 12,
+                    right: 12,
+                    bottom: 2,
+                  ),
                   child: livenessChip(_liveness),
                 ),
               ),
@@ -331,6 +346,16 @@ class _ChatViewState extends State<ChatView> {
                     ? () => _markTaskDone(provider)
                     : null,
               ),
+            _CenteredChatLane(
+              child: ChatRuntimeNoticePanel(
+                apiError: provider.apiErrorPolicy,
+                limit: provider.usageWindowLimit,
+                balance: provider.usageBalance,
+                onRetry: provider.apiErrorPolicy?.canManualRetry == true
+                    ? () => _retryApiError(provider)
+                    : null,
+              ),
+            ),
             if (_behindCount() > 0)
               _BehindMainBanner(
                 behind: _behindCount(),
@@ -1192,7 +1217,7 @@ class _AuxClassifyBar extends StatelessWidget {
   final String goal;
   final String phase;
 
-  /// Live classify-state letter (D/C/W/B/E/P). Drives the pill tint, aligned
+  /// Live classify-state letter (D/W/B/E/P). Drives the pill tint, aligned
   /// with main_shell _classifyBadge and the web CLASSIFY_DISPLAY barTint.
   final String classifyState;
 
@@ -1223,7 +1248,7 @@ class _AuxClassifyBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // classifyState letter (D/C/W/B/E/P) drives the tint - aligned with the
+    // classifyState letter (D/W/B/E/P) drives the tint - aligned with the
     // workspace _classifyBadge and web CLASSIFY_DISPLAY barTint.
     final cs = classifyState.toUpperCase();
     final Color phaseColor;
@@ -1231,12 +1256,11 @@ class _AuxClassifyBar extends StatelessWidget {
     final Color phaseBorder;
     final String stateEmoji;
     switch (cs) {
-      case 'C': // continue
       case 'P': // processing
         phaseColor = const Color(0xFF6cb6ff);
         phaseBg = const Color(0xFF0d1a2e);
         phaseBorder = const Color(0x551f6feb);
-        stateEmoji = cs == 'C' ? '🔵' : '⚡';
+        stateEmoji = '⚡';
         break;
       case 'D': // done
         phaseColor = const Color(0xFF56d364);
@@ -1244,12 +1268,13 @@ class _AuxClassifyBar extends StatelessWidget {
         phaseBorder = const Color(0x55238636);
         stateEmoji = '✅';
         break;
+      case 'C': // legacy continue, retired server-side: render safely as wait
       case 'W': // wait-user
       case 'B': // wait-bg
         phaseColor = const Color(0xFFe3b341);
         phaseBg = const Color(0xFF241c08);
         phaseBorder = const Color(0x55e3b341);
-        stateEmoji = cs == 'W' ? '⏸' : '⏳';
+        stateEmoji = cs == 'B' ? '⏳' : '⏸';
         break;
       case 'E': // error
         phaseColor = const Color(0xFFf85149);
@@ -1316,13 +1341,11 @@ class _AuxClassifyBar extends StatelessWidget {
             GestureDetector(
               onTap: onMarkDone,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
                   color: const Color(0xFF1c4529),
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                      color: const Color(0x882ea043)),
+                  border: Border.all(color: const Color(0x882ea043)),
                 ),
                 child: const Text(
                   '✓ 完成',
@@ -1720,8 +1743,10 @@ class _MessageListState extends State<_MessageList> {
                     prev == null ||
                     msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
                         _timeSeparatorGapMinutes;
-                final bubble =
-                    _maybeHighlight(MessageBubble(message: msg), msg.id);
+                final bubble = _maybeHighlight(
+                  MessageBubble(message: msg),
+                  msg.id,
+                );
                 if (!showTime) return bubble;
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1909,9 +1934,10 @@ class _FocusHighlightState extends State<_FocusHighlight>
       vsync: this,
       duration: const Duration(milliseconds: 3200),
     );
-    _opacity = Tween<double>(begin: 0.45, end: 0.0).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
-    );
+    _opacity = Tween<double>(
+      begin: 0.45,
+      end: 0.0,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
     _ctrl.forward().then((_) {
       if (mounted) widget.onFadeComplete?.call();
     });

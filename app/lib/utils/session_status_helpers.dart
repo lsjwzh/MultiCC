@@ -59,7 +59,8 @@ String wbStatusLabel(String? status) {
 /// Live classify-state (aux-AI intent classifier) badge styling, aligned to the
 /// web fleet cards (manage.js _CLASSIFY_BADGE). Returns null for sessions with
 /// no classify verdict yet, so the badge is simply hidden.
-///   D=done · C=continue · W=wait-user · B=wait-bg · E=api-error · P=processing
+///   D=done · W=wait-user · B=wait-bg · E=api-error · P=processing
+/// Legacy C is rendered as W; it must never imply client-side continuation.
 ({Color color, String label, String emoji})? classifyBadge(String? s) {
   switch (s) {
     case 'D':
@@ -69,11 +70,6 @@ String wbStatusLabel(String? status) {
         emoji: '✅',
       );
     case 'C':
-      return (
-        color: const Color(0xFF6cb6ff),
-        label: t('classifyContinuing'),
-        emoji: '▶️',
-      );
     case 'W':
       return (
         color: const Color(0xFFe3b341),

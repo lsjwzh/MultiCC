@@ -208,19 +208,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
         label = '完成';
         break;
       case 'C':
-        c = const Color(0xFF6cb6ff);
-        emoji = '🔵';
-        label = '继续';
+      case 'W':
+        c = const Color(0xFFe3b341);
+        emoji = '⏸';
+        label = '等用户';
         break;
       case 'P':
         c = const Color(0xFF6cb6ff);
         emoji = '⚡';
         label = '处理';
-        break;
-      case 'W':
-        c = const Color(0xFFe3b341);
-        emoji = '⏸';
-        label = '等用户';
         break;
       case 'B':
         c = const Color(0xFFe3b341);
