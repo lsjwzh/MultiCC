@@ -968,6 +968,35 @@
           </div>
 
           <div class="settings-card">
+            <div class="sc-header">ZCode 认证配置</div>
+            <div class="sc-body" id="zcode-auth-body" style="gap:8px;">
+              <div id="zcode-auth-status" style="font-size:13px;color:var(--faint)">检查中…</div>
+              <div id="zcode-auth-actions" style="display:none;flex-direction:column;gap:8px;">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button class="btn btn-green" style="padding:4px 12px;font-size:12px" id="zcode-sync-btn" onclick="syncZcodeAuth()">从桌面端同步</button>
+                  <button class="btn" style="padding:4px 12px;font-size:12px" id="zcode-login-btn" onclick="loginZcode()">ZCode 官方登录</button>
+                  <button class="btn" style="padding:4px 12px;font-size:12px" onclick="toggleZcodeManualForm()">手动填写 API Key</button>
+                </div>
+                <div id="zcode-manual-form" style="display:none;flex-direction:column;gap:6px;padding:8px 0;">
+                  <div class="setting-row"><label>Provider</label>
+                    <select id="zcode-manual-provider" style="min-width:200px">
+                      <option value="zai">Z.ai (api.z.ai)</option>
+                      <option value="bigmodel">BigModel (open.bigmodel.cn)</option>
+                    </select>
+                  </div>
+                  <div class="setting-row"><label>API Key</label>
+                    <input type="password" id="zcode-manual-key" placeholder="粘贴 API Key" style="min-width:300px;flex:1">
+                  </div>
+                  <div style="display:flex;gap:8px;">
+                    <button class="btn btn-green" style="padding:4px 12px;font-size:12px" onclick="saveZcodeManualKey()">保存</button>
+                    <span class="status-text" id="zcode-manual-status"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-card">
             <div class="sc-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
               <span>全部 CLI 用量（Claude + Codex · 按模型 · 最准）</span>
               <button class="btn" style="padding:4px 10px;font-size:12px" onclick="loadGlobalUsage(true)">重新扫描</button>

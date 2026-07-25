@@ -1,6 +1,7 @@
 'use strict';
 
 const { runStateForFreezeReason } = require('./session-work-scheduler');
+const zcodeAuth = require('./cli-adapters/zcode-auth');
 
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
@@ -32,6 +33,22 @@ function createSessionWorkHost(deps = {}) {
 
   async function admit(sessionId, text, options = {}) {
     if (!deps.getRecord(sessionId)) return { ok: false, code: 'session_not_found' };
+    // L4: ZCode auth pre-check -- if the session is a zcode session and auth
+    // is not configured (and can't be auto-synced from desktop), reject with
+    // configuration_required instead of letting the turn fail with a cryptic
+    // API error. This is a user-actionable state, not a transient fault.
+    const sessionRecord = deps.getRecord(sessionId);
+    if (sessionRecord && sessionRecord.cli === 'zcode') {
+      const authCheck = zcodeAuth.ensureZcodeAuth();
+      if (!authCheck.ok) {
+        deps.broadcast(sessionId, {
+          type: 'error',
+          error: authCheck.message || 'ZCode 尚未配置 API Key。',
+          code: 'configuration_required',
+        });
+        return { ok: false, code: 'configuration_required', message: authCheck.message };
+      }
+    }
     const closing = turnClosures.get(sessionId);
     if (closing) await closing;
     const runtime = schedulerRuntime();
