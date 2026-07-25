@@ -540,6 +540,12 @@ test('canonical classify makes only P stage direct chat input', async t => {
     idempotencyKey: 'direct-error',
   });
   assert.equal(immediate.queued, false);
+  const immediateEvent = h.events.find(event => event.entryId === immediate.entry.id);
+  assert.equal(immediateEvent.queued, false);
+  assert.equal(
+    immediateEvent.queuedItems.some(item => item.entryId === immediate.entry.id),
+    false,
+  );
   const claim = await claimOne(h);
   assert.equal(claim.id, immediate.entry.id);
   assert.notEqual(claim.id, staged.entry.id);
