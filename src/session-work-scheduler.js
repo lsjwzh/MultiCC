@@ -74,6 +74,7 @@ function newSchedule(sessionId, at) {
     state: 'idle',
     freezeReason: null,
     awaitingRequestId: null,
+    takeoverEntryId: null,
     active: null,
     lastDecision: null,
     updatedAt: at,
@@ -137,11 +138,13 @@ function createSessionWorkScheduler({
   function queueForDraft(draft, sessionId) {
     const schedule = draft.sessionSchedules[sessionId];
     const activeDeliveryId = schedule?.active?.deliveryId || schedule?.active?.entryId || null;
+    const takeoverEntryId = schedule?.takeoverEntryId || null;
     return Object.values(draft.outbox)
       .filter(item => item.sessionId === sessionId)
       .filter(item => item.state === 'pending' || item.state === 'leased')
       .filter(item => !isControlItem(item))
       .filter(item => !activeDeliveryId || item.id !== activeDeliveryId)
+      .filter(item => !takeoverEntryId || item.id !== takeoverEntryId)
       .sort((a, b) => a.sequence - b.sequence);
   }
 
@@ -171,15 +174,17 @@ function createSessionWorkScheduler({
     return completed;
   }
 
-  function releaseFrozenForDirectInput(schedule, at) {
-    if (!schedule?.active || schedule.state !== 'frozen'
+  function releaseFrozenForDirectInput(schedule, at, takeoverEntryId) {
+    if (!schedule?.active || !['assessing', 'frozen'].includes(schedule.state)
         || schedule.awaitingRequestId
-        || DIRECT_TAKEOVER_BLOCKED_REASONS.has(schedule.freezeReason)) return null;
+        || (schedule.state === 'frozen'
+          && DIRECT_TAKEOVER_BLOCKED_REASONS.has(schedule.freezeReason))) return null;
     const superseded = clone(schedule.active);
     schedule.active = null;
     schedule.state = 'idle';
     schedule.freezeReason = null;
     schedule.awaitingRequestId = null;
+    schedule.takeoverEntryId = takeoverEntryId || null;
     schedule.lastDecision = {
       action: 'supersede',
       reason: 'direct-user-message',
@@ -220,6 +225,9 @@ function createSessionWorkScheduler({
     if (!items.length) return null;
     const schedule = draft.sessionSchedules[items[0].sessionId];
     if (!schedule || !schedule.active || schedule.state === 'idle') {
+      if (schedule?.takeoverEntryId) {
+        return items.find(item => item.id === schedule.takeoverEntryId) || null;
+      }
       return items[0];
     }
     if (schedule.state !== 'frozen') return null;
@@ -277,12 +285,6 @@ function createSessionWorkScheduler({
     const result = await store.mutate(draft => {
       const at = Number(now());
       const schedule = ensure(draft, cleanSessionId, at);
-      if (!CONTROL_KINDS.has(inferredKind)) {
-        const directTakeover = inferredKind === 'task' && payload.source === 'direct'
-          ? releaseFrozenForDirectInput(schedule, at)
-          : null;
-        if (!directTakeover) releaseLegacyTurnEnd(schedule, at);
-      }
       if (CONTROL_KINDS.has(inferredKind)) {
         if (!schedule.active) {
           return { ok: false, code: 'no_active_task', schedule: publicSchedule(schedule) };
@@ -304,13 +306,22 @@ function createSessionWorkScheduler({
         source: { type: 'session-admission', kind: inferredKind },
         now: at,
       });
+      if (!CONTROL_KINDS.has(inferredKind)) {
+        const directTakeover = inferredKind === 'task'
+          && payload.source === 'direct'
+          && admitted.item.state === 'pending'
+          ? releaseFrozenForDirectInput(schedule, at, admitted.item.id)
+          : null;
+        if (!directTakeover) releaseLegacyTurnEnd(schedule, at);
+      }
       schedule.updatedAt = at;
       const queue = queueForDraft(draft, cleanSessionId);
       return {
         ok: true,
         duplicate: admitted.idempotent,
         entry: clone(admitted.item),
-        queued: !!schedule.active || queue[0]?.id !== admitted.item.id,
+        queued: schedule.takeoverEntryId !== admitted.item.id
+          && (!!schedule.active || queue[0]?.id !== admitted.item.id),
         position: queue.findIndex(item => item.id === admitted.item.id) + 1,
         schedule: publicSchedule(schedule, queue),
       };
@@ -353,6 +364,7 @@ function createSessionWorkScheduler({
           startedAt: null,
           attempt: item.attempts,
         };
+        schedule.takeoverEntryId = null;
       } else if (isActiveReplay(schedule, item) || relatedControl(schedule, item)) {
         schedule.active.deliveryId = item.id;
         schedule.active.workKind = workKind(item);
@@ -413,6 +425,7 @@ function createSessionWorkScheduler({
         schedule.state = 'idle';
         schedule.freezeReason = null;
         schedule.awaitingRequestId = null;
+        schedule.takeoverEntryId = null;
       } else {
         schedule.active.deliveryId = schedule.active.entryId;
         schedule.active.workKind = 'task';
@@ -425,13 +438,22 @@ function createSessionWorkScheduler({
   }
 
   async function turnEnded(sessionId) {
-    return store.mutate(draft => {
+    const result = await store.mutate(draft => {
       const schedule = draft.sessionSchedules[sessionId];
       if (!schedule?.active || !ACTIVE_STATES.has(schedule.state)) return { ok: false, code: 'no_active_task' };
       schedule.state = 'assessing';
       schedule.updatedAt = Number(now());
       return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)) };
     });
+    if (result.ok) emit('assessing', {
+      sessionId,
+      entryId: result.schedule.active?.entryId || null,
+      taskId: result.schedule.active?.taskId || null,
+      schedulerState: 'assessing',
+      queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
+    });
+    return result;
   }
 
   async function freeze(sessionId, reason, { requestId = null, expectedTaskId = null } = {}) {
@@ -488,6 +510,7 @@ function createSessionWorkScheduler({
       schedule.state = 'idle';
       schedule.freezeReason = null;
       schedule.awaitingRequestId = null;
+      schedule.takeoverEntryId = null;
       schedule.lastDecision = {
         action: 'complete',
         reason,
@@ -606,6 +629,57 @@ function createSessionWorkScheduler({
       const schedule = draft.sessionSchedules[sessionId];
       return publicSchedule(schedule || newSchedule(sessionId, 0), queueForDraft(draft, sessionId));
     });
+  }
+
+  async function cancelQueued(sessionId, entryId, {
+    actor = 'user',
+    reason = 'cancelled before start',
+  } = {}) {
+    const cleanEntryId = String(entryId || '').trim();
+    if (!cleanEntryId) throw new TypeError('queued cancellation requires entryId');
+    const result = await store.mutate(draft => {
+      const item = draft.outbox[cleanEntryId];
+      if (!item || item.sessionId !== sessionId || isControlItem(item)) {
+        return { ok: false, code: 'queued_entry_not_found' };
+      }
+      const schedule = ensure(draft, sessionId, Number(now()));
+      const activeIds = new Set([
+        schedule.active?.entryId,
+        schedule.active?.deliveryId,
+      ].filter(Boolean));
+      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
+        return { ok: false, code: 'queued_entry_already_claimed' };
+      }
+      if (item.state !== 'pending') {
+        return { ok: false, code: 'queued_entry_not_pending' };
+      }
+      const at = Number(now());
+      item.state = 'cancelled';
+      item.cancelledAt = at;
+      item.updatedAt = at;
+      item.lastError = String(reason || 'cancelled before start').slice(0, 500);
+      if (schedule.takeoverEntryId === cleanEntryId) schedule.takeoverEntryId = null;
+      schedule.updatedAt = at;
+      return {
+        ok: true,
+        cancelled: {
+          entryId: cleanEntryId,
+          actor: String(actor || 'user').slice(0, 80),
+          at,
+        },
+        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
+      };
+    });
+    if (result.ok) emit('queued_cancelled', {
+      sessionId,
+      entryId: result.cancelled.entryId,
+      actor,
+      schedulerState: result.schedule.state,
+      queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
+      freezeReason: result.schedule.freezeReason,
+    });
+    return result;
   }
 
   async function noteQueued(entryId) {
@@ -798,6 +872,7 @@ function createSessionWorkScheduler({
     freeze,
     complete,
     resolve,
+    cancelQueued,
     status,
     noteQueued,
     list,
