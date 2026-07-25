@@ -711,26 +711,50 @@
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
-    .session-queue-cancel {
+    .session-queue-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .session-queue-insert,
+    .session-queue-close {
       min-height: 28px;
-      padding: 3px 9px;
-      color: #f85149;
-      background: transparent;
-      border: 1px solid #6e3630;
-      border-radius: 6px;
       font: inherit;
       cursor: pointer;
     }
-    .session-queue-cancel:hover:not(:disabled) {
+    .session-queue-insert {
+      padding: 3px 9px;
+      color: #79c0ff;
+      background: rgba(56, 139, 253, .08);
+      border: 1px solid #1f6feb;
+      border-radius: 6px;
+    }
+    .session-queue-insert:hover:not(:disabled) {
+      color: #fff;
+      background: #1f6feb;
+    }
+    .session-queue-close {
+      width: 28px;
+      padding: 0;
+      color: #f85149;
+      background: transparent;
+      border: 1px solid #6e3630;
+      border-radius: 50%;
+      font-size: 20px;
+      line-height: 1;
+    }
+    .session-queue-close:hover:not(:disabled) {
       color: #fff;
       background: #da3633;
       border-color: #f85149;
     }
-    .session-queue-cancel:focus-visible {
+    .session-queue-insert:focus-visible,
+    .session-queue-close:focus-visible {
       outline: 2px solid #58a6ff;
       outline-offset: 2px;
     }
-    .session-queue-cancel:disabled {
+    .session-queue-insert:disabled,
+    .session-queue-close:disabled {
       color: #8b949e;
       border-color: #3d444d;
       cursor: wait;

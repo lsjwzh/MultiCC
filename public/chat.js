@@ -2424,7 +2424,13 @@ for (const [name, binding] of Object.entries(eventStateBindings)) {
 const cancelQueuedSessionEntry = window.MultiCCChatSessionQueue.createCancelHandler(
   { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
 );
-window.MultiCCChatSessionQueue.configure({ onCancel: cancelQueuedSessionEntry });
+const insertQueuedSessionEntry = window.MultiCCChatSessionQueue.createInsertHandler(
+  { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
+);
+window.MultiCCChatSessionQueue.configure({
+  onCancel: cancelQueuedSessionEntry,
+  onInsert: insertQueuedSessionEntry,
+});
 chatEventController = window.MultiCCChatEventController.createEventController({
   state: chatEventState,
   liveUi: chatLiveUi,
