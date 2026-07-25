@@ -19,6 +19,42 @@ const DIRECT_TAKEOVER_BLOCKED_REASONS = new Set([
   'awaiting_callback',
   'continuation_ready',
 ]);
+
+// Explicit freezeReason → display runState map. Replaces the old
+// `String(reason).includes('error') ? 'error' : 'waiting'` substring heuristic,
+// which collapsed EVERY non-"error" freeze into "Waiting for user" — falsely
+// telling the user to act when the session was actually mid-recovery, settling a
+// durable ack, or interrupted. runState vocabulary is the fixed renderable set
+// {queued, running, waiting, error, done, idle}. A reason not listed here falls
+// back to the old heuristic so a future scheduler reason never crashes the UI.
+const FREEZE_REASON_RUN_STATE = Object.freeze({
+  // Genuinely handed back to the user / an external party.
+  awaiting_user_input: 'waiting',
+  awaiting_callback: 'waiting',
+  waiting: 'waiting',
+  // Faults / interruptions — surface as an attention state, NOT "waiting on you".
+  error: 'error',
+  classification_error: 'error',
+  unknown_interruption: 'error',
+  legacy_unresolved: 'error',
+  // Live work the scheduler will drive forward — not user-blocked.
+  delivery_recovery: 'running',
+  continuation_ready: 'running',
+  incomplete_requires_resume: 'running',
+  // Claim released; work is pending re-run.
+  prelaunch_deferred: 'queued',
+});
+
+function runStateForFreezeReason(reason) {
+  const key = String(reason || '');
+  if (Object.prototype.hasOwnProperty.call(FREEZE_REASON_RUN_STATE, key)) {
+    return FREEZE_REASON_RUN_STATE[key];
+  }
+  // Backstop for any future/unknown reason: preserve the legacy heuristic so a
+  // reason literally containing "error" still reads as a fault, else wait.
+  return key.includes('error') ? 'error' : 'waiting';
+}
+
 const MAX_PUBLIC_MESSAGE_LENGTH = 20_000;
 
 function clone(value) {
@@ -886,7 +922,9 @@ function createSessionWorkScheduler({
 module.exports = {
   ACTIVE_STATES,
   CONTROL_KINDS,
+  FREEZE_REASON_RUN_STATE,
   createSessionWorkScheduler,
   isControlItem,
+  runStateForFreezeReason,
   workKind,
 };

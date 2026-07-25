@@ -7,7 +7,33 @@ const path = require('path');
 const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration-store');
 const { createOutbox } = require('../src/outbox');
-const { createSessionWorkScheduler } = require('../src/session-work-scheduler');
+const {
+  createSessionWorkScheduler,
+  runStateForFreezeReason,
+} = require('../src/session-work-scheduler');
+
+test('runStateForFreezeReason maps each freeze reason to a truthful runState', () => {
+  // User / external hand-off → waiting (the only reasons that mean "act now").
+  assert.equal(runStateForFreezeReason('awaiting_user_input'), 'waiting');
+  assert.equal(runStateForFreezeReason('awaiting_callback'), 'waiting');
+  assert.equal(runStateForFreezeReason('waiting'), 'waiting');
+  // Faults / interruptions → error, NOT a false "waiting on you".
+  assert.equal(runStateForFreezeReason('error'), 'error');
+  assert.equal(runStateForFreezeReason('classification_error'), 'error');
+  assert.equal(runStateForFreezeReason('unknown_interruption'), 'error');
+  assert.equal(runStateForFreezeReason('legacy_unresolved'), 'error');
+  // Live work the scheduler will drive forward → running.
+  assert.equal(runStateForFreezeReason('delivery_recovery'), 'running');
+  assert.equal(runStateForFreezeReason('continuation_ready'), 'running');
+  assert.equal(runStateForFreezeReason('incomplete_requires_resume'), 'running');
+  // Deferred claim → queued.
+  assert.equal(runStateForFreezeReason('prelaunch_deferred'), 'queued');
+  // Unknown reason falls back to the legacy heuristic (safe backstop).
+  assert.equal(runStateForFreezeReason('some_future_error_state'), 'error');
+  assert.equal(runStateForFreezeReason('something_new'), 'waiting');
+  assert.equal(runStateForFreezeReason(null), 'waiting');
+  assert.equal(runStateForFreezeReason(undefined), 'waiting');
+});
 
 function fixture(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-session-scheduler-'));

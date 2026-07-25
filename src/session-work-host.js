@@ -1,5 +1,7 @@
 'use strict';
 
+const { runStateForFreezeReason } = require('./session-work-scheduler');
+
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
     throw new TypeError(`[session-work-host] ${name} port is required`);
@@ -91,11 +93,12 @@ function createSessionWorkHost(deps = {}) {
     if (state?.queueState === 'queued') return 'queued';
     if (state?.queueState === 'running') return 'running';
     if (state?.queueState === 'frozen') {
-      return String(state.queueFreezeReason || '').includes('error') ? 'error' : 'waiting';
+      // Explicit reason→state map (session-work-scheduler) — never the old
+      // substring heuristic that mislabelled interruption/recovery as "waiting".
+      return runStateForFreezeReason(state.queueFreezeReason);
     }
     const classifyState = state?.classifyState;
     if (!classifyState) return 'idle';
-    if (classifyState === 'A') return 'running';
     const cardStatus = deps.classifyDisplay(classifyState).cardStatus;
     return cardStatus === 'completed' ? 'done' : cardStatus;
   }
