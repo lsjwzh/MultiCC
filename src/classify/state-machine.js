@@ -86,7 +86,12 @@ function createClassifyStateMachine(rawDeps) {
   }
 
   function dispatchStateAction(result, ctx) {
-    const { state, goal, phase, background, error } = result;
+    const { state, goal, phase } = result;
+    // The letter IS the state (single source). Derive the legacy error/background
+    // flags locally so the W/B/E branches below read naturally; future tranches
+    // drop them entirely. No other module derives these from a word+flags shape.
+    const error = state === 'E';
+    const background = state === 'B';
     const { sessionName, sessionId, cs, isTerminal } = ctx;
 
     // ── Classify history (persisted, last 7 days) ────────────────────────
@@ -119,13 +124,13 @@ function createClassifyStateMachine(rawDeps) {
 
     // Mid-stream reclassify only observes goal/phase. Turn-end owns state and
     // side effects; persisting a provisional classifyState poisons scan guards.
-    if (cs && cs.isStreaming && state !== 'running') {
+    if (cs && cs.isStreaming && state !== 'P') {
       console.log(`[multicc/scan] ${sessionName} reclassify in-flight (isStreaming): state=${state}, 纯观察跳过（等 turn 结束重判）`);
       return;
     }
 
     // ── Dispatch per state ──────────────────────────────────────────────
-    if (state === 'running') {
+    if (state === 'P') {
       // P — still processing. Two sub-cases:
       if (cs && cs.isStreaming) {
         // (1) Genuinely mid-turn (a turn IS in flight) — just refresh labels.
@@ -146,7 +151,7 @@ function createClassifyStateMachine(rawDeps) {
     }
 
     getSessionWorkHost().classifyTransition(sessionName, cs?._currentTaskId || null, result);
-    if (state === 'completed') {
+    if (state === 'D') {
       // D — task genuinely finished. This is the ONLY terminal state.
       const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
       if (isTerminal) {
@@ -212,7 +217,9 @@ function createClassifyStateMachine(rawDeps) {
     }
 
     // Common waiting-state broadcast — driven by classifyState letter.
-    const cls = error ? 'E' : background ? 'B' : 'W';
+    // state is already the letter (W/B/E, or P falling through when exhausted);
+    // preserve the old P-fallthrough→W rendering to avoid a behavior shift here.
+    const cls = state === 'P' ? 'W' : state;
     const disp = classifyDisplay(cls);
     const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
     const policyMessage = error && cs?._lastApiErrorDecision
@@ -232,8 +239,8 @@ function createClassifyStateMachine(rawDeps) {
     // Persist the accurate letter for observability. scan re-judges C/B/E/P and
     // skips D/W; C never reaches this branch merely because auto-inject is off.
     setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() });
-    // Reset auto-continue guard on a plain W (user is in charge now). B/E/C keep their own flow.
-    if (state === 'waiting' && !background && !error) {
+    // Reset auto-continue guard on a plain W (user is in charge now). B/E keep their own flow.
+    if (state === 'W') {
       getWaitInjector().resetAuto(sessionName);
     }
   }
@@ -321,7 +328,7 @@ function createClassifyStateMachine(rawDeps) {
     }
     // Turn over - dispatch state action.
     dispatchStateAction(res, { sessionName, sessionId, cs, isTerminal: false, cwd });
-    console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.error ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
+    console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.state === 'E' ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
   }
 
   function scanAndReclassify() {

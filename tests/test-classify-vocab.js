@@ -20,30 +20,31 @@ const {
   PHASE_LABELS,
 } = require('../src/classify/vocab');
 
-test('state letter maps to the correct runtime state, background, and error flags', () => {
+test('state letter is the single source of truth (D/W/B/E/P); C retires to W', () => {
   const cases = [
-    ['P', { state: 'running', background: false, error: false }],
-    // C is RETIRED — it now collapses to plain waiting (W), never 'continue'.
-    ['C', { state: 'waiting', background: false, error: false }],
-    ['W', { state: 'waiting', background: false, error: false }],
-    ['B', { state: 'waiting', background: true, error: false }],
-    ['E', { state: 'waiting', background: false, error: true }],
-    ['D', { state: 'completed', background: false, error: false }],
+    ['P', 'P'],
+    // C is RETIRED — collapses to W.
+    ['C', 'W'],
+    ['W', 'W'],
+    ['B', 'B'],
+    ['E', 'E'],
+    ['D', 'D'],
   ];
   for (const [letter, expect] of cases) {
     const r = parseClassifyResult(`修复登录样式\n实现中\n${letter}`);
-    assert.equal(r.state, expect.state, letter);
-    assert.equal(r.background, expect.background, `${letter} background`);
-    assert.equal(r.error, expect.error, `${letter} error`);
+    assert.equal(r.state, expect, letter);
+    // No word+flags intermediate: the letter IS the state.
+    assert.equal(r.background, undefined, `${letter} no background flag`);
+    assert.equal(r.error, undefined, `${letter} no error flag`);
   }
 });
 
 test('unknown/unparseable state defaults to waiting, NEVER completed', () => {
-  assert.equal(parseClassifyResult('目标\n实现中\nZ').state, 'waiting');
-  assert.equal(parseClassifyResult('').state, 'waiting');
-  assert.equal(parseClassifyResult('garbage only').state, 'waiting');
+  assert.equal(parseClassifyResult('目标\n实现中\nZ').state, 'W');
+  assert.equal(parseClassifyResult('').state, 'W');
+  assert.equal(parseClassifyResult('garbage only').state, 'W');
   // A single blank/space state line must not fall through to completed.
-  assert.equal(parseClassifyResult('目标\n实现中\n ').state, 'waiting');
+  assert.equal(parseClassifyResult('目标\n实现中\n ').state, 'W');
 });
 
 test('unresolved request_user_input evidence authoritatively yields plain waiting', () => {
@@ -53,9 +54,7 @@ test('unresolved request_user_input evidence authoritatively yields plain waitin
     question: '是否立即发布？',
     resolved: false,
   });
-  assert.equal(resolved.state, 'waiting');
-  assert.equal(resolved.background, false);
-  assert.equal(resolved.error, false);
+  assert.equal(resolved.state, 'W');
   assert.equal(resolved.evidence, 'request_user_input');
   assert.equal(applyUserInputEvidence(classified, null), classified);
   assert.equal(applyUserInputEvidence(classified, { resolved: true }), classified);
@@ -94,13 +93,13 @@ test('DeepSeek thinking guards: unicode marker strips preceding text, think-tags
   // so the real goal that follows becomes line 1.
   const r2 = parseClassifyResult('junk reasoning<｜end▁of▁thinking｜>清理缓存\n实现中\nC');
   assert.equal(r2.goal, '清理缓存');
-  assert.equal(r2.state, 'waiting'); // C retired → collapses to W
+  assert.equal(r2.state, 'W'); // C retired → collapses to W
   // <think></think> tags themselves are stripped (their content is NOT removed —
   // the classifier relies on the unicode marker above for that), so empty tags
   // just leave the goal line intact.
   const r = parseClassifyResult('<think></think>真目标\n实现中\nD');
   assert.equal(r.goal, '真目标');
-  assert.equal(r.state, 'completed');
+  assert.equal(r.state, 'D');
 });
 
 test('buildClassifySystemPrompt embeds the prior goal and the full state vocabulary', () => {
@@ -160,10 +159,10 @@ test('classify C is retired: no dispatch branch persists it, it falls through to
     assert.equal(source.indexOf("classifyState: 'C'"), -1,
       `must never persist classifyState C (${file})`);
   }
-  // parseClassifyResult is the single retirement point: C → plain waiting.
-  assert.equal(parseClassifyResult('目标\n实现中\nC').state, 'waiting');
-  assert.equal(parseClassifyResult('目标\n实现中\nC').background, false);
-  assert.equal(parseClassifyResult('目标\n实现中\nC').error, false);
+  // parseClassifyResult is the single retirement point: C → plain W.
+  assert.equal(parseClassifyResult('目标\n实现中\nC').state, 'W');
+  assert.equal(parseClassifyResult('目标\n实现中\nC').background, undefined);
+  assert.equal(parseClassifyResult('目标\n实现中\nC').error, undefined);
 });
 
 test('optimistic completion cannot overwrite a pending structured question', () => {
