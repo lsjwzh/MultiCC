@@ -207,8 +207,16 @@ function buildHandoffCheckpoint({ session, fromCli, toCli, history, git, now = D
 function renderHandoffPrompt(handoff) {
   if (!handoff || !handoff.checkpoint) return '';
   const cp = handoff.checkpoint;
-  const isContextReset = handoff.reason === 'history_clear_keep' || cp.reason === 'history_clear_keep';
-  const lines = isContextReset ? [
+  const isManualRotation = handoff.reason === 'manual_native_context_rotate'
+    || cp.reason === 'manual_native_context_rotate';
+  const isContextReset = isManualRotation || handoff.reason === 'history_clear_keep'
+    || cp.reason === 'history_clear_keep';
+  const lines = isManualRotation ? [
+    '[MultiCC context checkpoint v1]',
+    'The user started a fresh native CLI context while preserving the full MultiCC display history.',
+    'Use the verified bounded checkpoint below as prior context.',
+    `Checkpoint id: ${handoff.id || 'unknown'}`,
+  ] : isContextReset ? [
     '[MultiCC context checkpoint v1]',
     'The user cleared native CLI context but explicitly kept recent visible messages.',
     'Every native CLI session was invalidated. Use the verified visible checkpoint below as prior context.',
