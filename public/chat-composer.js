@@ -42,7 +42,8 @@
     const getUserInputRequestId = opts.getUserInputRequestId || (() => null);
     const consumeUserInputRequestId = opts.consumeUserInputRequestId || (() => {});
     const resetHistory = opts.resetHistory || (() => {});
-    const addUserMessage = opts.addUserMessage || (() => {});
+    const addUserMessage = opts.addUserMessage || (() => {})
+  const stageUserMessage = opts.stageUserMessage || (() => {});
     const goalWrap = opts.goalWrap || (task => task);
     const debug = opts.debug || (() => {});
     const webSocketOpen = opts.webSocketOpen == null ? 1 : opts.webSocketOpen;
@@ -133,7 +134,8 @@
 
       const clientMsgId = newClientMsgId();
       const userInputRequestId = getUserInputRequestId();
-      addUserMessage(text, clientMsgId);
+      if (typeof stageUserMessage === 'function') stageUserMessage(text, clientMsgId);
+      else addUserMessage(text, clientMsgId);
       clearInput();
       debug('state', `send() — WS ▶ user_message (${text.length} chars)${goalOptions ? ' [goal]' : ''}`);
       try {
