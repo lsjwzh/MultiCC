@@ -389,6 +389,8 @@ function createSessionWorkScheduler({
         ? result.schedule.queued
         : result.schedule.queued.filter(item => item.entryId !== result.entry.id);
       emit('queued', {
+        message: result.entry.payload?.message || null,
+        clientMsgId: result.entry.payload?.options?.clientMsgId || null,
         sessionId: cleanSessionId,
         entryId: result.entry.id,
         taskId: result.entry.payload?.taskId || null,
