@@ -162,3 +162,114 @@ test('poller: adapter failure caches null briefly (no per-turn hammering)', asyn
     },
   );
 });
+
+// ── Codex weekly (real ChatGPT backend, OAuth read) ──
+
+const CODEX_AUTH = () => ({ accessToken: 'at-oauth', accountId: 'acct-1' });
+
+test('Codex adapter surfaces the WEEKLY window (7d) from the usage read', async () => {
+  await withFetch(
+    (url, opts) => {
+      assert.strictEqual(url, 'https://chatgpt.com/backend-api/wham/usage');
+      assert.strictEqual(opts.headers.Authorization, 'Bearer at-oauth');
+      assert.strictEqual(opts.headers['ChatGPT-Account-Id'], 'acct-1');
+      // prolite-style: the only window is a 7-day one, in the "primary" slot.
+      return okJson({
+        plan_type: 'prolite',
+        rate_limit: {
+          allowed: true, limit_reached: false,
+          primary_window: { used_percent: 64, limit_window_seconds: 604800, reset_after_seconds: 341324, reset_at: 1785287053 },
+          secondary_window: null,
+        },
+      });
+    },
+    async () => {
+      const dto = await poller.pollCodexUsage({ strategy: 'codex-oauth-usage' }, 0, 6000, CODEX_AUTH);
+      assert.strictEqual(dto.kind, 'window');
+      assert.strictEqual(dto.provider, 'codex');
+      assert.strictEqual(dto.rateLimitType, 'weekly');
+      assert.strictEqual(dto.status, 'allowed');
+      assert.ok(Math.abs(dto.utilization - 0.64) < 1e-9);
+      assert.strictEqual(dto.resetsAt, 1785287053);
+      assert.strictEqual(dto.tier, 'prolite');
+    },
+  );
+});
+
+test('Codex adapter classifies by window length, not slot (weekly in secondary)', async () => {
+  await withFetch(
+    () => okJson({
+      plan_type: 'pro',
+      rate_limit: {
+        allowed: true, limit_reached: false,
+        primary_window: { used_percent: 30, limit_window_seconds: 18000, reset_at: 111 },   // 5h — ignored
+        secondary_window: { used_percent: 85, limit_window_seconds: 604800, reset_at: 222 }, // weekly — chosen
+      },
+    }),
+    async () => {
+      const dto = await poller.pollCodexUsage({ strategy: 'codex-oauth-usage' }, 0, 6000, CODEX_AUTH);
+      assert.strictEqual(dto.rateLimitType, 'weekly');
+      assert.strictEqual(dto.status, 'allowed_warning', '85% → warning');
+      assert.ok(Math.abs(dto.utilization - 0.85) < 1e-9);
+      assert.strictEqual(dto.resetsAt, 222, 'reset from the weekly window');
+    },
+  );
+});
+
+test('Codex adapter: limit_reached → rejected; derives reset from reset_after', async () => {
+  await withFetch(
+    () => okJson({
+      rate_limit: {
+        limit_reached: true,
+        primary_window: { used_percent: 100, limit_window_seconds: 604800, reset_after_seconds: 3600 },
+        secondary_window: null,
+      },
+    }),
+    async () => {
+      const dto = await poller.pollCodexUsage({ strategy: 'codex-oauth-usage' }, 10_000, 6000, CODEX_AUTH);
+      assert.strictEqual(dto.status, 'rejected');
+      assert.strictEqual(dto.resetsAt, 10 + 3600, 'now(10s) + reset_after(3600)');
+    },
+  );
+});
+
+test('Codex adapter: only a short (5h) window → null (codex is weekly-only, never mislabel)', async () => {
+  await withFetch(
+    () => okJson({ rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18000 }, secondary_window: null } }),
+    async () => {
+      const dto = await poller.pollCodexUsage({ strategy: 'codex-oauth-usage' }, 0, 6000, CODEX_AUTH);
+      assert.strictEqual(dto, null);
+    },
+  );
+});
+
+test('Codex adapter: missing OAuth token → null, no fetch', async () => {
+  await withFetch(
+    () => { throw new Error('should not fetch'); },
+    async (calls) => {
+      const dto = await poller.pollCodexUsage({ strategy: 'codex-oauth-usage' }, 0, 6000, () => null);
+      assert.strictEqual(dto, null);
+      assert.strictEqual(calls.length, 0);
+    },
+  );
+});
+
+test('poller dedups codex OAuth by keyHashSeed across sessions → one fetch', async () => {
+  const target = { providerId: 'codex-official', host: 'chatgpt.com', apiKey: null, keyHashSeed: 'codex-oauth', strategy: 'codex-oauth-usage' };
+  await withFetch(
+    () => okJson({ rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 604800, reset_at: 5 }, secondary_window: null } }),
+    async (calls) => {
+      const seen = [];
+      const p = poller.createUsageLimitPoller({
+        resolveTarget: () => target,
+        broadcast: (sid, dto) => seen.push({ sid, dto }),
+        now: () => 0,
+        adapters: { 'codex-oauth-usage': (t, n) => poller.pollCodexUsage(t, n, 6000, CODEX_AUTH) },
+      });
+      await Promise.all([p.onTurnComplete('s-a'), p.onTurnComplete('s-b')]);
+      assert.strictEqual(calls.length, 1, 'two sessions, one shared poll');
+      assert.strictEqual(seen.length, 2, 'both sessions get the broadcast');
+      assert.strictEqual(seen[0].dto.provider, 'codex');
+    },
+  );
+});

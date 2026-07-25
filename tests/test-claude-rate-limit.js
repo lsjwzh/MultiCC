@@ -173,6 +173,46 @@ test('GLM window limit labels as GLM 5h and shows under codex, hides under claud
   }
 });
 
+test('Codex weekly window labels as Codex 周 and shows under codex, hides under claude', () => {
+  const value = normalizeFiveHourRateLimit({
+    status: 'allowed', rateLimitType: 'weekly', utilization: 0.64,
+    resetsAt: Math.floor(Date.now() / 1000) + 3600, provider: 'codex',
+  }, Date.now());
+  assert.equal(value.provider, 'codex');
+  assert.match(formatFiveHourRateLimit(value).text, /^Codex 周 64% · .+ 重置$/);
+  assert.match(formatFiveHourRateLimit(value).title, /周额度/);
+
+  const element = { style: {}, textContent: '', title: '' };
+  const values = new Map();
+  global.document = { getElementById: id => id === 'claude-rate-limit-bar' ? element : null };
+  global.localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, v) => values.set(key, v),
+    removeItem: key => values.delete(key),
+  };
+  try {
+    consumeRateLimitEvent({
+      status: 'allowed', rateLimitType: 'weekly', utilization: 0.64,
+      resetsAt: Math.floor(Date.now() / 1000) + 3600, provider: 'codex',
+    }, 'codex-sess');
+    setCli('codex');
+    assert.equal(element.style.display, 'block', 'Codex weekly shows under codex');
+    assert.match(element.textContent, /^Codex 周 64%/);
+    setCli('claude');
+    assert.equal(element.style.display, 'none', 'Codex weekly hidden under claude');
+  } finally {
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+  }
+});
+
+test('rejects a non-window rateLimitType (e.g. seven_day) for codex too', () => {
+  assert.equal(normalizeFiveHourRateLimit({
+    status: 'allowed', rateLimitType: 'seven_day', utilization: 0.5, provider: 'codex',
+  }, Date.now()), null);
+});
+
 test('DeepSeek balance normalizes, formats, and renders in its own bar under codex', () => {
   assert.equal(normalizeBalance({ kind: 'window' }), null, 'rejects non-balance');
   const bal = normalizeBalance({ kind: 'balance', available: true, currency: 'CNY', total: 110 });
