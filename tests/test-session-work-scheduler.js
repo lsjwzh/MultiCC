@@ -353,7 +353,7 @@ test('legacy classifier waiting is released, while structured wait and error rem
   assert.equal(await claimOne(failed, 'failed'), null);
 });
 
-test('direct user admission takes over an interrupted frozen turn and preserves queued FIFO', async t => {
+test('chat input takes over post-turn assessing before older queued work without consuming that queue', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
     sessionId: 's1', text: 'active', idempotencyKey: 'active',
@@ -362,7 +362,7 @@ test('direct user admission takes over an interrupted frozen turn and preserves 
   const queued = await h.scheduler.admit({
     sessionId: 's1', text: 'already queued', idempotencyKey: 'queued',
   });
-  await h.scheduler.freeze('s1', 'unknown_interruption');
+  await h.scheduler.turnEnded('s1');
   const next = await h.scheduler.admit({
     sessionId: 's1', text: 'next user message', idempotencyKey: 'next',
   });
@@ -370,7 +370,13 @@ test('direct user admission takes over an interrupted frozen turn and preserves 
   assert.equal(next.schedule.active, null);
   assert.equal(next.schedule.lastDecision.action, 'supersede');
   assert.equal(next.schedule.lastDecision.reason, 'direct-user-message');
-  assert.deepEqual(next.schedule.queued.map(item => item.text), ['already queued', 'next user message']);
+  assert.deepEqual(next.schedule.queued.map(item => item.text), ['already queued']);
+  const takeover = await claimOne(h);
+  assert.equal(takeover.id, next.entry.id);
+  await startClaim(h, takeover);
+  assert.deepEqual((await h.scheduler.status('s1')).queued.map(item => item.text), ['already queued']);
+  assert.equal(await claimOne(h), null, 'older queue remains paused behind the direct takeover');
+  assert.equal((await h.scheduler.complete('s1')).ok, true);
   assert.equal((await claimOne(h)).id, queued.entry.id);
 });
 
@@ -412,4 +418,38 @@ test('direct takeover releases legacy waiting but preserves correlated input and
   });
   assert.equal((await callback.scheduler.status('callback')).state, 'frozen');
   assert.equal(await claimOne(callback, 'callback'), null);
+});
+
+test('a pending queued entry can be cancelled individually but a leased entry cannot', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(h, await claimOne(h));
+  const first = await h.scheduler.admit({
+    sessionId: 's1', text: 'cancel me', idempotencyKey: 'cancel-me',
+  });
+  const second = await h.scheduler.admit({
+    sessionId: 's1', text: 'keep me', idempotencyKey: 'keep-me',
+  });
+
+  const cancelled = await h.scheduler.cancelQueued('s1', first.entry.id, {
+    actor: 'test',
+    reason: 'no longer needed',
+  });
+  assert.equal(cancelled.ok, true);
+  assert.deepEqual(cancelled.schedule.queued.map(item => item.text), ['keep me']);
+  assert.equal((await h.outbox.get(first.entry.id)).state, 'cancelled');
+  assert.equal(h.events.at(-1).type, 'queued_cancelled');
+
+  assert.equal((await h.scheduler.complete('s1')).ok, true);
+  const [leased] = await h.outbox.claim({
+    workerId: 'race-worker',
+    limit: 1,
+    selectSessionItem: h.scheduler.selectSessionItem,
+  });
+  assert.equal(leased.id, second.entry.id);
+  const tooLate = await h.scheduler.cancelQueued('s1', second.entry.id);
+  assert.equal(tooLate.ok, false);
+  assert.equal(tooLate.code, 'queued_entry_already_claimed');
 });
