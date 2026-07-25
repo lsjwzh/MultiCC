@@ -777,6 +777,10 @@ function createSessionWorkScheduler({
         return { ok: false, code: 'queued_entry_not_pending' };
       }
       const at = Number(now());
+      // A user-selected "insert now" item is not merely FIFO priority. Once
+      // the route cancels/releases the active slot, directRun makes this exact
+      // pending entry immediately selectable even when the prior verdict is E.
+      item.directRun = true;
       schedule.priorityEntryId = cleanEntryId;
       schedule.updatedAt = at;
       return {

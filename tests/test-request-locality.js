@@ -99,6 +99,7 @@ test('locality checks stay limited to authentication and sensitive host controls
   const taskBoardRoutes = fs.readFileSync('src/routes/task-board.js', 'utf8');
   const hostReadRoutes = fs.readFileSync('src/routes/host-read.js', 'utf8');
   const hostWriteRoutes = fs.readFileSync('src/routes/host-write.js', 'utf8');
+  const wsConnectionRouter = fs.readFileSync('src/ws/connection-router.js', 'utf8');
   const sourceFiles = ['server.js'];
   const pending = ['src'];
   while (pending.length) {
@@ -125,11 +126,13 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/auth.js',
     'src/routes/host-read.js',
     'src/routes/host-write.js',
+    'src/ws/connection-router.js',
   ]);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
   assert.match(authRoutes, /isLocalRequest\(req\)/);
   assert.match(routerToolHost, /isLocalRequest\(req\)/);
-  assert.match(server, /isLocalRequest\(req\)/);
+  assert.match(wsConnectionRouter, /isLocalRequest\(req\)/);
+  assert.match(server, /mountWsConnectionRouter\(wss,/);
   assert.match(hostReadRoutes, /canEdit:\s*deps\.isLocalRequest\(req\)/);
   assert.match(hostWriteRoutes, /requireLocal\(deps, req, res/);
   assert.ok(

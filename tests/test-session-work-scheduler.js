@@ -245,7 +245,7 @@ test('identical messages without an idempotency key remain distinct FIFO entries
   );
 });
 
-test('public FIFO exposes every pending kind and insertQueued promotes exactly one item', async t => {
+test('public FIFO exposes every pending kind and insertQueued marks exactly one direct run', async t => {
   const h = fixture(t);
   const active = await h.scheduler.admit({
     sessionId: 's1', text: 'active', idempotencyKey: 'active',
@@ -279,9 +279,13 @@ test('public FIFO exposes every pending kind and insertQueued promotes exactly o
     last.entry.id, first.entry.id, control.entry.id,
   ]);
   assert.equal(inserted.schedule.queued[0].priority, true);
-  assert.equal(await claimOne(h), null, 'promotion never bypasses classify P');
+  assert.equal((await h.outbox.get(last.entry.id)).directRun, true);
+  assert.equal(await claimOne(h), null, 'the route must release the active turn first');
 
-  await h.scheduler.complete('s1', { reason: 'classified_complete' });
+  await h.scheduler.complete('s1', {
+    reason: 'user_cancelled_for_immediate_insert',
+    classifyState: 'E',
+  });
   assert.equal((await claimOne(h)).id, last.entry.id);
 });
 

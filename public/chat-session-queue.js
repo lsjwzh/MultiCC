@@ -40,7 +40,7 @@
         throw new Error(message);
       }
       notify(action === 'insert_queued'
-        ? '已移到队首；classify 允许后立即执行'
+        ? '已停止当前回复并直接执行所选消息'
         : '已移除暂存消息', 'completed');
       return true;
     };
@@ -91,12 +91,12 @@
           const insert = documentRef.createElement('button');
           insert.type = 'button';
           insert.className = 'session-queue-insert';
-          insert.textContent = item.priority ? '队首' : '立刻插入';
+          insert.textContent = item.priority ? '执行中' : '立刻插入';
           insert.title = item.priority
-            ? '这条消息已经位于队首'
-            : '将这条消息移到队首；classify 允许时立即执行';
+            ? '这条消息已被选中立即执行'
+            : '停止当前回复并立即执行这条消息';
           insert.disabled = item.priority === true;
-          insert.setAttribute?.('aria-label', `将第 ${Number(item.position) || index + 1} 条消息立刻插入队首`);
+          insert.setAttribute?.('aria-label', `立即执行第 ${Number(item.position) || index + 1} 条消息`);
           insert.addEventListener('click', async event => {
             event.stopPropagation?.();
             if (insert.disabled) return;

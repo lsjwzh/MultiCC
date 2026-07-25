@@ -105,6 +105,15 @@
         }
       }
 
+      // `cancel` is a transport control, not a prompt. It must never enter the
+      // durable FIFO or reach the model: the host cancels the active slot and
+      // records classify E directly.
+      if (/^cancel$/i.test(text)) {
+        clearInput();
+        cancelStreaming();
+        return true;
+      }
+
       if (!isSocketOpen()) {
         addSystemMessage('连接已断开，正在重连。请稍后再发送。');
         retryTransport();

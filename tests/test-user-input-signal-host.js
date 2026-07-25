@@ -87,13 +87,13 @@ test('structured signal overrides Aux state and provides degraded W fallback', (
     requestId: 'usrq-1', resolved: false,
   };
   const effective = host.apply('chat-1', completed);
-  assert.equal(effective.state, 'waiting');
+  assert.equal(effective.state, 'W');
   assert.equal(effective.evidence, 'request_user_input');
   assert.deepEqual(host.degradedResult('chat-1', {
     goal: '发布版本',
     phase: 'wrapping',
   }), {
-    state: 'waiting',
+    state: 'W',
     goal: '发布版本',
     phase: 'wrapping',
     background: false,

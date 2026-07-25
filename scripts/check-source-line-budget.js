@@ -16,14 +16,7 @@ const SOURCE_EXTENSIONS = new Set([
 // Temporary migration debt is deliberately explicit and ratcheted. The
 // ceiling must be reduced in the same commit whenever a split makes the file
 // smaller. These entries are not permanent exceptions to the 3k target.
-const MIGRATION_DEBT = Object.freeze({
-  'server.js': Object.freeze({
-    ceiling: 3131,
-    byteCeiling: 137773,
-    target: DEFAULT_MAX_LINES,
-    reason: 'legacy host composition and inline route/controller migration',
-  }),
-});
+const MIGRATION_DEBT = Object.freeze({});
 
 // Reviewed third-party/generated assets are not first-party maintainability
 // units. Keep this whitelist exact; directories must never be broadly ignored.
