@@ -146,6 +146,22 @@ test('session create payload preserves the legacy optional-field contract', () =
     label: ' ', rolePrompt: '', provider: '', model: null, effort: '',
   });
   assert.equal(JSON.stringify(minimal), JSON.stringify({ cli: 'claude', kind: 'terminal' }));
+
+  const opencodeDefault = context.buildSessionCreatePayload('opencode', 'chat', {
+    label: '', rolePrompt: '', provider: '', model: null, effort: '',
+  });
+  assert.equal(JSON.stringify(opencodeDefault), JSON.stringify({ cli: 'opencode', kind: 'chat' }));
+});
+
+test('new-session dialog uses OpenCode variant defaults instead of Codex reasoning levels', () => {
+  const { context } = createHarness();
+  const lifecycle = context.MultiCCManageSessionLifecycle;
+  const opencodeOptions = Array.from(lifecycle.effortOptionsForCli('opencode', false));
+  assert.equal(lifecycle.effortLabelForCli('opencode', false), 'Variant');
+  assert.deepEqual(opencodeOptions, ['', 'minimal', 'low', 'medium', 'high', 'max']);
+  assert.equal(lifecycle.defaultEffortForCli('opencode', false), '');
+  assert.equal(opencodeOptions.includes('xhigh'), false);
+  assert.equal(opencodeOptions.includes('ultra'), false);
 });
 
 test('latest session mutation owns UI effects when responses arrive out of order', async () => {
