@@ -104,7 +104,7 @@
       "rationale": "Uploads and git import bundles are bounded temporary files rather than restart-persistent runtime state.",
       "migrationStrategy": "Keep OS-temp ownership, enforce private modes and lifecycle cleanup, and never treat these paths as durable API fields.",
       "sources": [
-        { "file": "server.js", "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);" },
+        { "file": "src/routes/session-bundle.js", "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);" },
         { "file": "server.js", "anchor": "fs.writeFileSync(tmpPath, Buffer.from(data, 'base64'), { mode: 0o600 });" }
       ]
     },
