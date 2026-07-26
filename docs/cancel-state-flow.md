@@ -17,6 +17,42 @@ Everything else — the terminal letter, `endedAt`, the cancel envelope, the
 persisted broadcast, the scheduler slot release, every projection — follows from
 that one submission.
 
+## How a cancel enters classify
+
+classify has three inputs, and only two of them are LLM judgements:
+
+| input | trigger | path |
+| --- | --- | --- |
+| turn-end judgement | a turn finished streaming | `classifyTurnEnd` → Aux queue (`intent_classify`) → `applyClassifyResult` |
+| periodic scan | every 60 s, for sessions not yet terminal | `scanAndReclassify` → Aux queue → `applyClassifyResult` |
+| **direct structured submission** | a cancel (and `mark-task-done`) | `dispatchStateAction({state:'E', cancel:{…}})` — no queue, no model |
+
+A cancel is the third kind: a **deterministic** result handed straight to
+`dispatchStateAction`. Whether the user pressed stop is a fact, not something to
+ask a model about — routing it through Aux would add latency, a failure mode
+(Aux unhealthy) and the possibility of a different verdict for an event that has
+exactly one correct answer.
+
+Because it is an insertion, it must also clear what the *other* two inputs left
+behind for the turn it is ending:
+
+1. **Drop the judgement already queued for this turn.** `stopRunner` calls
+   `deps.cancelSessionClassifyJobs(sessionId)` → `auxQueue.cancelClassifyFor()`,
+   which removes this session's queued `intent_classify` tasks.
+2. **Cancel the one already executing.** `cancelClassifyFor` also marks the
+   in-flight task cancelled. The transport is deliberately *not* aborted: a
+   cancelled request that later fails must not count against upstream health
+   (see `drain()`'s catch). Its result is discarded on arrival.
+3. **Do not let the kill queue a replacement.** The runner's close handler still
+   runs finalize → `classifyTurnEnd` after the process dies. `runClassifyNow`
+   returns early when the session is already `E` with a `cancelledAt`
+   (`classify_skipped_after_cancel`). `ensureCurrentTask` clears `cancelledAt`
+   when the next real user turn starts, so the guard never sticks.
+
+Without 1–3 the state was still correct — `applyClassifyResult` drops a late
+verdict — but every cancel paid for one or two Aux calls whose answers were
+thrown away.
+
 ## What was wrong
 
 `cancelActiveTurn` used to write `setTaskState({classifyState:'E'})` **and**
@@ -44,8 +80,9 @@ controller               src/routes/orchestration.js · src/chat/turn-engine.js
   ▼
 cancelActiveTurn         src/session-work-host.js
   ├─ idempotency: in-flight map keyed by sessionId
-  ├─ stopRunner()        kill child / cancel stream / cancel preparation
-  ├─ awaitRunnerStop()   bounded (5s); failure is reported, not faked
+  ├─ stopRunner()        SIGTERM child / cancel stream / cancel preparation
+  │                      + drop this session's queued & in-flight classify jobs
+  ├─ awaitRunnerStop()   SIGTERM → (1.5s) SIGKILL → (5s) reported failure
   ├─ closeTurnForClassify() → scheduler.turnEnded() → state 'assessing'
   ▼
 dispatchStateAction({state:'E', cancel:{…}})     src/classify/state-machine.js
@@ -95,8 +132,23 @@ lives for a few hundred milliseconds.
 **`E.cardStatus` is now `error`,** matching its `barTint`. One terminal fact, one
 face. See [status-presentation.md](status-presentation.md#legacy-and-adjacent-vocabularies).
 
-**A failed stop is still `E`, but not `ok`.** If the runner has not stopped
-inside the timeout the result is `{ok:false, code:'runner_stop_timeout'}` with
+**SIGTERM is a request; SIGKILL is the answer to ignoring it.** A CLI wedged in a
+syscall, or one that traps SIGTERM to "finish up", keeps running, keeps writing
+files and keeps holding the provider connection. `awaitRunnerStop` therefore
+escalates to `SIGKILL` after `runnerKillGraceMs` (1.5 s) and logs
+`session_cancel_runner_force_kill`.
+
+Liveness is read from the child handle, not from `cs.claudeProc`: `stopRunner`
+nulls that field immediately (the close handler keys off `cs.claudeProc === proc`
+to know the turn is inactive), so a wait that checked it reported "stopped" the
+instant the signal was *sent*. The killed handle is parked on
+`state._cancelledProc` and read through `exitCode`/`signalCode`/its `exit` event.
+There is deliberately no `process.kill(pid, 0)` probe — pids get reused, and a
+foreign match would be a "still running" that never clears.
+
+**A failed stop is still `E`, but not `ok`.** If the process survives even
+SIGKILL (uninterruptible sleep — a hung mount, a stuck device) the result is
+`{ok:false, code:'runner_stop_timeout'}` with
 `cancelReason:'cancel_stop_timeout'`, and the notify reads 「取消失败：任务未能停止」.
 Reporting a clean cancel over a process that is still writing would be a lie the
 next tool call exposes.
@@ -157,7 +209,11 @@ every step in one ordered event log so sequence can be asserted:
   dispatch;
 - a stale projection is repaired even when the computed state already matches;
 - a stale `running` heartbeat is rejected; a late classifier verdict is ignored;
-- a runner that will not stop lands on an explicit failure, not a fake cancel;
+- a runner that ignores SIGTERM is escalated to SIGKILL and still reports a
+  clean cancel; one that survives both lands on an explicit failure, not a fake
+  cancel;
+- the judgement queued for the killed turn is dropped, and the trailing
+  turn-end that runs after the kill queues no replacement;
 - cancelling with no active entry still publishes;
 - mid-tool cancel persists the partial reply exactly once;
 - the HTTP route delegates to the intent, never calls `resolve()` or `tick()`,
@@ -166,5 +222,8 @@ every step in one ordered event log so sequence can be asserted:
   state.
 
 `tests/test-session-work-host.js` covers the host unit surface (ordering,
-no-direct-write, stop timeout, reconcile-without-active-entry), and
-`tests/test-status-presentation.js` pins `E` to a single face.
+no-direct-write, SIGTERM→SIGKILL escalation, stop timeout, classify-job drop,
+reconcile-without-active-entry); `tests/test-aux-goal-routes.js` covers
+`cancelClassifyFor` reaching queued **and** in-flight judgements without touching
+another session's work; `tests/test-status-presentation.js` pins `E` to a single
+face.
