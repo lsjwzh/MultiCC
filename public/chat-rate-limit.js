@@ -275,6 +275,7 @@
     renderCurrent();
     renderBalance();
     renderOpenCodeQuota();
+    renderQoderQuota();
   }
 
   // ── OpenCode Go subscription usage (5h rolling / weekly / monthly). Sourced
@@ -520,6 +521,159 @@
     return currentQuota;
   }
 
+  // ── Qoder CN credit usage. Sourced by driving Chrome via CDP to
+  // qoder.com.cn/account/usage and intercepting the SPA's API responses.
+  // Rendered as #qoder-quota-bar, shown only when cli=qoder.
+  let currentQoderQuota = null;
+  let qoderQuotaFetchInFlight = false;
+  const QODER_QUOTA_BACKOFF_MS = 60_000;
+  let qoderQuotaLastErrorAt = 0;
+
+  function qoderQuotaStorageKey() { return 'multicc.qoder.quota.v1'; }
+
+  function loadQoderQuotaFromStorage() {
+    const storage = browserStorage(); if (!storage) return null;
+    try {
+      const raw = storage.getItem(qoderQuotaStorageKey());
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      if (v.fetchedAt && (Date.now() - v.fetchedAt) > 24 * 60 * 60 * 1000) return null;
+      return v;
+    } catch (_) { return null; }
+  }
+
+  function saveQoderQuotaToStorage(data) {
+    const storage = browserStorage(); if (!storage) return;
+    try { storage.setItem(qoderQuotaStorageKey(), JSON.stringify(data)); } catch (_) {}
+  }
+
+  function formatQoderQuota(value) {
+    if (!value) {
+      return Object.freeze({
+        text: 'Qoder CN 余量 · ⟳ 刷新',
+        color: '#8b949e',
+        title: '点击从 qoder.com.cn 拉取 credits 用量',
+      });
+    }
+    if (value.status === 'needs_login') {
+      return Object.freeze({
+        text: 'Qoder CN：需登录 · 点击打开登录页',
+        color: '#f85149',
+        title: 'Chrome 9222 未登录 qoder.com.cn。点击将在 Chrome 中打开登录页，登录后再点刷新。',
+      });
+    }
+    if (value.status === 'chrome_unavailable') {
+      return Object.freeze({
+        text: 'Qoder CN：未开 Chrome 9222 · ⟳ 重试',
+        color: '#d29922',
+        title: '请在本机开主 Chrome（--remote-debugging-port=9222）并登录 qoder.com.cn',
+      });
+    }
+    if (value.status !== 'ok' || !value.quota) {
+      return Object.freeze({
+        text: 'Qoder CN：用量暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: value.error || '无法从 qoder.com.cn 拉取用量',
+      });
+    }
+    const q = value.quota;
+    const total = q.total_quota?.quota_summary || {};
+    const planQ = q.plan_quota?.quota_summary || {};
+    const pkg = q.resource_package_quota?.quota_summary || {};
+    const used = total.used_value ?? 0;
+    const limit = total.limit_value ?? 0;
+    const remaining = total.remaining_value ?? 0;
+    const pct = total.usage_percentage ?? (limit > 0 ? Math.round(used / limit * 100) : 0);
+
+    let text = `Qoder CN ${remaining}/${limit} credits (${pct}%)`;
+    if (pkg.limit_value > 0) text += ` · 加油包 ${pkg.remaining_value}/${pkg.limit_value}`;
+    const syncRel = relativeAgo(value.fetchedAt);
+    if (syncRel) text += ` · ${syncRel}`;
+    text += ' ⟳';
+
+    let color = '#58a6ff';
+    if (pct >= 90) color = '#f85149';
+    else if (pct >= 70) color = '#d29922';
+
+    const planTier = value.plan?.plan_tier?.replace('PLAN_TIER_', '') || '';
+    let title = `Qoder CN 用量（CDP 抓 qoder.com.cn）\n套餐: ${planTier}\n总计: ${used}/${limit} · 剩余 ${remaining}`;
+    if (planQ.limit_value) title += `\n套餐配额: ${planQ.used_value}/${planQ.limit_value}`;
+    if (pkg.limit_value) title += `\n加油包: ${pkg.used_value}/${pkg.limit_value} (剩 ${pkg.remaining_value})`;
+    if (syncRel) title += `\n同步于 ${syncRel}`;
+    title += '\n点击 bar 刷新';
+    return Object.freeze({ text, color, title });
+  }
+
+  function renderQoderQuota() {
+    const element = global.document?.getElementById?.('qoder-quota-bar');
+    if (!element) return;
+    if (currentCli !== 'qoder') {
+      element.style.display = 'none';
+      element.textContent = '';
+      element.onclick = null;
+      return;
+    }
+    const view = formatQoderQuota(currentQoderQuota);
+    if (qoderQuotaFetchInFlight) {
+      element.textContent = 'Qoder CN：加载中…';
+      element.style.color = '#8b949e';
+      element.title = '正在通过 CDP 抓取 qoder.com.cn 用量...';
+    } else {
+      element.textContent = view?.text || '';
+      element.title = view?.title || '';
+      if (view) element.style.color = view.color;
+    }
+    element.style.display = 'block';
+    element.onclick = () => {
+      if (currentQoderQuota && currentQoderQuota.status === 'needs_login') {
+        fetch('/api/qoder/quota/login', { method: 'POST', credentials: 'same-origin' })
+          .then(() => setTimeout(() => refreshQoderQuota(true), 3000));
+      } else {
+        refreshQoderQuota(true);
+      }
+    };
+  }
+
+  async function refreshQoderQuota(force) {
+    if (currentCli !== 'qoder' && !force) return null;
+    if (qoderQuotaFetchInFlight) return currentQoderQuota;
+    if (!force && qoderQuotaLastErrorAt && (Date.now() - qoderQuotaLastErrorAt) < QODER_QUOTA_BACKOFF_MS) {
+      return currentQoderQuota;
+    }
+    qoderQuotaFetchInFlight = true;
+    renderQoderQuota();
+    try {
+      const res = await fetch('/api/qoder/quota', { credentials: 'same-origin' });
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!data) data = { status: 'unavailable', error: 'invalid response' };
+      if (data.status === 'ok') {
+        currentQoderQuota = data;
+        saveQoderQuotaToStorage(data);
+        qoderQuotaLastErrorAt = 0;
+      } else {
+        currentQoderQuota = data;
+        qoderQuotaLastErrorAt = Date.now();
+      }
+      renderQoderQuota();
+      return currentQoderQuota;
+    } catch (_) {
+      qoderQuotaLastErrorAt = Date.now();
+      currentQoderQuota = { status: 'unavailable', error: 'fetch failed' };
+      renderQoderQuota();
+      return currentQoderQuota;
+    } finally {
+      qoderQuotaFetchInFlight = false;
+    }
+  }
+
+  function restoreQoderQuota() {
+    currentQoderQuota = loadQoderQuotaFromStorage();
+    renderQoderQuota();
+    return currentQoderQuota;
+  }
+
   const api = Object.freeze({
     normalizeFiveHourRateLimit,
     formatFiveHourRateLimit,
@@ -533,6 +687,8 @@
     consumeBalanceEvent,
     refreshOpenCodeQuota,
     restoreOpenCodeQuota,
+    refreshQoderQuota,
+    restoreQoderQuota,
     setCli,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -542,5 +698,6 @@
     restoreFiveHourRateLimit(sess);
     restoreBalance(sess);
     restoreOpenCodeQuota();
+    restoreQoderQuota();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
