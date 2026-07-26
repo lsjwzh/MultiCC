@@ -132,7 +132,9 @@ function createCodexAdapter(deps) {
       };
       const isFirstTurn = env.historyHandle.isFirstTurn;
       const prompt = renderPrompt(env);
-      let payload = isFirstTurn ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt }) : prompt;
+      let payload = isFirstTurn
+        ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt })
+        : envConstraint ? `${envConstraint}\n\n${prompt}` : prompt;
       if (stayAlivePrompt) payload += `\n${stayAlivePrompt}`;
       const args = ['exec'];
       for (const arg of [

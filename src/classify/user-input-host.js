@@ -77,8 +77,8 @@ function recordAdapterUserInput({ evt, sessionId, turnId, recordInput } = {}) {
 }
 
 const USER_INPUT_SIGNAL_PROMPT = Object.freeze([
-  '【等待用户输入信号】仅当缺少用户决定、确认、选择或必要信息，导致当前任务无法安全继续时，调用 MultiCC MCP 的 request_user_input 工具记录结构化等待信号。',
-  '该工具不会弹出终端交互，也不会代替你的正常回复；调用成功后，把问题和选项作为本轮最终回复展示给用户，然后结束本轮，不再执行其他工具。',
+  '【等待用户回答】当你准备以阻塞性问题结束本轮（缺少用户决定、确认、选择或必要信息，导致任务无法安全继续）时，必须先调用 MultiCC MCP 的 wait_for_user_answer 工具；旧名 request_user_input 仅用于兼容。',
+  '该工具有时显示为 multicc_router.wait_for_user_answer 或 mcp__multicc_router__wait_for_user_answer。调用成功后，把同一问题和选项作为本轮最终回复展示给用户，然后结束本轮，不再执行其他工具。',
   '如果你可以基于现有信息合理继续，就不要调用。普通建议、可选后续工作或礼貌性反问不属于必须等待用户。',
 ]);
 
@@ -87,7 +87,8 @@ function buildCodexUserInputConstraint(enabled = true) {
   return [
     '[MultiCC 环境约束]',
     '- Codex 内置 request_user_input / AskUserQuestion 在非交互执行环境中不可用。',
-    '- 需要用户决定、确认或补充必要信息且无法继续时，调用 MultiCC MCP 的 request_user_input；不要调用 Codex 内置同名工具。',
+    '- 准备以阻塞性问题结束本轮时，必须先调用 MultiCC MCP 的 wait_for_user_answer（可能显示为 mcp__multicc_router__wait_for_user_answer）；不要调用 Codex 内置同名工具。',
+    '- 工具返回后，把同一问题作为最终回复并结束本轮；能够安全合理继续时不要调用。',
     '[MultiCC 环境约束结束]',
   ].join('\n');
 }

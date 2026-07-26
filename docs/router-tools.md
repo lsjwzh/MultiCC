@@ -6,11 +6,14 @@ queuing, idempotency, and result completion remain server-side.
 
 ## Tools
 
-- `request_user_input(question, reason?, options?, allow_multiple?)` records a
+- `wait_for_user_answer(question, reason?, options?, allow_multiple?)` records a
   durable semantic signal that the current turn cannot continue without the
   user. It returns immediately; the model still presents the question as its
   ordinary final response. At turn end the classifier treats the unresolved
   signal as authoritative `W` evidence. The next real user message clears it.
+- `request_user_input(...)` is a backward-compatible alias. New prompts and
+  agents should prefer `wait_for_user_answer` to avoid collisions with vendor
+  built-in tools that are unavailable in non-interactive execution.
 - `route_task(target_session_id, message, idempotency_key?)` admits a durable
   one-way dispatch and returns immediately. The target result is retained on
   the operation but is not returned to the caller.
@@ -58,7 +61,8 @@ persisted. Restart recovery can deliver or complete admitted work independently
 of the MCP process. MCP cancellation aborts only the waiting tool request and
 does not discard the durable operation.
 
-`request_user_input` is deliberately not an interactive terminal prompt and
+`wait_for_user_answer` (and its legacy `request_user_input` alias) is
+deliberately not an interactive terminal prompt and
 does not hold an MCP request open. Its scoped capability proves the originating
 session and turn; the host rejects stale turns, deduplicates repeated calls,
 and persists only the pending-input fact in session task state. Aux still owns
