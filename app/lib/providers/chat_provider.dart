@@ -969,6 +969,11 @@ class ChatProvider extends ChangeNotifier {
   ///      repopulate the chat, making the clear look like a no-op).
   ///   2. When [keep] > 0, only the messages before the last [keep] are
   ///      discarded locally and on the server (keep-last-N mode).
+  /// Request native CLI context rotation via service.
+  void rotateNativeContext() {
+    _service.rotateNativeContext();
+  }
+
   void clearHistory({int keep = 0}) {
     if (isStreaming) {
       cancel();

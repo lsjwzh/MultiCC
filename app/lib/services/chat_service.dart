@@ -463,6 +463,15 @@ class ChatService {
     isStreaming = false;
   }
 
+  /// Request native CLI context rotation (compact/restart native session).
+  /// This triggers a handoff where the native CLI session is rotated
+  /// while preserving the multicc chat transcript.
+  void rotateNativeContext() {
+    try {
+      _channel?.sink.add(jsonEncode({"type": "clear_history", "preserveHistory": true}));
+    } catch (_) {}
+  }
+
   void clearHistory({int keep = 0}) {
     try {
       _channel?.sink.add(jsonEncode({'type': 'clear_history', 'keep': keep}));
