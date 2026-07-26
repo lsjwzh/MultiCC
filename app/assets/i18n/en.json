@@ -387,7 +387,7 @@
   "contextKept": "Cleared {removed} earlier messages and kept the latest {kept} as the new context. Native CLI context was reset.",
   "contextResetKept": "Kept the current messages and reset native CLI context.",
   "contextCleared": "Chat history and native CLI context cleared.",
-  "rotateNativeContext": "Start Fresh Native Context (Keep History)",
+  "rotateNativeContext": "Rotate native context",
   "rotateNativeContextConfirm": "Start a fresh native CLI context? Full page history stays visible and the next message receives a one-time checkpoint.",
   "rotateNativeContextDone": "Native context rotated. Full chat history was preserved; the next message will use a fresh session.",
   "rotateNativeContextReused": "A context checkpoint is already pending; no duplicate rotation was performed.",

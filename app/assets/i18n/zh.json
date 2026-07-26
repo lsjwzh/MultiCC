@@ -387,7 +387,7 @@
   "contextKept": "已清除 {removed} 条早期消息，保留最近 {kept} 条作为新上下文；CLI 原生上下文已重置。",
   "contextResetKept": "已保留当前消息并重置 CLI 原生上下文。",
   "contextCleared": "聊天记录和 CLI 原生上下文已清空。",
-  "rotateNativeContext": "新开原生上下文（保留历史）",
+  "rotateNativeContext": "压缩上下文",
   "rotateNativeContextConfirm": "确定新开原生 CLI 上下文吗？完整页面历史会保留，下一条消息将携带一次性交接摘要。",
   "rotateNativeContextDone": "原生上下文已轮换；完整聊天历史已保留，下一条消息将进入新会话。",
   "rotateNativeContextReused": "已有待发送的上下文 checkpoint，本次未重复轮换。",
