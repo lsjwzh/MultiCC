@@ -30,6 +30,12 @@ const {
   CHAT_TURN_PORTS,
   assertChatTurnPorts,
 } = require('../src/chat');
+const { appendAdapterAssistantText } = require('../src/chat/turn-engine');
+
+test('adapter assistant snapshots preserve every OpenCode text part canonically', () => {
+  assert.equal(appendAdapterAssistantText('', 'first'), 'first');
+  assert.equal(appendAdapterAssistantText('first', 'second'), 'first\n\nsecond');
+});
 
 function request(overrides = {}) {
   return normalizeTurnRequest({

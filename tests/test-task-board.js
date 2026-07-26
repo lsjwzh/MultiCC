@@ -764,7 +764,7 @@ test('streaming classify path creates or merges the task-board card before retur
   const end = source.indexOf('\n  function scanAndReclassify()', start);
   assert.ok(start >= 0 && end > start, 'applyClassifyResult slice anchors must resolve');
   const body = source.slice(start, end);
-  const streaming = body.indexOf('if (turnInFlightForClassify(cs))');
+  const streaming = body.indexOf("if (liveness.state !== 'inactive')");
   const create = body.indexOf('recordTaskBoardGoal(', streaming);
   const earlyReturn = body.indexOf('\n      return;', streaming);
   assert.ok(streaming >= 0 && create > streaming && earlyReturn > create);
