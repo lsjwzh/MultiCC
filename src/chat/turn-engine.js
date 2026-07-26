@@ -48,6 +48,7 @@ function createChatTurnEngine(deps) {
     getSessionWorkHost,         // let
     getChatHistoryRuntime,      // let
     getChatHistoryService,      // let
+    getExperimentalTuiChatRuntime,
     isShuttingDown,             // let bool _shuttingDown
     getPort,                    // let PORT
     getClaudeProxyEnabled,      // let
@@ -490,6 +491,10 @@ function createChatTurnEngine(deps) {
   }
 
   async function admitChatWork(sessionName, text, opts = {}) {
+    const experimentalRuntime = getExperimentalTuiChatRuntime?.();
+    if (experimentalRuntime?.owns(persistedSessions.get(sessionName))) {
+      return experimentalRuntime.admit(sessionName, text, opts);
+    }
     return getSessionWorkHost()?.admit(sessionName, text, opts)
       || { ok: false, code: 'scheduler_not_ready' };
   }
@@ -499,6 +504,10 @@ function createChatTurnEngine(deps) {
     if (!persisted) {
       console.warn(`[multicc/chat] runChatTurn: no persisted record for ${sessionName}`);
       return false;
+    }
+    const experimentalRuntime = getExperimentalTuiChatRuntime?.();
+    if (experimentalRuntime?.owns(persisted)) {
+      return experimentalRuntime.admit(sessionName, text, opts);
     }
     // Typed Commander user input is intercepted by the host router. Any fallback
     // Commander turn is deliberately barred from the legacy marker dispatcher.
@@ -1517,6 +1526,10 @@ function createChatTurnEngine(deps) {
         `会话已失效（${invalidSessions.get(sessionName)}），请删除后重建。` });
       ws.close();
       return;
+    }
+    const experimentalRuntime = getExperimentalTuiChatRuntime?.();
+    if (persisted.experimentalMode && experimentalRuntime) {
+      return experimentalRuntime.handleWs(ws, req, urlObj);
     }
     const cli = persisted.cli || 'claude';
     const cwd = cwdForSession(persisted);

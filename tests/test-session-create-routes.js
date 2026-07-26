@@ -120,8 +120,24 @@ test('legacy session create contract remains unchanged', async () => {
     effort: 'high',
     agent: null,
     rolePrompt: 'prompt',
+    experimentalMode: null,
     persistence: 'required',
     persistenceSource: 'http.create-session',
   });
 });
 
+test('session create forwards the isolated experimental mode marker', async () => {
+  const current = fixture();
+  const handler = current.app.routes.get('POST /api/directories/:id/sessions');
+  const response = await invoke(handler, {
+    params: { id: 'fleet-1' },
+    body: {
+      cli: 'codex',
+      kind: 'chat',
+      label: 'TUI mirror',
+      experimentalMode: 'tui-chat-mirror',
+    },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(current.creates[0].experimentalMode, 'tui-chat-mirror');
+});

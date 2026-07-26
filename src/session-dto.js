@@ -82,6 +82,7 @@ function toSessionDto(source = {}) {
     effectiveEffort: nullableString(source.effectiveEffort, 80),
     agent: nullableString(source.agent, 160),
     provider: nullableString(source.provider, 160),
+    experimentalMode: nullableString(source.experimentalMode, 80),
     subagent: subagentDto(source.subagent),
     autoCommit: !!source.autoCommit,
     autoDispatch: !!source.autoDispatch,
