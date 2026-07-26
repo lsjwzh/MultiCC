@@ -62,12 +62,14 @@ function fixture(options = {}) {
     dispatchStateAction: (result, ctx) => calls.push(['dispatch', result, ctx]),
     reconcileTaskProjection: (...args) => calls.push(['reconcile', ...args]),
     cancelClassify() {},
+    cancelSessionClassifyJobs: sessionId => calls.push(['cancel-classify-jobs', sessionId]),
     assignKillReason() {},
     appendMessage: (...args) => calls.push(['append-message', ...args]),
     cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
     chatStream: { isAlive: () => false, cancel() {} },
     zcodeAuth: options.zcodeAuth || { ensureZcodeAuth: () => ({ ok: true }) },
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
+    runnerKillGraceMs: options.runnerKillGraceMs,
     log: { warn: (...args) => calls.push(['warn', ...args]) },
   });
   return {
@@ -124,14 +126,32 @@ test('provider-less ZCode keeps the actionable native configuration gate', async
   ]);
 });
 
-function cancelFixture(overrides = {}, fixtureOptions = {}) {
-  const child = {
+// A child process that only dies on the signal it is configured to respect —
+// `diesOn: null` models the CLI that ignores everything short of SIGKILL's
+// kernel-level stop. `signalCode` + the 'exit' event are how Node reports a
+// death, and they are what the host reads to tell "asked to stop" from "stopped".
+function fakeChild(diesOn = 'SIGTERM') {
+  const exitListeners = [];
+  return {
     pid: 123,
     exitCode: null,
     signalCode: null,
     kills: 0,
-    kill(signal) { this.kills += 1; this.signal = signal; },
+    signals: [],
+    once(event, fn) { if (event === 'exit') exitListeners.push(fn); },
+    kill(signal) {
+      this.kills += 1;
+      this.signal = signal;
+      this.signals.push(signal);
+      if (!diesOn || signal !== diesOn) return;
+      this.signalCode = signal;
+      exitListeners.splice(0).forEach(fn => fn(null, signal));
+    },
   };
+}
+
+function cancelFixture(overrides = {}, fixtureOptions = {}) {
+  const child = fakeChild(fixtureOptions.diesOn === undefined ? 'SIGTERM' : fixtureOptions.diesOn);
   const state = {
     cli: 'codex',
     claudeProc: child,
@@ -254,6 +274,55 @@ test('a runner that refuses to stop reports an explicit failure instead of prete
   assert.equal(verdict.state, 'E');
   assert.equal(verdict.cancel.runnerStopped, false);
   assert.equal(verdict.cancel.reason, 'cancel_stop_timeout');
+});
+
+test('a runner that ignores SIGTERM is escalated to SIGKILL rather than left running', async () => {
+  const { child, state, h } = cancelFixture({}, {
+    diesOn: 'SIGKILL',
+    runnerKillGraceMs: 10,
+    runnerStopTimeoutMs: 2_000,
+  });
+  const result = await h.host.cancelActiveTurn('s1');
+
+  assert.deepEqual(child.signals, ['SIGTERM', 'SIGKILL']);
+  // The escalation is loud: a CLI that had to be killed is worth a log line.
+  assert.equal(h.calls.some(call => call[0] === 'warn' && call[1] === 'session_cancel_runner_force_kill'), true);
+  // Dead is dead — the cancel succeeds, and the handle kept for the liveness
+  // check is released by the process's own exit event.
+  assert.equal(state._cancelledProc, null);
+  assert.equal(result.ok, true);
+  const verdict = h.calls.find(call => call[0] === 'dispatch')[1];
+  assert.equal(verdict.cancel.runnerStopped, true);
+  assert.equal(verdict.cancel.reason, 'user_cancelled');
+});
+
+test('a process surviving SIGKILL is reported as a failed stop, not a successful cancel', async () => {
+  const { child, h } = cancelFixture({}, {
+    diesOn: null,
+    runnerKillGraceMs: 5,
+    runnerStopTimeoutMs: 60,
+  });
+  const result = await h.host.cancelActiveTurn('s1');
+
+  // Both signals were actually tried before giving up.
+  assert.deepEqual(child.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'runner_stop_timeout');
+  assert.equal(result.cancelReason, 'cancel_stop_timeout');
+  // Detaching claudeProc used to be read as "stopped": the wait must not be
+  // satisfied by the bookkeeping that hides the process from the turn.
+  assert.equal(h.calls.some(call => call[0] === 'warn' && call[1] === 'session_cancel_runner_stop_timeout'), true);
+});
+
+test('cancel drops this session\'s queued and in-flight classify jobs before submitting its own verdict', async () => {
+  const { h } = cancelFixture();
+  await h.host.cancelActiveTurn('s1');
+  const dropped = h.calls.filter(call => call[0] === 'cancel-classify-jobs');
+  assert.deepEqual(dropped, [['cancel-classify-jobs', 's1']]);
+  // Ordering: the stale judgement is dropped as part of stopping the runner, so
+  // the only classify input left for this turn is the cancel verdict itself.
+  const order = h.calls.map(call => call[0]);
+  assert.ok(order.indexOf('cancel-classify-jobs') < order.indexOf('dispatch'));
 });
 
 test('cancel with no active scheduler entry still republishes the canonical snapshot', async () => {

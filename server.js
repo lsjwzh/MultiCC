@@ -2569,6 +2569,10 @@ sessionWorkHost = createSessionWorkHost({
     taskBoardRuntime.reconcileRunState(taskId, options),
   classifyDisplay,
   cancelClassify,
+  // Stopping the runner also stops the judgement queued for it: drop this
+  // session's queued + in-flight classify jobs so a cancelled turn is not still
+  // paying for an Aux verdict that will be discarded on arrival.
+  cancelSessionClassifyJobs: sessionId => auxQueue.cancelClassifyFor(sessionId),
   chatStream,
   assignKillReason,
   appendMessage: appendChatMessage,
