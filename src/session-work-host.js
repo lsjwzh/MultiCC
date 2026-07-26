@@ -172,7 +172,11 @@ function createSessionWorkHost(deps = {}) {
     if (!state) return false;
     if (state.queueState === 'assessing') return false;
     const runState = getRunState(sessionId);
-    return runState === 'running' || runState === 'queued';
+    // `queued` is admission state, not native-run liveness. Treating it as
+    // busy deadlocks the outbox item that produced the queued projection: the
+    // delivery worker sees its own queue row and defers forever. A claimed or
+    // started entry emits `running`, which remains the actual busy boundary.
+    return runState === 'running';
   }
 
   function closeTurnForClassify(sessionId, failureReason = null) {

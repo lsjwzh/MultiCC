@@ -233,6 +233,28 @@ test('only classify P stages direct input; every non-P state continues immediate
   assert.equal(staged.activeEntryId, null);
 });
 
+test('queued projection does not make its own outbox delivery look busy', () => {
+  const h = fixture();
+  h.host.onSchedulerEvent({
+    type: 'queued',
+    sessionId: 's1',
+    schedulerState: 'idle',
+    queuedItems: [],
+    at: 10,
+  });
+  assert.equal(h.host.getRunState('s1'), 'queued');
+  assert.equal(h.host.isRunActive('s1'), false);
+
+  h.host.onSchedulerEvent({
+    type: 'started',
+    sessionId: 's1',
+    schedulerState: 'running',
+    queuedItems: [],
+    at: 11,
+  });
+  assert.equal(h.host.isRunActive('s1'), true);
+});
+
 test('classify W/B/E release the active slot (no freeze); unavailable leaves assessment pending', async () => {
   // Queue rule (T1): every turn-end verdict releases the active slot via
   // complete(). FIFO draining is D-only and lives in selectSessionItem, not
