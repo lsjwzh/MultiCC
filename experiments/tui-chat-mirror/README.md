@@ -8,7 +8,38 @@
 - 本地 Tool 仍由 Codex TUI 执行，旁路只展示，绝不重放；
 - tmux 原始画面仅作诊断兜底，不作为历史事实源。
 
-它是独立 sidecar，不被 `server.js`、正式 Web/App 或任务调度器引用。
+仓库保留两种隔离方式：
+
+- 本页 sidecar：完全独立于 MultiCC，用于最小原理验证；
+- MultiCC 集成实验：复用正式 Chat UI、WebSocket 与事件渲染，但只有服务端开关和会话标记同时存在时才启用。
+
+两种方式都不改变普通会话的执行路径。
+
+## MultiCC 集成实验
+
+只在隔离的实验实例设置服务端开关：
+
+```sh
+MULTICC_EXPERIMENT_TUI_CHAT=1 node server.js
+```
+
+然后通过现有创建会话接口建立带标记的 Codex Chat 会话：
+
+```json
+{
+  "cli": "codex",
+  "kind": "chat",
+  "label": "🧪 TUI Chat Mirror",
+  "experimentalMode": "tui-chat-mirror"
+}
+```
+
+隔离边界是 fail-closed 的：
+
+- 未设置 `MULTICC_EXPERIMENT_TUI_CHAT=1` 时，服务拒绝创建带该标记的会话；
+- 该标记只接受 `cli=codex`、`kind=chat`；
+- 普通会话不进入实验运行时；
+- TUI 是唯一执行者，Chat 只注入输入并投影原生 rollout，Tool 不会在旁路重放。
 
 ## 启动
 
