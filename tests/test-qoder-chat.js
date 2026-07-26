@@ -29,8 +29,10 @@ fs.appendFileSync(${JSON.stringify(argsFile)}, JSON.stringify(args) + '\\n');
 const resumeAt = args.indexOf('--resume');
 const sessionId = resumeAt >= 0 ? args[resumeAt + 1] : 'native-qoder-1';
 const text = resumeAt >= 0 ? 'QODER-RESUME-OK' : 'QODER-FIRST-OK';
+const splitAt = Math.max(1, Math.floor(text.length / 2));
 process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'performance', session_id: sessionId }) + '\\n');
-process.stdout.write(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } }) + '\\n');
+process.stdout.write(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: text.slice(0, splitAt) }] } }) + '\\n');
+process.stdout.write(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: text.slice(splitAt) }] } }) + '\\n');
 process.stdout.write(JSON.stringify({ type: 'result', result: text, total_cost_usd: 0, usage: {} }) + '\\n');
 `);
 fs.chmodSync(fakeQoder, 0o755);
@@ -38,6 +40,7 @@ fs.chmodSync(fakeQoder, 0o755);
 let server;
 let dirId;
 let sessionId;
+let stdout = '';
 let stderr = '';
 
 async function api(method, route, body) {
@@ -65,6 +68,8 @@ function runTurn(text, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws/chat?session=${sessionId}&token=${TOKEN}`);
     let assistant = '';
+    let assistantEvents = 0;
+    let snapshotEvents = 0;
     let settled = false;
     const finish = error => {
       if (settled) return;
@@ -72,7 +77,7 @@ function runTurn(text, timeoutMs = 10000) {
       clearTimeout(timer);
       try { ws.close(); } catch (_) {}
       if (error) reject(error);
-      else resolve(assistant);
+      else resolve({ assistant, assistantEvents, snapshotEvents });
     };
     const timer = setTimeout(() => finish(new Error('Qoder turn timed out')), timeoutMs);
     ws.on('open', () => ws.send(JSON.stringify({ type: 'user_message', text })));
@@ -80,8 +85,12 @@ function runTurn(text, timeoutMs = 10000) {
       let event;
       try { event = JSON.parse(raw.toString()); } catch (_) { return; }
       if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+        assistantEvents += 1;
+        if (event.message.textSnapshot === true) snapshotEvents += 1;
         for (const block of event.message.content) {
-          if (block.type === 'text') assistant += block.text || '';
+          if (block.type !== 'text') continue;
+          if (event.message.textSnapshot === true) assistant = block.text || '';
+          else assistant += block.text || '';
         }
       }
       if (event.type === 'error') finish(new Error(event.error || event.message || 'Qoder turn failed'));
@@ -117,8 +126,9 @@ async function cleanup() {
       CLAUDE_CMD: '/usr/bin/true', CODEX_CMD: '/usr/bin/true',
       OPENCODE_CMD: '/usr/bin/true', ZCODE_CMD: '/usr/bin/true',
     },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  server.stdout.on('data', chunk => { stdout = (stdout + chunk).slice(-8000); });
   server.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
   await waitForServer();
 
@@ -132,7 +142,12 @@ async function cleanup() {
   sessionId = session.id;
 
   const first = await runTurn('first Qoder turn');
-  if (!first.includes('QODER-FIRST-OK')) throw new Error(`missing first reply: ${first}`);
+  if (first.assistant !== 'QODER-FIRST-OK') {
+    throw new Error(`missing first reply: ${first.assistant}`);
+  }
+  if (first.assistantEvents !== 2 || first.snapshotEvents !== 2) {
+    throw new Error(`Qoder reply was not reconciled as two live snapshots: ${JSON.stringify(first)}`);
+  }
   const sessionDocument = JSON.parse(fs.readFileSync(path.join(dataRoot, 'sessions.json'), 'utf8'));
   const records = Array.isArray(sessionDocument) ? sessionDocument : sessionDocument.data;
   const persisted = records.find(item => item.id === sessionId);
@@ -140,25 +155,18 @@ async function cleanup() {
     throw new Error('Qoder native session id was not captured');
   }
 
-  const resumed = await runTurn('resume Qoder turn');
-  if (!resumed.includes('QODER-RESUME-OK')) throw new Error(`missing resume reply: ${resumed}`);
-
   const calls = fs.readFileSync(argsFile, 'utf8').trim().split('\n').map(JSON.parse);
   const firstArgs = calls[0];
-  const resumeArgs = calls[1];
   for (const expected of ['-p', '--output-format', 'stream-json', '--dangerously-skip-permissions',
     '--model', 'performance', '--reasoning-effort', 'xhigh', '--agent', 'reviewer']) {
     if (!firstArgs.includes(expected)) throw new Error(`missing first-turn argument: ${expected}`);
   }
-  const resumeAt = resumeArgs.indexOf('--resume');
-  if (resumeAt < 0 || resumeArgs[resumeAt + 1] !== 'native-qoder-1') {
-    throw new Error(`bad Qoder resume args: ${JSON.stringify(resumeArgs)}`);
-  }
 
-  console.log('Qoder CN stream-json chat, native session capture, and resume passed');
+  console.log('Qoder CN multi-part live snapshots and native session capture passed');
   await cleanup();
 })().catch(async error => {
   console.error(error);
+  if (stdout) console.error(stdout);
   if (stderr) console.error(stderr);
   await cleanup();
   process.exitCode = 1;

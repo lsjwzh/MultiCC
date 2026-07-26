@@ -380,6 +380,15 @@ assert.deepStrictEqual(
     '--reasoning-effort', 'high', '--agent', 'reviewer',
   ],
 );
+assert.deepStrictEqual(
+  qoder.buildInvocation({
+    ...opencodeEnvelope,
+    systemPrompt: 'system',
+    historyHandle: { isFirstTurn: false, cliSessionId: 'qoder-1' },
+    spawnOpts: { rawModel: 'performance', rawEffort: 'high', rawAgent: 'reviewer' },
+  }).args.slice(-2),
+  ['--resume', 'qoder-1'],
+);
 assert.strictEqual(
   qoder.buildTerminalCmd({ model: 'performance', effort: 'xhigh', agent: 'reviewer', cliSessionId: 'qoder-1' }),
   'qoderclicn --model performance --reasoning-effort xhigh --agent reviewer --resume qoder-1',
