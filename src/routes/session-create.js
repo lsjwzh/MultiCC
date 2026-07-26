@@ -46,8 +46,9 @@ function mountSessionCreateRoutes(app, rawDeps) {
     const agent = req.body.agent === undefined ? null : req.body.agent;
     const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
     const rolePrompt = (req.body.rolePrompt || '').trim() || null;
+    const experimentalMode = (req.body.experimentalMode || '').trim() || null;
     const result = await deps.createSessionRecord({
-      dir, cli, kind, label, model, provider, effort, agent, rolePrompt,
+      dir, cli, kind, label, model, provider, effort, agent, rolePrompt, experimentalMode,
       persistence: 'required', persistenceSource: 'http.create-session',
     });
     if (!result.ok) return res.status(400).json({ error: result.error });

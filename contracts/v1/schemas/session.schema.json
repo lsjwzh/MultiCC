@@ -18,6 +18,7 @@
     "effectiveEffort": { "type": ["string", "null"], "maxLength": 80 },
     "agent": { "type": ["string", "null"], "maxLength": 160 },
     "provider": { "type": ["string", "null"], "maxLength": 160 },
+    "experimentalMode": { "type": ["string", "null"], "maxLength": 80 },
     "subagent": {
       "type": ["object", "null"],
       "additionalProperties": false,
