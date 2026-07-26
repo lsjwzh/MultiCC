@@ -43,6 +43,29 @@ void main() {
     },
   );
 
+  testWidgets('pending input supports a free-text answer in the top card', (
+    tester,
+  ) async {
+    String? answer;
+    await tester.pumpWidget(
+      _host(
+        PendingUserInputPanel(
+          input: const PendingUserInput(requestId: 'r-text', question: '请输入说明'),
+          enabled: true,
+          onAnswer: (value) => answer = value,
+        ),
+      ),
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('pending-free-text')),
+      '  自定义回答  ',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('pending-submit-text')));
+    expect(answer, '自定义回答');
+  });
+
   testWidgets('frozen queue exposes server actions and per-entry cancel', (
     tester,
   ) async {
