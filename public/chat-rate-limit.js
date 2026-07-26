@@ -367,16 +367,112 @@
     return Object.freeze({ text, color, title: titleParts.join('\n') });
   }
 
+  // Relative "N 分钟前" renderer for the fetchedAt timestamp.
+  function relativeAgo(tsMs) {
+    if (!tsMs || !Number.isFinite(tsMs)) return '';
+    const sec = Math.max(0, Math.floor((Date.now() - tsMs) / 1000));
+    if (sec < 5) return '刚刚';
+    if (sec < 60) return `${sec}s 前`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min} 分钟前`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `${h} 小时前`;
+    const d = Math.floor(h / 24);
+    return `${d} 天前`;
+  }
+
+  // Empty-state bar built into the same div: when no data yet, show a manual
+  // refresh prompt so the user has a click target (it's NOT auto-refreshed on
+  // turn end by default — see RESTART-POLICY memory: user must opt-in to extras
+  // like this). Returns the same shape as formatQuota so the renderer below
+  // doesn't need a separate code path.
+  function formatQuotaIdle() {
+    return Object.freeze({
+      text: 'OpenCode Go 余量 · ⟳ 刷新',
+      color: '#8b949e',
+      title: '点击从 opencode.ai Zen console 拉取 Go 订阅 5h / 周 / 月 用量',
+    });
+  }
+
+  function formatQuota(value) {
+    if (!value) return formatQuotaIdle();
+    if (value.status === 'needs_login') {
+      return Object.freeze({
+        text: 'OpenCode Go：需登录 · ⟳ 重试',
+        color: '#f85149',
+        title: '主 Chrome 9222 没登 opencode.ai/auth。点击 bar 重新拉取；登录后请先在主 Chrome 打开 https://opencode.ai/auth 走完 OAuth。',
+      });
+    }
+    if (value.status === 'chrome_unavailable') {
+      return Object.freeze({
+        text: 'OpenCode Go：未开 Chrome 9222 · ⟳ 重试',
+        color: '#d29922',
+        title: '请在本机开主 Chrome（--remote-debugging-port=9222）并登 opencode.ai/auth',
+      });
+    }
+    if (value.status !== 'ok' || !value.usage) {
+      return Object.freeze({
+        text: 'OpenCode Go：用量暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: value.error || '无法从 opencode.ai 拉取 Go 用量',
+      });
+    }
+    const u = value.usage;
+    const fmt = (n) => {
+      const r = Math.round(n);
+      return Number.isInteger(r) ? String(r) : (Math.round(n * 10) / 10).toString();
+    };
+    let text = 'OpenCode Go';
+    if (u.rolling && Number.isFinite(u.rolling.usagePercent))  text += ` · 5h ${fmt(u.rolling.usagePercent)}%`;
+    if (u.weekly  && Number.isFinite(u.weekly.usagePercent))   text += ` · 周 ${fmt(u.weekly.usagePercent)}%`;
+    if (u.monthly && Number.isFinite(u.monthly.usagePercent))  text += ` · 月 ${fmt(u.monthly.usagePercent)}%`;
+    // Sync time: appended as "· N分钟前 ⟳" so users see how stale the data is
+    // and have a visible refresh affordance.
+    const syncRel = relativeAgo(value.fetchedAt);
+    if (syncRel) text += ` · ${syncRel}`;
+    text += ' ⟳';
+    const maxPct = Math.max(
+      u.rolling?.usagePercent ?? 0,
+      u.weekly?.usagePercent ?? 0,
+      u.monthly?.usagePercent ?? 0,
+    );
+    let color = '#58a6ff';
+    if (maxPct >= 90) color = '#f85149';
+    else if (maxPct >= 70) color = '#d29922';
+    let titleParts = ['OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）'];
+    if (u.rolling)  titleParts.push(`5h: ${fmt(u.rolling.usagePercent)}% · 重置 ${formatResetRemaining(u.rolling.resetInSec)}`);
+    if (u.weekly)   titleParts.push(`周: ${fmt(u.weekly.usagePercent)}% · 重置 ${formatResetRemaining(u.weekly.resetInSec)}`);
+    if (u.monthly)  titleParts.push(`月: ${fmt(u.monthly.usagePercent)}% · 重置 ${formatResetRemaining(u.monthly.resetInSec)}`);
+    if (syncRel) titleParts.push(`同步于 ${syncRel}`);
+    titleParts.push('点击 bar 刷新');
+    if (u.useBalance) titleParts.push('已启用：超额用余额兜底');
+    return Object.freeze({ text, color, title: titleParts.join('\n') });
+  }
+
   function renderOpenCodeQuota() {
     const element = global.document?.getElementById?.('opencode-quota-bar');
     if (!element) return;
-    // Only show under opencode CLI.
-    const view = currentCli === 'opencode' ? formatQuota(currentQuota) : null;
-    element.style.display = view ? 'block' : 'none';
-    element.textContent = view?.text || '';
-    element.title = view?.title || '';
-    if (view) element.style.color = view.color;
-    // Click handler to re-fetch on demand (esp. for needs_login recheck).
+    // Show the bar whenever the chat CLI is set to opencode — even before the
+    // first fetch resolves — so the user has a visible click target for manual
+    // refresh. The bar is not auto-refreshed on turn end (this commit removed
+    // that hook); the user clicks the bar to re-fetch.
+    if (currentCli !== 'opencode') {
+      element.style.display = 'none';
+      element.textContent = '';
+      element.onclick = null;
+      return;
+    }
+    const view = formatQuota(currentQuota);
+    if (quotaFetchInFlight) {
+      element.textContent = 'OpenCode Go：加载中…';
+      element.style.color = '#8b949e';
+      element.title = '正在通过 CDP 抓取 opencode.ai/console ...';
+    } else {
+      element.textContent = view?.text || '';
+      element.title = view?.title || '';
+      if (view) element.style.color = view.color;
+    }
+    element.style.display = 'block';
     element.onclick = () => { refreshOpenCodeQuota(true); };
   }
 
