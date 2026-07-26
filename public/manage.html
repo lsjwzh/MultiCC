@@ -594,6 +594,9 @@
     .tb-body-fold pre,.tb-body-detail pre{margin:5px 0 0;padding:7px 9px;max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);font-family:inherit}
     .tb-body-detail{margin-top:8px}
     .tb-body-pending{font-size:10px;color:var(--faint);font-style:italic}
+    .tb-legacy-group{border-top:1px dashed var(--line);background:color-mix(in srgb,var(--panel) 55%,transparent)}
+    .tb-legacy-group>summary{padding:7px 14px 7px 24px;cursor:pointer;color:var(--faint);font-size:11px;user-select:none}
+    .tb-legacy-group>.tb-task{padding-left:34px}
     /* No status animation here: whether a status may animate is decided once, in
        status-presentation.js (.st-spin, running only), so an errored row cannot
        keep spinning. */

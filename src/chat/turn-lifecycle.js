@@ -11,6 +11,15 @@ function freezeLineage(lineage) {
   });
 }
 
+function freezeTask(task) {
+  const source = task && typeof task === 'object' ? task : {};
+  return Object.freeze({
+    id: clean(source.id) || null,
+    start: source.start === true,
+    source: clean(source.source) || null,
+  });
+}
+
 function createTurnLifecycle(request, input = {}) {
   if (!request || !request.sessionId || !request.origin || !request.launch) {
     throw new TypeError('normalized turn request is required');
@@ -22,6 +31,7 @@ function createTurnLifecycle(request, input = {}) {
     sessionId: request.sessionId,
     userText: clean(request.text),
     lineage: freezeLineage(request.origin),
+    task: freezeTask(request.task),
     launchReason: request.launch.reason === 'continue' ? 'continue' : 'request',
     resultDurable: false,
     resultRunnerId: null,

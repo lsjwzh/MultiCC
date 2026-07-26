@@ -50,7 +50,7 @@ function fixture(t, overrides = {}) {
         taskId: opts.taskId,
         taskStart: opts.taskStart,
         taskSource: opts.taskSource,
-        taskText: opts.taskText,
+        taskText: opts.taskText || null,
       },
     });
     return {
@@ -136,6 +136,64 @@ test('route_task durably admits one-way work and is turn-idempotent', async t =>
   const operation = await operations.get(first.operation_id);
   assert.equal(operation.spec.resultMode, 'none');
   assert.equal(operation.spec.taskId, first.task_id);
+});
+
+test('route_task preserves an inherited logical task across follow-up turns', async t => {
+  let active = {
+    turnId: 'turn-task-start',
+    taskId: 'tsk-canonical-upstream',
+    taskStart: true,
+    taskSource: 'task-board',
+  };
+  const { admissions, operations, runtime } = fixture(t, {
+    resolveContext: () => active,
+  });
+  const capability = runtime.issueContext({ sessionId: 'caller', dynamic: true });
+  const first = await runtime.execute(capability, 'route_task', {
+    target_session_id: 'worker-a',
+    message: 'initial work',
+  });
+  active = {
+    turnId: 'turn-task-followup',
+    taskId: 'tsk-canonical-upstream',
+    taskStart: false,
+    taskSource: 'task-board',
+  };
+  const followup = await runtime.execute(capability, 'route_task', {
+    target_session_id: 'worker-a',
+    message: 'follow-up details',
+  });
+  assert.equal(first.task_id, 'tsk-canonical-upstream');
+  assert.equal(followup.task_id, first.task_id);
+  assert.notEqual(followup.operation_id, first.operation_id);
+  assert.equal(admissions.length, 2);
+  assert.deepEqual(admissions.map(item => item.opts.taskStart), [true, false]);
+  assert.deepEqual(admissions.map(item => item.opts.taskSource), ['task-board', 'task-board']);
+  assert.equal((await operations.list({ kind: 'dispatch' })).length, 2);
+});
+
+test('explicit idempotency survives a fresh turn without creating a second logical task', async t => {
+  const { admissions, operations, runtime } = fixture(t);
+  const args = {
+    target_session_id: 'worker-a',
+    message: 'idempotent work',
+    idempotency_key: 'delivery-stable-1',
+  };
+  const first = await runtime.execute(
+    runtime.issueContext({ sessionId: 'caller', turnId: 'turn-retry-1' }),
+    'route_task',
+    args,
+  );
+  const replay = await runtime.execute(
+    runtime.issueContext({ sessionId: 'caller', turnId: 'turn-retry-2' }),
+    'route_task',
+    args,
+  );
+  assert.equal(replay.task_id, first.task_id);
+  assert.equal(replay.operation_id, first.operation_id);
+  assert.equal(replay.duplicate, true);
+  assert.equal((await operations.list({ kind: 'dispatch' })).length, 1);
+  assert.equal(admissions.length, 2, 'both HTTP/tool attempts reach the canonical idempotent admission');
 });
 
 test('dispatch_master waits for the durable slave result without a result outbox', async t => {

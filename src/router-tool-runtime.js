@@ -147,6 +147,9 @@ function createRouterToolRuntime({
     turnId = null,
     originDispatchId = null,
     userText = '',
+    taskId = null,
+    taskStart = false,
+    taskSource = null,
     dynamic = false,
   } = {}) {
     const caller = records.get(sessionId);
@@ -157,6 +160,9 @@ function createRouterToolRuntime({
       turnId: turnId ? cleanId(turnId, 'turnId') : null,
       originDispatchId: originDispatchId ? cleanId(originDispatchId, 'originDispatchId') : null,
       userText: String(userText || '').slice(0, MAX_MESSAGE_LENGTH),
+      taskId: taskId ? cleanId(taskId, 'taskId') : null,
+      taskStart: taskStart === true,
+      taskSource: taskSource ? cleanId(taskSource, 'taskSource') : null,
       dynamic: dynamic === true,
       expiresAt: Number(now()) + capabilityTtlMs,
     }));
@@ -195,6 +201,9 @@ function createRouterToolRuntime({
         ? cleanId(current.originDispatchId, 'originDispatchId')
         : null,
       userText: String(current.userText || '').slice(0, MAX_MESSAGE_LENGTH),
+      taskId: current.taskId ? cleanId(current.taskId, 'taskId') : null,
+      taskStart: current.taskStart === true,
+      taskSource: current.taskSource ? cleanId(current.taskSource, 'taskSource') : null,
     });
   }
 
@@ -238,13 +247,24 @@ function createRouterToolRuntime({
   }
 
   function admissionIdentity(context, tool, targetId, message, explicitKey) {
-    const key = explicitKey == null || String(explicitKey).trim() === ''
+    const hasExplicitKey = explicitKey != null && String(explicitKey).trim() !== '';
+    const key = !hasExplicitKey
       ? `router:${stableSuffix([tool, context.sessionId, context.turnId, targetId, message], cryptoImpl)}`
       : `router:${tool}:${cleanId(explicitKey, 'idempotency_key')}`;
-    const suffix = stableSuffix([tool, context.sessionId, context.turnId, targetId, message, key], cryptoImpl);
+    // A task id is logical identity, not an execution attempt. A continuation
+    // carries the canonical source task across Commander/router turns; an
+    // explicit idempotency key must also survive a client retry that starts a
+    // fresh turn. turnId/message remain operation identity only when neither
+    // stronger boundary exists.
+    const inheritedTaskId = context.taskId ? cleanId(context.taskId, 'taskId') : null;
+    const suffix = stableSuffix(hasExplicitKey
+      ? [tool, context.sessionId, targetId, key]
+      : [tool, context.sessionId, context.turnId, targetId, message, key], cryptoImpl);
     return {
       idempotencyKey: key,
-      taskId: `tsk-router-${suffix}`,
+      taskId: inheritedTaskId || `tsk-router-${suffix}`,
+      taskStart: inheritedTaskId ? context.taskStart === true : true,
+      taskSource: context.taskSource || 'router-tool',
     };
   }
 
@@ -264,9 +284,9 @@ function createRouterToolRuntime({
       requireIdle: false,
       idempotencyKey: identity.idempotencyKey,
       taskId: identity.taskId,
-      taskStart: true,
-      taskSource: 'router-tool',
-      taskText: message,
+      taskStart: identity.taskStart,
+      taskSource: identity.taskSource,
+      taskText: identity.taskStart ? message : undefined,
     });
     if (!result || result.ok !== true) {
       throw new RouterToolError(
@@ -283,6 +303,9 @@ function createRouterToolRuntime({
         operationId: result.operationId,
         status: result.status || 'admitted',
         resultMode,
+        taskStart: identity.taskStart,
+        taskSource: identity.taskSource,
+        taskText: identity.taskStart ? message : '',
       });
     } catch (_) {}
     Promise.resolve(tick()).catch(() => {});
