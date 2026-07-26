@@ -274,6 +274,154 @@
     currentCli = String(cli || 'claude');
     renderCurrent();
     renderBalance();
+    renderOpenCodeQuota();
+  }
+
+  // ── OpenCode Go subscription usage (5h rolling / weekly / monthly). Sourced
+  // by driving the user's local Chrome via CDP to opencode.ai/auth → /workspace/
+  // <wsid>/go and regexing the SSR SolidStart hydration data. No REST API.
+  // Rendered as a separate bar (id="opencode-quota-bar") so its 3 limit windows
+  // and `needs_login` call to action don't fight the Claude 5h field.
+  let currentQuota = null; // { status, usage, fetchedAt, ... } or { status:'needs_login'|... }
+  let quotaFetchInFlight = false;
+  const QUOTA_BACKOFF_MS = 60_000;
+  let quotaLastErrorAt = 0;
+
+  function quotaStorageKey() { return 'multicc.opencode.quota.v1'; }
+
+  function loadQuotaFromStorage() {
+    const storage = browserStorage(); if (!storage) return null;
+    try {
+      const raw = storage.getItem(quotaStorageKey());
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      // Stale after 1 day (the Zen console only refreshes per request, and we
+      // bump on every turn end so 24h is just a backstop).
+      if (v.fetchedAt && (Date.now() - v.fetchedAt) > 24 * 60 * 60 * 1000) return null;
+      return v;
+    } catch (_) { return null; }
+  }
+
+  function saveQuotaToStorage(value) {
+    const storage = browserStorage(); if (!storage || !value) return;
+    try { storage.setItem(quotaStorageKey(), JSON.stringify(value)); } catch (_) {}
+  }
+
+  function formatResetRemaining(resetInSec) {
+    if (!Number.isFinite(resetInSec) || resetInSec < 0) return '';
+    if (resetInSec < 60) return `${Math.round(resetInSec)}s`;
+    const mins = Math.round(resetInSec / 60);
+    if (mins < 60) return `${mins} 分钟`;
+    const hours = Math.floor(mins / 60); const rem = mins % 60;
+    if (hours < 24) return rem ? `${hours} 小时 ${rem} 分钟` : `${hours} 小时`;
+    const days = Math.floor(hours / 24); const remH = hours % 24;
+    return remH ? `${days} 天 ${remH} 小时` : `${days} 天`;
+  }
+
+  function formatQuota(value) {
+    if (!value) return null;
+    if (value.status === 'needs_login') {
+      return Object.freeze({
+        text: 'OpenCode Go：需登录 →',
+        color: '#f85149',
+        title: '主 Chrome 9222 没登 opencode.ai/auth。点击开新标签去登录后回来这里点击重试。',
+      });
+    }
+    if (value.status === 'chrome_unavailable') {
+      return Object.freeze({
+        text: 'OpenCode Go：未开 Chrome 9222',
+        color: '#d29922',
+        title: '请在本机开主 Chrome（--remote-debugging-port=9222）并登 opencode.ai/auth',
+      });
+    }
+    if (value.status !== 'ok' || !value.usage) {
+      return Object.freeze({
+        text: 'OpenCode Go：用量暂不可用',
+        color: '#d29922',
+        title: value.error || '无法从 opencode.ai 拉取 Go 用量',
+      });
+    }
+    const u = value.usage;
+    const fmt = (n) => {
+      const r = Math.round(n);
+      return Number.isInteger(r) ? String(r) : (Math.round(n * 10) / 10).toString();
+    };
+    let text = 'OpenCode Go';
+    if (u.rolling && Number.isFinite(u.rolling.usagePercent))  text += ` · 5h ${fmt(u.rolling.usagePercent)}%`;
+    if (u.weekly  && Number.isFinite(u.weekly.usagePercent))   text += ` · 周 ${fmt(u.weekly.usagePercent)}%`;
+    if (u.monthly && Number.isFinite(u.monthly.usagePercent))  text += ` · 月 ${fmt(u.monthly.usagePercent)}%`;
+    const maxPct = Math.max(
+      u.rolling?.usagePercent ?? 0,
+      u.weekly?.usagePercent ?? 0,
+      u.monthly?.usagePercent ?? 0,
+    );
+    let color = '#58a6ff';
+    if (maxPct >= 90) color = '#f85149';
+    else if (maxPct >= 70) color = '#d29922';
+    let titleParts = ['OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）'];
+    if (u.rolling)  titleParts.push(`5h: ${fmt(u.rolling.usagePercent)}% · 重置 ${formatResetRemaining(u.rolling.resetInSec)}`);
+    if (u.weekly)   titleParts.push(`周: ${fmt(u.weekly.usagePercent)}% · 重置 ${formatResetRemaining(u.weekly.resetInSec)}`);
+    if (u.monthly)  titleParts.push(`月: ${fmt(u.monthly.usagePercent)}% · 重置 ${formatResetRemaining(u.monthly.resetInSec)}`);
+    if (u.useBalance) titleParts.push('已启用：超额用余额兜底');
+    return Object.freeze({ text, color, title: titleParts.join('\n') });
+  }
+
+  function renderOpenCodeQuota() {
+    const element = global.document?.getElementById?.('opencode-quota-bar');
+    if (!element) return;
+    // Only show under opencode CLI.
+    const view = currentCli === 'opencode' ? formatQuota(currentQuota) : null;
+    element.style.display = view ? 'block' : 'none';
+    element.textContent = view?.text || '';
+    element.title = view?.title || '';
+    if (view) element.style.color = view.color;
+    // Click handler to re-fetch on demand (esp. for needs_login recheck).
+    element.onclick = () => { refreshOpenCodeQuota(true); };
+  }
+
+  async function fetchOpenCodeQuota() {
+    const res = await fetch('/api/opencode/quota', { credentials: 'same-origin' });
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = null; }
+    return data || { status: 'unavailable', error: 'invalid response' };
+  }
+
+  // Refresh OpenCode Go quota from the server. Debounced: skip if a fetch is in
+  // flight or we errored within the last QUOTA_BACKOFF_MS.
+  async function refreshOpenCodeQuota(force) {
+    if (currentCli !== 'opencode' && !force) return null;
+    if (quotaFetchInFlight) return currentQuota;
+    if (!force && quotaLastErrorAt && (Date.now() - quotaLastErrorAt) < QUOTA_BACKOFF_MS) {
+      return currentQuota;
+    }
+    quotaFetchInFlight = true;
+    try {
+      const data = await fetchOpenCodeQuota();
+      if (data.status === 'ok') {
+        currentQuota = data;
+        saveQuotaToStorage(data);
+        quotaLastErrorAt = 0;
+      } else {
+        currentQuota = data;
+        quotaLastErrorAt = Date.now();
+      }
+      renderOpenCodeQuota();
+      return currentQuota;
+    } catch (err) {
+      quotaLastErrorAt = Date.now();
+      currentQuota = { status: 'unavailable', error: 'fetch failed' };
+      renderOpenCodeQuota();
+      return currentQuota;
+    } finally {
+      quotaFetchInFlight = false;
+    }
+  }
+
+  function restoreOpenCodeQuota() {
+    currentQuota = loadQuotaFromStorage();
+    renderOpenCodeQuota();
+    return currentQuota;
   }
 
   const api = Object.freeze({
@@ -287,6 +435,8 @@
     formatBalance,
     restoreBalance,
     consumeBalanceEvent,
+    refreshOpenCodeQuota,
+    restoreOpenCodeQuota,
     setCli,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -295,5 +445,6 @@
     const sess = new URLSearchParams(global.location.search).get('session') || '';
     restoreFiveHourRateLimit(sess);
     restoreBalance(sess);
+    restoreOpenCodeQuota();
   }
 })(typeof window !== 'undefined' ? window : globalThis);

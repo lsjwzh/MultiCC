@@ -114,6 +114,7 @@ const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers');
 const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
+const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
@@ -2281,6 +2282,13 @@ providerRoutes.mountCatalogRoutes(app);
 // (provider/model strings, cached for 1 day). Used by the chat picker when an
 // opencode session has no multicc-managed provider's model list to render.
 mountOpenCodeModelRoutes(app);
+
+// GET /api/opencode/quota — drive the user's local Chrome (CDP 9222) to
+// scrape the OpenCode Zen console's Go subscription usage (5h rolling /
+// weekly / monthly). SSR'd hydration data, no REST API exists. Surfaces
+// chrome_unavailable / needs_login / unavailable states so the chat
+// rate-limit bar can prompt instead of degrading silently.
+mountOpenCodeQuotaRoutes(app);
 
 // Token APIs remain between the two Provider route phases so the established
 // route ordering stays byte-compatible while accounting lives in one runtime.

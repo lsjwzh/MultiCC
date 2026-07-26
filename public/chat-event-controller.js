@@ -363,6 +363,13 @@
           }
           liveUi.settleTurnScopedDanmaku?.();
           finishTurnProgress('done', '本轮已结束');
+          // Refresh OpenCode Go quota after every turn end (debounced 60s
+          // inside refreshOpenCodeQuota on error, no-op under non-opencode CLIs).
+          // Skip when streaming was cancelled (pendingCancel) to avoid spurious
+          // fetches right after the user aborts a turn.
+          if (!state.pendingCancel) {
+            global.MultiCCChatRateLimit?.refreshOpenCodeQuota?.();
+          }
           break;
         case 'notify': {
           const classifyState = message.classifyState || null;
