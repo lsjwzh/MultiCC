@@ -37,6 +37,12 @@ test('adapter assistant snapshots preserve every OpenCode text part canonically'
   assert.equal(appendAdapterAssistantText('first', 'second'), 'first\n\nsecond');
 });
 
+test('Qoder Claude-compatible assistant events are normalized to snapshots', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert.match(source, /providerName === 'qoder'[\s\S]{0,500}textSnapshot: true/);
+});
+
 function request(overrides = {}) {
   return normalizeTurnRequest({
     sessionId: 'session-1',
