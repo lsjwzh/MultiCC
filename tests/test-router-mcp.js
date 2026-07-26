@@ -89,20 +89,22 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.equal(initialized.result.serverInfo.name, 'multicc-router');
   const listed = await plain.call('tools/list');
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
-    'request_user_input', 'route_task', 'dispatch_master', 'dispatch_slave',
+    'wait_for_user_answer', 'request_user_input',
+    'route_task', 'dispatch_master', 'dispatch_slave',
   ]);
   const questionTool = listed.result.tools[0];
   assert.deepEqual(questionTool.inputSchema.required, ['question']);
   assert.equal(questionTool.inputSchema.properties.options.maxItems, 12);
+  assert.match(questionTool.description, /blocking question/);
   const asked = await plain.call('tools/call', {
-    name: 'request_user_input',
+    name: 'wait_for_user_answer',
     arguments: {
       question: '选择发布环境',
       options: ['测试环境', '生产环境'],
     },
   });
   assert.equal(asked.result.isError, false);
-  assert.equal(requests[0].url, '/api/internal/router-tools/request_user_input');
+  assert.equal(requests[0].url, '/api/internal/router-tools/wait_for_user_answer');
   assert.deepEqual(requests[0].body.arguments.options, ['测试环境', '生产环境']);
   const routeSchema = listed.result.tools.find(tool => tool.name === 'route_task').inputSchema;
   assert.deepEqual(routeSchema.properties.allow_terminal, {
@@ -127,6 +129,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   t.after(() => dispatched.stop());
   const dispatchedList = await dispatched.call('tools/list');
   assert.deepEqual(dispatchedList.result.tools.map(tool => tool.name), [
-    'request_user_input', 'route_task', 'dispatch_master', 'dispatch_slave',
+    'wait_for_user_answer', 'request_user_input',
+    'route_task', 'dispatch_master', 'dispatch_slave',
   ]);
 });

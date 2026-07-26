@@ -211,6 +211,22 @@ assert.deepStrictEqual(
   opencode.buildInvocation(opencodeEnvelope).args,
   ['run', '--format', 'json', '--auto', '--thinking', '--model', 'open/model', '--variant', 'high', '--agent', 'build'],
 );
+const userInputReminder = 'blocking question -> wait_for_user_answer';
+const opencodeWithReminder = createOpencodeAdapter({
+  cmd: 'opencode',
+  userInputReminder,
+});
+assert.equal(
+  opencodeWithReminder.buildInvocation(opencodeEnvelope).payload,
+  `${userInputReminder}\n\nhello`,
+);
+assert.equal(
+  opencodeWithReminder.buildInvocation({
+    ...opencodeEnvelope,
+    historyHandle: { isFirstTurn: false, cliSessionId: 'ses_next' },
+  }).payload,
+  `${userInputReminder}\n\nhello`,
+);
 // zcode 专用 adapter：不直调引擎，而是 spawn 树内 bridge（zcode-bridge.cjs）。
 // 首轮无 --session；payload 由 multicc 作为末尾 argv 传给 bridge。
 const zcodeInv = zcode.buildInvocation(opencodeEnvelope);
@@ -275,6 +291,20 @@ assert.equal(
 assert.equal(
   codexRouterArgs.includes('mcp_servers.multicc_router.default_tools_approval_mode="approve"'),
   true,
+);
+const codexWithReminder = createCodexAdapter({
+  cmd: 'codex',
+  codexReasoningConfigArg: () => null,
+  codexModelConfigArg: () => null,
+  multiccImgHint: 'hint',
+  envConstraint: userInputReminder,
+});
+assert.equal(
+  codexWithReminder.buildInvocation({
+    ...opencodeEnvelope,
+    historyHandle: { isFirstTurn: false, cliSessionId: 'thread-next' },
+  }).payload,
+  `${userInputReminder}\n\nhello`,
 );
 const claudeWithRouter = createClaudeAdapter({
   cmd: 'claude',

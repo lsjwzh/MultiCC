@@ -40,41 +40,55 @@ const TARGET_SCHEMA = {
   },
 };
 
+const USER_INPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['question'],
+  properties: {
+    question: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 16384,
+      description: 'The exact blocking question the user must answer before work can continue.',
+    },
+    reason: {
+      type: 'string',
+      maxLength: 4096,
+      description: 'Optional concise explanation of why the task cannot safely continue.',
+    },
+    options: {
+      type: 'array',
+      maxItems: 12,
+      uniqueItems: true,
+      items: { type: 'string', minLength: 1, maxLength: 512 },
+      description: 'Optional user-facing choices. Omit for free-text input.',
+    },
+    allow_multiple: {
+      type: 'boolean',
+      default: false,
+      description: 'Whether the user may select more than one option.',
+    },
+  },
+};
+
 const TOOLS = [
   {
-    name: 'request_user_input',
-    title: 'Declare user input required',
-    description: 'Record a structured signal that this turn cannot continue without a user decision, confirmation, choice, or missing required information. This tool does not collect the reply and returns immediately. After calling it, present the question and options as the final assistant response, then stop the turn without running more tools.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['question'],
-      properties: {
-        question: {
-          type: 'string',
-          minLength: 1,
-          maxLength: 16384,
-          description: 'The exact question the user must answer before work can continue.',
-        },
-        reason: {
-          type: 'string',
-          maxLength: 4096,
-          description: 'Optional concise explanation of why the task cannot safely continue.',
-        },
-        options: {
-          type: 'array',
-          maxItems: 12,
-          uniqueItems: true,
-          items: { type: 'string', minLength: 1, maxLength: 512 },
-          description: 'Optional user-facing choices. Omit for free-text input.',
-        },
-        allow_multiple: {
-          type: 'boolean',
-          default: false,
-          description: 'Whether the user may select more than one option.',
-        },
-      },
+    name: 'wait_for_user_answer',
+    title: 'Wait for user answer',
+    description: 'Call this before ending a turn with a blocking question: when a user decision, confirmation, choice, or missing required information is necessary and work cannot safely continue. It records the structured question card and returns immediately; then present the same question as the final response and stop the turn without running more tools.',
+    inputSchema: USER_INPUT_SCHEMA,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
+  },
+  {
+    name: 'request_user_input',
+    title: 'Wait for user answer (legacy alias)',
+    description: 'Backward-compatible alias for wait_for_user_answer. Prefer wait_for_user_answer for a blocking question.',
+    inputSchema: USER_INPUT_SCHEMA,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
