@@ -458,7 +458,7 @@ class _ClearMenuBody extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Clear all
+                  // Clear all\n                  // Rotate native context\n                  InkWell(\n                    onTap: () {\n                      _closeMenu.call();\n                      widget.provider.rotateNativeContext();\n                    },\n                    borderRadius: BorderRadius.circular(6),\n                    child: Padding(\n                      padding: const EdgeInsets.symmetric(\n                        horizontal: 10,\n                        vertical: 9,\n                      ),\n                      child: Row(\n                        children: [\n                          const Icon(\n                            Icons.autorenew_outlined,\n                            size: 16,\n                            color: Color(0xFF3ad6c5),\n                          ),\n                          const SizedBox(width: 8),\n                          Text(\n                            t(\x27rotateNativeContext\x27),\n                            style: const TextStyle(\n                              color: Color(0xFFe7eaee),\n                              fontSize: 13,\n                            ),\n                          ),\n                        ],\n                      ),\n                    ),\n                  ),
                   InkWell(
                     onTap: onClearAll,
                     borderRadius: BorderRadius.circular(6),
