@@ -411,6 +411,20 @@ test('only classify P stages direct input; every non-P state continues immediate
   assert.equal(staged.activeEntryId, null);
 });
 
+test('waiting direct input has the same immediate continuation contract for every chat CLI', async () => {
+  for (const cli of ['claude', 'codex', 'opencode']) {
+    const h = fixture({ record: { cli } });
+    h.setClassifyState('W');
+    await h.host.admit('s1', `waiting reply for ${cli}`, {
+      clientMsgId: `waiting-${cli}`,
+    });
+    const admission = h.calls.find(call => call[0] === 'admit')[1];
+    assert.equal(admission.source, 'direct');
+    assert.equal(admission.workKind, 'continuation', cli);
+    assert.equal(admission.activeEntryId, 'entry-1', cli);
+  }
+});
+
 test('queued projection does not make its own outbox delivery look busy', () => {
   const h = fixture();
   h.host.onSchedulerEvent({
