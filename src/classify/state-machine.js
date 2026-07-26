@@ -86,6 +86,22 @@ function createClassifyStateMachine(rawDeps) {
     getTaskContextHost().recordGoal(sessionName, goal, phase, cs, classifyState);
   }
 
+  // A classify verdict may only become a scheduler/business-state transition
+  // after the owned provider turn has ended. `isStreaming` is the primary turn
+  // fact, while non-Claude CLIs also expose their one-shot child process. The
+  // latter is a defensive guard for the narrow window where a stale scan or a
+  // watchdog has cleared isStreaming before the process close/finalize boundary.
+  // Claude is deliberately excluded from the child check because its process is
+  // persistent and remains alive while the session is genuinely at rest.
+  function turnInFlightForClassify(cs) {
+    if (!cs) return false;
+    if (cs.isStreaming) return true;
+    if (cs.cli === 'claude') return false;
+    const child = cs.claudeProc;
+    return !!child && child.killed !== true
+      && child.exitCode == null && child.signalCode == null;
+  }
+
   function dispatchStateAction(result, ctx) {
     const { state, goal, phase } = result;
     // The letter IS the state (single source). Derive the legacy error/background
@@ -131,8 +147,8 @@ function createClassifyStateMachine(rawDeps) {
     // side effects; persisting a provisional classifyState poisons scan guards.
     // A cancel is exempt: it *is* the turn boundary, and the runner it stopped
     // may not have flipped isStreaming yet on every adapter.
-    if (cs && cs.isStreaming && state !== 'P' && !cancel) {
-      console.log(`[multicc/scan] ${sessionName} reclassify in-flight (isStreaming): state=${state}, 纯观察跳过（等 turn 结束重判）`);
+    if (turnInFlightForClassify(cs) && state !== 'P' && !cancel) {
+      console.log(`[multicc/scan] ${sessionName} reclassify in-flight (owned runner): state=${state}, 纯观察跳过（等 turn 结束重判）`);
       return;
     }
 
@@ -281,11 +297,6 @@ function createClassifyStateMachine(rawDeps) {
   const SCAN_INTERVAL_MS = 60 * 1000;
   const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
   const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
-  // Watchdog: a turn whose isStreaming never reset (process hung/crashed) would skip
-  // scan forever. Force-reset if no live stream event for this long. Generous so a
-  // slow-but-alive turn (a long tool/subagent that still emits events) is never killed.
-  const STUCK_STREAM_MS = 10 * 60 * 1000;    // 10 min of total stream silence = stuck
-
   // Bounded in-memory ring of recent scanAndReclassify passes, for debugging
   // "when did a scan run, what did it see, and which sessions did it enqueue vs
   // skip (and why)". Queryable via GET /api/scan/history. Never persisted — no fs
@@ -343,7 +354,7 @@ function createClassifyStateMachine(rawDeps) {
       logger.info('classify_result_ignored_after_cancel', { sessionId: sessionName, source });
       return;
     }
-    if (cs && cs.isStreaming) {
+    if (turnInFlightForClassify(cs)) {
       if (cs.currentTask) {
         cs.currentTask.goal = (res.goal && res.goal !== '-') ? res.goal : '';
         if (res.phase) cs.currentTask.phase = res.phase;
@@ -423,19 +434,16 @@ function createClassifyStateMachine(rawDeps) {
         continue;
       }
 
-      // Streaming state waits for turn-end. Scan only resolves an unnamed goal;
-      // the silence watchdog resets a genuinely stuck stream for normal recovery.
+      // An owned provider turn waits for its close/finalize boundary. Stream
+      // silence is not a terminal fact: OpenCode (and other one-shot CLIs) can
+      // spend a long time inside a tool without emitting JSONL. The dedicated
+      // processing watchdog checks actual child/stream liveness and cancels a
+      // genuinely missing runner; classify must never clear isStreaming or
+      // publish W/D while that runner is still alive.
       const liveCs = chatSessions.get(sid);
-      if (liveCs && liveCs.isStreaming) {
-        // Math.max avoids inheriting a prior turn's stale lastStreamAt.
-        const lastStream = Math.max(liveCs.lastStreamAt || 0, liveCs.turnStartedAt || 0);
-        if (lastStream && (now - lastStream) > STUCK_STREAM_MS) {
-          note(sid, ts.classifyState, 'stuck-reset', `${((now - lastStream) / 1000).toFixed(0)}s stream silence → force-reset isStreaming`);
-          console.log(`[multicc/scan] ${sid} stuck-isStreaming: ${((now - lastStream) / 1000).toFixed(0)}s 无流事件 → 强制复位 isStreaming，本轮按 !isStreaming 重判`);
-          liveCs.isStreaming = false;
-          // fall through to reclassify now via the normal (non-streaming) path below
-        } else if (isGoalResolved(ts.goal)) {
-          note(sid, ts.classifyState, 'skipped-streaming', 'isStreaming + goal already resolved');
+      if (turnInFlightForClassify(liveCs)) {
+        if (isGoalResolved(ts.goal)) {
+          note(sid, ts.classifyState, 'skipped-live-runner', 'owned provider turn + goal already resolved');
           continue;
         }
         // Unresolved goal falls through to the in-progress classify path.
@@ -772,7 +780,9 @@ function createClassifyStateMachine(rawDeps) {
     SCAN_INTERVAL_MS,
     SCAN_MAX_QUEUE,
     SCAN_RETHROTTLE_MS,
-    STUCK_STREAM_MS,
+    // Backward-compatible diagnostics field. Silence no longer changes state;
+    // the processing watchdog owns dead-runner detection from structured facts.
+    STUCK_STREAM_MS: null,
     SCAN_HISTORY_MAX_PASSES,
     SCAN_HISTORY_MAX_DECISIONS,
   };
