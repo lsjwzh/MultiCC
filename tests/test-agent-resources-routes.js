@@ -152,7 +152,10 @@ test('preset list strips prompts while detail preserves them and returns legacy 
     params: { id: AGENT_COMMANDER_PRESET_ID },
   });
   assert.equal(detail.body.prompt, COMMANDER_ROUTER_PROMPT);
-  assert.match(detail.body.description, /Router-only/);
+  assert.match(detail.body.description, /Route-first/);
+  assert.match(detail.body.prompt, /不是强制 route-only/);
+  assert.match(detail.body.prompt, /跨 session 派发的【唯一通道】是调用 route_task/);
+  assert.match(detail.body.prompt, /不要输出 <<route>> 或 <<dispatch>>/);
   assert.equal(current.reads(), 1);
   const missing = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
     params: { id: 'missing' },

@@ -185,7 +185,8 @@ test('a normal session stays in-directory', () => {
 test('commander gets the dispatch prompt without needing autoDispatch', () => {
   const t = makeFactory(COMMANDER_BASE, {});
   const p = t.buildDispatchContextPrompt('cmd');
-  assert.match(p, /指挥官/);
+  assert.match(p, /\[MultiCC Commander routing\]/);
+  assert.match(p, /route-first|不是强制 route-only|优先 route_task|优先判断/);
   assert.match(p, /route_task/);
   assert.match(p, /优先复用/);
   assert.match(p, /role（稳定职责摘要）/);
@@ -195,7 +196,25 @@ test('commander gets the dispatch prompt without needing autoDispatch', () => {
   assert.match(p, /不要根据 id、CLI 名称或最近活跃时间猜职责/);
   assert.match(p, /用户原话点名/);
   assert.doesNotMatch(p, /<<route target=/);
+  assert.doesNotMatch(p, /\[MultiCC Ultracode workflow\]/);
   assert.match(p, /可用目标 sessions: \[/);
+});
+
+test('commander with ultracode stays on route-first route_task surface', () => {
+  const records = COMMANDER_BASE.map(record => (
+    record.id === 'cmd' ? { ...record, effort: 'ultracode' } : record
+  ));
+  const t = makeFactory(records, {}, () => 'ultracode');
+  const p = t.buildDispatchContextPrompt('cmd');
+  assert.match(p, /\[MultiCC Commander routing\]/);
+  assert.match(p, /具备 Ultracode 能力/);
+  assert.match(p, /可以在当前会话完成/);
+  assert.match(p, /route_task/);
+  assert.match(p, /跨 session 派发仍只使用 route_task/);
+  assert.doesNotMatch(p, /\[MultiCC Ultracode workflow\]/);
+  assert.doesNotMatch(p, /Task\/Agent\/Workflow/);
+  assert.doesNotMatch(p, /<<dispatch target=/);
+  assert.match(p, /\[MultiCC Commander routing end\]/);
 });
 
 test('commander target surface lists only same-dir workers', () => {
