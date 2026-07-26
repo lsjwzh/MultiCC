@@ -123,6 +123,7 @@ const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createChatTurnEngine } = require('./src/chat/turn-engine');
+const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
 const { createSessionBundleRoutes } = require('./src/routes/session-bundle');
@@ -1607,10 +1608,12 @@ app.use(createMemoModule({
 
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, effort = null, agent = null, rolePrompt = null, rolePresetId = null, type = null, elasticWorker = false, experimentalMode = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session' }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
+  const experiment = validateExperimentalSession({ enabled: tuiChatMirrorEnabled(), cli, kind, experimentalMode });
+  if (!experiment.ok) return experiment;
   // Model can be set for both Claude and Codex sessions. Claude terminal mode
   // interpolates it into a shell command, so keep the charset tight; Codex uses
   // the same id shape in config.toml.
@@ -1681,7 +1684,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
   if (type === 'worker' && elasticWorker) session.elasticWorker = true;
-  if (ephemeral) session.ephemeral = true;
+  if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode;
   if (kind === 'chat') ensureCliStates(session);
   try {
     if (persistence === 'required') {
@@ -2636,6 +2639,7 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   logger,
 });
 
+const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
 
 // Chat turn engine: per-turn + persistent-streaming turn execution, the chat
 // stream-json WebSocket handler and the orchestration wait-injector helpers.
@@ -2646,6 +2650,7 @@ const chatTurnEngine = createChatTurnEngine({
   getSessionWorkHost: () => sessionWorkHost,
   getChatHistoryRuntime: () => chatHistoryRuntime,
   getChatHistoryService: () => chatHistoryService,
+  getExperimentalTuiChatRuntime: () => tuiChatMirrorRuntime,
   isShuttingDown: () => _shuttingDown,
   getPort: () => PORT,
   getClaudeProxyEnabled: () => CLAUDE_PROXY_ENABLED,
