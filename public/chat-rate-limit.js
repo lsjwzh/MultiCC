@@ -656,16 +656,14 @@
         currentQoderQuota = data;
         qoderQuotaLastErrorAt = Date.now();
       }
-      renderQoderQuota();
-      return currentQoderQuota;
     } catch (_) {
       qoderQuotaLastErrorAt = Date.now();
       currentQoderQuota = { status: 'unavailable', error: 'fetch failed' };
-      renderQoderQuota();
-      return currentQoderQuota;
     } finally {
       qoderQuotaFetchInFlight = false;
     }
+    renderQoderQuota();
+    return currentQoderQuota;
   }
 
   function restoreQoderQuota() {
