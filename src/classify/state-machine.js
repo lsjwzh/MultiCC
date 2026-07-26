@@ -582,6 +582,16 @@ function createClassifyStateMachine(rawDeps) {
     if (userMsg.length < 1 && reply.length < 20) return;
 
     const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
+    // A cancelled turn has already reached its verdict. The runner's close
+    // handler still runs finalize → classifyTurnEnd after the kill, so without
+    // this guard every cancel queued one more Aux judgement whose result
+    // applyClassifyResult was only going to throw away. ensureCurrentTask clears
+    // cancelledAt when the next real user turn starts, so this never sticks.
+    const cancelledState = getTaskState(persistedSessions.get(sessionName));
+    if (cancelledState.classifyState === 'E' && cancelledState.cancelledAt) {
+      logger.info('classify_skipped_after_cancel', { sessionId: sessionName });
+      return;
+    }
     const priorGoal = cs.currentTask?.goal || '';
     // Structured W remains available while Aux is degraded.
     if (getAuxQueue().isUnhealthy()) {

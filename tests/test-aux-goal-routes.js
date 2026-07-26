@@ -264,6 +264,36 @@ test('in-flight cancellation does not poison Aux health when transport later fai
   assert.equal(harness.broadcasts.at(-1).payload.cancelled, true);
 });
 
+test('cancelClassifyFor drops a session\'s queued and in-flight judgements, and nobody else\'s', async () => {
+  let sequence = 0;
+  const harness = createHarness({
+    crypto: { randomUUID: () => `cls-${++sequence}` },
+    executeAuxHttp: () => new Promise(() => {}),  // never settles: stays in flight
+  });
+  const queue = harness.runtime.auxQueue;
+  const classify = (meta, prompt) => {
+    const pending = queue.enqueue({ type: 'intent_classify', prompt, meta });
+    pending.catch(() => {});
+    return pending;
+  };
+  const running = classify({ sessionName: 's1' }, 'judge s1');
+  const queued = classify({ sid: 's1' }, 'judge s1 again');   // sid is the other key
+  classify({ sessionName: 's2' }, 'judge s2');
+  queue.enqueue({ type: 'manual', prompt: 'unrelated', meta: { sessionName: 's1' } }).catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queue.currentTask.id, 'cls-1');
+
+  // Two: the one already executing plus the one still queued.
+  assert.equal(queue.cancelClassifyFor('s1'), 2);
+  assert.equal(queue.currentTask.cancelled, true);
+  await assert.rejects(queued, error => error && error.cancelled === true);
+  // Another session's judgement and this session's non-classify work are untouched.
+  assert.deepEqual(queue.queue.map(task => task.id), ['cls-3', 'cls-4']);
+  // Idempotent: a repeated cancel has nothing left to drop.
+  assert.equal(queue.cancelClassifyFor('s1'), 0);
+  running.catch(() => {});
+});
+
 test('Aux WebSocket ownership cleans up on close and error', () => {
   const { runtime } = createHarness();
   const closed = new EventEmitter();

@@ -73,10 +73,27 @@ function harness(t, options = {}) {
     taskState: { goal: '重构取消链路', phase: 'implement' },
   }]]);
 
+  // A CLI that stops when asked, unless the test says otherwise. `signalCode` +
+  // the 'exit' event are what Node sets when a child actually dies, and they are
+  // what the host reads to tell a delivered signal from a stopped process.
+  const diesOn = options.diesOn === undefined ? 'SIGTERM' : options.diesOn;
+  const exitListeners = [];
   const child = {
     pid: 4242,
+    exitCode: null,
+    signalCode: null,
     kills: 0,
-    kill(signal) { this.kills += 1; this.signal = signal; record({ kind: 'runner_kill', signal }); },
+    signals: [],
+    once(event, fn) { if (event === 'exit') exitListeners.push(fn); },
+    kill(signal) {
+      this.kills += 1;
+      this.signal = signal;
+      this.signals.push(signal);
+      record({ kind: 'runner_kill', signal });
+      if (!diesOn || signal !== diesOn) return;
+      this.signalCode = signal;
+      exitListeners.splice(0).forEach(fn => fn(null, signal));
+    },
   };
   const chatState = {
     cli: 'codex',
@@ -90,6 +107,22 @@ function harness(t, options = {}) {
     currentTask: { goal: '重构取消链路', phase: 'implement' },
   };
   const chatSessions = new Map([['s1', chatState]]);
+
+  // The Aux queue is classify's LLM input channel. A cancel has to reach it too:
+  // the judgement admitted for the killed turn must be dropped, and the trailing
+  // turn-end that the runner's close handler fires after the kill must not queue
+  // a replacement.
+  const auxJobs = { enqueued: [], cancelledFor: [] };
+  const auxQueue = {
+    isUnhealthy: () => false,
+    cancel() {},
+    cancelClassifyFor(sessionKey) { auxJobs.cancelledFor.push(sessionKey); return 0; },
+    enqueue(task) {
+      auxJobs.enqueued.push(task);
+      record({ kind: 'aux_enqueue', taskType: task.type });
+      return new Promise(() => {});  // still in flight
+    },
+  };
 
   const taskStateStore = createTaskStateStore({
     persistedSessions,
@@ -136,7 +169,7 @@ function harness(t, options = {}) {
     chatSessions,
     getSessionSummaries: () => new Map(),
     logger: { info() {}, warn() {}, error() {} },
-    getAuxQueue: () => ({ enqueue: async () => ({}), cancel() {}, isUnhealthy: () => true }),
+    getAuxQueue: () => auxQueue,
     getSessionWorkHost: () => sessionWorkHost,
     getTaskContextHost: () => ({
       recordGoal: (sessionName, goal, phase, cs, classifyState) => {
@@ -195,12 +228,14 @@ function harness(t, options = {}) {
     },
     classifyDisplay,
     cancelClassify: () => {},
+    cancelSessionClassifyJobs: sessionId => auxQueue.cancelClassifyFor(sessionId),
     assignKillReason: (runner, reason) => { if (runner) runner.killReason = reason; },
     appendMessage: (sessionId, message) => record({ kind: 'history_append', sessionId, message }),
     cancelPreparation: (sessionId, reason) => record({ kind: 'cancel_preparation', sessionId, reason }),
     chatStream: { isAlive: () => false, cancel() {} },
     zcodeAuth: { ensureZcodeAuth: () => ({ ok: true }) },
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
+    runnerKillGraceMs: options.runnerKillGraceMs,
     log: { warn: (...args) => record({ kind: 'warn', args }), log() {} },
   });
 
@@ -221,7 +256,7 @@ function harness(t, options = {}) {
 
   return {
     dir, events, record, kinds, firstIndex,
-    persistedSessions, chatSessions, chatState, child,
+    persistedSessions, chatSessions, chatState, child, classify, auxJobs,
     taskStateStore, taskBoard, scheduler, outbox,
     get host() { return sessionWorkHost; },
     taskState: () => taskStateStore.getTaskState(persistedSessions.get('s1')),
@@ -420,6 +455,43 @@ test('a runner that will not stop lands on an explicit error, not a fake cancel'
     && event.payload.type === 'notify').pop();
   assert.equal(notify.payload.message, '取消失败：任务未能停止');
   assert.ok(h.events.some(event => event.kind === 'warn'));
+});
+
+test('a cancel escalates to SIGKILL rather than accepting an ignored SIGTERM', async t => {
+  const h = harness(t, { diesOn: 'SIGKILL', runnerKillGraceMs: 10, runnerStopTimeoutMs: 2_000 });
+  await h.startTurn();
+
+  const result = await h.host.cancelActiveTurn('s1');
+  assert.deepEqual(h.child.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(result.ok, true);
+  // A killed runner is still a clean cancel, not a stop failure.
+  assert.equal(h.taskState().classifyState, 'E');
+  assert.equal(h.taskState().cancelReason, 'user_cancelled');
+  assert.equal(h.boardTask().runState, 'error');
+});
+
+// ── 5b. The classify input channel ─────────────────────────────────────────
+
+test('cancel drops the judgement queued for the killed turn and the trailing turn-end queues no replacement', async t => {
+  const h = harness(t);
+  await h.startTurn();
+  h.chatState.currentUserText = '把取消链路收敛到 classify';
+  h.chatState.currentAssistantText = '正在修改 session-work-host 的取消路径实现';
+
+  // Normal path: a turn end is judged by the Aux queue.
+  h.classify.classifyTurnEnd(h.chatState, 's1');
+  assert.equal(h.auxJobs.enqueued.length, 1);
+  assert.equal(h.auxJobs.enqueued[0].type, 'intent_classify');
+
+  await h.host.cancelActiveTurn('s1');
+  // 1. The judgement admitted for the killed turn is dropped, not left to run.
+  assert.equal(h.auxJobs.cancelledFor.includes('s1'), true);
+  // 2. The kill makes the CLI exit, and its close handler runs finalize →
+  //    classifyTurnEnd once more. That turn already has its verdict; queueing a
+  //    second judgement would only pay for a result applyClassifyResult drops.
+  h.classify.classifyTurnEnd(h.chatState, 's1');
+  assert.equal(h.auxJobs.enqueued.length, 1);
+  assert.equal(h.taskState().classifyState, 'E');
 });
 
 // ── 6. No active scheduler entry ───────────────────────────────────────────
