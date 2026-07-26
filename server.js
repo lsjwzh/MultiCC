@@ -559,6 +559,7 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
   codexEnvConstraint: CODEX_ENV_CONSTRAINT,
   codexStayAlivePrompt: CODEX_STAY_ALIVE_PROMPT,
   multiccImgHint: MULTICC_IMG_HINT,
+  userInputReminder: USER_INPUT_SIGNAL_PROMPT.join('\n'),
   resolveSessionWireModel: providerRouterRuntime.resolveSessionWireModel,
   claudeDefaultModel,
   cliEffortLevel,

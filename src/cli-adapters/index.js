@@ -45,7 +45,10 @@ function createCliAdapters(deps) {
       isResponseCompletedDisconnect: deps.isCodexResponseCompletedDisconnect,
       isTransportDisconnect: deps.isCodexTransportDisconnect,
     }),
-    createOpencodeAdapter({ cmd: commands.opencode }),
+    createOpencodeAdapter({
+      cmd: commands.opencode,
+      userInputReminder: deps.userInputReminder,
+    }),
     createZcodeAdapter({ cmd: commands.zcode }),
     createQoderAdapter({ cmd: commands.qoder, routerMcpNode, routerMcpScript }),
   ]);

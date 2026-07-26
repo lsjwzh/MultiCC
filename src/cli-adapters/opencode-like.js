@@ -2,7 +2,10 @@
 
 const { renderPrompt } = require('../message-composer');
 
-function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = false, includeThinking = false }) {
+function createOpencodeLikeAdapter({
+  name, label, cmd, supportsAgentVariant = false, includeThinking = false,
+  userInputReminder = '',
+}) {
   return {
     name,
     cmd,
@@ -28,9 +31,10 @@ function createOpencodeLikeAdapter({ name, label, cmd, supportsAgentVariant = fa
         args.push('--continue');
       }
       const prompt = renderPrompt(env);
-      const payload = isFirstTurn && env.rolePrompt
+      let payload = isFirstTurn && env.rolePrompt
         ? `[角色设定]\n${env.rolePrompt}\n[角色设定结束]\n\n${prompt}`
         : prompt;
+      if (userInputReminder) payload = `${userInputReminder}\n\n${payload}`;
       return { cmd, args, payload };
     },
     decodeEvent(event) {
