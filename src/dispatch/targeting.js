@@ -120,8 +120,18 @@ function buildDispatchContextPrompt(sessionId) {
   // routes one-way to workers); every other session must opt in via autoDispatch.
   if (!isCommander && !current?.autoDispatch) return '';
   const ultra = normalizeEffort(current?.effort) === 'ultracode';
-  const intro = ultra
+  const intro = isCommander
     ? [
+        '[MultiCC Commander routing]',
+        '你是本 fleet 的 Commander。默认优先判断是否应把自包含任务用 route_task 单向派发给下面列出的同 fleet worker。',
+        '这不是强制 route-only：轻量分析、检查、规划、解释，或用户明确要求你自己处理时，可以在当前会话完成；如果选择自己完成，请简短说明为什么不派发。',
+        '涉及代码修改、长时间执行、验证/提交/合并、跨 provider、多模块并行或需要独立 worktree 的任务，优先 route_task 派发。',
+        ...(ultra ? [
+          '当前会话具备 Ultracode 能力，可用于轻量分析、验证和小范围自执行；但跨 session 派发仍只使用 route_task，不使用 <<dispatch>>。',
+        ] : []),
+      ]
+    : ultra
+      ? [
         '[MultiCC Ultracode workflow]',
         '当前会话开启了 ultracode（effort=xhigh + dynamic workflow）。你拥有两套任务分发能力，应根据任务性质选择：',
         '',
@@ -141,11 +151,9 @@ function buildDispatchContextPrompt(sessionId) {
         '',
         '两者不互斥：同一回合可以同时使用 Task/Agent/Workflow 做分析 + <<dispatch>> 派发改动。',
       ]
-    : [
+      : [
         '[MultiCC cross-session dispatch]',
-        isCommander
-          ? '你是本 fleet 的指挥官：分析任务后，只调用 route_task 工具把自包含子任务单向派发给下面列出的现有 worker session。你只派活、不亲自执行。'
-          : '你可以把自包含子任务分发给同目录的其它 session。只有确实需要其它 session 干活时才输出标记，普通回答不要输出。',
+        '你可以把自包含子任务分发给同目录的其它 session。只有确实需要其它 session 干活时才输出标记，普通回答不要输出。',
       ];
   return [
     ...intro,
@@ -166,11 +174,13 @@ function buildDispatchContextPrompt(sessionId) {
       ? '默认只选择 kind="chat"。任务正文出现“终端/terminal/CLI”不代表用户指定了 terminal session；只有用户原话点名某个 terminal 的完整 id 或完整 label 时，才可选择该 terminal id 并设置 allow_terminal=true。'
       : '等价方式（适合在回合中途派活）：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/dispatch，JSON body 必须包含 target 和 message；target 仍然必须是下面列表里的真实 id，结果同样自动回流。',
     ...(isCommander ? [
-      '不要输出 <<route>> 标记，也不要直接调用创建 session/终端的 API；route_task 的 queued/operation_id 回执才是有效派发。',
+      '不要输出 <<route>> 或 <<dispatch>> 标记，也不要直接调用创建 session/终端的 API；跨 session 派发只调用 route_task，queued/operation_id 回执才是有效派发。',
       '如果要并行派发多个独立子任务，可连续调用多个 route_task；派发是单向的，worker 结果不会回流给你。',
     ] : []),
     `可用目标 sessions: ${JSON.stringify(targets)}`,
-    ultra ? '[MultiCC Ultracode workflow end]' : '[MultiCC cross-session dispatch end]',
+    isCommander
+      ? '[MultiCC Commander routing end]'
+      : ultra ? '[MultiCC Ultracode workflow end]' : '[MultiCC cross-session dispatch end]',
     '',
   ].join('\n');
 }
