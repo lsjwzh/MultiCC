@@ -150,10 +150,12 @@ function createTaskBoardRuntime(deps) {
     return { text: '', messageId: null, sessionId: null, legacy: true };
   }
 
-  function ensureTaskIndex({ taskId, dirId, sessionId, routing, now = Date.now() }) {
+  function ensureTaskIndex({
+    taskId, dirId, sessionId, routing, taskText = '', now = Date.now(),
+  }) {
     const existing = board.tasks[taskId];
     const task = existing || core.createPendingTask(board, {
-      taskId, dirId, sessionId, now,
+      taskId, dirId, sessionId, taskText, now,
     });
     if (!task) return { task: null, created: false };
     if (sessionId && !(task.refs || []).some(ref => ref.sessionId === sessionId)) {
@@ -178,6 +180,7 @@ function createTaskBoardRuntime(deps) {
           taskId: message.taskId,
           dirId: rec.dirId || null,
           sessionId,
+          taskText: message.taskText || core.messageText(message),
           now: message.ts || Date.now(),
         }).task;
       }
@@ -194,7 +197,7 @@ function createTaskBoardRuntime(deps) {
           }
         }
       }
-      const changed = core.addRefToTask(task, {
+      let changed = core.addRefToTask(task, {
         sessionId,
         dirId: rec.dirId || null,
         userMsgId: userMessage?.id || null,
@@ -202,6 +205,14 @@ function createTaskBoardRuntime(deps) {
         ts: message.ts || Date.now(),
         excerpt: '',
       }, message.ts || Date.now());
+      if (task.title === core.PENDING_TASK_TITLE && userMessage) {
+        const derived = core.deriveTaskTitle(userMessage.taskText || core.messageText(userMessage));
+        if (derived !== core.PENDING_TASK_TITLE) {
+          task.title = derived;
+          task.updatedAt = message.ts || Date.now();
+          changed = true;
+        }
+      }
       const stateChanged = message.role === 'user' && task.runState !== 'running';
       if (stateChanged) {
         task.runState = 'running';
@@ -230,6 +241,7 @@ function createTaskBoardRuntime(deps) {
       taskId,
       dirId: worker.dirId || null,
       sessionId: worker.id || admission.targetSessionId,
+      taskText: admission.taskText || '',
       routing: {
         mode: commanderRoute ? 'commander' : 'router-tool',
         targetSessionId: commanderRoute
@@ -378,7 +390,7 @@ function createTaskBoardRuntime(deps) {
       '',
       '【本次要求】',
       `这是用户已确认创建的任务，占位任务 id 为 ${task.id}。`,
-      `必须输出恰好一个任务；若属于现有任务可返回其 id，否则返回 id "${task.id}"。`,
+      `必须输出恰好一个任务并保留 id "${task.id}"；这里只做模块/标题归类，不合并任务身份。`,
       '必须给出最终 title、module 和 areas，不能返回空 tasks。',
     ].join('\n');
   }
@@ -741,10 +753,16 @@ function createTaskBoardRuntime(deps) {
   function taskDto(task) {
     const dto = core.buildBoardDto({ modules: board.modules, tasks: { [task.id]: task } }, getSessionRunState).tasks[0];
     const body = canonicalTaskBody(task);
+    if (dto.title === core.PENDING_TASK_TITLE && body.text) {
+      dto.title = core.deriveTaskTitle(body.text);
+    }
     dto.body = body.text;
     dto.bodyMessageId = body.messageId;
     dto.bodySessionId = body.sessionId;
     dto.legacy = body.legacy;
+    dto.identityState = body.text
+      ? body.legacy ? 'legacy' : 'canonical'
+      : task.routing?.operationId ? 'orphaned_admission' : 'legacy_unresolved';
     if (dto?.routing) {
       dto.routing.targetLabel = records.get(dto.routing.targetSessionId)?.label || dto.routing.targetSessionId;
       if (dto.routing.workerSessionId) {
@@ -759,10 +777,16 @@ function createTaskBoardRuntime(deps) {
     const labels = {};
     for (const t of dto.tasks) {
       const body = canonicalTaskBody(board.tasks[t.id]);
+      if (t.title === core.PENDING_TASK_TITLE && body.text) {
+        t.title = core.deriveTaskTitle(body.text);
+      }
       t.body = body.text;
       t.bodyMessageId = body.messageId;
       t.bodySessionId = body.sessionId;
       t.legacy = body.legacy;
+      t.identityState = body.text
+        ? body.legacy ? 'legacy' : 'canonical'
+        : board.tasks[t.id]?.routing?.operationId ? 'orphaned_admission' : 'legacy_unresolved';
       if (t.routing) {
         const sid = t.routing.targetSessionId;
         labels[sid] = records.get(sid)?.label || sid;
@@ -1029,6 +1053,7 @@ function createTaskBoardRuntime(deps) {
       taskId,
       dirId,
       sessionId: workerSessionId,
+      taskText: text,
       routing: {
         mode: effectiveRouteMode,
         targetSessionId: effectiveTarget,

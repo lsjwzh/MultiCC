@@ -136,6 +136,23 @@ test('task context is explicit, trusted, and preserved only for routed task star
   assert.deepEqual(ordinary.task, { id: null, start: false, source: null, text: '' });
 });
 
+test('turn lifecycle carries canonical task identity into router tool capabilities', () => {
+  const normalized = normalizeTurnRequest({
+    sessionId: 'commander',
+    text: '任务后续',
+    taskId: 'tsk-upstream',
+    taskStart: false,
+    taskSource: 'task-board',
+  });
+  const turn = createTurnLifecycle(normalized, { turnId: 'turn-followup' });
+  assert.deepEqual(turn.task, {
+    id: 'tsk-upstream',
+    start: false,
+    source: 'task-board',
+  });
+  assert.equal(Object.isFrozen(turn.task), true);
+});
+
 test('Claude host pre-allocation proof preserves legacy resume intent for existing history', () => {
   const turn = request({ cli: 'claude', turnCount: 3, hasNativeSession: true });
   assert.equal(turn.execution.isFirstTurn, false);

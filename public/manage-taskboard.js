@@ -63,7 +63,7 @@ async function refreshTaskBoard(force) {
     const r = await fetch('/api/task-board');
     const d = await r.json();
     if (!d || !d.ok) return;
-    _tbBoard = d;
+    _tbBoard = window.MultiCCTaskBoardUi.reconcileSnapshot(d);
     _tbFetchedAt = Date.now();
     // Re-render wherever the board is currently visible.
     if (typeof _detailModalOpen === 'function' && _detailModalOpen()
@@ -99,6 +99,27 @@ function _tbTasksForDir(dirId) {
     && ((t.dirIds || []).includes(dirId) || modDir.get(t.moduleId) === dirId));
 }
 
+function _tbTaskRowHtml(task) {
+  const display = window.MultiCCTaskBoardUi.taskDisplayState(task);
+  const clsRun = display.running ? ' running' : '';
+  const attempt = Number(task.attemptCount) > 1
+    ? `<span class="tb-dim">${Number(task.attemptCount)} 次投递</span>` : '';
+  const body = task.body
+    ? `<details class="tb-body-fold" onclick="event.stopPropagation()"><summary>任务正文</summary><pre>${_tbEsc(task.body)}</pre></details>`
+    : task.identityState === 'orphaned_admission' || task.identityState === 'legacy_unresolved'
+      ? '<span class="tb-body-pending">旧记录缺少 canonical 正文，未自动合并</span>'
+      : '<span class="tb-body-pending">正文等待目标会话持久化…</span>';
+  return `
+    <div class="tb-task${display.done ? ' done' : ''}${clsRun}" data-task-id="${_tbEsc(task.id)}" onclick="openTaskBoardDetail('${_tbEsc(task.id)}')">
+      ${_tbStatusIcon(display)}
+      <span class="tb-title-cell">
+        <span class="tb-title">${_tbEsc(task.title)}</span>
+        ${body}
+      </span>
+      <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(task)}${attempt}${_tbModuleAssignmentHtml(task)}${_tbQuickArchiveHtml(task)}<span class="tb-dim">${task.refCount}轮 · ${_tbEsc(_tbTimeAgo(task.lastTs))}</span></span>
+    </div>`;
+}
+
 // Synchronous section HTML for renderDirectoryDetailBody (data from cache;
 // openDirectoryDetail triggers the async refresh). With {tabbed:true} the
 // board fills its own tab, so the section chrome (border + "任务板" head that
@@ -119,6 +140,7 @@ function renderTaskBoardSection(dirId, opts) {
   );
   for (const mod of mods) {
     const list = window.MultiCCTaskBoardUi.sortTasks(byModule.get(mod.id));
+    const identity = window.MultiCCTaskBoardUi.partitionTaskIdentity(list);
     const collapsed = _tbCollapsed.has(mod.id);
     const batch = mod.source === 'classify'
       ? `<button class="btn btn-sm tb-reclassify-all" onclick="reclassifyPendingTaskBoard(event,'${_tbEsc(dirId)}')">全部重新归类</button>`
@@ -129,31 +151,18 @@ function renderTaskBoardSection(dirId, opts) {
         <span class="tb-mod-actions">${batch}<span class="tb-dim">${_tbEsc(_tbTimeAgo(mod.lastTs))}</span></span>
       </div>`);
     if (collapsed) continue;
-    for (const t of list) {
-      const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
-      const clsRun = display.running ? ' running' : '';
-      rowsHtml.push(`
-        <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-          ${_tbStatusIcon(display)}
-          <span class="tb-title">${_tbEsc(t.title)}</span>
-          <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮 · ${_tbEsc(_tbTimeAgo(t.lastTs))}</span></span>
-        </div>`);
+    for (const task of identity.canonical) rowsHtml.push(_tbTaskRowHtml(task));
+    if (identity.unresolved.length) {
+      rowsHtml.push(`<details class="tb-legacy-group" onclick="event.stopPropagation()">
+        <summary>历史身份待确认 · ${identity.unresolved.length}（未自动合并）</summary>
+        ${identity.unresolved.map(_tbTaskRowHtml).join('')}
+      </details>`);
     }
   }
   // Orphans (module list pruned or filtered out) still need to be reachable.
   const seen = new Set(mods.map(m => m.id));
-  for (const t of window.MultiCCTaskBoardUi.sortTasks(tasks.filter(x => !seen.has(x.moduleId)))) {
-    const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
-    const clsRun = display.running ? ' running' : '';
-    rowsHtml.push(`
-      <div class="tb-task${display.done ? ' done' : ''}${clsRun}" onclick="openTaskBoardDetail('${_tbEsc(t.id)}')">
-        ${_tbStatusIcon(display)}
-        <span class="tb-title-cell">
-          <span class="tb-title">${_tbEsc(t.title)}</span>
-          ${t.body ? `<details class="tb-body-fold" onclick="event.stopPropagation()"><summary>任务正文</summary><pre>${_tbEsc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}
-        </span>
-        <span class="tb-task-meta"><span class="tb-run-state st-tone-${display.tone}">${_tbEsc(display.label)}</span>${_tbRoutingHtml(t)}${_tbModuleAssignmentHtml(t)}${_tbQuickArchiveHtml(t)}<span class="tb-dim">${t.refCount}轮</span></span>
-      </div>`);
+  for (const task of window.MultiCCTaskBoardUi.sortTasks(tasks.filter(x => !seen.has(x.moduleId)))) {
+    rowsHtml.push(_tbTaskRowHtml(task));
   }
   const body = rowsHtml.length
     ? rowsHtml.join('')

@@ -34,6 +34,45 @@
     });
   }
 
+  // Full snapshots replace local state. Indexing by canonical taskId makes WS
+  // delta replay/reconnect idempotent and automatically prunes cards absent
+  // from the latest authoritative snapshot. It deliberately never compares
+  // titles or bodies: two explicit user admissions with the same text remain
+  // two tasks.
+  function reconcileSnapshot(snapshot) {
+    const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    const byId = (items) => {
+      const map = new Map();
+      for (const item of Array.isArray(items) ? items : []) {
+        const id = String(item?.id || '').trim();
+        if (!id) continue;
+        const existing = map.get(id);
+        const currentTs = Number(item?.lastTs || item?.updatedAt || item?.createdAt) || 0;
+        const existingTs = Number(existing?.lastTs || existing?.updatedAt || existing?.createdAt) || 0;
+        if (!existing || currentTs >= existingTs) map.set(id, item);
+      }
+      return [...map.values()];
+    };
+    return {
+      ...source,
+      modules: byId(source.modules),
+      tasks: byId(source.tasks),
+    };
+  }
+
+  function partitionTaskIdentity(tasks) {
+    const result = { canonical: [], unresolved: [] };
+    for (const task of Array.isArray(tasks) ? tasks : []) {
+      if (task?.identityState === 'orphaned_admission'
+          || task?.identityState === 'legacy_unresolved') {
+        result.unresolved.push(task);
+      } else {
+        result.canonical.push(task);
+      }
+    }
+    return result;
+  }
+
   function statusRegistry() {
     return global.MultiCCStatusPresentation || (typeof require === 'function'
       ? require('./status-presentation.js')
@@ -85,7 +124,15 @@
     return `${commander} → ${workerLabel}${workerLabel === workerId ? '' : ` (${workerId})`}${elastic}`;
   }
 
-  const api = Object.freeze({ sessionChatUrl, sortModules, sortTasks, taskDisplayState, taskRoutingLabel });
+  const api = Object.freeze({
+    sessionChatUrl,
+    sortModules,
+    sortTasks,
+    reconcileSnapshot,
+    partitionTaskIdentity,
+    taskDisplayState,
+    taskRoutingLabel,
+  });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCTaskBoardUi = api;
 })(typeof window !== 'undefined' ? window : globalThis);
