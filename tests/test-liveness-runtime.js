@@ -34,6 +34,39 @@ function make({ now, sessions = {}, chat = {}, streamStatus = {}, probeSession, 
 test('unknown session yields state=unknown', () => {
   const rt = make({ now: clockFrom(1000), sessions: {} });
   assert.deepEqual(rt.verdict('nope'), { state: 'unknown', reason: 'no_such_session' });
+  assert.deepEqual(rt.ownership('nope'), { state: 'unknown', reason: 'no_such_session' });
+});
+
+test('classify ownership uses structured runner facts and fails closed on contradictions', () => {
+  const now = clockFrom(1000);
+  const liveChild = { killed: false, exitCode: null, signalCode: null };
+  const exitedChild = { killed: false, exitCode: 0, signalCode: null };
+  const rt = make({
+    now,
+    sessions: {
+      openLive: { cli: 'opencode' },
+      openDead: { cli: 'opencode' },
+      openGap: { cli: 'opencode' },
+      claudeBusy: { cli: 'claude' },
+      claudeIdle: { cli: 'claude' },
+    },
+    chat: {
+      openLive: { cli: 'opencode', isStreaming: false, claudeProc: liveChild },
+      openDead: { cli: 'opencode', isStreaming: true, claudeProc: exitedChild },
+      openGap: { cli: 'opencode', isStreaming: true, claudeProc: null },
+      claudeBusy: { cli: 'claude', isStreaming: true },
+      claudeIdle: { cli: 'claude', isStreaming: true },
+    },
+    streamStatus: {
+      claudeBusy: { busy: true, alive: true },
+      claudeIdle: { busy: false, alive: true },
+    },
+  });
+  assert.equal(rt.ownership('openLive').state, 'active');
+  assert.equal(rt.ownership('openDead').state, 'inactive');
+  assert.equal(rt.ownership('openGap').state, 'unknown');
+  assert.equal(rt.ownership('claudeBusy').state, 'active');
+  assert.equal(rt.ownership('claudeIdle').state, 'inactive');
 });
 
 test('fresh proxy request/first_byte activity => working (most authoritative)', () => {

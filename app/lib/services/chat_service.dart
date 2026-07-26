@@ -285,6 +285,17 @@ class ChatService {
         }
         break;
 
+      case 'assistant':
+        final assistant = msg['message'];
+        if (assistant is Map) {
+          _emit('assistant', Map<String, dynamic>.from(assistant));
+        }
+        break;
+
+      case 'part_delta':
+        _emit('part_delta', msg);
+        break;
+
       case 'result':
         isStreaming = false;
         _cancelRequested = false;
@@ -468,7 +479,9 @@ class ChatService {
   /// while preserving the multicc chat transcript.
   void rotateNativeContext() {
     try {
-      _channel?.sink.add(jsonEncode({"type": "clear_history", "preserveHistory": true}));
+      _channel?.sink.add(
+        jsonEncode({"type": "clear_history", "preserveHistory": true}),
+      );
     } catch (_) {}
   }
 

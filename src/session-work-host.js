@@ -226,9 +226,10 @@ function createSessionWorkHost(deps = {}) {
 
   // Classify is the only semantic gate for the interaction FIFO. The scheduler
   // persists ordering and active correlation, then applies exactly one of
-  // D/W/B/E/P here. No delivery, liveness or process status may complete work.
-  function classifyTransition(sessionId, taskId, result = {}) {
-    const operation = runClassifyTransition(sessionId, taskId, result);
+  // D/W/B/E/P here. Liveness may confirm a missing runner boundary, but it never
+  // chooses a verdict or completes work by itself.
+  function classifyTransition(sessionId, taskId, result = {}, options = {}) {
+    const operation = runClassifyTransition(sessionId, taskId, result, options);
     if (sessionId) {
       pendingTransitions.set(sessionId, operation);
       const clear = () => {
@@ -239,14 +240,30 @@ function createSessionWorkHost(deps = {}) {
     return operation;
   }
 
-  async function runClassifyTransition(sessionId, taskId, result = {}) {
+  async function runClassifyTransition(sessionId, taskId, result = {}, options = {}) {
     const runtime = schedulerRuntime();
     const target = runtime?.sessionScheduler;
     if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
     try {
       const closing = turnClosures.get(sessionId);
       if (closing) await closing;
-      const current = await target.status(sessionId);
+      let current = await target.status(sessionId);
+      const currentTaskId = current?.active?.taskId || null;
+      if (taskId && currentTaskId && taskId !== currentTaskId) {
+        return { ok: false, code: 'active_task_mismatch' };
+      }
+      if (current?.active
+          && !['assessing', 'frozen'].includes(current.state)
+          && options.recoverMissingBoundary === true
+          && ['starting', 'running'].includes(current.state)) {
+        const boundary = await target.turnEnded(sessionId);
+        if (!boundary?.ok) return boundary || { ok: false, code: 'turn_boundary_recovery_failed' };
+        current = await target.status(sessionId);
+        log.info?.('session_scheduler_turn_boundary_recovered', {
+          sessionId,
+          reason: options.livenessReason || 'confirmed_inactive',
+        });
+      }
       if (!current?.active || !['assessing', 'frozen'].includes(current.state)) {
         return { ok: false, code: 'stale_classification' };
       }

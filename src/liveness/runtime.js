@@ -81,6 +81,51 @@ function createLivenessRuntime(deps = {}) {
     proxyLedger.delete(sessionId);
   }
 
+  function processHandleAlive(child) {
+    return !!child
+      && child.killed !== true
+      && child.exitCode == null
+      && child.signalCode == null;
+  }
+
+  // Fast, side-effect-free ownership proof used by classify. This deliberately
+  // answers a narrower question than verdict(): may a W/D/E candidate cross the
+  // scheduler boundary right now? Absence of traffic is never treated as proof
+  // that a turn ended. Only a live owned runner proves active; a stopped runner
+  // or an idle persistent stream proves inactive; contradictory/missing facts
+  // fail closed as unknown.
+  function ownership(sessionId) {
+    const record = records.get(sessionId);
+    if (!record) return { state: 'unknown', reason: 'no_such_session' };
+    const cs = chatSessions.get(sessionId);
+    if (!cs) return { state: 'unknown', reason: 'no_chat_runtime' };
+    if (cs._activeRunner?.retryPlanned) {
+      return { state: 'active', reason: 'owned_retry_pending' };
+    }
+    const cli = record.cli || cs.cli || null;
+    if (cli === 'claude') {
+      const stream = (() => {
+        try { return chatStreamStatus(sessionId) || null; } catch (_) { return null; }
+      })();
+      if (stream?.busy) return { state: 'active', reason: 'persistent_stream_busy' };
+      if (stream && stream.busy === false) {
+        return { state: 'inactive', reason: 'persistent_stream_idle' };
+      }
+      return cs.isStreaming
+        ? { state: 'unknown', reason: 'stream_status_missing' }
+        : { state: 'inactive', reason: 'no_owned_turn' };
+    }
+    if (processHandleAlive(cs.claudeProc)) {
+      return { state: 'active', reason: 'owned_process_alive' };
+    }
+    if (cs.claudeProc) {
+      return { state: 'inactive', reason: 'owned_process_exited' };
+    }
+    return cs.isStreaming
+      ? { state: 'unknown', reason: 'streaming_without_process' }
+      : { state: 'inactive', reason: 'no_owned_turn' };
+  }
+
   // Snapshot the raw signals for one session (no verdict). Useful for the
   // endpoint payload and for tests to assert the inputs.
   function signals(sessionId) {
@@ -166,7 +211,7 @@ function createLivenessRuntime(deps = {}) {
     return verdict(sessionId, probeResult);
   }
 
-  return { recordProxyActivity, forget, signals, verdict, assess, thresholds: cfg };
+  return { recordProxyActivity, forget, signals, ownership, verdict, assess, thresholds: cfg };
 }
 
 module.exports = { createLivenessRuntime, LIVENESS_DEFAULTS: DEFAULTS };

@@ -15,7 +15,9 @@ function fixture(options = {}) {
   const scheduler = {
     status: async () => ({
       state: schedulerState,
-      active: schedulerState === 'idle' ? null : { entryId: 'entry-1' },
+      active: schedulerState === 'idle'
+        ? null
+        : { entryId: 'entry-1', ...(options.activeTaskId ? { taskId: options.activeTaskId } : {}) },
     }),
     complete: async (_sessionId, options) => {
       calls.push(['complete', options]);
@@ -354,6 +356,46 @@ test('turn boundary parks FIFO until classify D is the sole completion verdict',
   ]);
   assert.equal(h.calls.some(call => call[0] === 'tick'), true);
   assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
+});
+
+test('inactive classify scan repairs a missing turn boundary before applying its verdict', async () => {
+  const h = fixture();
+  const classification = await h.host.classifyTransition(
+    's1',
+    'task-1',
+    { state: 'W' },
+    { recoverMissingBoundary: true, livenessReason: 'owned_process_exited' },
+  );
+  assert.equal(classification.ok, true);
+  const assessingIndex = h.calls.findIndex(call => call[0] === 'assessing');
+  const completeIndex = h.calls.findIndex(call => call[0] === 'complete');
+  assert.ok(assessingIndex >= 0 && completeIndex > assessingIndex);
+  assert.deepEqual(h.calls[completeIndex], [
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_W', classifyState: 'W' },
+  ]);
+});
+
+test('classify cannot repair a running scheduler without trusted inactive liveness', async () => {
+  const h = fixture();
+  const classification = await h.host.classifyTransition(
+    's1', 'task-1', { state: 'D' },
+  );
+  assert.deepEqual(classification, { ok: false, code: 'stale_classification' });
+  assert.equal(h.calls.some(call => call[0] === 'assessing'), false);
+  assert.equal(h.calls.some(call => call[0] === 'complete'), false);
+});
+
+test('lost-boundary recovery rejects a stale task before mutating the active scheduler', async () => {
+  const h = fixture({ activeTaskId: 'task-current' });
+  const classification = await h.host.classifyTransition(
+    's1',
+    'task-stale',
+    { state: 'D' },
+    { recoverMissingBoundary: true, livenessReason: 'owned_process_exited' },
+  );
+  assert.deepEqual(classification, { ok: false, code: 'active_task_mismatch' });
+  assert.equal(h.calls.some(call => call[0] === 'assessing'), false);
+  assert.equal(h.calls.some(call => call[0] === 'complete'), false);
 });
 
 test('chat admission waits for the closing turn to enter classify assessment', async () => {
