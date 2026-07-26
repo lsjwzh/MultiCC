@@ -312,7 +312,7 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
   if (adapter.name === 'codex') {
     let payload = o.isFirstTurn
       ? `${IMG_HINT}\n\n${ENV_CONSTRAINT}\n\n[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
-      : promptText;
+      : `${ENV_CONSTRAINT}\n\n${promptText}`;
     payload += `\n${STAY_ALIVE}`;
     const result = ['exec'];
     for (const arg of [codexReasoningConfigArg(persisted), codexModelConfigArg(persisted)].filter(Boolean)) {
@@ -403,7 +403,7 @@ shapeEquiv('3c codex first-turn', {
   isFirstTurn: true,
 });
 
-// 3d: codex resume turn (no systemBlock, resume <id>)
+// 3d: codex resume turn (short env constraint is refreshed, resume <id>)
 shapeEquiv('3d codex resume', {
   adapter: codexAdapter,
   persisted: basePersisted({ cli: 'codex', type: null, effort: 'high', model: 'gpt-5' }),

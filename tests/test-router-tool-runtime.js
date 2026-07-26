@@ -84,7 +84,7 @@ async function nextTurn() {
   await new Promise(resolve => setImmediate(resolve));
 }
 
-test('request_user_input records an idempotent turn-scoped semantic signal', async t => {
+test('preferred wait_for_user_answer and its legacy alias share one idempotent signal', async t => {
   const { runtime, userInputSignals } = fixture(t);
   const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-question' });
   const args = {
@@ -92,7 +92,7 @@ test('request_user_input records an idempotent turn-scoped semantic signal', asy
     reason: '两个环境的发布风险不同',
     options: ['测试环境', '生产环境'],
   };
-  const first = await runtime.execute(capability, 'request_user_input', args);
+  const first = await runtime.execute(capability, 'wait_for_user_answer', args);
   const duplicate = await runtime.execute(capability, 'request_user_input', args);
   assert.equal(first.status, 'waiting_reply_signal_recorded');
   assert.equal(first.request_id, duplicate.request_id);

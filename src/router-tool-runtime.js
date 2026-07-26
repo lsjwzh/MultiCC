@@ -11,7 +11,8 @@ const TERMINAL_OPERATION_STATES = new Set([
   'completed', 'failed', 'interrupted', 'cancelled',
 ]);
 const TOOL_NAMES = new Set([
-  'request_user_input', 'route_task', 'dispatch_master', 'dispatch_slave',
+  'wait_for_user_answer', 'request_user_input',
+  'route_task', 'dispatch_master', 'dispatch_slave',
 ]);
 const MAX_MESSAGE_LENGTH = 256 * 1024;
 const MAX_RESULT_LENGTH = 512 * 1024;
@@ -478,7 +479,9 @@ function createRouterToolRuntime({
       throw new RouterToolError('invalid_arguments', 'tool arguments must be an object');
     }
     const context = contextFor(token);
-    if (tool === 'request_user_input') return requestUserInput(context, args);
+    if (tool === 'wait_for_user_answer' || tool === 'request_user_input') {
+      return requestUserInput(context, args);
+    }
     if (tool === 'route_task') return routeTask(context, args);
     if (tool === 'dispatch_master') return dispatchMaster(context, args, options.signal);
     return dispatchSlave(context, args);
