@@ -495,7 +495,8 @@
       for (const block of message.content) {
         if (block.type === 'text' && block.text) {
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
-          if (state.currentCli === 'codex') state.currentTextContent += block.text;
+          if (message.textSnapshot === true) state.currentTextContent = block.text;
+          else if (state.currentCli === 'codex') state.currentTextContent += block.text;
           else if (!state.currentTextContent) state.currentTextContent = block.text;
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();

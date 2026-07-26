@@ -37,6 +37,7 @@ function createClassifyStateMachine(rawDeps) {
     logger,
     getAuxQueue,
     getSessionWorkHost,
+    getLivenessRuntime,
     getTaskContextHost,
     getTaskBoardRuntime,
     getUserInputSignalHost,
@@ -68,6 +69,7 @@ function createClassifyStateMachine(rawDeps) {
   }
   for (const [fn, name] of [
     [getAuxQueue, 'getAuxQueue'], [getSessionWorkHost, 'getSessionWorkHost'],
+    [getLivenessRuntime, 'getLivenessRuntime'],
     [getTaskContextHost, 'getTaskContextHost'], [getTaskBoardRuntime, 'getTaskBoardRuntime'],
     [getUserInputSignalHost, 'getUserInputSignalHost'], [getApiErrorHost, 'getApiErrorHost'],
     [getWaitInjector, 'getWaitInjector'], [setTaskState, 'setTaskState'],
@@ -86,20 +88,16 @@ function createClassifyStateMachine(rawDeps) {
     getTaskContextHost().recordGoal(sessionName, goal, phase, cs, classifyState);
   }
 
-  // A classify verdict may only become a scheduler/business-state transition
-  // after the owned provider turn has ended. `isStreaming` is the primary turn
-  // fact, while non-Claude CLIs also expose their one-shot child process. The
-  // latter is a defensive guard for the narrow window where a stale scan or a
-  // watchdog has cleared isStreaming before the process close/finalize boundary.
-  // Claude is deliberately excluded from the child check because its process is
-  // persistent and remains alive while the session is genuinely at rest.
-  function turnInFlightForClassify(cs) {
-    if (!cs) return false;
-    if (cs.isStreaming) return true;
-    if (cs.cli === 'claude') return false;
-    const child = cs.claudeProc;
-    return !!child && child.killed !== true
-      && child.exitCode == null && child.signalCode == null;
+  // Classify owns the semantic letter; liveness only validates whether that
+  // candidate may commit. The shared runtime returns active/inactive/unknown so
+  // missing or contradictory ownership facts fail closed instead of masquerading
+  // as an ended turn.
+  function turnLivenessForClassify(sessionName) {
+    try {
+      const value = getLivenessRuntime().ownership(sessionName);
+      if (value && ['active', 'inactive', 'unknown'].includes(value.state)) return value;
+    } catch (_) {}
+    return { state: 'unknown', reason: 'liveness_unavailable' };
   }
 
   function dispatchStateAction(result, ctx) {
@@ -113,7 +111,8 @@ function createClassifyStateMachine(rawDeps) {
     // classifier verdict: same letter, same transition, same writer — the extra
     // envelope only records who asked and whether the runner actually stopped.
     const cancel = result.cancel && typeof result.cancel === 'object' ? result.cancel : null;
-    const { sessionName, sessionId, cs, isTerminal } = ctx;
+    const { sessionName, sessionId, cs, isTerminal, source } = ctx;
+    const liveness = ctx.liveness || turnLivenessForClassify(sessionName);
 
     // ── Classify history (persisted, last 7 days) ────────────────────────
     const now = Date.now();
@@ -147,8 +146,8 @@ function createClassifyStateMachine(rawDeps) {
     // side effects; persisting a provisional classifyState poisons scan guards.
     // A cancel is exempt: it *is* the turn boundary, and the runner it stopped
     // may not have flipped isStreaming yet on every adapter.
-    if (turnInFlightForClassify(cs) && state !== 'P' && !cancel) {
-      console.log(`[multicc/scan] ${sessionName} reclassify in-flight (owned runner): state=${state}, 纯观察跳过（等 turn 结束重判）`);
+    if (liveness.state !== 'inactive' && state !== 'P' && !cancel) {
+      console.log(`[multicc/scan] ${sessionName} classify candidate held: state=${state}, liveness=${liveness.state}/${liveness.reason || 'unknown'}`);
       return;
     }
 
@@ -173,7 +172,15 @@ function createClassifyStateMachine(rawDeps) {
       // Fall through to the waiting broadcast.
     }
 
-    getSessionWorkHost().classifyTransition(sessionName, cs?._currentTaskId || null, result);
+    getSessionWorkHost().classifyTransition(
+      sessionName,
+      cs?._currentTaskId || null,
+      result,
+      {
+        recoverMissingBoundary: source === 'multicc/scan' && liveness.state === 'inactive',
+        livenessReason: liveness.reason || null,
+      },
+    );
     if (state === 'D') {
       // D — task genuinely finished. This is the ONLY terminal state.
       const msg = finalGoal ? `任务完成：${finalGoal}` : '任务完成';
@@ -346,6 +353,7 @@ function createClassifyStateMachine(rawDeps) {
   // once the turn ends dispatchStateAction owns the definitive state verdict.
   function applyClassifyResult(cs, sessionName, sessionId, res, { cwd, source } = {}) {
     res = getUserInputSignalHost().apply(sessionName, res);
+    const liveness = turnLivenessForClassify(sessionName);
     const currentState = getTaskState(persistedSessions.get(sessionName));
     // Explicit user/watchdog cancellation owns the turn boundary. An Aux job
     // already in flight may finish later; never let that stale verdict replace
@@ -354,8 +362,8 @@ function createClassifyStateMachine(rawDeps) {
       logger.info('classify_result_ignored_after_cancel', { sessionId: sessionName, source });
       return;
     }
-    if (turnInFlightForClassify(cs)) {
-      if (cs.currentTask) {
+    if (liveness.state !== 'inactive') {
+      if (cs?.currentTask) {
         cs.currentTask.goal = (res.goal && res.goal !== '-') ? res.goal : '';
         if (res.phase) cs.currentTask.phase = res.phase;
       }
@@ -369,11 +377,14 @@ function createClassifyStateMachine(rawDeps) {
       recordTaskBoardGoal(sessionName, goal, cs.currentTask?.phase, cs);
       const label = goal ? `处理中：${goal}${ph ? ' · ' + ph : ''}` : `处理中${ph ? '：' + ph : '…'}`;
       emitRunningNotify(sessionName, label);
-      console.log(`[${source}] Classify in-progress for ${sessionName}: goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
+      console.log(`[${source}] Classify observational for ${sessionName}: liveness=${liveness.state}/${liveness.reason || 'unknown'} goal="${goal}" phase=${cs.currentTask?.phase || '?'}`);
       return;
     }
-    // Turn over - dispatch state action.
-    dispatchStateAction(res, { sessionName, sessionId, cs, isTerminal: false, cwd });
+    // Classify supplied the semantic candidate and liveness independently proved
+    // the owned runner inactive. The scan path may now repair a lost turn_end.
+    dispatchStateAction(res, {
+      sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness,
+    });
     console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.state === 'E' ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
   }
 
@@ -441,7 +452,12 @@ function createClassifyStateMachine(rawDeps) {
       // genuinely missing runner; classify must never clear isStreaming or
       // publish W/D while that runner is still alive.
       const liveCs = chatSessions.get(sid);
-      if (turnInFlightForClassify(liveCs)) {
+      const liveness = turnLivenessForClassify(sid);
+      if (liveness.state === 'unknown') {
+        note(sid, ts.classifyState, 'skipped-unknown-liveness', liveness.reason);
+        continue;
+      }
+      if (liveness.state === 'active') {
         if (isGoalResolved(ts.goal)) {
           note(sid, ts.classifyState, 'skipped-live-runner', 'owned provider turn + goal already resolved');
           continue;

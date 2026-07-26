@@ -1470,6 +1470,7 @@ const classifyStateMachine = createClassifyStateMachine({
   logger,
   getAuxQueue: () => auxQueue,
   getSessionWorkHost: () => sessionWorkHost,
+  getLivenessRuntime: () => livenessRuntime,
   getTaskContextHost: () => taskContextHost,
   getTaskBoardRuntime: () => taskBoardRuntime,
   getUserInputSignalHost: () => userInputSignalHost,

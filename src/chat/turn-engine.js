@@ -35,6 +35,12 @@ const chatStream = require('../chat-stream');
 const waitInjector = require('../wait-injector');
 const providers = require('../providers');
 
+function appendAdapterAssistantText(current, text) {
+  const prior = String(current || '');
+  const next = String(text || '');
+  return prior ? `${prior}\n\n${next}` : next;
+}
+
 function createChatTurnEngine(deps) {
   const {
     // ── Getters for reassigned / late-composed host bindings ──
@@ -323,10 +329,17 @@ function createChatTurnEngine(deps) {
       if (evt.type === 'assistant_text') {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
         if (!evt.text) continue;
-        cs.currentAssistantText += (cs.currentAssistantText ? '\n\n' : '') + evt.text;
+        cs.currentAssistantText = appendAdapterAssistantText(cs.currentAssistantText, evt.text);
         forward({
           type: 'assistant',
-          message: { content: [{ type: 'text', text: evt.text + (evt.forwardSuffix || '') }] },
+          // A cumulative authoritative snapshot heals a dropped/replayed WS
+          // fragment and reconciles any proxy part_delta preview. OpenCode emits
+          // several complete text parts; treating them as one-shot final blocks
+          // made the browser keep only the first until history reload.
+          message: {
+            textSnapshot: true,
+            content: [{ type: 'text', text: cs.currentAssistantText }],
+          },
         });
         setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
         scheduleIncrementalSave(sessionName, cs);
@@ -1715,4 +1728,4 @@ function createChatTurnEngine(deps) {
   };
 }
 
-module.exports = { createChatTurnEngine };
+module.exports = { createChatTurnEngine, appendAdapterAssistantText };
