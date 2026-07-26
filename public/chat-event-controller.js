@@ -369,6 +369,7 @@
           // fetches right after the user aborts a turn.
           if (!state.pendingCancel) {
             global.MultiCCChatRateLimit?.refreshOpenCodeQuota?.();
+            global.MultiCCChatRateLimit?.refreshQoderQuota?.();
           }
           break;
         case 'notify': {
