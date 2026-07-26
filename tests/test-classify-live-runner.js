@@ -30,7 +30,7 @@ function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = tru
   };
   const persistedSessions = new Map([['s1', record]]);
   const chatSessions = new Map([['s1', chatState]]);
-  const observed = { enqueued: 0, transitions: 0, broadcasts: [] };
+  const observed = { enqueued: 0, transitions: 0, transitionOptions: [], broadcasts: [] };
   const auxQueue = {
     queue: [],
     isUnhealthy: () => false,
@@ -47,8 +47,22 @@ function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = tru
     logger: { info() {}, warn() {}, error() {} },
     getAuxQueue: () => auxQueue,
     getSessionWorkHost: () => ({
-      classifyTransition() { observed.transitions += 1; },
+      classifyTransition(_sessionId, _taskId, _result, options) {
+        observed.transitions += 1;
+        observed.transitionOptions.push(options);
+      },
       classifyUnavailable() {},
+    }),
+    getLivenessRuntime: () => ({
+      ownership() {
+        const state = chatSessions.get('s1');
+        if (!state) return { state: 'unknown', reason: 'no_chat_runtime' };
+        const child = state.claudeProc;
+        const liveChild = !!child && child.killed !== true
+          && child.exitCode == null && child.signalCode == null;
+        if (state.isStreaming || liveChild) return { state: 'active', reason: 'fixture_runner' };
+        return { state: 'inactive', reason: 'fixture_idle' };
+      },
     }),
     getTaskContextHost: () => ({ recordGoal() {} }),
     getTaskBoardRuntime: () => ({ onTurnEnd() {} }),
@@ -71,7 +85,7 @@ function fixture({ cli = 'opencode', goal = '已识别任务', isStreaming = tru
     loadChatHistory: () => [{ role: 'assistant', content: 'x'.repeat(40) }],
     appendChatMessage() {},
   });
-  return { machine, record, chatState, observed };
+  return { machine, record, chatState, chatSessions, observed };
 }
 
 test('silent live turns remain P across OpenCode, Codex and Claude scans', () => {
@@ -103,3 +117,25 @@ test('mid-turn goal discovery is observational and cannot publish a W verdict', 
   assert.equal(h.chatState.isStreaming, true);
 });
 
+test('scan commits a candidate only after inactive liveness and requests lost-boundary recovery', async () => {
+  const h = fixture({ cli: 'opencode', isStreaming: false });
+  h.chatState.claudeProc = null;
+  h.machine.scanAndReclassify();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.observed.enqueued, 1);
+  assert.equal(h.observed.transitions, 1);
+  assert.deepEqual(h.observed.transitionOptions, [{
+    recoverMissingBoundary: true,
+    livenessReason: 'fixture_idle',
+  }]);
+  assert.equal(h.record.taskState.classifyState, 'W');
+});
+
+test('unknown liveness fails closed before classify admission', () => {
+  const h = fixture({ cli: 'opencode', isStreaming: false });
+  h.chatSessions.delete('s1');
+  h.machine.scanAndReclassify();
+  assert.equal(h.observed.enqueued, 0);
+  assert.equal(h.observed.transitions, 0);
+  assert.equal(h.record.taskState.classifyState, 'P');
+});

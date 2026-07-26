@@ -171,6 +171,11 @@ function harness(t, options = {}) {
     logger: { info() {}, warn() {}, error() {} },
     getAuxQueue: () => auxQueue,
     getSessionWorkHost: () => sessionWorkHost,
+    getLivenessRuntime: () => ({
+      ownership: sessionId => chatSessions.get(sessionId)?.isStreaming
+        ? { state: 'active', reason: 'fixture_streaming' }
+        : { state: 'inactive', reason: 'fixture_idle' },
+    }),
     getTaskContextHost: () => ({
       recordGoal: (sessionName, goal, phase, cs, classifyState) => {
         record({ kind: 'task_context_goal', sessionName, goal, phase, classifyState });

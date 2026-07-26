@@ -333,6 +333,14 @@ class ChatProvider extends ChangeNotifier {
         _onContentBlockDelta(evt.payload as Map<String, dynamic>);
         break;
 
+      case 'assistant':
+        _onAssistantSnapshot(evt.payload as Map<String, dynamic>);
+        break;
+
+      case 'part_delta':
+        _onPartDelta(evt.payload as Map<String, dynamic>);
+        break;
+
       case 'content_block_stop':
         break;
 
@@ -612,6 +620,38 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  void _onAssistantSnapshot(Map<String, dynamic> message) {
+    final blocks = message['content'];
+    if (blocks is! List) return;
+    var changed = false;
+    for (final raw in blocks) {
+      if (raw is! Map || raw['type'] != 'text') continue;
+      final text = raw['text']?.toString() ?? '';
+      if (text.isEmpty) continue;
+      _ensureAssistantMsg();
+      if (message['textSnapshot'] == true) {
+        _currentMsg!.content = text;
+      } else if (_cli == SessionCli.codex) {
+        _currentMsg!.content += text;
+      } else if (_currentMsg!.content.isEmpty) {
+        _currentMsg!.content = text;
+      }
+      changed = true;
+    }
+    if (changed) notifyListeners();
+  }
+
+  void _onPartDelta(Map<String, dynamic> message) {
+    if (_cli == SessionCli.claude) return;
+    final delta = message['delta'];
+    if (delta is! Map || delta['type'] != 'text') return;
+    final text = delta['text']?.toString() ?? '';
+    if (text.isEmpty) return;
+    _ensureAssistantMsg();
+    _currentMsg!.content += text;
+    notifyListeners();
   }
 
   void _onResult(Map<String, dynamic> msg) {
