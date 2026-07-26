@@ -93,6 +93,10 @@ function createClassifyStateMachine(rawDeps) {
     // drop them entirely. No other module derives these from a word+flags shape.
     const error = state === 'E';
     const background = state === 'B';
+    // An explicit cancellation arrives here as a structured result rather than a
+    // classifier verdict: same letter, same transition, same writer — the extra
+    // envelope only records who asked and whether the runner actually stopped.
+    const cancel = result.cancel && typeof result.cancel === 'object' ? result.cancel : null;
     const { sessionName, sessionId, cs, isTerminal } = ctx;
 
     // ── Classify history (persisted, last 7 days) ────────────────────────
@@ -125,7 +129,9 @@ function createClassifyStateMachine(rawDeps) {
 
     // Mid-stream reclassify only observes goal/phase. Turn-end owns state and
     // side effects; persisting a provisional classifyState poisons scan guards.
-    if (cs && cs.isStreaming && state !== 'P') {
+    // A cancel is exempt: it *is* the turn boundary, and the runner it stopped
+    // may not have flipped isStreaming yet on every adapter.
+    if (cs && cs.isStreaming && state !== 'P' && !cancel) {
       console.log(`[multicc/scan] ${sessionName} reclassify in-flight (isStreaming): state=${state}, 纯观察跳过（等 turn 结束重判）`);
       return;
     }
@@ -190,7 +196,10 @@ function createClassifyStateMachine(rawDeps) {
     // E is now display/classification only. The runner boundary already called
     // the centralized API policy, which either scheduled one bounded safe retry
     // or failed fast. Classify must never create a second retry channel.
-    if (error) {
+    // A user pressing Cancel is not an API fault: running the API-error policy
+    // would log a phantom provider failure and offer a retry for something the
+    // user deliberately stopped.
+    if (error && !cancel) {
       if (!cs?._lastApiErrorDecision) {
         evaluateTurnApiError({
           sessionName,
@@ -225,13 +234,18 @@ function createClassifyStateMachine(rawDeps) {
     const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
     const policyMessage = error && cs?._lastApiErrorDecision
       ? retryNotice(cs._lastApiErrorDecision) : '';
-    const waitMsg = error ? (policyMessage || 'API 异常，未自动重试')
-      : finalGoal ? `等待：${finalGoal}` : '等待交互';
+    const cancelMsg = !cancel ? ''
+      : cancel.runnerStopped === false ? '取消失败：任务未能停止'
+        : finalGoal ? `已取消：${finalGoal}` : '任务已取消';
+    const waitMsg = cancelMsg || (error ? (policyMessage || 'API 异常，未自动重试')
+      : finalGoal ? `等待：${finalGoal}` : '等待交互');
+    // The user just pressed Cancel — they are looking at the screen. Broadcast
+    // (drives the bar and every card) but no lock-screen push.
     if (isTerminal) {
-      triggerPush(sessionId, pushType, waitMsg);
+      if (!cancel) triggerPush(sessionId, pushType, waitMsg);
       terminalBroadcast(sessionId, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     } else {
-      triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`);
+      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`);
       chatBroadcast(sessionName, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     }
     const dirId2 = persistedSessions.get(sessionName)?.dirId;
@@ -239,7 +253,19 @@ function createClassifyStateMachine(rawDeps) {
     setSessionStatus(sessionName, { status: 'waiting' });
     // Persist the accurate letter for observability. scan re-judges C/B/E/P and
     // skips D/W; C never reaches this branch merely because auto-inject is off.
-    setTaskState(sessionName, { classifyState: cls, endedAt: Date.now() });
+    // cancelledAt/cancelReason are written HERE, by classify, and nowhere else —
+    // they are what applyClassifyResult and scanAndReclassify read to stop a late
+    // Aux verdict from resurrecting a cancelled turn.
+    setTaskState(sessionName, cancel
+      ? {
+        classifyState: cls,
+        endedAt: Date.now(),
+        cancelledAt: cancel.at || Date.now(),
+        cancelReason: cancel.reason || 'user_cancelled',
+        cancelSource: cancel.source || 'manual_cancel',
+        cancelOperationId: cancel.operationId || null,
+      }
+      : { classifyState: cls, endedAt: Date.now() });
     // Reset auto-continue guard on a plain W (user is in charge now). B/E keep their own flow.
     if (state === 'W') {
       getWaitInjector().resetAuto(sessionName);

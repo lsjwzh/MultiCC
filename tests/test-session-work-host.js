@@ -58,12 +58,16 @@ function fixture(options = {}) {
     },
     onTaskBoardQueueEvent() {},
     classifyDisplay: () => ({ cardStatus: 'running' }),
+    // classify is the only writer of business state; the host merely submits.
+    dispatchStateAction: (result, ctx) => calls.push(['dispatch', result, ctx]),
+    reconcileTaskProjection: (...args) => calls.push(['reconcile', ...args]),
     cancelClassify() {},
     assignKillReason() {},
-    appendMessage() {},
+    appendMessage: (...args) => calls.push(['append-message', ...args]),
     cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
     chatStream: { isAlive: () => false, cancel() {} },
     zcodeAuth: options.zcodeAuth || { ensureZcodeAuth: () => ({ ok: true }) },
+    runnerStopTimeoutMs: options.runnerStopTimeoutMs,
     log: { warn: (...args) => calls.push(['warn', ...args]) },
   });
   return {
@@ -71,6 +75,7 @@ function fixture(options = {}) {
     host,
     forceState,
     setClassifyState(value) { record.taskState.classifyState = value; },
+    setCancelledAt(value) { record.taskState.cancelledAt = value; },
     setPending(value) { pending = value; },
     setPendingWait(value) { pendingWait = value; },
   };
@@ -119,13 +124,13 @@ test('provider-less ZCode keeps the actionable native configuration gate', async
   ]);
 });
 
-test('cancel publishes classify E before scheduler I/O and ends the active turn', async () => {
+function cancelFixture(overrides = {}, fixtureOptions = {}) {
   const child = {
     pid: 123,
     exitCode: null,
     signalCode: null,
-    killed: false,
-    kill(signal) { this.killed = true; this.signal = signal; },
+    kills: 0,
+    kill(signal) { this.kills += 1; this.signal = signal; },
   };
   const state = {
     cli: 'codex',
@@ -135,15 +140,24 @@ test('cancel publishes classify E before scheduler I/O and ends the active turn'
     currentToolCalls: [],
     streamReplay: ['partial'],
     _activeRunner: {},
+    _currentTaskId: 'task-1',
+    ...overrides,
   };
-  const h = fixture({ chatState: state });
-  // The E write occurs synchronously before cancelActiveTurn reaches its first
-  // scheduler await.
-  const cancellation = h.host.cancelActiveTurn('s1');
-  const immediate = h.calls.find(call => call[0] === 'task-state');
-  assert.equal(immediate[2].classifyState, 'E');
-  assert.equal(immediate[2].cancelReason, 'user_cancelled');
-  assert.ok(Number.isFinite(immediate[2].cancelledAt));
+  if (fixtureOptions.stuckRunner) {
+    // A runner that ignores the stop request: isStreaming never clears.
+    Object.defineProperty(state, 'isStreaming', {
+      get() { return true; },
+      set() { /* the runner wins */ },
+    });
+  }
+  return { child, state, h: fixture({ ...fixtureOptions, chatState: state }) };
+}
+
+test('cancel stops the runner and submits one structured E result to classify — it never writes state itself', async () => {
+  const { child, state, h } = cancelFixture();
+  const result = await h.host.cancelActiveTurn('s1', { operationId: 'op-1' });
+
+  // Runner side effects: process/transport only.
   assert.deepEqual(h.calls.find(call => call[0] === 'cancel-preparation'), [
     'cancel-preparation', 's1', 'user_cancelled',
   ]);
@@ -151,11 +165,106 @@ test('cancel publishes classify E before scheduler I/O and ends the active turn'
   assert.equal(state.isStreaming, false);
   assert.deepEqual(state.streamReplay, []);
 
-  const result = await cancellation;
-  assert.equal(result.ok, true);
-  assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
-    'complete', { reason: 'user_cancelled', classifyState: 'E' },
+  // The controller/host performs NO direct business-state write. The only
+  // task-state writes allowed are the scheduler's queue projections; classify
+  // owns classifyState/cancelledAt.
+  const directWrites = h.calls.filter(call => call[0] === 'task-state'
+    && ('classifyState' in call[2] || 'cancelledAt' in call[2]));
+  assert.deepEqual(directWrites, []);
+
+  // Exactly one structured result reaches classify, carrying the cancel envelope.
+  const dispatches = h.calls.filter(call => call[0] === 'dispatch');
+  assert.equal(dispatches.length, 1);
+  const [, verdict, ctx] = dispatches[0];
+  assert.equal(verdict.state, 'E');
+  assert.equal(verdict.cancel.source, 'manual_cancel');
+  assert.equal(verdict.cancel.operationId, 'op-1');
+  assert.equal(verdict.cancel.reason, 'user_cancelled');
+  assert.equal(verdict.cancel.runnerStopped, true);
+  assert.equal(verdict.cancel.taskId, 'task-1');
+  assert.ok(Number.isFinite(verdict.cancel.requestedAt));
+  assert.ok(verdict.cancel.at >= verdict.cancel.requestedAt);
+  assert.equal(ctx.sessionName, 's1');
+
+  // Ordering proof: stop → turn boundary (assessing) → classify → reconcile.
+  const order = h.calls.map(call => call[0]);
+  assert.ok(order.indexOf('cancel-preparation') < order.indexOf('assessing'));
+  assert.ok(order.indexOf('assessing') < order.indexOf('dispatch'));
+  assert.ok(order.indexOf('dispatch') < order.indexOf('reconcile'));
+
+  // Formal projection re-publish, not a hand-assembled second broadcast.
+  assert.deepEqual(h.calls.find(call => call[0] === 'reconcile'), [
+    'reconcile', 'task-1', { classifyState: 'E', reason: 'user_cancelled' },
   ]);
+  assert.equal(result.ok, true);
+  assert.equal(result.classifyState, 'E');
+  assert.equal(result.operationId, 'op-1');
+});
+
+test('a partial assistant reply is persisted once, and a cancel never advances the FIFO', async () => {
+  const { h } = cancelFixture({
+    currentAssistantText: 'half an answer',
+    currentToolCalls: [{ name: 'Read' }],
+  });
+  await h.host.cancelActiveTurn('s1');
+  const appended = h.calls.filter(call => call[0] === 'append-message');
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0][2].cancelled, true);
+  assert.equal(appended[0][2].content, 'half an answer');
+  // tick() is the FIFO drain. A cancel must not trigger it; only a classify D
+  // verdict does, and that decision lives in the state machine + scheduler.
+  assert.equal(h.calls.some(call => call[0] === 'tick'), false);
+});
+
+test('concurrent and repeated cancels collapse into exactly one effective transition', async () => {
+  const { child, h } = cancelFixture();
+  const [first, second] = await Promise.all([
+    h.host.cancelActiveTurn('s1', { operationId: 'op-1' }),
+    h.host.cancelActiveTurn('s1', { operationId: 'op-2' }),
+  ]);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(second.deduplicated, true);
+  assert.equal(second.operationId, 'op-1', 'the retry joins the running operation');
+  assert.equal(h.calls.filter(call => call[0] === 'dispatch').length, 1);
+  assert.equal(h.calls.filter(call => call[0] === 'append-message').length, 0);
+  assert.equal(child.kills, 1, 'no duplicate kill');
+
+  // A later click, after classify has persisted the cancel, re-publishes the
+  // projection (repairing a stale card) without a second kill or verdict.
+  h.setClassifyState('E');
+  h.setCancelledAt(Date.now());
+  const repeat = await h.host.cancelActiveTurn('s1');
+  assert.equal(repeat.ok, true);
+  assert.equal(repeat.alreadyCancelled, true);
+  assert.equal(h.calls.filter(call => call[0] === 'dispatch').length, 1);
+  assert.deepEqual(h.calls.filter(call => call[0] === 'reconcile').pop(), [
+    'reconcile', 'task-1', { classifyState: 'E', reason: 'cancel_repeat' },
+  ]);
+});
+
+test('a runner that refuses to stop reports an explicit failure instead of pretending it cancelled', async () => {
+  const { h } = cancelFixture({}, { runnerStopTimeoutMs: 0, stuckRunner: true });
+  const result = await h.host.cancelActiveTurn('s1');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'runner_stop_timeout');
+  assert.equal(result.classifyState, 'E');
+  assert.equal(result.cancelReason, 'cancel_stop_timeout');
+  const verdict = h.calls.find(call => call[0] === 'dispatch')[1];
+  assert.equal(verdict.state, 'E');
+  assert.equal(verdict.cancel.runnerStopped, false);
+  assert.equal(verdict.cancel.reason, 'cancel_stop_timeout');
+});
+
+test('cancel with no active scheduler entry still republishes the canonical snapshot', async () => {
+  const { h } = cancelFixture();
+  h.forceState('idle');
+  const result = await h.host.cancelActiveTurn('s1');
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyIdle, true);
+  // The silence in this branch is exactly how a card stayed on `running`.
+  assert.equal(h.calls.filter(call => call[0] === 'dispatch').length, 1);
+  assert.equal(h.calls.some(call => call[0] === 'reconcile'), true);
 });
 
 test('turn boundary parks FIFO until classify D is the sole completion verdict', async () => {

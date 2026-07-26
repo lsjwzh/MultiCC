@@ -94,7 +94,7 @@ function makeEl() { return new FakeElement(fakeDocument); }
 
 // ── 1. Contract pins: the registry mirrors the server vocabularies ──────────
 
-test('classify letters mirror src/classify/vocab.js, with E as the only divergence', () => {
+test('classify letters mirror src/classify/vocab.js with no divergence left', () => {
   assert.deepEqual(
     Object.keys(SP.CLASSIFY_LETTER_STATUS).sort(),
     Object.keys(CLASSIFY_DISPLAY).sort(),
@@ -107,10 +107,14 @@ test('classify letters mirror src/classify/vocab.js, with E as the only divergen
     if (shown !== fromServer) divergent.push(letter);
     assert.notEqual(shown, 'unknown', `classify ${letter} must resolve to a known status`);
   }
-  // Documented, deliberate: the server's cardStatus for E is `waiting` while its
-  // barTint is `error`. A fault has to read as a fault on the card too.
-  assert.deepEqual(divergent, ['E']);
+  // E used to be the one divergence: cardStatus `waiting` (⏸️ on the session
+  // list) against barTint `error` (❌ in the chat bar) — one terminal fact with
+  // two faces, which is what let a cancelled turn read as "still waiting"
+  // outside while it was already an abnormal end inside. Both now say `error`,
+  // so there is no divergence left to document.
+  assert.deepEqual(divergent, []);
   assert.equal(SP.classifyStatus('E'), 'error');
+  assert.equal(CLASSIFY_DISPLAY.E.cardStatus, 'error');
   assert.equal(CLASSIFY_DISPLAY.E.barTint, 'error');
 });
 

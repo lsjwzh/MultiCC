@@ -105,19 +105,25 @@ card ended up with no error icon at all.
 | scheduler bookkeeping | `skipped`, `released` | `idle` |
 | disconnection | `stopped`, `disconnected`, `inactive` | `offline` |
 
-Two mappings are deliberate **display-layer divergences** from the server, each
-pinned by a test that asserts it is the *only* divergence in its table:
+One mapping is a deliberate **display-layer divergence** from the server, pinned
+by a test that asserts it is the *only* divergence in its table:
 
 - `configuration_required` → `blocked` (server: `waiting`). The server is right
   that the user must act; the action is "go set up auth/config", not "answer
   here", so it gets the lock rather than the pause.
-- classify `E` → `error` (server `cardStatus: 'waiting'`, `barTint: 'error'`).
-  An API failure is a fault, and the card is the only place some surfaces show it,
-  so the card follows the tint.
 
-`cancelled` is presentation-only: the server folds a cancelled claim into
-runState `idle`, but "you stopped this" and "nothing is happening" are different
-things to a reader, and an interrupted turn must never be dressed up as completed.
+Classify `E` used to be a second divergence: the server's `cardStatus` said
+`waiting` while its `barTint` said `error`, so one terminal fact rendered as ⏸️
+on the session list and ❌ in the chat bar. `E.cardStatus` is now `error` too —
+see [cancel-state-flow.md](cancel-state-flow.md), where that split was half of
+the "internal error, external something-else" bug.
+
+`cancelled` is presentation-only: the server has no `cancelled` letter — a user
+stop is the same abnormal end as an API fault (`E`), distinguished by the
+`cancelReason` / `cancelledAt` envelope rather than by a separate terminal value.
+The status exists so a surface that *does* know the reason can say "you stopped
+this" instead of "the provider failed"; an interrupted turn must never be dressed
+up as completed.
 
 ## Component usage
 

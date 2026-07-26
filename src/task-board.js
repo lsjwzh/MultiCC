@@ -92,6 +92,9 @@ function normalizeBoard(raw) {
         : [],
     };
     if (TASK_RUN_STATES.has(t.runState)) task.runState = t.runState;
+    // Monotonic stamp of the queue event that produced runState. Survives a
+    // reload so a heartbeat replayed after restart cannot un-cancel a card.
+    if (Number(t.runStateAt) > 0) task.runStateAt = Number(t.runStateAt);
     // `classification.state` was an older module-assignment retry state that
     // was easily confused with the session classify state (A/B/C/D/W/P).
     // Migrate it into non-status operation metadata. The module itself is the
