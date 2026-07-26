@@ -2,9 +2,10 @@
 
 const { createOpencodeLikeAdapter } = require('./opencode-like');
 
-function createOpencodeAdapter({ cmd }) {
+function createOpencodeAdapter({ cmd, userInputReminder = '' }) {
   return createOpencodeLikeAdapter({
-    name: 'opencode', label: 'OpenCode', cmd, supportsAgentVariant: true, includeThinking: true,
+    name: 'opencode', label: 'OpenCode', cmd, supportsAgentVariant: true,
+    includeThinking: true, userInputReminder,
   });
 }
 
