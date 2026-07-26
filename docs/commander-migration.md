@@ -9,7 +9,7 @@ the relevant Fleet has completed this migration.
 
 The migration is idempotent. A Fleet with one non-ephemeral chat session whose
 `type` is already `commander` retains that session identity; its role prompt may
-be refreshed to the current router-only contract. Re-running an upgrade or
+be refreshed to the current route-first contract. Re-running an upgrade or
 restarting the service does not create another session.
 
 Stable metadata is the only Commander identity: the migration does not inspect
@@ -24,6 +24,14 @@ Missing Commanders are created through the same `createSessionRecord` service
 as the session API. They therefore receive a normal chat record, a dedicated
 `multicc/<sessionId>` branch, an isolated worktree, required atomic session
 persistence, and the complete current Commander preset prompt.
+
+The Commander prompt is route-first, not route-only. It tells the model to prefer
+`route_task` for code changes, long-running work, verification/commit/merge,
+cross-provider work, and multi-module parallel work. Lightweight analysis,
+planning, explanation, or explicitly user-requested local handling may stay in
+the Commander session. Cross-session delivery still has a single authority:
+`route_task`; prose, `<<route>>`, and `<<dispatch>>` do not count as Commander
+delivery.
 
 CLI selection uses this explicit compatibility order, skipping every entry
 whose executable is unavailable:
