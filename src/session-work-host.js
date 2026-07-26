@@ -389,24 +389,67 @@ function createSessionWorkHost(deps = {}) {
     ? Number(deps.runnerStopTimeoutMs)
     : 5_000;
   const RUNNER_STOP_POLL_MS = 25;
+  // SIGTERM is a request. A CLI that ignores it (or is wedged in a syscall) keeps
+  // running, keeps writing files and keeps holding the provider connection, so
+  // after this grace period the cancel escalates to SIGKILL, which cannot be
+  // ignored. Only if the process survives *that* is the cancel reported failed.
+  const RUNNER_KILL_GRACE_MS = Number.isFinite(deps.runnerKillGraceMs)
+    ? Number(deps.runnerKillGraceMs)
+    : 1_500;
   // In-flight + recently-settled cancels, keyed by sessionId. Repeated clicks,
   // HTTP retries and simultaneous Web/App cancels all join the same operation
   // instead of killing twice or writing history twice.
   const cancelOperations = new Map();
+
+  // Is the child still running? `claudeProc` cannot answer this: it is nulled the
+  // moment we signal (the close handler keys off `cs.claudeProc === proc` to know
+  // the turn is no longer active), which made the old wait report "stopped" while
+  // the CLI was still very much alive. The killed handle is kept separately and
+  // read directly — exitCode/signalCode are set by Node when the process is
+  // reaped, and stopRunner clears the handle on its 'exit' event. Deliberately no
+  // `process.kill(pid, 0)` probe: pids get reused, and a foreign match would be a
+  // false "still running" that never clears.
+  function processAlive(proc) {
+    if (!proc) return false;
+    if (proc.exitCode !== null && proc.exitCode !== undefined) return false;
+    if (proc.signalCode) return false;
+    return true;
+  }
 
   function runnerStopped(sessionId) {
     const state = deps.getChatSession(sessionId);
     if (!state) return true;
     if (state.isStreaming) return false;
     if (state.claudeProc) return false;
+    if (processAlive(state._cancelledProc)) return false;
     if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) return false;
     return true;
   }
 
+  function forceKillRunner(sessionId) {
+    const state = deps.getChatSession(sessionId);
+    const proc = state && state._cancelledProc;
+    if (!processAlive(proc)) return false;
+    log.warn?.('session_cancel_runner_force_kill', { sessionId, pid: proc.pid });
+    try { proc.kill('SIGKILL'); } catch (_) {}
+    return true;
+  }
+
   async function awaitRunnerStop(sessionId, timeoutMs = RUNNER_STOP_TIMEOUT_MS) {
-    const deadline = Date.now() + timeoutMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    let escalated = false;
     while (!runnerStopped(sessionId)) {
-      if (Date.now() >= deadline) return false;
+      if (!escalated && Date.now() - startedAt >= RUNNER_KILL_GRACE_MS) {
+        escalated = true;
+        forceKillRunner(sessionId);
+      }
+      if (Date.now() >= deadline) {
+        // Last chance: a timeout that never escalated (grace ≥ budget) would
+        // report failure without ever having tried the signal that works.
+        if (!escalated && forceKillRunner(sessionId)) escalated = true;
+        return runnerStopped(sessionId);
+      }
       await new Promise(resolve => setTimeout(resolve, RUNNER_STOP_POLL_MS));
     }
     return true;
@@ -419,15 +462,31 @@ function createSessionWorkHost(deps = {}) {
     deps.cancelPreparation(sessionId, reason);
     if (!state) return;
     deps.cancelClassify(state);
+    // Drop this session's queued/in-flight classify jobs. classify's own
+    // cancelClassify() only clears the debounce timer, so a judgement admitted
+    // before the cancel stayed in the Aux queue and ran against a turn that no
+    // longer exists. Its verdict was already discarded downstream — this stops
+    // paying for it.
+    if (typeof deps.cancelSessionClassifyJobs === 'function') {
+      try { deps.cancelSessionClassifyJobs(sessionId); }
+      catch (error) { log.warn?.('session_cancel_classify_jobs_failed', { sessionId, error: error.message }); }
+    }
     deps.assignKillReason(state._activeRunner, killReason);
     if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
       log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
       deps.chatStream.cancel(sessionId);
     }
     if (state.claudeProc) {
-      log.log?.(`[multicc/chat] [${sessionId}] Cancel requested (${reason}), killing child process`);
-      try { state.claudeProc.kill('SIGTERM'); } catch (_) {}
+      const proc = state.claudeProc;
+      log.log?.(`[multicc/chat] [${sessionId}] Cancel requested (${reason}), killing child process pid=${proc.pid}`);
+      try { proc.kill('SIGTERM'); } catch (_) {}
+      // Detach it from the session (the close handler must see the turn as
+      // inactive) but keep the handle so the wait below can tell "asked to stop"
+      // from "actually stopped", and escalate to SIGKILL if it is only the former.
       state.claudeProc = null;
+      state._cancelledProc = proc;
+      try { proc.once('exit', () => { if (state._cancelledProc === proc) state._cancelledProc = null; }); }
+      catch (_) {}
       state.lineBuf = '';
     }
     state.isStreaming = false;

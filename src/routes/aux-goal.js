@@ -368,13 +368,26 @@ function mountAuxGoalRoutes(app, dependencies) {
     },
 
     cancelClassifyFor(sessionKey) {
-      if (!sessionKey) return;
+      if (!sessionKey) return 0;
       const isClassify = task => task && task.type === 'intent_classify'
         && task.meta
         && (task.meta.sessionName === sessionKey || task.meta.sid === sessionKey);
+      let cancelled = 0;
       for (const task of [...this.queue]) {
-        if (isClassify(task)) this.cancel(task.id);
+        if (isClassify(task)) { this.cancel(task.id); cancelled++; }
       }
+      // The in-flight one too. This used to iterate the queue only, so a cancel
+      // that arrived while this session's classify was already executing left it
+      // to finish and resolve — harmless for state (applyClassifyResult drops a
+      // verdict once cancelledAt is set) but it still spent an Aux call and
+      // logged a judgement for a turn nobody was waiting on. `cancel()` marks it,
+      // it does not abort the socket: see drain()'s catch, which deliberately
+      // keeps a cancelled in-flight request out of the upstream health stats.
+      if (this.currentTask && isClassify(this.currentTask) && !this.currentTask.cancelled) {
+        this.cancel(this.currentTask.id);
+        cancelled++;
+      }
+      return cancelled;
     },
 
     async drain() {
