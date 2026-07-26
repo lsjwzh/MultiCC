@@ -2562,6 +2562,11 @@ sessionWorkHost = createSessionWorkHost({
   broadcast: chatBroadcast,
   setTaskState,
   onTaskBoardQueueEvent: event => taskBoardRuntime.onQueueEvent(event),
+  // Cancellation submits a structured result to classify instead of writing
+  // state; classify is the only writer of session/task business state.
+  dispatchStateAction,
+  reconcileTaskProjection: (taskId, options) =>
+    taskBoardRuntime.reconcileRunState(taskId, options),
   classifyDisplay,
   cancelClassify,
   chatStream,
@@ -2782,7 +2787,9 @@ createOrchestrationRoutes({
   withApiMeta,
   requestContext,
   v1Error,
-  cancelActiveTurn: sessionId => sessionWorkHost.cancelActiveTurn(sessionId),
+  // Options carry the cancel intent's source/operationId through to classify;
+  // dropping them here is what made repeat clicks look like distinct cancels.
+  cancelActiveTurn: (sessionId, options) => sessionWorkHost.cancelActiveTurn(sessionId, options),
 }).mountRoutes(app);
 
 

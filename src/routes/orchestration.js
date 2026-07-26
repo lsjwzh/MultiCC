@@ -278,7 +278,9 @@ function createOrchestrationRoutes(rawDeps) {
             // "Insert now" is literal: stop/release the current turn (recording
             // E) and let the selected directRun entry claim the slot at once.
             if (typeof deps.cancelActiveTurn === 'function') {
-              await deps.cancelActiveTurn(session.id);
+              await deps.cancelActiveTurn(session.id, {
+                source: 'insert_queued', reason: 'insert_queued',
+              });
             }
             await deps.runtime.tick();
           }
@@ -286,8 +288,26 @@ function createOrchestrationRoutes(rawDeps) {
             : result.code === 'queued_entry_not_found' ? 404 : 409;
           return res.status(status).json(result);
         }
-        if (action === 'cancel' && typeof deps.cancelActiveTurn === 'function') {
-          await deps.cancelActiveTurn(session.id);
+        if (action === 'cancel') {
+          // Manual cancel is an intent, not a state write: the host stops the
+          // runner and submits a structured result to classify, which is the
+          // only writer of session/task business state. The controller must NOT
+          // also call resolve() afterwards — that used to overwrite the E
+          // verdict with D, and (because cancelActiveTurn had already cleared
+          // the active entry) answered a successful cancel with HTTP 404.
+          if (typeof deps.cancelActiveTurn !== 'function') {
+            return res.status(409).json({ ok: false, code: 'cancel_unsupported' });
+          }
+          const result = await deps.cancelActiveTurn(session.id, {
+            source: 'manual_cancel',
+            reason: body.reason || 'user_cancelled',
+            operationId: req.get('Idempotency-Key') || body.idempotencyKey || body.operationId || null,
+          });
+          // No tick(): a cancel does not advance the FIFO. Only a D verdict
+          // drains the queue, and that policy lives in the scheduler.
+          const status = result.ok ? 200
+            : result.code === 'session_not_found' ? 404 : 409;
+          return res.status(status).json(result);
         }
         const result = await deps.runtime.sessionScheduler.resolve(session.id, {
           action,

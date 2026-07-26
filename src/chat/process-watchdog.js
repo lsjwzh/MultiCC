@@ -98,6 +98,9 @@ function createProcessingWatchdog(deps = {}) {
     const result = await deps.cancelTurn(sessionId, {
       reason: 'process_watchdog',
       killReason: 'process_watchdog',
+      // Not a manual cancel: same canonical transition, different attribution,
+      // so the recorded cancelSource can tell a user stop from a dead runner.
+      source: 'process_watchdog',
     });
     logger.warn?.('processing_watchdog_cancelled_dead_turn', {
       sessionId,
