@@ -136,10 +136,14 @@ test('a correlated answer resolves the pending request once and continuation kee
 });
 
 test('prompt directs models to the MCP signal, not the unavailable built-in', () => {
-  assert.match(USER_INPUT_SIGNAL_PROMPT.join('\n'), /MCP.*request_user_input/);
+  const shared = USER_INPUT_SIGNAL_PROMPT.join('\n');
+  assert.match(shared, /MCP.*wait_for_user_answer/);
+  assert.match(shared, /阻塞性问题.*必须/);
+  assert.match(shared, /request_user_input.*兼容/);
   const codex = buildCodexUserInputConstraint(true);
   assert.match(codex, /内置 request_user_input/);
-  assert.match(codex, /MultiCC MCP/);
+  assert.match(codex, /MultiCC MCP.*wait_for_user_answer/);
+  assert.match(codex, /阻塞性问题.*必须/);
   assert.equal(buildCodexUserInputConstraint(false), '');
 });
 
