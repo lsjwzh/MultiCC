@@ -152,6 +152,137 @@ test('non-P direct admit jumps stale FIFO; stale items only drain on D (T1)', as
   assert.equal(bClaim && bClaim.id, b.entry.id, 'stale B drains only after a D verdict');
 });
 
+test('released W keeps ordinary FIFO staged but runs a correlated answer control entry', async t => {
+  const h = fixture(t);
+  const active = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'ask',
+    options: { taskId: 'task-a' },
+    idempotencyKey: 'ask',
+  });
+  await startClaim(h, await claimOne(h));
+  const future = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'future queued task',
+    source: 'operation',
+    idempotencyKey: 'future',
+  });
+
+  await h.scheduler.complete('s1', {
+    classifyState: 'W',
+    awaitingRequestId: 'usrq-1',
+  });
+  const waiting = await h.scheduler.status('s1');
+  assert.equal(waiting.active, null);
+  assert.equal(waiting.awaitingRequestId, 'usrq-1');
+  assert.equal(await claimOne(h), null, 'ordinary queued work stays gated by W');
+
+  const wrong = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'wrong',
+    workKind: 'answer',
+    requestId: 'usrq-wrong',
+    idempotencyKey: 'wrong',
+  });
+  assert.equal(wrong.code, 'no_active_task');
+
+  const answer = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'approved',
+    workKind: 'answer',
+    requestId: 'usrq-1',
+    options: { taskId: 'task-a' },
+    idempotencyKey: 'answer',
+  });
+  assert.equal(answer.ok, true);
+  assert.equal(answer.queued, false);
+  const answerClaim = await claimOne(h);
+  assert.equal(answerClaim.id, answer.entry.id);
+  assert.equal(answerClaim.payload.workKind, 'answer');
+  assert.equal(answerClaim.payload.activeEntryId, null);
+  await startClaim(h, answerClaim);
+
+  await h.scheduler.complete('s1', { classifyState: 'D' });
+  const futureClaim = await claimOne(h);
+  assert.equal(futureClaim.id, future.entry.id);
+  assert.notEqual(futureClaim.id, active.entry.id);
+});
+
+test('an early structured answer queues during P then runs first after the asking turn releases', async t => {
+  const h = fixture(t);
+  const asking = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'ask',
+    options: { taskId: 'task-a' },
+    idempotencyKey: 'asking',
+  });
+  await startClaim(h, await claimOne(h));
+  const ordinary = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'ordinary future work',
+    source: 'operation',
+    idempotencyKey: 'ordinary',
+  });
+  const answer = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'answer before stream_end',
+    workKind: 'answer',
+    requestId: 'usrq-early',
+    activeEntryId: asking.entry.id,
+    idempotencyKey: 'answer-early',
+  });
+  assert.equal(answer.ok, true);
+  assert.equal(answer.queued, true);
+  assert.equal(await claimOne(h), null, 'P keeps the early answer staged');
+
+  await h.scheduler.complete('s1', {
+    classifyState: 'W',
+    awaitingRequestId: 'usrq-early',
+  });
+  const answerClaim = await claimOne(h);
+  assert.equal(answerClaim.id, answer.entry.id);
+  assert.equal(answerClaim.payload.activeEntryId, null);
+  await startClaim(h, answerClaim);
+
+  await h.scheduler.complete('s1', { classifyState: 'D' });
+  assert.equal((await claimOne(h)).id, ordinary.entry.id);
+});
+
+test('correlated structured answers depend on request identity and non-D, not the W letter', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({ sessionId: 's1', text: 'ask', idempotencyKey: 'ask' });
+  await startClaim(h, await claimOne(h));
+  await h.scheduler.complete('s1', {
+    classifyState: 'E',
+    awaitingRequestId: 'usrq-e',
+  });
+  const answer = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'repair choice',
+    workKind: 'answer',
+    requestId: 'usrq-e',
+    idempotencyKey: 'answer-e',
+  });
+  assert.equal(answer.ok, true);
+  assert.equal((await claimOne(h)).id, answer.entry.id);
+
+  const done = fixture(t);
+  await done.scheduler.admit({ sessionId: 's2', text: 'done', idempotencyKey: 'done' });
+  await startClaim(done, await claimOne(done, 's2'));
+  await done.scheduler.complete('s2', {
+    classifyState: 'D',
+    awaitingRequestId: 'usrq-stale',
+  });
+  const rejected = await done.scheduler.admit({
+    sessionId: 's2',
+    text: 'late answer',
+    workKind: 'answer',
+    requestId: 'usrq-stale',
+    idempotencyKey: 'late',
+  });
+  assert.equal(rejected.code, 'no_active_task');
+});
+
 test('error and user-input waiting freeze future work while a correlated control resumes active', async t => {
   const h = fixture(t);
   const active = await h.scheduler.admit({

@@ -86,10 +86,13 @@ function createSessionWorkHost(deps = {}) {
       && source === 'direct'
       && classifyState !== 'P'
       && !!status?.active;
+    const admissionOptions = requestId && pending?.taskId && !options.taskId
+      ? { ...options, taskId: pending.taskId }
+      : options;
     const admission = {
       sessionId,
       text,
-      options,
+      options: admissionOptions,
       source,
       workKind: requestId ? 'answer' : directContinuation ? 'continuation' : null,
       requestId: requestId || null,
@@ -235,14 +238,19 @@ function createSessionWorkHost(deps = {}) {
         : resultLetter === 'D' ? 'D'
           : resultLetter === 'B' || runtime.hasPending(sessionId) ? 'B'
             : 'W';   // W, or P-misjudged-at-turn-end → at-rest
+      const pendingInput = deps.pendingUserInput(sessionId);
       // Queue rule: P enqueues, D drains, W/B/E leave the FIFO alone. Every
       // turn-end verdict releases the active slot via complete(); FIFO draining
       // is gated by classifyState==='D' inside selectSessionItem. No classify freeze.
-      const transition = await target.complete(sessionId, {
+      const completeOptions = {
         expectedTaskId,
         reason: `classified_${classifyState}`,
         classifyState,
-      });
+      };
+      if (pendingInput && pendingInput.resolved !== true) {
+        completeOptions.awaitingRequestId = pendingInput.requestId;
+      }
+      const transition = await target.complete(sessionId, completeOptions);
       if (transition?.ok) await runtime.tick();
       return transition;
     } catch (error) {

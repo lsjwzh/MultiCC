@@ -8,6 +8,7 @@ const test = require('node:test');
 const liveUiApi = require('../public/chat-live-ui');
 require('../public/chat-rate-limit'); // registers global.MultiCCChatRateLimit for the rate_limit_event case
 require('../public/chat-session-queue');
+const userInputCardApi = require('../public/chat-user-input-card');
 const eventApi = require('../public/chat-event-controller');
 
 const ROOT = path.join(__dirname, '..');
@@ -192,6 +193,10 @@ function controllerFixture() {
     renderSessionQueue(items, metadata) {
       calls.push(['queue', items.map(item => item.text), metadata]);
     },
+    renderPendingUserInput(message) {
+      calls.push(['pending-input', message]);
+      return true;
+    },
     rearmUnread() {},
   };
   const controller = eventApi.createEventController({ state, host, liveUi, historyStore, historyView });
@@ -276,8 +281,13 @@ test('structured user-input and FIFO events expose correlation and honest frozen
   }, generation);
   assert.equal(fixture.state.pendingUserInputRequestId, 'usrq-1');
   assert.deepEqual(fixture.calls.at(-1), [
-    'system',
-    '需要你的确认：<img src=x onerror=alert(1)> 是否继续？\n1. 继续\n2. 取消',
+    'pending-input',
+    {
+      type: 'user_input_required',
+      requestId: 'usrq-1',
+      question: '<img src=x onerror=alert(1)> 是否继续？',
+      options: ['继续', '取消'],
+    },
   ]);
 
   fixture.controller.handleEvent({
@@ -339,6 +349,78 @@ test('structured user-input and FIFO events expose correlation and honest frozen
     && call[0] === 'toast' && call[1].startsWith('消息已')).length, 1);
   assert.equal(fixture.calls.some(call => Array.isArray(call)
     && call[0] === 'system' && call[1].startsWith('队列保持冻结')), false);
+});
+
+test('structured answer card is above messages and never overlays the composer', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
+  const card = html.indexOf('id="pending-user-input-card"');
+  const messages = html.indexOf('id="messages"');
+  const composer = html.indexOf('id="input-bar"');
+  assert.ok(card >= 0 && card < messages && messages < composer);
+  assert.match(
+    html,
+    /#pending-user-input-card\s*\{[^}]*max-height:[^}]*overflow:\s*auto/s,
+  );
+  const styles = html.slice(
+    html.indexOf('#pending-user-input-card'),
+    html.indexOf('/* Fixed overlay'),
+  );
+  assert.doesNotMatch(styles, /position:\s*fixed/);
+});
+
+test('structured answer card submits selected and free-text values without HTML rendering', () => {
+  const { document } = fakeDocument();
+  const elements = {
+    root: new FakeElement('section'),
+    question: new FakeElement('div'),
+    reason: new FakeElement('div'),
+    options: new FakeElement('div'),
+    textInput: new FakeElement('textarea'),
+    submitButton: new FakeElement('button'),
+  };
+  const answers = [];
+  const card = userInputCardApi.createController({
+    document,
+    elements,
+    isConnected: () => true,
+    submitAnswer: (answer, requestId) => {
+      answers.push([answer, requestId]);
+      return true;
+    },
+  });
+  assert.equal(card.render({
+    requestId: 'usrq-1',
+    question: '<img src=x onerror=alert(1)>',
+    reason: '<b>literal reason</b>',
+    options: ['模型', '队列'],
+    allowMultiple: true,
+  }), true);
+  assert.equal(elements.root.hidden, false);
+  assert.equal(elements.question.textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(elements.reason.textContent, '<b>literal reason</b>');
+
+  const checkboxes = elements.options.walk().filter(node => node.tagName === 'INPUT');
+  checkboxes[1].checked = true;
+  elements.textInput.value = '补充说明';
+  elements.submitButton.click();
+  assert.deepEqual(answers, [['队列, 补充说明', 'usrq-1']]);
+  assert.equal(elements.root.hidden, true);
+});
+
+test('Flutter keeps the pending answer card above the message lane, not in the bottom input bar', () => {
+  const screen = fs.readFileSync(
+    path.join(ROOT, 'app', 'lib', 'screens', 'chat_screen.dart'),
+    'utf8',
+  );
+  const inputBar = fs.readFileSync(
+    path.join(ROOT, 'app', 'lib', 'widgets', 'input_bar.dart'),
+    'utf8',
+  );
+  const pending = screen.indexOf('if (provider.pendingUserInput != null)');
+  const messages = screen.indexOf('child: _MessageList(');
+  assert.ok(pending >= 0 && pending < messages);
+  assert.match(screen, /maxHeight:\s*MediaQuery\.sizeOf\(context\)\.height \* 0\.38/);
+  assert.doesNotMatch(inputBar, /PendingUserInputPanel\s*\(/);
 });
 
 test('staged-message dock renders canonical text with textContent only', () => {
@@ -684,13 +766,19 @@ test('chat host loads new controllers before chat and reaches the 3000-line budg
   const chat = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
   const live = fs.readFileSync(path.join(ROOT, 'public/chat-live-ui.js'), 'utf8');
   const events = fs.readFileSync(path.join(ROOT, 'public/chat-event-controller.js'), 'utf8');
-  for (const script of ['chat-live-ui.js', 'chat-session-queue.js', 'chat-event-controller.js']) {
+  const inputCard = fs.readFileSync(path.join(ROOT, 'public', 'chat-user-input-card.js'), 'utf8');
+  for (const script of [
+    'chat-live-ui.js',
+    'chat-session-queue.js',
+    'chat-user-input-card.js',
+    'chat-event-controller.js',
+  ]) {
     assert.ok(html.indexOf(`<script src="${script}"></script>`) < html.indexOf('<script src="chat.js"></script>'));
   }
   assert.ok(chat.split(/\r?\n/).length <= 3000, 'chat host must stay within the hard migration target');
   assert.match(chat, /MultiCCChatEventController\.createEventController/);
   assert.match(chat, /MultiCCChatLiveUi\.createLiveUi/);
-  for (const source of [live, events]) {
+  for (const source of [live, events, inputCard]) {
     assert.doesNotMatch(source, /\.innerHTML\s*=/);
     assert.doesNotMatch(source, /\bfetch\s*\(/);
     assert.doesNotMatch(source, /new\s+WebSocket\s*\(/);

@@ -223,6 +223,108 @@
     #messages::-webkit-scrollbar { width: 6px; }
     #messages::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 
+    /* Structured request_user_input answer card. It participates in the flex
+       layout above #messages instead of floating over chat or the composer, so
+       neither long questions nor the mobile keyboard can hide the controls. */
+    #pending-user-input-card {
+      flex-shrink: 0;
+      width: min(calc(100% - 24px), 956px);
+      max-height: min(38vh, 360px);
+      align-self: center;
+      margin: 8px 12px 0;
+      padding: 11px 12px;
+      overflow: auto;
+      background: #211a08;
+      border: 1px solid #7d5d16;
+      border-radius: 10px;
+      box-shadow: 0 8px 22px #00000055;
+      color: #f0f3f6;
+      position: relative;
+      z-index: 60;
+    }
+    #pending-user-input-card[hidden] { display: none !important; }
+    .pending-input-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 6px;
+      color: #f2cc60;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #pending-user-input-question {
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #pending-user-input-reason {
+      margin-top: 5px;
+      color: #aeb6c2;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #pending-user-input-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 9px;
+    }
+    .pending-input-option {
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid #7d5d16;
+      border-radius: 8px;
+      background: #2d2108;
+      color: #f2cc60;
+      cursor: pointer;
+      font: inherit;
+      text-align: left;
+    }
+    label.pending-input-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .pending-input-option:hover { background: #3a2b0b; border-color: #d29922; }
+    .pending-input-option:disabled { opacity: .55; cursor: wait; }
+    .pending-input-answer-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 7px;
+      margin-top: 9px;
+    }
+    #pending-user-input-text {
+      flex: 1;
+      min-width: 0;
+      min-height: 38px;
+      max-height: 96px;
+      resize: vertical;
+      padding: 8px 10px;
+      border: 1px solid #574515;
+      border-radius: 8px;
+      outline: none;
+      background: #0d1117;
+      color: #f0f3f6;
+      font: inherit;
+      line-height: 1.35;
+    }
+    #pending-user-input-text:focus { border-color: #d29922; }
+    #pending-user-input-submit {
+      flex-shrink: 0;
+      min-height: 38px;
+      padding: 7px 14px;
+      border: 1px solid #d29922;
+      border-radius: 8px;
+      background: #9e6a03;
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    #pending-user-input-submit:disabled { opacity: .55; cursor: wait; }
+
     /* Fixed overlay positioned by chat-scroll-controller against #messages. */
     .new-msg-pill {
       position: fixed;
@@ -1307,6 +1409,12 @@
         width: 100%;
         max-width: none;
       }
+      #pending-user-input-card {
+        width: calc(100% - 16px);
+        max-height: 42vh;
+        margin: 7px 8px 0;
+      }
+      .pending-input-answer-row { align-items: stretch; }
       #messages { padding: 12px; }
       .msg { max-width: 96%; }
       .msg.assistant { max-width: 100%; }
@@ -1901,6 +2009,23 @@
     <button type="button" class="ac-mark-done" id="ac-mark-done" title="把当前等待中的任务手动标记为完成">✓ 完成</button>
   </div>
 
+  <!-- Top answer card for a structured request_user_input signal. It stays
+       outside the scrolling message lane so it cannot be hidden by messages,
+       the queue dock, or the bottom composer. -->
+  <section id="pending-user-input-card" hidden aria-live="assertive" aria-labelledby="pending-user-input-title">
+    <div class="pending-input-head">
+      <span aria-hidden="true">❓</span>
+      <span id="pending-user-input-title">需要你的回答</span>
+    </div>
+    <div id="pending-user-input-question"></div>
+    <div id="pending-user-input-reason" hidden></div>
+    <div id="pending-user-input-options"></div>
+    <div class="pending-input-answer-row">
+      <textarea id="pending-user-input-text" rows="1" placeholder="也可以输入自定义回答"></textarea>
+      <button id="pending-user-input-submit" type="button">提交</button>
+    </div>
+  </section>
+
   <!-- Messages -->
   <div id="messages">
     <div class="msg system-msg">Chat mode — structured output rendering</div>
@@ -2163,9 +2288,10 @@
   <script src="chat-notifications.js"></script>
   <script src="chat-composer.js"></script>
   <script src="chat-live-ui.js"></script>
-<script src="chat-rate-limit.js"></script>
-<script src="chat-session-queue.js"></script>
-<script src="chat-event-controller.js"></script>
+  <script src="chat-rate-limit.js"></script>
+  <script src="chat-session-queue.js"></script>
+  <script src="chat-user-input-card.js"></script>
+  <script src="chat-event-controller.js"></script>
   <script src="chat-context-controls.js"></script>
   <script src="chat-diff.js"></script>
   <script src="chat.js"></script>

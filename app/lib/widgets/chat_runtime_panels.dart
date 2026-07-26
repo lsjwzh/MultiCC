@@ -22,13 +22,39 @@ class PendingUserInputPanel extends StatefulWidget {
 
 class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
   final Set<String> _selected = {};
+  final TextEditingController _customAnswer = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _customAnswer.addListener(_refreshSubmitState);
+  }
+
+  void _refreshSubmitState() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _customAnswer
+      ..removeListener(_refreshSubmitState)
+      ..dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(covariant PendingUserInputPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.input.requestId != widget.input.requestId) {
       _selected.clear();
+      _customAnswer.clear();
     }
+  }
+
+  void _submitCustomAnswer() {
+    final answer = _customAnswer.text.trim();
+    if (!widget.enabled || answer.isEmpty) return;
+    widget.onAnswer(answer);
   }
 
   @override
@@ -144,10 +170,57 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
               ),
             ],
           ],
-          const SizedBox(height: 5),
-          Text(
-            t('pendingInputFreeTextHint'),
-            style: const TextStyle(color: Color(0xFF8a909b), fontSize: 11),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('pending-free-text'),
+                  controller: _customAnswer,
+                  enabled: widget.enabled,
+                  minLines: 1,
+                  maxLines: 3,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _submitCustomAnswer(),
+                  style: const TextStyle(
+                    color: Color(0xFFf0f3f6),
+                    fontSize: 13,
+                  ),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: t('pendingInputFreeTextHint'),
+                    hintStyle: const TextStyle(
+                      color: Color(0xFF8a909b),
+                      fontSize: 11,
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFF0d1117),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 9,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: Color(0xFF574515)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: Color(0xFFd29922)),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 7),
+              FilledButton(
+                key: const Key('pending-submit-text'),
+                onPressed:
+                    widget.enabled && _customAnswer.text.trim().isNotEmpty
+                    ? _submitCustomAnswer
+                    : null,
+                child: Text(t('submitAnswer')),
+              ),
+            ],
           ),
         ],
       ),
