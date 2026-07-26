@@ -78,6 +78,9 @@
     white-space: pre-wrap; word-break: break-word; border: 1px solid #30363d; border-radius: 6px;
     background: #0d1117; color: #c9d1d9; font: inherit; }
   .tb-body-pending { font-size: 10px; color: #6e7681; font-style: italic; }
+  .tb-legacy-group { display: block; border-top: 1px dashed #30363d; background: rgba(22,27,34,.55); }
+  .tb-legacy-group > summary { padding: 7px 12px 7px 24px; cursor: pointer; color: #8b949e; font-size: 11px; }
+  .tb-legacy-group > .tb-task { padding-left: 34px; }
   .tb-task .tb-meta { color: #6e7681; font-size: 11px; white-space: nowrap; }
   .tb-mod-actions, .tb-meta { display: flex; align-items: center; gap: 6px; }
   .tb-class-state { font-size: 10px; padding: 1px 6px; border-radius: 9px; background: #21262d; color: #8b949e; }
@@ -312,7 +315,10 @@ async function fetchTaskBoard() {
   try {
     const r = await fetch('/api/task-board');
     const d = await r.json();
-    if (d && d.ok) { tb = d; renderTaskBoard(); }
+    if (d && d.ok) {
+      tb = window.MultiCCTaskBoardUi.reconcileSnapshot(d);
+      renderTaskBoard();
+    }
     // 刷新后定位待定位任务
     if (pendingTaskIds.length) {
       const tid = pendingTaskIds[0];
@@ -393,6 +399,49 @@ function bindQuickTaskArchive(row, task) {
   };
 }
 
+function createTaskBoardRow(task) {
+  const display = window.MultiCCTaskBoardUi.taskDisplayState(task);
+  const clsRun = display.running ? ' running' : '';
+  const row = document.createElement('div');
+  row.className = 'tb-task' + (display.done ? ' done' : '')
+    + (selectedTask === task.id ? ' selected' : '') + clsRun;
+  row.dataset.taskId = task.id;
+  const assignment = task.moduleAssignment;
+  const body = task.body
+    ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(task.body)}</pre></details>`
+    : task.identityState === 'orphaned_admission' || task.identityState === 'legacy_unresolved'
+      ? '<span class="tb-body-pending">旧记录缺少 canonical 正文，未自动合并</span>'
+      : '<span class="tb-body-pending">正文等待目标会话持久化…</span>';
+  const attempt = Number(task.attemptCount) > 1
+    ? `<span>${Number(task.attemptCount)} 次投递</span>` : '';
+  row.innerHTML = `
+    ${statusIconHtml(display)}
+    <span class="tb-title-cell"><span class="tb-title">${esc(task.title)}</span>${body}</span>
+    <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(task)}${attempt}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${task.refCount}轮 · ${esc(timeAgo(task.lastTs))}</span></span>`;
+  row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
+  row.onclick = () => { selectedTask = task.id; renderTaskBoard(); loadTaskDetail(task.id); };
+  const retry = row.querySelector('.tb-reclassify');
+  if (retry) retry.onclick = (event) => {
+    event.stopPropagation();
+    reclassifyTask(task.id, retry);
+  };
+  bindQuickTaskArchive(row, task);
+  return row;
+}
+
+function appendTaskIdentityGroups(box, tasks) {
+  const identity = window.MultiCCTaskBoardUi.partitionTaskIdentity(tasks);
+  for (const task of identity.canonical) box.appendChild(createTaskBoardRow(task));
+  if (!identity.unresolved.length) return;
+  const group = document.createElement('details');
+  group.className = 'tb-legacy-group';
+  const summary = document.createElement('summary');
+  summary.textContent = `历史身份待确认 · ${identity.unresolved.length}（未自动合并）`;
+  group.appendChild(summary);
+  for (const task of identity.unresolved) group.appendChild(createTaskBoardRow(task));
+  box.appendChild(group);
+}
+
 async function archiveCompletedTasks(button) {
   if (button) button.disabled = true;
   try {
@@ -438,39 +487,13 @@ function renderTaskBoard() {
     if (retryAll) retryAll.onclick = (e) => { e.stopPropagation(); reclassifyAllPending(retryAll); };
     box.appendChild(mrow);
     if (collapsed) continue;
-    for (const t of tasks) {
-      const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
-      const clsRun = display.running ? ' running' : '';
-      const row = document.createElement('div');
-      row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
-      const assignment = t.moduleAssignment;
-      row.innerHTML = `
-        ${statusIconHtml(display)}
-        <span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span>
-        <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(t)}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮 · ${esc(timeAgo(t.lastTs))}</span></span>`;
-      row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
-      row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
-      const retry = row.querySelector('.tb-reclassify');
-      if (retry) retry.onclick = (e) => { e.stopPropagation(); reclassifyTask(t.id, retry); };
-      bindQuickTaskArchive(row, t);
-      box.appendChild(row);
-    }
+    appendTaskIdentityGroups(box, tasks);
   }
   // 孤儿任务（模块已不存在）兜底展示
   const orphan = window.MultiCCTaskBoardUi.sortTasks(
     visible.filter(t => !tb.modules.some(m => m.id === t.moduleId)),
   );
-  for (const t of orphan) {
-    const display = window.MultiCCTaskBoardUi.taskDisplayState(t);
-    const clsRun = display.running ? ' running' : '';
-    const row = document.createElement('div');
-    row.className = 'tb-task' + (display.done ? ' done' : '') + (selectedTask === t.id ? ' selected' : '') + clsRun;
-    row.innerHTML = `${statusIconHtml(display)}<span class="tb-title-cell"><span class="tb-title">${esc(t.title)}</span>${t.body ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(t.body)}</pre></details>` : '<span class="tb-body-pending">正文等待目标会话持久化…</span>'}</span><span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(t)}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${t.refCount}轮</span></span>`;
-    row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
-    row.onclick = () => { selectedTask = t.id; renderTaskBoard(); loadTaskDetail(t.id); };
-    bindQuickTaskArchive(row, t);
-    box.appendChild(row);
-  }
+  appendTaskIdentityGroups(box, orphan);
 }
 
 async function loadTaskDetail(taskId, silent) {

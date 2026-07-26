@@ -233,6 +233,28 @@ test('only classify P stages direct input; every non-P state continues immediate
   assert.equal(staged.activeEntryId, null);
 });
 
+test('queued projection does not make its own outbox delivery look busy', () => {
+  const h = fixture();
+  h.host.onSchedulerEvent({
+    type: 'queued',
+    sessionId: 's1',
+    schedulerState: 'idle',
+    queuedItems: [],
+    at: 10,
+  });
+  assert.equal(h.host.getRunState('s1'), 'queued');
+  assert.equal(h.host.isRunActive('s1'), false);
+
+  h.host.onSchedulerEvent({
+    type: 'started',
+    sessionId: 's1',
+    schedulerState: 'running',
+    queuedItems: [],
+    at: 11,
+  });
+  assert.equal(h.host.isRunActive('s1'), true);
+});
+
 test('a released W turn admits its correlated structured answer as a new control entry', async () => {
   const h = fixture();
   h.forceState('idle');

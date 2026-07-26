@@ -862,6 +862,9 @@ function createChatTurnEngine(deps) {
         args: spawnArgs, cwd: cs.cwd, env: childEnv,
         sessionId: sessionName, turnId: turn.turnId, originDispatchId,
         userText: turn.userText,
+        taskId: turn.task?.id,
+        taskStart: turn.task?.start,
+        taskSource: turn.task?.source,
         baseUrl: `http://127.0.0.1:${getPort()}`,
       });
       const runner = createRunnerOwnership(turn, {

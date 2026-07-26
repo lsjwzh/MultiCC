@@ -11,6 +11,38 @@ const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/t
 const { routeLegacyCommanderMarkers } = require('../src/dispatch/legacy-commander-route');
 const taskBoardUi = require('../public/task-board-ui');
 
+test('task board snapshot reconciliation is taskId-idempotent and prunes replay ghosts', () => {
+  const reconciled = taskBoardUi.reconcileSnapshot({
+    modules: [{ id: 'mod-1', updatedAt: 1 }, { id: 'mod-1', updatedAt: 2 }],
+    tasks: [
+      { id: 'tsk-1', title: 'same title', updatedAt: 1 },
+      { id: 'tsk-1', title: 'newer projection', updatedAt: 2 },
+      { id: 'tsk-2', title: 'same title', updatedAt: 3 },
+    ],
+  });
+  assert.equal(reconciled.modules.length, 1);
+  assert.equal(reconciled.tasks.length, 2);
+  assert.equal(reconciled.tasks.find(task => task.id === 'tsk-1').title, 'newer projection');
+  assert.equal(reconciled.tasks.find(task => task.id === 'tsk-2').title, 'same title',
+    'two explicit task ids with identical titles must remain two cards');
+
+  const afterReconnect = taskBoardUi.reconcileSnapshot({
+    modules: [{ id: 'mod-1' }],
+    tasks: [{ id: 'tsk-2', title: 'same title' }],
+  });
+  assert.deepEqual(afterReconnect.tasks.map(task => task.id), ['tsk-2']);
+});
+
+test('legacy tasks with unresolved identity are separated without destructive merging', () => {
+  const grouped = taskBoardUi.partitionTaskIdentity([
+    { id: 'tsk-canonical', identityState: 'canonical', title: '新任务' },
+    { id: 'tsk-orphan', identityState: 'orphaned_admission', title: '新任务' },
+    { id: 'tsk-legacy', identityState: 'legacy_unresolved', title: '新任务' },
+  ]);
+  assert.deepEqual(grouped.canonical.map(task => task.id), ['tsk-canonical']);
+  assert.deepEqual(grouped.unresolved.map(task => task.id), ['tsk-orphan', 'tsk-legacy']);
+});
+
 test('task detail session links use the encoded chat navigation contract', () => {
   assert.equal(
     taskBoardUi.sessionChatUrl('session one&中文'),
@@ -261,14 +293,14 @@ test('applyTagResult creates module and task, attaches the turn ref', () => {
   assert.equal(mod.dirId, 'd1');
 });
 
-test('applyTagResult reuses module by normalized name and task by title', () => {
+test('applyTagResult reuses modules but preserves distinct task admissions with similar titles', () => {
   const board = core.createEmptyBoard();
   core.applyTagResult(board, [{ id: 'new', title: '修复登录', module: '前端 UI', areas: [] }], mkRef(), 1);
   core.applyTagResult(board, [{ id: 'new', title: '修复 登录', module: '前端UI', areas: [] }],
     mkRef({ assistantMsgId: 'ma2', userMsgId: 'mu2' }), 2);
   assert.equal(Object.keys(board.modules).length, 1);
-  assert.equal(Object.keys(board.tasks).length, 1);
-  assert.equal(Object.values(board.tasks)[0].refs.length, 2);
+  assert.equal(Object.keys(board.tasks).length, 2);
+  assert.deepEqual(Object.values(board.tasks).map(t => t.refs.length), [1, 1]);
 });
 
 test('task title canonicalization merges same intent but preserves opposite actions', () => {
@@ -281,7 +313,7 @@ test('task title canonicalization merges same intent but preserves opposite acti
   assert.equal(core.taskTitleSimilarity('删除 tiktok 会话及其全部 worktree 和分支', '恢复 tiktok 会话及其全部 worktree 和分支'), 0);
 });
 
-test('applyTagResult merges similar tasks across modules in one directory only', () => {
+test('title similarity is diagnostic only and never merges logical task identity', () => {
   const board = core.createEmptyBoard();
   core.applyTagResult(board, [
     { id: 'new', title: '删除 [tiktok] 会话和 worktree', module: '发布运维', areas: [] },
@@ -289,13 +321,13 @@ test('applyTagResult merges similar tasks across modules in one directory only',
   core.applyTagResult(board, [
     { id: 'new', title: '清理 tiktok 会话与 worktree', module: '会话管理', areas: [] },
   ], mkRef({ sessionId: 's2', userMsgId: 'mu2', assistantMsgId: 'ma2' }), 2);
-  assert.equal(Object.keys(board.tasks).length, 1);
-  assert.deepEqual(Object.values(board.tasks)[0].refs.map(r => r.sessionId), ['s1', 's2']);
+  assert.equal(Object.keys(board.tasks).length, 2);
+  assert.deepEqual(Object.values(board.tasks).map(t => t.refs[0].sessionId), ['s1', 's2']);
 
   core.applyTagResult(board, [
     { id: 'new', title: '删除 tiktok 会话和 worktree', module: '发布运维', areas: [] },
   ], mkRef({ dirId: 'd2', sessionId: 'other', userMsgId: 'mu3', assistantMsgId: 'ma3' }), 3);
-  assert.equal(Object.keys(board.tasks).length, 2);
+  assert.equal(Object.keys(board.tasks).length, 3);
 });
 
 test('addRefToTask upgrades an in-flight user ref with the final assistant id', () => {
@@ -331,7 +363,7 @@ test('pending tasks are unique placeholders and converge in place after classifi
   assert.equal(Object.keys(board.tasks).length, 2);
 });
 
-test('pending classification can merge into an existing task without duplicates', () => {
+test('classification cannot merge a pending canonical task into another task id', () => {
   const board = core.createEmptyBoard();
   const [existingId] = core.applyTagResult(board, [
     { id: 'new', title: '修复登录', module: '前端 UI', areas: [] },
@@ -343,10 +375,10 @@ test('pending classification can merge into an existing task without duplicates'
     id: existingId, title: '', module: '', areas: ['public/login.js'],
   }, mkRef({ userMsgId: 'u-new', assistantMsgId: 'a-new' }), 3);
   assert.equal(result.ok, true);
-  assert.equal(result.taskId, existingId);
-  assert.equal(board.tasks[pending.id], undefined);
-  assert.equal(Object.keys(board.tasks).length, 1);
-  assert.deepEqual(board.tasks[existingId].refs.map(r => r.userMsgId), ['u-old', 'u-new']);
+  assert.equal(result.taskId, pending.id);
+  assert.equal(Object.keys(board.tasks).length, 2);
+  assert.deepEqual(board.tasks[existingId].refs.map(r => r.userMsgId), ['u-old']);
+  assert.deepEqual(board.tasks[pending.id].refs.map(r => r.userMsgId), ['u-new']);
 });
 
 test('applyTagResult routes by existing id and dedups refs by assistant msg id', () => {
@@ -391,7 +423,7 @@ test('parseBackfillResult validates turn lists and drops entries without turns',
   assert.deepEqual(out.tasks[0].turns, [1, 2, 3]);
 });
 
-test('applyBackfillResult attaches every listed turn and dedups the task by title', () => {
+test('applyBackfillResult uses source-message identity and is replay-idempotent', () => {
   const board = core.createEmptyBoard();
   const refByTurn = new Map([
     [1, mkRef({ userMsgId: 'u1', assistantMsgId: 'a1', ts: 10 })],
@@ -543,6 +575,28 @@ test('buildBoardDto aggregates counts, sessions and sorts by recency', () => {
   assert.deepEqual(dto.tasks[0].sessionIds, ['s2']);
 });
 
+test('routing retries append attempts on one task and replayed operations stay idempotent', () => {
+  const task = {
+    id: 'tsk-stable', title: 'T', status: 'active', areas: [], refs: [],
+    createdAt: 1, updatedAt: 1,
+  };
+  const first = {
+    mode: 'router-tool', targetSessionId: 'worker-1', workerSessionId: 'worker-1',
+    operationId: 'op-1', status: 'admitted', routedAt: 10,
+  };
+  core.setTaskRouting(task, first);
+  core.setTaskRouting(task, first);
+  core.setTaskRouting(task, {
+    ...first, operationId: 'op-2', status: 'completed', routedAt: 20,
+  });
+  assert.deepEqual(task.routing.attempts.map(attempt => attempt.operationId), ['op-1', 'op-2']);
+  const dto = core.buildBoardDto({
+    modules: {},
+    tasks: { [task.id]: task },
+  }, () => 'idle');
+  assert.equal(dto.tasks[0].attemptCount, 2);
+});
+
 test('Commander one-way card status follows the executing worker classify only', () => {
   const board = core.createEmptyBoard();
   const pending = core.createPendingTask(board, {
@@ -666,7 +720,7 @@ test('canonical task messages create one projection, retain full body, and class
     taskId,
     runState: 'waiting',
   });
-  assert.equal(runtime.getBoard().tasks[taskId].title, '统一任务链路');
+  assert.equal(runtime.getBoard().tasks[taskId].title, '第一行');
   assert.equal(runtime.getBoard().tasks[taskId].runState, 'waiting');
   assert.equal(broadcasts[0].payload.kind, 'created');
 
@@ -1030,7 +1084,7 @@ test('task rows expose quick archive immediately after the classify action', () 
   const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
 
-  assert.match(manage, /\$\{_tbModuleAssignmentHtml\(t\)\}\$\{_tbQuickArchiveHtml\(t\)\}/);
+  assert.match(manage, /_tbModuleAssignmentHtml\(task\)[\s\S]*?_tbQuickArchiveHtml\(task\)/);
   assert.match(manage, /archiveTaskBoardTask\(event,'\$\{_tbEsc\(task\.id\)\}',this\)/);
   assert.match(meta,
     /\$\{assignment \? `<button class="tb-reclassify"[\s\S]*?<\/button>` : ''\}<button class="tb-quick-archive"/);
@@ -1168,9 +1222,12 @@ test('task body UI folds long text and escapes or text-renders untrusted content
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
   assert.match(manage, /tb-body-fold[\s\S]*?_tbEsc\(t\.body\)/);
   assert.match(manage, /tb-body-detail[\s\S]*?_tbEsc\(t\.body\)/);
-  assert.match(meta, /tb-body-fold[\s\S]*?esc\(t\.body\)/);
+  assert.match(meta, /tb-body-fold[\s\S]*?esc\(task\.body\)/);
   assert.match(meta, /querySelector\('\.tb-body-fold'\)[\s\S]*?stopPropagation/);
   assert.match(meta, /pre\.textContent = t\.body/);
+  assert.match(meta, /reconcileSnapshot\(d\)/);
+  assert.match(meta, /partitionTaskIdentity\(tasks\)/);
+  assert.match(meta, /历史身份待确认/);
   assert.doesNotMatch(manage, /innerHTML\s*=\s*t\.body/);
   assert.doesNotMatch(meta, /innerHTML\s*=\s*t\.body/);
 });
@@ -1512,7 +1569,7 @@ test('board placeholder stays in 待归类 at turn end (方案A：仅手动归�
   assert.equal(auxCalls.length, 0);
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].id, simTaskId);
-  assert.equal(tasks[0].title, '新任务');
+  assert.equal(tasks[0].title, '增加手动重新归类按钮');
   assert.ok(tasks[0].moduleAssignment, '占位卡仍待归类');
   assert.equal(board.modules[tasks[0].moduleId].source, 'classify');
   assert.ok(tasks[0].refs.some(ref => ref.assistantMsgId === 'a-new'), '本轮 ref 已挂到占位卡');

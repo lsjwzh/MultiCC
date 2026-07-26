@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 // Task board core — pure logic for the AI-tagged module→task board shown in
 // the fleet panel (meta.html). No I/O and no host state: given a board object
 // and inputs, every function here is deterministic, so the whole tagging /
@@ -24,6 +26,7 @@ const MAX_MODULE_LEN = 20;
 const CLASSIFY_PENDING_MODULE_NAME = '待归类';
 const PENDING_TASK_TITLE = '新任务';
 const TASK_RUN_STATES = new Set(['queued', 'running', 'waiting', 'done', 'error', 'idle']);
+const MAX_ROUTING_ATTEMPTS = 50;
 
 function safeClassificationError(value) {
   const code = typeof value === 'string' ? value.slice(0, 80) : '';
@@ -121,7 +124,8 @@ function normalizeBoard(raw) {
 function normalizeTaskRouting(value) {
   if (!value || typeof value !== 'object') return null;
   const mode = value.mode === 'commander' ? 'commander'
-    : value.mode === 'manual' ? 'manual' : null;
+    : value.mode === 'manual' ? 'manual'
+      : value.mode === 'router-tool' ? 'router-tool' : null;
   const targetSessionId = typeof value.targetSessionId === 'string'
     ? value.targetSessionId.trim().slice(0, 200) : '';
   if (!mode || !targetSessionId) return null;
@@ -141,12 +145,41 @@ function normalizeTaskRouting(value) {
   if (status) routing.status = status;
   if (value.oneWay === true) routing.oneWay = true;
   if (value.elasticWorkerCreated === true) routing.elasticWorkerCreated = true;
+  const attempts = Array.isArray(value.attempts) ? value.attempts : [];
+  routing.attempts = attempts
+    .filter(attempt => attempt && typeof attempt === 'object'
+      && typeof attempt.operationId === 'string' && attempt.operationId.trim())
+    .map(attempt => ({
+      operationId: attempt.operationId.trim().slice(0, 200),
+      workerSessionId: typeof attempt.workerSessionId === 'string'
+        ? attempt.workerSessionId.trim().slice(0, 200) : '',
+      status: typeof attempt.status === 'string' && /^[a-z0-9_-]{1,40}$/i.test(attempt.status)
+        ? attempt.status : 'admitted',
+      at: Math.max(0, Number(attempt.at) || 0),
+    }))
+    .slice(-MAX_ROUTING_ATTEMPTS);
+  if (operationId && !routing.attempts.some(attempt => attempt.operationId === operationId)) {
+    routing.attempts.push({
+      operationId,
+      workerSessionId,
+      status: status || 'admitted',
+      at: routing.routedAt,
+    });
+  }
   return routing;
 }
 
 function setTaskRouting(task, value) {
   const routing = normalizeTaskRouting(value);
   if (!task || !routing) return false;
+  const previous = normalizeTaskRouting(task.routing);
+  if (previous?.attempts?.length) {
+    const attempts = new Map(previous.attempts.map(attempt => [attempt.operationId, attempt]));
+    for (const attempt of routing.attempts || []) attempts.set(attempt.operationId, attempt);
+    routing.attempts = [...attempts.values()]
+      .sort((a, b) => a.at - b.at || a.operationId.localeCompare(b.operationId))
+      .slice(-MAX_ROUTING_ATTEMPTS);
+  }
   task.routing = routing;
   task.updatedAt = Math.max(task.updatedAt || 0, routing.routedAt || Date.now());
   return true;
@@ -279,15 +312,40 @@ function parseBackfillResult(text) {
 }
 
 // Apply a backfill verdict: for each entry, attach every listed turn's ref.
-// Reuses applyTagResult per turn — title/module normalization dedups the task
-// across turns, addRefToTask dedups refs across repeated backfills.
+// Reuses the task id created for the first referenced turn. This groups the
+// model's explicit backfill entry without treating its title as identity.
+function stableLegacyBackfillTaskId(entry, entryIndex, refByTurn) {
+  const refs = (entry?.turns || [])
+    .map(n => refByTurn.get(n))
+    .filter(Boolean)
+    .map(ref => [
+      ref.sessionId || '',
+      ref.dirId || '',
+      ref.userMsgId || '',
+      ref.assistantMsgId || '',
+    ].join('\u001f'));
+  if (!refs.length) return null;
+  const digest = crypto.createHash('sha256')
+    .update(`${entryIndex}\u001e${refs.join('\u001d')}`)
+    .digest('hex')
+    .slice(0, 24);
+  return `tsk-legacy-${digest}`;
+}
+
 function applyBackfillResult(board, entries, refByTurn, now = Date.now()) {
   const touched = new Set();
-  for (const e of entries || []) {
+  for (const [entryIndex, e] of (entries || []).entries()) {
+    const suppliedId = e.id && e.id !== 'new' ? e.id : null;
+    const legacyId = suppliedId || stableLegacyBackfillTaskId(e, entryIndex, refByTurn);
+    let stableEntry = legacyId ? { ...e, id: legacyId } : e;
     for (const n of e.turns || []) {
       const ref = refByTurn.get(n);
       if (!ref) continue;
-      for (const id of applyTagResult(board, [e], ref, now)) touched.add(id);
+      const changed = applyTagResult(board, [stableEntry], ref, now, { newTaskId: legacyId });
+      for (const id of changed) touched.add(id);
+      if ((!stableEntry.id || stableEntry.id === 'new') && changed[0]) {
+        stableEntry = { ...stableEntry, id: changed[0] };
+      }
     }
   }
   return [...touched];
@@ -449,6 +507,33 @@ function taskLastTs(task) {
   return Math.max(last || 0, task.updatedAt || 0, task.createdAt || 0);
 }
 
+// Titles are display summaries, never task identity. Derive a useful initial
+// title from the canonical task-start message so cards do not pile up as
+// indistinguishable "新任务" placeholders while module classification remains
+// explicitly pending. No derived title participates in task merging.
+function deriveTaskTitle(value) {
+  const lines = String(value || '').replace(/\r\n?/g, '\n').split('\n');
+  let declared = '';
+  for (const raw of lines) {
+    const taskHeader = raw.trim().match(/^【任务[：:]\s*([^】|｜]+)(?:[|｜][^】]*)?】$/u);
+    if (!taskHeader) continue;
+    const candidate = taskHeader[1].trim();
+    if (candidate && candidate !== PENDING_TASK_TITLE) declared = candidate;
+  }
+  if (declared) return declared.slice(0, MAX_TITLE_LEN);
+  for (const raw of lines) {
+    const line = raw.trim()
+      .replace(/^(?:#{1,6}|[-*+]|\d+[.)]|>)\s*/u, '')
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/gu, '')
+      .trim();
+    if (!line || /^【[^】]+】$/u.test(line)) continue;
+    if (/^(?:这是宿主路由器|请在当前 worker 会话|结果保留在当前 worker|不会自动回灌 Commander)/u.test(line)) continue;
+    if (/^(?:任务|新任务)\s*[:：]?\s*$/u.test(line)) continue;
+    return line.slice(0, MAX_TITLE_LEN);
+  }
+  return PENDING_TASK_TITLE;
+}
+
 // Attach one turn ref to a task; dedup on either message id so an in-flight
 // user-only ref can be enriched with its final assistant message in place.
 function addRefToTask(task, ref, now) {
@@ -493,10 +578,11 @@ function addRefToTask(task, ref, now) {
   return true;
 }
 
-// Create the durable card shown immediately after a board-level send. It is
-// intentionally unique even though every card starts with the same visible
-// title; title-based aggregation would otherwise collapse unrelated sends.
-function createPendingTask(board, { taskId = null, dirId = null, sessionId, now = Date.now() }) {
+// Create the durable card shown immediately after a board-level send. Identity
+// is always taskId; the canonical text only supplies an immediate display title.
+function createPendingTask(board, {
+  taskId = null, dirId = null, sessionId, taskText = '', now = Date.now(),
+}) {
   if (!sessionId) return null;
   const id = typeof taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(taskId)
     ? taskId : newId('tsk');
@@ -512,7 +598,7 @@ function createPendingTask(board, { taskId = null, dirId = null, sessionId, now 
     board.modules[mod.id] = mod;
   }
   const task = {
-    id, moduleId: mod.id, title: PENDING_TASK_TITLE,
+    id, moduleId: mod.id, title: deriveTaskTitle(taskText),
     status: 'active', areas: [], createdAt: now, updatedAt: now,
     refs: [{
       sessionId, dirId: dirId || null, userMsgId: null, assistantMsgId: null,
@@ -534,19 +620,23 @@ function deleteEmptyModule(board, moduleId) {
   if (!Object.values(board.tasks).some(t => t.moduleId === moduleId)) delete board.modules[moduleId];
 }
 
-// Converge a placeholder/classify card in place. If the classifier explicitly
-// selects an existing task, merge into that task and delete only the placeholder.
-// Returns a structured result so callers can notify both changed ids.
-function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.now()) {
+// Converge a placeholder/classify card in place. Identity merging is disabled
+// by default and requires an explicit future user-confirmed allowIdentityMerge
+// action; ordinary classification only changes module/title metadata.
+function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.now(), options = {}) {
   const pending = board.tasks[pendingTaskId];
   if (!pending) return { ok: false, error: 'task_not_found' };
   const title = String(entry?.title || '').trim().slice(0, MAX_TITLE_LEN);
   const explicitCandidate = entry?.id && entry.id !== 'new' && entry.id !== pendingTaskId
     ? board.tasks[entry.id] : null;
-  const explicitTarget = explicitCandidate && !explicitCandidate.moduleAssignment ? explicitCandidate : null;
-  const explicitModule = explicitTarget?.moduleId ? board.modules[explicitTarget.moduleId] : null;
+  const explicitTarget = options.allowIdentityMerge === true
+    && explicitCandidate && !explicitCandidate.moduleAssignment ? explicitCandidate : null;
+  const classificationHint = explicitCandidate && !explicitCandidate.moduleAssignment
+    ? explicitCandidate : null;
+  const resolvedTitle = title || classificationHint?.title || '';
+  const explicitModule = classificationHint?.moduleId ? board.modules[classificationHint.moduleId] : null;
   const moduleName = String(entry?.module || explicitModule?.name || '').trim().slice(0, MAX_MODULE_LEN);
-  if ((!title && !explicitTarget) || !moduleName || moduleName === CLASSIFY_PENDING_MODULE_NAME) {
+  if ((!resolvedTitle && !explicitTarget) || !moduleName || moduleName === CLASSIFY_PENDING_MODULE_NAME) {
     return { ok: false, error: 'invalid_classification' };
   }
 
@@ -560,11 +650,10 @@ function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.no
     board.modules[mod.id] = mod;
   }
 
-  let target = explicitTarget;
-  if (!target && title) {
-    const matched = findTaskByTitle(board, mod.id, title, { dirId, similar: true });
-    if (matched && matched.id !== pendingTaskId && !matched.moduleAssignment) target = matched;
-  }
+  // An explicit existing id is structured classification evidence. Title
+  // similarity alone is never identity: it may be shown as a diagnostic hint,
+  // but it cannot delete a canonical card or collapse two user admissions.
+  const target = explicitTarget;
 
   const oldModuleId = pending.moduleId;
   if (target && target.id !== pendingTaskId) {
@@ -584,7 +673,7 @@ function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.no
     return { ok: true, taskId: target.id, removedTaskId: pendingTaskId, touched: [target.id, pendingTaskId] };
   }
 
-  pending.title = title || pending.title;
+  pending.title = resolvedTitle || pending.title;
   pending.moduleId = mod.id;
   pending.updatedAt = now;
   for (const area of entry?.areas || []) {
@@ -607,10 +696,12 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
     if (!task) {
       const modName = (e.module || '').trim() || (ref.dirLabel || '未分组');
       let mod = findModuleByName(board, modName, ref.dirId || null);
-      task = findTaskByTitle(board, mod?.id || null, e.title, {
-        dirId: ref.dirId || null,
-        similar: options.mergeSimilar !== false,
-      });
+      task = options.legacyMergeByTitle === true
+        ? findTaskByTitle(board, mod?.id || null, e.title, {
+            dirId: ref.dirId || null,
+            similar: false,
+          })
+        : null;
       const taskMod = task?.moduleId ? board.modules[task.moduleId] : null;
       const needsRealModule = task && taskMod?.source === 'classify'
         && options.moduleSource !== 'classify' && !!(e.module || '').trim();
@@ -631,7 +722,7 @@ function applyTagResult(board, entries, ref, now = Date.now(), options = {}) {
       if (!task) {
         if (!e.title) continue;   // an unknown id with no title is unusable
         task = {
-          id: newId('tsk'), moduleId: mod.id, title: e.title.slice(0, MAX_TITLE_LEN),
+          id: options.newTaskId || newId('tsk'), moduleId: mod.id, title: e.title.slice(0, MAX_TITLE_LEN),
           status: 'active', areas: [], createdAt: now, updatedAt: now, refs: [],
         };
         board.tasks[task.id] = task;
@@ -906,6 +997,7 @@ function buildBoardDto(board, getSessionRunState) {
         lastError: safeClassificationError(t.moduleAssignment.lastError),
       } : null,
       routing,
+      attemptCount: routing?.attempts?.length || 0,
     };
   }).sort((a, b) => b.lastTs - a.lastTs);
   const countByModule = new Map();
@@ -930,6 +1022,7 @@ module.exports = {
   MAX_REFS_PER_TASK,
   CLASSIFY_PENDING_MODULE_NAME,
   PENDING_TASK_TITLE,
+  deriveTaskTitle,
   createEmptyBoard,
   normalizeBoard,
   buildTagSystemPrompt,
