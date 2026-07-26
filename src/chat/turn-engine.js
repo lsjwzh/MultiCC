@@ -250,6 +250,24 @@ function createChatTurnEngine(deps) {
     // Drop claude's `system init` — server already sent its own (but keep the
     // runtime-reported model before discarding).
     if (evt.type === 'system' && evt.subtype === 'init') { noteReportedModel(sessionName, evt.model); return; }
+    if (providerName === 'qoder' && evt.type === 'assistant'
+        && Array.isArray(evt.message?.content)) {
+      const nonTextBlocks = evt.message.content.filter(block => block?.type !== 'text');
+      forward({
+        ...evt,
+        message: {
+          ...evt.message,
+          textSnapshot: true,
+          content: [
+            ...(cs.currentAssistantText
+              ? [{ type: 'text', text: cs.currentAssistantText }]
+              : []),
+            ...nonTextBlocks,
+          ],
+        },
+      });
+      return;
+    }
     forward(evt);
   }
 
@@ -333,9 +351,9 @@ function createChatTurnEngine(deps) {
         forward({
           type: 'assistant',
           // A cumulative authoritative snapshot heals a dropped/replayed WS
-          // fragment and reconciles any proxy part_delta preview. OpenCode emits
-          // several complete text parts; treating them as one-shot final blocks
-          // made the browser keep only the first until history reload.
+          // fragment and reconciles any proxy part_delta preview. OpenCode and
+          // ZCode emit several complete text parts; treating them as one-shot
+          // final blocks made the browser keep only the first until history reload.
           message: {
             textSnapshot: true,
             content: [{ type: 'text', text: cs.currentAssistantText }],
