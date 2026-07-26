@@ -100,11 +100,16 @@ const CLASSIFY_DISPLAY = {
     voiceText: '等待后台任务', ding: 'waiting',
     cardStatus: 'waiting', barTint: 'waiting',
   },
-  E: {  // API error — truncated reply
+  E: {  // Abnormal end — API error, or an explicit user/watchdog cancellation
     label: 'API 异常',
     pushType: 'error', pushTitle: '出现异常',
     voiceText: 'API 异常中断，等待重试中', ding: 'error',
-    cardStatus: 'waiting', barTint: 'error',
+    // cardStatus MUST equal barTint's fault semantics: E used to render as
+    // `waiting` on cards and `error` on the bar, so one terminal fact showed up
+    // as ⏸️ in the session list and ❌ in the chat bar — the exact "internal
+    // error / external something-else" split the cancel path was blamed for.
+    // Both projections now read one value.
+    cardStatus: 'error', barTint: 'error',
   },
   P: {  // Processing — mid-turn only
     label: '处理中',

@@ -15,6 +15,8 @@ function createSessionWorkHost(deps = {}) {
     'pendingUserInput', 'recordUserInput', 'broadcast', 'setTaskState',
     'onTaskBoardQueueEvent', 'classifyDisplay', 'cancelClassify',
     'assignKillReason', 'appendMessage', 'cancelPreparation',
+    // classify owns every business-state transition, including cancellation.
+    'dispatchStateAction',
   ]) requireFunction(deps, name);
   if (!deps.chatStream || typeof deps.chatStream.isAlive !== 'function'
       || typeof deps.chatStream.cancel !== 'function') {
@@ -44,7 +46,7 @@ function createSessionWorkHost(deps = {}) {
     if (options.interrupt) {
       const rt = schedulerRuntime();
       if (rt?.sessionScheduler && (await rt.sessionScheduler.status(sessionId))?.active) {
-        await cancelActiveTurn(sessionId);
+        await cancelActiveTurn(sessionId, { source: 'force_insert', reason: 'force_insert' });
       }
     }
     // ZCode native auth pre-check. A selected MultiCC Provider materializes its
@@ -216,10 +218,28 @@ function createSessionWorkHost(deps = {}) {
     return closeTurnForClassify(sessionId, reason);
   }
 
+  // classify's dispatchStateAction is synchronous and starts the transition
+  // without awaiting it. Keeping the in-flight promise here lets the cancel path
+  // await the *same* transition, so a cancel never replies (or reconciles the
+  // projection) while the scheduler mutation is still half-applied.
+  const pendingTransitions = new Map();
+
   // Classify is the only semantic gate for the interaction FIFO. The scheduler
   // persists ordering and active correlation, then applies exactly one of
   // D/W/B/E/P here. No delivery, liveness or process status may complete work.
-  async function classifyTransition(sessionId, taskId, result = {}) {
+  function classifyTransition(sessionId, taskId, result = {}) {
+    const operation = runClassifyTransition(sessionId, taskId, result);
+    if (sessionId) {
+      pendingTransitions.set(sessionId, operation);
+      const clear = () => {
+        if (pendingTransitions.get(sessionId) === operation) pendingTransitions.delete(sessionId);
+      };
+      operation.then(clear, clear);
+    }
+    return operation;
+  }
+
+  async function runClassifyTransition(sessionId, taskId, result = {}) {
     const runtime = schedulerRuntime();
     const target = runtime?.sessionScheduler;
     if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
@@ -352,69 +372,203 @@ function createSessionWorkHost(deps = {}) {
     }).catch(() => {});
   }
 
+  // ── Cancellation ──────────────────────────────────────────────────────────
+  // A cancel is an *intent*, not a state write. This function may do exactly two
+  // things: stop the real runner (process / stream / preparation), and submit a
+  // structured result to classify. classify is the sole writer of the session's
+  // business state, so there is one transition, one persistence point and one
+  // broadcast chain — the same ones a normal turn end uses.
+  //
+  // The pre-2026-07 shape wrote `setTaskState({classifyState:'E'})` here AND
+  // called scheduler.complete(). Two writers, two fan-outs: the chat bar saw the
+  // task_state broadcast while the task board only learned about it through the
+  // scheduler event — and when there was no active entry, not at all. That is
+  // where 「内部 error / 外部 running」 came from.
+
+  const RUNNER_STOP_TIMEOUT_MS = Number.isFinite(deps.runnerStopTimeoutMs)
+    ? Number(deps.runnerStopTimeoutMs)
+    : 5_000;
+  const RUNNER_STOP_POLL_MS = 25;
+  // In-flight + recently-settled cancels, keyed by sessionId. Repeated clicks,
+  // HTTP retries and simultaneous Web/App cancels all join the same operation
+  // instead of killing twice or writing history twice.
+  const cancelOperations = new Map();
+
+  function runnerStopped(sessionId) {
+    const state = deps.getChatSession(sessionId);
+    if (!state) return true;
+    if (state.isStreaming) return false;
+    if (state.claudeProc) return false;
+    if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) return false;
+    return true;
+  }
+
+  async function awaitRunnerStop(sessionId, timeoutMs = RUNNER_STOP_TIMEOUT_MS) {
+    const deadline = Date.now() + timeoutMs;
+    while (!runnerStopped(sessionId)) {
+      if (Date.now() >= deadline) return false;
+      await new Promise(resolve => setTimeout(resolve, RUNNER_STOP_POLL_MS));
+    }
+    return true;
+  }
+
+  // Ask the runner to stop. Side effects here are process/transport only — no
+  // business state is touched.
+  function stopRunner(sessionId, reason, killReason) {
+    const state = deps.getChatSession(sessionId);
+    deps.cancelPreparation(sessionId, reason);
+    if (!state) return;
+    deps.cancelClassify(state);
+    deps.assignKillReason(state._activeRunner, killReason);
+    if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
+      log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
+      deps.chatStream.cancel(sessionId);
+    }
+    if (state.claudeProc) {
+      log.log?.(`[multicc/chat] [${sessionId}] Cancel requested (${reason}), killing child process`);
+      try { state.claudeProc.kill('SIGTERM'); } catch (_) {}
+      state.claudeProc = null;
+      state.lineBuf = '';
+    }
+    state.isStreaming = false;
+    state.streamReplay = [];
+    // Persisting the partial reply is transcript bookkeeping, not status, and it
+    // is guarded by the in-flight map above so a double cancel cannot write the
+    // same partial twice.
+    const tools = Array.isArray(state.currentToolCalls) ? state.currentToolCalls : [];
+    if (state.currentAssistantText || tools.length) {
+      deps.appendMessage(sessionId, {
+        role: 'assistant',
+        content: state.currentAssistantText || '',
+        tools: tools.length ? tools : undefined,
+        ts: Date.now(),
+        cancelled: true,
+      });
+      state.currentAssistantText = '';
+      state.currentToolCalls = [];
+    }
+  }
+
+  // Already terminal *because of a cancel* — a repeat click has nothing left to
+  // transition. It still gets a projection re-publish (see below) so a card that
+  // drifted out of sync is repaired rather than left stale.
+  function alreadyCancelled(sessionId) {
+    const taskState = deps.getTaskState(deps.getRecord(sessionId)) || {};
+    return taskState.classifyState === 'E' && !!taskState.cancelledAt;
+  }
+
+  async function runCancel(sessionId, intent) {
+    const { reason, killReason, source, operationId, requestedAt } = intent;
+    stopRunner(sessionId, reason, killReason);
+    const stopped = await awaitRunnerStop(sessionId);
+    if (!stopped) {
+      log.warn?.('session_cancel_runner_stop_timeout', { sessionId, source, operationId });
+    }
+    // Park the scheduler entry on the same boundary a normal turn end uses, so
+    // classifyTransition sees `assessing` and can apply its verdict. Absent an
+    // active entry this is a no-op and classify still repairs the persisted state.
+    let closed = { ok: false, code: 'no_active_task' };
+    if (scheduler()) {
+      try { closed = await closeTurnForClassify(sessionId, reason); }
+      catch (_) { closed = { ok: false, code: 'turn_close_failed' }; }
+    }
+    const state = deps.getChatSession(sessionId);
+    const taskState = deps.getTaskState(deps.getRecord(sessionId)) || {};
+    const taskId = state?._currentTaskId || null;
+    // The structured cancel result. `state: 'E'` is the existing canonical
+    // abnormal-end letter — a cancel does not get a private terminal value, and
+    // a failed stop is an error for the same reason (the turn did not end
+    // cleanly), distinguished by cancelReason rather than by a new enum member.
+    const result = {
+      state: 'E',
+      goal: taskState.goal || '',
+      phase: taskState.phase || '',
+      cancel: {
+        source,
+        operationId,
+        requestedAt,
+        at: Date.now(),
+        taskId,
+        reason: stopped ? reason : 'cancel_stop_timeout',
+        runnerStopped: stopped,
+      },
+    };
+    deps.dispatchStateAction(result, {
+      sessionName: sessionId,
+      sessionId: deps.getRecord(sessionId)?.id || sessionId,
+      cs: state || null,
+      isTerminal: deps.getRecord(sessionId)?.kind !== 'chat',
+    });
+    // dispatchStateAction returns before the scheduler transition it started has
+    // settled. Awaiting it here is what makes the cancel reply, the reconcile
+    // below and every projection observe one finished transition instead of a
+    // race between the verdict and the slot release.
+    try { await pendingTransitions.get(sessionId); } catch (_) {}
+    // Requirement: re-publish the canonical snapshot even when the computed
+    // terminal state equals the persisted one — a cancel that found no active
+    // entry produces no scheduler event, and that silence is exactly how a card
+    // stayed on `running`. Goes through the board's own reducer, not a
+    // hand-assembled second broadcast.
+    if (taskId && typeof deps.reconcileTaskProjection === 'function') {
+      try { deps.reconcileTaskProjection(taskId, { classifyState: 'E', reason: result.cancel.reason }); }
+      catch (error) { log.warn?.('session_cancel_reconcile_failed', { sessionId, error: error.message }); }
+    }
+    if (!stopped) {
+      return {
+        ok: false,
+        code: 'runner_stop_timeout',
+        classifyState: 'E',
+        operationId,
+        cancelReason: result.cancel.reason,
+      };
+    }
+    return {
+      ok: true,
+      classifyState: 'E',
+      operationId,
+      alreadyIdle: !closed.ok && closed.code === 'no_active_task',
+    };
+  }
+
   async function cancelActiveTurn(sessionId, {
-    resolveQueue = false,
+    // Kept for call-site compatibility. Queue policy is unchanged by a cancel:
+    // the E verdict releases the active slot and, per the state machine, only D
+    // drains the FIFO. A cancel never advances the next queued item.
+    resolveQueue = false,          // eslint-disable-line no-unused-vars
     reason = 'user_cancelled',
     killReason = 'user_cancel',
+    source = 'manual_cancel',
+    operationId = null,
   } = {}) {
     const record = deps.getRecord(sessionId);
     if (!record) return { ok: false, code: 'session_not_found' };
-    // This write is deliberately the first mutation: setTaskState persists and
-    // broadcasts synchronously, so every cancel surface flips the classify bar
-    // to E before process shutdown or scheduler I/O can delay the response.
-    deps.setTaskState(sessionId, {
-      classifyState: 'E',
-      endedAt: Date.now(),
-      cancelledAt: Date.now(),
-      cancelReason: reason,
-    });
-    const state = deps.getChatSession(sessionId);
-    deps.cancelPreparation(sessionId, reason);
-    if (state) {
-      deps.cancelClassify(state);
-      deps.assignKillReason(state._activeRunner, killReason);
-      if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
-        log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
-        deps.chatStream.cancel(sessionId);
+    const inFlight = cancelOperations.get(sessionId);
+    // Idempotency: a second intent while one is running is the same effective
+    // transition. It joins the running one — no second kill, no second history
+    // write, no second verdict.
+    if (inFlight) return inFlight.promise.then(result => ({ ...result, deduplicated: true }));
+    if (alreadyCancelled(sessionId) && runnerStopped(sessionId)) {
+      const taskId = deps.getChatSession(sessionId)?._currentTaskId || null;
+      if (taskId && typeof deps.reconcileTaskProjection === 'function') {
+        try { deps.reconcileTaskProjection(taskId, { classifyState: 'E', reason: 'cancel_repeat' }); }
+        catch (_) {}
       }
-      if (state.claudeProc) {
-        log.log?.(`[multicc/chat] [${sessionId}] Cancel requested (${reason}), killing child process`);
-        try { state.claudeProc.kill('SIGTERM'); } catch (_) {}
-        state.claudeProc = null;
-        state.lineBuf = '';
-      }
-      state.isStreaming = false;
-      state.streamReplay = [];
-      const tools = Array.isArray(state.currentToolCalls) ? state.currentToolCalls : [];
-      if (state.currentAssistantText || tools.length) {
-        deps.appendMessage(sessionId, {
-          role: 'assistant',
-          content: state.currentAssistantText || '',
-          tools: tools.length ? tools : undefined,
-          ts: Date.now(),
-          cancelled: true,
-        });
-        state.currentAssistantText = '';
-        state.currentToolCalls = [];
-      }
+      return { ok: true, alreadyCancelled: true, classifyState: 'E', operationId };
     }
-    if (!scheduler()) return { ok: true };
-    const runtime = schedulerRuntime();
-    // User cancellation is an abnormal termination → verdict E, active slot
-    // released. FIFO is left untouched (E doesn't drain, per the state machine).
-    // The killed proc's close handler later finds no active entry and no-ops, so
-    // this E verdict is the one that sticks (LLM classify is bypassed).
-    const completed = await runtime.sessionScheduler.complete(sessionId, {
+    const intent = {
       reason,
-      classifyState: 'E',
-    });
-    if (completed.ok) await runtime.tick();
-    // A stale persisted P can have no active scheduler entry. The synchronous E
-    // write above still repaired it, so cancellation is successful/idempotent.
-    if (!completed.ok && completed.code === 'no_active_task') {
-      return { ok: true, alreadyIdle: true };
-    }
-    return completed.ok ? { ok: true } : completed;
+      killReason,
+      source: String(source || 'manual_cancel'),
+      operationId: operationId ? String(operationId).slice(0, 128) : null,
+      requestedAt: Date.now(),
+    };
+    const promise = runCancel(sessionId, intent);
+    cancelOperations.set(sessionId, { promise, intent });
+    const clear = () => {
+      if (cancelOperations.get(sessionId)?.promise === promise) cancelOperations.delete(sessionId);
+    };
+    promise.then(clear, clear);
+    return promise;
   }
 
   return Object.freeze({

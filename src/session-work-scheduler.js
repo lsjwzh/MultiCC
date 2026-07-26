@@ -622,10 +622,15 @@ function createSessionWorkScheduler({
         schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
       };
     });
+    // The verdict letter travels WITH the event. Without it every consumer had
+    // to guess what "completed" meant and the task board hard-coded `done`, so a
+    // cancelled (E) turn rendered as ✅. Projections map the letter, not the type.
     if (result.ok) emit('completed', {
       sessionId,
       entryId: result.completed.entryId,
       taskId: result.completed.taskId || null,
+      classifyState: result.schedule.classifyState || null,
+      reason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
     });
@@ -717,9 +722,12 @@ function createSessionWorkScheduler({
         schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
       };
     });
+    // taskId was missing here, so every resolution event reached the task board
+    // as `task_not_found` and left the card on its previous run state.
     if (result.ok) emit(action === 'cancel' ? 'cancelled' : 'skipped', {
       sessionId,
       entryId: result.resolved.entryId,
+      taskId: result.resolved.taskId || null,
       action,
       actor,
       queued: result.schedule.queued.length,

@@ -769,8 +769,7 @@ async function markTaskDone() {
   }
 }
 function cancelTaskFromBar() {
-  cancelStreaming();
-  addSystemMsg('已请求取消当前任务');
+  if (!cancelStreaming()) addSystemMsg('正在取消…');  // cancelStreaming() already says it when a turn is live
 }
 function attachUsageLine(bubbleEl, usage, roleBreakdown) {
   return chatLiveUi.attachUsageLine(bubbleEl, usage, roleBreakdown);
@@ -2589,7 +2588,7 @@ chatComposer = window.MultiCCChatComposer.createComposer({
     isStreaming = false;
     finishStreaming();
     stopTitleAnimation();
-    addSystemMsg('Cancelled');
+    addSystemMsg('正在取消…');
     updateUI();
   },
 });

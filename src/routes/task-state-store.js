@@ -8,6 +8,12 @@ function createTaskStateStore(deps) {
     classifyHistory: [],
     pendingUserInput: null, userInputSignalVersion: 0, userInputSignalTurnId: null,
     apiError: null,
+    // Cancellation envelope. Written only by the classify dispatch, never by a
+    // controller: `cancelledAt` is what marks an E as "the user stopped this"
+    // rather than "the provider failed", and it is the guard that keeps a late
+    // Aux verdict from resurrecting the turn.
+    cancelledAt: null, cancelReason: null, cancelSource: null,
+    cancelOperationId: null,
   };
 
   function getTaskState(persisted) {
@@ -29,6 +35,10 @@ function createTaskStateStore(deps) {
       phase: next.phase || 'idle',
       classifyState: next.classifyState || null,
       apiError: next.apiError || null,
+      // Lets a surface say 「已取消」 instead of 「API 异常」 without inventing a
+      // second terminal value: the state is still E, only the reason differs.
+      cancelledAt: next.cancelledAt || null,
+      cancelReason: next.cancelledAt ? (next.cancelReason || null) : null,
     };
     try { chatBroadcast(sessionId, classifyPayload); } catch (_) {}
     if (persisted.dirId) {

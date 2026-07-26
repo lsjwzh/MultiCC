@@ -20,6 +20,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const core = require('../task-board');
 const { runStateForFreezeReason } = require('../session-work-scheduler');
+const { classifyDisplay } = require('../classify/vocab');
 
 const REQUIRED_DEPS = [
   'file', 'auxQueue', 'records', 'loadHistory', 'dispatchToSession',
@@ -585,6 +586,14 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
+  // Classify letter → task run state. Same fold as session-work-host.getRunState
+  // and task-context-host.runState, so the task card, the session card and the
+  // chat bar cannot disagree about what one verdict means.
+  function runStateForClassify(classifyState) {
+    const cardStatus = classifyDisplay(classifyState || 'D').cardStatus;
+    return cardStatus === 'completed' ? 'done' : cardStatus;
+  }
+
   function onQueueEvent(event = {}) {
     const taskId = String(event.taskId || '');
     const task = taskId ? board.tasks[taskId] : null;
@@ -596,14 +605,36 @@ function createTaskBoardRuntime(deps) {
     }
     if (type === 'queued') runState = 'queued';
     else if (type === 'claimed' || type === 'started' || type === 'resumed') runState = 'running';
-    else if (type === 'completed') runState = 'done';
-    else if (type === 'frozen') {
+    else if (type === 'completed') {
+      // NOT hard-coded `done`. `completed` only means "the active slot was
+      // released"; D/W/B/E says whether that was a finish, a wait or an abort.
+      runState = runStateForClassify(event.classifyState);
+    } else if (type === 'reconcile') {
+      // Formal re-publish: the canonical state was recomputed elsewhere (e.g. a
+      // cancel that found no active scheduler entry). Always notifies, even when
+      // the value is unchanged, so a stale projection is repaired rather than
+      // silently kept — and no caller has to hand-roll a second broadcast.
+      runState = runStateForClassify(event.classifyState);
+    } else if (type === 'frozen') {
       // Explicit reason→state map, shared with getRunState. Not the old substring
       // heuristic (mislabelled interruption/recovery/settling as "waiting").
       runState = runStateForFreezeReason(event.freezeReason);
     } else if (type === 'cancelled' || type === 'skipped') runState = 'idle';
-    if (!runState || task.runState === runState) return { ok: true, changed: false };
+    if (!runState) return { ok: true, changed: false };
+    // Monotonic guard: a heartbeat that was already in flight when the turn
+    // reached a terminal verdict must not resurrect `running`. `at` is the
+    // scheduler's own clock; reconcile carries the newest one by construction.
+    const at = Number(event.at) || Date.now();
+    if (task.runStateAt && at < task.runStateAt && type !== 'reconcile') {
+      return { ok: true, changed: false, code: 'stale_queue_event' };
+    }
+    if (task.runState === runState && type !== 'reconcile') {
+      task.runStateAt = Math.max(task.runStateAt || 0, at);
+      return { ok: true, changed: false };
+    }
+    const changed = task.runState !== runState;
     task.runState = runState;
+    task.runStateAt = Math.max(task.runStateAt || 0, at);
     task.updatedAt = Date.now();
     if (task.routing) {
       task.routing.status = runState;
@@ -612,7 +643,20 @@ function createTaskBoardRuntime(deps) {
     save();
     const dirId = core.taskDirId(board, task);
     notify(dirId || null, [task.id]);
-    return { ok: true, changed: true };
+    return { ok: true, changed, republished: !changed };
+  }
+
+  // Re-publish the canonical run state for a task through the same reducer the
+  // scheduler feeds. Callers submit the classify verdict; they never assemble a
+  // broadcast themselves.
+  function reconcileRunState(taskId, { classifyState = null, reason = '' } = {}) {
+    return onQueueEvent({
+      type: 'reconcile',
+      taskId,
+      classifyState,
+      reason,
+      at: Date.now(),
+    });
   }
 
   // ── Backfill (scan existing chat history into the board) ─────────────────
@@ -1298,6 +1342,7 @@ function createTaskBoardRuntime(deps) {
     mountRoutes,
     onMessagePersisted,
     onQueueEvent,
+    reconcileRunState,
     recordRouterAdmission,
     onTurnEnd,
     onClassifyGoal,

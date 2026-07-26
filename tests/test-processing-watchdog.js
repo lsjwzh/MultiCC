@@ -77,9 +77,11 @@ test('processing watchdog confirms a dead P runner before forcing E cancellation
   h.advance(5_001);
   result = await h.watchdog.sweep();
   assert.equal(result.results[0].action, 'cancelled');
+  // `source` rides along so the cancel envelope classify persists can tell a dead
+  // runner from a user pressing stop — same transition, different attribution.
   assert.deepEqual(h.calls, [[
     's1',
-    { reason: 'process_watchdog', killReason: 'process_watchdog' },
+    { reason: 'process_watchdog', killReason: 'process_watchdog', source: 'process_watchdog' },
   ]]);
 });
 
