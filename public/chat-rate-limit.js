@@ -276,6 +276,7 @@
     renderBalance();
     renderOpenCodeQuota();
     renderQoderQuota();
+    renderCodexQuota();
   }
 
   // ── OpenCode Go subscription usage (5h rolling / weekly / monthly). Sourced
@@ -672,6 +673,141 @@
     return currentQoderQuota;
   }
 
+  // ── Codex (ChatGPT) weekly quota. Sourced directly from
+  // chatgpt.com/backend-api/wham/usage via the on-disk OAuth token (no CDP).
+  // Rendered as #codex-quota-bar, shown when cli=codex.
+  let currentCodexQuota = null;
+  let codexQuotaFetchInFlight = false;
+  const CODEX_QUOTA_BACKOFF_MS = 60_000;
+  let codexQuotaLastErrorAt = 0;
+
+  function codexQuotaStorageKey() { return 'multicc.codex.quota.v1'; }
+
+  function loadCodexQuotaFromStorage() {
+    const storage = browserStorage(); if (!storage) return null;
+    try {
+      const raw = storage.getItem(codexQuotaStorageKey());
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      if (v.fetchedAt && (Date.now() - v.fetchedAt) > 24 * 60 * 60 * 1000) return null;
+      return v;
+    } catch (_) { return null; }
+  }
+
+  function saveCodexQuotaToStorage(data) {
+    const storage = browserStorage(); if (!storage) return;
+    try { storage.setItem(codexQuotaStorageKey(), JSON.stringify(data)); } catch (_) {}
+  }
+
+  function formatCodexQuota(value) {
+    if (!value) {
+      return Object.freeze({
+        text: 'Codex 余量 · ⟳ 刷新',
+        color: '#8b949e',
+        title: '点击从 chatgpt.com 拉取 Codex 周额度用量',
+      });
+    }
+    if (value.status === 'no_auth') {
+      return Object.freeze({
+        text: 'Codex：未登录 · ⟳ 重试',
+        color: '#f85149',
+        title: '未找到 ~/.codex/auth.json。请先在终端运行 codex 完成登录。',
+      });
+    }
+    if (value.status !== 'ok' || !value.weekly) {
+      return Object.freeze({
+        text: 'Codex：用量暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: value.error || '无法从 chatgpt.com 拉取用量',
+      });
+    }
+    const w = value.weekly;
+    const used = w.usedPercent ?? 0;
+    const remaining = w.remainingPercent ?? 0;
+    let text = `Codex 周 ${remaining}% 剩余 (${used}% 已用)`;
+    if (w.resetsAt) text += ` · ${formatResetRemaining(Math.max(0, w.resetsAt * 1000 - Date.now()) / 1000)}重置`;
+    if (value.additional && value.additional.length) {
+      const spark = value.additional[0];
+      text += ` · ${spark.name} ${spark.usedPercent}%`;
+    }
+    const syncRel = relativeAgo(value.fetchedAt);
+    if (syncRel) text += ` · ${syncRel}`;
+    text += ' ⟳';
+
+    let color = '#58a6ff';
+    if (value.limitReached || used >= 90) color = '#f85149';
+    else if (used >= 70) color = '#d29922';
+
+    let title = `Codex 周额度（chatgpt.com/backend-api/wham/usage）\n套餐: ${value.planType || '?'}${value.email ? ' · ' + value.email : ''}\n已用 ${used}% · 剩余 ${remaining}%`;
+    if (w.resetsAt) title += `\n重置: ${new Date(w.resetsAt * 1000).toLocaleString()}`;
+    for (const a of (value.additional || [])) title += `\n${a.name}: ${a.usedPercent}% 已用`;
+    if (value.credits && value.credits.hasCredits) title += `\nCredits 余额: ${value.credits.balance}`;
+    if (syncRel) title += `\n同步于 ${syncRel}`;
+    title += '\n点击 bar 刷新';
+    return Object.freeze({ text, color, title });
+  }
+
+  function renderCodexQuota() {
+    const element = global.document?.getElementById?.('codex-quota-bar');
+    if (!element) return;
+    if (currentCli !== 'codex') {
+      element.style.display = 'none';
+      element.textContent = '';
+      element.onclick = null;
+      return;
+    }
+    const view = formatCodexQuota(currentCodexQuota);
+    if (codexQuotaFetchInFlight) {
+      element.textContent = 'Codex：加载中…';
+      element.style.color = '#8b949e';
+      element.title = '正在从 chatgpt.com 拉取 Codex 周额度...';
+    } else {
+      element.textContent = view?.text || '';
+      element.title = view?.title || '';
+      if (view) element.style.color = view.color;
+    }
+    element.style.display = 'block';
+    element.onclick = () => { refreshCodexQuota(true); };
+  }
+
+  async function refreshCodexQuota(force) {
+    if (currentCli !== 'codex' && !force) return null;
+    if (codexQuotaFetchInFlight) return currentCodexQuota;
+    if (!force && codexQuotaLastErrorAt && (Date.now() - codexQuotaLastErrorAt) < CODEX_QUOTA_BACKOFF_MS) {
+      return currentCodexQuota;
+    }
+    codexQuotaFetchInFlight = true;
+    renderCodexQuota();
+    try {
+      const res = await fetch('/api/codex/quota', { credentials: 'same-origin' });
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!data) data = { status: 'unavailable', error: 'invalid response' };
+      if (data.status === 'ok') {
+        currentCodexQuota = data;
+        saveCodexQuotaToStorage(data);
+        codexQuotaLastErrorAt = 0;
+      } else {
+        currentCodexQuota = data;
+        codexQuotaLastErrorAt = Date.now();
+      }
+    } catch (_) {
+      codexQuotaLastErrorAt = Date.now();
+      currentCodexQuota = { status: 'unavailable', error: 'fetch failed' };
+    } finally {
+      codexQuotaFetchInFlight = false;
+    }
+    renderCodexQuota();
+    return currentCodexQuota;
+  }
+
+  function restoreCodexQuota() {
+    currentCodexQuota = loadCodexQuotaFromStorage();
+    renderCodexQuota();
+    return currentCodexQuota;
+  }
+
   const api = Object.freeze({
     normalizeFiveHourRateLimit,
     formatFiveHourRateLimit,
@@ -687,6 +823,8 @@
     restoreOpenCodeQuota,
     refreshQoderQuota,
     restoreQoderQuota,
+    refreshCodexQuota,
+    restoreCodexQuota,
     setCli,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -697,5 +835,6 @@
     restoreBalance(sess);
     restoreOpenCodeQuota();
     restoreQoderQuota();
+    restoreCodexQuota();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
