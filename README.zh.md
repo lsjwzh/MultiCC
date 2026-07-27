@@ -168,6 +168,8 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 `/manage` 里配�
 | [FAQ](docs/faq.md) | 排错与常见问题 |
 | [Tech stack](docs/tech-stack.md) | 运行时依赖及其用途 |
 
+完整的文档索引（34 篇，含设计契约、语音、provider 路由、治理评审、模块化历史）在 **[docs/README.md](docs/README.md)**。
+
 界面本身支持中英文切换，默认中文。
 
 ---

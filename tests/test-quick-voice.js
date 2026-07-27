@@ -46,7 +46,7 @@ console.log('\n[Test 3] Documentation Files');
 const docs = [
   'docs/realtime-voice-design.md',
   'docs/realtime-voice-implementation.md',
-  'benchmark-realtime-voice.md',
+  'docs/benchmark-realtime-voice.md',
 ];
 for (const f of docs) {
   if (fs.existsSync(f)) {
