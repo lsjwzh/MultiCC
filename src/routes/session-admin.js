@@ -259,6 +259,7 @@ function createSessionAdminRuntime(rawDeps) {
       active: !!runtime.active,
       mergeState: runtime.mergeState,
       cli,
+      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
       model: record.model || null,
       effectiveModel: runtime.effectiveModel,
       effort: record.effort || null,

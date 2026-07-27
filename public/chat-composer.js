@@ -47,6 +47,11 @@
       ? opts.stageUserMessage
       : addUserMessage;
     const goalWrap = opts.goalWrap || (task => task);
+    // Commander-only routing switch (chat-dispatch-hint.js). Identity elsewhere.
+    const decorateText = opts.decorateText || (text => {
+      const hint = win.MultiCCChatDispatchHint;
+      return hint && typeof hint.decorate === 'function' ? hint.decorate(text) : text;
+    });
     const debug = opts.debug || (() => {});
     const webSocketOpen = opts.webSocketOpen == null ? 1 : opts.webSocketOpen;
     const hasNativeBridge = opts.hasNativeBridge === true;
@@ -134,6 +139,12 @@
       updateAttachArea();
       if (paths.length) text += ' ' + paths.join(' ');
 
+      // What the user typed, kept for the retry path: restoring the decorated
+      // text into the box would append the routing line twice.
+      const typedText = text;
+      const decorated = decorateText(text);
+      if (typeof decorated === 'string' && decorated.trim()) text = decorated;
+
       const clientMsgId = newClientMsgId();
       const userInputRequestId = getUserInputRequestId();
       stageUserMessage(text, clientMsgId);
@@ -152,7 +163,7 @@
         return true;
       } catch (error) {
         addSystemMessage('发送失败，正在重连：' + error.message);
-        inputEl.value = text;
+        inputEl.value = typedText;
         retryTransport();
         updateUi();
         return false;
