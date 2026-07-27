@@ -1,5 +1,7 @@
 'use strict';
 
+const { SYSTEM_PREFIX } = require('../session-delivery');
+
 // Classify state machine: the unified classify loop that decides goal/phase and
 // the D/C/W/B/E/P letter for every chat session. Owns the turn-end hook, the
 // 60s periodic scan (with its decision history ring), the current-task model,
@@ -331,12 +333,12 @@ function createClassifyStateMachine(rawDeps) {
   function isInjectedOrJunkGoal(goal) {
     const g = String(goal || '').trim();
     if (!g) return true;  // empty goal is junk — classify never ran or failed
-    return g.startsWith(getWaitInjector().SYS_PREFIX) || g.startsWith('<') || g.startsWith('"<');
+    return g.startsWith(SYSTEM_PREFIX) || g.startsWith('<') || g.startsWith('"<');
   }
 
   // Whether a user message is system-injected (autoContinue / apiRetry / bgCheck).
   function isSystemInjectedMsg(msg) {
-    return String(msg || '').trim().startsWith(getWaitInjector().SYS_PREFIX);
+    return String(msg || '').trim().startsWith(SYSTEM_PREFIX);
   }
 
   // Whether classify has produced a real goal for this session. False for the

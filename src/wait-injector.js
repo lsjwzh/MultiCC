@@ -2,6 +2,11 @@
 
 // ── Wait injector: continue a chat session when external data arrives ──
 //
+// LEGACY COMPATIBILITY LAYER. Durable callback/poll/delay state now belongs to
+// orchestration-runtime + wait-service, and new host continuations belong to
+// session-delivery. Keep this module only while old HTTP views, interruption
+// bookkeeping and background-result de-dup are migrated independently.
+//
 // A `claude -p` turn ends when the model yields (even if it said "I'll wait for
 // X"). Streaming keeps the process warm, but SOMETHING still has to deliver the
 // awaited data as the next message. This module is that something. Three modes:
@@ -49,6 +54,7 @@
 // which autoContinue (D) and bgCheck (E) skip - the result inject subsumes both.
 
 const crypto = require('crypto');
+const { SYSTEM_PREFIX } = require('./session-delivery');
 
 // Injected dependencies (set by init) so the module is testable in isolation.
 let _inject = async () => {};   // (session, text, opts?) => Promise   — runChatTurn wrapper
@@ -377,7 +383,9 @@ function recentlyBgResultInjected(session) {
 // Universal prefix for all system-injected messages (autoContinue,
 // bgCheck). Recognition side (server.js) matches this single token to skip
 // injected text during classify/reconcile, replacing the old per-language regex.
-const SYS_PREFIX = '🔇';
+// Compatibility export for legacy wait callers. New production delivery paths
+// import SYSTEM_PREFIX from session-delivery directly.
+const SYS_PREFIX = SYSTEM_PREFIX;
 
 // inject() is the durable session admission boundary. It persists immediately
 // even while a turn is busy; the scheduler, not a volatile timer loop, decides

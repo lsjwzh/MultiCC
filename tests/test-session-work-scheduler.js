@@ -781,6 +781,33 @@ test('manual retry is admitted only for classify E', async t => {
   assert.equal(retry.payload.taskId, 'task-failed');
 });
 
+test('host API recovery options become a retry work item after classify E', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'original task',
+    idempotencyKey: 'original',
+  });
+  await startClaim(h, await claimOne(h));
+  await h.scheduler.complete('s1', { classifyState: 'E' });
+
+  const recovery = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'provider recovered',
+    source: 'api_recovery',
+    options: {
+      originContinue: true,
+      retry: true,
+    },
+    idempotencyKey: 'api-recovery:s1:1000',
+  });
+  assert.equal(recovery.entry.payload.workKind, 'retry');
+  assert.equal(recovery.entry.payload.source, 'api_recovery');
+  const claim = await claimOne(h);
+  assert.equal(claim.id, recovery.entry.id);
+  assert.equal(claim.payload.workKind, 'retry');
+});
+
 test('a pending queued entry can be cancelled individually but a leased entry cannot', async t => {
   const h = fixture(t);
   await h.scheduler.admit({

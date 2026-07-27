@@ -20,7 +20,7 @@ function createBackgroundTaskRuntime(deps = {}) {
   const broadcast = requiredFunction(deps, 'broadcast');
   const observeTask = requiredFunction(deps, 'observeTask');
   const noteBgResultInjected = requiredFunction(deps, 'noteBgResultInjected');
-  const injectSystemMsg = requiredFunction(deps, 'injectSystemMsg');
+  const deliverSystem = requiredFunction(deps, 'deliverSystem');
   const createCoalescer = requiredFunction(deps, 'createCoalescer');
   const buildNudge = requiredFunction(deps, 'buildNudge');
   const classifyCompletion = requiredFunction(deps, 'classifyCompletion');
@@ -64,7 +64,7 @@ function createBackgroundTaskRuntime(deps = {}) {
         ? { bgTaskIds, bgToolUseIds }
         : {};
       try {
-        injectSystemMsg(sessionName, buildNudge(items), 0, origin);
+        deliverSystem(sessionName, buildNudge(items), origin);
       } catch (error) {
         log('warn', 'background task completion injection failed', error);
       }

@@ -229,7 +229,7 @@ test('REPRO end-to-end: the daemon completion flows to a nudge with the exact ob
   assert.ok(msg.includes('started pid 46222'), 'the daemon startup echo is carried in as if it were a result');
   assert.ok(msg.includes('[ref:brwgfem7d]'), 'buildNudge appends the [ref:<taskId>] suffix when the item carries an id');
   // The ONLY piece added downstream (not by buildNudge) is the 🔇 prefix, which
-  // injectSystemMsg (SYS_PREFIX) prepends before handing the text to runChatTurn.
+  // session-delivery prepends before handing the text to session admission.
 });
 
 // ── Wiring guard (structural) ────────────────────────────────────────────────

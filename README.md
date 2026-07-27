@@ -680,7 +680,9 @@ multicc/
 │   ├── git-queue.js              # Serialized git operations (prevents concurrent conflicts)
 │   ├── tmux.js                   # Tmux session management, pipe-pane, FIFO output
 │   ├── directories.js            # Directory workspace registry & path helpers
-│   ├── wait-injector.js          # Wait/poll registration, resolution, auto-injection
+│   ├── wait-service.js           # Durable callback/poll/delay state and exactly-once resolution
+│   ├── session-delivery.js       # Typed continuation/system/retry admission boundary
+│   ├── wait-injector.js          # Legacy wait/recovery compatibility layer
 │   ├── detached.js               # run-detached task lifecycle (setsid, polling, completion)
 │   ├── push.js                   # VAPID, Bark, webhook notification delivery
 │   ├── share.js                  # Session sharing (snapshot links, password auth)
@@ -858,7 +860,7 @@ user interrupts by speaking → agent stops → next turn
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/sessions/:id/wait` | Register a poll or callback wait that injects results into the chat session |
+| `POST` | `/api/sessions/:id/wait` | Register a durable poll, callback, or delay wait |
 | `POST` | `/api/wait/:wid/resolve?token=<token>` | Resolve a callback wait from an external system |
 | `GET` | `/api/sessions/:id/waits` | List waits for one session |
 | `DELETE` | `/api/wait/:wid` | Cancel a wait |
@@ -877,6 +879,17 @@ curl -s "$MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/wait" \
   -H 'Content-Type: application/json' \
   -d '{"mode":"poll","pollCmd":"test -f build.done && cat build.done","untilContains":"ok","intervalSec":15,"maxChecks":40}'
 ```
+
+Chat CLIs also receive scoped MCP tools for the current session:
+
+- `wait_for_external_result` registers a durable `callback` or `delay`.
+- `get_external_wait` reads only waits owned by that session.
+- `cancel_external_wait` cancels only a pending wait owned by that session.
+
+The MCP surface intentionally cannot select another session, run polling commands,
+choose an injected message, or recover a callback secret after its first return.
+Use the HTTP poll endpoint only when a trusted host-side command or URL probe is
+actually required.
 
 Example detached task:
 ```bash

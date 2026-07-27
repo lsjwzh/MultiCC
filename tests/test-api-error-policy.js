@@ -70,6 +70,64 @@ test('401/403, billing, invalid request, context, tool/config errors fail fast',
   }
 });
 
+test('trusted quota/context details refine generic HTTP status without overriding explicit auth', () => {
+  const quota403 = decide({
+    httpStatus: 403,
+    message: 'You have reached your usage limit for this billing cycle; quota will refresh next cycle.',
+    source: 'claude_result',
+    provider: 'claude',
+  });
+  assert.equal(quota403.error.category, 'billing_quota');
+  assert.equal(quota403.action, 'fail_fast');
+
+  const structuredQuota403 = decide({
+    httpStatus: 403,
+    code: 'quota_exceeded',
+    source: 'codex_event',
+    provider: 'codex',
+  });
+  assert.equal(structuredQuota403.error.category, 'billing_quota');
+
+  const explicitAuth403 = decide({
+    httpStatus: 403,
+    code: 'permission_denied',
+    message: 'usage limit is shown in unrelated diagnostic text',
+    source: 'claude_result',
+    provider: 'claude',
+  });
+  assert.equal(explicitAuth403.error.category, 'authentication_permission');
+
+  const context400 = decide({
+    httpStatus: 400,
+    message: 'Maximum context window exceeded: too many tokens in this request.',
+    source: 'codex_event',
+    provider: 'codex',
+  });
+  assert.equal(context400.error.category, 'context_token_limit');
+  assert.equal(context400.action, 'fail_fast');
+});
+
+test('local CLI launch failures are configuration errors and never auto-retry', () => {
+  const cases = [
+    { code: 'EACCES', message: 'spawn bridge EACCES' },
+    { code: 'ENOENT', message: 'spawn bridge ENOENT' },
+    { code: 'ENOEXEC', message: 'spawn bridge ENOEXEC' },
+    { code: -13, message: 'spawn failed' },
+    { message: 'ZCode 无响应（exit -13）' },
+  ];
+  for (const raw of cases) {
+    const result = decide({
+      ...raw,
+      source: 'process_stderr',
+      provider: 'zcode',
+    });
+    assert.equal(result.error.category, 'adapter_configuration', JSON.stringify(raw));
+    assert.equal(result.error.retryable, false, JSON.stringify(raw));
+    assert.equal(result.action, 'fail_fast', JSON.stringify(raw));
+    assert.equal(result.error.maxAttempts, 0, JSON.stringify(raw));
+  }
+});
+
 test('429 honors Retry-After without jitter and long reset windows do not short-loop', () => {
   assert.equal(parseRetryAfter('7', 0), 7_000);
   const short = decide({
@@ -143,6 +201,23 @@ test('cancellation and shutdown never retry; unknown gets at most one controlled
     message: 'opaque upstream failure', source: 'opencode_event', provider: 'opencode',
   }, { attempt: 1 });
   assert.equal(second.action, 'fail_fast');
+});
+
+test('elapsed retry budget stops even the bounded unknown fallback', () => {
+  const raw = {
+    message: 'opaque upstream failure',
+    source: 'opencode_event',
+    provider: 'opencode',
+  };
+  const withinBudget = decide(raw, { elapsedMs: 119_999 });
+  assert.equal(withinBudget.error.category, 'unknown');
+  assert.equal(withinBudget.action, 'retry');
+  assert.equal(withinBudget.attempt, 1);
+
+  const exhausted = decide(raw, { elapsedMs: 120_000 });
+  assert.equal(exhausted.error.category, 'unknown');
+  assert.equal(exhausted.action, 'fail_fast');
+  assert.equal(exhausted.reason, 'retry_budget_exhausted');
 });
 
 test('untrusted text cannot smuggle a retryable category and public messages are sanitized', () => {

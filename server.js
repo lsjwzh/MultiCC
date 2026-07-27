@@ -493,15 +493,14 @@ const MULTICC_IMG_HINT = [
   `    -d '{"name":"任务名","dirPath":"<当前工作目录的绝对路径>","cron":"0 9 * * *","prompt":"到点要执行的完整指令"}'`,
   'cron 为标准 5 段（分 时 日 月 周，本地时区），如 "0 9 * * *" 表示每天 9:00。dirPath 用你当前的工作目录即可。登记后告诉用户可在 /manage 的「定时任务」里查看与管理。仅在用户明确要求定时/周期执行时才登记。',
   '',
-  '【等待外部结果，别空等】当你需要「等某个后台任务/部署/接口/第三方返回后再继续」时，不要只在回复里说“我等一下”然后停下——那样这一轮就结束了、不会自动继续。请改用 multicc 的等待接口登记，到点 multicc 会自动把结果作为下一条消息发回给你、你就能接着做：',
-  '  ① 轮询（你能用命令/URL 查状态时）：',
+  '【等待外部结果，别空等】需要等部署、接口或第三方返回时，若工具列表中有 `wait_for_external_result`，优先用它登记持久等待；结果到达后 multicc 会自动续接当前会话。',
+  '  ① callback：传 `mode="callback"`、`reason`，可选 `timeout_seconds`。回调 capability URL 只在首次登记时返回，只交给外部结果生产方。',
+  '  ② delay：传 `mode="delay"`、`reason`、`delay_seconds`。延迟跨服务重启保留；可用 `get_external_wait` 查询、`cancel_external_wait` 取消。',
+  '  ③ 只有必须由宿主机执行命令或查询 URL 时，才使用受控 HTTP poll 接口：',
   `     curl -s $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/wait -H 'Content-Type: application/json' \\`,
   `       -d '{"mode":"poll","pollCmd":"<查询状态的shell命令>","untilContains":"<出现即视为完成的关键字>","intervalSec":15,"maxChecks":40}'`,
   '     （也可用 "pollUrl" 代替 pollCmd，用 "untilRegex" 代替 untilContains。命令在你的工作目录下执行。）',
-  '  ② 回调（由外部系统在完成时主动通知）：',
-  `     curl -s $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/wait -H 'Content-Type: application/json' -d '{"mode":"callback"}'`,
-  '     返回里的 callbackUrl 交给外部系统，让它在完成时 POST 结果到该 URL（body 放 {"data":"..."}）。',
-  '  登记成功后，正常结束本轮即可——条件满足/回调到达时 multicc 会自动续接，无需用户手动催。',
+  '  MCP 等待工具故意不接受 sessionId、shell 命令、轮询 URL 或任意注入消息；不要拿它绕过会话所有权。登记成功后可正常结束本轮，无需用户手动催。',
   '',
   '【子 Agent/Task/Workflow 轮询保活规则】在 `-p` 模式下，主进程退出时所有子进程（Agent/Task/Workflow/Bash 后台任务）都会被一起回收。',
   '因此：',
@@ -1069,7 +1068,7 @@ const gatewayHost = createGatewayHost({
   getChatHistoryService: () => chatHistoryService,
   appendEvent, normalizeEffort, dispatchTargetHintFor, cwdForSession,
   getSetSessionStatus: () => setSessionStatus, isTargetBusy: dispatchTargetBusy,
-  getWaitInjector: () => waitInjector,
+  getSessionDelivery: () => sessionDelivery,
   getOrchestrationRuntime: () => orchestrationRuntime,
   getTaskContextHost: () => taskContextHost,
   getCreateSessionRecord: () => createSessionRecord,
@@ -2037,10 +2036,14 @@ tunnel.setFailureReporter((stage, category) => {
 });
 const chatStream = require('./src/chat-stream');
 const waitInjector = require('./src/wait-injector');
+const sessionDelivery = require('./src/session-delivery').createSessionDelivery({
+  admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
+  log: message => console.log('[multicc/delivery]', message),
+});
 let apiErrorAuxQueue = null;
 const apiErrorHost = createApiErrorHost({
   policy: apiErrorPolicy, logger, persistedSessions, getTaskState, setTaskState,
-  chatBroadcast, workspaceBroadcast, waitInjector,
+  chatBroadcast, workspaceBroadcast, sessionDelivery,
   getAuxQueue: () => apiErrorAuxQueue,
   setSessionStatus, isShuttingDown: () => _shuttingDown,
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
@@ -2624,13 +2627,11 @@ mountScanRoutes(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
 // API recovery is decided at the owned runner boundary. Classify state E only
 // reflects that decision; it cannot inject a second retry turn.
 
-
-
 const backgroundTaskRuntime = createBackgroundTaskRuntime({
   broadcast: chatBroadcast,
   observeTask: observation => orchestrationRuntime.observeTask(observation),
   noteBgResultInjected: sessionName => waitInjector.noteBgResultInjected(sessionName),
-  injectSystemMsg: (...args) => waitInjector.injectSystemMsg(...args),
+  deliverSystem: (sessionName, text, origin) => sessionDelivery.deliverSystem(sessionName, text, origin),
   createCoalescer: bgCoalesce.createCoalescer,
   buildNudge: bgCoalesce.buildNudge,
   classifyCompletion: bgCoalesce.classifyBgCompletion,
@@ -2784,11 +2785,7 @@ routerToolHost.configure({ records: persistedSessions, dispatchToSession,
   recordUserInput: signal => sessionWorkHost.recordInput(signal) });
 
 waitInjector.init({
-  // Continuations preserve origin metadata; originContinue stays the default.
-  inject: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, {
-    originContinue: true,
-    ...(opts || {}),
-  }),
+  inject: (session, text, opts) => sessionDelivery.deliverContinuation(session, text, opts),
   isBusy: chatTurnEngine.orchestrationChatBusy,
   hasExplicitWait: session => orchestrationRuntime.hasPending(session),
   exec: (cmd, cwd) => new Promise((resolve) => {
@@ -2815,9 +2812,6 @@ createOrchestrationRoutes({
   // dropping them here is what made repeat clicks look like distinct cancels.
   cancelActiveTurn: (sessionId, options) => sessionWorkHost.cancelActiveTurn(sessionId, options),
 }).mountRoutes(app);
-
-
-
 
 
 
