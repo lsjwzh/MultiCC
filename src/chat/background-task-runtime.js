@@ -340,6 +340,7 @@ function createBackgroundTaskRuntime(deps = {}) {
     const command = (tool && tool.input && tool.input.command) || '';
     const sync = !!(tool && tool.name === 'Bash' && !(tool.input && tool.input.run_in_background));
     const monitor = !!(tool && tool.name === 'Monitor');
+    const persistentMonitor = monitor && tool.input && tool.input.persistent === true;
     const subagent = !!(event.tool_use_id && !tool);
     if (sync) tagTimed(syncBashTasks, sessionName, taskId);
     if (monitor) tagTimed(monitorTasks, sessionName, taskId);
@@ -350,7 +351,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       taskId,
       status: 'running',
       detail: {
-        kind: sync ? 'sync-bash' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task',
+        kind: sync ? 'sync-bash' : persistentMonitor ? 'monitor-persistent' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task',
         description: event.description || '',
         toolUseId: event.tool_use_id || null,
         outputFile,
@@ -363,8 +364,8 @@ function createBackgroundTaskRuntime(deps = {}) {
       command,
       background: !sync,
     });
-    startShadow(sessionName, taskId, outputFile, event.description || '');
-    return { handled: true, kind: sync ? 'sync-bash' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task' };
+    if (!persistentMonitor) startShadow(sessionName, taskId, outputFile, event.description || '');
+    return { handled: true, kind: sync ? 'sync-bash' : persistentMonitor ? 'monitor-persistent' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task' };
   }
 
   function handleProgress(sessionName, event) {
