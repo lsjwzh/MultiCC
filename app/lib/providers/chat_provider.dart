@@ -593,6 +593,20 @@ class ChatProvider extends ChangeNotifier {
           break;
         }
 
+      case 'user_input_resolved':
+        {
+          // 另一窗口消费了 wait_user：清掉本窗口的提示框（幂等：requestId 不匹配
+          // 表示本窗口已先消费，no-op）。
+          final requestId =
+              (evt.payload as Map<String, dynamic>)['requestId']?.toString();
+          if (_pendingUserInput != null &&
+              _pendingUserInput!.requestId == requestId) {
+            _pendingUserInput = null;
+            notifyListeners();
+          }
+          break;
+        }
+
       case 'session_queue':
         {
           final p = evt.payload as Map<String, dynamic>;
