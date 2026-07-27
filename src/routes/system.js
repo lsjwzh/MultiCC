@@ -118,15 +118,30 @@ async function resolveVersionInfo(deps) {
 }
 
 function createServerInfoHandler(deps) {
+  // Boot time is derived from the process's own uptime rather than a
+  // `Date.now()` captured at require time. A graceful restart replaces the
+  // process, so uptime can never report the previous run's start, and there is
+  // no second copy of the fact that could drift out of sync with reality.
+  const uptimeSeconds = typeof deps.uptimeSeconds === 'function' ? deps.uptimeSeconds : () => process.uptime();
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
   return function serverInfoHandler(req, res) {
     const ip = selectLanAddress(deps.networkInterfaces());
     const port = deps.getPort();
+    // Negative uptime is impossible, but a clamped floor is cheaper than a
+    // startedAt in the future if a platform ever reports one.
+    const uptimeMs = Math.max(0, Math.round(uptimeSeconds() * 1000));
     res.json({
       ip,
       port,
       proto: 'http',
       url: `http://${ip}:${port}`,
       authRequired: Boolean(deps.authRequired()),
+      // Both are sent on purpose. startedAt is the readable fact; uptimeMs is
+      // the one a browser can use without inheriting this host's clock — a VM
+      // whose clock is hours off would otherwise render a start time that
+      // looks like a bug.
+      startedAt: new Date(now() - uptimeMs).toISOString(),
+      uptimeMs,
     });
   };
 }

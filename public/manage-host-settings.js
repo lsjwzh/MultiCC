@@ -574,11 +574,81 @@
   }
 
 
+  /* ── Service uptime read-out (sidebar, under the version) ── */
+  //
+  // Lives beside restartMulticcService() on purpose: the button that ends a
+  // run and the line that says when the current run began are the same fact
+  // seen from two sides.
+
+  // Padded, unlike loadApkInfo's variant: this one sits in a monospace column
+  // under the version, where a 1-digit month would break the alignment.
+  function fmtBootClock(date) {
+    const pad = value => String(value).padStart(2, '0');
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  // Coarse by design — two units at most. Nobody reads "2h 15m 6s" off a
+  // sidebar, and a seconds field would demand a 1s repaint to stay honest.
+  function fmtUptime(ms) {
+    const minutes = Math.floor(ms / 60000);
+    if (minutes < 1) return '<1m';
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor((minutes % 1440) / 60);
+    if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    return `${minutes}m`;
+  }
+
+  // {uptimeMs, at} — the server's uptime and the local instant we learned it.
+  // Everything on screen is derived from this pair rather than from the
+  // server's wall clock, so a host whose clock is off does not render a start
+  // time in the future.
+  let _bootReading = null;
+
+  function paintBootTime() {
+    const timeEl = document.getElementById('boot-time');
+    const upEl = document.getElementById('boot-uptime');
+    if (!timeEl || !_bootReading) return;
+    const uptimeMs = _bootReading.uptimeMs + (Date.now() - _bootReading.at);
+    const started = new Date(Date.now() - uptimeMs);
+    timeEl.textContent = fmtBootClock(started);
+    // The short clock drops the year; the tooltip carries the full instant.
+    timeEl.title = started.toLocaleString();
+    if (upEl) {
+      upEl.textContent = typeof global.t === 'function'
+        ? global.t('uptimeDuration', { duration: fmtUptime(uptimeMs) })
+        : fmtUptime(uptimeMs);
+    }
+  }
+
+  async function loadBootTime() {
+    if (!document.getElementById('boot-time')) return;
+    try {
+      const res = await fetch('/api/server-info' + tokenQS('?'));
+      const data = await res.json();
+      if (!res.ok || !Number.isFinite(data.uptimeMs)) return;   // leave the placeholder
+      _bootReading = { uptimeMs: data.uptimeMs, at: Date.now() };
+      paintBootTime();
+    } catch (_) {
+      // An unreachable server has bigger tells than a dash in the sidebar.
+    }
+  }
+
   function initialize() {
     loadPushDiagnostics();
     loadNotifySettings();
     loadTunnelSettings();
     loadApkInfo();
+    loadBootTime();
+    // Repaint from the cached reading — the start instant does not change
+    // while the process lives, so this costs no requests.
+    setInterval(paintBootTime, 60000);
+    // A restart is the one thing that does change it, and the user triggers it
+    // by hand. Re-reading whenever the tab comes back is enough to catch that
+    // without polling a value that is constant the rest of the time.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) loadBootTime();
+    });
   }
 
   Object.assign(global, {
@@ -596,6 +666,7 @@
     restartMulticcService,
     loadIpv6Status,
     applyFunnel,
+    loadBootTime,
   });
   global.MultiCCManageHostSettings = Object.freeze({ initialize });
 })(window);
