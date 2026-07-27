@@ -10,15 +10,23 @@ class SessionQueueItem {
   final int position;
   final String text;
 
+  /// The scheduler已把这条标为「插队优先」(schedule.priorityEntryId)。服务端在
+  /// insert_queued 成功后回填；UI 据此把插入按钮换成不可再点的「执行中」。
+  final bool priority;
+
   const SessionQueueItem({
     required this.entryId,
     this.taskId,
     required this.state,
     required this.position,
     required this.text,
+    this.priority = false,
   });
 
   bool get canCancel => entryId.isNotEmpty && state == 'pending';
+
+  /// 只有还没被调度器领取的 pending 条目能插队；已经是 priority 的不必再插一次。
+  bool get canInsert => canCancel && !priority;
 
   factory SessionQueueItem.fromJson(
     Map<String, dynamic> json, {
@@ -30,6 +38,7 @@ class SessionQueueItem {
       state: (json['state'] ?? 'pending').toString().toLowerCase(),
       position: _positiveInt(json['position']) ?? fallbackPosition,
       text: (json['text'] ?? '').toString(),
+      priority: json['priority'] == true,
     );
   }
 }

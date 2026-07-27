@@ -234,12 +234,17 @@ class SessionQueuePanel extends StatefulWidget {
   final Future<void> Function(String action) onAction;
   final Future<void> Function(String entryId) onCancelQueued;
 
+  /// 「立刻插入」：停掉当前回复并让这条暂存消息马上执行（web 端同名按钮）。
+  /// 可选，省略时列表项只显示取消按钮（旧行为）。
+  final Future<void> Function(String entryId)? onInsertQueued;
+
   const SessionQueuePanel({
     super.key,
     required this.queue,
     required this.enabled,
     required this.onAction,
     required this.onCancelQueued,
+    this.onInsertQueued,
   });
 
   @override
@@ -424,6 +429,37 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
                                   ),
                                 ),
                               ),
+                              // 插队优先的那条已经在等着抢占执行槽，按钮换成
+                              // 不可点的状态标记，避免用户重复触发一次中断。
+                              if (item.priority)
+                                Padding(
+                                  key: Key('queued-running-${item.entryId}'),
+                                  padding: const EdgeInsets.only(left: 6),
+                                  child: Text(
+                                    t('queuedMessageRunning'),
+                                    style: const TextStyle(
+                                      color: Color(0xFFd29922),
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                )
+                              else if (item.canInsert &&
+                                  widget.onInsertQueued != null)
+                                IconButton(
+                                  key: Key('insert-queued-${item.entryId}'),
+                                  tooltip: t('insertQueuedMessage'),
+                                  visualDensity: VisualDensity.compact,
+                                  iconSize: 17,
+                                  color: const Color(0xFFd29922),
+                                  onPressed: _busy || !widget.enabled
+                                      ? null
+                                      : () => _run(
+                                          () => widget.onInsertQueued!(
+                                            item.entryId,
+                                          ),
+                                        ),
+                                  icon: const Icon(Icons.bolt_rounded),
+                                ),
                               if (item.canCancel)
                                 IconButton(
                                   key: Key('cancel-queued-${item.entryId}'),
