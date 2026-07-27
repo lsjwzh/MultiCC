@@ -74,5 +74,9 @@ test('migration debt can only shrink and stale policy entries fail closed', () =
 test('the current tracked tree satisfies the ratcheted budget', () => {
   const result = evaluateLineBudgets(trackedSourceEntries());
   assert.deepEqual(result.violations, []);
-  assert.deepEqual(result.debts, []);
+  // Debt is allowed only where MIGRATION_DEBT declares it. Anything else over
+  // budget is a violation above, so this pins the declared set — a new god file
+  // cannot be quietly parked here, and retiring server.js's entry (by splitting
+  // it back under 3000) means emptying this list in the same commit.
+  assert.deepEqual(result.debts.map(entry => entry.file), ['server.js']);
 });

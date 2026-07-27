@@ -16,7 +16,21 @@ const SOURCE_EXTENSIONS = new Set([
 // Temporary migration debt is deliberately explicit and ratcheted. The
 // ceiling must be reduced in the same commit whenever a split makes the file
 // smaller. These entries are not permanent exceptions to the 3k target.
-const MIGRATION_DEBT = Object.freeze({});
+//
+// server.js was extracted from 4577 lines down to 2932 (310d1ad), then drifted
+// back over 3000 through ordinary feature work. The ceiling is pinned at the
+// current count so the file cannot grow further without someone deciding to
+// raise this number — growth reports `migration_debt_regressed`, naming the
+// commit that did it. `byteCeiling` is deliberately omitted: the ratchet is
+// exact, so pinning bytes too would fail on every character-level edit while
+// the line count is what this budget is actually defending.
+const MIGRATION_DEBT = Object.freeze({
+  'server.js': Object.freeze({
+    ceiling: 3002,
+    target: 3000,
+    reason: 'post-extraction drift; next split retires this entry',
+  }),
+});
 
 // Reviewed third-party/generated assets are not first-party maintainability
 // units. Keep this whitelist exact; directories must never be broadly ignored.
