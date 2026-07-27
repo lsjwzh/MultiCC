@@ -7,18 +7,79 @@ import '../i18n.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 
+/// Everything the diff sheet has learned, kept outside the widget so that
+/// minimising to the floating button does not throw it away. Restoring is then
+/// instant and silent: no refetch, same file selected, same AI summaries.
+class _DiffDockData {
+  _DiffDockData(this.sessionId);
+
+  final String sessionId;
+  Map<String, dynamic>? data;
+  String? error;
+  bool loading = true;
+  bool filesExpanded = true;
+  int visibleCount = 20;
+
+  /// The selected file entry (a Map from the files list); null = list view.
+  Map<String, dynamic>? selectedFile;
+
+  /// path -> AI summary, shared across detail navigations.
+  final Map<String, String> summaryCache = {};
+
+  /// Sheet height as a fraction of the screen. Dragged from the grab handle.
+  double heightFactor = _sheetDefaultFactor;
+
+  int get fileCount => (data?['files'] as List?)?.length ?? 0;
+}
+
+const double _sheetMinFactor = 0.35;
+const double _sheetMaxFactor = 0.94;
+const double _sheetDefaultFactor = 0.72;
+const double _dockIconSize = 52;
+const double _dockIconMargin = 12;
+
+/// One dock at a time: on a phone two floating diff buttons would be clutter,
+/// and the sheet is modal anyway.
+_DiffDockData? _dock;
+OverlayEntry? _dockEntry;
+
+void _removeDockIcon() {
+  _dockEntry?.remove();
+  _dockEntry = null;
+}
+
 /// Show the worktree diff for a session against its base branch. Works for any
 /// session with changes (no conflict required) - mirrors the web "View Diff".
 /// Codex-style: collapsible summary header + file list + per-file detail with
 /// an AI change summary panel.
+///
+/// Presented as a resizable bottom sheet rather than a full-screen dialog, so
+/// the screen behind it stays readable, and it can be closed outright or
+/// collapsed to a draggable floating button.
 Future<void> showSessionDiffDialog(
   BuildContext context, {
   required SettingsService settings,
   required String sessionId,
 }) {
-  return showDialog<void>(
+  _removeDockIcon();
+  // Reopening the same session resumes where it left off; a different session
+  // starts clean rather than showing the previous one's files.
+  if (_dock == null || _dock!.sessionId != sessionId) _dock = _DiffDockData(sessionId);
+  return showGeneralDialog<void>(
     context: context,
-    builder: (_) => _SessionDiffDialog(settings: settings, sessionId: sessionId),
+    barrierDismissible: true,
+    barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+    // Light barrier on purpose: the sheet covers part of the screen, and what
+    // it does not cover should still be legible.
+    barrierColor: const Color(0x59000000),
+    transitionDuration: const Duration(milliseconds: 180),
+    pageBuilder: (_, __, ___) =>
+        _SessionDiffDialog(settings: settings, sessionId: sessionId),
+    transitionBuilder: (_, anim, __, child) => SlideTransition(
+      position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+          .animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+      child: child,
+    ),
   );
 }
 
@@ -32,23 +93,48 @@ class _SessionDiffDialog extends StatefulWidget {
 }
 
 class _SessionDiffDialogState extends State<_SessionDiffDialog> {
-  Map<String, dynamic>? _data;
-  String? _error;
-  bool _loading = true;
-  bool _filesExpanded = true;
-  int _visibleCount = 20;
+  // All view state lives in the dock so it survives a minimise/restore round
+  // trip; these accessors keep the body below reading as it did.
+  _DiffDockData get _d => _dock ??= _DiffDockData(widget.sessionId);
 
-  // Detail view: the selected file entry (a Map from the files list), null =
-  // list view.
-  Map<String, dynamic>? _selectedFile;
-
-  // Shared AI summary cache across detail navigations: path -> summary text.
-  final Map<String, String> _summaryCache = {};
+  Map<String, dynamic>? get _data => _d.data;
+  String? get _error => _d.error;
+  bool get _loading => _d.loading;
+  bool get _filesExpanded => _d.filesExpanded;
+  int get _visibleCount => _d.visibleCount;
+  Map<String, dynamic>? get _selectedFile => _d.selectedFile;
+  Map<String, String> get _summaryCache => _d.summaryCache;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    // Restoring from the floating button must not refetch what we already have.
+    if (_d.data == null && _d.error == null) {
+      _load();
+    } else {
+      _d.loading = false;
+    }
+  }
+
+  /// Collapse to the floating button. The overlay is resolved before popping,
+  /// because after the pop this State's context is gone.
+  void _minimize() {
+    final overlay = Navigator.of(context, rootNavigator: true).overlay;
+    final settings = widget.settings;
+    final sessionId = widget.sessionId;
+    Navigator.of(context).pop();
+    if (overlay == null || !overlay.mounted) return;
+    _removeDockIcon();
+    _dockEntry = OverlayEntry(
+      builder: (_) => _DiffDockIcon(settings: settings, sessionId: sessionId),
+    );
+    overlay.insert(_dockEntry!);
+  }
+
+  void _close() {
+    _removeDockIcon();
+    _dock = null;
+    Navigator.of(context).pop();
   }
 
   Future<void> _load() async {
@@ -58,20 +144,20 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
       if (!mounted) return;
       if (res['ok'] == false) {
         setState(() {
-          _error = res['error']?.toString() ?? '加载失败';
-          _loading = false;
+          _d.error = res['error']?.toString() ?? '加载失败';
+          _d.loading = false;
         });
       } else {
         setState(() {
-          _data = res;
-          _loading = false;
+          _d.data = res;
+          _d.loading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = '$e';
-        _loading = false;
+        _d.error = '$e';
+        _d.loading = false;
       });
     }
   }
@@ -95,20 +181,55 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: const Color(0xFF070809),
-      insetPadding: const EdgeInsets.all(12),
-      child: SizedBox(
-        width: 1000,
-        height: 720,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (_selectedFile == null) _listHeader() else _detailHeader(),
-            Expanded(
-              child: _selectedFile == null ? _listBody() : _detailBody(),
-            ),
-          ],
+    final screen = MediaQuery.of(context).size;
+    final height = screen.height * _d.heightFactor;
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Material(
+        color: const Color(0xFF070809),
+        // Wide screens keep a card-like panel; phones get a full-width sheet.
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        clipBehavior: Clip.antiAlias,
+        child: SizedBox(
+          width: screen.width > 1040 ? 1000 : screen.width,
+          height: height,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _grabHandle(screen.height),
+              if (_selectedFile == null) _listHeader() else _detailHeader(),
+              Expanded(
+                child: _selectedFile == null ? _listBody() : _detailBody(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Drag to trade sheet height against how much of the screen behind stays
+  /// visible. Bounded so it can neither collapse to nothing nor swallow the
+  /// whole screen.
+  Widget _grabHandle(double screenHeight) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: (e) {
+        setState(() {
+          _d.heightFactor = (_d.heightFactor - e.delta.dy / screenHeight)
+              .clamp(_sheetMinFactor, _sheetMaxFactor);
+        });
+      },
+      child: Container(
+        height: 22,
+        alignment: Alignment.center,
+        child: Container(
+          width: 38,
+          height: 4,
+          decoration: BoxDecoration(
+            color: const Color(0xFF2b3038),
+            borderRadius: BorderRadius.circular(2),
+          ),
         ),
       ),
     );
@@ -116,9 +237,27 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
 
   // -- List view ----------------------------------------------------------
 
+  /// Minimise + close, in that order, shared by both headers.
+  List<Widget> _shellButtons() {
+    return [
+      IconButton(
+        onPressed: _minimize,
+        icon: const Icon(Icons.remove, color: Color(0xFF8a909b), size: 20),
+        tooltip: t('diffMinimize'),
+        visualDensity: VisualDensity.compact,
+      ),
+      IconButton(
+        onPressed: _close,
+        icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
+        tooltip: t('diffClose'),
+        visualDensity: VisualDensity.compact,
+      ),
+    ];
+  }
+
   Widget _listHeader() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
+      padding: const EdgeInsets.fromLTRB(16, 2, 4, 10),
       child: Row(
         children: [
           Expanded(
@@ -142,10 +281,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
               ],
             ),
           ),
-          IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
-          ),
+          ..._shellButtons(),
         ],
       ),
     );
@@ -195,7 +331,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     final add = (d['totalAdditions'] as num?)?.toInt() ?? 0;
     final del = (d['totalDeletions'] as num?)?.toInt() ?? 0;
     return InkWell(
-      onTap: () => setState(() => _filesExpanded = !_filesExpanded),
+      onTap: () => setState(() => _d.filesExpanded = !_d.filesExpanded),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: const BoxDecoration(
@@ -268,7 +404,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
       itemBuilder: (ctx, i) {
         if (i == visible.length) {
           return InkWell(
-            onTap: () => setState(() => _visibleCount = files.length),
+            onTap: () => setState(() => _d.visibleCount = files.length),
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Center(
@@ -293,7 +429,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     final del = (f['deletions'] as num?)?.toInt() ?? 0;
     final binary = f['binary'] == true;
     return InkWell(
-      onTap: () => setState(() => _selectedFile = f),
+      onTap: () => setState(() => _d.selectedFile = f),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         child: Row(
@@ -428,11 +564,11 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
     final add = (f['additions'] as num?)?.toInt() ?? 0;
     final del = (f['deletions'] as num?)?.toInt() ?? 0;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 10),
+      padding: const EdgeInsets.fromLTRB(8, 0, 4, 10),
       child: Row(
         children: [
           IconButton(
-            onPressed: () => setState(() => _selectedFile = null),
+            onPressed: () => setState(() => _d.selectedFile = null),
             icon: const Icon(Icons.arrow_back, color: Color(0xFF8a909b), size: 20),
             tooltip: t('diffBackToList'),
           ),
@@ -481,10 +617,7 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
               ],
             ),
           ),
-          IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close, color: Color(0xFF8a909b)),
-          ),
+          ..._shellButtons(),
         ],
       ),
     );
@@ -808,6 +941,134 @@ class _FileDiffViewState extends State<_FileDiffView> {
             fontFamily: 'monospace',
             fontSize: 11,
             height: 1.5,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Where the floating button was left, so dragging it out of the way survives
+/// a restore + minimise cycle. Null until the first layout picks a default.
+Offset? _dockIconPos;
+
+/// The collapsed form of the diff sheet: a small draggable circle that snaps to
+/// whichever side is nearer, badged with the number of changed files. Tapping it
+/// reopens the sheet exactly where it was left.
+class _DiffDockIcon extends StatefulWidget {
+  const _DiffDockIcon({required this.settings, required this.sessionId});
+
+  final SettingsService settings;
+  final String sessionId;
+
+  @override
+  State<_DiffDockIcon> createState() => _DiffDockIconState();
+}
+
+class _DiffDockIconState extends State<_DiffDockIcon> {
+  bool _dragging = false;
+
+  /// Keep the button fully on screen even after a rotation or a keyboard.
+  Offset _clamp(Offset p, Size screen, EdgeInsets pad) {
+    final maxX = screen.width - _dockIconSize - _dockIconMargin;
+    final minY = pad.top + _dockIconMargin;
+    final maxY = screen.height - pad.bottom - _dockIconSize - _dockIconMargin;
+    return Offset(
+      p.dx.clamp(_dockIconMargin, maxX < _dockIconMargin ? _dockIconMargin : maxX),
+      p.dy.clamp(minY, maxY < minY ? minY : maxY),
+    );
+  }
+
+  void _restore() {
+    final settings = widget.settings;
+    final sessionId = widget.sessionId;
+    _removeDockIcon();
+    showSessionDiffDialog(context, settings: settings, sessionId: sessionId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final screen = media.size;
+    final pad = media.padding;
+    final pos = _clamp(
+      _dockIconPos ??
+          Offset(screen.width - _dockIconSize - _dockIconMargin,
+              screen.height * 0.58),
+      screen,
+      pad,
+    );
+    final count = _dock?.fileCount ?? 0;
+
+    return Positioned(
+      left: pos.dx,
+      top: pos.dy,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => setState(() => _dragging = true),
+        onPanUpdate: (e) => setState(() {
+          _dockIconPos = _clamp(pos + e.delta, screen, pad);
+        }),
+        onPanEnd: (_) => setState(() {
+          _dragging = false;
+          // Snap to the nearer edge so it always parks out of the way.
+          final left = pos.dx + _dockIconSize / 2 < screen.width / 2;
+          _dockIconPos = Offset(
+            left ? _dockIconMargin : screen.width - _dockIconSize - _dockIconMargin,
+            (_dockIconPos ?? pos).dy,
+          );
+        }),
+        onTap: _restore,
+        child: Tooltip(
+          message: t('diffRestore'),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Container(
+                width: _dockIconSize,
+                height: _dockIconSize,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1f6feb),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF388bfd)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xAA000000),
+                      blurRadius: _dragging ? 26 : 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                alignment: Alignment.center,
+                child: const Icon(Icons.difference_outlined,
+                    color: Colors.white, size: 24),
+              ),
+              if (count > 0)
+                Positioned(
+                  top: -4,
+                  right: -4,
+                  child: Container(
+                    constraints: const BoxConstraints(minWidth: 20),
+                    height: 20,
+                    padding: const EdgeInsets.symmetric(horizontal: 5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0d1117),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFF388bfd)),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      count > 99 ? '99+' : '$count',
+                      style: const TextStyle(
+                        color: Color(0xFFcfe3ff),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),

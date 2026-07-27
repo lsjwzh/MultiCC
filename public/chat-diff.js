@@ -19,6 +19,23 @@
 
   var MAX_PATCH_CHARS = 24000;       // truncate patch before sending to aux
   var MAX_RENDERED_FILES_FIRST = 20; // first paint of file list
+
+  // ── Dock geometry ──
+  // The panel is docked, not centred, so it needs bounds rather than a size.
+  var DOCK_MIN_W = 320;              // below this the file rows stop being readable
+  var DOCK_MAX_W = 900;
+  var DOCK_DEFAULT_W = 460;
+  var DOCK_MIN_H_RATIO = 0.3;        // narrow screens: bottom-sheet height
+  var DOCK_MAX_H_RATIO = 0.92;
+  var DOCK_DEFAULT_H_RATIO = 0.68;
+  var FAB_SIZE = 44;
+  var FAB_MARGIN = 12;
+  // Low enough to clear the header, high enough to clear the composer — the two
+  // places a floating button would actually be in the way.
+  var FAB_DEFAULT_TOP_RATIO = 0.6;
+  var FAB_DRAG_SLOP = 5;             // px before a press counts as a drag, not a tap
+  var DOCK_STORE_KEY = 'multicc.diffDock';
+  var NARROW_QUERY = '(max-width: 640px)';
   var STATUS_COLOR = {
     M: '#58a6ff', A: '#3fb950', D: '#f85149', R: '#bc8cff',
     T: '#d29922', C: '#d29922',
@@ -85,7 +102,94 @@
     activeSummary: null,       // { id, path, abortController }
     collapsed: false,          // summary bar collapse state
     renderedAll: false,        // file list: have we rendered all rows?
+    minimized: false,          // panel collapsed into the floating button
+    fileCount: 0,              // badge on the floating button
   };
+
+  // ── Dock geometry, persisted for the tab ──
+  // sessionStorage, not localStorage: "keep my layout while I work" is a
+  // property of this sitting, and a stale minimised flag from last week
+  // reappearing on a fresh visit would be a bug, not a feature.
+  var dock = {
+    width: DOCK_DEFAULT_W,
+    heightRatio: DOCK_DEFAULT_H_RATIO,
+    fabSide: 'right',
+    fabTopRatio: FAB_DEFAULT_TOP_RATIO,
+    minimized: false,
+    sessionId: '',
+  };
+
+  function clamp(value, lo, hi) {
+    return value < lo ? lo : (value > hi ? hi : value);
+  }
+  function isNarrow() {
+    try {
+      if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+        return !!window.matchMedia(NARROW_QUERY).matches;
+      }
+    } catch (_) {}
+    return false;
+  }
+  function viewportW() { return (typeof window !== 'undefined' && window.innerWidth) || 1024; }
+  function viewportH() { return (typeof window !== 'undefined' && window.innerHeight) || 768; }
+
+  function loadDock() {
+    try {
+      var raw = window.sessionStorage && window.sessionStorage.getItem(DOCK_STORE_KEY);
+      if (!raw) return;
+      var saved = JSON.parse(raw);
+      if (!saved || typeof saved !== 'object') return;
+      if (Number.isFinite(saved.width)) dock.width = clamp(saved.width, DOCK_MIN_W, DOCK_MAX_W);
+      if (Number.isFinite(saved.heightRatio)) dock.heightRatio = clamp(saved.heightRatio, DOCK_MIN_H_RATIO, DOCK_MAX_H_RATIO);
+      if (saved.fabSide === 'left' || saved.fabSide === 'right') dock.fabSide = saved.fabSide;
+      if (Number.isFinite(saved.fabTopRatio)) dock.fabTopRatio = clamp(saved.fabTopRatio, 0, 1);
+      dock.minimized = saved.minimized === true;
+      dock.sessionId = typeof saved.sessionId === 'string' ? saved.sessionId : '';
+    } catch (_) {
+      // Private-mode or corrupt entry: defaults are perfectly usable.
+    }
+  }
+  function saveDock() {
+    try {
+      if (!window.sessionStorage) return;
+      window.sessionStorage.setItem(DOCK_STORE_KEY, JSON.stringify(dock));
+    } catch (_) {}
+  }
+
+  function applyGeometry() {
+    var root = document.documentElement;
+    if (!root || !root.style || typeof root.style.setProperty !== 'function') return;
+    root.style.setProperty('--diff-dock-w', dock.width + 'px');
+    root.style.setProperty('--diff-dock-h', Math.round(dock.heightRatio * viewportH()) + 'px');
+    // Start below the header so the model picker / CLI buttons on the right of
+    // the top bar stay reachable while a diff is open. Measured, not hardcoded:
+    // the header wraps to two rows on narrow desktops.
+    var header = document.getElementById('header');
+    var headH = header && header.offsetHeight ? header.offsetHeight : 0;
+    root.style.setProperty('--diff-dock-top', headH + 'px');
+  }
+
+  function placeFab() {
+    if (!dom.fab || !dom.fab.style) return;
+    var maxTop = Math.max(FAB_MARGIN, viewportH() - FAB_SIZE - FAB_MARGIN);
+    var top = clamp(Math.round(dock.fabTopRatio * (viewportH() - FAB_SIZE)), FAB_MARGIN, maxTop);
+    var left = dock.fabSide === 'left'
+      ? FAB_MARGIN
+      : Math.max(FAB_MARGIN, viewportW() - FAB_SIZE - FAB_MARGIN);
+    dom.fab.style.left = left + 'px';
+    dom.fab.style.top = top + 'px';
+    dom.fab.style.right = 'auto';
+    dom.fab.style.bottom = 'auto';
+  }
+
+  function updateFabCount() {
+    if (!dom.fabCount) return;
+    var n = state.fileCount || 0;
+    dom.fabCount.textContent = n > 0 ? (n > 99 ? '99+' : String(n)) : '';
+    if (dom.fab) {
+      dom.fab.title = n > 0 ? ('展开 Diff 面板（' + n + ' 个文件）') : '展开 Diff 面板';
+    }
+  }
 
   // ── DOM refs (populated on first open) ──
   var dom = {};
@@ -111,19 +215,153 @@
     dom.aiPanel = document.getElementById('diff-ai-panel');
     dom.aiContent = document.getElementById('diff-ai-content');
     dom.patchContainer = document.getElementById('diff-patch');
+    dom.minBtn = document.getElementById('diff-min-btn');
+    dom.resizeHandle = document.getElementById('diff-resize-handle');
+    dom.fab = document.getElementById('diff-dock-fab');
+    dom.fabCount = document.getElementById('diff-dock-count');
 
     if (dom.closeBtn) dom.closeBtn.addEventListener('click', function (e) { e.preventDefault(); close(); });
+    if (dom.minBtn) dom.minBtn.addEventListener('click', function (e) { e.preventDefault(); minimize(); });
     if (dom.backBtn) dom.backBtn.addEventListener('click', function (e) { e.preventDefault(); backToList(); });
     if (dom.summaryBar) dom.summaryBar.addEventListener('click', toggleCollapse);
-    if (dom.modal) {
-      dom.modal.addEventListener('click', function (e) {
-        if (e.target === dom.modal) close();
-      });
-    }
+    // No backdrop any more: the dock deliberately leaves the chat clickable, so
+    // there is no "click outside to dismiss" surface to bind.
+    bindResize();
+    bindFab();
+    applyGeometry();
+    placeFab();
     document.addEventListener('keydown', function (e) {
       if (!dom.modal || !dom.modal.classList.contains('open')) return;
       if (e.key === 'Escape') { e.preventDefault(); close(); }
     });
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      // Both the sheet height and the button position are stored as ratios, so
+      // a rotation or window resize re-derives them instead of stranding either
+      // one off-screen.
+      window.addEventListener('resize', function () { applyGeometry(); placeFab(); });
+    }
+  }
+
+  // ── Resize (panel width on desktop, sheet height on narrow screens) ──
+  function bindResize() {
+    var handle = dom.resizeHandle;
+    if (!handle || typeof handle.addEventListener !== 'function') return;
+    var dragging = false;
+    handle.addEventListener('pointerdown', function (e) {
+      dragging = true;
+      if (e.preventDefault) e.preventDefault();
+      if (handle.setPointerCapture && e.pointerId != null) {
+        try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+      if (handle.classList) handle.classList.add('dragging');
+    });
+    handle.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      if (isNarrow()) {
+        var h = viewportH() - (e.clientY || 0);
+        dock.heightRatio = clamp(h / viewportH(), DOCK_MIN_H_RATIO, DOCK_MAX_H_RATIO);
+      } else {
+        var w = viewportW() - (e.clientX || 0);
+        dock.width = clamp(Math.round(w), DOCK_MIN_W, Math.min(DOCK_MAX_W, Math.round(viewportW() * 0.92)));
+      }
+      applyGeometry();
+    });
+    function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      if (handle.releasePointerCapture && e && e.pointerId != null) {
+        try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+      }
+      if (handle.classList) handle.classList.remove('dragging');
+      saveDock();
+    }
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+  }
+
+  // ── Floating button: drag to any edge, tap to restore ──
+  function bindFab() {
+    var fab = dom.fab;
+    if (!fab || typeof fab.addEventListener !== 'function') return;
+    var pressing = false, moved = false, startX = 0, startY = 0, offX = 0, offY = 0;
+
+    fab.addEventListener('pointerdown', function (e) {
+      pressing = true;
+      moved = false;
+      startX = e.clientX || 0;
+      startY = e.clientY || 0;
+      var left = parseFloat(fab.style.left) || 0;
+      var top = parseFloat(fab.style.top) || 0;
+      offX = startX - left;
+      offY = startY - top;
+      if (fab.setPointerCapture && e.pointerId != null) {
+        try { fab.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+    });
+    fab.addEventListener('pointermove', function (e) {
+      if (!pressing) return;
+      var x = e.clientX || 0, y = e.clientY || 0;
+      if (!moved && Math.abs(x - startX) + Math.abs(y - startY) < FAB_DRAG_SLOP) return;
+      moved = true;
+      if (fab.classList) fab.classList.add('dragging');
+      fab.style.left = clamp(x - offX, FAB_MARGIN, Math.max(FAB_MARGIN, viewportW() - FAB_SIZE - FAB_MARGIN)) + 'px';
+      fab.style.top = clamp(y - offY, FAB_MARGIN, Math.max(FAB_MARGIN, viewportH() - FAB_SIZE - FAB_MARGIN)) + 'px';
+    });
+    function endPress(e) {
+      if (!pressing) return;
+      pressing = false;
+      if (fab.releasePointerCapture && e && e.pointerId != null) {
+        try { fab.releasePointerCapture(e.pointerId); } catch (_) {}
+      }
+      if (fab.classList) fab.classList.remove('dragging');
+      if (!moved) { restore(); return; }
+      // Snap to whichever vertical edge it was dropped nearest, so it never
+      // floats over the middle of the conversation.
+      var left = parseFloat(fab.style.left) || 0;
+      var top = parseFloat(fab.style.top) || 0;
+      dock.fabSide = (left + FAB_SIZE / 2) < viewportW() / 2 ? 'left' : 'right';
+      dock.fabTopRatio = clamp(top / Math.max(1, viewportH() - FAB_SIZE), 0, 1);
+      placeFab();
+      saveDock();
+    }
+    fab.addEventListener('pointerup', endPress);
+    fab.addEventListener('pointercancel', endPress);
+  }
+
+  // ── Minimise / restore ──
+  function showPanel() {
+    if (!dom.modal) return;
+    state.minimized = false;
+    dock.minimized = false;
+    dom.modal.classList.add('open');
+    if (dom.fab) dom.fab.hidden = true;
+    applyGeometry();
+    saveDock();
+  }
+
+  function minimize() {
+    ensureDom();
+    if (!dom.modal || !dom.fab) return;
+    state.minimized = true;
+    dock.minimized = true;
+    dock.sessionId = state.sessionId || dock.sessionId || '';
+    dom.modal.classList.remove('open');
+    dom.fab.hidden = false;
+    updateFabCount();
+    placeFab();
+    saveDock();
+    // The in-flight AI summary is deliberately left running: minimising is
+    // "get out of my way", not "cancel my work", and the result lands in the
+    // cache for the restore.
+  }
+
+  function restore() {
+    ensureDom();
+    if (!dom.modal) return;
+    // Reopened after a page reload, when only the button survived: fetch the
+    // session's diff again rather than showing an empty shell.
+    if (!state.sessionId && dock.sessionId) { open(dock.sessionId); return; }
+    showPanel();
   }
 
   // ── Public API ──
@@ -150,12 +388,15 @@
     state.listFetchedAt = 0;
     state.renderedAll = false;
     state.collapsed = false;
+    state.fileCount = 0;
+    dock.sessionId = sessionId;
 
     dom.title.textContent = 'Diff · ' + sessionId;
     dom.subTitle.textContent = '加载中…';
     showListView();
     renderEmptyFileList('加载中…');
-    dom.modal.classList.add('open');
+    // Opening always means "show it to me", even if it was minimised before.
+    showPanel();
 
     fetchFiles(sessionId);
   }
@@ -166,7 +407,11 @@
     cancelActiveSummary();
     state.requestToken++;
     state.currentPath = null;
+    state.minimized = false;
+    dock.minimized = false;
     dom.modal.classList.remove('open');
+    if (dom.fab) dom.fab.hidden = true;
+    saveDock();
     // Reset to list view so a re-open starts clean.
     showListView();
   }
@@ -230,6 +475,8 @@
     dom.subTitle.textContent = parts.join(' · ');
 
     var files = Array.isArray(data.files) ? data.files : [];
+    state.fileCount = files.length;
+    updateFabCount();
     var totalAdd = data.totalAdditions || 0;
     var totalDel = data.totalDeletions || 0;
     dom.summaryText.textContent = '已更改 ' + files.length + ' 个文件';
@@ -581,6 +828,34 @@
     }
   }
 
+  // ── Boot ──
+  // A reload wipes the panel but not the intent behind it: if the dock was
+  // minimised for this same session, bring the button back so the diff is one
+  // tap away instead of silently gone.
+  function resumeDock() {
+    loadDock();
+    ensureDom();
+    if (!dom.modal) return;
+    applyGeometry();
+    placeFab();
+    var current = '';
+    try { current = new URLSearchParams(location.search).get('session') || ''; } catch (_) {}
+    if (dock.minimized && dock.sessionId && dock.sessionId === current && dom.fab) {
+      state.minimized = true;
+      dom.fab.hidden = false;
+      updateFabCount();
+    }
+  }
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', resumeDock);
+    } else {
+      resumeDock();
+    }
+  }
+
   // ── Expose ──
-  window.chatDiffViewer = Object.freeze({ open: open, close: close });
+  window.chatDiffViewer = Object.freeze({
+    open: open, close: close, minimize: minimize, restore: restore,
+  });
 })();
