@@ -104,6 +104,7 @@ function createOrchestrationRuntime({
     now,
     onEvent: onSchedulerEvent,
     getClassifyState: sessionId => getSessionRecoveryState(sessionId)?.classifyState || null,
+    getPendingUserInput: sessionId => getSessionRecoveryState(sessionId)?.pendingUserInput || null,
     log,
   });
   const pendingBySession = new Map();
@@ -413,6 +414,7 @@ function createOrchestrationRuntime({
     if (payload.type === 'session.work') {
       return {
         ...(payload.options || {}),
+        taskId: payload.taskId || payload.options?.taskId || undefined,
         originContinue: payload.workKind !== 'task',
         deliveryId: item.id,
         // Keep the browser correlation key so chat_msg_meta can replace the

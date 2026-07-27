@@ -308,11 +308,21 @@ function createSessionWorkHost(deps = {}) {
 
   function recoveryState(sessionId) {
     const state = deps.getTaskState(deps.getRecord(sessionId));
+    const pendingInput = deps.pendingUserInput(sessionId);
     return {
       classifyState: state.classifyState,
       startedAt: state.startedAt,
       endedAt: state.endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,
+      // Scheduler recovery needs correlation only; question/options remain in
+      // the task-state owner and are never duplicated into orchestration state.
+      pendingUserInput: pendingInput && pendingInput.resolved !== true
+        ? {
+          requestId: pendingInput.requestId,
+          taskId: pendingInput.taskId || null,
+          resolved: false,
+        }
+        : null,
     };
   }
 

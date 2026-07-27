@@ -78,6 +78,38 @@ test('callback resolution is durable, private and payload-idempotent', async t =
   await runtime.stop();
 });
 
+test('runtime wires canonical pending input into option and free-text answer admission', async t => {
+  for (const [suffix, text] of [
+    ['option', '生产环境'],
+    ['free-text', '请改成下周一发布'],
+  ]) {
+    const requestId = `usrq-${suffix}`;
+    const taskId = `task-${suffix}`;
+    const { runtime, injections } = fixture(t, {
+      getSessionRecoveryState: () => ({
+        // Deliberately stale scheduler/classify projection: the unresolved
+        // request is the correlation proof that must keep the answer viable.
+        classifyState: 'D',
+        pendingUserInput: { requestId, taskId, resolved: false },
+      }),
+    });
+    const admitted = await runtime.sessionScheduler.admit({
+      sessionId: `session-${suffix}`,
+      text,
+      workKind: 'answer',
+      requestId,
+      idempotencyKey: `answer-${suffix}`,
+    });
+    assert.equal(admitted.ok, true, suffix);
+    await runtime.tick();
+    assert.equal(injections.length, 1, suffix);
+    assert.equal(injections[0].text, text, suffix);
+    assert.equal(injections[0].opts.userInputRequestId, requestId, suffix);
+    assert.equal(injections[0].opts.taskId, taskId, suffix);
+    await runtime.stop();
+  }
+});
+
 test('reconstruction closes resolve-to-inject crash and inject-to-ack crash windows', async t => {
   const sharedHistory = new Map();
   const clock = { value: 20_000 };
