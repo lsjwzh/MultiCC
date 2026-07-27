@@ -869,6 +869,7 @@
     currentProviderBaseUrl = String(baseUrl || '');
     renderArkQuota();
     renderZhipuQuota();
+    renderKimiQuota();
   }
 
   function arkQuotaStorageKey() { return 'multicc.ark.quota.v1'; }
@@ -1244,6 +1245,172 @@
     return currentZhipuQuota;
   }
 
+  // ── Kimi / Moonshot (api.moonshot.cn) prepaid balance. A MONEY balance (like
+  // DeepSeek), not a rolling window — sourced from GET <host>/v1/users/me/balance
+  // with the provider's Bearer API key. Like Ark/Zhipu, gated on the active
+  // provider's baseUrl host (moonshot.cn / kimi.com / …) rather than currentCli.
+  // Rendered as #kimi-quota-bar.
+  let currentKimiQuota = null;
+  let kimiQuotaFetchInFlight = false;
+  const KIMI_QUOTA_BACKOFF_MS = 60_000;
+  let kimiQuotaLastErrorAt = 0;
+
+  function kimiHostFromBaseUrl(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string') return '';
+    try { return new URL(baseUrl).hostname.toLowerCase(); } catch (_) { return ''; }
+  }
+
+  function isKimiBaseUrl(baseUrl) {
+    const h = kimiHostFromBaseUrl(baseUrl);
+    if (!h) return false;
+    return /(^|\.)(moonshot|kimi)\.(cn|com|ai)$/.test(h);
+  }
+
+  function kimiQuotaStorageKey() { return 'multicc.kimi.quota.v1'; }
+
+  function loadKimiQuotaFromStorage() {
+    const storage = browserStorage(); if (!storage) return null;
+    try {
+      const raw = storage.getItem(kimiQuotaStorageKey());
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      if (v.fetchedAt && (Date.now() - v.fetchedAt) > 24 * 60 * 60 * 1000) return null;
+      return v;
+    } catch (_) { return null; }
+  }
+
+  function saveKimiQuotaToStorage(data) {
+    const storage = browserStorage(); if (!storage) return;
+    try { storage.setItem(kimiQuotaStorageKey(), JSON.stringify(data)); } catch (_) {}
+  }
+
+  // 2-decimal money display, trailing zeros dropped (49.58894 -> 49.59, 3 -> 3).
+  function fmtKimiNum(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return '';
+    return String(Number(v.toFixed(2)));
+  }
+
+  function formatKimiQuota(value) {
+    if (!value) {
+      return Object.freeze({
+        text: 'Kimi 余量 · ⟳ 刷新',
+        color: '#8b949e',
+        title: '点击从 api.moonshot.cn 拉取预付余额',
+      });
+    }
+    if (value.status === 'not_configured') {
+      return Object.freeze({
+        text: 'Kimi：未配置 provider · ⟳ 刷新',
+        color: '#8b949e',
+        title: '没有 baseUrl 指向 moonshot / kimi 的 provider，无法拉取余额',
+      });
+    }
+    if (value.status !== 'ok' || !Array.isArray(value.sites)) {
+      return Object.freeze({
+        text: 'Kimi：余额暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: value.error || '无法从 api.moonshot.cn 拉取余额',
+      });
+    }
+    const okSites = value.sites.filter((s) => s && s.ok && Number.isFinite(s.available));
+    if (!okSites.length) {
+      return Object.freeze({
+        text: 'Kimi：余额暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: '所有 Kimi 站点的余额端点都未返回有效数据',
+      });
+    }
+    let minAvail = Infinity;
+    const parts = [];
+    const titleLines = [];
+    for (const s of okSites) {
+      if (s.available < minAvail) minAvail = s.available;
+      parts.push(`${s.site} ¥${fmtKimiNum(s.available)}`);
+      let line = `${s.site} (${s.host}): 可用 ¥${fmtKimiNum(s.available)}`;
+      if (Number.isFinite(s.voucher)) line += ` · 券 ¥${fmtKimiNum(s.voucher)}`;
+      if (Number.isFinite(s.cash)) line += ` · 现金 ¥${fmtKimiNum(s.cash)}`;
+      titleLines.push(line);
+    }
+    let text = parts.join(' · ');
+    const syncRel = relativeAgo(value.fetchedAt);
+    if (syncRel) text += ` · ${syncRel}`;
+    text += ' ⟳';
+
+    let color = '#58a6ff';
+    if (minAvail <= 0) color = '#f85149';
+    else if (minAvail <= 5) color = '#d29922';
+
+    let title = 'Kimi / Moonshot 预付余额（api.moonshot.cn/v1/users/me/balance）';
+    title += '\n' + titleLines.join('\n');
+    if (syncRel) title += `\n同步于 ${syncRel}`;
+    title += '\n点击 bar 刷新';
+    return Object.freeze({ text, color, title });
+  }
+
+  function renderKimiQuota() {
+    const element = global.document?.getElementById?.('kimi-quota-bar');
+    if (!element) return;
+    if (!isKimiBaseUrl(currentProviderBaseUrl)) {
+      element.style.display = 'none';
+      element.textContent = '';
+      element.onclick = null;
+      return;
+    }
+    const view = formatKimiQuota(currentKimiQuota);
+    if (kimiQuotaFetchInFlight) {
+      element.textContent = 'Kimi：加载中…';
+      element.style.color = '#8b949e';
+      element.title = '正在从 api.moonshot.cn 拉取预付余额...';
+    } else {
+      element.textContent = view?.text || '';
+      element.title = view?.title || '';
+      if (view) element.style.color = view.color;
+    }
+    element.style.display = 'block';
+    element.onclick = () => { refreshKimiQuota(true); };
+  }
+
+  async function refreshKimiQuota(force) {
+    if (!isKimiBaseUrl(currentProviderBaseUrl) && !force) return null;
+    if (kimiQuotaFetchInFlight) return currentKimiQuota;
+    if (!force && kimiQuotaLastErrorAt && (Date.now() - kimiQuotaLastErrorAt) < KIMI_QUOTA_BACKOFF_MS) {
+      return currentKimiQuota;
+    }
+    kimiQuotaFetchInFlight = true;
+    renderKimiQuota();
+    try {
+      const host = kimiHostFromBaseUrl(currentProviderBaseUrl);
+      const url = host ? `/api/kimi/quota?host=${encodeURIComponent(host)}` : '/api/kimi/quota';
+      const res = await fetch(url, { credentials: 'same-origin' });
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!data) data = { status: 'unavailable', error: 'invalid response' };
+      if (data.status === 'ok') {
+        currentKimiQuota = data;
+        saveKimiQuotaToStorage(data);
+        kimiQuotaLastErrorAt = 0;
+      } else {
+        currentKimiQuota = data;
+        kimiQuotaLastErrorAt = Date.now();
+      }
+    } catch (_) {
+      kimiQuotaLastErrorAt = Date.now();
+      currentKimiQuota = { status: 'unavailable', error: 'fetch failed' };
+    } finally {
+      kimiQuotaFetchInFlight = false;
+    }
+    renderKimiQuota();
+    return currentKimiQuota;
+  }
+
+  function restoreKimiQuota() {
+    currentKimiQuota = loadKimiQuotaFromStorage();
+    renderKimiQuota();
+    return currentKimiQuota;
+  }
+
   const api = Object.freeze({
     normalizeFiveHourRateLimit,
     formatFiveHourRateLimit,
@@ -1268,6 +1435,10 @@
     restoreZhipuQuota,
     formatZhipuQuota,
     isZhipuBaseUrl,
+    refreshKimiQuota,
+    restoreKimiQuota,
+    formatKimiQuota,
+    isKimiBaseUrl,
     setCli,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -1281,5 +1452,6 @@
     restoreCodexQuota();
     restoreArkQuota();
     restoreZhipuQuota();
+    restoreKimiQuota();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
