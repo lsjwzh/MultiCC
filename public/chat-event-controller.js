@@ -306,6 +306,12 @@
             ].filter(Boolean).join('\n'));
           }
           break;
+        case 'user_input_resolved':
+          // Another window (or this one) consumed the wait_user prompt. Tear the
+          // card down everywhere — consumeUserInputRequestId is idempotent, so the
+          // answering window's own copy is a harmless no-op.
+          host.consumeUserInputRequestId?.(message.requestId);
+          break;
         case 'session_queue': {
           const items = Array.isArray(message.items) ? message.items : [];
           const visibleItems = message.event === 'queued' && message.queued === false
