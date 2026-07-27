@@ -55,6 +55,9 @@ function createOrchestrationRoutes(rawDeps) {
           maxChecks: body.maxChecks,
           injectPrefix: body.injectPrefix,
           timeoutSec: body.timeoutSec,
+          ...((body.delaySec ?? body.delaySeconds) == null
+            ? {} : { delaySec: body.delaySec ?? body.delaySeconds }),
+          ...(body.reason == null ? {} : { reason: body.reason }),
         });
         const callbackUrl = registration.token
           ? `${req.protocol}://${req.get('host')}/api/wait/${registration.id}/resolve?token=${registration.token}`
@@ -64,6 +67,7 @@ function createOrchestrationRoutes(rawDeps) {
           ...registration,
           callbackUrl,
           status: registration.status || 'pending',
+          dueAt: registration.dueAt || null,
         });
       } catch (error) {
         res.status(400).json({ error: error.message });

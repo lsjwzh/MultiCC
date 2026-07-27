@@ -4,7 +4,7 @@
 const readline = require('readline');
 
 const SERVER_NAME = 'multicc-router';
-const SERVER_VERSION = '1.2.0';
+const SERVER_VERSION = '1.3.0';
 const BASE_URL = String(process.env.MULTICC_BASE_URL || '').replace(/\/+$/, '');
 const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
 
@@ -71,6 +71,59 @@ const USER_INPUT_SCHEMA = {
   },
 };
 
+const EXTERNAL_WAIT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['mode', 'reason'],
+  properties: {
+    mode: {
+      type: 'string',
+      enum: ['callback', 'delay'],
+      description: 'callback waits for an authenticated external POST; delay schedules a durable wake-up.',
+    },
+    reason: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 4096,
+      description: 'Concise reason for waiting. For delay mode this is included in the trusted wake-up envelope.',
+    },
+    timeout_seconds: {
+      type: 'number',
+      minimum: 10,
+      maximum: 604800,
+      description: 'Callback expiry, from 10 seconds through 7 days. Valid only for callback mode.',
+    },
+    delay_seconds: {
+      type: 'number',
+      minimum: 1,
+      maximum: 604800,
+      description: 'Durable delay, from 1 second through 7 days. Required for delay mode.',
+    },
+    idempotency_key: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      pattern: '^[A-Za-z0-9._:-]+$',
+      description: 'Optional stable retry key. Reuse it only for the exact same wait.',
+    },
+  },
+};
+
+const EXTERNAL_WAIT_ID_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['wait_id'],
+  properties: {
+    wait_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      pattern: '^wait-router-[a-f0-9]{24}$',
+      description: 'Wait id returned by wait_for_external_result in this session.',
+    },
+  },
+};
+
 const TOOLS = [
   {
     name: 'wait_for_user_answer',
@@ -92,6 +145,42 @@ const TOOLS = [
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'wait_for_external_result',
+    title: 'Wait for external result',
+    description: 'Register a durable callback or delay for the current session. It never accepts a session id, command, URL to poll, or arbitrary injected message. Callback capability URLs are returned only by the first successful registration; an idempotent replay never rotates or re-exposes the secret.',
+    inputSchema: EXTERNAL_WAIT_SCHEMA,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  },
+  {
+    name: 'get_external_wait',
+    title: 'Get external wait',
+    description: 'Read the bounded status of a durable external wait created by this session.',
+    inputSchema: EXTERNAL_WAIT_ID_SCHEMA,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'cancel_external_wait',
+    title: 'Cancel external wait',
+    description: 'Cancel a pending durable external wait created by this session. Resolved waits cannot be cancelled.',
+    inputSchema: EXTERNAL_WAIT_ID_SCHEMA,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
     },

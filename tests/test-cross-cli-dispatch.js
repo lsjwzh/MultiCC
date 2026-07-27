@@ -302,7 +302,7 @@ async function getAssistantTexts(sid) {
 }
 
 // ── Helper: read ALL message text (any role) from session history ─────
-// 回流 (finalizeDispatch→safeInject) injects the worker's result as a USER
+// 回流 (finalizeDispatch→session delivery) injects the worker's result as a USER
 // message on the dispatcher, so checking only role==='assistant' misses it.
 // This returns every message's text, so 回流 assertions can see it.
 async function getAllHistoryText(sid) {
@@ -959,7 +959,7 @@ function validEffortForCli(cli, effort) {
       fail(testId, `${fromCli}→${toCli} dispatch: target 未产出预期响应`);
     }
 
-    // 回流验证: finalizeDispatch→safeInject(replyTo, "【label 回复】\\n<worker 输出>")
+    // 回流验证: finalizeDispatch→deliverContinuation(replyTo, "【label 回复】\\n<worker 输出>")
     // 把 worker 结果作为 USER 消息注入 dispatcher 并触发其新回合（异步）。
     // 故：查全量 history（不只 assistant），并轮询等待回流回合落盘（单次等待会竞态）。
     let hasHuiliu = false;
