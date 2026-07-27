@@ -816,6 +816,7 @@
   let currentProviderBaseUrl = '';
   let currentArkQuota = null;
   let arkQuotaFetchInFlight = false;
+  let arkInstallInFlight = false;
   const ARK_QUOTA_BACKOFF_MS = 60_000;
   let arkQuotaLastErrorAt = 0;
 
@@ -875,11 +876,11 @@
         title: 'arkcli 未配置火山 SSO 凭证。点击将打开浏览器完成 SSO 登录，登录后再点刷新。',
       });
     }
-    if (value.status === 'cli_missing') {
+    if (value.status === 'needs_install') {
       return Object.freeze({
-        text: '火山方舟：未安装 arkcli · ⟳ 重试',
+        text: '火山方舟：未安装 arkcli · 点击安装',
         color: '#d29922',
-        title: '未找到 arkcli。请运行 npm i -g @volcengine/ark-cli 安装。',
+        title: '未检测到 arkcli。点击将自动执行 npm install -g @volcengine/ark-cli 安装（需本机有 npm）。',
       });
     }
     if (value.status !== 'ok' || !Array.isArray(value.items)) {
@@ -948,7 +949,11 @@
       return;
     }
     const view = formatArkQuota(currentArkQuota);
-    if (arkQuotaFetchInFlight) {
+    if (arkInstallInFlight) {
+      element.textContent = '火山方舟：正在安装 arkcli…';
+      element.style.color = '#8b949e';
+      element.title = '正在执行 npm install -g @volcengine/ark-cli，首次安装可能需要一两分钟...';
+    } else if (arkQuotaFetchInFlight) {
       element.textContent = '火山方舟：加载中…';
       element.style.color = '#8b949e';
       element.title = '正在通过 arkcli 拉取火山方舟套餐额度...';
@@ -959,7 +964,26 @@
     }
     element.style.display = 'block';
     element.onclick = () => {
-      if (currentArkQuota && currentArkQuota.status === 'needs_auth') {
+      if (currentArkQuota && currentArkQuota.status === 'needs_install' && !arkInstallInFlight) {
+        arkInstallInFlight = true;
+        renderArkQuota();
+        fetch('/api/ark/quota/install', { method: 'POST', credentials: 'same-origin' })
+          .then((r) => r.json().catch(() => ({})).then((d) => ({ httpOk: r.ok, body: d || {} })))
+          .then(({ httpOk, body }) => {
+            arkInstallInFlight = false;
+            if (httpOk && body.status === 'ok') {
+              refreshArkQuota(true);
+            } else {
+              currentArkQuota = { status: 'unavailable', error: body.error || '自动安装失败，请手动运行 npm install -g @volcengine/ark-cli' };
+              arkQuotaLastErrorAt = 0;
+              renderArkQuota();
+            }
+          })
+          .catch(() => {
+            arkInstallInFlight = false;
+            renderArkQuota();
+          });
+      } else if (currentArkQuota && currentArkQuota.status === 'needs_auth') {
         fetch('/api/ark/quota/login', { method: 'POST', credentials: 'same-origin' })
           .then(() => setTimeout(() => refreshArkQuota(true), 4000));
       } else {
