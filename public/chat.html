@@ -747,20 +747,26 @@
       background: #0d1117;
       border-top: 1px solid #30363d;
     }
-    #auto-dispatch-label {
+    #auto-dispatch-label,
+    #no-dispatch-label {
       display: flex;
       align-items: center;
       gap: 4px;
       cursor: pointer;
       user-select: none;
     }
-    #auto-dispatch-label input[type="checkbox"] {
+    #auto-dispatch-label input[type="checkbox"],
+    #no-dispatch-label input[type="checkbox"] {
       accent-color: #388bfd;
       width: 13px;
       height: 13px;
       margin: 0;
     }
-    #auto-dispatch-label:hover { color: #c9d1d9; }
+    #auto-dispatch-label:hover,
+    #no-dispatch-label:hover { color: #c9d1d9; }
+    /* Commander-only; `display:flex` above would otherwise beat [hidden]. */
+    #no-dispatch-label[hidden] { display: none; }
+    #no-dispatch-label input:checked + span { color: #d29922; }
 
     /* ── Durable messages staged behind the active turn ── */
     #session-queue-dock {
@@ -2166,6 +2172,11 @@
       <input type="checkbox" id="auto-dispatch-check" /> Auto dispatch to sessions
     </label>
     <button id="subagent-pill" type="button" title="子任务 (subagent) 用的 provider+model，点击修改" style="margin-left:10px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;cursor:pointer;">子任务: <span id="subagent-pill-label">随主</span></button>
+    <!-- Commander only: shown once /api/sessions/:id reports type==='commander'. -->
+    <label id="no-dispatch-label" hidden
+           title="勾选：强制在当前会话内完成，不派发给其它会话；不勾选：请求尽可能拆分并派发给其它会话并行完成。两种状态都会在发送的提示词末尾追加一句派发要求。">
+      <input type="checkbox" id="no-dispatch-check" /> <span>不派发给其他会话</span>
+    </label>
     <span id="liveness-pill" title="" style="display:none;margin-left:8px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span></span>
   </div>
 
@@ -2370,6 +2381,7 @@
   <script src="chat-event-controller.js"></script>
   <script src="chat-context-controls.js"></script>
   <script src="chat-diff.js"></script>
+  <script src="chat-dispatch-hint.js"></script>
   <script src="chat.js"></script>
   <script src="tour.js"></script>
 </body>
