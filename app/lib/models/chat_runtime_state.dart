@@ -229,6 +229,7 @@ class UsageWindowLimit {
   final double? usedPercentage;
   final int? resetsAtMs;
   final String provider;
+  final int? observedAtMs;
 
   const UsageWindowLimit({
     required this.rateLimitType,
@@ -236,6 +237,7 @@ class UsageWindowLimit {
     required this.usedPercentage,
     required this.resetsAtMs,
     required this.provider,
+    this.observedAtMs,
   });
 
   bool isActiveAt(DateTime now) =>
@@ -254,6 +256,7 @@ class UsageWindowLimit {
     'usedPercentage': usedPercentage,
     'resetsAtMs': resetsAtMs,
     'provider': provider,
+    'observedAtMs': observedAtMs,
   };
 
   static UsageWindowLimit? fromEvent(Map<String, dynamic> json) {
@@ -277,6 +280,7 @@ class UsageWindowLimit {
       usedPercentage: usedPercentage,
       resetsAtMs: _epochMs(json['resetsAt']),
       provider: provider,
+      observedAtMs: DateTime.now().millisecondsSinceEpoch,
     );
   }
 
@@ -297,6 +301,7 @@ class UsageWindowLimit {
       usedPercentage: percentage,
       resetsAtMs: _int(json['resetsAtMs']),
       provider: provider,
+      observedAtMs: _int(json['observedAtMs']),
     );
   }
 }
