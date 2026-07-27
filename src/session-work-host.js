@@ -12,7 +12,7 @@ function requireFunction(deps, name) {
 function createSessionWorkHost(deps = {}) {
   for (const name of [
     'runtime', 'getRecord', 'getChatSession', 'getTaskState',
-    'pendingUserInput', 'recordUserInput', 'broadcast', 'setTaskState',
+    'pendingUserInput', 'recordUserInput', 'resolveUserInput', 'broadcast', 'setTaskState',
     'onTaskBoardQueueEvent', 'onWorkspaceQueueStatus', 'classifyDisplay', 'cancelClassify',
     'assignKillReason', 'appendMessage', 'cancelPreparation',
     // classify owns every business-state transition, including cancellation.
@@ -74,11 +74,9 @@ function createSessionWorkHost(deps = {}) {
       ? options.userInputRequestId.trim() : '';
     const pending = requestedRequestId ? deps.pendingUserInput(sessionId) : null;
     // requestId enriches an input with correlation; it never grants permission
-    // to send. A stale/replayed picker answer is still ordinary user text, so
-    // drop only its stale correlation metadata instead of rejecting the input.
-    const requestId = pending
-      && pending.requestId === requestedRequestId
-      && pending.resolved !== true
+    // to send. A mismatched stale picker answer is still ordinary user text;
+    // an exact replay remains an idempotent answer even after it was resolved.
+    const requestId = pending && pending.requestId === requestedRequestId
       ? requestedRequestId
       : '';
     const status = await runtime.sessionScheduler.status(sessionId);
@@ -117,6 +115,27 @@ function createSessionWorkHost(deps = {}) {
           ? '这条回答不属于当前待确认问题，未执行。'
           : `消息入队失败：${admitted.code || 'scheduler_rejected'}`,
       });
+    } else if (requestId) {
+      // Admission is the durable consumption boundary for a structured answer.
+      // Resolving here (rather than when the next provider process happens to
+      // start) prevents reconnect/replay from showing the picker again while
+      // the crash-safe control hand-off waits for the current turn to release.
+      try {
+        const resolved = await Promise.resolve(deps.resolveUserInput(sessionId, requestId));
+        if (!resolved?.ok) {
+          log.warn?.('session_user_input_resolve_after_admission_failed', {
+            sessionId,
+            requestId,
+            code: resolved?.code || 'unknown',
+          });
+        }
+      } catch (error) {
+        log.warn?.('session_user_input_resolve_after_admission_failed', {
+          sessionId,
+          requestId,
+          error: error.message,
+        });
+      }
     }
     return admitted;
   }

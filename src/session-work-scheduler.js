@@ -86,6 +86,14 @@ function isControlItem(item) {
   return CONTROL_KINDS.has(workKind(item));
 }
 
+function isUserInputAnswer(item) {
+  const payload = item?.payload || {};
+  return payload.type === 'session.work'
+    && workKind(item) === 'answer'
+    && typeof payload.requestId === 'string'
+    && payload.requestId.length > 0;
+}
+
 function activeTaskId(schedule) {
   return schedule?.active?.taskId || null;
 }
@@ -163,6 +171,11 @@ function queuedText(item) {
 
 function publicSchedule(schedule, queue = []) {
   if (!schedule) return null;
+  // A correlated request_user_input answer is a durable control hand-off, not
+  // future user work. It must survive a crash while the asking process releases,
+  // but exposing it in the ordinary FIFO makes the picker answer look "staged"
+  // and lets reconnect snapshots resurrect that false queue card.
+  const visibleQueue = queue.filter(item => !isUserInputAnswer(item));
   return {
     sessionId: schedule.sessionId,
     state: schedule.state,
@@ -170,7 +183,7 @@ function publicSchedule(schedule, queue = []) {
     awaitingRequestId: schedule.awaitingRequestId || null,
     classifyState: classifyStateForSchedule(schedule),
     active: schedule.active ? clone(schedule.active) : null,
-    queued: queue.map((item, index) => ({
+    queued: visibleQueue.map((item, index) => ({
       entryId: item.id,
       taskId: item.payload?.taskId || null,
       source: item.payload?.source || item.source?.type || 'legacy',
@@ -438,6 +451,12 @@ function createSessionWorkScheduler({
           && directMessage) {
         draft.outbox[admitted.item.id].directRun = true;
       }
+      const specialAnswer = isUserInputAnswer(admitted.item);
+      if (specialAnswer && draft.outbox[admitted.item.id]?.state === 'pending') {
+        // The answer resumes the currently waiting interaction and therefore
+        // outranks unrelated user work already staged behind that interaction.
+        schedule.priorityEntryId = admitted.item.id;
+      }
       schedule.updatedAt = at;
       const queue = queueForDraft(draft, cleanSessionId);
       const selected = selectSessionItem(queue, draft, at);
@@ -445,8 +464,13 @@ function createSessionWorkScheduler({
         ok: true,
         duplicate: admitted.idempotent,
         entry: clone(admitted.item),
-        queued: selected?.id !== admitted.item.id,
-        position: queue.findIndex(item => item.id === admitted.item.id) + 1,
+        // While the asking native process is still releasing, the answer can be
+        // pending internally for crash safety. Product/API semantics remain a
+        // direct structured response: it never enters the ordinary waiting FIFO.
+        queued: specialAnswer ? false : selected?.id !== admitted.item.id,
+        position: specialAnswer
+          ? 0
+          : queue.findIndex(item => item.id === admitted.item.id) + 1,
         schedule: publicSchedule(schedule, queue),
       };
     });
