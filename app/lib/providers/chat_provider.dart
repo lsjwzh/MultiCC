@@ -17,6 +17,103 @@ bool _isRecoverableCodexReconnectErrorText(String text) {
           text.contains('response.completed'));
 }
 
+// ── Staged user sends: a sent message waiting for the server's FIFO verdict ─
+//
+// 对齐 web 的 stagedUserBubbles：sendMessage 不再立刻把用户气泡画进对话区，而是
+// 先暂存，等服务端的 session_queue 事件裁决这条是「立即执行」还是「进 FIFO 队列」。
+// 进队列的不在对话区占位（只在队列面板出现），等它真正开始执行（event=started）再
+// 回填气泡；被取消（event=queued_cancelled）则丢弃。一个兜底定时器保证服务端迟迟
+// 不回裁决（断连/丢事件）时消息也不会凭空消失。
+
+/// 一条已发送、等待 FIFO 裁决的用户消息。
+@visibleForTesting
+class StagedUserSend {
+  final String clientMsgId;
+  final String text;
+
+  /// 服务端 admit 后回填；started / queued_cancelled 用它精确匹配暂存条目。
+  String? entryId;
+
+  bool resolved = false;
+
+  /// 兜底：服务端没在合理时间内裁决时，回退乐观显示，避免消息消失。
+  Timer? fallbackTimer;
+
+  StagedUserSend(this.clientMsgId, this.text);
+}
+
+/// [resolveStagedQueueEvent] 对一条暂存给出的动作。
+enum StagedResolution { keep, commit, discard }
+
+/// [resolveStagedQueueEvent] 的裁决结果：对哪条暂存做什么动作，以及是否给它绑定
+/// 服务端 entryId。
+@visibleForTesting
+class StagedVerdict {
+  final StagedUserSend? target;
+  final StagedResolution resolution;
+  final String? bindEntryId;
+
+  const StagedVerdict(this.target, this.resolution, {this.bindEntryId});
+  static const keep = StagedVerdict(null, StagedResolution.keep);
+}
+
+/// 纯裁决器：给定暂存列表与一个 session_queue 事件，决定要 commit / discard / keep
+/// 哪条（及是否绑定 entryId）。无副作用，可单测。
+///
+/// 关联依赖「发送顺序 = admit 裁决顺序」：同会话的 scheduler 串行 admit，所以把每个
+/// `event='queued'` 依次绑到最早一条未绑定的暂存是可靠的。
+@visibleForTesting
+StagedVerdict resolveStagedQueueEvent(
+  List<StagedUserSend> staged,
+  String event,
+  Map<String, dynamic> payload,
+) {
+  StagedUserSend? firstUnbound() {
+    for (final s in staged) {
+      if (s.entryId == null && !s.resolved) return s;
+    }
+    return null;
+  }
+
+  StagedUserSend? byEntryId(String id) {
+    for (final s in staged) {
+      if (s.entryId == id && !s.resolved) return s;
+    }
+    return null;
+  }
+
+  final rawEntry = payload['entryId']?.toString();
+  final entryId = (rawEntry != null && rawEntry.isNotEmpty) ? rawEntry : null;
+
+  switch (event) {
+    case 'queued':
+      // admit 裁决按发送顺序到达：绑到最早一条还没绑 entryId 的暂存。
+      final target = firstUnbound();
+      // queued:false = 立即执行 → 显示气泡；queued:true = 进队列 → 暂存等 started。
+      final resolution = payload['queued'] == false
+          ? StagedResolution.commit
+          : StagedResolution.keep;
+      return StagedVerdict(target, resolution, bindEntryId: entryId);
+    case 'started':
+    case 'claimed':
+      // 这条队列消息开始执行：回填它的用户气泡。
+      final target = entryId == null ? null : byEntryId(entryId);
+      return StagedVerdict(
+        target,
+        target == null ? StagedResolution.keep : StagedResolution.commit,
+      );
+    case 'queued_cancelled':
+      // 用户在队列面板取消了这条：丢弃暂存，不显示气泡。
+      final target = entryId == null ? null : byEntryId(entryId);
+      return StagedVerdict(
+        target,
+        target == null ? StagedResolution.keep : StagedResolution.discard,
+      );
+    default:
+      return StagedVerdict.keep;
+  }
+}
+
 class ChatProvider extends ChangeNotifier {
   final SettingsService settings;
   final String sessionName;
@@ -95,6 +192,11 @@ class ChatProvider extends ChangeNotifier {
   ChatMessage? _currentMsg;
   final Map<int, ToolCall> _activeTools = {};
   int _reconnectAttempt = 0;
+
+  /// 已发送、等服务端 FIFO 裁决的用户消息。空 = 没有占位暂存（对齐 web
+  /// stagedUserBubbles：进队列的不在对话区占位）。
+  final List<StagedUserSend> _stagedUserSends = [];
+  static const Duration _stagedFallbackTimeout = Duration(seconds: 4);
   bool _historyApplied = false;
 
   // Lazy history pagination state. The initial WS chat_history push carries
@@ -493,6 +595,8 @@ class ChatProvider extends ChangeNotifier {
             p,
             previous: _sessionQueue,
           );
+          // 裁决暂存消息：立即执行则显示气泡，进队列则继续暂存，取消则丢弃。
+          _reconcileStaged(event, p);
           if (event == 'queued') {
             final position = p['queuePosition'];
             _statusText = position == null ? '消息已持久排队' : '消息已排队（第 $position 位）';
@@ -787,6 +891,9 @@ class ChatProvider extends ChangeNotifier {
       ..addAll(parsed);
     _currentMsg = streamingAssistantTail(parsed);
     _activeTools.clear();
+    // 历史已是权威：未裁决的暂存失去意义（已落盘的在历史里，未落盘的队列消息靠
+    // 队列面板展示），取消它们的兜底定时器。
+    _clearStaged();
     notifyListeners();
   }
 
@@ -955,13 +1062,10 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _messages.add(
-      ChatMessage(
-        role: MessageRole.user,
-        content: message,
-        clientMsgId: clientMsgId,
-      ),
-    );
+    // 不立刻把气泡画进对话区：先暂存，等服务端 session_queue 裁决这条是立即执行
+    // 还是进 FIFO。进队列的只在队列面板出现，不在这里占位（对齐 web
+    // stagedUserBubbles）。_commitStaged 在收到裁决（或兜底超时）时才真正加气泡。
+    _stageUserSend(clientMsgId, message);
     _pendingUserInput = null;
     _apiErrorPolicy = null;
     // User just sent a message -> resume auto-follow at the bottom, clear any
@@ -969,6 +1073,68 @@ class ChatProvider extends ChangeNotifier {
     _userPinnedAway = false;
     _unreadCount = 0;
     notifyListeners();
+  }
+
+  // ── Staged user sends: 等服务端 FIFO 裁决的暂存消息 ──────────────────────────
+
+  void _stageUserSend(String clientMsgId, String text) {
+    final staged = StagedUserSend(clientMsgId, text);
+    _stagedUserSends.add(staged);
+    // 兜底：服务端没在合理时间内裁决（断连 / 丢事件）→ 回退乐观显示，绝不让用户
+    // 消息凭空消失。正常路径下 session_queue 事件会先到并取消这个定时器。
+    staged.fallbackTimer = Timer(_stagedFallbackTimeout, () {
+      if (!staged.resolved) _commitStaged(staged);
+    });
+  }
+
+  /// 把一条暂存消息落成对话区里的用户气泡。
+  void _commitStaged(StagedUserSend staged) {
+    if (staged.resolved) return;
+    staged.resolved = true;
+    staged.fallbackTimer?.cancel();
+    _stagedUserSends.remove(staged);
+    _messages.add(
+      ChatMessage(
+        role: MessageRole.user,
+        content: staged.text,
+        clientMsgId: staged.clientMsgId,
+      ),
+    );
+    notifyListeners();
+  }
+
+  /// 用户在队列面板取消了这条暂存消息：丢弃，不显示气泡。
+  void _discardStaged(StagedUserSend staged) {
+    if (staged.resolved) return;
+    staged.resolved = true;
+    staged.fallbackTimer?.cancel();
+    _stagedUserSends.remove(staged);
+  }
+
+  /// 放弃所有未裁决的暂存（重连用权威历史重建、清空对话、dispose 时调用）。
+  void _clearStaged() {
+    for (final s in _stagedUserSends) {
+      s.fallbackTimer?.cancel();
+      s.resolved = true;
+    }
+    _stagedUserSends.clear();
+  }
+
+  /// 用一个 session_queue 事件裁决暂存消息：绑 entryId、按需 commit / discard。
+  void _reconcileStaged(String event, Map<String, dynamic> payload) {
+    final verdict = resolveStagedQueueEvent(_stagedUserSends, event, payload);
+    if (verdict.target != null && verdict.bindEntryId != null) {
+      verdict.target!.entryId = verdict.bindEntryId;
+    }
+    if (verdict.target == null) return;
+    switch (verdict.resolution) {
+      case StagedResolution.commit:
+        _commitStaged(verdict.target!);
+      case StagedResolution.discard:
+        _discardStaged(verdict.target!);
+      case StagedResolution.keep:
+        break;
+    }
   }
 
   /// Explicit scheduler control. The APP never mutates or advances the queue
@@ -1027,6 +1193,7 @@ class ChatProvider extends ChangeNotifier {
     _currentMsg = null;
     _activeTools.clear();
     _historyApplied = false;
+    _clearStaged();
     _service.clearHistory(keep: keep);
     notifyListeners();
   }
@@ -1058,6 +1225,7 @@ class ChatProvider extends ChangeNotifier {
       _currentMsg = null;
       _activeTools.clear();
       _historyApplied = false;
+      _clearStaged();
       notifyListeners();
     } else {
       // Seamless resume: stop feeding a stale streaming bubble, then let the
@@ -1079,6 +1247,7 @@ class ChatProvider extends ChangeNotifier {
   @override
   void dispose() {
     _usageExpiryTimer?.cancel();
+    _clearStaged();
     _eventSub?.cancel();
     _service.dispose();
     super.dispose();
