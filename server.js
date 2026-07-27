@@ -117,6 +117,7 @@ const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
 const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
 const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota');
+const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
@@ -2297,6 +2298,7 @@ mountOpenCodeModelRoutes(app);
 mountOpenCodeQuotaRoutes(app);
 mountQoderQuotaRoutes(app);
 mountCodexQuotaRoutes(app);
+mountArkQuotaRoutes(app);
 
 // Token APIs remain between the two Provider route phases so the established
 // route ordering stays byte-compatible while accounting lives in one runtime.

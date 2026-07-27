@@ -1738,6 +1738,7 @@ function providerShortName(id) {
 function updateProviderBtn() {
   if (!providerBtn) return;
   providerBtn.style.display = 'none';
+  window.MultiCCChatRateLimit?.setProviderBaseUrl?.((_providerList.find((x) => x && x.id === _sessionProvider) || {}).baseUrl || '');
   updateModelBtn();
 }
 

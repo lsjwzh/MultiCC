@@ -808,6 +808,203 @@
     return currentCodexQuota;
   }
 
+  // ── Volcano Ark (火山方舟) subscription quota. Sourced by shelling out to the
+  // official `arkcli` CLI (`arkcli usage plan`) on the server. Unlike Qoder/Codex
+  // (gated on currentCli), this bar is gated on the active provider's baseUrl
+  // being a Volcano Ark endpoint (host *.volces.com), so it shows for any cli
+  // pointed at Ark. Rendered as #ark-quota-bar.
+  let currentProviderBaseUrl = '';
+  let currentArkQuota = null;
+  let arkQuotaFetchInFlight = false;
+  const ARK_QUOTA_BACKOFF_MS = 60_000;
+  let arkQuotaLastErrorAt = 0;
+
+  function isArkBaseUrl(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string') return false;
+    try {
+      return /(^|\.)volces\.com$/i.test(new URL(baseUrl).hostname);
+    } catch (_) {
+      return /volces\.com/i.test(baseUrl);
+    }
+  }
+
+  function setProviderBaseUrl(baseUrl) {
+    currentProviderBaseUrl = String(baseUrl || '');
+    renderArkQuota();
+  }
+
+  function arkQuotaStorageKey() { return 'multicc.ark.quota.v1'; }
+
+  function loadArkQuotaFromStorage() {
+    const storage = browserStorage(); if (!storage) return null;
+    try {
+      const raw = storage.getItem(arkQuotaStorageKey());
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      if (v.fetchedAt && (Date.now() - v.fetchedAt) > 24 * 60 * 60 * 1000) return null;
+      return v;
+    } catch (_) { return null; }
+  }
+
+  function saveArkQuotaToStorage(data) {
+    const storage = browserStorage(); if (!storage) return;
+    try { storage.setItem(arkQuotaStorageKey(), JSON.stringify(data)); } catch (_) {}
+  }
+
+  function arkProductLabel(product) {
+    if (product === 'agent-plan') return 'Agent';
+    if (product === 'coding-plan') return 'Coding';
+    if (product === 'agent-plan-team') return 'Agent团队';
+    if (product === 'coding-plan-team') return 'Coding团队';
+    return product || '?';
+  }
+
+  function formatArkQuota(value) {
+    if (!value) {
+      return Object.freeze({
+        text: '火山方舟 余量 · ⟳ 刷新',
+        color: '#8b949e',
+        title: '点击通过 arkcli 拉取火山方舟套餐额度',
+      });
+    }
+    if (value.status === 'needs_auth') {
+      return Object.freeze({
+        text: '火山方舟：未登录 · 点击登录',
+        color: '#f85149',
+        title: 'arkcli 未配置火山 SSO 凭证。点击将打开浏览器完成 SSO 登录，登录后再点刷新。',
+      });
+    }
+    if (value.status === 'cli_missing') {
+      return Object.freeze({
+        text: '火山方舟：未安装 arkcli · ⟳ 重试',
+        color: '#d29922',
+        title: '未找到 arkcli。请运行 npm i -g @volcengine/ark-cli 安装。',
+      });
+    }
+    if (value.status !== 'ok' || !Array.isArray(value.items)) {
+      return Object.freeze({
+        text: '火山方舟：用量暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: value.error || '无法通过 arkcli 拉取用量',
+      });
+    }
+    const subscribed = value.items.filter((it) => it.subscribed && !it.error && it.periods && it.periods.length);
+    if (!subscribed.length) {
+      return Object.freeze({
+        text: '火山方舟：无生效套餐 · ⟳ 刷新',
+        color: '#8b949e',
+        title: '当前身份名下没有已订阅的 AgentPlan / CodingPlan',
+      });
+    }
+    let maxPct = 0;
+    const parts = [];
+    const titleLines = [];
+    for (const it of subscribed) {
+      const worst = it.periods.reduce((a, b) => ((b.percent ?? -1) > (a.percent ?? -1) ? b : a));
+      const pct = worst.percent ?? 0;
+      if (pct > maxPct) maxPct = pct;
+      const seg = (worst.used != null && worst.total != null)
+        ? `${worst.label} ${worst.used}/${worst.total} (${pct}%)`
+        : `${worst.label} ${pct}%`;
+      parts.push(`${arkProductLabel(it.product)} ${seg}`);
+      titleLines.push(`${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}`);
+      for (const p of it.periods) {
+        let line = `  ${p.label}: `;
+        line += (p.used != null && p.total != null)
+          ? `${p.used}/${p.total} (${p.percent ?? 0}%)`
+          : `${p.percent ?? 0}%`;
+        if (p.resetAt) line += ` · ${new Date(p.resetAt).toLocaleString()} 重置`;
+        titleLines.push(line);
+      }
+    }
+    let text = parts.join(' · ');
+    const syncRel = relativeAgo(value.fetchedAt);
+    if (syncRel) text += ` · ${syncRel}`;
+    text += ' ⟳';
+
+    let color = '#58a6ff';
+    if (maxPct >= 90) color = '#f85149';
+    else if (maxPct >= 70) color = '#d29922';
+
+    const viewer = value.viewer;
+    let title = '火山方舟套餐额度（arkcli usage plan）';
+    if (viewer && (viewer.user_name || viewer.account_id)) {
+      title += `\n身份: ${viewer.user_name || viewer.account_id}${viewer.auth_method ? ' · ' + viewer.auth_method : ''}`;
+    }
+    title += '\n' + titleLines.join('\n');
+    if (syncRel) title += `\n同步于 ${syncRel}`;
+    title += '\n点击 bar 刷新';
+    return Object.freeze({ text, color, title });
+  }
+
+  function renderArkQuota() {
+    const element = global.document?.getElementById?.('ark-quota-bar');
+    if (!element) return;
+    if (!isArkBaseUrl(currentProviderBaseUrl)) {
+      element.style.display = 'none';
+      element.textContent = '';
+      element.onclick = null;
+      return;
+    }
+    const view = formatArkQuota(currentArkQuota);
+    if (arkQuotaFetchInFlight) {
+      element.textContent = '火山方舟：加载中…';
+      element.style.color = '#8b949e';
+      element.title = '正在通过 arkcli 拉取火山方舟套餐额度...';
+    } else {
+      element.textContent = view?.text || '';
+      element.title = view?.title || '';
+      if (view) element.style.color = view.color;
+    }
+    element.style.display = 'block';
+    element.onclick = () => {
+      if (currentArkQuota && currentArkQuota.status === 'needs_auth') {
+        fetch('/api/ark/quota/login', { method: 'POST', credentials: 'same-origin' })
+          .then(() => setTimeout(() => refreshArkQuota(true), 4000));
+      } else {
+        refreshArkQuota(true);
+      }
+    };
+  }
+
+  async function refreshArkQuota(force) {
+    if (!isArkBaseUrl(currentProviderBaseUrl) && !force) return null;
+    if (arkQuotaFetchInFlight) return currentArkQuota;
+    if (!force && arkQuotaLastErrorAt && (Date.now() - arkQuotaLastErrorAt) < ARK_QUOTA_BACKOFF_MS) {
+      return currentArkQuota;
+    }
+    arkQuotaFetchInFlight = true;
+    renderArkQuota();
+    try {
+      const res = await fetch('/api/ark/quota', { credentials: 'same-origin' });
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!data) data = { status: 'unavailable', error: 'invalid response' };
+      if (data.status === 'ok') {
+        currentArkQuota = data;
+        saveArkQuotaToStorage(data);
+        arkQuotaLastErrorAt = 0;
+      } else {
+        currentArkQuota = data;
+        arkQuotaLastErrorAt = Date.now();
+      }
+    } catch (_) {
+      arkQuotaLastErrorAt = Date.now();
+      currentArkQuota = { status: 'unavailable', error: 'fetch failed' };
+    } finally {
+      arkQuotaFetchInFlight = false;
+    }
+    renderArkQuota();
+    return currentArkQuota;
+  }
+
+  function restoreArkQuota() {
+    currentArkQuota = loadArkQuotaFromStorage();
+    renderArkQuota();
+    return currentArkQuota;
+  }
+
   const api = Object.freeze({
     normalizeFiveHourRateLimit,
     formatFiveHourRateLimit,
@@ -825,6 +1022,9 @@
     restoreQoderQuota,
     refreshCodexQuota,
     restoreCodexQuota,
+    setProviderBaseUrl,
+    refreshArkQuota,
+    restoreArkQuota,
     setCli,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -836,5 +1036,6 @@
     restoreOpenCodeQuota();
     restoreQoderQuota();
     restoreCodexQuota();
+    restoreArkQuota();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
