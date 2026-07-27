@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createErrorDto, requestContext, withApiMeta } = require('../src/api-contract');
+const { isTerminalLetter } = require('../src/classify/vocab');
 const {
   assistantText,
   latestAssistant,
@@ -253,7 +254,12 @@ test('manual mark-task-done flips a waiting task to completed through dispatchSt
   assert.equal(ok.statusCode, 200);
   assert.equal(ok.body.classifyState, 'D');
   assert.equal(fixture.dispatched.length, 1);
-  assert.equal(fixture.dispatched[0].result.state, 'completed');
+  // The LETTER, and a terminal one: dispatchStateAction routes on letters, and
+  // anything non-terminal here would be re-judged by the 60s scan, quietly
+  // undoing the manual "done" the user just asked for.
+  assert.equal(fixture.dispatched[0].result.state, 'D');
+  assert.equal(isTerminalLetter(fixture.dispatched[0].result.state), true);
+  assert.equal(fixture.dispatched[0].result.state, ok.body.classifyState);
   assert.equal(fixture.dispatched[0].result.goal, 'wait goal');
   assert.equal(fixture.dispatched[0].context.sessionName, 's1');
   assert.equal(fixture.dispatched[0].context.isTerminal, false);
