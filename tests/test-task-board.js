@@ -700,6 +700,27 @@ test('ordinary chat never creates a task or queues task tagging', () => {
   assert.deepEqual(runtime.getBoard(), { modules: {}, tasks: {} });
 });
 
+test('a released delivery claim returns its routed task card to queued', () => {
+  const { runtime } = mkRuntime();
+  assert.equal(runtime.recordRouterAdmission({
+    callerSessionId: 'commander-1',
+    targetSessionId: 'sess-1',
+    taskId: 'tsk-release',
+    taskText: 'release delivery',
+    operationId: 'op-release',
+    status: 'admitted',
+  }), true);
+  assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'queued');
+  runtime.onQueueEvent({
+    type: 'claimed', taskId: 'tsk-release', at: 20,
+  });
+  assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'running');
+  runtime.onQueueEvent({
+    type: 'claim_released', taskId: 'tsk-release', at: 21,
+  });
+  assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'queued');
+});
+
 test('canonical task messages create one projection, retain full body, and classify updates it', () => {
   const history = [];
   const { runtime, broadcasts } = mkRuntime({ loadHistory: () => history });

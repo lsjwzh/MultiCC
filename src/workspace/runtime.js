@@ -10,6 +10,8 @@ const EMPTY_STATUS = Object.freeze({
   runStartedAt: null,
   runEndedAt: null,
 });
+const QUEUE_STATES = new Set(['idle', 'starting', 'running', 'assessing', 'frozen', 'queued']);
+const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
 
 function assertMap(name, value) {
   if (!value || typeof value.get !== 'function' || typeof value[Symbol.iterator] !== 'function') {
@@ -48,6 +50,7 @@ function createWorkspaceRuntime(options) {
   const status = new Map();
   const clients = new Map();
   const summaries = new Map();
+  const queueStatuses = new Map();
   const metaClients = new Set();
 
   const sessionState = createSessionStateService({
@@ -123,6 +126,46 @@ function createWorkspaceRuntime(options) {
     return next;
   }
 
+  function normalizeQueueStatus(sessionId, input = {}) {
+    const state = String(input.state || 'idle');
+    const classifyState = String(input.classifyState || '').toUpperCase();
+    return Object.freeze({
+      sessionId,
+      depth: Math.max(0, Math.floor(Number(input.depth) || 0)),
+      state: QUEUE_STATES.has(state) ? state : 'idle',
+      classifyState: CLASSIFY_STATES.has(classifyState) ? classifyState : null,
+      updatedAt: Math.max(0, Math.floor(Number(input.updatedAt) || 0)),
+    });
+  }
+
+  function setQueueStatus(sessionId, input, { broadcast: shouldBroadcast = true } = {}) {
+    const record = records.get(sessionId);
+    if (!record || record.type === 'aux' || record.type === 'gateway') return null;
+    const next = normalizeQueueStatus(sessionId, input);
+    const previous = queueStatuses.get(sessionId);
+    if (previous && previous.updatedAt > next.updatedAt) return previous;
+    queueStatuses.set(sessionId, next);
+    if (shouldBroadcast && (!previous || previous.depth !== next.depth
+        || previous.state !== next.state || previous.classifyState !== next.classifyState)) {
+      broadcast(record.dirId, { type: 'session_queue_status', ...next });
+    }
+    return next;
+  }
+
+  function hydrateQueueStatuses(items) {
+    let count = 0;
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item?.sessionId) continue;
+      if (setQueueStatus(item.sessionId, item, { broadcast: false })) count += 1;
+    }
+    return count;
+  }
+
+  function queueSnapshot(dirId) {
+    return [...queueStatuses.values()]
+      .filter(item => records.get(item.sessionId)?.dirId === dirId);
+  }
+
   function attachWorkspace(socket, url) {
     const dirId = url.searchParams.get('dirId') || '';
     if (!directories.has(dirId)) {
@@ -143,6 +186,7 @@ function createWorkspaceRuntime(options) {
       dirId,
       sessions: workspaceSnapshot(dirId),
       events: recentEvents(dirId),
+      queues: queueSnapshot(dirId),
     });
     socket.on('close', () => {
       scoped.delete(socket);
@@ -162,6 +206,7 @@ function createWorkspaceRuntime(options) {
         dirLabel: directory.label || null,
         sessions: workspaceSnapshot(dirId),
         events: recentEvents(dirId),
+        queues: queueSnapshot(dirId),
       });
     }
     send(socket, { type: 'meta_snapshot', fleet });
@@ -175,10 +220,13 @@ function createWorkspaceRuntime(options) {
     status,
     clients,
     summaries,
+    queueStatuses,
     metaClients,
     broadcast,
     setSummary,
     setStatus,
+    setQueueStatus,
+    hydrateQueueStatuses,
     attachWorkspace,
     attachMeta,
   });

@@ -67,6 +67,8 @@ function createHarness(overrides = {}) {
     _providerData: { available: true, providers: [] },
     _auxConfig: {},
     _workspaceStatus: new Map(),
+    _workspaceQueues: new Map(),
+    _workspaceClassify: new Map(),
     _workspaceNotes: new Map(),
     _workspaceSummaries: new Map(),
     _workspaceEvents: new Map(),
@@ -193,6 +195,29 @@ test('session card consumes provider summary fields without rendering credential
   });
   assert.match(html, /Safe relay/);
   assert.doesNotMatch(html, /must-not-render|nested-secret/);
+});
+
+test('fleet session card shows bounded FIFO depth while waiting-user work stays queued', () => {
+  const { context } = createHarness();
+  context._workspaceQueues.set('session-queued', {
+    depth: 2,
+    state: 'idle',
+    classifyState: 'W',
+    updatedAt: 100,
+    text: 'must not render',
+  });
+  context._workspaceClassify.set('session-queued', { classifyState: 'W' });
+  const html = context.renderSessionRow({
+    id: 'session-queued',
+    kind: 'chat',
+    cli: 'codex',
+    active: false,
+    createdAt: new Date().toISOString(),
+  });
+  assert.match(html, /📥 FIFO 2/);
+  assert.match(html, /目标会话正在等待用户回复/);
+  assert.match(html, /之后按 FIFO 执行/);
+  assert.doesNotMatch(html, /must not render/);
 });
 
 test('dashboard loader keeps the two legacy summary endpoints token-free', async () => {
