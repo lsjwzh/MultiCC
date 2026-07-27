@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
 import '../providers/session_manager.dart';
@@ -13,52 +16,128 @@ class MemoScreen extends StatefulWidget {
 }
 
 class _MemoScreenState extends State<MemoScreen> {
+  static const _autoSaveDelay = Duration(milliseconds: 1000);
+
   final TextEditingController _ctrl = TextEditingController();
+  Timer? _autoSaveTimer;
   bool _loading = true;
+  bool _saving = false;
+  bool _reSave = false;
+  String _lastSavedText = '';
   String _path = '';
   String _status = '';
+
+  String get _draftKey => 'multicc_memo_draft_${widget.directory.id}';
 
   @override
   void initState() {
     super.initState();
+    _ctrl.addListener(_onTextChanged);
     _load();
   }
 
   @override
   void dispose() {
+    _autoSaveTimer?.cancel();
+    final dirId = widget.directory.id;
+    final text = _ctrl.text;
+    if (text != _lastSavedText) {
+      widget.mgr.service.saveMemo(dirId, text).then((_) {
+        SharedPreferences.getInstance()
+            .then((prefs) => prefs.remove('multicc_memo_draft_$dirId'))
+            .catchError((_) => false);
+      }).catchError((_) {});
+    }
     _ctrl.dispose();
     super.dispose();
   }
 
+  void _onTextChanged() {
+    if (_loading) return;
+    final text = _ctrl.text;
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setString(_draftKey, text))
+        .catchError((_) => false);
+    final composing = _ctrl.value.composing;
+    if (composing.isValid && !composing.isCollapsed) return;
+    _scheduleAutoSave();
+  }
+
+  void _scheduleAutoSave() {
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(_autoSaveDelay, () {
+      if (!mounted || _ctrl.text == _lastSavedText) return;
+      _save();
+    });
+  }
+
   Future<void> _load() async {
+    String? draft;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      draft = prefs.getString(_draftKey);
+    } catch (_) {}
     try {
       final m = await widget.mgr.service.fetchMemo(widget.directory.id);
       if (!mounted) return;
+      final serverText = (m['text'] as String?) ?? '';
+      final restored = draft != null && draft != serverText;
       setState(() {
-        _ctrl.text = (m['text'] as String?) ?? '';
+        _ctrl.text = restored ? draft! : serverText;
+        _lastSavedText = serverText;
         _path = (m['path'] as String?) ?? '';
-        _status = (m['exists'] == true) ? '' : '文件尚未创建（保存即创建）';
+        _status = restored
+            ? '已恢复上次未保存的内容，即将自动保存'
+            : ((m['exists'] == true) ? '' : '文件尚未创建（保存即创建）');
         _loading = false;
       });
+      if (draft != null && !restored) {
+        SharedPreferences.getInstance()
+            .then((prefs) => prefs.remove(_draftKey))
+            .catchError((_) => false);
+      }
+      if (restored) _scheduleAutoSave();
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _status = '加载失败：$e';
+        if (draft != null) {
+          _ctrl.text = draft;
+          _status = '加载失败，已恢复本地草稿：$e';
+        } else {
+          _status = '加载失败：$e';
+        }
         _loading = false;
       });
+      if (draft != null) _scheduleAutoSave();
     }
   }
 
   Future<void> _save() async {
-    setState(() => _status = '保存中…');
+    if (_saving) {
+      _reSave = true;
+      return;
+    }
+    _saving = true;
+    final text = _ctrl.text;
+    if (mounted) setState(() => _status = '保存中…');
     try {
-      await widget.mgr.service.saveMemo(widget.directory.id, _ctrl.text);
+      await widget.mgr.service.saveMemo(widget.directory.id, text);
+      _lastSavedText = text;
+      SharedPreferences.getInstance()
+          .then((prefs) => prefs.remove(_draftKey))
+          .catchError((_) => false);
       if (!mounted) return;
       final now = TimeOfDay.fromDateTime(DateTime.now());
       setState(() => _status = '已保存 · ${now.format(context)}');
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = '保存失败：$e');
+    } finally {
+      _saving = false;
+      if (_reSave) {
+        _reSave = false;
+        if (mounted && _ctrl.text != _lastSavedText) _save();
+      }
     }
   }
 
