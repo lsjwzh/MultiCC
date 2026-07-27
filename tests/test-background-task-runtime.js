@@ -276,6 +276,35 @@ async function test(name, fn) {
     assert.strictEqual(h.injections.length, 0);
   });
 
+  await test('Monitor completion settles UI and ledger without injecting a silent nudge', () => {
+    const h = makeHarness();
+    h.files.set('/out/monitor', 'DONE\n');
+    h.runtime.recordMainToolUseId('s1', 'mon-tool');
+    const started = h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'mon-tool', name: 'Monitor', input: { pattern: 'DONE' } }],
+    }, {
+      subtype: 'task_started', task_id: 'mon-task', tool_use_id: 'mon-tool',
+      session_id: 'native', description: '1688 image extraction pass progress',
+    });
+    assert.strictEqual(started.kind, 'monitor');
+    h.broadcasts.length = 0;
+    h.observations.length = 0;
+    const result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'mon-task', tool_use_id: 'mon-tool',
+      output_file: '/out/monitor', status: 'completed', summary: 'stream ended',
+    });
+    assert.strictEqual(result.decision, 'monitor');
+    const done = h.broadcasts.find(item => item.event.type === 'monitor_done');
+    assert.ok(done, 'Monitor completion still closes the UI spinner');
+    assert.strictEqual(done.event.task_id, 'mon-task');
+    assert.strictEqual(done.event.output, 'DONE\n');
+    assert.strictEqual(h.observations[0].status, 'completed');
+    h.clock.advance(100);
+    assert.strictEqual(h.notes.length, 0);
+    assert.strictEqual(h.injections.length, 0);
+  });
+
   await test('unconsumed completions coalesce once with output tails and full origin metadata', () => {
     const h = makeHarness({ outputCap: 8 });
     h.files.set('/out/a', 'prefix-OUTPUT-A');

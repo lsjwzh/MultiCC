@@ -89,9 +89,10 @@ function buildNudge(items) {
 
 // Decide whether a background task's completion should INJECT a wake-up nudge or
 // be SUPPRESSED because its result already reaches the model another way. Pure:
-// the caller supplies the four predicates it computed from session bookkeeping.
+// the caller supplies the five predicates it computed from session bookkeeping.
 // Precedence mirrors the original inline chain in handleBackgroundTaskEvent:
-//   TaskOutput pull  →  sync/foreground Bash  →  sidechain/subagent  →  inject.
+//   TaskOutput pull  →  sync/foreground Bash  →  sidechain/subagent
+//   → Monitor stream  →  inject.
 //
 // KNOWN GAP (reproduced in the unit test): a `run_in_background` *daemon* — e.g.
 // `node server.js &`, which the CLI reports "completed (exit 0)" the instant `&`
@@ -101,10 +102,17 @@ function buildNudge(items) {
 // a false-positive wake for work the model already consumed. The 'inject' verdict
 // on the all-false input IS the reported bug; the fix will add a signal that the
 // task is still-running/daemon-like and suppress it there.
-function classifyBgCompletion({ awaitingTaskOutput = false, sync = false, subagent = false, sidechainByToolUse = false } = {}) {
+function classifyBgCompletion({
+  awaitingTaskOutput = false,
+  sync = false,
+  subagent = false,
+  sidechainByToolUse = false,
+  monitor = false,
+} = {}) {
   if (awaitingTaskOutput) return { action: 'suppress', reason: 'taskoutput' };
   if (sync)               return { action: 'suppress', reason: 'sync-bash' };
   if (subagent || sidechainByToolUse) return { action: 'suppress', reason: 'sidechain' };
+  if (monitor)            return { action: 'suppress', reason: 'monitor' };
   return { action: 'inject', reason: 'unconsumed' };
 }
 
