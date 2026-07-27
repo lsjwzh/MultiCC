@@ -26,8 +26,14 @@ function fakeElement(id = '') {
     children: [],
     scrollHeight: 0,
     scrollTop: 0,
+    attrs: {},
     appendChild(child) { this.children.push(child); this.firstChild = this.children[0] || null; return child; },
     addEventListener() {},
+    // Attributes are how the page states a role (a clickable commit row sets
+    // role=button). They render nothing, so the escaping assertions here don't
+    // read them — but a page that sets one must not crash the harness.
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    getAttribute(name) { return name in this.attrs ? this.attrs[name] : null; },
     removeChild(child) { this.children = this.children.filter(item => item !== child); this.firstChild = this.children[0] || null; },
     replaceChildren(...children) {
       this.children = children.flatMap(child => child && child.__fragment ? child.children : [child]);
