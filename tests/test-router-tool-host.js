@@ -23,10 +23,43 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   let sequence = 0;
   const userInputSignals = [];
   const operations = new Map();
+  const waits = new Map();
   const orchestrationRuntime = {
     operations: { get: async id => operations.get(id) || null },
+    waits: { get: async id => waits.get(id) || null },
     completeDispatch: async () => ({ ok: true }),
     tick: async () => {},
+    register: async spec => {
+      const wait = {
+        id: spec.id,
+        sessionId: spec.session,
+        mode: spec.mode,
+        status: 'pending',
+        metadata: {
+          source: spec.source,
+          reason: spec.reason,
+          registrationFingerprint: spec.registrationFingerprint,
+          dueAt: spec.mode === 'delay' ? 20_000 : null,
+        },
+        createdAt: 10_000,
+      };
+      waits.set(wait.id, wait);
+      return {
+        ...wait,
+        token: spec.mode === 'callback' ? 'host-callback-secret' : null,
+        callbackUrl: null,
+        dueAt: wait.metadata.dueAt,
+      };
+    },
+    listForSession: async sessionId => [...waits.values()]
+      .filter(wait => wait.sessionId === sessionId && wait.status === 'pending'),
+    cancel: async id => {
+      const wait = waits.get(id);
+      if (!wait) return { ok: false, code: 'not_found' };
+      wait.status = 'cancelled';
+      wait.cancelledAt = 12_000;
+      return { ok: true, idempotent: false };
+    },
   };
   const host = createRouterToolHost({ express, isLocalRequest });
   host.configure({
@@ -84,6 +117,32 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   assert.equal(accepted.status, 200);
   const body = await accepted.json();
   assert.equal(body.result.operation_id, 'op-1');
+
+  const callback = await fetch(
+    `http://127.0.0.1:${port}/api/internal/router-tools/wait_for_external_result`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-multicc-router-capability': context.env.MULTICC_ROUTER_CAPABILITY,
+      },
+      body: JSON.stringify({
+        arguments: {
+          mode: 'callback',
+          reason: '等待外部构建完成',
+          idempotency_key: 'build-1',
+        },
+      }),
+    },
+  );
+  assert.equal(callback.status, 200);
+  const callbackBody = await callback.json();
+  assert.match(
+    callbackBody.result.callback_url,
+    new RegExp(`^http://127\\.0\\.0\\.1:${port}/api/wait/`),
+  );
+  assert.equal(callbackBody.result.callback_url.includes('host-callback-secret'), true);
+  assert.equal(callbackBody.result.wait_id.startsWith('wait-router-'), true);
 
   const question = await fetch(
     `http://127.0.0.1:${port}/api/internal/router-tools/request_user_input`,

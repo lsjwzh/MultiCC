@@ -204,3 +204,31 @@ test('poll waits resolve through the same atomic outbox path without a token', a
   assert.equal(snapshot.waits[registered.id].status, 'resolved');
   assert.equal(snapshot.outbox[`wait:${registered.id}`].payload.data, 'poll output');
 });
+
+test('delay waits resolve through the same atomic outbox path without a callback token', async t => {
+  const { store, waits } = serviceFixture(t);
+  const registered = await waits.register({ sessionId: 'session-D', mode: 'delay' });
+  assert.equal('token' in registered, false);
+
+  const resolved = await waits.resolveDelay(
+    registered.id,
+    { dueAt: 12_345, reason: 'check deployment' },
+    { deliveryText: '【延迟条件已到】check deployment' },
+  );
+  assert.equal(resolved.ok, true);
+  const duplicate = await waits.resolveDelay(
+    registered.id,
+    { reason: 'check deployment', dueAt: 12_345 },
+    { deliveryText: '【延迟条件已到】check deployment' },
+  );
+  assert.equal(duplicate.ok, true);
+  assert.equal(duplicate.idempotent, true);
+
+  const snapshot = await store.snapshot();
+  assert.equal(snapshot.waits[registered.id].status, 'resolved');
+  assert.equal(snapshot.outbox[`wait:${registered.id}`].payload.mode, 'delay');
+  assert.equal(
+    snapshot.outbox[`wait:${registered.id}`].payload.deliveryText,
+    '【延迟条件已到】check deployment',
+  );
+});

@@ -130,6 +130,12 @@ test('provider and wait adapters expose status without credentials, commands, UR
     untilContains: 'secret marker', cwd: '/private/repository', stack: 'private stack',
   });
   assertValid('wait.schema.json', wait);
+  assert.equal(toWaitDto({
+    id: 'w_delay',
+    session: 'session-contract',
+    mode: 'delay',
+    createdAt: 1784332800000,
+  }).mode, 'delay');
 
   const wire = serialized({ provider, wait });
   for (const forbidden of ['provider-secret', 'sk-****', 'private.example', '/private/', 'secret marker', 'private stack']) {

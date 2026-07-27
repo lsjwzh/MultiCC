@@ -12,6 +12,7 @@ const TERMINAL_OPERATION_STATES = new Set([
 ]);
 const TOOL_NAMES = new Set([
   'wait_for_user_answer', 'request_user_input',
+  'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
   'route_task', 'dispatch_master', 'dispatch_slave',
 ]);
 const MAX_MESSAGE_LENGTH = 256 * 1024;
@@ -20,6 +21,9 @@ const MAX_QUESTION_LENGTH = 16 * 1024;
 const MAX_REASON_LENGTH = 4 * 1024;
 const MAX_OPTION_LENGTH = 512;
 const MAX_OPTIONS = 12;
+const MAX_PENDING_EXTERNAL_WAITS = 8;
+const MAX_EXTERNAL_WAIT_SECONDS = 7 * 24 * 60 * 60;
+const MIN_CALLBACK_TIMEOUT_SECONDS = 10;
 const DEFAULT_CAPABILITY_TTL_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_MASTER_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_MASTER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
@@ -69,6 +73,49 @@ function cleanOptions(value) {
     throw new RouterToolError('invalid_arguments', 'options must be unique');
   }
   return options;
+}
+
+function rejectUnknownArguments(args, allowed) {
+  for (const key of Object.keys(args)) {
+    if (!allowed.has(key)) {
+      throw new RouterToolError(
+        'invalid_arguments',
+        `${key} is not accepted by this tool`,
+      );
+    }
+  }
+}
+
+function cleanBaseUrl(value) {
+  const text = value == null ? '' : String(value).trim();
+  if (!text) return '';
+  try {
+    const parsed = new URL(text);
+    if (!['http:', 'https:'].includes(parsed.protocol)
+        || parsed.username || parsed.password || parsed.search || parsed.hash) {
+      return '';
+    }
+    return parsed.toString().replace(/\/+$/, '');
+  } catch (_) {
+    return '';
+  }
+}
+
+function boundedExternalSeconds(value, field, { minimum, required = false, fallback } = {}) {
+  if (value == null || value === '') {
+    if (required) throw new RouterToolError('invalid_arguments', `${field} is required`);
+    return fallback;
+  }
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)
+      || seconds < minimum
+      || seconds > MAX_EXTERNAL_WAIT_SECONDS) {
+    throw new RouterToolError(
+      'invalid_arguments',
+      `${field} must be between ${minimum} and ${MAX_EXTERNAL_WAIT_SECONDS}`,
+    );
+  }
+  return seconds;
 }
 
 function boundedTimeout(value) {
@@ -123,6 +170,10 @@ function createRouterToolRuntime({
   resolveContext = () => null,
   onAdmitted = async () => {},
   recordUserInput,
+  registerExternalWait,
+  getExternalWait,
+  listExternalWaits,
+  cancelExternalWait,
 } = {}) {
   if (!records || typeof records.get !== 'function') {
     throw new TypeError('[router-tool-runtime] records map is required');
@@ -139,6 +190,12 @@ function createRouterToolRuntime({
   if (typeof recordUserInput !== 'function') {
     throw new TypeError('[router-tool-runtime] recordUserInput port is required');
   }
+  if (typeof registerExternalWait !== 'function'
+      || typeof getExternalWait !== 'function'
+      || typeof listExternalWaits !== 'function'
+      || typeof cancelExternalWait !== 'function') {
+    throw new TypeError('[router-tool-runtime] durable external wait ports are required');
+  }
 
   const capabilities = new Map();
 
@@ -151,6 +208,7 @@ function createRouterToolRuntime({
     taskStart = false,
     taskSource = null,
     dynamic = false,
+    baseUrl = '',
   } = {}) {
     const caller = records.get(sessionId);
     if (!caller) throw new RouterToolError('session_not_found', 'caller session not found', 404);
@@ -164,6 +222,7 @@ function createRouterToolRuntime({
       taskStart: taskStart === true,
       taskSource: taskSource ? cleanId(taskSource, 'taskSource') : null,
       dynamic: dynamic === true,
+      baseUrl: cleanBaseUrl(baseUrl),
       expiresAt: Number(now()) + capabilityTtlMs,
     }));
     return token;
@@ -471,6 +530,243 @@ function createRouterToolRuntime({
     };
   }
 
+  function externalWaitSummary(wait) {
+    const metadata = wait?.metadata && typeof wait.metadata === 'object'
+      ? wait.metadata : {};
+    return {
+      wait_id: wait.id,
+      mode: wait.mode,
+      status: wait.status,
+      reason: String(metadata.reason ?? wait.reason ?? ''),
+      due_at: metadata.dueAt ?? wait.dueAt ?? null,
+      created_at: wait.createdAt ?? null,
+      resolved_at: wait.resolvedAt ?? null,
+      cancelled_at: wait.cancelledAt ?? null,
+    };
+  }
+
+  function assertOwnedExternalWait(context, wait, waitId) {
+    if (!wait
+        || wait.sessionId !== context.sessionId
+        || !/^wait-router-[a-f0-9]{24}$/.test(String(wait.id || ''))
+        || wait.metadata?.source !== 'router-mcp') {
+      throw new RouterToolError(
+        'external_wait_not_found',
+        `external wait ${waitId} was not found for this session`,
+        404,
+      );
+    }
+    return wait;
+  }
+
+  async function ownedExternalWait(context, rawId) {
+    const waitId = cleanId(rawId, 'wait_id');
+    if (!/^wait-router-[a-f0-9]{24}$/.test(waitId)) {
+      throw new RouterToolError(
+        'external_wait_not_found',
+        `external wait ${waitId} was not found for this session`,
+        404,
+      );
+    }
+    return assertOwnedExternalWait(
+      context,
+      await getExternalWait(waitId),
+      waitId,
+    );
+  }
+
+  function callbackUrlFor(context, registration) {
+    if (registration.callbackUrl) return String(registration.callbackUrl);
+    if (!context.baseUrl || !registration.token) return null;
+    return `${context.baseUrl}/api/wait/${encodeURIComponent(registration.id)}/resolve`
+      + `?token=${encodeURIComponent(registration.token)}`;
+  }
+
+  function normalizeExternalWait(context, args) {
+    rejectUnknownArguments(args, new Set([
+      'mode', 'reason', 'timeout_seconds', 'delay_seconds', 'idempotency_key',
+    ]));
+    const mode = String(args.mode || '');
+    if (mode !== 'callback' && mode !== 'delay') {
+      throw new RouterToolError(
+        'invalid_arguments',
+        'mode must be callback or delay',
+      );
+    }
+    const reason = cleanText(args.reason, 'reason', MAX_REASON_LENGTH);
+    const explicitKey = args.idempotency_key == null
+      || String(args.idempotency_key).trim() === ''
+      ? null
+      : cleanId(args.idempotency_key, 'idempotency_key');
+    let timeoutSec = null;
+    let delaySec = null;
+    if (mode === 'callback') {
+      if (args.delay_seconds != null) {
+        throw new RouterToolError(
+          'invalid_arguments',
+          'delay_seconds is valid only for delay mode',
+        );
+      }
+      timeoutSec = boundedExternalSeconds(args.timeout_seconds, 'timeout_seconds', {
+        minimum: MIN_CALLBACK_TIMEOUT_SECONDS,
+        fallback: 1800,
+      });
+    } else {
+      if (args.timeout_seconds != null) {
+        throw new RouterToolError(
+          'invalid_arguments',
+          'timeout_seconds is valid only for callback mode',
+        );
+      }
+      delaySec = boundedExternalSeconds(args.delay_seconds, 'delay_seconds', {
+        minimum: 1,
+        required: true,
+      });
+    }
+    const registrationFingerprint = stableSuffix([
+      mode, reason, timeoutSec, delaySec,
+    ], cryptoImpl);
+    const waitId = `wait-router-${stableSuffix(explicitKey
+      ? ['external-wait', context.sessionId, explicitKey]
+      : [
+        'external-wait', context.sessionId, context.turnId, mode,
+        registrationFingerprint,
+      ], cryptoImpl)}`;
+    return {
+      mode,
+      reason,
+      explicitKey,
+      timeoutSec,
+      delaySec,
+      registrationFingerprint,
+      waitId,
+    };
+  }
+
+  function duplicateExternalWait(context, existing, spec) {
+    assertOwnedExternalWait(context, existing, spec.waitId);
+    if (existing.mode !== spec.mode
+        || (existing.metadata?.registrationFingerprint
+            && existing.metadata.registrationFingerprint !== spec.registrationFingerprint)) {
+      throw new RouterToolError(
+        'idempotency_conflict',
+        'idempotency_key is already bound to a different wait',
+        409,
+      );
+    }
+    return {
+      ok: true,
+      ...externalWaitSummary(existing),
+      duplicate: true,
+      ...(spec.mode === 'callback'
+        ? {
+          callback_url: null,
+          callback_url_unavailable: true,
+          instruction: 'This is an at-most-once replay. The callback capability is not rotated or re-exposed.',
+        }
+        : {
+          instruction: existing.status === 'pending'
+            ? 'The existing durable delay remains scheduled.'
+            : `The existing durable delay is already ${existing.status}; no new wait was created.`,
+        }),
+    };
+  }
+
+  async function waitForExternalResult(context, args) {
+    const spec = normalizeExternalWait(context, args);
+    const existing = await getExternalWait(spec.waitId);
+    if (existing) return duplicateExternalWait(context, existing, spec);
+
+    const pending = await listExternalWaits(context.sessionId);
+    const pendingRouterWaits = Array.isArray(pending)
+      ? pending.filter(wait => String(wait?.id || '').startsWith('wait-router-'))
+      : [];
+    if (pendingRouterWaits.length >= MAX_PENDING_EXTERNAL_WAITS) {
+      throw new RouterToolError(
+        'external_wait_limit',
+        `a session cannot have more than ${MAX_PENDING_EXTERNAL_WAITS} pending external waits`,
+        409,
+      );
+    }
+
+    let registered;
+    try {
+      registered = await registerExternalWait({
+        id: spec.waitId,
+        session: context.sessionId,
+        mode: spec.mode,
+        reason: spec.reason,
+        source: 'router-mcp',
+        registrationFingerprint: spec.registrationFingerprint,
+        ...(spec.mode === 'callback'
+          ? { timeoutSec: spec.timeoutSec }
+          : { delaySec: spec.delaySec }),
+      });
+    } catch (error) {
+      if (error?.code !== 'WAIT_ALREADY_EXISTS') throw error;
+      const raced = await getExternalWait(spec.waitId);
+      return duplicateExternalWait(context, raced, spec);
+    }
+    const summary = externalWaitSummary(registered);
+    if (spec.mode === 'callback') {
+      const callbackUrl = callbackUrlFor(context, registered);
+      if (!callbackUrl) {
+        await Promise.resolve(cancelExternalWait(spec.waitId)).catch(() => {});
+        throw new RouterToolError(
+          'callback_url_unavailable',
+          'callback URL could not be created for this process capability',
+          503,
+        );
+      }
+      return {
+        ok: true,
+        ...summary,
+        duplicate: false,
+        callback_url: callbackUrl,
+        callback_url_unavailable: false,
+        instruction: 'Give this capability URL only to the external producer. End the turn after any remaining work; MultiCC will resume this session when the callback arrives.',
+      };
+    }
+    return {
+      ok: true,
+      ...summary,
+      due_at: registered.dueAt ?? summary.due_at,
+      duplicate: false,
+      instruction: 'The wake-up is durable. End the turn after any remaining work; MultiCC will resume this session when the delay expires.',
+    };
+  }
+
+  async function getExternalWaitStatus(context, args) {
+    rejectUnknownArguments(args, new Set(['wait_id']));
+    const wait = await ownedExternalWait(context, args.wait_id);
+    return { ok: true, ...externalWaitSummary(wait) };
+  }
+
+  async function cancelExternalWaitForContext(context, args) {
+    rejectUnknownArguments(args, new Set(['wait_id']));
+    const wait = await ownedExternalWait(context, args.wait_id);
+    const result = await cancelExternalWait(wait.id);
+    if (!result || result.ok !== true) {
+      throw new RouterToolError(
+        result?.code || 'external_wait_cancel_rejected',
+        result?.status
+          ? `external wait is ${result.status}`
+          : 'external wait could not be cancelled',
+        result?.code === 'not_found' ? 404 : 409,
+      );
+    }
+    const current = await getExternalWait(wait.id);
+    return {
+      ok: true,
+      ...(current ? externalWaitSummary(current) : {
+        wait_id: wait.id,
+        mode: wait.mode,
+        status: 'cancelled',
+      }),
+      duplicate: result.idempotent === true,
+    };
+  }
+
   async function execute(token, tool, args = {}, options = {}) {
     if (!TOOL_NAMES.has(tool)) {
       throw new RouterToolError('unknown_tool', 'unknown router tool', 404);
@@ -481,6 +777,13 @@ function createRouterToolRuntime({
     const context = contextFor(token);
     if (tool === 'wait_for_user_answer' || tool === 'request_user_input') {
       return requestUserInput(context, args);
+    }
+    if (tool === 'wait_for_external_result') {
+      return waitForExternalResult(context, args);
+    }
+    if (tool === 'get_external_wait') return getExternalWaitStatus(context, args);
+    if (tool === 'cancel_external_wait') {
+      return cancelExternalWaitForContext(context, args);
     }
     if (tool === 'route_task') return routeTask(context, args);
     if (tool === 'dispatch_master') return dispatchMaster(context, args, options.signal);

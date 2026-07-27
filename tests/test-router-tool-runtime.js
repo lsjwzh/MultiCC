@@ -32,6 +32,8 @@ function fixture(t, overrides = {}) {
   ]);
   const admissions = [];
   const userInputSignals = [];
+  const externalWaits = new Map();
+  const externalWaitRegistrations = [];
   const dispatchToSession = async (targetId, message, opts) => {
     admissions.push({ targetId, message, opts });
     const admitted = await operations.admitDispatch({
@@ -71,12 +73,60 @@ function fixture(t, overrides = {}) {
       if (!duplicate) userInputSignals.push(signal);
       return { ok: true, duplicate };
     },
+    registerExternalWait: async spec => {
+      externalWaitRegistrations.push(spec);
+      if (externalWaits.has(spec.id)) {
+        const error = new Error('wait already exists');
+        error.code = 'WAIT_ALREADY_EXISTS';
+        throw error;
+      }
+      const at = 10_000;
+      const metadata = {
+        source: spec.source,
+        reason: spec.reason,
+        registrationFingerprint: spec.registrationFingerprint,
+        ...(spec.mode === 'callback'
+          ? { timeoutSec: spec.timeoutSec, expireAt: at + spec.timeoutSec * 1000 }
+          : { delaySec: spec.delaySec, dueAt: at + spec.delaySec * 1000 }),
+      };
+      const wait = {
+        id: spec.id,
+        sessionId: spec.session,
+        mode: spec.mode,
+        status: 'pending',
+        metadata,
+        createdAt: at,
+        resolvedAt: null,
+        cancelledAt: null,
+      };
+      externalWaits.set(wait.id, wait);
+      return {
+        ...wait,
+        token: spec.mode === 'callback' ? 'callback-secret' : null,
+        callbackUrl: null,
+        dueAt: metadata.dueAt || null,
+      };
+    },
+    getExternalWait: async id => externalWaits.get(id) || null,
+    listExternalWaits: async sessionId => [...externalWaits.values()]
+      .filter(wait => wait.sessionId === sessionId && wait.status === 'pending'),
+    cancelExternalWait: async id => {
+      const wait = externalWaits.get(id);
+      if (!wait) return { ok: false, code: 'not_found' };
+      if (wait.status === 'cancelled') return { ok: true, idempotent: true };
+      if (wait.status !== 'pending') {
+        return { ok: false, code: 'not_pending', status: wait.status };
+      }
+      wait.status = 'cancelled';
+      wait.cancelledAt = 11_000;
+      return { ok: true, idempotent: false };
+    },
     pollIntervalMs: 2,
     ...overrides,
   });
   return {
-    admissions, dispatchToSession, operations, records, runtime, store,
-    userInputSignals,
+    admissions, dispatchToSession, externalWaitRegistrations, externalWaits,
+    operations, records, runtime, store, userInputSignals,
   };
 }
 
@@ -114,6 +164,185 @@ test('request_user_input validates bounded choices without dispatching work', as
     error => error.code === 'invalid_arguments',
   );
   assert.equal(admissions.length, 0);
+});
+
+test('external callback wait is session-bound, at-most-once, and never exposes raw injection controls', async t => {
+  const { externalWaitRegistrations, runtime } = fixture(t);
+  const capability = runtime.issueContext({
+    sessionId: 'caller',
+    turnId: 'turn-callback',
+    baseUrl: 'http://127.0.0.1:3000',
+  });
+  const args = {
+    mode: 'callback',
+    reason: '等待 CI 发布结果',
+    timeout_seconds: 300,
+    idempotency_key: 'ci-release-42',
+  };
+  const first = await runtime.execute(capability, 'wait_for_external_result', args);
+  assert.equal(first.ok, true);
+  assert.equal(first.duplicate, false);
+  assert.match(
+    first.callback_url,
+    /^http:\/\/127\.0\.0\.1:3000\/api\/wait\/wait-router-[a-f0-9]{24}\/resolve\?token=callback-secret$/,
+  );
+  assert.equal('token' in first, false);
+  assert.deepEqual(externalWaitRegistrations[0], {
+    id: first.wait_id,
+    session: 'caller',
+    mode: 'callback',
+    reason: '等待 CI 发布结果',
+    source: 'router-mcp',
+    registrationFingerprint: externalWaitRegistrations[0].registrationFingerprint,
+    timeoutSec: 300,
+  });
+  assert.equal('pollCmd' in externalWaitRegistrations[0], false);
+  assert.equal('pollUrl' in externalWaitRegistrations[0], false);
+  assert.equal('injectPrefix' in externalWaitRegistrations[0], false);
+
+  const replay = await runtime.execute(capability, 'wait_for_external_result', args);
+  assert.equal(replay.wait_id, first.wait_id);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.callback_url, null);
+  assert.equal(replay.callback_url_unavailable, true);
+  assert.equal(externalWaitRegistrations.length, 1);
+
+  await assert.rejects(
+    runtime.execute(capability, 'wait_for_external_result', {
+      ...args,
+      reason: 'same key, different purpose',
+    }),
+    error => error.code === 'idempotency_conflict',
+  );
+  await assert.rejects(
+    runtime.execute(capability, 'wait_for_external_result', {
+      mode: 'delay',
+      reason: 'same key, different mode',
+      delay_seconds: 30,
+      idempotency_key: args.idempotency_key,
+    }),
+    error => error.code === 'idempotency_conflict',
+  );
+});
+
+test('durable delay can be inspected and cancelled only by its owning session', async t => {
+  const { externalWaits, runtime } = fixture(t);
+  const capability = runtime.issueContext({
+    sessionId: 'caller',
+    turnId: 'turn-delay',
+    baseUrl: 'http://127.0.0.1:3000',
+  });
+  const created = await runtime.execute(capability, 'wait_for_external_result', {
+    mode: 'delay',
+    reason: '十分钟后复查部署',
+    delay_seconds: 600,
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.duplicate, false);
+  assert.equal(created.due_at, 610_000);
+
+  const duplicate = await runtime.execute(capability, 'wait_for_external_result', {
+    mode: 'delay',
+    reason: '十分钟后复查部署',
+    delay_seconds: 600,
+  });
+  assert.equal(duplicate.wait_id, created.wait_id);
+  assert.equal(duplicate.duplicate, true);
+
+  const status = await runtime.execute(capability, 'get_external_wait', {
+    wait_id: created.wait_id,
+  });
+  assert.equal(status.status, 'pending');
+  assert.equal(status.reason, '十分钟后复查部署');
+
+  const otherSession = runtime.issueContext({
+    sessionId: 'worker-a',
+    turnId: 'turn-other',
+  });
+  await assert.rejects(
+    runtime.execute(otherSession, 'get_external_wait', { wait_id: created.wait_id }),
+    error => error.code === 'external_wait_not_found',
+  );
+  externalWaits.set('wait_system_internal', {
+    id: 'wait_system_internal',
+    sessionId: 'caller',
+    mode: 'delay',
+    status: 'pending',
+  });
+  await assert.rejects(
+    runtime.execute(capability, 'cancel_external_wait', {
+      wait_id: 'wait_system_internal',
+    }),
+    error => error.code === 'external_wait_not_found',
+  );
+
+  const cancelled = await runtime.execute(capability, 'cancel_external_wait', {
+    wait_id: created.wait_id,
+  });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.duplicate, false);
+  const replayedCancel = await runtime.execute(capability, 'cancel_external_wait', {
+    wait_id: created.wait_id,
+  });
+  assert.equal(replayedCancel.duplicate, true);
+
+  const replayedRegistration = await runtime.execute(capability, 'wait_for_external_result', {
+    mode: 'delay',
+    reason: '十分钟后复查部署',
+    delay_seconds: 600,
+  });
+  assert.equal(replayedRegistration.wait_id, created.wait_id);
+  assert.equal(replayedRegistration.status, 'cancelled');
+  assert.match(replayedRegistration.instruction, /already cancelled/);
+});
+
+test('external wait rejects unsupported modes, ambiguous timing, and per-session overflow', async t => {
+  const { runtime } = fixture(t);
+  const capability = runtime.issueContext({
+    sessionId: 'caller',
+    turnId: 'turn-wait-bounds',
+    baseUrl: 'http://127.0.0.1:3000',
+  });
+  for (const [args, code] of [
+    [{ mode: 'poll', reason: 'run a command' }, 'invalid_arguments'],
+    [{ mode: 'delay', reason: 'missing duration' }, 'invalid_arguments'],
+    [{
+      mode: 'callback', reason: 'ambiguous', delay_seconds: 10,
+    }, 'invalid_arguments'],
+    [{
+      mode: 'delay', reason: 'ambiguous', delay_seconds: 10, timeout_seconds: 20,
+    }, 'invalid_arguments'],
+    [{
+      mode: 'delay',
+      reason: 'must not accept host controls',
+      delay_seconds: 10,
+      session_id: 'worker-a',
+      pollCmd: 'echo unsafe',
+    }, 'invalid_arguments'],
+  ]) {
+    await assert.rejects(
+      runtime.execute(capability, 'wait_for_external_result', args),
+      error => error.code === code,
+    );
+  }
+  for (let index = 0; index < 8; index++) {
+    const wait = await runtime.execute(capability, 'wait_for_external_result', {
+      mode: 'delay',
+      reason: `bounded ${index}`,
+      delay_seconds: index + 1,
+      idempotency_key: `bounded-${index}`,
+    });
+    assert.equal(wait.ok, true);
+  }
+  await assert.rejects(
+    runtime.execute(capability, 'wait_for_external_result', {
+      mode: 'delay',
+      reason: 'one too many',
+      delay_seconds: 20,
+      idempotency_key: 'bounded-overflow',
+    }),
+    error => error.code === 'external_wait_limit',
+  );
 });
 
 test('route_task durably admits one-way work and is turn-idempotent', async t => {

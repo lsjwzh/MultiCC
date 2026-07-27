@@ -69,6 +69,8 @@ const PROVIDER_TRANSIENT_CODES = new Set([
 const CONFIG_CODES = new Set([
   'provider_unavailable', 'provider_config_invalid', 'missing_provider',
   'missing_base_url', 'spawn_failed', 'cli_not_installed', 'cli_resume_mismatch',
+  'eacces', 'enoent', 'enoexec', 'spawn_eacces', 'spawn_enoent',
+  'spawn_enoexec', 'exit_13',
 ]);
 const TOOL_CODES = new Set([
   'invalid_tool_arguments', 'tool_schema_error', 'tool_protocol_error',
@@ -83,7 +85,11 @@ function numberOrNull(value) {
 }
 
 function normalizeCode(value) {
-  return String(value || '').trim().toLowerCase().replace(/[\s.-]+/g, '_').slice(0, 80);
+  const text = String(value || '').trim().toLowerCase();
+  // libuv exposes spawn EACCES as errno -13. Preserve the launch-failure
+  // meaning instead of normalizing it into the opaque token "_13".
+  if (text === '-13') return 'exit_13';
+  return text.replace(/[\s.-]+/g, '_').slice(0, 80);
 }
 
 function sourceMessage(raw) {
@@ -193,15 +199,20 @@ function retryAfterOf(raw, now) {
 function structuredCategory(status, code, rawCategory) {
   if (CATEGORY_SET.has(rawCategory)) return rawCategory;
   if (CANCELLATION_CODES.has(code)) return 'cancel_shutdown';
-  if (AUTH_CODES.has(code) || status === 401 || status === 403) return 'authentication_permission';
-  if (BILLING_CODES.has(code) || status === 402) return 'billing_quota';
-  if (RATE_CODES.has(code) || status === 429) return 'rate_limit';
+  // A provider error code is more specific than a generic HTTP status. In
+  // particular, quota_exceeded is commonly transported as HTTP 403.
+  if (AUTH_CODES.has(code)) return 'authentication_permission';
+  if (BILLING_CODES.has(code)) return 'billing_quota';
+  if (RATE_CODES.has(code)) return 'rate_limit';
   if (PROVIDER_TRANSIENT_CODES.has(code)) return 'provider_transient';
   if (CONTEXT_CODES.has(code)) return 'context_token_limit';
   if (TOOL_CODES.has(code)) return 'tool_protocol';
   if (CONFIG_CODES.has(code)) return 'adapter_configuration';
   if (NETWORK_CODES.has(code)) return 'network';
   if (TIMEOUT_CODES.has(code)) return 'timeout';
+  if (status === 401 || status === 403) return 'authentication_permission';
+  if (status === 402) return 'billing_quota';
+  if (status === 429) return 'rate_limit';
   if (status != null && [500, 502, 503, 504, 529].includes(status)) return 'provider_transient';
   if (status != null && [400, 404, 409, 422].includes(status)) return 'invalid_request_model';
   return null;
@@ -215,7 +226,7 @@ function textFallbackCategory(message) {
   if (/context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit/.test(text)) return 'context_token_limit';
   if (/invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error/.test(text)) return 'tool_protocol';
   if (/cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint/.test(text)) return 'cancel_shutdown';
-  if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed/.test(text)) return 'adapter_configuration';
+  if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b/.test(text)) return 'adapter_configuration';
   if (/etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle/.test(text)) return 'timeout';
   if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection refused|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
   if (/\b(?:500|502|503|504|529)\b|overloaded|server error|internal server error|service unavailable|bad gateway|system is busy/.test(text)) return 'provider_transient';
@@ -249,10 +260,30 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   const code = normalizeCode(context.code || raw.code || nested.code || raw.type || nested.type);
   const httpStatus = httpStatusOf(raw);
   const message = sourceMessage(raw);
-  const explicit = structuredCategory(httpStatus, code,
-    normalizeCode(context.category || raw.category || nested.category));
-  const category = explicit || (TRUSTED_TEXT_SOURCES.has(source)
-    ? textFallbackCategory(message) : 'unknown');
+  const rawCategory = normalizeCode(context.category || raw.category || nested.category);
+  const explicit = structuredCategory(httpStatus, code, rawCategory);
+  const trustedTextCategory = TRUSTED_TEXT_SOURCES.has(source)
+    ? textFallbackCategory(message) : null;
+  let category = explicit || trustedTextCategory || 'unknown';
+  if (!CATEGORY_SET.has(rawCategory)) {
+    // HTTP 403 alone is only a generic auth signal. Provider-owned quota and
+    // billing wording is more specific, but must not override an explicit
+    // authentication code/category.
+    if (httpStatus === 403
+        && explicit === 'authentication_permission'
+        && !AUTH_CODES.has(code)
+        && trustedTextCategory === 'billing_quota') {
+      category = 'billing_quota';
+    }
+    // Likewise, HTTP 400 is the usual transport for context overflow. Prefer
+    // the trusted, specific context signal over the generic invalid-request
+    // fallback while preserving explicit structured categories.
+    if (httpStatus === 400
+        && explicit === 'invalid_request_model'
+        && trustedTextCategory === 'context_token_limit') {
+      category = 'context_token_limit';
+    }
+  }
   const partialOutput = context.partialOutput === true || raw.partialOutput === true;
   const sideEffects = context.sideEffects === true || raw.sideEffects === true;
   const phase = String(context.phase || raw.phase || (partialOutput ? 'stream' : 'before_first_token'));

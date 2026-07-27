@@ -8,7 +8,7 @@
   "properties": {
     "id": { "type": "string", "minLength": 1, "maxLength": 160 },
     "sessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "mode": { "enum": ["poll", "callback"] },
+    "mode": { "enum": ["poll", "callback", "delay"] },
     "checks": { "type": "integer", "minimum": 0 },
     "maxChecks": { "type": ["integer", "null"], "minimum": 1 },
     "intervalSec": { "type": ["number", "null"], "minimum": 1 },

@@ -1,6 +1,7 @@
 'use strict';
 
 const { isErrorOnlyText, retryNotice } = require('./api-error-policy');
+const { SYSTEM_PREFIX } = require('../session-delivery');
 
 function createApiErrorHost(options = {}) {
   const {
@@ -11,7 +12,7 @@ function createApiErrorHost(options = {}) {
     setTaskState,
     chatBroadcast,
     workspaceBroadcast,
-    waitInjector,
+    sessionDelivery,
     getAuxQueue,
     setSessionStatus,
     clearIncrementalSave,
@@ -28,8 +29,8 @@ function createApiErrorHost(options = {}) {
   if (!policy || typeof policy.evaluate !== 'function' || typeof policy.recordSuccess !== 'function') {
     throw new TypeError('api error host dependency missing: policy');
   }
-  if (!logger || !persistedSessions || !waitInjector
-      || typeof waitInjector.safeInject !== 'function') {
+  if (!logger || !persistedSessions || !sessionDelivery
+      || typeof sessionDelivery.deliverRetry !== 'function') {
     throw new TypeError('api error host dependency missing: object port');
   }
   const now = typeof options.now === 'function' ? options.now : Date.now;
@@ -66,7 +67,12 @@ function createApiErrorHost(options = {}) {
       const message = info.pendingText
         ? `${recovery}（含暂挂期间被暂存的真实数据，请据此继续）\n${info.pendingText}`
         : `${recovery}请确认当前状态并继续执行。`;
-      try { waitInjector.safeInject(sessionId, message); } catch (_) {}
+      try {
+        await sessionDelivery.deliverRetry(sessionId, message, {
+          idempotencyKey: `api-recovery:${sessionId}:${info.heldAt}`,
+          taskSource: 'api_recovery',
+        });
+      } catch (_) {}
       logger.info('api_error_held_session_resumed', { sessionId });
       if (++index < held.size) await new Promise(resolve => setTimeoutFn(resolve, 2_000));
     }
@@ -162,6 +168,9 @@ function createApiErrorHost(options = {}) {
       phase,
       partialOutput,
       sideEffects,
+      elapsedMs: Number.isFinite(Number(cs?.turnStartedAt))
+        ? Math.max(0, now() - Number(cs.turnStartedAt))
+        : 0,
       idempotencyKey: `${turn?.turnId || sessionName}:${attempt}:${provider}`,
     });
     if (runner) {
@@ -269,9 +278,9 @@ function createApiErrorHost(options = {}) {
   }
 
   function mergeHeldPendingText(pendingText, prior) {
-    const newIsNudge = typeof pendingText === 'string' && pendingText.startsWith(waitInjector.SYS_PREFIX);
+    const newIsNudge = typeof pendingText === 'string' && pendingText.startsWith(SYSTEM_PREFIX);
     const priorIsReal = prior?.pendingText != null
-      && !String(prior.pendingText).startsWith(waitInjector.SYS_PREFIX);
+      && !String(prior.pendingText).startsWith(SYSTEM_PREFIX);
     if (newIsNudge && priorIsReal) return prior.pendingText;
     return pendingText != null ? pendingText : prior?.pendingText || null;
   }

@@ -72,9 +72,9 @@ function harness(options = {}) {
     },
     chatBroadcast: (sessionId, payload) => broadcasts.push({ sessionId, payload }),
     workspaceBroadcast: (dirId, payload) => workspaceEvents.push({ dirId, payload }),
-    waitInjector: {
-      SYS_PREFIX: '🔇',
-      safeInject: (sessionId, message) => injections.push({ sessionId, message }),
+    sessionDelivery: {
+      deliverRetry: (sessionId, message, deliveryOptions) =>
+        injections.push({ sessionId, message, deliveryOptions }),
     },
     getAuxQueue: () => auxQueue,
     setSessionStatus: (sessionId, status) => statuses.push({ sessionId, status }),
@@ -123,6 +123,25 @@ test('turn policy decision persists stable state and duplicate delivery does not
   assert.equal(h.broadcasts[0].payload.type, 'api_error_policy');
   assert.equal(h.taskWrites[0].patch.apiError.category, 'provider_transient');
   assert.equal('sanitizedMessage' in h.taskWrites[0].patch.apiError, false);
+});
+
+test('turn policy receives the owned turn elapsed budget', () => {
+  const h = harness();
+  let observed = null;
+  h.decideWith((raw, context) => {
+    observed = context;
+    return decision();
+  });
+  h.host.evaluateTurnApiError({
+    sessionName: 'session-1',
+    cs: { turnStartedAt: 250 },
+    persisted: { cli: 'claude' },
+    turn: { turnId: 'turn-elapsed' },
+    runner: {},
+    raw: { httpStatus: 503 },
+    phase: 'before_first_token',
+  });
+  assert.equal(observed.elapsedMs, 750);
 });
 
 test('owned retry reuses the current turn, resets partial state, and cancels when superseded', () => {
@@ -176,6 +195,8 @@ test('only network failures open the global hold and recovery resumes held sessi
   assert.equal(h.host.isNetworkUnhealthy(), false);
   assert.equal(h.injections.length, 1);
   assert.match(h.injections[0].message, /真实待处理数据/);
+  assert.equal(h.injections[0].deliveryOptions.taskSource, 'api_recovery');
+  assert.match(h.injections[0].deliveryOptions.idempotencyKey, /^api-recovery:session-1:/);
 });
 
 test('Aux recovery probe skips permanent authentication/configuration failures', () => {

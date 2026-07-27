@@ -21,6 +21,8 @@ const DEFAULTS = Object.freeze({
   maxChecks: 40,
   timeoutSec: 1800,
   minIntervalSec: 3,
+  minDelaySec: 1,
+  maxDelaySec: 7 * 24 * 60 * 60,
 });
 
 function asFinite(value, fallback) {
@@ -49,6 +51,8 @@ function publicWait(wait) {
     pollUrl: metadata.pollUrl,
     untilContains: metadata.untilContains,
     untilRegex: metadata.untilRegex,
+    dueAt: metadata.dueAt,
+    reason: metadata.reason,
     createdAt: wait.createdAt,
     resolvedAt: wait.resolvedAt,
     cancelledAt: wait.cancelledAt,
@@ -144,8 +148,16 @@ function createOrchestrationRuntime({
   }
 
   async function register(spec = {}) {
-    const mode = spec.mode === 'callback' ? 'callback' : 'poll';
+    const mode = ['callback', 'poll', 'delay'].includes(spec.mode)
+      ? spec.mode : 'poll';
     const at = Number(now());
+    const registrationMetadata = {
+      ...(spec.source ? { source: String(spec.source).slice(0, 64) } : {}),
+      ...(spec.reason ? { reason: String(spec.reason).slice(0, 4096) } : {}),
+      ...(spec.registrationFingerprint
+        ? { registrationFingerprint: String(spec.registrationFingerprint).slice(0, 128) }
+        : {}),
+    };
     let metadata;
     if (mode === 'poll') {
       if (!spec.pollCmd && !spec.pollUrl) throw new Error('poll mode needs pollCmd or pollUrl');
@@ -168,13 +180,31 @@ function createOrchestrationRuntime({
         nextAt: at + intervalSec * 1000,
         pollLeaseId: null,
         pollLeasedUntil: null,
+        ...registrationMetadata,
+      };
+    } else if (mode === 'callback') {
+      const timeoutSec = Math.max(10, asFinite(spec.timeoutSec, DEFAULTS.timeoutSec));
+      metadata = {
+        timeoutSec,
+        expireAt: at + timeoutSec * 1000,
+        ...registrationMetadata,
       };
     } else {
-      const timeoutSec = Math.max(10, asFinite(spec.timeoutSec, DEFAULTS.timeoutSec));
-      metadata = { timeoutSec, expireAt: at + timeoutSec * 1000 };
+      const delaySec = Math.min(
+        DEFAULTS.maxDelaySec,
+        Math.max(DEFAULTS.minDelaySec, asFinite(spec.delaySec ?? spec.delaySeconds, 1)),
+      );
+      metadata = {
+        delaySec,
+        dueAt: at + delaySec * 1000,
+        delayLeaseId: null,
+        delayLeasedUntil: null,
+        ...registrationMetadata,
+      };
     }
 
     const registered = await waits.register({
+      id: spec.id,
       sessionId: spec.session || spec.sessionId,
       mode,
       injectPrefix: spec.injectPrefix || '',
@@ -187,6 +217,7 @@ function createOrchestrationRuntime({
       callbackUrl: registered.callbackUrl || null,
       session: registered.sessionId,
       status: 'pending',
+      dueAt: metadata.dueAt || null,
     };
   }
 
@@ -331,6 +362,25 @@ function createOrchestrationRuntime({
           }
           continue;
         }
+        if (wait.mode === 'delay') {
+          const leaseActive = metadata.delayLeaseId
+            && Number.isFinite(metadata.delayLeasedUntil)
+            && metadata.delayLeasedUntil > at;
+          if (leaseActive || !Number.isFinite(metadata.dueAt) || metadata.dueAt > at) continue;
+          const delayLeaseId = crypto.randomBytes(16).toString('hex');
+          metadata.delayLeaseId = delayLeaseId;
+          metadata.delayLeasedUntil = at + pollLeaseMs;
+          wait.metadata = metadata;
+          wait.updatedAt = at;
+          claims.push({
+            id: wait.id,
+            mode: 'delay',
+            sessionId: wait.sessionId,
+            delayLeaseId,
+            metadata: JSON.parse(JSON.stringify(metadata)),
+          });
+          continue;
+        }
         const leaseActive = metadata.pollLeaseId
           && Number.isFinite(metadata.pollLeasedUntil)
           && metadata.pollLeasedUntil > at;
@@ -340,7 +390,13 @@ function createOrchestrationRuntime({
         metadata.pollLeasedUntil = at + pollLeaseMs;
         wait.metadata = metadata;
         wait.updatedAt = at;
-        claims.push({ id: wait.id, sessionId: wait.sessionId, pollLeaseId, metadata: JSON.parse(JSON.stringify(metadata)) });
+        claims.push({
+          id: wait.id,
+          mode: 'poll',
+          sessionId: wait.sessionId,
+          pollLeaseId,
+          metadata: JSON.parse(JSON.stringify(metadata)),
+        });
       }
       return { claims, expired };
     });
@@ -383,6 +439,19 @@ function createOrchestrationRuntime({
   async function processPolls() {
     const claims = await claimDuePolls();
     await Promise.allSettled(claims.map(async claim => {
+      if (claim.mode === 'delay') {
+        const reason = String(claim.metadata.reason || '').trim();
+        const text = reason
+          ? `🔇【延迟条件已到】${reason}`
+          : '🔇【延迟条件已到】请检查当前状态并继续处理。';
+        const result = await waits.resolveDelay(
+          claim.id,
+          { dueAt: claim.metadata.dueAt, reason },
+          { deliveryText: text },
+        );
+        if (result.ok) removePending(claim.sessionId, claim.id);
+        return;
+      }
       try {
         const output = String(await probe(claim.metadata));
         await finishPollAttempt(claim, { output: output.slice(0, 1024 * 1024) });
@@ -404,7 +473,9 @@ function createOrchestrationRuntime({
     if (payload.type === 'session.work') return String(payload.message || '');
     if (payload.type === 'dispatch.request') return String(payload.message || '');
     if (typeof payload.deliveryText === 'string' && payload.deliveryText) return payload.deliveryText;
-    const defaultPrefix = payload.mode === 'poll' ? '[轮询条件已满足]' : '[等待的数据已返回]';
+    const defaultPrefix = payload.mode === 'poll' ? '[轮询条件已满足]'
+      : payload.mode === 'delay' ? '[延迟条件已到]'
+        : '[等待的数据已返回]';
     const prefix = payload.injectPrefix || defaultPrefix;
     return `${prefix}\n${renderData(payload.data)}`;
   }

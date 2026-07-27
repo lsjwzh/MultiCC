@@ -64,8 +64,8 @@ function makeHarness(overrides = {}) {
     broadcast: (sessionName, event) => broadcasts.push({ sessionName, event }),
     observeTask: observation => { observations.push(observation); },
     noteBgResultInjected: sessionName => notes.push(sessionName),
-    injectSystemMsg: (sessionName, text, delay, origin) => {
-      injections.push({ sessionName, text, delay, origin });
+    deliverSystem: (sessionName, text, origin) => {
+      injections.push({ sessionName, text, origin });
     },
     createCoalescer: bgCompletion.createCoalescer,
     buildNudge: bgCompletion.buildNudge,
@@ -300,7 +300,6 @@ async function test(name, fn) {
     });
     assert.ok(h.injections[0].text.includes('OUTPUT-A'));
     assert.ok(h.injections[0].text.includes('OUTPUT-B'));
-    assert.strictEqual(h.injections[0].delay, 0);
   });
 
   await test('completion ledger and monitor_done preserve the bounded final result DTO', () => {
