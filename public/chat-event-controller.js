@@ -370,6 +370,7 @@
           if (!state.pendingCancel) {
             global.MultiCCChatRateLimit?.refreshOpenCodeQuota?.();
             global.MultiCCChatRateLimit?.refreshQoderQuota?.();
+            global.MultiCCChatRateLimit?.refreshCodexQuota?.();
           }
           break;
         case 'notify': {
