@@ -372,6 +372,7 @@
             global.MultiCCChatRateLimit?.refreshQoderQuota?.();
             global.MultiCCChatRateLimit?.refreshCodexQuota?.();
             global.MultiCCChatRateLimit?.refreshArkQuota?.();
+            global.MultiCCChatRateLimit?.refreshZhipuQuota?.();
           }
           break;
         case 'notify': {
