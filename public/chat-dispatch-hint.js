@@ -20,11 +20,12 @@
 
   var STORE_PREFIX = 'multicc.noDispatch.';
 
-  // Both suffixes speak the Commander's own vocabulary: route_task is its only
-  // dispatch channel, so an instruction phrased around it reads as a constraint
-  // it already knows how to obey.
-  var SUFFIX_SPREAD = '\n\n[派发要求] 请尽可能把本次任务拆分，并通过 route_task 派发给其它会话并行完成；只有确实无法派发的部分才留在当前会话自己做。';
-  var SUFFIX_KEEP = '\n\n[派发要求] 不要派发给其它会话（不要调用 route_task），请在当前会话内直接完成本次任务。';
+  // Both suffixes are in English on purpose: the Commander model obeys English
+  // tool-routing instructions more reliably, and route_task is its only dispatch
+  // channel, so an instruction phrased around it reads as a constraint it
+  // already knows how to obey.
+  var SUFFIX_SPREAD = '\n\n[Dispatch] After a brief analysis, dispatch this task to other sessions in parallel via the route_task tool. Only keep in the current session what truly cannot be dispatched.';
+  var SUFFIX_KEEP = '\n\n[Dispatch] Do not dispatch this task. Do not call the route_task tool. Complete the entire task yourself within the current session.';
 
   function defaultStorage(win) {
     try { return win && win.localStorage ? win.localStorage : null; } catch (_) { return null; }
@@ -94,17 +95,38 @@
       render();
     }
 
+    // Resolving the role can race ahead of the session being fully ready /
+    // created: a transient loadSession failure at boot would otherwise hide the
+    // switch forever. A concrete answer (commander OR not) is final; only a
+    // thrown/rejected lookup is retried. A non-commander role stays fail-closed
+    // and never rewrites prompts.
+    var roleMaxRetries = opts.roleMaxRetries == null ? 4 : opts.roleMaxRetries;
+    var roleRetryDelayMs = opts.roleRetryDelayMs == null ? 1500 : opts.roleRetryDelayMs;
+
+    function resolveRole(attempt) {
+      return Promise.resolve()
+        .then(function () { return loadSession(sessionId); })
+        .then(function (info) {
+          setEnabled(!!info && info.type === 'commander');
+          return enabled;
+        })
+        .catch(function () {
+          if (attempt < roleMaxRetries) {
+            return new Promise(function (resolve) {
+              setTimeout(function () { resolve(resolveRole(attempt + 1)); }, roleRetryDelayMs);
+            });
+          }
+          setEnabled(false); return false;
+        });
+    }
+
     function mount() {
       bind();
       if (!sessionId) {
         setEnabled(false);
         return Promise.resolve(false);
       }
-      return Promise.resolve()
-        .then(function () { return loadSession(sessionId); })
-        .then(function (info) { setEnabled(!!info && info.type === 'commander'); return enabled; })
-        // Fail closed: an unknown session role must not silently rewrite prompts.
-        .catch(function () { setEnabled(false); return false; });
+      return resolveRole(0);
     }
 
     function decorate(text) {

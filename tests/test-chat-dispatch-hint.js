@@ -60,8 +60,10 @@ test('module exposes a frozen API and the two routing suffixes', () => {
   const { api } = loadHint();
   assert.equal(Object.isFrozen(api), true);
   assert.match(api.SUFFIX_SPREAD, /route_task/);
-  assert.match(api.SUFFIX_SPREAD, /派发给其它会话/);
-  assert.match(api.SUFFIX_KEEP, /不要派发给其它会话/);
+  // Suffixes are English on purpose — the model obeys English routing instructions.
+  assert.match(api.SUFFIX_SPREAD, /dispatch this task to other sessions/i);
+  assert.match(api.SUFFIX_KEEP, /do not dispatch this task/i);
+  assert.match(api.SUFFIX_KEEP, /route_task/);
   assert.equal(api.STORE_PREFIX, 'multicc.noDispatch.');
 });
 
@@ -161,11 +163,30 @@ test('an unreadable session role fails closed: hidden switch, untouched prompt',
   const doc = hintDocument();
   const hint = api.createDispatchHint({
     document: doc, sessionId: 'multicc-commander-01', storage: fakeStorage(),
+    roleMaxRetries: 0,
     loadSession: async () => { throw new Error('offline'); },
   });
   assert.equal(await hint.mount(), false);
   assert.equal(doc.label.hidden, true);
   assert.equal(hint.decorate('部署新版本'), '部署新版本');
+});
+
+test('a transient boot-time failure retries and then reveals the switch', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument();
+  let attempts = 0;
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'multicc-commander-01', storage: fakeStorage(),
+    roleMaxRetries: 3, roleRetryDelayMs: 1,
+    loadSession: async () => {
+      attempts += 1;
+      if (attempts < 2) throw new Error('transient');
+      return { id: 'multicc-commander-01', type: 'commander' };
+    },
+  });
+  assert.equal(await hint.mount(), true);
+  assert.equal(attempts, 2);
+  assert.equal(doc.label.hidden, false);
 });
 
 test('blank and non-string input is passed through untouched', async () => {
