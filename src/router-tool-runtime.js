@@ -326,11 +326,22 @@ function createRouterToolRuntime({
     };
   }
 
+  const DISPATCH_SLAVE_CALLBACK_INSTRUCTION = [
+    '',
+    '---',
+    '【回传要求】完成本任务后，你必须调用 dispatch_slave 工具回传结果：',
+    'dispatch_slave({result:"<结论/改动/证据/风险摘要>", status:"completed"})；',
+    '若失败用 status:"failed"。不回传则 master 会一直等待。',
+  ].join('\n');
+
   async function admit(context, tool, args, resultMode) {
     const { targetId } = targetFor(
       context, args.target_session_id, args.allow_terminal === true,
     );
-    const message = cleanText(args.message, 'message', MAX_MESSAGE_LENGTH);
+    let message = cleanText(args.message, 'message', MAX_MESSAGE_LENGTH);
+    if (resultMode === 'tool') {
+      message += DISPATCH_SLAVE_CALLBACK_INSTRUCTION;
+    }
     const identity = admissionIdentity(
       context, tool, targetId, message, args.idempotency_key,
     );
@@ -418,6 +429,7 @@ function createRouterToolRuntime({
         target_session_id: admitted.targetSessionId,
         execution_session_id: admitted.chatId || admitted.targetSessionId,
         task_id: admitted.taskId,
+        queued: true,
         retryable: true,
       };
     }
@@ -430,6 +442,7 @@ function createRouterToolRuntime({
       task_id: operation.spec.taskId || admitted.taskId,
       result: operation.result || null,
       duplicate: admitted.duplicate,
+      queued: true,
     };
   }
 
