@@ -127,30 +127,23 @@ test('idle starts one item and running work keeps later messages in strict FIFO 
   assert.equal(thirdClaim.id, third.entry.id);
 });
 
-test('non-P direct admit jumps stale FIFO; stale items only drain on D (T1)', async t => {
+test('direct input staged during P starts as soon as classify leaves P', async t => {
   const h = fixture(t);
   // A is active (P).
   const a = await h.scheduler.admit({ sessionId: 's1', text: 'A', idempotencyKey: 'A' });
   const aClaim = await claimOne(h);
   assert.equal(aClaim.id, a.entry.id);
   await startClaim(h, aClaim);
-  // B queues behind A (P → enqueue, not directRun).
+  // B is durably staged behind A while P is still running.
   const b = await h.scheduler.admit({ sessionId: 's1', text: 'B', idempotencyKey: 'B' });
+  assert.equal(b.queued, true);
+  assert.equal(await claimOne(h), null);
 
-  // A ends W (at-rest). B is stale FIFO; W must not drain it.
+  // A leaves P for W. B is a user message, so it starts a fresh native turn;
+  // the released -p process is not an admission gate.
   await h.scheduler.complete('s1', { classifyState: 'W' });
-  assert.equal(await claimOne(h), null, 'W leaves stale FIFO item B untouched');
-
-  // User sends C while non-P → directRun → runs immediately, jumping B.
-  const c = await h.scheduler.admit({ sessionId: 's1', text: 'C', idempotencyKey: 'C' });
-  const cClaim = await claimOne(h);
-  assert.equal(cClaim && cClaim.id, c.entry.id, 'direct admit C jumps stale B and runs');
-  await startClaim(h, cClaim);
-
-  // C ends D → stale B finally drains.
-  await h.scheduler.complete('s1', { classifyState: 'D' });
   const bClaim = await claimOne(h);
-  assert.equal(bClaim && bClaim.id, b.entry.id, 'stale B drains only after a D verdict');
+  assert.equal(bClaim && bClaim.id, b.entry.id);
 });
 
 test('released W keeps ordinary FIFO staged but runs a correlated answer control entry', async t => {
@@ -177,15 +170,6 @@ test('released W keeps ordinary FIFO staged but runs a correlated answer control
   assert.equal(waiting.active, null);
   assert.equal(waiting.awaitingRequestId, 'usrq-1');
   assert.equal(await claimOne(h), null, 'ordinary queued work stays gated by W');
-
-  const wrong = await h.scheduler.admit({
-    sessionId: 's1',
-    text: 'wrong',
-    workKind: 'answer',
-    requestId: 'usrq-wrong',
-    idempotencyKey: 'wrong',
-  });
-  assert.equal(wrong.code, 'no_active_task');
 
   const answer = await h.scheduler.admit({
     sessionId: 's1',
@@ -249,7 +233,7 @@ test('an early structured answer queues during P then runs first after the askin
   assert.equal((await claimOne(h)).id, ordinary.entry.id);
 });
 
-test('correlated structured answers depend on request identity and non-D, not the W letter', async t => {
+test('structured input remains deliverable even when its old request correlation is stale', async t => {
   const h = fixture(t);
   await h.scheduler.admit({ sessionId: 's1', text: 'ask', idempotencyKey: 'ask' });
   await startClaim(h, await claimOne(h));
@@ -274,14 +258,16 @@ test('correlated structured answers depend on request identity and non-D, not th
     classifyState: 'D',
     awaitingRequestId: 'usrq-stale',
   });
-  const rejected = await done.scheduler.admit({
+  const late = await done.scheduler.admit({
     sessionId: 's2',
     text: 'late answer',
     workKind: 'answer',
     requestId: 'usrq-stale',
     idempotencyKey: 'late',
   });
-  assert.equal(rejected.code, 'no_active_task');
+  assert.equal(late.ok, true);
+  assert.equal(late.queued, false);
+  assert.equal((await claimOne(done, 's2')).id, late.entry.id);
 });
 
 test('canonical pending request admits option and free-text answers despite a stale idle scheduler mirror', async t => {
@@ -315,7 +301,7 @@ test('canonical pending request admits option and free-text answers despite a st
   }
 });
 
-test('canonical pending request remains fail-closed for stale or mismatched answers', async t => {
+test('stale answer correlation never rejects or drops the user message', async t => {
   const h = fixture(t, {
     getClassifyState: () => 'W',
     getPendingUserInput: () => ({
@@ -331,8 +317,9 @@ test('canonical pending request remains fail-closed for stale or mismatched answ
     requestId: 'usrq-old',
     idempotencyKey: 'stale-answer',
   });
-  assert.equal(stale.ok, false);
-  assert.equal(stale.code, 'no_active_task');
+  assert.equal(stale.ok, true);
+  assert.equal(stale.entry.payload.taskId, null);
+  assert.equal((await claimOne(h)).id, stale.entry.id);
 });
 
 test('error and user-input waiting freeze future work while a correlated control resumes active', async t => {
@@ -366,15 +353,6 @@ test('error and user-input waiting freeze future work while a correlated control
     requestId: 'question-1',
     expectedTaskId: 'task-a',
   });
-  const wrong = await h.scheduler.admit({
-    sessionId: 's1',
-    text: 'wrong answer',
-    workKind: 'answer',
-    requestId: 'question-2',
-    activeEntryId: active.entry.id,
-    idempotencyKey: 'wrong',
-  });
-  assert.equal(wrong.code, 'request_id_mismatch');
   const answer = await h.scheduler.admit({
     sessionId: 's1',
     text: 'approved',
@@ -730,7 +708,7 @@ test('classify W permits a related continuation but never an unrelated queued ta
 });
 
 test('canonical classify makes only P stage direct chat input', async t => {
-  const classify = new Map([['s1', 'P']]);
+  const classify = new Map([['s1', 'D']]);
   const h = fixture(t, {
     getClassifyState: sessionId => classify.get(sessionId) || null,
   });
@@ -738,6 +716,7 @@ test('canonical classify makes only P stage direct chat input', async t => {
     sessionId: 's1', text: 'active', idempotencyKey: 'active',
   });
   await startClaim(h, await claimOne(h));
+  classify.set('s1', 'P');
   const staged = await h.scheduler.admit({
     sessionId: 's1', text: 'typed during process', source: 'direct',
     idempotencyKey: 'staged',
@@ -784,16 +763,22 @@ test('manual retry is admitted only for classify E', async t => {
 
   const failed = fixture(t);
   await failed.scheduler.admit({
-    sessionId: 'failed', text: 'active', idempotencyKey: 'active',
+    sessionId: 'failed',
+    text: 'active',
+    options: { taskId: 'task-failed' },
+    idempotencyKey: 'active',
   });
   await startClaim(failed, await claimOne(failed, 'failed'));
-  await failed.scheduler.freeze('failed', 'classify_error', { classifyState: 'E' });
+  await failed.scheduler.complete('failed', { classifyState: 'E' });
+  assert.equal((await failed.scheduler.status('failed')).active, null);
   const admitted = await failed.scheduler.resolve('failed', {
     action: 'retry',
     idempotencyKey: 'retry-error',
   });
   assert.equal(admitted.ok, true);
-  assert.equal((await claimOne(failed, 'failed')).payload.workKind, 'retry');
+  const retry = await claimOne(failed, 'failed');
+  assert.equal(retry.payload.workKind, 'retry');
+  assert.equal(retry.payload.taskId, 'task-failed');
 });
 
 test('a pending queued entry can be cancelled individually but a leased entry cannot', async t => {

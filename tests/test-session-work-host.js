@@ -511,6 +511,28 @@ test('a released W turn admits its correlated structured answer as a new control
   assert.equal(admission.options.taskId, 'task-1');
 });
 
+test('a stale picker correlation degrades to ordinary input instead of blocking send', async () => {
+  const h = fixture();
+  h.forceState('idle');
+  h.setClassifyState('W');
+  h.setPending({
+    requestId: 'usrq-current',
+    taskId: 'task-current',
+    resolved: false,
+  });
+
+  const result = await h.host.admit('s1', '旧选择仍作为文字发送', {
+    userInputRequestId: 'usrq-stale',
+    clientMsgId: 'client-stale-answer',
+  });
+  assert.equal(result.ok, true);
+  const admission = h.calls.find(call => call[0] === 'admit')[1];
+  assert.equal(admission.workKind, null);
+  assert.equal(admission.requestId, null);
+  assert.equal(admission.activeEntryId, null);
+  assert.equal('userInputRequestId' in admission.options, false);
+});
+
 test('recovery state exposes only unresolved request correlation to the scheduler', () => {
   const h = fixture();
   h.setPending({
