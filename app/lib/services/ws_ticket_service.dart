@@ -15,10 +15,10 @@ abstract final class MulticcWsPath {
 }
 
 // Flutter currently consumes Aux through REST + /ws/workspace events, so it
-// does not create a second /ws/aux transport. Voice input likewise remains the
-// existing multipart /api/voice/stt flow; only its protocol-compatible TTS
-// socket is migrated here. The constants keep both exact ticket scopes ready
-// without silently changing either business state machine.
+// does not create a second /ws/aux transport. Voice input now streams over
+// /ws/voice (see VoiceDictationService), falling back to the legacy multipart
+// /api/voice/stt flow when the socket is unavailable. The constants keep both
+// exact ticket scopes ready without silently changing either business state machine.
 
 typedef WsTicketPost =
     Future<http.Response> Function(

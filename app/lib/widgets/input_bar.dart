@@ -13,6 +13,7 @@ import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
+import '../services/voice_dictation_service.dart';
 import '../screens/voice_call_screen.dart';
 import '../utils/dispatch_hint.dart';
 import 'chat_runtime_panels.dart';
@@ -47,6 +48,11 @@ class _InputBarState extends State<InputBar> {
   bool _isRecording = false;
   bool _isTranscribing = false;
 
+  // 流式听写（/ws/voice）：边说边出字 + 实时润色，对齐 web 的语音 HUD。服务端 ASR
+  // 或麦克风不可用时回退到上面的 m4a → /api/voice/stt 整段上传。
+  VoiceDictationService? _dictation;
+  bool _legacyFallbackArmed = false;
+
   // Commander 专属的「不派发给其他会话」勾选，按会话记住（web 端同名开关）。
   bool _noDispatch = false;
   String _noDispatchSessionId = '';
@@ -62,6 +68,8 @@ class _InputBarState extends State<InputBar> {
 
   @override
   void dispose() {
+    _dictation?.removeListener(_onDictationChanged);
+    _dictation?.dispose();
     _ctrl.dispose();
     _focusNode.dispose();
     _recorder.dispose();
@@ -426,6 +434,97 @@ class _InputBarState extends State<InputBar> {
     } catch (_) {
       return null;
     }
+  }
+
+  // ── Streaming voice dictation (/ws/voice) ──
+
+  void _onDictationChanged() {
+    if (!mounted) return;
+    final d = _dictation;
+    // 启动失败且一个字都没识别到：回退旧的整段上传，别让用户对着空 HUD 干等。
+    if (d != null &&
+        d.state == VoiceDictationState.failed &&
+        !d.hasText &&
+        !_legacyFallbackArmed) {
+      _legacyFallbackArmed = true;
+      _dictation?.removeListener(_onDictationChanged);
+      _dictation = null;
+      setState(() {});
+      _fallbackLegacyRecording();
+      return;
+    }
+    setState(() {});
+  }
+
+  /// 麦克风按钮：正在听写就提交，否则开始一轮流式听写。
+  Future<void> _toggleDictation(
+    ChatProvider provider, {
+    required bool commander,
+  }) async {
+    final d = _dictation;
+    if (d != null && d.isBusy) {
+      await _commitDictation(provider, commander: commander);
+      return;
+    }
+    await _startDictation(provider);
+  }
+
+  Future<void> _startDictation(ChatProvider provider) async {
+    if (_dictation == null) {
+      _dictation = VoiceDictationService(settings: provider.settings);
+      _dictation!.addListener(_onDictationChanged);
+    }
+    _legacyFallbackArmed = false;
+    final ok = await _dictation!.start();
+    if (!mounted) return;
+    if (!ok) {
+      // /ws/voice 或麦克风不可用：回退旧的整段上传流程。
+      _dictation?.removeListener(_onDictationChanged);
+      _dictation = null;
+      setState(() {});
+      await _toggleRecording();
+    } else {
+      setState(() {});
+    }
+  }
+
+  Future<void> _commitDictation(
+    ChatProvider provider, {
+    required bool commander,
+  }) async {
+    final d = _dictation;
+    if (d == null) return;
+    final result = await d.commit();
+    if (!mounted) return;
+    if (result.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(t('voiceEmpty')),
+          backgroundColor: const Color(0xFF454b54),
+        ),
+      );
+      return;
+    }
+    // 填进输入框（保留可编辑，移动端误触代价大，不直接发送），并 fire-and-forget
+    // 回传润色反馈给服务端做质量评估。
+    final current = _ctrl.text.trim();
+    _ctrl.text =
+        current.isEmpty ? result.text : '$current\n${result.text}';
+    _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+    d.reportFeedback(result, userFinal: result.text);
+  }
+
+  void _cancelDictation() => _dictation?.cancel();
+
+  Future<void> _fallbackLegacyRecording() async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(t('voiceStreamUnavailable')),
+        backgroundColor: const Color(0xFF454b54),
+      ),
+    );
+    await _toggleRecording();
   }
 
   // ── Dispatch hint (commander only) ──
@@ -1235,6 +1334,21 @@ class _InputBarState extends State<InputBar> {
                 ),
               ),
 
+            // Streaming voice dictation HUD — lives just above the input row so the
+            // live transcript is visible while the keyboard / send button stay usable.
+            if (_dictation != null &&
+                _dictation!.state != VoiceDictationState.idle &&
+                _dictation!.state != VoiceDictationState.done)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: _VoiceDictationHud(
+                  dictation: _dictation!,
+                  onCancel: _cancelDictation,
+                  onCommit: () =>
+                      _commitDictation(provider, commander: isCommander),
+                ),
+              ),
+
             // Input row
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -1249,18 +1363,25 @@ class _InputBarState extends State<InputBar> {
                 ),
                 const SizedBox(width: 4),
 
-                // Voice button
+                // Voice button — streaming /ws/voice dictation (falls back to the
+                // legacy m4a → /api/voice/stt flow when the socket is unavailable).
                 _SmallButton(
-                  onTap: (!_isTranscribing && isConnected)
-                      ? _toggleRecording
+                  onTap: (_dictation?.isBusy ?? false)
+                      ? () => _commitDictation(provider, commander: isCommander)
+                      : (!_isTranscribing && isConnected)
+                      ? () => _toggleDictation(provider, commander: isCommander)
                       : null,
-                  icon: _isTranscribing
+                  icon: (_dictation?.state == VoiceDictationState.finalizing)
+                      ? Icons.hourglass_top_rounded
+                      : (_dictation?.isBusy ?? false)
+                      ? Icons.check_circle_rounded
+                      : _isTranscribing
                       ? Icons.hourglass_top_rounded
                       : _isRecording
                       ? Icons.stop_circle_rounded
                       : Icons.mic_rounded,
-                  color: _isRecording
-                      ? const Color(0xFFff6b63)
+                  color: (_dictation?.isBusy ?? false) || _isRecording
+                      ? const Color(0xFF22ab9c)
                       : const Color(0xFF8a909b),
                 ),
                 const SizedBox(width: 4),
@@ -1359,6 +1480,156 @@ class _InputBarState extends State<InputBar> {
         ),
       ),
     );
+  }
+}
+
+/// 流式听写的实时浮层：原文（已定稿 + 待定灰字）、润色稿、状态、取消/提交。
+/// 用 ListenableBuilder 直接订阅 [VoiceDictationService]，状态变了就重建。
+class _VoiceDictationHud extends StatelessWidget {
+  final VoiceDictationService dictation;
+  final VoidCallback onCancel;
+  final VoidCallback onCommit;
+
+  const _VoiceDictationHud({
+    required this.dictation,
+    required this.onCancel,
+    required this.onCommit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: dictation,
+      builder: (ctx, _) {
+        final raw = dictation.rawFinal;
+        final partial = dictation.rawPartial;
+        final refined = dictation.refined;
+        final failed = dictation.state == VoiceDictationState.failed;
+        final hasRaw = raw.trim().isNotEmpty || partial.trim().isNotEmpty;
+        final accent =
+            failed ? const Color(0xFFff6b63) : const Color(0xFF22ab9c);
+        return Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF070809),
+            border: Border.all(color: accent),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    failed
+                        ? Icons.error_outline_rounded
+                        : Icons.graphic_eq_rounded,
+                    size: 14,
+                    color: accent,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _stateLabel(),
+                      style: const TextStyle(
+                        color: Color(0xFF8a909b),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (hasRaw || refined.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                if (hasRaw)
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: raw,
+                          style: const TextStyle(
+                            color: Color(0xFFe7eaee),
+                            fontSize: 14,
+                          ),
+                        ),
+                        if (partial.isNotEmpty)
+                          TextSpan(
+                            text: partial,
+                            style: const TextStyle(
+                              color: Color(0xFF6b7280),
+                              fontSize: 14,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                if (refined.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0f1115),
+                      border: Border.all(
+                        color: const Color(0xFF22ab9c).withValues(alpha: 0.5),
+                      ),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      refined,
+                      style: const TextStyle(
+                        color: Color(0xFFe7eaee),
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(onPressed: onCancel, child: Text(t('cancel'))),
+                  const SizedBox(width: 4),
+                  FilledButton.icon(
+                    onPressed: dictation.state == VoiceDictationState.finalizing
+                        ? null
+                        : onCommit,
+                    icon: const Icon(Icons.send_rounded, size: 16),
+                    label: Text(t('voiceSubmit')),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF22ab9c),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _stateLabel() {
+    switch (dictation.state) {
+      case VoiceDictationState.starting:
+        return t('voiceStarting');
+      case VoiceDictationState.listening:
+        return t('voiceListening');
+      case VoiceDictationState.finalizing:
+        return t('voiceFinalizing');
+      case VoiceDictationState.failed:
+        return dictation.errorDetail.isNotEmpty
+            ? '⚠ ${dictation.errorDetail}'
+            : t('voiceFailed');
+      default:
+        return '';
+    }
   }
 }
 
