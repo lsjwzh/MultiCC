@@ -33,7 +33,6 @@ function createRouterToolHost({
       dispatchToSession,
       operations: orchestrationRuntime?.operations,
       completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
-      tick: () => orchestrationRuntime.tick(),
       registerExternalWait: spec => orchestrationRuntime.register(spec),
       getExternalWait: id => orchestrationRuntime.waits.get(id),
       listExternalWaits: sessionId => orchestrationRuntime.listForSession(sessionId),

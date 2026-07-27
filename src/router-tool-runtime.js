@@ -160,7 +160,6 @@ function createRouterToolRuntime({
   dispatchToSession,
   operations,
   completeDispatch,
-  tick = async () => {},
   now = Date.now,
   cryptoImpl = crypto,
   setTimeoutFn = setTimeout,
@@ -367,7 +366,6 @@ function createRouterToolRuntime({
         taskText: identity.taskStart ? message : '',
       });
     } catch (_) {}
-    Promise.resolve(tick()).catch(() => {});
     return {
       ...result,
       targetSessionId: targetId,
