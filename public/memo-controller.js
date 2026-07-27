@@ -102,6 +102,18 @@
       .trim();
   }
 
+  function defaultLocalStorage(root) {
+    try {
+      return root && root.localStorage ? root.localStorage : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function memoDraftKey(dirId) {
+    return `multicc.memo.draft:${normalizeId(dirId)}`;
+  }
+
   function memoEndpoint(dirId, suffix = '') {
     const id = normalizeId(dirId);
     if (!id) throw new TypeError('directory id is required');
@@ -202,6 +214,18 @@
     const requireDirectory = options.requireDirectory === undefined ? Boolean(getDirectories) : options.requireDirectory === true;
     const closeOnEscape = options.closeOnEscape === true;
     const ui = options.ui && typeof options.ui === 'object' ? options.ui : {};
+    const storage = options.storage !== undefined
+      ? options.storage
+      : defaultLocalStorage(root);
+    const autoSaveDelayMs = Number.isFinite(Number(options.autoSaveDelayMs)) && Number(options.autoSaveDelayMs) > 0
+      ? Number(options.autoSaveDelayMs)
+      : 1000;
+    const scheduleTimer = typeof options.setTimeout === 'function'
+      ? options.setTimeout
+      : (fn, ms) => setTimeout(fn, ms);
+    const cancelTimer = typeof options.clearTimeout === 'function'
+      ? options.clearTimeout
+      : id => clearTimeout(id);
     const ids = Object.assign({
       modal: 'memo-modal',
       text: 'memo-text',
@@ -217,6 +241,10 @@
 
     let currentDirId = null;
     let loadVersion = 0;
+    let lastSavedText = '';
+    let autoSaveTimer = null;
+    let saveInFlight = false;
+    let saveQueued = false;
 
     function element(name) {
       return ids[name] ? document.getElementById(ids[name]) : null;
@@ -236,17 +264,72 @@
       return textarea ? extractCurrentLine(textarea.value, textarea.selectionStart) : '';
     }
 
+    function readDraft(dirId) {
+      if (!storage || typeof storage.getItem !== 'function') return null;
+      try {
+        const raw = storage.getItem(memoDraftKey(dirId));
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        return data && typeof data.text === 'string' ? data.text : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function writeDraft(dirId, text) {
+      if (!storage || typeof storage.setItem !== 'function') return;
+      try {
+        storage.setItem(memoDraftKey(dirId), JSON.stringify({ text }));
+      } catch (_) {}
+    }
+
+    function clearDraft(dirId) {
+      if (!storage || typeof storage.removeItem !== 'function') return;
+      try {
+        storage.removeItem(memoDraftKey(dirId));
+      } catch (_) {}
+    }
+
+    function isDirty() {
+      const textarea = element('text');
+      return Boolean(textarea && currentDirId && textarea.value !== lastSavedText);
+    }
+
+    function scheduleAutoSave() {
+      if (!currentDirId || autoSaveTimer) return;
+      autoSaveTimer = scheduleTimer(() => {
+        autoSaveTimer = null;
+        if (!isDirty()) return;
+        if (saveInFlight) {
+          saveQueued = true;
+          return;
+        }
+        save();
+      }, autoSaveDelayMs);
+    }
+
     function pickerClose() {
       display('picker', 'hidePicker', 'none');
     }
 
     function close() {
       loadVersion += 1;
+      if (autoSaveTimer) {
+        cancelTimer(autoSaveTimer);
+        autoSaveTimer = null;
+      }
       const textarea = element('text');
-      if (textarea) textarea.onkeydown = null;
+      if (textarea) {
+        textarea.onkeydown = null;
+        textarea.oninput = null;
+        textarea.oncompositionend = null;
+        textarea.onblur = null;
+      }
+      if (isDirty() && !saveInFlight) save();
       hideModal();
       pickerClose();
       currentDirId = null;
+      lastSavedText = '';
     }
 
     async function directoryFor(id) {
@@ -283,6 +366,7 @@
       }
 
       currentDirId = id;
+      lastSavedText = '';
       const textarea = element('text');
       const status = element('status');
       const title = element('title');
@@ -299,6 +383,15 @@
             close();
           }
         };
+        textarea.oninput = (event) => {
+          if (currentDirId) writeDraft(currentDirId, textarea.value);
+          if (event && event.isComposing) return;
+          scheduleAutoSave();
+        };
+        textarea.oncompositionend = () => scheduleAutoSave();
+        textarea.onblur = () => {
+          if (isDirty() && !saveInFlight) save();
+        };
       }
       if (status) status.textContent = '';
       showModal();
@@ -307,15 +400,29 @@
       try {
         const memo = await client.loadMemo(id);
         if (requestVersion !== loadVersion || currentDirId !== id) return false;
+        lastSavedText = memo.text;
         if (textarea) {
-          textarea.value = memo.text;
+          const draft = readDraft(id);
+          const restored = draft !== null && draft !== memo.text;
+          textarea.value = restored ? draft : memo.text;
+          if (draft !== null && !restored) clearDraft(id);
           textarea.focus();
+          if (restored) {
+            if (status) status.textContent = '已恢复上次未保存的内容，即将自动保存';
+            scheduleAutoSave();
+          }
         }
         if (subtitle) subtitle.textContent = `${memo.path}${memo.exists ? '' : ' · 文件尚未创建（保存即创建）'}`;
         if (typeof ui.onLoaded === 'function') ui.onLoaded(directory, memo);
         return true;
       } catch (error) {
         if (requestVersion !== loadVersion || currentDirId !== id) return false;
+        const draft = textarea ? readDraft(id) : null;
+        if (textarea && draft !== null) {
+          textarea.value = draft;
+          if (status) status.textContent = '已恢复本地草稿，服务恢复后将自动保存';
+          scheduleAutoSave();
+        }
         if (subtitle) subtitle.textContent = `加载失败：${client.errorMessage(error)}`;
         return false;
       }
@@ -323,18 +430,34 @@
 
     async function save() {
       const dirId = currentDirId;
-      if (!dirId) return;
+      if (!dirId) return null;
       const textarea = element('text');
       const status = element('status');
-      if (!textarea) return;
+      if (!textarea) return null;
+      if (saveInFlight) {
+        saveQueued = true;
+        return null;
+      }
+      const text = textarea.value;
+      saveInFlight = true;
       if (status) status.textContent = '保存中…';
       try {
-        const result = await client.saveMemo(dirId, textarea.value);
-        if (currentDirId === dirId && status) status.textContent = `已保存 · ${now().toLocaleTimeString()}`;
+        const result = await client.saveMemo(dirId, text);
+        clearDraft(dirId);
+        if (currentDirId === dirId) {
+          lastSavedText = text;
+          if (status) status.textContent = `已保存 · ${now().toLocaleTimeString()}`;
+        }
         return result;
       } catch (error) {
         if (currentDirId === dirId && status) status.textContent = `保存失败：${client.errorMessage(error)}`;
         return null;
+      } finally {
+        saveInFlight = false;
+        if (saveQueued) {
+          saveQueued = false;
+          if (isDirty()) save();
+        }
       }
     }
 
@@ -411,6 +534,17 @@
         if (currentDirId === dirId && status) status.textContent = `发送失败：${client.errorMessage(error)}`;
         return null;
       }
+    }
+
+    if (root && typeof root.addEventListener === 'function') {
+      const flushIfDirty = () => {
+        if (isDirty() && !saveInFlight) save();
+      };
+      root.addEventListener('pagehide', flushIfDirty);
+      root.addEventListener('visibilitychange', () => {
+        const hostDocument = root.document;
+        if (hostDocument && hostDocument.visibilityState === 'hidden') flushIfDirty();
+      });
     }
 
     return Object.freeze({

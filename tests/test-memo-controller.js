@@ -385,3 +385,156 @@ test('Dashboard, Standalone and Chat load one classic client/controller with hos
   assert.ok(chatGlue.split(/\r?\n/).length < 90);
   assert.ok(memoInline.split(/\r?\n/).length < 80);
 });
+
+function createFakeStorage() {
+  const store = new Map();
+  return {
+    store,
+    storage: {
+      getItem: key => (store.has(key) ? store.get(key) : null),
+      setItem: (key, value) => { store.set(key, String(value)); },
+      removeItem: key => { store.delete(key); },
+    },
+  };
+}
+
+function createFakeTimers() {
+  let scheduled = null;
+  return {
+    setTimeout: (fn, ms) => { scheduled = { fn, ms }; return 1; },
+    clearTimeout: () => { scheduled = null; },
+    get scheduled() { return scheduled; },
+    async fire() {
+      const current = scheduled;
+      scheduled = null;
+      if (current) current.fn();
+      await new Promise(resolve => setImmediate(resolve));
+    },
+  };
+}
+
+test('controller autosaves with debounce, caches drafts locally and clears them once persisted', async () => {
+  const document = createDocument();
+  const { storage, store } = createFakeStorage();
+  const timers = createFakeTimers();
+  const calls = [];
+  const api = {
+    async json(url, options) {
+      calls.push({ url, options });
+      if (!options) return { text: 'server text', path: '/repo/multicc.memo.md', exists: true, mtime: 1 };
+      return { mtime: 2 };
+    },
+    errorDisplay: () => ({ message: 'safe failure' }),
+  };
+  const controller = memo.createController({
+    api,
+    document,
+    storage,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    autoSaveDelayMs: 900,
+    getDirectories: () => [{ id: 'dir-1', name: 'Fleet' }],
+    now: () => ({ toLocaleTimeString: () => '12:00:00' }),
+  });
+
+  await controller.openMemo('dir-1');
+  const textarea = document.elements['memo-text'];
+  assert.equal(textarea.value, 'server text');
+  assert.equal(store.size, 0);
+
+  textarea.value = 'server text 你好';
+  textarea.oninput({ isComposing: true });
+  assert.equal(timers.scheduled, null, 'IME composition must not schedule a save');
+  assert.equal(JSON.parse(store.get('multicc.memo.draft:dir-1')).text, 'server text 你好');
+
+  textarea.oncompositionend();
+  assert.equal(timers.scheduled.ms, 900);
+  textarea.value = 'server text 你好 world';
+  textarea.oninput({ isComposing: false });
+  assert.ok(timers.scheduled, 'debounce keeps a single pending timer');
+
+  await timers.fire();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], {
+    url: '/api/directories/dir-1/memo',
+    options: { method: 'PUT', json: { text: 'server text 你好 world' } },
+  });
+  assert.equal(document.elements['memo-status'].textContent, '已保存 · 12:00:00');
+  assert.equal(store.has('multicc.memo.draft:dir-1'), false, 'draft is cleared after a successful save');
+
+  textarea.onblur();
+  await timers.fire();
+  assert.equal(calls.length, 2, 'blur with clean content does not re-save');
+});
+
+test('controller restores an unsaved local draft over server text and persists it', async () => {
+  const document = createDocument();
+  const { storage, store } = createFakeStorage();
+  store.set('multicc.memo.draft:dir-9', JSON.stringify({ text: 'draft after crash' }));
+  const timers = createFakeTimers();
+  const calls = [];
+  const api = {
+    async json(url, options) {
+      calls.push({ url, options });
+      if (!options) return { text: 'server text', path: '/repo/multicc.memo.md', exists: true, mtime: 1 };
+      return { mtime: 2 };
+    },
+    errorDisplay: () => ({ message: 'safe failure' }),
+  };
+  const controller = memo.createController({
+    api,
+    document,
+    storage,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    getDirectories: () => [{ id: 'dir-9', name: 'Fleet' }],
+    now: () => ({ toLocaleTimeString: () => '12:00:01' }),
+  });
+
+  await controller.openMemo('dir-9');
+  const textarea = document.elements['memo-text'];
+  assert.equal(textarea.value, 'draft after crash');
+  assert.equal(document.elements['memo-status'].textContent, '已恢复上次未保存的内容，即将自动保存');
+
+  await timers.fire();
+  assert.deepEqual(calls[1].options, { method: 'PUT', json: { text: 'draft after crash' } });
+  assert.equal(document.elements['memo-status'].textContent, '已保存 · 12:00:01');
+  assert.equal(store.has('multicc.memo.draft:dir-9'), false);
+});
+
+test('closing the memo flushes unsaved content once and drops drafts that match the server', async () => {
+  const document = createDocument();
+  const { storage, store } = createFakeStorage();
+  store.set('multicc.memo.draft:dir-2', JSON.stringify({ text: 'server text' }));
+  const timers = createFakeTimers();
+  const calls = [];
+  const api = {
+    async json(url, options) {
+      calls.push({ url, options });
+      if (!options) return { text: 'server text', path: '/repo/multicc.memo.md', exists: true, mtime: 1 };
+      return { mtime: 2 };
+    },
+    errorDisplay: () => ({ message: 'safe failure' }),
+  };
+  const controller = memo.createController({
+    api,
+    document,
+    storage,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    getDirectories: () => [{ id: 'dir-2', name: 'Fleet' }],
+  });
+
+  await controller.openMemo('dir-2');
+  assert.equal(store.has('multicc.memo.draft:dir-2'), false, 'draft identical to server content is dropped');
+
+  const textarea = document.elements['memo-text'];
+  textarea.value = 'edited then closed';
+  textarea.oninput({ isComposing: false });
+  controller.closeMemoModal();
+  assert.equal(timers.scheduled, null, 'pending debounce timer is cancelled on close');
+  assert.equal(calls.length, 2, 'close flushes dirty content');
+  assert.deepEqual(calls[1].options, { method: 'PUT', json: { text: 'edited then closed' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store.has('multicc.memo.draft:dir-2'), false, 'flushed draft is cleared');
+});
