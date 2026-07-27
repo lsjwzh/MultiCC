@@ -44,6 +44,7 @@ function createBackgroundTaskRuntime(deps = {}) {
   const taskOutputAwaiting = new Map();
   const syncBashTasks = new Map();
   const subagentTasks = new Map();
+  const monitorTasks = new Map();
   const mainToolUses = new Map();
   const knownSessions = new Set();
 
@@ -338,8 +339,10 @@ function createBackgroundTaskRuntime(deps = {}) {
     const tool = tools.find(item => item && item.id === event.tool_use_id);
     const command = (tool && tool.input && tool.input.command) || '';
     const sync = !!(tool && tool.name === 'Bash' && !(tool.input && tool.input.run_in_background));
+    const monitor = !!(tool && tool.name === 'Monitor');
     const subagent = !!(event.tool_use_id && !tool);
     if (sync) tagTimed(syncBashTasks, sessionName, taskId);
+    if (monitor) tagTimed(monitorTasks, sessionName, taskId);
     if (subagent) tagTimed(subagentTasks, sessionName, taskId);
     const outputFile = monitorOutputFilePath(event.session_id || '', taskId, chatState && chatState.cwd);
     observe({
@@ -347,7 +350,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       taskId,
       status: 'running',
       detail: {
-        kind: sync ? 'sync-bash' : subagent ? 'agent-task' : 'background-task',
+        kind: sync ? 'sync-bash' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task',
         description: event.description || '',
         toolUseId: event.tool_use_id || null,
         outputFile,
@@ -361,7 +364,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       background: !sync,
     });
     startShadow(sessionName, taskId, outputFile, event.description || '');
-    return { handled: true, kind: sync ? 'sync-bash' : subagent ? 'agent-task' : 'background-task' };
+    return { handled: true, kind: sync ? 'sync-bash' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task' };
   }
 
   function handleProgress(sessionName, event) {
@@ -420,12 +423,14 @@ function createBackgroundTaskRuntime(deps = {}) {
     });
     if (!chatState) return { handled: true, decision: 'none' };
     const subagent = hasTimed(subagentTasks, sessionName, taskId);
+    const monitor = hasTimed(monitorTasks, sessionName, taskId);
     const sidechainByToolUse = !!(event.tool_use_id && !isMainToolUseId(sessionName, event.tool_use_id));
     const decision = classifyCompletion({
       awaitingTaskOutput: hasTimed(taskOutputAwaiting, sessionName, taskId),
       sync,
       subagent,
       sidechainByToolUse,
+      monitor,
     });
     if (!decision || !['suppress', 'inject'].includes(decision.action)) {
       log('warn', 'background task classifier returned an invalid decision');
@@ -435,6 +440,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       if (decision.reason === 'taskoutput') consumeTimed(taskOutputAwaiting, sessionName, taskId);
       else if (decision.reason === 'sync-bash') consumeTimed(syncBashTasks, sessionName, taskId);
       else if (decision.reason === 'sidechain') consumeTimed(subagentTasks, sessionName, taskId);
+      else if (decision.reason === 'monitor') consumeTimed(monitorTasks, sessionName, taskId);
       return { handled: true, decision: decision.reason };
     }
     const item = {
@@ -483,6 +489,7 @@ function createBackgroundTaskRuntime(deps = {}) {
     taskOutputAwaiting.delete(sessionName);
     syncBashTasks.delete(sessionName);
     subagentTasks.delete(sessionName);
+    monitorTasks.delete(sessionName);
     mainToolUses.delete(sessionName);
     knownSessions.delete(sessionName);
     return killed;
@@ -495,6 +502,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       ...taskOutputAwaiting.keys(),
       ...syncBashTasks.keys(),
       ...subagentTasks.keys(),
+      ...monitorTasks.keys(),
       ...mainToolUses.keys(),
     ]);
     let killed = 0;
