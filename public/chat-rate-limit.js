@@ -861,6 +861,14 @@
     return product || '?';
   }
 
+  // Round to at most 2 decimals for display (99.487123 -> 99.49, 12.3456 -> 12.35);
+  // trailing zeros are dropped so integer counts stay clean (250 -> 250).
+  function fmtArkNum(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return String(n ?? '');
+    return String(Number(v.toFixed(2)));
+  }
+
   function formatArkQuota(value) {
     if (!value) {
       return Object.freeze({
@@ -906,15 +914,15 @@
       const pct = worst.percent ?? 0;
       if (pct > maxPct) maxPct = pct;
       const seg = (worst.used != null && worst.total != null)
-        ? `${worst.label} ${worst.used}/${worst.total} (${pct}%)`
-        : `${worst.label} ${pct}%`;
+        ? `${worst.label} ${fmtArkNum(worst.used)}/${fmtArkNum(worst.total)} (${fmtArkNum(pct)}%)`
+        : `${worst.label} ${fmtArkNum(pct)}%`;
       parts.push(`${arkProductLabel(it.product)} ${seg}`);
       titleLines.push(`${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}`);
       for (const p of it.periods) {
         let line = `  ${p.label}: `;
         line += (p.used != null && p.total != null)
-          ? `${p.used}/${p.total} (${p.percent ?? 0}%)`
-          : `${p.percent ?? 0}%`;
+          ? `${fmtArkNum(p.used)}/${fmtArkNum(p.total)} (${fmtArkNum(p.percent ?? 0)}%)`
+          : `${fmtArkNum(p.percent ?? 0)}%`;
         if (p.resetAt) line += ` · ${new Date(p.resetAt).toLocaleString()} 重置`;
         titleLines.push(line);
       }
