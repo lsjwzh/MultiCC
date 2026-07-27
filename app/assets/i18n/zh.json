@@ -661,6 +661,7 @@
   "glmFiveHourLimit": "GLM 5 小时额度",
   "codexWeeklyLimit": "Codex 周额度",
   "resetsAt": "{time} 重置",
+  "updatedAt": "更新于 {time}",
   "deepSeekBalance": "DeepSeek 余额",
   "balanceUnavailable": "暂不可用",
   "serverRetryScheduled": "服务端已安排差异化重试",

@@ -108,6 +108,32 @@ test('formats active five-hour state and hides expired state deterministically',
   }).text, 'Claude 5h 已达上限 · 15:40 重置');
 });
 
+test('appends 更新于 HH:MM for stale cached window data but keeps fresh data clean', () => {
+  const now = 1_700_000_000_000;
+  const stale = {
+    kind: 'five_hour',
+    status: 'allowed',
+    usedPercentage: 42,
+    resetsAtMs: now + 3_600_000,
+    observedAtMs: now - 120_000,
+  };
+  assert.deepEqual(formatFiveHourRateLimit(stale, {
+    nowMs: now,
+    formatReset: () => '15:40',
+    formatObserved: () => '14:28',
+  }), {
+    text: 'Claude 5h 42% · 更新于 14:28 · 15:40 重置',
+    color: '#58a6ff',
+    title: 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
+  });
+  const fresh = { ...stale, observedAtMs: now - 1_000 };
+  assert.equal(formatFiveHourRateLimit(fresh, {
+    nowMs: now,
+    formatReset: () => '15:40',
+    formatObserved: () => 'should-not-appear',
+  }).text, 'Claude 5h 42% · 15:40 重置');
+});
+
 test('structured event renders directly in the Claude chat bar and hides for another CLI', () => {
   const element = { style: {}, textContent: '', title: '' };
   const values = new Map();
@@ -165,7 +191,8 @@ test('GLM window limit labels as GLM 5h and shows under codex, hides under claud
     assert.equal(element.style.display, 'block', 'GLM window shows under codex');
     assert.match(element.textContent, /^GLM 5h 44%/);
     setCli('claude');
-    assert.equal(element.style.display, 'none', 'GLM window hidden under claude');
+    assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
+    assert.match(element.textContent, /^Claude 5h · —/, 'GLM window replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;
@@ -199,7 +226,8 @@ test('Codex weekly window labels as Codex 周 and shows under codex, hides under
     assert.equal(element.style.display, 'block', 'Codex weekly shows under codex');
     assert.match(element.textContent, /^Codex 周 64%/);
     setCli('claude');
-    assert.equal(element.style.display, 'none', 'Codex weekly hidden under claude');
+    assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
+    assert.match(element.textContent, /^Claude 5h · —/, 'Codex weekly replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;

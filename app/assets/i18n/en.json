@@ -661,6 +661,7 @@
   "glmFiveHourLimit": "GLM 5-hour limit",
   "codexWeeklyLimit": "Codex weekly limit",
   "resetsAt": "resets at {time}",
+  "updatedAt": "updated at {time}",
   "deepSeekBalance": "DeepSeek balance",
   "balanceUnavailable": "Unavailable",
   "serverRetryScheduled": "Server retry scheduled",
