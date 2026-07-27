@@ -868,6 +868,7 @@
   function setProviderBaseUrl(baseUrl) {
     currentProviderBaseUrl = String(baseUrl || '');
     renderArkQuota();
+    renderZhipuQuota();
   }
 
   function arkQuotaStorageKey() { return 'multicc.ark.quota.v1'; }
@@ -1073,6 +1074,176 @@
     return currentArkQuota;
   }
 
+  // ── Zhipu official sites (z.ai / bigmodel.cn) window quota. Sourced from the
+  // same glm-monitor window-utilization endpoint the usage-limit poller uses
+  // (GET <host>/api/monitor/usage/quota/limit, raw API key auth). Like Ark, this
+  // bar is gated on the active provider's baseUrl host (z.ai / bigmodel.cn) rather
+  // than currentCli, so it shows for any cli pointed at a Zhipu official endpoint.
+  // The backend returns all configured Zhipu sites; we pass the active host so the
+  // matching site is ordered first. Rendered as #zhipu-quota-bar.
+  let currentZhipuQuota = null;
+  let zhipuQuotaFetchInFlight = false;
+  const ZHIPU_QUOTA_BACKOFF_MS = 60_000;
+  let zhipuQuotaLastErrorAt = 0;
+
+  function zhipuHostFromBaseUrl(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string') return '';
+    try { return new URL(baseUrl).hostname.toLowerCase(); } catch (_) { return ''; }
+  }
+
+  function isZhipuBaseUrl(baseUrl) {
+    const h = zhipuHostFromBaseUrl(baseUrl);
+    if (!h) return false;
+    return h === 'z.ai' || h.endsWith('.z.ai')
+      || h === 'bigmodel.cn' || h.endsWith('.bigmodel.cn');
+  }
+
+  function zhipuQuotaStorageKey() { return 'multicc.zhipu.quota.v1'; }
+
+  function loadZhipuQuotaFromStorage() {
+    const storage = browserStorage(); if (!storage) return null;
+    try {
+      const raw = storage.getItem(zhipuQuotaStorageKey());
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      if (v.fetchedAt && (Date.now() - v.fetchedAt) > 24 * 60 * 60 * 1000) return null;
+      return v;
+    } catch (_) { return null; }
+  }
+
+  function saveZhipuQuotaToStorage(data) {
+    const storage = browserStorage(); if (!storage) return;
+    try { storage.setItem(zhipuQuotaStorageKey(), JSON.stringify(data)); } catch (_) {}
+  }
+
+  // 2-decimal display, trailing zeros dropped (12.3456 -> 12.35, 100 -> 100).
+  function fmtZhipuPct(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return '';
+    return String(Number(v.toFixed(2)));
+  }
+
+  function formatZhipuQuota(value) {
+    if (!value) {
+      return Object.freeze({
+        text: 'Zhipu 余量 · ⟳ 刷新',
+        color: '#8b949e',
+        title: '点击从 z.ai / bigmodel.cn 额度端点拉取窗口用量',
+      });
+    }
+    if (value.status === 'not_configured') {
+      return Object.freeze({
+        text: 'Zhipu：未配置 provider · ⟳ 刷新',
+        color: '#8b949e',
+        title: '没有 baseUrl 指向 z.ai / bigmodel.cn 的 provider，无法拉取用量',
+      });
+    }
+    if (value.status !== 'ok' || !Array.isArray(value.sites)) {
+      return Object.freeze({
+        text: 'Zhipu：用量暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: value.error || '无法从 z.ai / bigmodel.cn 拉取用量',
+      });
+    }
+    const okSites = value.sites.filter((s) => s && s.ok && Number.isFinite(s.usedPercent));
+    if (!okSites.length) {
+      return Object.freeze({
+        text: 'Zhipu：用量暂不可用 · ⟳ 重试',
+        color: '#d29922',
+        title: '所有 Zhipu 站点的额度端点都未返回有效窗口数据',
+      });
+    }
+    let maxPct = 0;
+    const parts = [];
+    const titleLines = [];
+    for (const s of okSites) {
+      const pct = s.usedPercent;
+      if (pct > maxPct) maxPct = pct;
+      parts.push(`${s.site} ${fmtZhipuPct(pct)}%`);
+      let line = `${s.site} (${s.host}): ${fmtZhipuPct(pct)}% 已用`;
+      if (s.tier) line += ` · ${s.tier}`;
+      if (s.resetsAt) line += ` · ${new Date(s.resetsAt).toLocaleString()} 重置`;
+      titleLines.push(line);
+    }
+    let text = parts.join(' · ');
+    const syncRel = relativeAgo(value.fetchedAt);
+    if (syncRel) text += ` · ${syncRel}`;
+    text += ' ⟳';
+
+    let color = '#58a6ff';
+    if (maxPct >= 90) color = '#f85149';
+    else if (maxPct >= 70) color = '#d29922';
+
+    let title = 'Zhipu 官方站点窗口用量（glm-monitor 额度端点）';
+    title += '\n' + titleLines.join('\n');
+    if (syncRel) title += `\n同步于 ${syncRel}`;
+    title += '\n点击 bar 刷新';
+    return Object.freeze({ text, color, title });
+  }
+
+  function renderZhipuQuota() {
+    const element = global.document?.getElementById?.('zhipu-quota-bar');
+    if (!element) return;
+    if (!isZhipuBaseUrl(currentProviderBaseUrl)) {
+      element.style.display = 'none';
+      element.textContent = '';
+      element.onclick = null;
+      return;
+    }
+    const view = formatZhipuQuota(currentZhipuQuota);
+    if (zhipuQuotaFetchInFlight) {
+      element.textContent = 'Zhipu：加载中…';
+      element.style.color = '#8b949e';
+      element.title = '正在从 z.ai / bigmodel.cn 额度端点拉取窗口用量...';
+    } else {
+      element.textContent = view?.text || '';
+      element.title = view?.title || '';
+      if (view) element.style.color = view.color;
+    }
+    element.style.display = 'block';
+    element.onclick = () => { refreshZhipuQuota(true); };
+  }
+
+  async function refreshZhipuQuota(force) {
+    if (!isZhipuBaseUrl(currentProviderBaseUrl) && !force) return null;
+    if (zhipuQuotaFetchInFlight) return currentZhipuQuota;
+    if (!force && zhipuQuotaLastErrorAt && (Date.now() - zhipuQuotaLastErrorAt) < ZHIPU_QUOTA_BACKOFF_MS) {
+      return currentZhipuQuota;
+    }
+    zhipuQuotaFetchInFlight = true;
+    renderZhipuQuota();
+    try {
+      const host = zhipuHostFromBaseUrl(currentProviderBaseUrl);
+      const url = host ? `/api/zhipu/quota?host=${encodeURIComponent(host)}` : '/api/zhipu/quota';
+      const res = await fetch(url, { credentials: 'same-origin' });
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!data) data = { status: 'unavailable', error: 'invalid response' };
+      if (data.status === 'ok') {
+        currentZhipuQuota = data;
+        saveZhipuQuotaToStorage(data);
+        zhipuQuotaLastErrorAt = 0;
+      } else {
+        currentZhipuQuota = data;
+        zhipuQuotaLastErrorAt = Date.now();
+      }
+    } catch (_) {
+      zhipuQuotaLastErrorAt = Date.now();
+      currentZhipuQuota = { status: 'unavailable', error: 'fetch failed' };
+    } finally {
+      zhipuQuotaFetchInFlight = false;
+    }
+    renderZhipuQuota();
+    return currentZhipuQuota;
+  }
+
+  function restoreZhipuQuota() {
+    currentZhipuQuota = loadZhipuQuotaFromStorage();
+    renderZhipuQuota();
+    return currentZhipuQuota;
+  }
+
   const api = Object.freeze({
     normalizeFiveHourRateLimit,
     formatFiveHourRateLimit,
@@ -1093,6 +1264,10 @@
     setProviderBaseUrl,
     refreshArkQuota,
     restoreArkQuota,
+    refreshZhipuQuota,
+    restoreZhipuQuota,
+    formatZhipuQuota,
+    isZhipuBaseUrl,
     setCli,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -1105,5 +1280,6 @@
     restoreQoderQuota();
     restoreCodexQuota();
     restoreArkQuota();
+    restoreZhipuQuota();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
