@@ -24,10 +24,28 @@ else
   done
 fi
 if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
-  echo "Error: could not find a 'node' binary. Install Node.js >= 18," >&2
+  echo "Error: could not find a 'node' binary. Install Node.js >= 20.19," >&2
   echo "       or set MULTICC_NODE=/full/path/to/node and retry." >&2
   exit 1
 fi
+
+# Warn (but do not block) when node is older than the floor in package.json.
+# chokidar 5 is pure ESM and needs the require(ESM) backport that landed in
+# Node 20.19 / 22.12 — without it the server dies with a bare ERR_REQUIRE_ESM.
+_node_ver="$("$NODE" -v 2>/dev/null | sed 's/^v//')"
+_node_major="${_node_ver%%.*}"
+_node_rest="${_node_ver#*.}"
+_node_minor="${_node_rest%%.*}"
+case "$_node_major" in
+  ''|*[!0-9]*) ;;  # unparseable — say nothing
+  *)
+    if [ "$_node_major" -lt 20 ] || { [ "$_node_major" -eq 20 ] && [ "${_node_minor:-0}" -lt 19 ]; }; then
+      echo "Warning: Node $_node_ver is below the required >= 20.19 ($NODE)." >&2
+      echo "         MultiCC will likely fail with ERR_REQUIRE_ESM (chokidar 5)." >&2
+      echo "         Upgrade Node, or point MULTICC_NODE at a newer binary." >&2
+    fi
+    ;;
+esac
 
 mkdir -p "$LOG_DIR"
 

@@ -300,7 +300,7 @@ stdin 第一行（`chatStream.send(sessionName, payload, ...)` → `userMessageL
 
 **今天方向**：PREFIX — `promptText = note + promptText`（server.js:9067）。goal 是 prepend 链最后一步，故位于最外层。
 
-**envelope**：`contextLayers.push({ kind:'goal-limit', order:10, text: note })`（MESSAGE_BUILDER_DESIGN.md:524-526）。`renderPrompt` 的 `layers.sort(order).map(text).join('')` 中 order:10 最低 = 最先拼 = 最外层，正复刻今日 prepend 链。
+**envelope**：`contextLayers.push({ kind:'goal-limit', order:10, text: note })`（message-builder-design.md:524-526）。`renderPrompt` 的 `layers.sort(order).map(text).join('')` 中 order:10 最低 = 最先拼 = 最外层，正复刻今日 prepend 链。
 
 **若触发的字节示例**（样本 `goalLimits={maxRounds:5, maxBudget:'500k'}`）：
 
@@ -324,7 +324,7 @@ stdin 第一行（`chatStream.send(sessionName, payload, ...)` → `userMessageL
 
 **今天方向**：PREFIX — `promptText = dispatchContext + promptText`（server.js:9059）。dispatch 文本直接前置于 promptText，无额外分隔符。
 
-**envelope**：`contextLayers.push({ kind:'dispatch-context', order:20, text: dc })`（MESSAGE_BUILDER_DESIGN.md:530-533）。`dc` 是 `buildDispatchContextPrompt` 原样返回值，未做任何变换。`renderPrompt` 的 `join('')` 直接拼接，无额外分隔符。
+**envelope**：`contextLayers.push({ kind:'dispatch-context', order:20, text: dc })`（message-builder-design.md:530-533）。`dc` 是 `buildDispatchContextPrompt` 原样返回值，未做任何变换。`renderPrompt` 的 `join('')` 直接拼接，无额外分隔符。
 
 **字节等价结论**：today `dc + promptText`（dc 尾部单 `\n`，与后续 text 间无额外符）=== envelope `layer.text(=dc) + nextLayer.text/userText`（`join('')` 无额外符）。逐字节相同。
 
@@ -363,7 +363,7 @@ function buildGatewayPrompt(userText) {
 
 **今天方向**：**WRAP** — `promptText = buildGatewayPrompt(promptText)`（server.js:9056）。把已含 notes 的 promptText 整体作为 `userText` 形参塞进 system block 尾部。这与 dispatch 的 PREFIX 不同：dispatch 是「在外面加前缀」，gateway 是「把整体塞进 block 内部」。
 
-**envelope**：`contextLayers.push({ kind:'gateway', order:20, text: buildGatewayPrompt('') })`（MESSAGE_BUILDER_DESIGN.md:528-529）。layer.text 只含 system block（尾部 `\n\n`），userText 经 `renderPrompt` 接在层后。
+**envelope**：`contextLayers.push({ kind:'gateway', order:20, text: buildGatewayPrompt('') })`（message-builder-design.md:528-529）。layer.text 只含 system block（尾部 `\n\n`），userText 经 `renderPrompt` 接在层后。
 
 **字节等价证明**：
 
@@ -393,13 +393,13 @@ today（`buildGatewayPrompt("调用api进行重启")`）与 envelope（`buildGat
 
 真实会话：无 pending notes → **不触发**。以下用样本留言 `fromLabel='multicc-claude-chat-05', body='请先 sync 再动手'` 验证。
 
-**来源函数**：runChatTurn 内联块（server.js:9036-9053），envelope 对应 MESSAGE_BUILDER_DESIGN.md:534-548。
+**来源函数**：runChatTurn 内联块（server.js:9036-9053），envelope 对应 message-builder-design.md:534-548。
 
 **尾部分隔符**：`\n\n`（`[留言结束]\n\n`）。
 
 **今天方向**：PREFIX — `promptText = block + text`（server.js:9042）。
 
-**envelope**：`contextLayers.push({ kind:'cross-agent-notes', order:30, text: block })`（MESSAGE_BUILDER_DESIGN.md:540）。`renderPrompt` 的 `join('')` 直接拼接。
+**envelope**：`contextLayers.push({ kind:'cross-agent-notes', order:30, text: block })`（message-builder-design.md:540）。`renderPrompt` 的 `join('')` 直接拼接。
 
 **若触发的字节示例**：
 
@@ -411,7 +411,7 @@ today（`buildGatewayPrompt("调用api进行重启")`）与 envelope（`buildGat
 
 **副作用**（按分歧 3 裁决留在 composeMessage 内，非纯函数）：在构造 block 之后同步执行，顺序与今天一致：
 
-| 步骤 | 今天（server.js:9043-9053） | envelope（MESSAGE_BUILDER_DESIGN.md:542-547） |
+| 步骤 | 今天（server.js:9043-9053） | envelope（message-builder-design.md:542-547） |
 |------|---------------------------|-----------------------------------------------|
 | 1 | `n.delivered = true; n.deliveredAt = now` | 同 |
 | 2 | `saveNotes()` | 同 |
@@ -425,7 +425,7 @@ today（`buildGatewayPrompt("调用api进行重启")`）与 envelope（`buildGat
 
 真实会话：`bare=false` && `type=null !== 'aux'`（true）&& `normalizeEffort('ultracode') === 'ultracode'`（true）→ **触发**。
 
-**来源函数**：server.js:9073-9075（追加点）；envelope MESSAGE_BUILDER_DESIGN.md:552-553（suffix 计算点）。
+**来源函数**：server.js:9073-9075（追加点）；envelope message-builder-design.md:552-553（suffix 计算点）。
 
 **尾部分隔符**：suffix 以 `\n\n` 起头。
 
@@ -475,7 +475,7 @@ today（`buildGatewayPrompt("调用api进行重启")`）与 envelope（`buildGat
 
 ### 5.3 codex（firstTurn + 续轮，真实会话不触发）
 
-| 维度 | 今天 `codex.buildChatSpawnArgs`（codex.js:36-50） | envelope `codex.shape`（MESSAGE_BUILDER_DESIGN.md:240-257） |
+| 维度 | 今天 `codex.buildChatSpawnArgs`（codex.js:36-50） | envelope `codex.shape`（message-builder-design.md:240-257） |
 |------|--------------------------------------------------|-------------------------------------------------------------|
 | 首轮 args | `exec -c model="fable" --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <PAYLOAD>` | `exec -c model_reasoning_effort="xhigh" -c model="fable" --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <PAYLOAD>` |
 | 续轮 args | `exec -c model="fable" resume ca88a4d8-... --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <PAYLOAD>` | `exec -c model_reasoning_effort="xhigh" -c model="fable" resume ca88a4d8-... --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <PAYLOAD>` |
@@ -576,7 +576,7 @@ shape 层字节等价（args 构造逻辑、`--session`/`--continue` 决策、`[
 
 2. **gateway WRAP vs dispatch PREFIX 方向差异**：今天对 gateway 用 `buildGatewayPrompt(promptText)`（WRAP，promptText 塞进 block 尾部），对 dispatch 用 `dispatchContext + promptText`（PREFIX，外部前缀）。envelope 对两者建模不同——gateway 的 layer.text = `buildGatewayPrompt('')`（仅 system block），dispatch 的 layer.text = `dc` 本身——但经 `renderPrompt` 拼接后均逐字节还原。审阅时确认 gateway layer 不含 userText（userText 由 renderPrompt 的 `+ envelope.userText` 提供），而 dispatch layer 也不含 userText（同理）。
 
-3. **streaming 句柄不变**：envelope 的 `claude.shape` 在 streaming 模式下**省略 session 句柄**（`if (so.mode === 'per-turn')` 块不执行）。`_streamSessionId` 的生成、`s.started` 标志的读写、`--session-id`/`--resume` 的决策全部留在 `spawnProc`，与今天完全相同。审阅时确认 `runChatTurnStreaming` 改造版（MESSAGE_BUILDER_DESIGN.md:302-338）仍调用 `chatStream.ensure` 且 `spawnProc` 仍用 `[...s.spawnArgs, ...sessionArgs]` 追加句柄。
+3. **streaming 句柄不变**：envelope 的 `claude.shape` 在 streaming 模式下**省略 session 句柄**（`if (so.mode === 'per-turn')` 块不执行）。`_streamSessionId` 的生成、`s.started` 标志的读写、`--session-id`/`--resume` 的决策全部留在 `spawnProc`，与今天完全相同。审阅时确认 `runChatTurnStreaming` 改造版（message-builder-design.md:302-338）仍调用 `chatStream.ensure` 且 `spawnProc` 仍用 `[...s.spawnArgs, ...sessionArgs]` 追加句柄。
 
 4. **副作用位置**：cross-agent-notes 的 5 项副作用（mark delivered → saveNotes → appendEvent → workspaceBroadcast → chatBroadcast）留在 `composeMessage` 内（非纯函数），在构造 notes 层 text 之后同步执行。审阅时确认：(a) 副作用未拆到调用方；(b) `bare=true` 路径（codex-continue / retry）跳过 `composeMessage` 故不执行副作用；(c) golden 测试只验 text，副作用由集成测试覆盖。
 
