@@ -2071,6 +2071,12 @@
     .git-subject{color:var(--text);flex:1;word-break:break-word;}
     .git-refs{color:var(--orange);font-size:10px;margin-left:4px;}
     .git-branch-line{color:var(--line);margin-right:4px;}
+    /* Chevron affordance, mirroring .diff-file-chevron on the chat diff card:
+       without it a commit row reads as static text and nobody clicks it. */
+    .git-commit{cursor:pointer;}
+    .git-chevron{color:var(--faint);flex-shrink:0;padding-left:4px;transition:color .12s,transform .12s;}
+    .git-commit:hover .git-chevron{color:var(--accent);transform:translateX(2px);}
+    .git-commit:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px;}
 
     /* ── Commit diff detail modal: AI summary panel + spinner ── */
     .gcd-ai{padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg-soft);min-height:42px;}
@@ -2117,10 +2123,28 @@
           subject.appendChild(gitTreeText('git-refs', `(${ref})`));
         }
         row.appendChild(subject);
+        row.appendChild(gitTreeText('git-chevron', '›'));
         row.style.cursor = 'pointer';
-        row.title = String(c.subject || '') + '  ·  双击查看该提交的 diff';
-        row.addEventListener('dblclick', function () {
+        row.title = String(c.subject || '') + '  ·  点击查看该提交的 diff';
+        // Mirrors the chat diff card, whose file rows are real <button>s: a row
+        // that opens a view must be reachable and operable from the keyboard.
+        row.setAttribute('role', 'button');
+        row.tabIndex = 0;
+        const openThis = function () {
           openCommitDiff(c.short || c.hash, c.subject || '', c.hash || c.short);
+        };
+        row.addEventListener('click', function () {
+          // A click that ends a drag-selection is the user copying a hash or a
+          // subject, not asking for the diff. Opening the modal there would
+          // both blow away the selection and be a surprise.
+          const sel = window.getSelection && window.getSelection();
+          if (sel && !sel.isCollapsed && sel.toString() && row.contains(sel.anchorNode)) return;
+          openThis();
+        });
+        row.addEventListener('keydown', function (e) {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();   // Space would otherwise scroll the commit list
+          openThis();
         });
         fragment.appendChild(row);
       }
@@ -2152,7 +2176,7 @@
       window._gitTreeDir = null;
     }
 
-    /* ── Commit diff detail modal (double-click a commit row) ── */
+    /* ── Commit diff detail modal (click a commit row) ── */
     window._gcdAbort = null;      // {id, ac} for the in-flight aux summary, or null
     window._gcdReqToken = 0;      // bumped on every open/cancel/close to drop stale callbacks
     window._gcdCtx = null;        // {short, subject, hash, diff} of the commit being shown
@@ -2167,6 +2191,13 @@
     }
 
     function openCommitDiff(short, subject, hash) {
+      // Rows open on a single click, so a habitual double click delivers two
+      // events. The second must not restart the diff fetch and queue a second
+      // aux summary for the commit already on screen. Once the modal is closed
+      // or backed out of, display is no longer 'flex' and re-opening works.
+      var openModal = document.getElementById('git-commit-diff-modal');
+      if (openModal && openModal.style.display === 'flex'
+          && window._gcdCtx && window._gcdCtx.hash === hash) return;
       // Drop any summary still running for the previous commit.
       cancelGcdSummary();
       var myToken = ++window._gcdReqToken; // invalidates this fetch if superseded/closed
