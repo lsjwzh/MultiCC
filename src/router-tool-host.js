@@ -34,6 +34,10 @@ function createRouterToolHost({
       operations: orchestrationRuntime?.operations,
       completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
       tick: () => orchestrationRuntime.tick(),
+      registerExternalWait: spec => orchestrationRuntime.register(spec),
+      getExternalWait: id => orchestrationRuntime.waits.get(id),
+      listExternalWaits: sessionId => orchestrationRuntime.listForSession(sessionId),
+      cancelExternalWait: id => orchestrationRuntime.cancel(id),
       onAdmitted: taskBoard?.recordRouterAdmission,
       recordUserInput,
       resolveContext: resolveContext || (sessionId => {
@@ -108,7 +112,7 @@ function createRouterToolHost({
     if (!runtime) throw new Error('router tool runtime is not configured');
     const token = runtime.issueContext({
       sessionId, turnId, originDispatchId, userText,
-      taskId, taskStart, taskSource, dynamic,
+      taskId, taskStart, taskSource, dynamic, baseUrl,
     });
     let revoked = false;
     const revoke = () => {

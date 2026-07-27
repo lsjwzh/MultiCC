@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-07-26",
+  "reviewedAt": "2026-07-27",
   "entries": [
     {
       "id": "server-env",
@@ -64,6 +64,16 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         { "file": "src/providers.js", "anchor": "const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');" }
+      ]
+    },
+    {
+      "id": "qoder-quota-cookie-cache",
+      "classification": "migration-required",
+      "owner": "Qoder quota adapter",
+      "rationale": "Installs without MULTICC_DATA_DIR still persist private CDP session cookies under the historical ~/.multicc root; configured installs are already isolated.",
+      "migrationStrategy": "Make MULTICC_DATA_DIR mandatory, copy qoder-cookies.json forward atomically with private permissions, retain a read-only legacy fallback for one migration window, then remove historical-root writes.",
+      "sources": [
+        { "file": "src/routes/qoder-quota.js", "anchor": "const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(require('os').homedir(), '.multicc');" }
       ]
     },
     {

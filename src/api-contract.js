@@ -75,7 +75,7 @@ function toWaitDto(source = {}) {
   const dto = {
     id: String(source.id || ''),
     sessionId: String(source.sessionId || source.session || ''),
-    mode: source.mode === 'callback' ? 'callback' : 'poll',
+    mode: ['callback', 'delay'].includes(source.mode) ? source.mode : 'poll',
     checks: Math.max(0, Math.floor(Number(source.checks) || 0)),
     maxChecks: source.maxChecks == null ? null : Math.max(1, Math.floor(Number(source.maxChecks) || 1)),
     intervalSec: source.intervalSec == null ? null : Math.max(1, Number(source.intervalSec) || 1),

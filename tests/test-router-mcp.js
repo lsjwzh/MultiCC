@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
+const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const readline = require('readline');
@@ -90,12 +91,28 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   const listed = await plain.call('tools/list');
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
     'wait_for_user_answer', 'request_user_input',
+    'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
     'route_task', 'dispatch_master', 'dispatch_slave',
   ]);
   const questionTool = listed.result.tools[0];
   assert.deepEqual(questionTool.inputSchema.required, ['question']);
   assert.equal(questionTool.inputSchema.properties.options.maxItems, 12);
   assert.match(questionTool.description, /blocking question/);
+  const externalWaitTool = listed.result.tools
+    .find(tool => tool.name === 'wait_for_external_result');
+  assert.deepEqual(externalWaitTool.inputSchema.properties.mode.enum, [
+    'callback', 'delay',
+  ]);
+  assert.equal(externalWaitTool.annotations.idempotentHint, false);
+  for (const forbidden of [
+    'session_id', 'pollCmd', 'pollUrl', 'cwd', 'injectPrefix', 'message',
+  ]) {
+    assert.equal(forbidden in externalWaitTool.inputSchema.properties, false);
+  }
+  const waitStatusTool = listed.result.tools
+    .find(tool => tool.name === 'get_external_wait');
+  assert.deepEqual(waitStatusTool.inputSchema.required, ['wait_id']);
+  assert.equal(waitStatusTool.annotations.readOnlyHint, true);
   const asked = await plain.call('tools/call', {
     name: 'wait_for_user_answer',
     arguments: {
@@ -130,6 +147,17 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   const dispatchedList = await dispatched.call('tools/list');
   assert.deepEqual(dispatchedList.result.tools.map(tool => tool.name), [
     'wait_for_user_answer', 'request_user_input',
+    'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
     'route_task', 'dispatch_master', 'dispatch_slave',
   ]);
+});
+
+test('host prompt prefers scoped durable wait tools and keeps raw polling privileged', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(source, /优先用它登记持久等待/);
+  assert.match(source, /wait_for_external_result/);
+  assert.match(source, /get_external_wait/);
+  assert.match(source, /cancel_external_wait/);
+  assert.match(source, /只有必须由宿主机执行命令或查询 URL 时/);
+  assert.doesNotMatch(source, /-d '\{\"mode\":\"callback\"\}'/);
 });

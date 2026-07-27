@@ -333,6 +333,49 @@ test('durable poll resolution and timeout use the outbox delivery path', async t
   assert.equal((await runtime.outbox.get(`wait:${timed.id}`)).state, 'delivered');
 });
 
+test('durable delay survives runtime reconstruction and delivers exactly once when due', async t => {
+  const clock = { value: 40_000 };
+  const first = fixture(t, { clock });
+  const registered = await first.runtime.register({
+    id: 'wait-delay-restart',
+    session: 'D',
+    mode: 'delay',
+    delaySeconds: 30,
+    reason: '重新检查部署状态',
+  });
+  assert.equal(registered.dueAt, 70_000);
+  assert.equal(first.runtime.hasPending('D'), true);
+
+  clock.value = 70_000;
+  const injections = [];
+  const history = new Map();
+  const rebuilt = createOrchestrationRuntime({
+    file: first.file,
+    now: () => clock.value,
+    runChatTurn: async (sessionId, text, opts) => {
+      injections.push({ sessionId, text, opts });
+      history.set(sessionId, new Set([opts.deliveryId]));
+      return true;
+    },
+    hasPersistedDelivery: async (sessionId, deliveryId) => (
+      history.get(sessionId)?.has(deliveryId) || false
+    ),
+    getSessionRecoveryState: () => ({ classifyState: 'D' }),
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+  });
+  await rebuilt.start();
+  assert.equal(rebuilt.hasPending('D'), false);
+  assert.equal(injections.length, 1);
+  assert.match(injections[0].text, /延迟条件已到.*重新检查部署状态/);
+  assert.equal(injections[0].opts.deliveryId, `wait:${registered.id}`);
+  assert.equal((await rebuilt.outbox.get(`wait:${registered.id}`)).state, 'delivered');
+
+  await rebuilt.tick();
+  assert.equal(injections.length, 1, 'resolved delay is never delivered twice');
+  await rebuilt.stop();
+});
+
 test('startup recovers an expired lease and stop clears the worker timer', async t => {
   const { runtime, clock, scheduled } = fixture(t, {
     getSessionRecoveryState: () => ({ classifyState: 'D' }),

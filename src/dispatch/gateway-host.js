@@ -7,7 +7,7 @@
 //
 // Extracted verbatim from server.js. Behaviour is preserved exactly; mutable
 // host state is reached through injected getters or function wrappers only —
-// orchestrationRuntime, chatHistoryService and waitInjector are host `let`/`const`
+// orchestrationRuntime, chatHistoryService and sessionDelivery are host `let`/`const`
 // bindings resolved after this factory runs (getters), appendChatMessage /
 // chatBroadcast / loadChatHistory wrap host functions that resolve their own
 // late-bound dependencies per call, and createSessionRecord / taskContextHost /
@@ -45,7 +45,7 @@ function createGatewayHost(rawDeps) {
     logger,
     getChatHistoryService,
     appendEvent,
-    getWaitInjector,
+    getSessionDelivery,
     normalizeEffort,
     dispatchTargetHintFor,
     cwdForSession,
@@ -72,7 +72,7 @@ function createGatewayHost(rawDeps) {
     throw new TypeError('[gateway-host] logger.warn is required');
   }
   for (const [fn, name] of [
-    [appendEvent, 'appendEvent'], [getWaitInjector, 'getWaitInjector'], [getChatHistoryService, 'getChatHistoryService'],
+    [appendEvent, 'appendEvent'], [getSessionDelivery, 'getSessionDelivery'], [getChatHistoryService, 'getChatHistoryService'],
     [normalizeEffort, 'normalizeEffort'], [dispatchTargetHintFor, 'dispatchTargetHintFor'],
     [cwdForSession, 'cwdForSession'], [getSetSessionStatus, 'getSetSessionStatus'],
     [isTargetBusy, 'isTargetBusy'],
@@ -371,7 +371,7 @@ function createGatewayHost(rawDeps) {
     if (!completed.ok && completed.code === 'not_found') {
       const text = (finalText || '').trim() || '（本次运行没有产生文本输出）';
       if (replyTo && persistedSessions.get(replyTo)) {
-        getWaitInjector().safeInject(replyTo, `【${targetId} 回复】\n${text}`);
+        getSessionDelivery().deliverContinuation(replyTo, `【${targetId} 回复】\n${text}`);
       } else {
         pushToGateway(`【${targetId} 回复】\n${text}`);
       }
@@ -403,16 +403,16 @@ function createGatewayHost(rawDeps) {
     for (const [markerIndex, mk] of dispatchMarkers.entries()) {
       if (mk.target === dispatcherId) continue;
       const v = validateDispatchTarget(mk.target, dispatcherId);
-      if (!v.ok) { getWaitInjector().injectSystemMsg(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
-      if (v.rec.dirId !== from.dirId && from.type !== 'commander') { getWaitInjector().injectSystemMsg(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
+      if (!v.ok) { getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
+      if (v.rec.dirId !== from.dirId && from.type !== 'commander') { getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
       appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
       deliveries.push(dispatchToSession(mk.target, mk.message, {
         replyTo: dispatcherId,
         oneWay: false,
         idempotencyKey: `marker:${dispatcherId}:${sourceKey}:${markerIndex}`,
       })
-        .then(r => { if (!r.ok) getWaitInjector().injectSystemMsg(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
-        .catch(e => getWaitInjector().injectSystemMsg(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`)));
+        .then(r => { if (!r.ok) getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
+        .catch(e => getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`)));
     }
 
     deliveries.push(...routeLegacyCommanderMarkers({
@@ -420,7 +420,7 @@ function createGatewayHost(rawDeps) {
       records: persistedSessions, crypto, isPlaceholder: isDispatchPlaceholderTarget,
       validateTarget: target => validateDispatchTarget(target, dispatcherId),
       appendEvent, dispatch: dispatchToSession,
-      inject: text => getWaitInjector().injectSystemMsg(dispatcherId, text),
+      inject: text => getSessionDelivery().deliverSystem(dispatcherId, text),
     }));
 
     // Strip <<route>> markers from displayed history (like Gateway strips <<dispatch>>)

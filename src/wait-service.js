@@ -47,8 +47,8 @@ function createWaitService({
     if (!sessionId || typeof sessionId !== 'string') {
       throw new TypeError('[wait-service] sessionId is required');
     }
-    if (!['callback', 'poll'].includes(mode)) {
-      throw new TypeError('[wait-service] mode must be callback or poll');
+    if (!['callback', 'poll', 'delay'].includes(mode)) {
+      throw new TypeError('[wait-service] mode must be callback, poll or delay');
     }
 
     const token = mode === 'callback' ? String(callbackTokenFactory()) : null;
@@ -171,6 +171,13 @@ function createWaitService({
     return resolveInternal(id, payload, { expectedMode: 'poll', deliveryText: options.deliveryText });
   }
 
+  async function resolveDelay(id, payload, options = {}) {
+    return resolveInternal(id, payload, {
+      expectedMode: 'delay',
+      deliveryText: options.deliveryText,
+    });
+  }
+
   async function cancel(id) {
     return store.mutate(draft => {
       const wait = draft.waits[id];
@@ -218,6 +225,7 @@ function createWaitService({
     register,
     resolveCallback,
     resolvePoll,
+    resolveDelay,
     cancel,
     cancelForSession,
     get,
