@@ -309,6 +309,8 @@
   "openWebDashboard": "Open Web Dashboard in Browser",
   "about": "About",
   "currentVersion": "Current Version",
+  "lastStartedAt": "Last started",
+  "uptimeDuration": "up {duration}",
   "versionFormatHint": "The version is shown as name (build). Update checks compare build numbers.",
   "checking": "Checking...",
   "checkForUpdates": "Check for Updates",

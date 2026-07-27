@@ -64,13 +64,70 @@ test('server info selects the first external IPv4 and reads the live port', () =
     }),
     getPort: () => port,
     authRequired: () => true,
+    now: () => Date.parse('2026-07-27T05:32:00.000Z'),
+    uptimeSeconds: () => 8100,
   });
   assert.deepEqual(capture(handler), {
     ip: '192.168.1.8', port: 3000, proto: 'http', url: 'http://192.168.1.8:3000', authRequired: true,
+    startedAt: '2026-07-27T03:17:00.000Z', uptimeMs: 8100000,
   });
   port = 3012;
   assert.equal(capture(handler).port, 3012);
   assert.equal(selectLanAddress({ lo0: null }), '127.0.0.1');
+});
+
+test('server info reports the running process start, not a value captured at require time', () => {
+  // The sidebar read-out is only trustworthy if a restart moves it. Deriving
+  // startedAt from live uptime is what guarantees that: a module-level
+  // `bootTime` would keep answering with the previous run until someone
+  // remembered to reassign it.
+  let clock = Date.parse('2026-07-27T05:32:00.000Z');
+  let uptime = 8100;
+  const deps = {
+    networkInterfaces: () => ({}),
+    getPort: () => 3000,
+    authRequired: () => false,
+    now: () => clock,
+    uptimeSeconds: () => uptime,
+  };
+  const handler = createServerInfoHandler(deps);
+  const before = capture(handler);
+
+  // Time passes with the same process running: the start instant holds still.
+  clock += 600000;
+  uptime += 600;
+  assert.equal(capture(handler).startedAt, before.startedAt);
+  assert.equal(capture(handler).uptimeMs, 8700000);
+
+  // A restart: same wall clock, a process that has only just begun.
+  uptime = 3;
+  const after = capture(handler);
+  assert.equal(after.startedAt, '2026-07-27T05:41:57.000Z');
+  assert.ok(Date.parse(after.startedAt) > Date.parse(before.startedAt), 'a restart must move the read-out forward');
+
+  // Uptime is read per request, not frozen when the handler was built.
+  assert.equal(capture(handler).uptimeMs, 3000);
+});
+
+test('server info falls back to the real process clock and never reports a future start', () => {
+  const handler = createServerInfoHandler({
+    networkInterfaces: () => ({}),
+    getPort: () => 3000,
+    authRequired: () => false,
+  });
+  const body = capture(handler);
+  assert.ok(body.uptimeMs >= 0 && body.uptimeMs < 24 * 3600 * 1000, 'defaults to this process uptime');
+  assert.ok(Date.parse(body.startedAt) <= Date.now(), 'startedAt is in the past');
+
+  const negative = capture(createServerInfoHandler({
+    networkInterfaces: () => ({}),
+    getPort: () => 3000,
+    authRequired: () => false,
+    now: () => 1000,
+    uptimeSeconds: () => -5,
+  }));
+  assert.equal(negative.uptimeMs, 0);
+  assert.equal(negative.startedAt, new Date(1000).toISOString());
 });
 
 test('version info prefers GitHub release metadata and keeps install channel', async () => {
