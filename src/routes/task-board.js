@@ -603,7 +603,7 @@ function createTaskBoardRuntime(deps) {
     if (type === 'queued' && event.workKind !== 'task') {
       return { ok: true, changed: false };
     }
-    if (type === 'queued') runState = 'queued';
+    if (type === 'queued' || type === 'claim_released') runState = 'queued';
     else if (type === 'claimed' || type === 'started' || type === 'resumed') runState = 'running';
     else if (type === 'completed') {
       // NOT hard-coded `done`. `completed` only means "the active slot was

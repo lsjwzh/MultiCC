@@ -59,6 +59,8 @@ function fixture(options = {}) {
       calls.push(['task-state', sessionId, patch]);
     },
     onTaskBoardQueueEvent() {},
+    onWorkspaceQueueStatus: (sessionId, status) =>
+      calls.push(['workspace-queue', sessionId, status]),
     classifyDisplay: () => ({ cardStatus: 'running' }),
     // classify is the only writer of business state; the host merely submits.
     dispatchStateAction: (result, ctx) => calls.push(['dispatch', result, ctx]),
@@ -620,6 +622,13 @@ test('queued insert events preserve the scheduler state in queue projections', (
     schedulerState: 'frozen',
     queued: 2,
     queuedItems: [{ entryId: 'queued-2' }, { entryId: 'queued-1' }],
+    queueSummary: {
+      sessionId: 's1',
+      depth: 2,
+      state: 'frozen',
+      classifyState: 'W',
+      updatedAt: 120,
+    },
     at: 123,
   });
   const projected = h.calls.find(call => call[0] === 'task-state');
@@ -630,6 +639,17 @@ test('queued insert events preserve the scheduler state in queue projections', (
       queueState: 'frozen',
       queueFreezeReason: null,
       queueUpdatedAt: 123,
+    },
+  ]);
+  assert.deepEqual(h.calls.find(call => call[0] === 'workspace-queue'), [
+    'workspace-queue',
+    's1',
+    {
+      sessionId: 's1',
+      depth: 2,
+      state: 'frozen',
+      classifyState: 'W',
+      updatedAt: 120,
     },
   ]);
 });

@@ -1656,6 +1656,51 @@ async function commitAllUncommitted() {
   }
 }
 
+function fifoQueueHint(sessionId, queue) {
+  const depth = Math.max(0, Math.floor(Number(queue?.depth) || 0));
+  const classifyState = _workspaceClassify.get(sessionId)?.classifyState
+    || queue?.classifyState || null;
+  if (classifyState === 'W') {
+    return `${depth} 条任务已派发；目标会话正在等待用户回复，之后按 FIFO 执行`;
+  }
+  if (classifyState === 'E' || queue?.state === 'frozen') {
+    return `${depth} 条任务已派发并在 FIFO 中等待；目标会话当前暂停，需先恢复`;
+  }
+  if (classifyState === 'P' || ['starting', 'running', 'assessing'].includes(queue?.state)) {
+    return `${depth} 条任务已派发；将在目标会话当前任务完成后按 FIFO 执行`;
+  }
+  return `${depth} 条任务已派发，正在目标会话的 FIFO 中等待执行`;
+}
+
+function updateSessionQueueDom(sessionId) {
+  const queue = _workspaceQueues.get(sessionId);
+  const badge = document.getElementById(`sess-queue-${sessionId}`);
+  if (!badge) return;
+  const depth = Math.max(0, Math.floor(Number(queue?.depth) || 0));
+  badge.textContent = depth > 0 ? `📥 FIFO ${depth}` : '';
+  badge.title = depth > 0 ? fifoQueueHint(sessionId, queue) : '';
+  badge.style.display = depth > 0 ? '' : 'none';
+}
+
+function applyWorkspaceQueueStatus(input) {
+  const sessionId = String(input?.sessionId || '');
+  if (!sessionId) return;
+  const previous = _workspaceQueues.get(sessionId);
+  const updatedAt = Math.max(0, Math.floor(Number(input.updatedAt) || 0));
+  if (previous && previous.updatedAt > updatedAt) return;
+  _workspaceQueues.set(sessionId, {
+    depth: Math.max(0, Math.floor(Number(input.depth) || 0)),
+    state: String(input.state || 'idle'),
+    classifyState: input.classifyState || null,
+    updatedAt,
+  });
+  updateSessionQueueDom(sessionId);
+}
+
+function applyWorkspaceQueueSnapshot(items) {
+  for (const item of Array.isArray(items) ? items : []) applyWorkspaceQueueStatus(item);
+}
+
 function renderSessionRow(s) {
   const focusedClass = s.id === _focusedSessionId ? ' focused' : '';
   // CLI marker: groups are now kind-only (chat/terminal), so each card shows its
@@ -1697,6 +1742,9 @@ function renderSessionRow(s) {
   // have its own ternary that had no error glyph at all.
   const summaryIco = window.MultiCCStatusPresentation.presentation('session', cardStatus).icon;
   const runtimeText = sessionRunTimeText(s.id);
+  const queue = _workspaceQueues.get(s.id);
+  const queueDepth = Math.max(0, Math.floor(Number(queue?.depth) || 0));
+  const queueTitle = queueDepth > 0 ? fifoQueueHint(s.id, queue) : '';
 
   const openBtn = s.kind === 'chat'
     ? `<button class="btn-icon" onclick="event.stopPropagation(); openSessionChat('${escapeHtml(s.id)}')" title="${escapeHtml(tt('openInNewTab'))}">🔗</button>`
@@ -1713,7 +1761,7 @@ function renderSessionRow(s) {
       })}
       <span class="classify-badge" id="sess-classify-${escapeHtml(s.id)}" style="display:none"></span>
       <div class="lean-main">
-        <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}${s.type === 'commander' ? '<span class="cmdr-badge" title="指挥官：只分发任务、不亲自执行；不可单独删除">🎖 指挥</span>' : ''}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span></div>
+        <div class="lean-name" title="#${escapeHtml(s.id)}">${escapeHtml(displayName)}${s.type === 'commander' ? '<span class="cmdr-badge" title="指挥官：只分发任务、不亲自执行；不可单独删除">🎖 指挥</span>' : ''}<span class="sess-notes" id="sess-notes-${escapeHtml(s.id)}"${pendingNotes > 0 ? '' : ' style="display:none"'}>${pendingNotes > 0 ? '📨 ' + pendingNotes : ''}</span><span class="sess-queue" id="sess-queue-${escapeHtml(s.id)}" title="${escapeHtml(queueTitle)}"${queueDepth > 0 ? '' : ' style="display:none"'}>${queueDepth > 0 ? `📥 FIFO ${queueDepth}` : ''}</span></div>
         <div class="lean-meta">
           <span class="cli-chip ${cliClass}" title="CLI: ${escapeHtml(cli)}">${escapeHtml(cli)}</span>
           <span class="sep">·</span><span>${escapeHtml(formatRelative(sessionLastInteractionMs(s) || s.createdAt))}</span>

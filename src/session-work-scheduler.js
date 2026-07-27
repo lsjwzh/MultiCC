@@ -200,10 +200,25 @@ function createSessionWorkScheduler({
     throw new TypeError('[session-scheduler] orchestration store is required');
   }
 
+  function safeQueueSummary(schedule, classifyState = null) {
+    if (!schedule?.sessionId) return null;
+    return {
+      sessionId: schedule.sessionId,
+      depth: Array.isArray(schedule.queued) ? schedule.queued.length : 0,
+      state: ACTIVE_STATES.has(schedule.state) || schedule.state === 'idle'
+        ? schedule.state : 'idle',
+      classifyState: CLASSIFY_STATES.has(classifyState)
+        ? classifyState : classifyStateForSchedule(schedule),
+      updatedAt: Number(schedule.updatedAt) || 0,
+    };
+  }
+
   function emit(type, fields = {}) {
-    const event = { type, at: Number(now()), ...fields };
+    const { schedule = null, ...publicFields } = fields;
+    const event = { type, at: Number(now()), ...publicFields };
+    if (schedule) event.queueSummary = safeQueueSummary(schedule);
     try { onEvent(event); } catch (_) {}
-    try { log(`[session-scheduler] ${type} ${JSON.stringify(fields)}`); } catch (_) {}
+    try { log(`[session-scheduler] ${type} ${JSON.stringify(publicFields)}`); } catch (_) {}
     return event;
   }
 
@@ -453,6 +468,7 @@ function createSessionWorkScheduler({
         schedulerState: result.schedule.state,
         freezeReason: result.schedule.freezeReason,
         queuedItems,
+        schedule: result.schedule,
       });
     }
     return result;
@@ -498,6 +514,7 @@ function createSessionWorkScheduler({
       taskId: result.schedule.active?.taskId || null,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
+      schedule: result.schedule,
     });
     return result;
   }
@@ -525,12 +542,13 @@ function createSessionWorkScheduler({
       taskId: result.schedule.active?.taskId || null,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
+      schedule: result.schedule,
     });
     return result;
   }
 
   async function releaseClaim(item, reason = 'prelaunch_deferred') {
-    return store.mutate(draft => {
+    const result = await store.mutate(draft => {
       const schedule = draft.sessionSchedules[item.sessionId];
       if (!schedule?.active || schedule.active.deliveryId !== item.id) {
         return { ok: false, code: 'active_delivery_mismatch' };
@@ -555,6 +573,16 @@ function createSessionWorkScheduler({
       schedule.updatedAt = at;
       return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId)) };
     });
+    if (result.ok) emit('claim_released', {
+      sessionId: item.sessionId,
+      entryId: item.id,
+      taskId: result.schedule.active?.taskId || item.payload?.taskId || null,
+      reason,
+      queued: result.schedule.queued.length,
+      queuedItems: result.schedule.queued,
+      schedule: result.schedule,
+    });
+    return result;
   }
 
   async function turnEnded(sessionId) {
@@ -578,6 +606,7 @@ function createSessionWorkScheduler({
       schedulerState: 'assessing',
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
+      schedule: result.schedule,
     });
     return result;
   }
@@ -610,6 +639,7 @@ function createSessionWorkScheduler({
       freezeReason: result.schedule.freezeReason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
+      schedule: result.schedule,
     });
     return result;
   }
@@ -664,6 +694,7 @@ function createSessionWorkScheduler({
       reason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
+      schedule: result.schedule,
     });
     return result;
   }
@@ -762,6 +793,7 @@ function createSessionWorkScheduler({
       actor,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
+      schedule: result.schedule,
     });
     return result;
   }
@@ -823,6 +855,7 @@ function createSessionWorkScheduler({
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       freezeReason: result.schedule.freezeReason,
+      schedule: result.schedule,
     });
     return result;
   }
@@ -871,6 +904,7 @@ function createSessionWorkScheduler({
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       freezeReason: result.schedule.freezeReason,
+      schedule: result.schedule,
     });
     return result;
   }
@@ -900,6 +934,7 @@ function createSessionWorkScheduler({
       schedulerState: info.schedulerState,
       freezeReason: info.schedule.freezeReason,
       queuedItems: info.schedule.queued,
+      schedule: info.schedule,
     });
     return { ok: true, position: info.position || null };
   }
@@ -910,6 +945,28 @@ function createSessionWorkScheduler({
         draft.sessionSchedules[sessionId],
         queueForDraft(draft, sessionId),
       )));
+  }
+
+  async function queueSummaries(sessionIds = null) {
+    const requested = Array.isArray(sessionIds)
+      ? [...new Set(sessionIds.map(value => String(value || '').trim()).filter(Boolean))]
+      : null;
+    return store.read(draft => {
+      const ids = requested || [...new Set([
+        ...Object.keys(draft.sessionSchedules),
+        ...Object.values(draft.outbox)
+          .filter(item => item.state === 'pending' || item.state === 'leased')
+          .map(item => item.sessionId),
+      ])].sort();
+      return ids.map((sessionId) => {
+        const schedule = draft.sessionSchedules[sessionId] || newSchedule(sessionId, 0);
+        const projected = publicSchedule(schedule, queueForDraft(draft, sessionId));
+        return safeQueueSummary(
+          projected,
+          canonicalClassifyState(sessionId, schedule) || projected.classifyState,
+        );
+      });
+    });
   }
 
   async function recover({
@@ -1053,6 +1110,8 @@ function createSessionWorkScheduler({
       }
       return changes;
     });
+    const summaries = new Map((await queueSummaries(events.map(event => event.sessionId)))
+      .map(summary => [summary.sessionId, summary]));
     for (const event of events) emit(event.type, {
       sessionId: event.sessionId,
       entryId: event.entryId || null,
@@ -1060,6 +1119,7 @@ function createSessionWorkScheduler({
       queued: event.queued == null ? null : event.queued,
       queuedItems: event.queuedItems || [],
       freezeReason: event.type === 'frozen' ? event.reason : null,
+      queueSummary: summaries.get(event.sessionId) || null,
       recovered: true,
     });
     return { ok: true, changes: events.length };
@@ -1077,6 +1137,7 @@ function createSessionWorkScheduler({
     cancelQueued,
     insertQueued,
     status,
+    queueSummaries,
     noteQueued,
     list,
     recover,

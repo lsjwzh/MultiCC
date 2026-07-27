@@ -106,6 +106,7 @@ test('workspace connection sends snapshot and removes the final client on close'
     dirId: 'd1',
     sessions: [{ id: 'session-d1' }],
     events: [{ id: 'event-d1' }],
+    queues: [],
   });
   assert.equal(runtime.clients.get('d1').has(socket), true);
   socket.isAlive = false;
@@ -138,10 +139,56 @@ test('meta connection receives a fleet snapshot with directory labels', () => {
   assert.deepEqual(socket.messages, [{
     type: 'meta_snapshot',
     fleet: [
-      { dirId: 'd1', dirLabel: 'One', sessions: [{ id: 'session-d1' }], events: [{ id: 'event-d1' }] },
-      { dirId: 'd2', dirLabel: 'Two', sessions: [{ id: 'session-d2' }], events: [{ id: 'event-d2' }] },
+      { dirId: 'd1', dirLabel: 'One', sessions: [{ id: 'session-d1' }], events: [{ id: 'event-d1' }], queues: [] },
+      { dirId: 'd2', dirLabel: 'Two', sessions: [{ id: 'session-d2' }], events: [{ id: 'event-d2' }], queues: [] },
     ],
   }]);
+});
+
+test('FIFO projection is bounded, monotonic, directory-scoped, and payload-free', () => {
+  const { runtime } = createHarness();
+  assert.equal(runtime.hydrateQueueStatuses([
+    {
+      sessionId: 'done',
+      depth: 2,
+      state: 'frozen',
+      classifyState: 'W',
+      updatedAt: 50,
+      text: 'must not escape',
+      entryId: 'private-entry',
+      taskId: 'private-task',
+    },
+    { sessionId: 'aux', depth: 99, updatedAt: 50 },
+  ]), 1);
+
+  const socket = new FakeSocket();
+  runtime.attachWorkspace(socket, new URL('ws://localhost/ws/workspace?dirId=d1'));
+  assert.deepEqual(socket.messages[0].queues, [{
+    sessionId: 'done',
+    depth: 2,
+    state: 'frozen',
+    classifyState: 'W',
+    updatedAt: 50,
+  }]);
+  assert.doesNotMatch(JSON.stringify(socket.messages[0]), /must not escape|private-entry|private-task/);
+
+  socket.messages.length = 0;
+  runtime.setQueueStatus('done', {
+    depth: 1, state: 'running', classifyState: 'P', updatedAt: 60, text: 'hidden',
+  });
+  assert.deepEqual(socket.messages, [{
+    type: 'session_queue_status',
+    sessionId: 'done',
+    depth: 1,
+    state: 'running',
+    classifyState: 'P',
+    updatedAt: 60,
+  }]);
+  runtime.setQueueStatus('done', {
+    depth: 9, state: 'frozen', classifyState: 'W', updatedAt: 55,
+  });
+  assert.equal(runtime.queueStatuses.get('done').depth, 1, 'older events cannot revive stale depth');
+  assert.equal(socket.messages.length, 1);
 });
 
 test('summary persistence and broadcast preserve legacy ordering and idempotence', () => {

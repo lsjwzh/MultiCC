@@ -13,7 +13,7 @@ function createSessionWorkHost(deps = {}) {
   for (const name of [
     'runtime', 'getRecord', 'getChatSession', 'getTaskState',
     'pendingUserInput', 'recordUserInput', 'broadcast', 'setTaskState',
-    'onTaskBoardQueueEvent', 'classifyDisplay', 'cancelClassify',
+    'onTaskBoardQueueEvent', 'onWorkspaceQueueStatus', 'classifyDisplay', 'cancelClassify',
     'assignKillReason', 'appendMessage', 'cancelPreparation',
     // classify owns every business-state transition, including cancellation.
     'dispatchStateAction',
@@ -351,6 +351,9 @@ function createSessionWorkHost(deps = {}) {
       queueFreezeReason: event.freezeReason || null,
       queueUpdatedAt: event.at,
     });
+    if (event.queueSummary) {
+      deps.onWorkspaceQueueStatus(event.sessionId, event.queueSummary);
+    }
     deps.onTaskBoardQueueEvent(event);
   }
 

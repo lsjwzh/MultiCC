@@ -156,6 +156,10 @@ test('preset list strips prompts while detail preserves them and returns legacy 
   assert.match(detail.body.prompt, /不是强制 route-only/);
   assert.match(detail.body.prompt, /跨 session 派发的【唯一通道】是调用 route_task/);
   assert.match(detail.body.prompt, /不要输出 <<route>> 或 <<dispatch>>/);
+  assert.match(detail.body.prompt, /routingState="waiting_user"/);
+  assert.match(detail.body.prompt, /相关性相近时优先选择非 waiting_user/);
+  assert.match(detail.body.prompt, /相关性明显更高时仍可选择/);
+  assert.match(detail.body.prompt, /列表顺序不表示优先级/);
   assert.equal(current.reads(), 1);
   const missing = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
     params: { id: 'missing' },
