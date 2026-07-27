@@ -2568,7 +2568,6 @@ function setTaskState(sessionId, patch, opts = {}) {
   }
   return next;
 }
-
 const userInputSignalHost = createUserInputSignalHost(
   { getSession: id => chatSessions.get(id),
     getState: id => getTaskState(persistedSessions.get(id)),
@@ -2580,6 +2579,7 @@ sessionWorkHost = createSessionWorkHost({
   getTaskState,
   pendingUserInput: id => userInputSignalHost.pending(id),
   recordUserInput: signal => userInputSignalHost.record(signal),
+  resolveUserInput: (id, requestId) => userInputSignalHost.resolve(id, requestId),
   broadcast: chatBroadcast,
   setTaskState,
   onTaskBoardQueueEvent: event => taskBoardRuntime.onQueueEvent(event),
