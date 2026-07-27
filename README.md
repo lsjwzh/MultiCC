@@ -223,7 +223,7 @@ Then open the same URL on your phone, or install the [Flutter app](docs/installa
 | [FAQ](docs/faq.md) | Troubleshooting and common questions |
 | [Tech stack](docs/tech-stack.md) | Runtime dependencies and what each one is for |
 
-Design and contract documents (voice, provider routing, governance, modularization) also live in [`docs/`](docs/).
+The full index — design contracts, voice, provider routing, governance reviews, and modularization history — is in **[docs/README.md](docs/README.md)** (34 documents).
 
 ---
 
@@ -261,6 +261,8 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 
 **Where it is weaker:** no hosted/cloud option, no built-in code editor, macOS/Linux only, and single-user by design — there is no team RBAC.
 
+Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, cc-connect, CloudCLI, Superset, Orca, cockpit-tools.
+
 **→ The full 12-project survey and head-to-head tables: [How MultiCC compares](docs/ecosystem-comparison.md)**
 
 ---
@@ -289,6 +291,8 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 ```
 
 Key decisions: vendor transcripts are never translated; state is flat JSON, not a database; each session owns a branch and worktree; the network bind is fail-closed.
+
+**Built with:** Node.js · Express · ws · better-sqlite3 · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter. No frontend build step — the web client is plain JavaScript.
 
 **→ [Architecture](docs/architecture.md)**
 
