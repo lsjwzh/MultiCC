@@ -30,8 +30,33 @@ void main() {
       expect(state.items.map((item) => item.text), ['first', 'second']);
       expect(state.items.first.canCancel, isTrue);
       expect(state.items.last.canCancel, isFalse);
+      // 没有 priority 字段的旧快照一律当普通条目，插队按钮照常可用。
+      expect(state.items.first.priority, isFalse);
+      expect(state.items.first.canInsert, isTrue);
+      expect(state.items.last.canInsert, isFalse);
     },
   );
+
+  test('the entry the scheduler already prioritised cannot be inserted again', () {
+    final state = SessionQueueState.fromEvent({
+      'state': 'queued',
+      'items': [
+        {
+          'entryId': 'e-hot',
+          'state': 'pending',
+          'position': 1,
+          'text': 'jump the line',
+          'priority': true,
+        },
+      ],
+    });
+
+    final item = state.items.single;
+    expect(item.priority, isTrue);
+    // 仍然可以取消，只是不必再插一次队。
+    expect(item.canCancel, isTrue);
+    expect(item.canInsert, isFalse);
+  });
 
   test('partial queue events retain previous items and map freeze reasons', () {
     final queued = SessionQueueState.fromEvent({

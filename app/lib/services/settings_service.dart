@@ -38,6 +38,7 @@ class SettingsService {
   static const _keyLang = 'multicc_lang';
   static const _keyServerHistory = 'multicc_server_history';
   static const _keyChatRuntimePrefix = 'multicc_chat_runtime_';
+  static const _keyNoDispatchPrefix = 'multicc_no_dispatch_';
 
   /// How many past server connections to remember.
   static const _serverHistoryMax = 10;
@@ -160,6 +161,18 @@ class SettingsService {
       '$_keyChatRuntimePrefix$sessionId',
       jsonEncode(value),
     );
+  }
+
+  /// Commander 会话的「不派发给其他会话」勾选状态，按会话记住（web 端存在
+  /// localStorage 的 `multicc.noDispatch.<id>`）。没写过就是 false。
+  bool readNoDispatch(String sessionId) {
+    if (sessionId.isEmpty) return false;
+    return _prefs.getBool('$_keyNoDispatchPrefix$sessionId') ?? false;
+  }
+
+  Future<void> saveNoDispatch(String sessionId, bool value) async {
+    if (sessionId.isEmpty) return;
+    await _prefs.setBool('$_keyNoDispatchPrefix$sessionId', value);
   }
 
   Future<void> save({

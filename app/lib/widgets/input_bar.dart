@@ -14,6 +14,7 @@ import '../providers/session_manager.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
 import '../screens/voice_call_screen.dart';
+import '../utils/dispatch_hint.dart';
 import 'chat_runtime_panels.dart';
 
 // Goal precheck dimension keys → short chip labels (web/app kept in sync).
@@ -45,6 +46,10 @@ class _InputBarState extends State<InputBar> {
   final _recorder = AudioRecorder();
   bool _isRecording = false;
   bool _isTranscribing = false;
+
+  // Commander 专属的「不派发给其他会话」勾选，按会话记住（web 端同名开关）。
+  bool _noDispatch = false;
+  String _noDispatchSessionId = '';
 
   @override
   void initState() {
@@ -423,9 +428,26 @@ class _InputBarState extends State<InputBar> {
     }
   }
 
+  // ── Dispatch hint (commander only) ──
+
+  /// 切到别的会话时把勾选状态对齐到那个会话记住的值。读是同步的（
+  /// SharedPreferences 早已加载），所以直接在 build 里调用，不用等下一帧；
+  /// 没写过的会话保持 false，不回写默认值。
+  void _syncNoDispatch(ChatProvider provider) {
+    final sessionId = provider.sessionName;
+    if (sessionId == _noDispatchSessionId) return;
+    _noDispatchSessionId = sessionId;
+    _noDispatch = provider.settings.readNoDispatch(sessionId);
+  }
+
+  void _setNoDispatch(ChatProvider provider, bool value) {
+    setState(() => _noDispatch = value);
+    provider.settings.saveNoDispatch(provider.sessionName, value);
+  }
+
   // ── Send ──
 
-  void _send(ChatProvider provider) {
+  void _send(ChatProvider provider, {required bool commander}) {
     var text = _ctrl.text.trim();
     // Append attachment paths
     if (_attachments.isNotEmpty) {
@@ -433,6 +455,12 @@ class _InputBarState extends State<InputBar> {
       text = text.isEmpty ? paths : '$text $paths';
     }
     if (text.isEmpty) return;
+    // 装饰必须在交给 provider 之前：气泡与真正发出去的 payload 用同一个字符串。
+    text = decorateDispatchHint(
+      text,
+      enabled: commander,
+      noDispatch: _noDispatch,
+    );
     provider.sendMessage(text);
     _ctrl.clear();
     setState(() {
@@ -442,14 +470,24 @@ class _InputBarState extends State<InputBar> {
   }
 
   Future<bool> _confirmQueueChange(String action) async {
-    if (!const {'skip', 'cancel', 'cancel_queued'}.contains(action)) {
+    if (!const {
+      'skip',
+      'cancel',
+      'cancel_queued',
+      'insert_queued',
+    }.contains(action)) {
       return true;
     }
+    // 插队会当场掐断正在生成的回复，手机上误触代价比 web 大，所以和取消一样
+    // 走一次确认；文案单列，别让用户以为只是「排到前面」。
+    final body = action == 'insert_queued'
+        ? t('confirmInsertQueuedBody')
+        : t('confirmQueueChangeBody');
     return await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: Text(t('confirmQueueChangeTitle')),
-            content: Text(t('confirmQueueChangeBody')),
+            content: Text(body),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(dialogContext, false),
@@ -474,14 +512,28 @@ class _InputBarState extends State<InputBar> {
     try {
       await provider.queueAction(action, entryId: entryId);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(t('queueActionAccepted'))));
-    } catch (error) {
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(t('queueActionFailed', {'error': '$error'})),
+          content: Text(
+            action == 'insert_queued'
+                ? t('queueInsertAccepted')
+                : t('queueActionAccepted'),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      // 调度器已经领走这条消息是最常见的失败，原始 code 对用户没有意义。
+      final claimed =
+          error is QueueActionException &&
+          error.code == 'queued_entry_already_claimed';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            claimed
+                ? t('queueEntryAlreadyClaimed')
+                : t('queueActionFailed', {'error': '$error'}),
+          ),
           backgroundColor: const Color(0xFF3a1414),
         ),
       );
@@ -1005,6 +1057,9 @@ class _InputBarState extends State<InputBar> {
         ? sub.effectiveModel
         : ((sub?.model != null && sub!.model!.isNotEmpty) ? sub.model : null);
     final subagentModelLabel = subReal;
+    // 会话角色读不到就当不是 commander：fail closed，绝不悄悄改写提示词。
+    final isCommander = isCommanderSessionType(activeSess?.type);
+    _syncNoDispatch(provider);
     final isStreaming = provider.isStreaming;
     final isConnected =
         provider.connectionState == ChatConnectionState.connected;
@@ -1028,6 +1083,8 @@ class _InputBarState extends State<InputBar> {
               onAction: (action) => _runQueueAction(provider, action),
               onCancelQueued: (entryId) =>
                   _runQueueAction(provider, 'cancel_queued', entryId: entryId),
+              onInsertQueued: (entryId) =>
+                  _runQueueAction(provider, 'insert_queued', entryId: entryId),
             ),
 
             // Attachment chips
@@ -1131,6 +1188,53 @@ class _InputBarState extends State<InputBar> {
                 ),
               ),
 
+            // Commander 专属：勾选后强制在当前会话内做完，不派发给其它会话。
+            // 跟在子任务 pill 之后，与 web 的 #pre-input-bar 顺序一致。
+            if (isCommander)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Tooltip(
+                    message: t('noDispatchHint'),
+                    child: GestureDetector(
+                      key: const Key('no-dispatch-toggle'),
+                      onTap: () => _setNoDispatch(provider, !_noDispatch),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: Checkbox(
+                              key: const Key('no-dispatch-check'),
+                              value: _noDispatch,
+                              onChanged: (v) =>
+                                  _setNoDispatch(provider, v == true),
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              side: const BorderSide(color: Color(0xFF454b54)),
+                              activeColor: const Color(0xFFd29922),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            t('noDispatchLabel'),
+                            style: TextStyle(
+                              color: _noDispatch
+                                  ? const Color(0xFFd29922)
+                                  : const Color(0xFF8a909b),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
             // Input row
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -1222,7 +1326,9 @@ class _InputBarState extends State<InputBar> {
                           vertical: 10,
                         ),
                       ),
-                      onSubmitted: canSend ? (_) => _send(provider) : null,
+                      onSubmitted: canSend
+                          ? (_) => _send(provider, commander: isCommander)
+                          : null,
                     ),
                   ),
                 ),
@@ -1238,7 +1344,9 @@ class _InputBarState extends State<InputBar> {
                   ),
                 if (isStreaming) const SizedBox(width: 4),
                 _ActionButton(
-                  onTap: canSend ? () => _send(provider) : null,
+                  onTap: canSend
+                      ? () => _send(provider, commander: isCommander)
+                      : null,
                   color: canSend
                       ? const Color(0xFF22ab9c)
                       : const Color(0xFF14171c),
