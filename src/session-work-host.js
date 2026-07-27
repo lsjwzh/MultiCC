@@ -70,12 +70,17 @@ function createSessionWorkHost(deps = {}) {
     if (!runtime?.admitSessionWork || !runtime.sessionScheduler) {
       return { ok: false, code: 'scheduler_not_ready' };
     }
-    const requestId = typeof options.userInputRequestId === 'string'
+    const requestedRequestId = typeof options.userInputRequestId === 'string'
       ? options.userInputRequestId.trim() : '';
-    const pending = requestId ? deps.pendingUserInput(sessionId) : null;
-    if (requestId && (!pending || pending.requestId !== requestId || pending.resolved === true)) {
-      return { ok: false, code: pending ? 'request_id_mismatch' : 'no_pending_request' };
-    }
+    const pending = requestedRequestId ? deps.pendingUserInput(sessionId) : null;
+    // requestId enriches an input with correlation; it never grants permission
+    // to send. A stale/replayed picker answer is still ordinary user text, so
+    // drop only its stale correlation metadata instead of rejecting the input.
+    const requestId = pending
+      && pending.requestId === requestedRequestId
+      && pending.resolved !== true
+      ? requestedRequestId
+      : '';
     const status = await runtime.sessionScheduler.status(sessionId);
     const source = options.taskSource
       || (options.originTrigger === true ? 'trigger'
@@ -88,9 +93,11 @@ function createSessionWorkHost(deps = {}) {
       && source === 'direct'
       && classifyState !== 'P'
       && !!status?.active;
-    const admissionOptions = requestId && pending?.taskId && !options.taskId
-      ? { ...options, taskId: pending.taskId }
-      : options;
+    const admissionOptions = { ...options };
+    if (!requestId) delete admissionOptions.userInputRequestId;
+    if (requestId && pending?.taskId && !admissionOptions.taskId) {
+      admissionOptions.taskId = pending.taskId;
+    }
     const admission = {
       sessionId,
       text,
@@ -102,16 +109,7 @@ function createSessionWorkHost(deps = {}) {
       idempotencyKey: options.idempotencyKey
         || options.clientMsgId || options.deliveryId || null,
     };
-    let admitted = await runtime.admitSessionWork(admission);
-    // D may clear the active pointer between status() and admission. Nothing was
-    // persisted on this rejection, so retry once as fresh immediate work.
-    if (!admitted.ok && directContinuation && admitted.code === 'no_active_task') {
-      admitted = await runtime.admitSessionWork({
-        ...admission,
-        workKind: null,
-        activeEntryId: null,
-      });
-    }
+    const admitted = await runtime.admitSessionWork(admission);
     if (!admitted.ok) {
       deps.broadcast(sessionId, {
         type: 'error',

@@ -119,10 +119,10 @@ function classifyStateForReason(reason) {
 
 function controlAllowedByClassify(item, classifyState) {
   const kind = workKind(item);
-  const directContinuation = item?.payload?.type === 'session.work'
-    && item.payload.source === 'direct'
-    && kind === 'continuation';
-  if (directContinuation) return classifyState !== 'P';
+  // Every session.work payload is ultimately one native conversation message.
+  // Classify P is the only staging gate; W/B/E/D may start a fresh CLI turn
+  // even when the previous -p process and its physical active slot are gone.
+  if (item?.payload?.type === 'session.work') return classifyState !== 'P';
   if (classifyState === 'W') return kind === 'answer' || kind === 'approval' || kind === 'continuation';
   if (classifyState === 'B') return kind === 'callback' || kind === 'continuation';
   if (classifyState === 'E') return kind === 'retry' || kind === 'resume';
@@ -262,6 +262,9 @@ function createSessionWorkScheduler({
   function relatedControl(schedule, item) {
     if (!schedule?.active || !isControlItem(item)) return false;
     const payload = item.payload || {};
+    // User/control input is a self-contained conversation message. Correlation
+    // metadata helps preserve task lineage but must never make input impossible.
+    if (payload.type === 'session.work') return true;
     if (payload.activeEntryId && payload.activeEntryId !== schedule.active.entryId) return false;
     // task.interrupted.taskId names the child Task/Agent, not the parent
     // session task. Its durable same-session origin is the correlation proof.
@@ -292,16 +295,25 @@ function createSessionWorkScheduler({
       return a.sequence - b.sequence;
     });
     if (!schedule || !schedule.active || schedule.state === 'idle') {
-      // A direct (non-P) admit runs immediately, jumping any stale FIFO items
-      // (those only drain on D). directRun is a per-item tag, not priority, so
-      // the queued list order is preserved.
-      const direct = ordered.find(it => it.directRun);
-      if (direct) return direct;
+      const cls = schedule
+        ? (canonicalClassifyState(schedule.sessionId, schedule)
+          || classifyStateForSchedule(schedule))
+        : 'D';
+      // P is the sole input staging state. Once classify leaves P, a typed or
+      // control message may start a fresh native turn even if it was admitted
+      // before the previous process exited.
+      if (cls !== 'P') {
+        const direct = ordered.find(it => it.directRun);
+        if (direct) return direct;
+        const control = ordered.find(item => isControlItem(item)
+          && controlAllowedByClassify(item, cls));
+        if (control) return control;
+      }
       // At-rest verdicts (W/E/B) leave stale FIFO items untouched — the queue
       // does nothing until the user's next direct admit or a D verdict. Every
       // other state (D done, never-classified, P exhausted) drains in FIFO order.
-      const cls = schedule && schedule.classifyState;
       if (cls === 'W' || cls === 'E' || cls === 'B') return null;
+      if (cls === 'P') return null;
       return ordered[0];
     }
     const replay = ordered.find(item => isActiveReplay(schedule, item));
@@ -373,38 +385,24 @@ function createSessionWorkScheduler({
         ? pendingInput?.requestId === requestId
         : classifyStateForSchedule(schedule) !== 'D'
           && (!schedule.awaitingRequestId || schedule.awaitingRequestId === requestId);
-      const atRestAnswer = !schedule.active
-        && inferredKind === 'answer'
+      const correlatedAnswer = inferredKind === 'answer'
         && !!requestId
         && pendingAnswerMatches;
       if (CONTROL_KINDS.has(inferredKind)) {
-        // A structured answer is a new, correlated control turn. The previous
-        // provider turn has already released its active slot after classify W;
-        // ordinary queued work remains gated, while this direct answer becomes
-        // the next active entry. Production correlation comes from the
-        // canonical unresolved request; the scheduler mirror is recovery-only.
-        if (!schedule.active && !atRestAnswer) {
-          return { ok: false, code: 'no_active_task', schedule: publicSchedule(schedule) };
-        }
-        if (schedule.active && activeEntryId && activeEntryId !== schedule.active.entryId) {
-          return { ok: false, code: 'active_task_mismatch', schedule: publicSchedule(schedule) };
-        }
-        if (inferredKind === 'answer' && schedule.awaitingRequestId
-            && requestId !== schedule.awaitingRequestId) {
-          return { ok: false, code: 'request_id_mismatch', schedule: publicSchedule(schedule) };
-        }
+        // active is an execution lease, not an admission permission. Control
+        // inputs remain valid messages after the previous -p process exits.
+        // Exact request/task correlation is retained when available, but stale
+        // correlation never rejects or drops user input.
         if (schedule.active) {
           // An answer is its own control turn even when submitted before the
-          // asking turn finishes. Validate against the current entry above,
-          // but do not inherit that entry id into delivery ownership.
+          // asking turn finishes; do not inherit that entry into ownership.
           payload.activeEntryId = inferredKind === 'answer'
             ? null
             : schedule.active.entryId;
           if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
-        } else if (atRestAnswer) {
-          // Repair only correlation metadata. Business state still comes from
-          // classify; an explicit pending request must not create a second
-          // scheduler-owned waiting state.
+        } else if (correlatedAnswer) {
+          // Repair correlation metadata only. Classify remains the sole owner
+          // of business state; this input simply starts the next native turn.
           schedule.awaitingRequestId = requestId;
           if (!payload.taskId && pendingInput?.taskId) payload.taskId = pendingInput.taskId;
         }
@@ -416,13 +414,13 @@ function createSessionWorkScheduler({
         source: { type: 'session-admission', kind: inferredKind },
         now: at,
       });
-      // "Non-P runs immediately": a task admitted while no turn is active is
-      // tagged directRun so selectSessionItem returns it right away — it never
-      // waits behind stale FIFO items (which only drain on D). This tag does
-      // NOT touch priorityEntryId, so the queued LIST order is preserved.
+      // Typed/control inputs carry directRun across the P boundary. Selection
+      // still blocks them while classify is P, then starts the oldest one as
+      // soon as classify leaves P. The tag does not rewrite FIFO sequence.
+      const directMessage = payload.type === 'session.work'
+        && (payload.source === 'direct' || CONTROL_KINDS.has(inferredKind));
       if (draft.outbox[admitted.item.id]
-          && (inferredKind === 'answer'
-            || (!schedule.active && (!CONTROL_KINDS.has(inferredKind) || atRestAnswer)))) {
+          && directMessage) {
         draft.outbox[admitted.item.id].directRun = true;
       }
       schedule.updatedAt = at;
@@ -707,21 +705,20 @@ function createSessionWorkScheduler({
   } = {}) {
     if (RETRY_ACTIONS.has(action)) {
       const current = await status(sessionId);
-      if (!current?.active) return { ok: false, code: 'no_active_task' };
-      if (current.state !== 'frozen') return { ok: false, code: 'active_task_not_frozen' };
       if (current.classifyState !== 'E') {
         return { ok: false, code: 'active_task_not_retryable' };
       }
+      const lineage = current.active || current.lastDecision || {};
       return admit({
         sessionId,
         text: String(text || '').trim() || '请继续刚才未完成的任务。',
         source: 'manual-resolution',
         workKind: action,
-        activeEntryId: current.active.entryId,
-        idempotencyKey: idempotencyKey || `${action}:${current.active.entryId}:${Date.now()}`,
+        activeEntryId: current.active?.entryId || null,
+        idempotencyKey: idempotencyKey || `${action}:${lineage.entryId || sessionId}:${Date.now()}`,
         options: {
           originContinue: true,
-          taskId: current.active.taskId || undefined,
+          taskId: lineage.taskId || undefined,
           clientMsgId: idempotencyKey || undefined,
         },
       });
