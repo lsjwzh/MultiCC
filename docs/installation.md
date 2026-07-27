@@ -1,0 +1,148 @@
+# Installation & service management
+
+> Full install reference, migrated out of the README: install-script flags, updating, recovery from a force-push, prerequisites, the `./multicc` service manager, a systemd unit, and Flutter app builds.
+
+## Stable Release (recommended)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.3.0/install.sh | bash -s -- --branch v1.3.0
+```
+
+This installs the latest **stable release**. The script auto-detects your OS,
+checks prerequisites, clones the repo, installs dependencies, configures an
+access token, and optionally installs as a background service (macOS `launchd`).
+
+Running `./multicc update` later checks for new releases and upgrades you
+when one becomes available.
+
+## Development Snapshot (daily `main`)
+
+> ⚠️ This pulls the current `main` branch — it may include untested changes.
+> Prefer the stable release above unless you explicitly want the bleeding edge.
+
+```bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
+```
+
+Detects your OS, checks prerequisites, clones the repo, installs dependencies, configures an access token, and optionally installs as a background service (macOS `launchd`).
+
+**Install with options:**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- \
+  --port 8080 --token mysecrettoken --no-service
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dir <path>` | Install directory (default: `./MultiCC`) |
+| `--token <xxx>` | Pre-set `ACCESS_TOKEN` (default: auto-generated) |
+| `--port <port>` | Server port (default: `3000`) |
+| `--no-service` | Skip background service install |
+| `--no-clone` | Use current directory; skip git clone |
+| `--branch <name>` | Git branch to clone (default: `main`) |
+
+**After install:**
+
+```bash
+cd MultiCC && ./multicc start     # start the server
+cd MultiCC && ./multicc install   # install as macOS launchd background service
+```
+
+**Update anytime:** `./multicc update` — pulls latest code, reinstalls deps if `package.json` changed, and restarts.
+
+The v1 updater also verifies the independently packaged `cli-provider-router`
+(CPR) before starting the server. Provider credentials and defaults remain in
+MultiCC's existing `providers.json` / data directory; no CPR data migration is
+required. If an interrupted upgrade leaves dependencies incomplete, rerun
+`./multicc update` and it will repair them with `npm install` before restarting.
+
+> **⚠️ If `./multicc update` fails** (e.g. after a server-side history rewrite / force-push, which can happen when sensitive files are purged from the repo), reset your local branch to match the remote:
+> ```bash
+> cd MultiCC
+> git fetch origin
+> git reset --hard origin/main
+> npm install
+> ./multicc restart
+> ```
+> Or as a one-liner:
+> ```bash
+> cd MultiCC && git fetch origin && git reset --hard origin/main && npm install && ./multicc restart
+> ```
+> **Note:** `git reset --hard` discards uncommitted local changes. If you have local modifications, stash them first with `git stash` and restore with `git stash pop` after the reset.
+
+## Prerequisites
+
+- **Node.js** >= 20.19 (required by `chokidar` 5 ESM — backported `require(ESM)` support landed in Node 20.19 / 22.12)
+- **tmux** (for terminal mode; chat mode works without it)
+- **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
+- **Flutter** >= 3.8 (optional; only if building the native app yourself)
+
+## Manual Install
+
+```bash
+git clone https://github.com/lsjwzh/MultiCC.git
+cd MultiCC
+npm install
+node server.js
+```
+
+Open `http://localhost:3000/chat` to begin.
+
+MultiCC binds to `127.0.0.1` by default and will **refuse to start** on any other host unless you opt in explicitly. To reach it from other devices on your LAN, set all three in `.env`:
+
+```env
+HOST=0.0.0.0
+MULTICC_ALLOW_REMOTE=1
+ACCESS_TOKEN=<a-long-random-string>
+```
+
+Then open `http://<your-lan-ip>:3000?token=<ACCESS_TOKEN>`. Note that plain HTTP over a LAN address is not a secure context, so microphone input and PWA install will not work there — use a tunnel (see [FAQ](faq.md)) if you need those.
+
+## CLI Service Manager
+
+```bash
+./multicc start       # start server
+./multicc stop        # stop server
+./multicc restart     # restart server
+./multicc status      # check if running
+./multicc log         # tail live logs
+./multicc update      # pull latest, reinstall deps, restart
+./multicc install     # install launchd agent (macOS auto-start on login)
+./multicc uninstall   # remove launchd agent
+```
+
+**Linux systemd user service:**
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/multicc.service <<'UNIT'
+[Unit]
+Description=MultiCC Server
+After=network.target
+[Service]
+ExecStart=$(which node) $PWD/server.js
+WorkingDirectory=$PWD
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now multicc
+```
+
+## Build the Flutter App
+
+```bash
+cd app
+flutter pub get
+flutter build apk --release              # Android
+flutter build ios --release --no-codesign # iOS (needs Xcode + signing)
+```
+
+The release APK is available in `app/build/app/outputs/flutter-apk/app-release.apk` and served by the dashboard at `/multicc.apk`.
+
+---
+
+[← Back to the README](../README.md)
