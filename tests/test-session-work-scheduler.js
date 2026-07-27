@@ -127,6 +127,29 @@ test('idle starts one item and running work keeps later messages in strict FIFO 
   assert.equal(thirdClaim.id, third.entry.id);
 });
 
+test('claim release publishes the same bounded FIFO summary used by snapshots', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'sensitive delivery body',
+    options: { taskId: 'private-task' },
+    idempotencyKey: 'release-me',
+  });
+  const item = await claimOne(h);
+  h.advance();
+  const released = await h.scheduler.releaseClaim(item, 'delivery_deferred');
+  assert.equal(released.ok, true);
+  const event = h.events.at(-1);
+  assert.equal(event.type, 'claim_released');
+  assert.deepEqual(event.queueSummary, (await h.scheduler.queueSummaries(['s1']))[0]);
+  assert.equal(event.queueSummary.state, 'idle');
+  assert.equal(event.queueSummary.depth, 1);
+  assert.doesNotMatch(
+    JSON.stringify(event.queueSummary),
+    /sensitive delivery body|private-task|entryId|taskId|source/,
+  );
+});
+
 test('direct input staged during P starts as soon as classify leaves P', async t => {
   const h = fixture(t);
   // A is active (P).
@@ -626,6 +649,16 @@ test('W/B/E classifications remain the only gates until a matching control or D'
   assert.ok(held.active);
   assert.equal(held.classifyState, 'W');
   assert.equal(held.queued[0].text, '<img src=x onerror=alert(1)>\nqueued body');
+  const summaries = await waiting.scheduler.queueSummaries(['waiting', 'missing']);
+  assert.equal(summaries[0].depth, 1);
+  assert.equal(summaries[0].state, 'frozen');
+  assert.equal(summaries[0].classifyState, 'W');
+  assert.equal(summaries[1].depth, 0);
+  assert.deepEqual(waiting.events.at(-1).queueSummary, summaries[0]);
+  assert.doesNotMatch(
+    JSON.stringify(summaries),
+    /queued body|entryId|taskId|source|priority|position/,
+  );
   assert.equal(await claimOne(waiting, 'waiting'), null);
 
   const callback = fixture(t);

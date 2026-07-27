@@ -223,6 +223,8 @@ function harness(t, options = {}) {
       return taskStateStore.setTaskState(sessionId, patch, opts);
     },
     onTaskBoardQueueEvent: event => taskBoard.onQueueEvent(event),
+    onWorkspaceQueueStatus: (sessionId, status) =>
+      record({ kind: 'workspace_queue_status', sessionId, status }),
     dispatchStateAction: (result, ctx) => {
       record({ kind: 'classify_dispatch', result, ctx: { sessionName: ctx.sessionName } });
       return classify.dispatchStateAction(result, ctx);

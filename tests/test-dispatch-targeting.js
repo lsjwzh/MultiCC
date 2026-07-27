@@ -155,6 +155,7 @@ test('commander sees bounded roles and deduplicated recent task evidence', () =>
   });
   const [target] = t.dispatchableSessionsFor('cmd');
   assert.equal(target.load, 'running');
+  assert.equal(target.routingState, 'unknown');
   assert.match(target.role, /后端与安全/);
   assert.doesNotMatch(target.role, /top-secret|private\/repo/);
   assert.deepEqual(target.recentTasks, [
@@ -193,11 +194,56 @@ test('commander gets the dispatch prompt without needing autoDispatch', () => {
   assert.match(p, /recentTasks/);
   assert.match(p, /上下文连续性/);
   assert.match(p, /load="running"/);
+  assert.match(p, /routingState="waiting_user"/);
+  assert.match(p, /相关性明显更高/);
+  assert.match(p, /候选列表顺序不表示优先级/);
   assert.match(p, /不要根据 id、CLI 名称或最近活跃时间猜职责/);
   assert.match(p, /用户原话点名/);
   assert.doesNotMatch(p, /<<route target=/);
   assert.doesNotMatch(p, /\[MultiCC Ultracode workflow\]/);
   assert.match(p, /可用目标 sessions: \[/);
+});
+
+test('commander sees waiting-user workflow state as a soft routing signal', () => {
+  const records = [
+    { id: 'cmd', dirId: 'd1', type: 'commander' },
+    {
+      id: 'waiting-worker',
+      dirId: 'd1',
+      type: 'worker',
+      kind: 'chat',
+      taskState: {
+        classifyState: 'W',
+        pendingUserInput: {
+          resolved: false,
+          question: 'sensitive question must not leak',
+          options: ['secret choice'],
+        },
+      },
+    },
+    {
+      id: 'available-worker',
+      dirId: 'd1',
+      type: 'worker',
+      kind: 'chat',
+      taskState: {
+        classifyState: 'D',
+        queueDepth: 0,
+      },
+    },
+  ];
+  const t = makeFactory(records, {
+    'waiting-worker': { clients: { size: 1 }, isStreaming: false },
+  });
+  const waiting = t.dispatchableSessionsFor('cmd')
+    .find(target => target.id === 'waiting-worker');
+  const available = t.dispatchableSessionsFor('cmd')
+    .find(target => target.id === 'available-worker');
+  assert.equal(waiting.load, 'available');
+  assert.equal(waiting.routingState, 'waiting_user');
+  assert.equal(available.load, 'available');
+  assert.equal(available.routingState, 'ready');
+  assert.doesNotMatch(JSON.stringify(waiting), /sensitive question|secret choice/);
 });
 
 test('commander with ultracode stays on route-first route_task surface', () => {

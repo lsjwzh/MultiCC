@@ -489,6 +489,7 @@ async function resolveRebase(id, action) {
 /* ── Workspace status board (live agent statuses per directory) ── */
 const _workspaceWs = new Map();        // dirId → WebSocket
 const _workspaceStatus = new Map();    // sessionId → { status, currentFile, lastActivity, mergeState }
+const _workspaceQueues = new Map();    // sessionId → bounded FIFO summary (never task text)
 const _workspaceClassify = new Map();  // sessionId → { classifyState, goal, phase }
 const _workspaceEvents = new Map();    // dirId → event[]
 const _workspaceNotes = new Map();     // sessionId → pending note count
@@ -544,6 +545,7 @@ async function connectWorkspace(dirId) {
         updateSessionRuntimeDom(s.id);
         updateSessionClassifyDom(s.id);
       }
+      applyWorkspaceQueueSnapshot(msg.queues || []);
       _workspaceEvents.set(dirId, msg.events || []);
       updateEventTimelineDom(dirId);
       updateDirPreview(dirId);
@@ -580,6 +582,8 @@ async function connectWorkspace(dirId) {
       updateSessionClassifyDom(msg.sessionId);
       // Also refresh summary — classify goal changes often mean the summary line should update too
       updateSessionSummaryDom(msg.sessionId);
+    } else if (msg.type === 'session_queue_status') {
+      applyWorkspaceQueueStatus(msg);
     } else if (msg.type === 'task_board_update') {
       if (typeof onTaskBoardUpdate === 'function') onTaskBoardUpdate(msg);
     } else if (msg.type === 'session_cli_changed') {

@@ -2583,6 +2583,7 @@ sessionWorkHost = createSessionWorkHost({
   broadcast: chatBroadcast,
   setTaskState,
   onTaskBoardQueueEvent: event => taskBoardRuntime.onQueueEvent(event),
+  onWorkspaceQueueStatus: (id, status) => workspaceRuntime.setQueueStatus(id, status),
   // Cancellation submits a structured result to classify instead of writing
   // state; classify is the only writer of session/task business state.
   dispatchStateAction,
@@ -2736,7 +2737,6 @@ const chatTurnEngine = createChatTurnEngine({
   MULTICC_IMG_HINT,
   CHAT_HISTORY_PAGE,
 });
-
 
 // Chat domain owns runChatTurn; other domains reach it without require()-ing chat:
 //  • fire-and-forget (triggers): bus event 'chat:run'
@@ -2942,7 +2942,6 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   routerToolHost,
   sessionPersistence,
 });
-
 // Terminal error handler: catches errors that reach next(err) or throw out of
 // async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
 // generic {error, requestId} so clients can't fingerprint the filesystem.
@@ -2955,6 +2954,7 @@ app.use(safeErrorHandler(logger));
   // readiness without blocking timers or other event-loop work.
   await startupRepoReady;
   await orchestrationRuntime.start();
+  workspaceRuntime.hydrateQueueStatuses(await orchestrationRuntime.sessionScheduler.queueSummaries([...persistedSessions.keys()]));
   if (networkPolicy.development) {
     try {
       const requestedPort = PORT;
