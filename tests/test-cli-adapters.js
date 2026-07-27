@@ -292,6 +292,13 @@ assert.equal(
   codexRouterArgs.includes('mcp_servers.multicc_router.default_tools_approval_mode="approve"'),
   true,
 );
+// A tight startup timeout makes Codex silently drop the router tools when the
+// MCP subprocess cold-starts slowly under load (observed: a session losing
+// wait_for_user_answer despite correct config). Keep the timeout generous.
+assert.equal(
+  codexRouterArgs.includes('mcp_servers.multicc_router.startup_timeout_sec=60'),
+  true,
+);
 const codexWithReminder = createCodexAdapter({
   cmd: 'codex',
   codexReasoningConfigArg: () => null,

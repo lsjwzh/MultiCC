@@ -80,7 +80,7 @@ function routerMcpConfigArgs(node, script) {
     `mcp_servers.multicc_router.env_vars=${JSON.stringify(envVars)}`,
     'mcp_servers.multicc_router.enabled=true',
     'mcp_servers.multicc_router.required=true',
-    'mcp_servers.multicc_router.startup_timeout_sec=10',
+    'mcp_servers.multicc_router.startup_timeout_sec=60',
     'mcp_servers.multicc_router.tool_timeout_sec=21630',
     'mcp_servers.multicc_router.default_tools_approval_mode="approve"',
   ];
