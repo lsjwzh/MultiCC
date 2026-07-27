@@ -1,57 +1,98 @@
 'use strict';
 
-// GET  /api/ark/quota       — fetch Volcano Ark (火山方舟) subscription quota by
-//                               shelling out to the official `arkcli` CLI
-//                               (`arkcli usage plan --format json`).
-// POST /api/ark/quota/login — spawn `arkcli auth login volc-sso` detached so the
-//                               user's browser opens the Volc SSO flow; the CLI
-//                               persists the credential for subsequent queries.
+// GET  /api/ark/quota        — fetch Volcano Ark (火山方舟) subscription quota by
+//                                shelling out to the official `arkcli` CLI
+//                                (`arkcli usage plan --format json`).
+// POST /api/ark/quota/login  — spawn `arkcli auth login volc-sso` detached so the
+//                                user's browser opens the Volc SSO flow; the CLI
+//                                persists the credential for subsequent queries.
+// POST /api/ark/quota/install — install arkcli globally via npm for the user.
+//
+// arkcli is NOT assumed to be present. We resolve it from $ARKCLI_BIN or PATH;
+// if absent we return `needs_install` (rather than silently shelling out to
+// `npx`, whose first-run download is slow and opaque) so the frontend can offer
+// a one-click install.
 //
 // On logical failure arkcli exits non-zero and writes its JSON error object to
 // stderr (success JSON goes to stdout), so we parse both streams and key off the
 // `ok` field rather than the exit code. Failure modes surfaced to the frontend:
-//   needs_auth   — CLI present but no Volc SSO credential (user must click login)
-//   cli_missing  — arkcli binary not found on PATH (and npx fallback unavailable)
-//   unavailable  — any other error / unexpected shape
+//   needs_install — arkcli binary not found (user can click to install via npm)
+//   needs_auth    — CLI present but no Volc SSO credential (click to log in)
+//   unavailable   — any other error / unexpected shape
 
 const fs = require('fs');
 const path = require('path');
 const { execFile, spawn } = require('child_process');
 
 const TIMEOUT_MS = 45000;
+const INSTALL_TIMEOUT_MS = 240000;
+const ARKCLI_PACKAGE = '@volcengine/ark-cli';
 const AUTH_RE = /not configured|auth login|volc-sso|\bsso\b|refresh_token|\.arkcli|logged_in|unauthoriz|credential/i;
 
 let cachedBin = null;
 
-function resolveArkcliBin() {
-  if (cachedBin) return cachedBin;
-  if (process.env.ARKCLI_BIN) {
-    cachedBin = { cmd: process.env.ARKCLI_BIN, prefix: [] };
-    return cachedBin;
-  }
+function findOnPath(name) {
   for (const dir of (process.env.PATH || '').split(path.delimiter)) {
     if (!dir) continue;
-    const candidate = path.join(dir, 'arkcli');
+    const candidate = path.join(dir, name);
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
-      cachedBin = { cmd: candidate, prefix: [] };
-      return cachedBin;
+      return candidate;
     } catch (_) {
       // keep searching
     }
   }
-  cachedBin = { cmd: 'npx', prefix: ['--yes', '@volcengine/ark-cli'] };
-  return cachedBin;
+  return null;
+}
+
+// Returns { cmd, prefix } or null. Only successful resolutions are cached so a
+// binary installed after a `needs_install` is picked up on the next call.
+function resolveArkcliBin() {
+  if (cachedBin) return cachedBin;
+  let found = null;
+  if (process.env.ARKCLI_BIN) {
+    found = { cmd: process.env.ARKCLI_BIN, prefix: [] };
+  } else {
+    const onPath = findOnPath('arkcli');
+    if (onPath) found = { cmd: onPath, prefix: [] };
+  }
+  if (found) cachedBin = found;
+  return found;
 }
 
 function runArkcli(args) {
   const bin = resolveArkcliBin();
+  if (!bin) return Promise.resolve({ err: Object.assign(new Error('arkcli not found'), { code: 'ENOENT' }), stdout: '', stderr: '' });
   return new Promise((resolve) => {
     execFile(
       bin.cmd,
       [...bin.prefix, ...args],
       { timeout: TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => resolve({ err, stdout: stdout || '', stderr: stderr || '' }),
+    );
+  });
+}
+
+function installArkcli() {
+  return new Promise((resolve) => {
+    const npm = findOnPath('npm');
+    if (!npm) {
+      resolve({ ok: false, error: '未找到 npm，无法自动安装。请手动安装 Node.js 后重试，或自行安装 @volcengine/ark-cli。' });
+      return;
+    }
+    execFile(
+      npm,
+      ['install', '-g', ARKCLI_PACKAGE],
+      { timeout: INSTALL_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+      (err, stdout, stderr) => {
+        if (err) {
+          const detail = (stderr || err.message || '').trim().split('\n').slice(0, 3).join(' ');
+          resolve({ ok: false, error: `npm install -g ${ARKCLI_PACKAGE} 失败：${detail || '未知错误'}` });
+          return;
+        }
+        cachedBin = null; // re-resolve so the freshly installed binary is found
+        resolve({ ok: true });
+      },
     );
   });
 }
@@ -111,7 +152,7 @@ async function fetchArkUsage(nowMs = Date.now()) {
 
   if (!parsed || typeof parsed !== 'object') {
     if (err && err.code === 'ENOENT') {
-      return { status: 'cli_missing', error: 'arkcli not found (install @volcengine/ark-cli)' };
+      return { status: 'needs_install', error: 'arkcli not found on PATH' };
     }
     return { status: 'unavailable', error: (stderr || (err && err.message) || 'no output').slice(0, 300) };
   }
@@ -139,7 +180,10 @@ function mountArkQuotaRoutes(app) {
     try {
       const result = await fetchArkUsage();
       const status = result?.status || 'unavailable';
-      const httpStatus = status === 'ok' ? 200 : status === 'needs_auth' ? 401 : 500;
+      const httpStatus = status === 'ok' ? 200
+        : status === 'needs_auth' ? 401
+        : status === 'needs_install' ? 404
+        : 500;
       res.status(httpStatus).json(result);
     } catch (_) {
       res.status(500).json({ status: 'unavailable', error: 'ark quota fetch failed' });
@@ -148,6 +192,10 @@ function mountArkQuotaRoutes(app) {
 
   app.post('/api/ark/quota/login', (req, res) => {
     const bin = resolveArkcliBin();
+    if (!bin) {
+      res.status(404).json({ status: 'needs_install', error: 'arkcli not found on PATH' });
+      return;
+    }
     try {
       const child = spawn(bin.cmd, [...bin.prefix, 'auth', 'login', 'volc-sso'], {
         detached: true,
@@ -160,6 +208,19 @@ function mountArkQuotaRoutes(app) {
       res.status(500).json({ status: 'unavailable', error: err.message || 'spawn failed' });
     }
   });
+
+  app.post('/api/ark/quota/install', async (req, res) => {
+    try {
+      const result = await installArkcli();
+      if (result.ok) {
+        res.json({ status: 'ok' });
+      } else {
+        res.status(500).json({ status: 'error', error: result.error });
+      }
+    } catch (err) {
+      res.status(500).json({ status: 'error', error: err.message || 'install failed' });
+    }
+  });
 }
 
-module.exports = { mountArkQuotaRoutes, fetchArkUsage, resolveArkcliBin };
+module.exports = { mountArkQuotaRoutes, fetchArkUsage, resolveArkcliBin, installArkcli };
