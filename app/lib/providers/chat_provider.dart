@@ -182,6 +182,12 @@ class ChatProvider extends ChangeNotifier {
     return value;
   }
 
+  /// Always-visible Claude limit bar: when we're on the claude CLI but have no
+  /// active window limit, the panel shows an idle "—" placeholder instead of
+  /// disappearing (mirrors the web `renderCurrent` fixed-display fallback).
+  bool get showClaudeLimitIdle =>
+      _cli == SessionCli.claude && usageWindowLimit == null;
+
   UsageBalance? _usageBalance;
   UsageBalance? get usageBalance => _usageBalance;
   Timer? _usageExpiryTimer;
