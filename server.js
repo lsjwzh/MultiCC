@@ -2569,9 +2569,9 @@ function setTaskState(sessionId, patch, opts = {}) {
   return next;
 }
 const userInputSignalHost = createUserInputSignalHost(
-  { getSession: id => chatSessions.get(id),
-    getState: id => getTaskState(persistedSessions.get(id)),
-    setState: setTaskState, log: message => console.log(message) });
+  { getSession: id => chatSessions.get(id), getState: id => getTaskState(persistedSessions.get(id)),
+    setState: setTaskState, log: message => console.log(message),
+    onResolved: (id, requestId, taskId) => chatBroadcast(id, { type: 'user_input_resolved', requestId, taskId: taskId ?? null }) });
 sessionWorkHost = createSessionWorkHost({
   runtime: () => orchestrationRuntime,
   getRecord: id => persistedSessions.get(id),
