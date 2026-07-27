@@ -511,6 +511,24 @@ test('a released W turn admits its correlated structured answer as a new control
   assert.equal(admission.options.taskId, 'task-1');
 });
 
+test('recovery state exposes only unresolved request correlation to the scheduler', () => {
+  const h = fixture();
+  h.setPending({
+    requestId: 'usrq-recovery',
+    taskId: 'task-1',
+    question: 'must stay in task state',
+    options: ['yes', 'no'],
+    resolved: false,
+  });
+  assert.deepEqual(h.host.recoveryState('s1').pendingUserInput, {
+    requestId: 'usrq-recovery',
+    taskId: 'task-1',
+    resolved: false,
+  });
+  h.setPending({ requestId: 'usrq-recovery', taskId: 'task-1', resolved: true });
+  assert.equal(h.host.recoveryState('s1').pendingUserInput, null);
+});
+
 test('classify W/B/E release the active slot (no freeze); unavailable leaves assessment pending', async () => {
   // Queue rule (T1): every turn-end verdict releases the active slot via
   // complete(). FIFO draining is D-only and lives in selectSessionItem, not

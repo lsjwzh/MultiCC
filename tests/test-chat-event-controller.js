@@ -407,6 +407,36 @@ test('structured answer card submits selected and free-text values without HTML 
   assert.equal(elements.root.hidden, true);
 });
 
+test('structured answer card option click submits the correlated request directly', () => {
+  const { document } = fakeDocument();
+  const elements = {
+    root: new FakeElement('section'),
+    question: new FakeElement('div'),
+    reason: new FakeElement('div'),
+    options: new FakeElement('div'),
+    textInput: new FakeElement('textarea'),
+    submitButton: new FakeElement('button'),
+  };
+  const answers = [];
+  const card = userInputCardApi.createController({
+    document,
+    elements,
+    isConnected: () => true,
+    submitAnswer: (answer, requestId) => {
+      answers.push([answer, requestId]);
+      return true;
+    },
+  });
+  card.render({
+    requestId: 'usrq-option',
+    question: '请选择环境',
+    options: ['测试环境', '生产环境'],
+  });
+  elements.options.children[1].click();
+  assert.deepEqual(answers, [['生产环境', 'usrq-option']]);
+  assert.equal(elements.root.hidden, true);
+});
+
 test('Flutter keeps the pending answer card above the message lane, not in the bottom input bar', () => {
   const screen = fs.readFileSync(
     path.join(ROOT, 'app', 'lib', 'screens', 'chat_screen.dart'),
