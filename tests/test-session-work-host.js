@@ -53,6 +53,15 @@ function fixture(options = {}) {
     getTaskState: value => value?.taskState || {},
     pendingUserInput: () => pending,
     recordUserInput: () => ({ ok: true }),
+    resolveUserInput: (sessionId, requestId) => {
+      calls.push(['resolve-user-input', sessionId, requestId]);
+      if (!pending || pending.requestId !== requestId) {
+        return { ok: false, code: pending ? 'request_id_mismatch' : 'no_pending_request' };
+      }
+      if (pending.resolved === true) return { ok: true, duplicate: true };
+      pending = { ...pending, resolved: true };
+      return { ok: true, duplicate: false };
+    },
     broadcast: (...args) => calls.push(['broadcast', ...args]),
     setTaskState: (sessionId, patch) => {
       record.taskState = { ...record.taskState, ...patch };
@@ -511,6 +520,34 @@ test('a released W turn admits its correlated structured answer as a new control
   assert.equal(admission.requestId, 'usrq-1');
   assert.equal(admission.activeEntryId, null);
   assert.equal(admission.options.taskId, 'task-1');
+  assert.deepEqual(
+    h.calls.find(call => call[0] === 'resolve-user-input'),
+    ['resolve-user-input', 's1', 'usrq-1'],
+  );
+});
+
+test('a running turn durably consumes its structured answer without ordinary queue semantics', async () => {
+  const h = fixture();
+  h.setClassifyState('P');
+  h.setPending({
+    requestId: 'usrq-running',
+    taskId: 'task-running',
+    resolved: false,
+  });
+
+  const result = await h.host.admit('s1', '选项 A', {
+    userInputRequestId: 'usrq-running',
+    clientMsgId: 'client-running-answer',
+  });
+  assert.equal(result.ok, true);
+  const admission = h.calls.find(call => call[0] === 'admit')[1];
+  assert.equal(admission.workKind, 'answer');
+  assert.equal(admission.requestId, 'usrq-running');
+  assert.equal(admission.options.taskId, 'task-running');
+  assert.deepEqual(
+    h.calls.find(call => call[0] === 'resolve-user-input'),
+    ['resolve-user-input', 's1', 'usrq-running'],
+  );
 });
 
 test('a stale picker correlation degrades to ordinary input instead of blocking send', async () => {
