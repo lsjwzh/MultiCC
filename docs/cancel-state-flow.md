@@ -27,6 +27,13 @@ classify has three inputs, and only two of them are LLM judgements:
 | periodic scan | every 60 s, for sessions not yet terminal | `scanAndReclassify` → Aux queue → `applyClassifyResult` |
 | **direct structured submission** | a cancel (and `mark-task-done`) | `dispatchStateAction({state:'E', cancel:{…}})` — no queue, no model |
 
+A direct submission carries the same vocabulary as a model verdict: the
+**letter** (`D`/`W`/`B`/`E`/`P`), never a word. `dispatchStateAction` routes on
+letters and persists whatever it is handed, so a pre-letter word like
+`'completed'` falls through to the W/B/E arm, is stored verbatim, and satisfies
+neither `isTerminalLetter` nor `isSettledLetter` — the 60 s scan then re-judges
+the task and the manual verdict silently reverts.
+
 A cancel is the third kind: a **deterministic** result handed straight to
 `dispatchStateAction`. Whether the user pressed stop is a fact, not something to
 ask a model about — routing it through Aux would add latency, a failure mode
