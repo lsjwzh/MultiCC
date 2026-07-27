@@ -650,6 +650,7 @@ function getProviderSummary(appType, id) {
 //
 //   strategy 'glm-monitor'      → open.bigmodel.cn / z.ai window-utilization endpoint
 //   strategy 'deepseek-balance' → api.deepseek.com prepaid money balance endpoint
+//   strategy 'kimi-balance'     → api.moonshot.cn prepaid money balance endpoint
 //
 // host is the ORIGINAL upstream host (not our local proxy), so a session routed
 // through the chat-to-responses proxy still resolves to its real vendor.
@@ -687,6 +688,8 @@ function getProviderLimitTarget(appType, id) {
   if (host === 'api.deepseek.com') strategy = 'deepseek-balance';
   else if (host === 'open.bigmodel.cn' || host === 'api.z.ai' || host.endsWith('.bigmodel.cn')) {
     strategy = 'glm-monitor';
+  } else if (/(^|\.)(moonshot|kimi)\.(cn|com|ai)$/.test(host)) {
+    strategy = 'kimi-balance';
   }
   if (!strategy) return null;
   return { providerId: id, appType: provider.appType, host, apiKey, strategy };
