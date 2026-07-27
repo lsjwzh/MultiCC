@@ -193,6 +193,7 @@ function createSessionWorkScheduler({
   cryptoImpl = crypto,
   onEvent = () => {},
   getClassifyState = null,
+  getPendingUserInput = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
@@ -241,6 +242,21 @@ function createSessionWorkScheduler({
     // Standalone/legacy callers without the canonical classify port retain the
     // persisted recovery fallback. Production always supplies the port.
     return classifyStateForSchedule(schedule);
+  }
+
+  function canonicalPendingUserInput(sessionId) {
+    if (typeof getPendingUserInput !== 'function') return null;
+    try {
+      const pending = getPendingUserInput(sessionId);
+      if (!pending || pending.resolved === true || !pending.requestId) return null;
+      return {
+        requestId: String(pending.requestId),
+        taskId: pending.taskId ? String(pending.taskId) : null,
+      };
+    } catch (error) {
+      log(`[session-work] pending user input read failed for ${sessionId}: ${error.message}`);
+      return null;
+    }
   }
 
   function relatedControl(schedule, item) {
@@ -344,18 +360,29 @@ function createSessionWorkScheduler({
     const result = await store.mutate(draft => {
       const at = Number(now());
       const schedule = ensure(draft, cleanSessionId, at);
+      const pendingInput = inferredKind === 'answer'
+        ? canonicalPendingUserInput(cleanSessionId) : null;
+      // An unresolved structured request is the authoritative correlation
+      // proof for an answer. The asking provider turn may already have released
+      // its physical active slot, and a legacy/recovery window may not yet have
+      // copied requestId into the scheduler mirror. Do not confuse that missing
+      // execution slot with "no logical task": the pending request owns the
+      // continuation. Standalone legacy callers without the canonical port keep
+      // the old classify/awaitingRequestId fallback.
+      const pendingAnswerMatches = typeof getPendingUserInput === 'function'
+        ? pendingInput?.requestId === requestId
+        : classifyStateForSchedule(schedule) !== 'D'
+          && (!schedule.awaitingRequestId || schedule.awaitingRequestId === requestId);
       const atRestAnswer = !schedule.active
         && inferredKind === 'answer'
         && !!requestId
-        && classifyStateForSchedule(schedule) !== 'D'
-        && (!schedule.awaitingRequestId || schedule.awaitingRequestId === requestId);
+        && pendingAnswerMatches;
       if (CONTROL_KINDS.has(inferredKind)) {
         // A structured answer is a new, correlated control turn. The previous
         // provider turn has already released its active slot after classify W;
-        // ordinary queued work remains gated, while this direct answer may
-        // become the next active entry. awaitingRequestId is retained when the
-        // W verdict is committed, but the empty check keeps pre-migration
-        // pending questions answerable after a server upgrade.
+        // ordinary queued work remains gated, while this direct answer becomes
+        // the next active entry. Production correlation comes from the
+        // canonical unresolved request; the scheduler mirror is recovery-only.
         if (!schedule.active && !atRestAnswer) {
           return { ok: false, code: 'no_active_task', schedule: publicSchedule(schedule) };
         }
@@ -374,6 +401,12 @@ function createSessionWorkScheduler({
             ? null
             : schedule.active.entryId;
           if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
+        } else if (atRestAnswer) {
+          // Repair only correlation metadata. Business state still comes from
+          // classify; an explicit pending request must not create a second
+          // scheduler-owned waiting state.
+          schedule.awaitingRequestId = requestId;
+          if (!payload.taskId && pendingInput?.taskId) payload.taskId = pendingInput.taskId;
         }
       }
       const admitted = admitOutboxItem(draft, {

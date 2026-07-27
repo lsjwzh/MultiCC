@@ -61,6 +61,7 @@ function fixture(t, options = {}) {
     now: () => clock,
     onEvent: event => events.push(event),
     getClassifyState: options.getClassifyState,
+    getPendingUserInput: options.getPendingUserInput,
   });
   return {
     store,
@@ -281,6 +282,57 @@ test('correlated structured answers depend on request identity and non-D, not th
     idempotencyKey: 'late',
   });
   assert.equal(rejected.code, 'no_active_task');
+});
+
+test('canonical pending request admits option and free-text answers despite a stale idle scheduler mirror', async t => {
+  for (const [suffix, text] of [
+    ['option', '生产环境'],
+    ['free-text', '请改为下周一发布'],
+  ]) {
+    const requestId = `usrq-${suffix}`;
+    const taskId = `task-${suffix}`;
+    const h = fixture(t, {
+      // Reproduces the field split from the bug: the task-state owner has an
+      // unresolved request, while the scheduler mirror has no active entry and
+      // still reads D.
+      getClassifyState: () => 'D',
+      getPendingUserInput: () => ({ requestId, taskId, resolved: false }),
+    });
+    const answer = await h.scheduler.admit({
+      sessionId: `s-${suffix}`,
+      text,
+      workKind: 'answer',
+      requestId,
+      idempotencyKey: `answer-${suffix}`,
+    });
+    assert.equal(answer.ok, true, suffix);
+    assert.equal(answer.queued, false, suffix);
+    assert.equal(answer.entry.payload.taskId, taskId, suffix);
+    assert.equal(answer.entry.payload.requestId, requestId, suffix);
+    const claim = await claimOne(h, `s-${suffix}`);
+    assert.equal(claim.id, answer.entry.id, suffix);
+    assert.equal(claim.payload.workKind, 'answer', suffix);
+  }
+});
+
+test('canonical pending request remains fail-closed for stale or mismatched answers', async t => {
+  const h = fixture(t, {
+    getClassifyState: () => 'W',
+    getPendingUserInput: () => ({
+      requestId: 'usrq-current',
+      taskId: 'task-current',
+      resolved: false,
+    }),
+  });
+  const stale = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'stale choice',
+    workKind: 'answer',
+    requestId: 'usrq-old',
+    idempotencyKey: 'stale-answer',
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'no_active_task');
 });
 
 test('error and user-input waiting freeze future work while a correlated control resumes active', async t => {
