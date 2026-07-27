@@ -523,6 +523,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   final ApiErrorPolicyState? apiError;
   final UsageWindowLimit? limit;
   final UsageBalance? balance;
+  final bool showClaudeIdle;
   final VoidCallback? onRetry;
 
   const ChatRuntimeNoticePanel({
@@ -530,12 +531,13 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.apiError,
     this.limit,
     this.balance,
+    this.showClaudeIdle = false,
     this.onRetry,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (apiError == null && limit == null && balance == null) {
+    if (apiError == null && limit == null && balance == null && !showClaudeIdle) {
       return const SizedBox.shrink();
     }
     return Container(
@@ -551,7 +553,10 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          if (limit != null) _limitView(context, limit!),
+          if (limit != null)
+            _limitView(context, limit!)
+          else if (showClaudeIdle)
+            _claudeIdleView(),
           if (balance != null) _balanceView(balance!),
           if (apiError != null) _errorView(apiError!),
           if (apiError?.canManualRetry == true && onRetry != null)
@@ -589,14 +594,33 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         ? const Color(0xFFe3b341)
         : const Color(0xFF7ee787);
     final percent = used == null ? '—' : '${used.toStringAsFixed(1)}%';
+    final parts = <String>[label, percent];
+    // Staleness hint: window data arrives passively and is also restored from
+    // cache, so surface "更新于 HH:MM" once it's >1min old (matches the web bar).
+    final observed = value.observedAtMs;
+    if (observed != null &&
+        DateTime.now().millisecondsSinceEpoch - observed > 60_000) {
+      parts.add(t('updatedAt', {
+        'time': TimeOfDay.fromDateTime(
+          DateTime.fromMillisecondsSinceEpoch(observed),
+        ).format(context),
+      }));
+    }
+    if (reset.isNotEmpty) parts.add(t('resetsAt', {'time': reset}));
     return Semantics(
       label: '$label $percent',
       child: Text(
-        reset.isEmpty
-            ? '$label · $percent'
-            : '$label · $percent · ${t('resetsAt', {'time': reset})}',
+        parts.join(' · '),
         style: TextStyle(color: color, fontSize: 11),
       ),
+    );
+  }
+
+  /// Idle placeholder for the always-visible Claude limit bar (no data yet).
+  Widget _claudeIdleView() {
+    return Text(
+      '${t('claudeFiveHourLimit')} · —',
+      style: const TextStyle(color: Color(0xFF8b949e), fontSize: 11),
     );
   }
 

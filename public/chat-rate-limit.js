@@ -102,6 +102,17 @@
       text += ` ${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
     }
 
+    // Staleness hint: window data arrives passively (WS rate_limit_event) and is
+    // also restored from localStorage, so a cached value may be old. Surface
+    // "更新于 HH:MM" once it's >1min old so the user knows it isn't live.
+    const observed = finiteNumber(value.observedAtMs);
+    if (observed !== null && (nowMs - observed) > 60_000) {
+      const formatObserved = typeof options.formatObserved === 'function'
+        ? options.formatObserved
+        : defaultResetLabel;
+      text += ` · 更新于 ${formatObserved(observed)}`;
+    }
+
     const reset = finiteNumber(value.resetsAtMs);
     if (reset !== null) {
       const formatReset = typeof options.formatReset === 'function'
@@ -146,16 +157,41 @@
     return cli === 'claude' || cli === 'opencode';
   }
 
+  // Idle placeholder for the always-visible Claude bar (mirrors the opencode
+  // formatQuotaIdle fixed-display pattern). Claude window data arrives only via
+  // passive WS rate_limit_event (there is no fetch endpoint), so there is no ⟳
+  // refresh affordance — just a "—" until the first event lands.
+  function formatClaudeIdle() {
+    return Object.freeze({
+      text: 'Claude 5h · —',
+      color: '#8b949e',
+      title: 'Claude 订阅五小时用量（暂无数据，等待 Claude Code 上报 rate_limit_event）',
+    });
+  }
+
   function renderCurrent() {
     const element = global.document?.getElementById?.('claude-rate-limit-bar');
     if (!element) return;
-    const view = (currentLimit && providerMatchesCli(currentLimit.provider, currentCli))
-      ? formatFiveHourRateLimit(currentLimit)
-      : null;
-    element.style.display = view ? 'block' : 'none';
-    element.textContent = view?.text || '';
-    element.title = view?.title || '';
-    if (view) element.style.color = view.color;
+    const matches = currentLimit && providerMatchesCli(currentLimit.provider, currentCli);
+    const view = matches ? formatFiveHourRateLimit(currentLimit) : null;
+    if (view) {
+      element.style.display = 'block';
+      element.textContent = view.text;
+      element.title = view.title;
+      element.style.color = view.color;
+    } else if (currentCli === 'claude') {
+      // Always visible under the claude CLI: fall back to the idle placeholder
+      // rather than hiding, so the bar is a constant fixture (fixed display).
+      const idle = formatClaudeIdle();
+      element.style.display = 'block';
+      element.textContent = idle.text;
+      element.title = idle.title;
+      element.style.color = idle.color;
+    } else {
+      element.style.display = 'none';
+      element.textContent = '';
+      element.title = '';
+    }
     if (expiryTimer) global.clearTimeout?.(expiryTimer);
     expiryTimer = null;
     if (view && currentLimit.resetsAtMs) {
