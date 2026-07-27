@@ -166,7 +166,7 @@ test('onFlush throwing leaves pending clean; the next window still works', () =>
 
 // ── classifyBgCompletion: the suppress-vs-inject decision (extracted from
 //    handleBackgroundTaskEvent so it is unit-testable) ─────────────────────────
-// Precedence: TaskOutput pull → sync Bash → sidechain/subagent → inject.
+// Precedence: TaskOutput pull → sync Bash → sidechain/subagent → Monitor → inject.
 test('classify: pulled via TaskOutput → suppress (taskoutput)', () => {
   assert.deepStrictEqual(classifyBgCompletion({ awaitingTaskOutput: true }), { action: 'suppress', reason: 'taskoutput' });
 });
@@ -179,8 +179,11 @@ test('classify: subagent task → suppress (sidechain)', () => {
 test('classify: sidechain-by-tool-use → suppress (sidechain)', () => {
   assert.deepStrictEqual(classifyBgCompletion({ sidechainByToolUse: true }), { action: 'suppress', reason: 'sidechain' });
 });
+test('classify: Monitor stream → suppress (monitor)', () => {
+  assert.deepStrictEqual(classifyBgCompletion({ monitor: true }), { action: 'suppress', reason: 'monitor' });
+});
 test('classify: precedence — TaskOutput wins even if other flags set', () => {
-  assert.strictEqual(classifyBgCompletion({ awaitingTaskOutput: true, sync: true, subagent: true }).reason, 'taskoutput');
+  assert.strictEqual(classifyBgCompletion({ awaitingTaskOutput: true, sync: true, subagent: true, monitor: true }).reason, 'taskoutput');
 });
 
 // ── BUG REPRODUCTION (false-positive observed 2026-07-12, session chat-05) ───────
@@ -240,11 +243,11 @@ const path = require('path');
 const SERVER = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const RUNTIME = fs.readFileSync(path.join(__dirname, '..', 'src/chat/background-task-runtime.js'), 'utf8');
 
-test('wiring: runtime calls classifyCompletion with the four predicate keys', () => {
+test('wiring: runtime calls classifyCompletion with the five predicate keys', () => {
   assert.ok(SERVER.includes('classifyCompletion: bgCoalesce.classifyBgCompletion'));
   const call = /classifyCompletion\(\{([\s\S]{0,400}?)\}\)/.exec(RUNTIME);
   assert.ok(call, 'background runtime must call classifyCompletion({...})');
-  for (const key of ['awaitingTaskOutput', 'sync', 'subagent', 'sidechainByToolUse']) {
+  for (const key of ['awaitingTaskOutput', 'sync', 'subagent', 'sidechainByToolUse', 'monitor']) {
     assert.ok(new RegExp('\\b' + key + '(?:\\s*:|\\s*[,}])').test(call[1]),
       `classifyBgCompletion call must pass the "${key}" predicate`);
   }
@@ -255,6 +258,7 @@ test('wiring: each reason dispatches to its matching consume* side effect', () =
     ["reason === 'taskoutput'", 'consumeTimed(taskOutputAwaiting'],
     ["reason === 'sync-bash'", 'consumeTimed(syncBashTasks'],
     ["reason === 'sidechain'", 'consumeTimed(subagentTasks'],
+    ["reason === 'monitor'", 'consumeTimed(monitorTasks'],
   ];
   for (const [guard, consume] of pairs) {
     assert.ok(RUNTIME.includes(guard), `expected wiring token: ${guard}`);
