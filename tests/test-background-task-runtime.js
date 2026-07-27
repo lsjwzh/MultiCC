@@ -276,18 +276,19 @@ async function test(name, fn) {
     assert.strictEqual(h.injections.length, 0);
   });
 
-  await test('Monitor completion settles UI and ledger without injecting a silent nudge', () => {
+  await test('non-persistent Monitor keeps the shadow fallback without injecting a silent nudge', () => {
     const h = makeHarness();
     h.files.set('/out/monitor', 'DONE\n');
     h.runtime.recordMainToolUseId('s1', 'mon-tool');
     const started = h.runtime.handleEvent('s1', {
       cwd: '/repo',
-      currentToolCalls: [{ id: 'mon-tool', name: 'Monitor', input: { pattern: 'DONE' } }],
+      currentToolCalls: [{ id: 'mon-tool', name: 'Monitor', input: { pattern: 'DONE', persistent: false } }],
     }, {
       subtype: 'task_started', task_id: 'mon-task', tool_use_id: 'mon-tool',
       session_id: 'native', description: '1688 image extraction pass progress',
     });
     assert.strictEqual(started.kind, 'monitor');
+    assert.strictEqual(h.processes.length, 1, 'non-persistent Monitor still gets a tail shadow fallback');
     h.broadcasts.length = 0;
     h.observations.length = 0;
     const result = h.runtime.handleEvent('s1', {}, {
@@ -295,9 +296,40 @@ async function test(name, fn) {
       output_file: '/out/monitor', status: 'completed', summary: 'stream ended',
     });
     assert.strictEqual(result.decision, 'monitor');
+    assert.strictEqual(h.processes[0].killed, true, 'completion stops the fallback shadow');
     const done = h.broadcasts.find(item => item.event.type === 'monitor_done');
     assert.ok(done, 'Monitor completion still closes the UI spinner');
     assert.strictEqual(done.event.task_id, 'mon-task');
+    assert.strictEqual(done.event.output, 'DONE\n');
+    assert.strictEqual(h.observations[0].status, 'completed');
+    h.clock.advance(100);
+    assert.strictEqual(h.notes.length, 0);
+    assert.strictEqual(h.injections.length, 0);
+  });
+
+  await test('persistent Monitor behaves like an already-consumed wait and starts no shadow', () => {
+    const h = makeHarness();
+    h.files.set('/out/persistent-monitor', 'DONE\n');
+    h.runtime.recordMainToolUseId('s1', 'persistent-mon-tool');
+    const started = h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'persistent-mon-tool', name: 'Monitor', input: { pattern: 'DONE', persistent: true } }],
+    }, {
+      subtype: 'task_started', task_id: 'persistent-mon-task', tool_use_id: 'persistent-mon-tool',
+      session_id: 'native', description: 'persistent progress',
+    });
+    assert.strictEqual(started.kind, 'monitor-persistent');
+    assert.strictEqual(h.processes.length, 0, 'persistent Monitor does not need the tail shadow fallback');
+    assert.strictEqual(h.runtime.hasLiveBackgroundTasks('s1'), false);
+    h.broadcasts.length = 0;
+    h.observations.length = 0;
+    const result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'persistent-mon-task', tool_use_id: 'persistent-mon-tool',
+      output_file: '/out/persistent-monitor', status: 'completed', summary: 'stream ended',
+    });
+    assert.strictEqual(result.decision, 'monitor');
+    const done = h.broadcasts.find(item => item.event.type === 'monitor_done');
+    assert.ok(done, 'persistent Monitor still emits monitor_done for any visible row');
     assert.strictEqual(done.event.output, 'DONE\n');
     assert.strictEqual(h.observations[0].status, 'completed');
     h.clock.advance(100);
