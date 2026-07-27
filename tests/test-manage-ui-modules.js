@@ -257,3 +257,96 @@ test('host settings preserve bootstrap header auth without credential query para
   assert.equal(JSON.parse(request.options.body).enabled, true);
   assert.doesNotMatch(request.url, /token/i);
 });
+
+/**
+ * The sidebar uptime read-out.
+ *
+ * Its whole value is that a restart moves it, so what is pinned here is that
+ * the numbers come from the server's *uptime* rather than its wall clock: a
+ * host running a few hours ahead of the browser would otherwise render a start
+ * time in the future, which reads as a bug in the service the line is meant to
+ * reassure you about.
+ */
+function bootHarness(payload, { now = Date.parse('2026-07-27T13:32:00+08:00') } = {}) {
+  const harness = browserContext();
+  harness.context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
+  harness.context.fetch = async (url) => {
+    const path = String(url);
+    harness.requests.push({ url: path, options: {} });
+    // initialize() wakes the other host panels too; they only need to not throw.
+    const body = path === '/api/server-info' ? payload
+      : path.startsWith('/api/push/health') ? { global: {}, subscriptions: [] }
+      : {};
+    return { ok: true, status: 200, async json() { return body; } };
+  };
+  vm.runInContext(read('public/manage-host-settings.js'), harness.context, { filename: 'manage-host-settings.js' });
+  return harness;
+}
+
+test('the sidebar shows when the service last started, derived from uptime not the host clock', async () => {
+  // The host's clock is a full day ahead of the browser's. Reading startedAt
+  // would put the start in the future; uptime cannot.
+  const harness = bootHarness({
+    uptimeMs: 8100000,                              // 2h 15m
+    startedAt: '2026-07-28T03:17:00.000Z',
+  });
+  await harness.context.loadBootTime();
+
+  assert.equal(harness.requests.at(-1).url, '/api/server-info');
+  assert.equal(harness.context.document.getElementById('boot-time').textContent, '07-27 11:17');
+  assert.equal(harness.context.document.getElementById('boot-uptime').textContent, '2h 15m');
+});
+
+test('the uptime line is translated, and the short clock keeps the full instant in its tooltip', async () => {
+  const harness = bootHarness({ uptimeMs: 8100000 });
+  harness.context.t = (key, params) => `${key}:${params.duration}`;
+  await harness.context.loadBootTime();
+  assert.equal(harness.context.document.getElementById('boot-uptime').textContent, 'uptimeDuration:2h 15m');
+  assert.ok(harness.context.document.getElementById('boot-time').title, 'the year is dropped on screen, so it must survive in the title');
+});
+
+test('uptime is coarse, and a server that just came up says so rather than showing 0', async () => {
+  const cases = [
+    [30 * 1000, '<1m'],
+    [90 * 1000, '1m'],
+    [59 * 60 * 1000, '59m'],
+    [3600 * 1000, '1h 0m'],
+    [8100 * 1000, '2h 15m'],
+    [26 * 3600 * 1000, '1d 2h'],
+    [48 * 3600 * 1000, '2d'],
+  ];
+  for (const [uptimeMs, expected] of cases) {
+    const harness = bootHarness({ uptimeMs });
+    await harness.context.loadBootTime();
+    assert.equal(harness.context.document.getElementById('boot-uptime').textContent, expected, `${uptimeMs}ms`);
+  }
+});
+
+test('a server-info response without uptime leaves the placeholder rather than printing a wrong time', async () => {
+  for (const payload of [{}, { uptimeMs: null }, { uptimeMs: 'soon' }]) {
+    const harness = bootHarness(payload);
+    harness.context.document.getElementById('boot-time').textContent = '—';
+    await harness.context.loadBootTime();
+    assert.equal(harness.context.document.getElementById('boot-time').textContent, '—');
+  }
+});
+
+test('the read-out is re-fetched when the tab comes back, since only a restart changes it', () => {
+  const harness = bootHarness({ uptimeMs: 1000 });
+  harness.context.MultiCCManageHostSettings.initialize();
+  const before = harness.requests.filter(item => item.url === '/api/server-info').length;
+  assert.equal(before, 1, 'one read on load');
+
+  const visibility = harness.listeners.filter(item => item.type === 'visibilitychange');
+  assert.equal(visibility.length, 1, 'exactly one visibility listener, not one per repaint');
+  harness.context.document.hidden = true;
+  visibility[0].handler({});
+  assert.equal(harness.requests.filter(item => item.url === '/api/server-info').length, before,
+    'a tab going away is not a reason to poll');
+  harness.context.document.hidden = false;
+  visibility[0].handler({});
+  assert.equal(harness.requests.filter(item => item.url === '/api/server-info').length, before + 1);
+});
