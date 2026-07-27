@@ -108,6 +108,82 @@ void main() {
     expect(cancelled, ['queued-1']);
   });
 
+  testWidgets('queued entries offer insert; the prioritised one shows running', (
+    tester,
+  ) async {
+    final inserted = <String>[];
+    final queue = SessionQueueState.fromEvent({
+      'state': 'queued',
+      'items': [
+        {
+          'entryId': 'queued-1',
+          'state': 'pending',
+          'position': 1,
+          'text': 'first',
+        },
+        {
+          'entryId': 'queued-2',
+          'state': 'pending',
+          'position': 2,
+          'text': 'second',
+          'priority': true,
+        },
+      ],
+    });
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: queue,
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onInsertQueued: (value) async => inserted.add(value),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pump();
+
+    expect(find.byKey(const Key('insert-queued-queued-2')), findsNothing);
+    expect(find.byKey(const Key('queued-running-queued-2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('insert-queued-queued-1')));
+    await tester.pump();
+    expect(inserted, ['queued-1']);
+  });
+
+  testWidgets('without an insert callback the queue keeps the cancel-only row', (
+    tester,
+  ) async {
+    final queue = SessionQueueState.fromEvent({
+      'state': 'queued',
+      'items': [
+        {
+          'entryId': 'queued-1',
+          'state': 'pending',
+          'position': 1,
+          'text': 'first',
+        },
+      ],
+    });
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: queue,
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pump();
+    expect(find.byKey(const Key('insert-queued-queued-1')), findsNothing);
+    expect(find.byKey(const Key('cancel-queued-queued-1')), findsOneWidget);
+  });
+
   testWidgets('API error only offers manual retry when policy says safe', (
     tester,
   ) async {
