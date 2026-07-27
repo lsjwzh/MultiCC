@@ -99,6 +99,10 @@ function createUserInputSignalHost({
   setState,
   now = Date.now,
   log = () => {},
+  // Fired once when a wait_user request is actually consumed (resolved). The
+  // server wires this to a session-wide broadcast so EVERY open window tears down
+  // its prompt — not just the one that answered. Duplicate resolves do not fire.
+  onResolved = () => {},
 } = {}) {
   for (const [name, value] of Object.entries({ getSession, getState, setState })) {
     if (typeof value !== 'function') {
@@ -169,6 +173,7 @@ function createUserInputSignalHost({
       userInputSignalVersion: 1,
     });
     log(`[multicc/classify] ${sessionId} request_user_input resolved request=${requestId}`);
+    onResolved(sessionId, requestId, current.taskId ?? null);
     return { ok: true, duplicate: false };
   }
 

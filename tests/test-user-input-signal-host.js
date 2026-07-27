@@ -135,6 +135,41 @@ test('a correlated answer resolves the pending request once and continuation kee
   }).state, 'completed');
 });
 
+test('resolve fires onResolved once so every window tears down the prompt', () => {
+  const resolved = [];
+  const sessions = new Map([['chat-1', {
+    isStreaming: true, _activeTurn: { turnId: 'turn-1' }, _currentTaskId: 'task-9',
+  }]]);
+  const states = new Map();
+  const host = createUserInputSignalHost({
+    getSession: id => sessions.get(id),
+    getState: id => states.get(id),
+    setState: (id, patch) => {
+      const next = { ...(states.get(id) || {}), ...patch };
+      states.set(id, next);
+      return next;
+    },
+    now: () => 1,
+    onResolved: (id, requestId, taskId) => resolved.push({ id, requestId, taskId }),
+  });
+  host.record({
+    requestId: 'usrq-1', sessionId: 'chat-1', turnId: 'turn-1', question: '发布？',
+  });
+
+  // First resolve broadcasts to the whole session (all open windows).
+  assert.deepEqual(host.resolve('chat-1', 'usrq-1'), { ok: true, duplicate: false });
+  assert.deepEqual(resolved, [{ id: 'chat-1', requestId: 'usrq-1', taskId: 'task-9' }]);
+
+  // A duplicate resolve (late second window / replay) must NOT re-fire — other
+  // windows would otherwise close a prompt that is no longer there.
+  assert.deepEqual(host.resolve('chat-1', 'usrq-1'), { ok: true, duplicate: true });
+  assert.equal(resolved.length, 1);
+
+  // A mismatched id never fires.
+  assert.equal(host.resolve('chat-1', 'nope').ok, false);
+  assert.equal(resolved.length, 1);
+});
+
 test('prompt directs models to the MCP signal, not the unavailable built-in', () => {
   const shared = USER_INPUT_SIGNAL_PROMPT.join('\n');
   assert.match(shared, /MCP.*wait_for_user_answer/);

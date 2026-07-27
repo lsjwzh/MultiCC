@@ -354,6 +354,15 @@ class ChatService {
         _emit('user_input_required', msg);
         break;
 
+      case 'user_input_resolved':
+        // 另一个窗口消费了 wait_user；清掉本地待决状态，让所有窗口同步关框。
+        // 幂等：requestId 不匹配（本窗口已先消费）则 _emit 仍转发但 provider 侧 no-op。
+        if (msg['requestId']?.toString() == _pendingUserInputRequestId) {
+          _pendingUserInputRequestId = null;
+        }
+        _emit('user_input_resolved', msg);
+        break;
+
       case 'session_queue':
         _emit('session_queue', msg);
         break;

@@ -197,6 +197,7 @@ function controllerFixture() {
       calls.push(['pending-input', message]);
       return true;
     },
+    consumeUserInputRequestId(requestId) { calls.push(['consume-input', requestId]); },
     rearmUnread() {},
   };
   const controller = eventApi.createEventController({ state, host, liveUi, historyStore, historyView });
@@ -268,6 +269,27 @@ test('only server init synchronizes streaming state and pending cancel ownership
   assert.equal(fixture.state.pendingCancel, false);
   assert.deepEqual(fixture.calls.find(call => Array.isArray(call) && call[0] === 'send'), ['send', { type: 'cancel' }]);
   assert.equal(fixture.state.providerTokenWindows.today, 1);
+});
+
+test('user_input_resolved tears down the wait_user prompt in every window', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'user_input_required', requestId: 'usrq-1', question: '发布？', options: ['是', '否'],
+  }, generation);
+  assert.equal(fixture.state.pendingUserInputRequestId, 'usrq-1');
+
+  // Another window consumed the prompt: the resolved broadcast must reach every
+  // window and clear the card.
+  fixture.controller.handleEvent({ type: 'user_input_resolved', requestId: 'usrq-1' }, generation);
+  assert.deepEqual(fixture.calls.at(-1), ['consume-input', 'usrq-1']);
+  // Idempotent: a late/duplicate resolved is still forwarded (the host's
+  // consumeUserInputRequestId is itself idempotent, so this is a safe replay).
+  fixture.controller.handleEvent({ type: 'user_input_resolved', requestId: 'usrq-1' }, generation);
+  assert.equal(
+    fixture.calls.filter(c => Array.isArray(c) && c[0] === 'consume-input').length,
+    2,
+  );
 });
 
 test('structured user-input and FIFO events expose correlation and honest frozen state', () => {
