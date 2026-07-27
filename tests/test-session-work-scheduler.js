@@ -216,7 +216,7 @@ test('released W keeps ordinary FIFO staged but runs a correlated answer control
   assert.notEqual(futureClaim.id, active.entry.id);
 });
 
-test('an early structured answer queues during P then runs first after the asking turn releases', async t => {
+test('an early structured answer stays off the public FIFO then runs first after the asking turn releases', async t => {
   const h = fixture(t);
   const asking = await h.scheduler.admit({
     sessionId: 's1',
@@ -240,8 +240,13 @@ test('an early structured answer queues during P then runs first after the askin
     idempotencyKey: 'answer-early',
   });
   assert.equal(answer.ok, true);
-  assert.equal(answer.queued, true);
-  assert.equal(await claimOne(h), null, 'P keeps the early answer staged');
+  assert.equal(answer.queued, false);
+  assert.deepEqual(
+    answer.schedule.queued.map(item => item.entryId),
+    [ordinary.entry.id],
+    'the crash-safe answer hand-off is not projected as ordinary staged work',
+  );
+  assert.equal(await claimOne(h), null, 'the answer does not overlap the live asking process');
 
   await h.scheduler.complete('s1', {
     classifyState: 'W',

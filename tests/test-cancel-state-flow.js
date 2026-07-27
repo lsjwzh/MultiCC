@@ -217,6 +217,7 @@ function harness(t, options = {}) {
     getTaskState: taskStateStore.getTaskState,
     pendingUserInput: () => null,
     recordUserInput: () => ({ ok: true }),
+    resolveUserInput: () => ({ ok: true }),
     broadcast: (sessionId, payload) => record({ kind: 'chat_broadcast', sessionId, payload }),
     setTaskState: (sessionId, patch, opts) => {
       record({ kind: 'task_state_write', sessionId, patch });
