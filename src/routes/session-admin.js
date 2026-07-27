@@ -466,8 +466,13 @@ function createSessionAdminRuntime(rawDeps) {
       if (cs && cs.isStreaming) {
         return res.status(409).json({ error: 'session is streaming', note: '会话正在执行，无法标记完成' });
       }
+      // 'D' — the LETTER, not the pre-letter word 'completed'. dispatchStateAction
+      // compares against letters: any other value falls through to the W/B/E arm,
+      // persists itself verbatim as classifyState, and is neither terminal nor
+      // settled — so the scan picks the task back up 60s later and the manual
+      // "done" silently reverts to waiting.
       deps.dispatchStateAction(
-        { state: 'completed', goal: task.goal || '', phase: task.phase || '' },
+        { state: 'D', goal: task.goal || '', phase: task.phase || '' },
         { sessionName: id, sessionId: id, cs: cs || null, isTerminal: record.kind !== 'chat' },
       );
       return res.json({ ok: true, classifyState: 'D' });
