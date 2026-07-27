@@ -169,6 +169,16 @@ async function waitUntil(check, message, attempts = 100) {
     const specialist = await api('POST', `/api/directories/${directory.id}/sessions`, {
       cli: 'codex', kind: 'chat', label: '架构师', rolePrompt: '# 角色：架构师\n只接受用户手工任务',
     });
+    sessions = await api('GET', '/api/sessions');
+    const pristineWorkers = sessions.filter(session => session.dirId === directory.id
+      && String(session.label || '').startsWith('全栈工程师'));
+    assert.equal(pristineWorkers.length, 2);
+    assert.equal(pristineWorkers.every(session => !session.cliSessionId), true,
+      'new workers have no native CLI session before route_task');
+    const pristinePaths = createPaths({ dataDir: dataRoot });
+    assert.equal(pristineWorkers.every(session =>
+      !fs.existsSync(path.join(pristinePaths.chatHistoryDir, `${session.id}.json`))), true,
+    'new workers have no chat history or manual initialization before route_task');
 
     const events = [];
     const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(commander.id)}&token=${TOKEN}`);
