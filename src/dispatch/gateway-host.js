@@ -277,6 +277,7 @@ function createGatewayHost(rawDeps) {
       return { ok: false, error: 'target_busy', code: 'target_busy', chatId };
     }
     const ownerSessionId = opts.ownerSessionId || opts.replyTo || GATEWAY_ID;
+    const runtime = getOrchestrationRuntime();
     const admitted = await getOrchestrationRuntime().admitDispatch({
       ownerSessionId,
       resultSessionId: ownerSessionId,
@@ -303,6 +304,11 @@ function createGatewayHost(rawDeps) {
     if (opts.replyTo && !opts.oneWay && !TERMINAL_DISPATCH_STATUS.has(admitted.status)) {
       addPendingDispatch(opts.replyTo, dispatchId, targetId);
     }
+    // Dispatch admission owns its wake-up just like direct chat admission does.
+    // Await one canonical scheduler pass so a never-opened chat is claimed and
+    // lazily initialized/spawned before route_task reports success. Busy targets
+    // remain durably queued; no process is pre-spawned and no parallel turn starts.
+    await runtime.tick();
     return {
       ok: true,
       chatId,
