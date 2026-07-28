@@ -3,13 +3,16 @@
 // Single-session lifecycle routes: DELETE /api/sessions/:id (cascades through
 // the session's worktree, tmux pane and chat process), POST .../relocate
 // (re-homes a session into a different directory with a fresh worktree), and
-// POST .../restart (kill tmux + respawn the CLI in place, fresh conversation).
+// POST .../restart (kill tmux + respawn the CLI in place, fresh conversation),
+// and POST .../restart-spawn (chat counterpart: destroy the CLI process and all
+// of its runtime state, keeping the conversation).
 // The whole-server POST /api/restart is deliberately NOT here — it stays in
 // server.js where its detached-scheduler wiring lives.
 //
-// Extracted verbatim from server.js. Behaviour is preserved exactly; every
-// dependency is injected, with maps passed by reference and the module's own
-// `fs` defaulting to the host's so tests can substitute an in-memory one.
+// The first three routes were extracted verbatim from server.js and their
+// behaviour is preserved exactly. Every dependency is injected, with maps passed
+// by reference and the module's own `fs` defaulting to the host's so tests can
+// substitute an in-memory one.
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -42,6 +45,10 @@ function createSessionLifecycleRuntime(rawDeps) {
     cwdForSession,
     cleanupPushMonitor,
     getSessionGitRuntime,
+    // Optional: restart-spawn uses it to release the scheduler slot through the
+    // canonical cancel. Deliberately not in the required list below — every
+    // other route here predates it and must keep composing without it.
+    getSessionWorkHost,
   } = deps;
 
   for (const [map, name] of [
@@ -234,6 +241,89 @@ function createSessionLifecycleRuntime(rawDeps) {
         console.error('[multicc] Restart failed:', err);
         res.status(500).json({ error: err.message });
       }
+    }));
+
+    // ── Hard-restart a chat session's CLI spawn ──
+    // /restart above is terminal-only: it kills the tmux pane and builds a new
+    // one. A chat session has no pane. Its CLI is a persistent `-p` stream
+    // process plus in-memory runtime state — the busy flag, the in-flight turn's
+    // unsettled promise, the replay buffer, the router MCP sidecar, and the
+    // scheduler slot. When that state and the real process disagree (the CLI
+    // died mid-turn, a provider 429 burned the retry budget, a kill was only
+    // ever *requested*), re-reading the session list changes nothing: the
+    // session reads as idle everywhere and still refuses every message. This
+    // tears the spawn down for real.
+    //
+    // The conversation is NOT lost. The vendor session id lives on the persisted
+    // record, so the next turn re-ensures and respawns with --resume <same id>.
+    // To start a genuinely blank conversation, clear the history first — that
+    // path already invalidates every CLI's native session — then restart here.
+    //
+    // The respawn is deliberately lazy. Only the turn engine can compute a spawn
+    // (provider env, model args, subagent routing), so eagerly rebuilding the
+    // process here would mean duplicating that; the next message spawns it with
+    // config that is correct by construction.
+    app.post('/api/sessions/:id/restart-spawn', asyncHandler(async (req, res) => {
+      const id = req.params.id;
+      const persisted = persistedSessions.get(id);
+      const cs = chatSessions.get(id);
+      if (!persisted && !cs) return res.status(404).json({ error: 'Session not found' });
+      if (persisted && persisted.kind && persisted.kind !== 'chat') {
+        return res.status(400).json({ error: 'restart-spawn only applies to chat sessions; terminal sessions use /restart' });
+      }
+
+      // Snapshot what was actually wrong, so the reply can show the caller that
+      // something real was torn down rather than just claiming success.
+      const streamBefore = (() => { try { return chatStream().status(id); } catch (_) { return null; } })();
+      const before = {
+        alive: !!streamBefore?.alive,
+        busy: !!streamBefore?.busy,
+        queued: streamBefore?.queued || 0,
+        pid: streamBefore?.pid || null,
+        isStreaming: !!cs?.isStreaming,
+      };
+
+      // 1. Business state first, through the canonical cancel. It releases the
+      //    scheduler's active slot — the `P` that makes controlAllowedByClassify
+      //    refuse every new unit of session work — writes the terminal verdict
+      //    and republishes the task projection. Killing the process first would
+      //    park the scheduler on a turn whose runner had already vanished.
+      let cancelled = null;
+      const workHost = typeof getSessionWorkHost === 'function' ? getSessionWorkHost() : null;
+      if (workHost && typeof workHost.cancelActiveTurn === 'function') {
+        try {
+          cancelled = await workHost.cancelActiveTurn(id, {
+            reason: 'restart_spawn', killReason: 'restart_spawn', source: 'restart_spawn',
+          });
+        } catch (error) {
+          cancelled = { ok: false, code: 'cancel_failed', error: error.message };
+        }
+      }
+
+      // 2. Destroy the stream session: SIGTERM→SIGKILL the process, settle any
+      //    in-flight turn, release the router MCP sidecar, drop the entry.
+      try { chatStream().close(id); } catch (error) {
+        console.warn(`[multicc] restart-spawn: stream close failed for ${id}: ${error.message}`);
+      }
+
+      // 3. Clear the per-session runtime the stream module does not own. Without
+      //    this a stale isStreaming keeps the turn engine rejecting delivery as
+      //    session-busy even though nothing is running any more.
+      if (cs) {
+        if (cs.claudeProc) { try { cs.claudeProc.kill('SIGTERM'); } catch (_) {} }
+        cs.claudeProc = null;
+        cs.isStreaming = false;
+        cs.streamReplay = [];
+        cs.lineBuf = '';
+        cs.currentAssistantText = '';
+        cs.currentToolCalls = [];
+        cs._activeTurn = null;
+        cs._activeRunner = null;
+      }
+
+      if (persisted) appendEvent(persisted.dirId, 'session_spawn_restarted', persisted.label || id, null);
+      console.log(`[multicc] restart-spawn ${id}: ${JSON.stringify(before)}`);
+      res.json({ ok: true, before, cancelled, cli: persisted?.cli || cs?.cli || null });
     }));
   }
 

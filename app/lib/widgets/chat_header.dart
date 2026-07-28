@@ -184,7 +184,7 @@ class ChatHeader extends StatelessWidget {
                     ),
                   ),
                 ),
-                onRestart: () => _confirmRestart(context, provider),
+                onRestart: () => _confirmRestartSpawn(context, provider),
               ),
             ],
           );
@@ -206,10 +206,17 @@ class ChatHeader extends StatelessWidget {
       );
   }
 
-  /// Restart the underlying CLI process for this session (stronger than
-  /// reconnect — rebuilds the claude/codex command, like the web's 🔄 button).
-  /// Asks for confirmation first because it discards any in-flight work.
-  Future<void> _confirmRestart(
+  /// Process-level restart: destroys the CLI process and the server-side runtime
+  /// that outlives it. One rung above [_forceReconnect], which only rebuilds this
+  /// client's socket and therefore cannot help when the wedged part is the
+  /// process on the server — the two look identical from here.
+  ///
+  /// This used to POST /restart, which the server answers with 400 for anything
+  /// that is not a terminal session, so it could never work from a chat header.
+  /// /restart-spawn is the chat counterpart and keeps the conversation: the next
+  /// message respawns against the same native session, and only the interrupted
+  /// turn is lost. Confirm first for that reason.
+  Future<void> _confirmRestartSpawn(
     BuildContext context,
     ChatProvider provider,
   ) async {
@@ -220,9 +227,9 @@ class ChatHeader extends StatelessWidget {
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF0f1115),
-        title: Text(t('restartCli'), style: const TextStyle(fontSize: 16)),
+        title: Text(t('restartSpawn'), style: const TextStyle(fontSize: 16)),
         content: Text(
-          t('restartCliBody'),
+          t('restartSpawnConfirm'),
           style: const TextStyle(color: Color(0xFF8a909b), fontSize: 13),
         ),
         actions: [
@@ -238,7 +245,7 @@ class ChatHeader extends StatelessWidget {
             style: TextButton.styleFrom(
               foregroundColor: const Color(0xFFe3b341),
             ),
-            child: Text(t('restart')),
+            child: Text(t('restartSpawn')),
           ),
         ],
       ),
@@ -254,14 +261,19 @@ class ChatHeader extends StatelessWidget {
         ),
       );
     try {
-      await SessionService(settings: settings).restartSession(sid);
+      final result = await SessionService(settings: settings).restartSpawn(sid);
+      final before = result['before'];
+      final pid = before is Map ? before['pid'] : null;
+      // The process this view was bound to is gone; resync so the header stops
+      // describing a runtime that no longer exists.
+      provider.reconnect();
       if (!context.mounted) return;
       messenger
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text(t('restarted')),
-            duration: const Duration(seconds: 2),
+            content: Text(t('restartSpawnDone', {'pid': '${pid ?? '-'}'})),
+            duration: const Duration(seconds: 3),
             backgroundColor: const Color(0xFF14171c),
           ),
         );
@@ -271,7 +283,7 @@ class ChatHeader extends StatelessWidget {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text(t('restartFailed', {'error': '$e'})),
+            content: Text(t('restartSpawnFailed', {'error': '$e'})),
             backgroundColor: const Color(0xFFff6b63),
           ),
         );
@@ -677,7 +689,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
         _item(
           'restart',
           Icons.restart_alt_rounded,
-          t('restartCli'),
+          t('restartSpawn'),
           const Color(0xFFe3b341),
         ),
         const PopupMenuDivider(),
