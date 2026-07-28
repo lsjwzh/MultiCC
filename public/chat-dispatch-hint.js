@@ -1,31 +1,42 @@
 /* ── chat-dispatch-hint.js ───────────────────────────────────────────────────
- * Commander-only「不派发给其他会话」switch that lives on #pre-input-bar and
- * appends one routing instruction to the end of every prompt sent from the box.
- *
- * The Commander decides per turn whether to hand work to other sessions. This
- * switch lets the user pin that decision from the UI instead of restating it in
- * prose each time:
- *   unchecked (default) → ask it to spread the work via route_task
- *   checked             → forbid dispatch; the work stays in this session
+ * Commander-only dispatch-mode radio group on #pre-input-bar. Evolves the old
+ * two-state「不派发」checkbox into a three-way choice the user pins from the UI:
+ *   dispatch_master (default) → dispatch via dispatch_master and WAIT for the
+ *                                result callback (two-way / needs receipt).
+ *   route_task                → dispatch via route_task, fire-and-forget
+ *                                (one-way / no callback).
+ *   none                      → no dispatch; finish in this session.
  *
  * Exposes: window.MultiCCChatDispatchHint = { createDispatchHint, decorate, … }
  * chat-composer.js calls decorate(text) right before staging + sending, so the
  * bubble on screen and the text the model receives are the same string.
  *
- * The switch only appears when GET /api/sessions/:id reports type==='commander';
+ * The group only appears when GET /api/sessions/:id reports type==='commander';
  * in every other session decorate() is the identity function.
  * ────────────────────────────────────────────────────────────────────────── */
 (function (global) {
   'use strict';
 
-  var STORE_PREFIX = 'multicc.noDispatch.';
+  var STORE_PREFIX = 'multicc.dispatchMode.';
+  var LEGACY_PREFIX = 'multicc.noDispatch.'; // old boolean switch — migrated once
 
-  // Both suffixes are in English on purpose: the Commander model obeys English
-  // tool-routing instructions more reliably, and route_task is its only dispatch
-  // channel, so an instruction phrased around it reads as a constraint it
-  // already knows how to obey.
-  var SUFFIX_SPREAD = '\n\n[Dispatch] After a brief analysis, dispatch this task to other sessions in parallel via the route_task tool. Only keep in the current session what truly cannot be dispatched.';
-  var SUFFIX_KEEP = '\n\n[Dispatch] Do not dispatch this task. Do not call the route_task tool. Complete the entire task yourself within the current session.';
+  var MODE_DISPATCH_MASTER = 'dispatch_master';
+  var MODE_ROUTE_TASK = 'route_task';
+  var MODE_NONE = 'none';
+  var MODES = [MODE_DISPATCH_MASTER, MODE_ROUTE_TASK, MODE_NONE];
+  var DEFAULT_MODE = MODE_DISPATCH_MASTER;
+
+  // English on purpose — the model obeys English tool-routing instructions more
+  // reliably. Each suffix names the exact tool so the constraint is unambiguous.
+  var SUFFIX_DISPATCH_MASTER = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the dispatch_master tool and wait for the result callback.';
+  var SUFFIX_ROUTE_TASK = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the route_task tool (fire-and-forget, no callback needed).';
+  var SUFFIX_NONE = '\n\n[Dispatch] Do not dispatch to other sessions this turn. Handle it entirely within the current session.';
+
+  function suffixFor(mode) {
+    if (mode === MODE_NONE) return SUFFIX_NONE;
+    if (mode === MODE_ROUTE_TASK) return SUFFIX_ROUTE_TASK;
+    return SUFFIX_DISPATCH_MASTER;
+  }
 
   function defaultStorage(win) {
     try { return win && win.localStorage ? win.localStorage : null; } catch (_) { return null; }
@@ -57,22 +68,23 @@
     var loadSession = opts.loadSession || defaultLoadSession(win);
     var sessionId = opts.sessionId || '';
 
-    var labelEl = null;
-    var inputEl = null;
+    var groupEl = null;
+    var radios = [];
     // `enabled` is the commander gate; a non-commander session never decorates.
     var enabled = false;
-    var noDispatch = false;
+    var mode = DEFAULT_MODE;
 
     function storeKey() { return STORE_PREFIX + sessionId; }
 
     function render() {
-      if (labelEl) labelEl.hidden = !enabled;
-      if (inputEl) inputEl.checked = noDispatch;
+      if (groupEl) groupEl.hidden = !enabled;
+      radios.forEach(function (r) { r.checked = (r.value === mode); });
     }
 
-    function setNoDispatch(value, persist) {
-      noDispatch = !!value;
-      if (persist !== false && sessionId) writeStore(storage, storeKey(), noDispatch ? '1' : '0');
+    function setMode(value, persist) {
+      var next = MODES.indexOf(value) >= 0 ? value : DEFAULT_MODE;
+      mode = next;
+      if (persist !== false && sessionId) writeStore(storage, storeKey(), next);
       render();
     }
 
@@ -83,21 +95,34 @@
 
     function bind() {
       if (!doc || typeof doc.getElementById !== 'function') return;
-      labelEl = doc.getElementById('no-dispatch-label');
-      inputEl = doc.getElementById('no-dispatch-check');
-      if (inputEl && typeof inputEl.addEventListener === 'function') {
-        inputEl.addEventListener('change', function () { setNoDispatch(!!inputEl.checked); });
+      groupEl = doc.getElementById('dispatch-mode-group');
+      if (groupEl && typeof groupEl.querySelectorAll === 'function') {
+        radios = Array.prototype.slice.call(
+          groupEl.querySelectorAll('input[name="dispatch-mode"]')
+        );
       }
-      // Restore without writing back, so a session that never touched the switch
+      radios.forEach(function (r) {
+        if (typeof r.addEventListener === 'function') {
+          r.addEventListener('change', function () { if (r.checked) setMode(r.value); });
+        }
+      });
+      // Restore: prefer the new mode key; fall back to the legacy boolean once,
+      // then the default. Restore never writes back, so an untouched session
       // keeps an empty slot rather than a synthesised default.
       var stored = sessionId ? readStore(storage, storeKey()) : null;
-      if (stored === '1' || stored === '0') setNoDispatch(stored === '1', false);
+      if (MODES.indexOf(stored) >= 0) {
+        setMode(stored, false);
+      } else {
+        var legacy = sessionId ? readStore(storage, LEGACY_PREFIX + sessionId) : null;
+        if (legacy === '1') setMode(MODE_NONE, false);
+        else if (legacy === '0') setMode(MODE_DISPATCH_MASTER, false);
+      }
       render();
     }
 
     // Resolving the role can race ahead of the session being fully ready /
     // created: a transient loadSession failure at boot would otherwise hide the
-    // switch forever. A concrete answer (commander OR not) is final; only a
+    // group forever. A concrete answer (commander OR not) is final; only a
     // thrown/rejected lookup is retried. A non-commander role stays fail-closed
     // and never rewrites prompts.
     var roleMaxRetries = opts.roleMaxRetries == null ? 4 : opts.roleMaxRetries;
@@ -131,16 +156,16 @@
 
     function decorate(text) {
       if (!enabled || typeof text !== 'string' || !text.trim()) return text;
-      return text + (noDispatch ? SUFFIX_KEEP : SUFFIX_SPREAD);
+      return text + suffixFor(mode);
     }
 
     return Object.freeze({
       mount: mount,
       decorate: decorate,
       setEnabled: setEnabled,
-      setNoDispatch: function (value) { setNoDispatch(value); },
+      setMode: function (value) { setMode(value); },
+      getMode: function () { return mode; },
       isEnabled: function () { return enabled; },
-      isNoDispatch: function () { return noDispatch; },
     });
   }
 
@@ -164,8 +189,12 @@
     decorate: decorate,
     boot: boot,
     current: function () { return active; },
-    SUFFIX_SPREAD: SUFFIX_SPREAD,
-    SUFFIX_KEEP: SUFFIX_KEEP,
+    SUFFIX_DISPATCH_MASTER: SUFFIX_DISPATCH_MASTER,
+    SUFFIX_ROUTE_TASK: SUFFIX_ROUTE_TASK,
+    SUFFIX_NONE: SUFFIX_NONE,
+    MODE_DISPATCH_MASTER: MODE_DISPATCH_MASTER,
+    MODE_ROUTE_TASK: MODE_ROUTE_TASK,
+    MODE_NONE: MODE_NONE,
     STORE_PREFIX: STORE_PREFIX,
   });
 

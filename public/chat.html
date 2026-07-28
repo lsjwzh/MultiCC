@@ -740,33 +740,67 @@
       align-self: center;
       display: flex;
       align-items: center;
-      gap: 12px;
+      /* Wraps instead of overflowing once the commander radio group is shown. */
+      flex-wrap: wrap;
+      gap: 4px 12px;
       padding: 2px 12px;
       font-size: 12px;
       color: #8b949e;
       background: #0d1117;
       border-top: 1px solid #30363d;
     }
-    #auto-dispatch-label,
-    #no-dispatch-label {
+    #auto-dispatch-label {
       display: flex;
       align-items: center;
       gap: 4px;
       cursor: pointer;
       user-select: none;
     }
-    #auto-dispatch-label input[type="checkbox"],
-    #no-dispatch-label input[type="checkbox"] {
+    #auto-dispatch-label input[type="checkbox"] {
       accent-color: #388bfd;
       width: 13px;
       height: 13px;
       margin: 0;
     }
-    #auto-dispatch-label:hover,
-    #no-dispatch-label:hover { color: #c9d1d9; }
-    /* Commander-only; `display:flex` above would otherwise beat [hidden]. */
-    #no-dispatch-label[hidden] { display: none; }
-    #no-dispatch-label input:checked + span { color: #d29922; }
+    #auto-dispatch-label:hover { color: #c9d1d9; }
+    /* Commander-only dispatch-mode radio group (three-way, mutually exclusive). */
+    #dispatch-mode-group {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px 8px;
+      min-width: 0;
+    }
+    /* `display:flex` above would otherwise beat [hidden]. */
+    #dispatch-mode-group[hidden] { display: none; }
+    #dispatch-mode-group .dispatch-mode-opt {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      user-select: none;
+      padding: 2px 8px;
+      border: 1px solid #30363d;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    #dispatch-mode-group .dispatch-mode-opt:hover { color: #c9d1d9; border-color: #484f58; }
+    #dispatch-mode-group input[type="radio"] {
+      accent-color: #388bfd;
+      width: 13px;
+      height: 13px;
+      margin: 0;
+    }
+    #dispatch-mode-group input:checked + span { color: #58a6ff; font-weight: 600; }
+    #dispatch-mode-group .dispatch-mode-opt:has(input:checked) {
+      border-color: #388bfd;
+      background: rgba(56, 139, 253, .14);
+    }
+    #dispatch-mode-group input[value="none"]:checked + span { color: #d29922; }
+    #dispatch-mode-group .dispatch-mode-opt:has(input[value="none"]:checked) {
+      border-color: #d29922;
+      background: rgba(210, 153, 34, .14);
+    }
 
     /* ── Durable messages staged behind the active turn ── */
     #session-queue-dock {
@@ -2174,11 +2208,23 @@
       <input type="checkbox" id="auto-dispatch-check" /> Auto dispatch to sessions
     </label>
     <button id="subagent-pill" type="button" title="子任务 (subagent) 用的 provider+model，点击修改" style="margin-left:10px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;cursor:pointer;">子任务: <span id="subagent-pill-label">随主</span></button>
-    <!-- Commander only: shown once /api/sessions/:id reports type==='commander'. -->
-    <label id="no-dispatch-label" hidden
-           title="勾选：强制在当前会话内完成，不派发给其它会话；不勾选：请求尽可能拆分并派发给其它会话并行完成。两种状态都会在发送的提示词末尾追加一句派发要求。">
-      <input type="checkbox" id="no-dispatch-check" /> <span>不派发给其他会话</span>
-    </label>
+    <!-- Commander only: shown once /api/sessions/:id reports type==='commander'.
+         Three-way, mutually exclusive; each choice appends its own English
+         dispatch instruction to the prompt (see chat-dispatch-hint.js). -->
+    <div id="dispatch-mode-group" hidden role="radiogroup" aria-label="派发方式">
+      <label class="dispatch-mode-opt" title="用 dispatch_master 派发给其它会话并等待结果回执（双向）">
+        <input type="radio" name="dispatch-mode" value="dispatch_master" checked />
+        <span>优先分发给其他会话且需要回执</span>
+      </label>
+      <label class="dispatch-mode-opt" title="用 route_task 单向派发给其它会话，不等回执（fire-and-forget）">
+        <input type="radio" name="dispatch-mode" value="route_task" />
+        <span>优先分发给其他会话且不需要回执</span>
+      </label>
+      <label class="dispatch-mode-opt" title="强制在当前会话内完成，不派发给其它会话">
+        <input type="radio" name="dispatch-mode" value="none" />
+        <span>不派发给其他会话</span>
+      </label>
+    </div>
     <span id="liveness-pill" title="" style="display:none;margin-left:8px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span></span>
   </div>
 
