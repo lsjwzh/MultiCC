@@ -44,6 +44,9 @@ const DEFAULT_IDLE_MS = 10 * 60 * 1000; // kill a warm-but-unused process after 
 // window — i.e. a leaked/stuck shadow. When it trips, the process is reclaimed
 // and the exit path reaps the shadows + surfaces `interrupted`.
 const DEFAULT_IDLE_MAX_HOLD_MS = 2 * 60 * 60 * 1000; // 2h
+// How long close() lets a SIGTERM'd process exit on its own before SIGKILL.
+// Matches the cancel path's grace window in session-work-host.
+const CLOSE_KILL_GRACE_MS = 1_500;
 
 function isAlive(name) {
   const s = sessions.get(name);
@@ -381,14 +384,39 @@ function cancel(name) {
   if (s.proc) { try { s.proc.kill('SIGTERM'); } catch (_) {} }
 }
 
-// Fully tear down (session deleted).
+// Fully tear down: session deleted, history cleared, or a deliberate hard
+// respawn. Everything the exit path would normally do has to happen HERE,
+// because deleting the map entry disarms it: every proc handler is guarded by
+// `sessions.get(name)?.proc === proc`, so once the entry is gone the 'exit'
+// event is a no-op. Two things would otherwise leak.
+//
+//  1. The in-flight turn's promise never settles. finishTurn/onExit are the only
+//     places that resolve or reject it, so send()'s caller (finalizeStreamingTurn)
+//     never runs and the session stays "streaming" for good — visible in the UI
+//     as a session that is idle by every other measure yet refuses new messages.
+//  2. The process is only ASKED to stop. cancel() sends SIGTERM and after the
+//     delete nobody is left holding the handle to escalate, so a CLI that
+//     ignores it keeps running — holding the provider connection and its stdin
+//     — while a respawn starts a second one alongside it.
 function close(name) {
-  cancel(name);
   const s = sessions.get(name);
-  if (s) {
-    clearIdle(s);
-    try { s.onDispose?.(); } catch (_) {}
+  cancel(name);
+  if (!s) return;
+  clearIdle(s);
+  const proc = s.proc;
+  const cur = s.current;
+  s.current = null;
+  s.busy = false;
+  s.proc = null;
+  if (proc) {
+    const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, CLOSE_KILL_GRACE_MS);
+    if (killer.unref) killer.unref();
+    try { proc.once('exit', () => clearTimeout(killer)); } catch (_) {}
   }
+  if (cur && typeof cur.reject === 'function') {
+    try { cur.reject(new Error('stream session closed')); } catch (_) {}
+  }
+  try { s.onDispose?.(); } catch (_) {}
   sessions.delete(name);
 }
 

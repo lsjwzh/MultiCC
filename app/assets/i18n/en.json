@@ -690,5 +690,10 @@
   "statusAriaCancelled": "Status: cancelled",
   "statusAriaArchived": "Status: archived",
   "statusAriaOffline": "Status: offline",
-  "statusAriaUnknown": "Status: unknown"
+  "statusAriaUnknown": "Status: unknown",
+  "restartSpawn": "Restart Process",
+  "restartSpawnHint": "Process-level restart: kill and rebuild this session CLI process, keeping the conversation (use when ↻ reconnect does not help)",
+  "restartSpawnConfirm": "Restart this session CLI process?\n\nThe turn in flight is interrupted. The conversation is kept — your next message respawns the process on the same native session.",
+  "restartSpawnDone": "✓ CLI process restarted (was pid {pid}). Send your next message to continue.",
+  "restartSpawnFailed": "Restart process failed: {error}"
 }

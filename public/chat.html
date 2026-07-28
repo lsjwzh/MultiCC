@@ -2067,6 +2067,7 @@
     <button class="hdr-btn" id="memory-btn" data-i18n-title="openMemoryLibrary" title="会话记忆库" data-i18n="memory">🧠 记忆</button>
     <button class="hdr-btn" id="auto-commit-btn" data-i18n-title="autoCommitTitle" title="任务完成后自动提交代码并合并回基分支" data-i18n="autoCommit">🚀 自动提交</button>
     <button class="hdr-btn" id="share-btn" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">🔗 分享</button>
+    <button class="hdr-btn" id="restart-spawn-btn" data-i18n-title="restartSpawnHint" title="进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）" data-i18n="restartSpawn">♻️ 重启进程</button>
     <span id="header-more-wrap">
       <button class="hdr-btn" id="header-more-btn" data-i18n="more">更多</button>
       <span id="header-more-menu"></span>
@@ -2430,6 +2431,7 @@
   <script src="chat-context-controls.js"></script>
   <script src="chat-diff.js"></script>
   <script src="chat-dispatch-hint.js"></script>
+<script src="chat-recovery-service.js"></script>
   <script src="chat.js"></script>
   <script src="tour.js"></script>
 </body>
