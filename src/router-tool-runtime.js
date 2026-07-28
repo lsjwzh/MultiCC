@@ -418,7 +418,24 @@ function createRouterToolRuntime({
   }
 
   async function dispatchMaster(context, args, signal) {
-    const admitted = await admit(context, 'dispatch_master', args, 'tool');
+    let admitted;
+    try {
+      admitted = await admit(context, 'dispatch_master', args, 'tool');
+    } catch (e) {
+      // admit throws when dispatchToSession returns ok:false (e.g. target busy
+      // entering FIFO) even though the message may already be enqueued. Do not
+      // surface this as a bare router_error; return a structured fifo receipt so
+      // the calling Commander can show "enqueued — wait or re-route" to the user.
+      return {
+        ok: false,
+        fifo: true,
+        status: 'rejected_possible_fifo',
+        error: (e && (e.message || e.error)) || String(e),
+        code: (e && e.code) || 'dispatch_rejected',
+        target_session_id: args.target_session_id,
+        retryable: true,
+      };
+    }
     const timeoutMs = boundedTimeout(args.timeout_seconds);
     const operation = await waitForOperation(admitted.operationId, timeoutMs, signal);
     if (!operation) {
