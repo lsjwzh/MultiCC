@@ -53,13 +53,25 @@ function collectKimiTargets() {
   return targets;
 }
 
+// The balance endpoint only exists on the canonical CN billing host. Inference is
+// often routed through rebrand hosts (api.kimi.com / api.kimi.ai / api.moonshot.com)
+// that return 404 for /v1/users/me/balance — verified: api.kimi.com 404s while
+// api.moonshot.cn returns a proper 401/200. The API key is account-level (works on
+// both), so query balance on api.moonshot.cn unless the provider already uses a
+// moonshot.cn host.
+const KIMI_BALANCE_HOST = 'api.moonshot.cn';
+function balanceHost(host) {
+  const h = String(host || '').toLowerCase();
+  return h.endsWith('moonshot.cn') ? h : KIMI_BALANCE_HOST;
+}
+
 // Fetch one account's balance. Best-effort: resolves null on any network/shape
 // problem so the caller shows "unavailable" rather than fabricating a number.
 async function fetchKimiBalance(target, timeoutMs = 6000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`https://${target.host}/v1/users/me/balance`, {
+    const res = await fetch(`https://${balanceHost(target.host)}/v1/users/me/balance`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${target.apiKey}` },
       signal: controller.signal,
@@ -132,4 +144,4 @@ function mountKimiQuotaRoutes(app) {
   });
 }
 
-module.exports = { mountKimiQuotaRoutes, fetchKimiUsage, fetchKimiBalance, collectKimiTargets, siteLabel };
+module.exports = { mountKimiQuotaRoutes, fetchKimiUsage, fetchKimiBalance, collectKimiTargets, siteLabel, balanceHost };
