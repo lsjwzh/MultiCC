@@ -1847,13 +1847,11 @@ sessionGitRuntime.mountRoutes(app);
 // stays here. The whole-server POST /api/restart below deliberately remains
 // inline — its detached-scheduler debounce is host process state.
 createSessionLifecycleRuntime({
-  sessions,
-  chatSessions,
-  persistedSessions,
-  directories,
-  invalidSessions,
+  sessions, chatSessions, persistedSessions, directories, invalidSessions,
   sessionPersistence,
   getChatStream: () => chatStream,
+  // sessionWorkHost is composed further down this file; forward lazily past the TDZ.
+  getSessionWorkHost: () => sessionWorkHost,
   asyncHandler,
   destroySessionCascade,
   tmuxKillSession,

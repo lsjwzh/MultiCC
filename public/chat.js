@@ -263,7 +263,8 @@ const headerMoreController = window.MultiCCChatLiveUi.bindHeaderMoreMenu({
   wrap: document.getElementById('header-more-wrap'),
   ids: [
     'lang-btn', 'notify-btn', 's2s-btn', 'dbg-btn', 'model-btn', 'role-btn',
-    'memory-btn', 'auto-commit-btn', 'share-btn', 'clear-ctx-wrap', 'memo-btn',
+    'memory-btn', 'auto-commit-btn', 'share-btn', 'restart-spawn-btn',
+    'clear-ctx-wrap', 'memo-btn',
   ],
 });
 function syncHeaderMoreMenu() { return headerMoreController.sync(); }
@@ -2788,21 +2789,16 @@ function forceReconnect(reason) {
 /* ── Reconnect when tab becomes visible again ── */
 chatTransport.startLifecycle();
 
-/* ── Manual reconnect control (header ↻) ── */
-(function initReconnectBtn() {
-  const btn = document.getElementById('reconnect-btn');
-  if (!btn) return;
-  // Tap → force reconnect; long-press (600ms) → hard page reload as a last resort.
-  let lpTimer = null, longFired = false;
-  const startLP = () => { longFired = false; lpTimer = setTimeout(() => { longFired = true; location.reload(); }, 600); };
-  const cancelLP = () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } };
-  btn.addEventListener('click', () => { if (!longFired) forceReconnect('manual button'); });
-  btn.addEventListener('mousedown', startLP);
-  btn.addEventListener('touchstart', startLP, { passive: true });
-  ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(ev => btn.addEventListener(ev, cancelLP));
-})();
-// The status pill is always a reconnect affordance too (not only after a drop).
-if (statusEl) statusEl.onclick = () => forceReconnect('status click');
+/* ── Recovery service: ↻ reconnect / long-press reload / ♻️ restart CLI spawn ── */
+const _chatRecovery = window.MultiCCChatRecoveryService.create({
+  document, window, translate: tt,
+  forceReconnect, statusEl,
+  reload: () => location.reload(),
+  getSessionName: () => _sessionName,
+  addSystemMsg, withToken,
+  confirm: (message, opts) => chatLiveUi.confirm(message, opts),
+  closeMoreMenu: () => closeHeaderMoreModal(),
+});
 
 /* ── Debug panel wiring ── */
 (function initDebugPanel() {
