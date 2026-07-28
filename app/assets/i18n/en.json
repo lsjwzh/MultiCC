@@ -361,6 +361,8 @@
   "phaseWrapping": "Wrapping up",
   "phaseDone": "Completed",
   "mergeBlockedBranch": "The worktree has changes, but {base} is not checked out in the main directory.",
+  "mergeHintCollapse": "Collapse",
+  "mergeHintExpand": "Expand merge hint",
   "sessionAliasHint": "Session alias (leave empty to reset to ID)",
   "sessionIdMissing": "Session ID is missing; this action cannot continue",
   "nameTooLong": "Name is too long (maximum {n} characters)",
