@@ -14,6 +14,8 @@ const {
   consumeBalanceEvent,
   setCli,
   setProviderBaseUrl,
+  formatArkQuota,
+  arkPlanFromBaseUrl,
 } = require('../public/chat-rate-limit');
 
 test('normalizes Claude five-hour rate-limit event into a privacy-minimal DTO', () => {
@@ -319,4 +321,55 @@ test('hides the Claude bar (data and idle placeholder) under a non-Claude provid
     delete global.document;
     delete global.localStorage;
   }
+});
+
+const ARK_FIXTURE = {
+  status: 'ok',
+  fetchedAt: Date.now(),
+  viewer: { user_name: 'tester' },
+  items: [
+    {
+      product: 'agent-plan', edition: 'personal', tier: 'medium', subscribed: true, error: null,
+      periods: [
+        { label: '5h', used: 10.55, total: 10000, percent: 0.11, resetAt: null },
+        { label: 'weekly', used: 5775, total: 35000, percent: 16.5, resetAt: null },
+        { label: 'monthly', used: 29769, total: 100000, percent: 29.77, resetAt: null },
+      ],
+    },
+    {
+      product: 'coding-plan', edition: 'personal', tier: null, subscribed: true, error: null,
+      periods: [
+        { label: 'session', used: null, total: null, percent: 100, resetAt: null },
+        { label: 'weekly', used: null, total: null, percent: 26.85, resetAt: null },
+        { label: 'monthly', used: null, total: null, percent: 98.42, resetAt: null },
+      ],
+    },
+  ],
+};
+
+test('detects the Ark plan family from the provider baseUrl path', () => {
+  assert.equal(arkPlanFromBaseUrl('https://ark.cn-beijing.volces.com/api/coding'), 'coding-plan');
+  assert.equal(arkPlanFromBaseUrl('https://ark.cn-beijing.volces.com/api/coding/v3'), 'coding-plan');
+  assert.equal(arkPlanFromBaseUrl('https://ark.cn-beijing.volces.com/api/plan'), 'agent-plan');
+  assert.equal(arkPlanFromBaseUrl('https://ark.cn-beijing.volces.com/api/v3'), null, 'bare inference path stays unknown');
+  assert.equal(arkPlanFromBaseUrl(''), null);
+  assert.equal(arkPlanFromBaseUrl('not a url'), null);
+});
+
+test('ark bar shows every period of both plans, marking the one matching the baseUrl', () => {
+  const agent = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/plan');
+  assert.ok(agent.text.startsWith('Agent（当前） 5h 0.11% · 周 16.5% · 月 29.77%'), agent.text);
+  assert.ok(agent.text.includes('｜ Coding 会话 100% · 周 26.85% · 月 98.42%'), agent.text);
+  assert.equal(agent.color, '#f85149', 'worst period (coding 会话 100%) drives the color');
+  assert.ok(agent.title.includes('Agent · medium（当前 provider）'), agent.title);
+  assert.ok(agent.title.includes('  5h: 10.55/10000 (0.11%)'), agent.title);
+  assert.ok(agent.title.includes('Coding（当前 provider）') === false, 'coding not marked current');
+
+  const coding = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/coding/v3');
+  assert.ok(coding.text.startsWith('Coding（当前） 会话 100% · 周 26.85% · 月 98.42%'), coding.text);
+  assert.ok(coding.text.includes('｜ Agent 5h 0.11% · 周 16.5% · 月 29.77%'), coding.text);
+
+  const unknown = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/v3');
+  assert.ok(unknown.text.includes('当前') === false, 'no plan marked when baseUrl is inconclusive');
+  assert.ok(unknown.text.startsWith('Agent 5h 0.11%'), unknown.text);
 });
