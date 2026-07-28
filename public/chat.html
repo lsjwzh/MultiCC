@@ -1103,6 +1103,25 @@
       color: #f2cc60;
     }
     #merge-hint button.ghost:hover { background: #3a2c0a; }
+    /* Collapsed form: bar hidden, replaced by the small pill below.
+     * Must come after .show so display:none wins the specificity tie. */
+    #merge-hint.collapsed { display: none; }
+    #merge-hint .mh-collapse {
+      flex-shrink: 0; border: none; background: transparent; color: #f2cc60;
+      padding: 2px 5px; font-size: 14px; line-height: 1; cursor: pointer; opacity: .7;
+    }
+    #merge-hint .mh-collapse:hover { opacity: 1; }
+    #merge-hint-fab {
+      position: fixed; right: 12px; bottom: calc(62px + env(safe-area-inset-bottom));
+      z-index: 8500; width: 34px; height: 34px; padding: 0;
+      border-radius: 50%; border: 1px solid #d29922; background: #2d2108;
+      color: #f2cc60; font-size: 15px; font-weight: 700; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 6px 18px #000000aa; cursor: pointer; opacity: .75;
+      transition: opacity 160ms ease;
+    }
+    #merge-hint-fab:hover { opacity: 1; }
+    #merge-hint-fab[hidden] { display: none; }
 
     #send-btn {
       flex-shrink: 0;
@@ -2152,7 +2171,11 @@
     <span class="merge-hint-text">当前 worktree 有可合并内容。</span>
     <button id="merge-hint-diff-btn" class="ghost">查看 Diff</button>
     <button id="merge-hint-btn">合并</button>
+    <button id="merge-hint-collapse-btn" class="mh-collapse" title="收起" aria-label="收起"
+            data-i18n-title="mergeHintCollapse" data-i18n-aria-label="mergeHintCollapse">⌄</button>
   </div>
+  <button id="merge-hint-fab" type="button" hidden title="展开合并提示" aria-label="展开合并提示"
+          data-i18n-title="mergeHintExpand" data-i18n-aria-label="mergeHintExpand">⎇</button>
 
   <!-- Diff dock: side panel (desktop) / bottom sheet (narrow), collapsible to
        the floating button below. -->
@@ -2431,7 +2454,8 @@
   <script src="chat-context-controls.js"></script>
   <script src="chat-diff.js"></script>
   <script src="chat-dispatch-hint.js"></script>
-<script src="chat-recovery-service.js"></script>
+  <script src="chat-merge-hint.js"></script>
+  <script src="chat-recovery-service.js"></script>
   <script src="chat.js"></script>
   <script src="tour.js"></script>
 </body>
