@@ -53,9 +53,9 @@ class _InputBarState extends State<InputBar> {
   VoiceDictationService? _dictation;
   bool _legacyFallbackArmed = false;
 
-  // Commander 专属的「不派发给其他会话」勾选，按会话记住（web 端同名开关）。
-  bool _noDispatch = false;
-  String _noDispatchSessionId = '';
+  // Commander 专属的「派发方式」三选一，按会话记住（web 端同一组单选）。
+  DispatchMode _dispatchMode = DispatchMode.defaultMode;
+  String _dispatchModeSessionId = '';
 
   @override
   void initState() {
@@ -529,19 +529,75 @@ class _InputBarState extends State<InputBar> {
 
   // ── Dispatch hint (commander only) ──
 
-  /// 切到别的会话时把勾选状态对齐到那个会话记住的值。读是同步的（
+  /// 切到别的会话时把选中项对齐到那个会话记住的值。读是同步的（
   /// SharedPreferences 早已加载），所以直接在 build 里调用，不用等下一帧；
-  /// 没写过的会话保持 false，不回写默认值。
-  void _syncNoDispatch(ChatProvider provider) {
+  /// 没写过的会话回落默认（dispatch_master），不回写默认值。
+  void _syncDispatchMode(ChatProvider provider) {
     final sessionId = provider.sessionName;
-    if (sessionId == _noDispatchSessionId) return;
-    _noDispatchSessionId = sessionId;
-    _noDispatch = provider.settings.readNoDispatch(sessionId);
+    if (sessionId == _dispatchModeSessionId) return;
+    _dispatchModeSessionId = sessionId;
+    _dispatchMode = provider.settings.readDispatchMode(sessionId);
   }
 
-  void _setNoDispatch(ChatProvider provider, bool value) {
-    setState(() => _noDispatch = value);
-    provider.settings.saveNoDispatch(provider.sessionName, value);
+  void _setDispatchMode(ChatProvider provider, DispatchMode value) {
+    setState(() => _dispatchMode = value);
+    provider.settings.saveDispatchMode(provider.sessionName, value);
+  }
+
+  /// 一枚单选胶囊。用 Radio + 高亮边框而不是 Checkbox：三者互斥，选中态得一眼
+  /// 能看出来是哪一个。
+  Widget _dispatchModeChip(
+    ChatProvider provider, {
+    required DispatchMode mode,
+    required String label,
+    required String hint,
+    required Color accent,
+  }) {
+    final selected = _dispatchMode == mode;
+    return Tooltip(
+      message: hint,
+      child: GestureDetector(
+        key: Key('dispatch-mode-${mode.wireName}'),
+        onTap: () => _setDispatchMode(provider, mode),
+        child: Container(
+          padding: const EdgeInsets.only(left: 2, right: 10),
+          decoration: BoxDecoration(
+            color: selected ? accent.withValues(alpha: .14) : null,
+            border: Border.all(
+              color: selected ? accent : const Color(0xFF3a414b),
+            ),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 22,
+                height: 22,
+                child: Radio<DispatchMode>(
+                  value: mode,
+                  groupValue: _dispatchMode,
+                  onChanged: (v) =>
+                      _setDispatchMode(provider, v ?? DispatchMode.defaultMode),
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  activeColor: accent,
+                ),
+              ),
+              const SizedBox(width: 2),
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected ? accent : const Color(0xFF8a909b),
+                  fontSize: 12,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   // ── Send ──
@@ -558,7 +614,7 @@ class _InputBarState extends State<InputBar> {
     text = decorateDispatchHint(
       text,
       enabled: commander,
-      noDispatch: _noDispatch,
+      mode: _dispatchMode,
     );
     provider.sendMessage(text);
     _ctrl.clear();
@@ -1158,7 +1214,7 @@ class _InputBarState extends State<InputBar> {
     final subagentModelLabel = subReal;
     // 会话角色读不到就当不是 commander：fail closed，绝不悄悄改写提示词。
     final isCommander = isCommanderSessionType(activeSess?.type);
-    _syncNoDispatch(provider);
+    _syncDispatchMode(provider);
     final isStreaming = provider.isStreaming;
     final isConnected =
         provider.connectionState == ChatConnectionState.connected;
@@ -1287,49 +1343,41 @@ class _InputBarState extends State<InputBar> {
                 ),
               ),
 
-            // Commander 专属：勾选后强制在当前会话内做完，不派发给其它会话。
-            // 跟在子任务 pill 之后，与 web 的 #pre-input-bar 顺序一致。
+            // Commander 专属：这一轮怎么派发（三选一，互斥）。跟在子任务 pill
+            // 之后、输入框之上，与 web 的 #pre-input-bar 顺序一致。窄屏靠 Wrap
+            // 换行，不会把输入区挤没。
             if (isCommander)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: Tooltip(
-                    message: t('noDispatchHint'),
-                    child: GestureDetector(
-                      key: const Key('no-dispatch-toggle'),
-                      onTap: () => _setNoDispatch(provider, !_noDispatch),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: Checkbox(
-                              key: const Key('no-dispatch-check'),
-                              value: _noDispatch,
-                              onChanged: (v) =>
-                                  _setNoDispatch(provider, v == true),
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                              side: const BorderSide(color: Color(0xFF454b54)),
-                              activeColor: const Color(0xFFd29922),
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            t('noDispatchLabel'),
-                            style: TextStyle(
-                              color: _noDispatch
-                                  ? const Color(0xFFd29922)
-                                  : const Color(0xFF8a909b),
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
+                  child: Wrap(
+                    key: const Key('dispatch-mode-group'),
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      _dispatchModeChip(
+                        provider,
+                        mode: DispatchMode.dispatchMaster,
+                        label: t('dispatchModeMasterLabel'),
+                        hint: t('dispatchModeMasterHint'),
+                        accent: const Color(0xFF58a6ff),
                       ),
-                    ),
+                      _dispatchModeChip(
+                        provider,
+                        mode: DispatchMode.routeTask,
+                        label: t('dispatchModeRouteLabel'),
+                        hint: t('dispatchModeRouteHint'),
+                        accent: const Color(0xFF58a6ff),
+                      ),
+                      _dispatchModeChip(
+                        provider,
+                        mode: DispatchMode.none,
+                        label: t('dispatchModeNoneLabel'),
+                        hint: t('dispatchModeNoneHint'),
+                        accent: const Color(0xFFd29922),
+                      ),
+                    ],
                   ),
                 ),
               ),

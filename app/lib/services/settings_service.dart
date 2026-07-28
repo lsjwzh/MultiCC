@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../utils/dispatch_hint.dart';
 import 'ws_ticket_service.dart';
 
 /// One remembered server connection (URL + its token).
@@ -38,6 +39,8 @@ class SettingsService {
   static const _keyLang = 'multicc_lang';
   static const _keyServerHistory = 'multicc_server_history';
   static const _keyChatRuntimePrefix = 'multicc_chat_runtime_';
+  static const _keyDispatchModePrefix = 'multicc_dispatch_mode_';
+  /// 三选一之前的布尔开关；只在还没写过新键时读一次做迁移。
   static const _keyNoDispatchPrefix = 'multicc_no_dispatch_';
 
   /// How many past server connections to remember.
@@ -163,16 +166,24 @@ class SettingsService {
     );
   }
 
-  /// Commander 会话的「不派发给其他会话」勾选状态，按会话记住（web 端存在
-  /// localStorage 的 `multicc.noDispatch.<id>`）。没写过就是 false。
-  bool readNoDispatch(String sessionId) {
-    if (sessionId.isEmpty) return false;
-    return _prefs.getBool('$_keyNoDispatchPrefix$sessionId') ?? false;
+  /// Commander 会话选定的派发方式，按会话记住（web 端存在 localStorage 的
+  /// `multicc.dispatchMode.<id>`）。没写过就读一次旧的布尔开关做迁移，
+  /// 再没有就是默认的 dispatch_master。读不回写，免得给没碰过的会话凭空造记录。
+  DispatchMode readDispatchMode(String sessionId) {
+    if (sessionId.isEmpty) return DispatchMode.defaultMode;
+    final stored = _prefs.getString('$_keyDispatchModePrefix$sessionId');
+    if (stored != null) return DispatchMode.fromWireName(stored);
+    final legacy = _prefs.getBool('$_keyNoDispatchPrefix$sessionId');
+    if (legacy == true) return DispatchMode.none;
+    return DispatchMode.defaultMode;
   }
 
-  Future<void> saveNoDispatch(String sessionId, bool value) async {
+  Future<void> saveDispatchMode(String sessionId, DispatchMode mode) async {
     if (sessionId.isEmpty) return;
-    await _prefs.setBool('$_keyNoDispatchPrefix$sessionId', value);
+    await _prefs.setString(
+      '$_keyDispatchModePrefix$sessionId',
+      mode.wireName,
+    );
   }
 
   Future<void> save({
