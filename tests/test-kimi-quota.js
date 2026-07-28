@@ -136,3 +136,32 @@ test('formatKimiQuota falls back to unavailable when no site has data', () => {
   const view = formatKimiQuota({ status: 'ok', fetchedAt: Date.now(), sites: [{ host: 'api.moonshot.cn', site: 'Moonshot', ok: false }] });
   assert.match(view.text, /暂不可用/);
 });
+
+test('fetchKimiUsage propagates httpStatus and reason in failed sites', async () => {
+  const result = await fetchKimiUsage('', 1, {
+    targets: [KIMI],
+    poll: async () => ({ error: true, httpStatus: 401, reason: 'auth_rejected' }),
+  });
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.sites[0].ok, false);
+  assert.equal(result.sites[0].httpStatus, 401);
+  assert.equal(result.sites[0].reason, 'auth_rejected');
+});
+
+test('formatKimiQuota shows cached value with stale indicator when fetch fails', () => {
+  const cached = {
+    status: 'ok', fetchedAt: Date.now() - 3600000,
+    sites: [{ host: 'api.moonshot.cn', site: 'Moonshot', ok: true, available: 42.5, voucher: null, cash: 42.5, currency: 'CNY' }],
+  };
+  const view = formatKimiQuota({ status: 'unavailable', error: 'all kimi fetches failed', sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }] }, cached);
+  assert.match(view.text, /Moonshot ¥42\.5/);
+  assert.match(view.text, /上次/);
+  assert.match(view.title, /缓存值/);
+  assert.match(view.title, /Kimi-for-Coding/);
+});
+
+test('formatKimiQuota shows specific reason for auth_rejected without cache', () => {
+  const view = formatKimiQuota({ status: 'unavailable', sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }] });
+  assert.match(view.text, /暂不可用/);
+  assert.match(view.title, /Kimi-for-Coding/);
+});

@@ -1352,7 +1352,17 @@
     return String(Number(v.toFixed(2)));
   }
 
-  function formatKimiQuota(value) {
+  function kimiReasonText(sites) {
+    if (!Array.isArray(sites) || !sites.length) return '';
+    const s = sites[0];
+    if (s.reason === 'auth_rejected') return 'API Key 不支持余额查询（Kimi-for-Coding 密钥无余额接口）';
+    if (s.reason === 'endpoint_not_found') return '余额端点不存在';
+    if (s.reason === 'network_error') return '网络请求失败';
+    if (s.reason === 'bad_shape' || s.reason === 'no_balance_fields') return '接口返回格式异常';
+    return s.reason || '';
+  }
+
+  function formatKimiQuota(value, cached) {
     if (!value) {
       return Object.freeze({
         text: 'Kimi 余量 · ⟳ 刷新',
@@ -1367,19 +1377,41 @@
         title: '没有 baseUrl 指向 moonshot / kimi 的 provider，无法拉取余额',
       });
     }
-    if (value.status !== 'ok' || !Array.isArray(value.sites)) {
-      return Object.freeze({
-        text: 'Kimi：余额暂不可用 · ⟳ 重试',
-        color: '#d29922',
-        title: value.error || '无法从 api.moonshot.cn 拉取余额',
-      });
-    }
-    const okSites = value.sites.filter((s) => s && s.ok && Number.isFinite(s.available));
+    const okSites = (value.status === 'ok' && Array.isArray(value.sites))
+      ? value.sites.filter((s) => s && s.ok && Number.isFinite(s.available))
+      : [];
     if (!okSites.length) {
+      // Current fetch failed — try to show cached value with stale indicator.
+      const cachedOk = (cached && cached.status === 'ok' && Array.isArray(cached.sites))
+        ? cached.sites.filter((s) => s && s.ok && Number.isFinite(s.available))
+        : [];
+      const reason = kimiReasonText(value.sites);
+      if (cachedOk.length) {
+        let minAvail = Infinity;
+        const parts = [];
+        for (const s of cachedOk) {
+          if (s.available < minAvail) minAvail = s.available;
+          parts.push(`${s.site} ¥${fmtKimiNum(s.available)}`);
+        }
+        const syncRel = relativeAgo(cached.fetchedAt);
+        let text = parts.join(' · ');
+        if (syncRel) text += ` · 上次 ${syncRel}`;
+        text += ' ⟳';
+        let color = '#8b949e';
+        if (minAvail <= 0) color = '#f85149';
+        else if (minAvail <= 5) color = '#d29922';
+        let title = '余额刷新失败，显示上次缓存值';
+        if (reason) title += `\n原因：${reason}`;
+        if (syncRel) title += `\n缓存于 ${syncRel}`;
+        title += '\n点击 bar 重试';
+        return Object.freeze({ text, color, title });
+      }
+      let title = value.error || '无法从 api.moonshot.cn 拉取余额';
+      if (reason) title = reason;
       return Object.freeze({
         text: 'Kimi：余额暂不可用 · ⟳ 重试',
         color: '#d29922',
-        title: '所有 Kimi 站点的余额端点都未返回有效数据',
+        title,
       });
     }
     let minAvail = Infinity;
@@ -1418,7 +1450,7 @@
       element.onclick = null;
       return;
     }
-    const view = formatKimiQuota(currentKimiQuota);
+    const view = formatKimiQuota(currentKimiQuota, loadKimiQuotaFromStorage());
     if (kimiQuotaFetchInFlight) {
       element.textContent = 'Kimi：加载中…';
       element.style.color = '#8b949e';

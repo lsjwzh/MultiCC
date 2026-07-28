@@ -65,8 +65,9 @@ function balanceHost(host) {
   return h.endsWith('moonshot.cn') ? h : KIMI_BALANCE_HOST;
 }
 
-// Fetch one account's balance. Best-effort: resolves null on any network/shape
-// problem so the caller shows "unavailable" rather than fabricating a number.
+// Fetch one account's balance. Returns { available, voucher, cash, currency } on
+// success or { error: true, httpStatus, reason } on failure so the caller can
+// propagate a specific reason to the frontend.
 async function fetchKimiBalance(target, timeoutMs = 6000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -76,13 +77,19 @@ async function fetchKimiBalance(target, timeoutMs = 6000) {
       headers: { Authorization: `Bearer ${target.apiKey}` },
       signal: controller.signal,
     });
-    if (!res || !res.ok) return null;
+    if (!res || !res.ok) {
+      const status = res ? res.status : null;
+      const reason = status === 401 || status === 403
+        ? 'auth_rejected'
+        : status === 404 ? 'endpoint_not_found' : 'http_error';
+      return { error: true, httpStatus: status, reason };
+    }
     const body = await res.json();
     const data = body && typeof body === 'object' ? body.data : null;
-    if (!data || typeof data !== 'object') return null;
+    if (!data || typeof data !== 'object') return { error: true, httpStatus: 200, reason: 'bad_shape' };
     const available = finite(data.available_balance);
     if (available === null && finite(data.voucher_balance) === null && finite(data.cash_balance) === null) {
-      return null;
+      return { error: true, httpStatus: 200, reason: 'no_balance_fields' };
     }
     return {
       available,
@@ -91,7 +98,7 @@ async function fetchKimiBalance(target, timeoutMs = 6000) {
       currency: 'CNY',
     };
   } catch (_) {
-    return null;
+    return { error: true, httpStatus: null, reason: 'network_error' };
   } finally {
     clearTimeout(timer);
   }
@@ -110,8 +117,10 @@ async function fetchKimiUsage(preferHost, nowMs = Date.now(), deps = {}) {
 
   const sites = await Promise.all(ordered.map(async (t) => {
     let bal = null;
-    try { bal = await poll(t); } catch (_) { bal = null; }
-    if (!bal) return { host: t.host, site: siteLabel(t.host), ok: false };
+    try { bal = await poll(t); } catch (_) { bal = { error: true, httpStatus: null, reason: 'network_error' }; }
+    if (!bal || bal.error) {
+      return { host: t.host, site: siteLabel(t.host), ok: false, httpStatus: bal?.httpStatus ?? null, reason: bal?.reason || 'fetch_failed' };
+    }
     return {
       host: t.host,
       site: siteLabel(t.host),
