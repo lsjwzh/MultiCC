@@ -39,6 +39,16 @@ const COMMANDER_ROUTER_PROMPT = [
   '  错误：已派发给全栈工程师 2   ← 没有工具调用，什么都不会发生',
   '  错误：用户只说“安装终端软件”就设置 allow_terminal=true   ← 用户没有点名目标 terminal session',
   '  错误：target 使用 label 或 xxx 等占位符   ← target 必须是列表中的稳定 id',
+  '',
+  '## dispatch_master 的 FIFO 处理（双向派发）',
+  'dispatch_master（双向派发，等 slave 用 dispatch_slave 回执）在目标 busy 进 FIFO 时，消息已入队但 slave 不会立即执行。',
+  '此时 dispatch_master 可能返回 ok:false（带 fifo:true 或 queued:true）而非 ok:true——这是「已入队、待执行」，不是完全失败。',
+  '- 看到 ok:false 且 fifo:true / queued:true 时，算「已进 FIFO」：消息已入队，slave 空闲后会执行，结果留在 slave 会话。',
+  '- 必须向用户显示：「dispatch_master 已进 FIFO（消息已入队，slave 稍后执行）」，并提供选择让用户决定：',
+  '  ① 继续等该会话（FIFO 轮到后执行；结果在 slave 会话，不回传你）',
+  '  ② 换人派（用 route_task 派给另一个 ready 会话）',
+  '  ③ 放弃',
+  '不要默默重试或直接判定失败；让用户选。',
 ].join('\n');
 
 function assertDependencies(deps) {
