@@ -2483,14 +2483,18 @@ function formatTokens(n) {
   return providerCatalog.formatCompactTokens(n);
 }
 
+function setProvTab(name) {
+  const isProto = ['anthropic', 'openai_responses', 'openai_chat'].includes(name);
+  document.querySelectorAll('#prov-tabs .prov-tab').forEach(b => b.classList.toggle('active', b.dataset.ptab === name));
+  document.querySelectorAll('.view[data-view="provider"] .prov-pane').forEach(p => { p.style.display = p.dataset.ptab === name ? '' : 'none'; });
+  const newCard = document.getElementById('prov-new-card');
+  if (newCard) newCard.style.display = isProto ? '' : 'none';
+  const fmt = document.getElementById('prov-new-apiformat');
+  if (fmt && isProto) fmt.value = name;
+}
+
 function renderProviderList() {
-  const box = document.getElementById('provider-list');
-  if (!box) return;
-  if (!_providerData.providers.length) {
-    box.innerHTML = '<span style="color:var(--faint);font-size:13px">还没有 provider。' +
-      (_providerData.available ? '在下方新增。' : 'cc-switch 不可用。') + '</span>';
-    return;
-  }
+  const groups = providerCatalog.groupByProtocol(_providerData);
   if (!_providerLatency) _providerLatency = {};
   const latencyBadge = (id) => {
     const r = _providerLatency[id];
@@ -2521,6 +2525,7 @@ function renderProviderList() {
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;">
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'} · 可用于 ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
+        <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">余量 —</div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
         <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '默认登录 / 订阅' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.useChatResponsesProxy ? ' · proxy' : ''}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
@@ -2529,21 +2534,23 @@ function renderProviderList() {
       <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>
     </div>`;
   };
-  const groupSpeedTestBtn = (label, providers) => {
-    if (!providers.length) return '';
-    return `<button class="btn" style="padding:2px 8px;font-size:11px;margin-left:8px" onclick="speedTestGroup(this,'${escapeHtml(providers.map(p => p.appType + '|' + p.id).join(','))}')">全部测速</button>`;
-  };
-  const groupHtml = (label, emoji, providers) => {
-    if (!providers.length) return '';
-    return `<div style="margin-bottom:12px;">
-      <div style="display:flex;align-items:center;font-size:12px;color:var(--muted);font-weight:600;margin-bottom:6px;padding:0 2px">${emoji} ${label} <span style="color:var(--faint);font-weight:400">(${providers.length})</span>${groupSpeedTestBtn(label, providers)}</div>
-      <div style="display:flex;flex-direction:column;gap:8px;">${providers.map(cardHtml).join('')}</div>
-    </div>`;
-  };
-  const groups = providerCatalog.groupByProtocol(_providerData);
-  box.innerHTML = groupHtml('Anthropic Messages', '🤖', groups.anthropic)
-    + groupHtml('OpenAI Responses', '⚡', groups.openai_responses)
-    + groupHtml('OpenAI Chat（Codex 自动转 Responses）', '🔄', groups.openai_chat);
+  const emptyMsg = !_providerData.providers.length
+    ? '还没有 provider。' + (_providerData.available ? '在下方新增。' : 'cc-switch 不可用。')
+    : '该协议下暂无 provider。';
+  for (const proto of ['anthropic', 'openai_responses', 'openai_chat']) {
+    const box = document.getElementById('prov-cards-' + proto);
+    if (!box) continue;
+    const list = groups[proto] || [];
+    const count = document.getElementById('prov-count-' + proto);
+    if (count) count.textContent = list.length ? `· ${list.length} 个` : '';
+    if (!list.length) {
+      box.innerHTML = `<span style="color:var(--faint);font-size:13px">${emptyMsg}</span>`;
+      continue;
+    }
+    const speedAll = `<div style="margin-top:2px"><button class="btn" style="padding:2px 8px;font-size:11px" onclick="speedTestGroup(this,'${escapeHtml(list.map(p => p.appType + '|' + p.id).join(','))}')">全部测速</button></div>`;
+    box.innerHTML = list.map(cardHtml).join('') + speedAll;
+  }
+  providerCatalog.injectProviderQuotas(_providerData);
 }
 
 // ── Provider speed-test ──────────────────────────────────────────────
