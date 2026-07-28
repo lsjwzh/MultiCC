@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/utils/dispatch_hint.dart';
 
-/// web 端同一个开关的权威实现，两端后缀必须逐字相同，否则 commander 在手机上
+/// web 端同一组单选的权威实现，两端后缀必须逐字相同，否则 commander 在手机上
 /// 收到的指令和网页上不是一句话。
 String _webSource() {
   for (final candidate in [
@@ -26,25 +26,74 @@ String? _webSuffix(String source, String name) {
 }
 
 void main() {
-  test('commander prompts get the spread suffix unless the switch is on', () {
+  test('each mode appends its own suffix', () {
     expect(
-      decorateDispatchHint('查一下队列', enabled: true, noDispatch: false),
-      '查一下队列$kDispatchHintSuffixSpread',
+      decorateDispatchHint(
+        '查一下队列',
+        enabled: true,
+        mode: DispatchMode.dispatchMaster,
+      ),
+      '查一下队列$kDispatchHintSuffixDispatchMaster',
     );
     expect(
-      decorateDispatchHint('查一下队列', enabled: true, noDispatch: true),
-      '查一下队列$kDispatchHintSuffixKeep',
+      decorateDispatchHint(
+        '查一下队列',
+        enabled: true,
+        mode: DispatchMode.routeTask,
+      ),
+      '查一下队列$kDispatchHintSuffixRouteTask',
     );
+    expect(
+      decorateDispatchHint('查一下队列', enabled: true, mode: DispatchMode.none),
+      '查一下队列$kDispatchHintSuffixNone',
+    );
+  });
+
+  test('each suffix names exactly the tool it wants — and none names two', () {
+    expect(kDispatchHintSuffixDispatchMaster, contains('dispatch_master'));
+    expect(kDispatchHintSuffixDispatchMaster, isNot(contains('route_task')));
+    expect(kDispatchHintSuffixRouteTask, contains('route_task'));
+    expect(kDispatchHintSuffixRouteTask, isNot(contains('dispatch_master')));
+    // 「别派发」那条要是提了工具名，模型反而可能去调它。
+    expect(kDispatchHintSuffixNone, isNot(contains('dispatch_master')));
+    expect(kDispatchHintSuffixNone, isNot(contains('route_task')));
   });
 
   test('non-commander sessions and blank text are never rewritten', () {
     // 会话角色读不到 / 不是 commander → 恒等，绝不悄悄改写别人的提示词。
     expect(
-      decorateDispatchHint('查一下队列', enabled: false, noDispatch: true),
+      decorateDispatchHint(
+        '查一下队列',
+        enabled: false,
+        mode: DispatchMode.none,
+      ),
       '查一下队列',
     );
-    expect(decorateDispatchHint('   ', enabled: true, noDispatch: false), '   ');
-    expect(decorateDispatchHint('', enabled: true, noDispatch: true), '');
+    expect(
+      decorateDispatchHint(
+        '   ',
+        enabled: true,
+        mode: DispatchMode.dispatchMaster,
+      ),
+      '   ',
+    );
+    expect(
+      decorateDispatchHint('', enabled: true, mode: DispatchMode.none),
+      '',
+    );
+  });
+
+  test('mode round-trips through its stored name, unknown values fall back', () {
+    for (final mode in DispatchMode.values) {
+      expect(DispatchMode.fromWireName(mode.wireName), mode);
+    }
+    expect(DispatchMode.defaultMode, DispatchMode.dispatchMaster);
+    expect(DispatchMode.fromWireName(null), DispatchMode.dispatchMaster);
+    expect(DispatchMode.fromWireName('broadcast'), DispatchMode.dispatchMaster);
+    // 存的字符串和 web 端 localStorage 里的一套词汇。
+    expect(DispatchMode.dispatchMaster.wireName, 'dispatch_master');
+    expect(DispatchMode.routeTask.wireName, 'route_task');
+    expect(DispatchMode.none.wireName, 'none');
   });
 
   test('session type gate only accepts the commander role', () {
@@ -54,13 +103,20 @@ void main() {
     expect(isCommanderSessionType(null), isFalse);
   });
 
-  test('both suffixes match the web implementation verbatim', () {
+  test('all three suffixes match the web implementation verbatim', () {
     final source = _webSource();
     if (source.isEmpty) {
       // app/ 被单独拷出来跑时读不到 web 源码；此时跳过而不是假绿。
       return;
     }
-    expect(_webSuffix(source, 'SUFFIX_SPREAD'), kDispatchHintSuffixSpread);
-    expect(_webSuffix(source, 'SUFFIX_KEEP'), kDispatchHintSuffixKeep);
+    expect(
+      _webSuffix(source, 'SUFFIX_DISPATCH_MASTER'),
+      kDispatchHintSuffixDispatchMaster,
+    );
+    expect(
+      _webSuffix(source, 'SUFFIX_ROUTE_TASK'),
+      kDispatchHintSuffixRouteTask,
+    );
+    expect(_webSuffix(source, 'SUFFIX_NONE'), kDispatchHintSuffixNone);
   });
 }
