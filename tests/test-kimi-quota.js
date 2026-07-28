@@ -6,6 +6,7 @@ const test = require('node:test');
 const {
   fetchKimiUsage,
   siteLabel,
+  balanceHost,
   mountKimiQuotaRoutes,
 } = require('../src/routes/kimi-quota');
 const {
@@ -20,6 +21,15 @@ test('siteLabel distinguishes kimi vs moonshot hosts', () => {
   assert.equal(siteLabel('api.kimi.com'), 'Kimi');
   assert.equal(siteLabel('api.moonshot.cn'), 'Moonshot');
   assert.equal(siteLabel(''), 'Moonshot');
+});
+
+test('balanceHost routes rebrand inference hosts to the canonical billing host', () => {
+  // api.kimi.com 404s on /v1/users/me/balance; the balance lives on api.moonshot.cn.
+  assert.equal(balanceHost('api.kimi.com'), 'api.moonshot.cn');
+  assert.equal(balanceHost('api.kimi.ai'), 'api.moonshot.cn');
+  assert.equal(balanceHost('api.moonshot.com'), 'api.moonshot.cn');
+  // A moonshot.cn provider stays on its own host.
+  assert.equal(balanceHost('api.moonshot.cn'), 'api.moonshot.cn');
 });
 
 test('fetchKimiUsage reports not_configured when no targets exist', async () => {
