@@ -14,7 +14,8 @@
 // reuse that adapter verbatim rather than reinventing the request.
 //
 // Response:
-//   { status:'ok', fetchedAt, sites:[ {host, site, ok, usedPercent, windowStatus, resetsAt, tier} ] }
+//   { status:'ok', fetchedAt, sites:[ {host, site, ok, period:'5h', usedPercent,
+//       windowStatus, resetsAt, weeklyPeriod:'weekly', weeklyUsedPercent, weeklyResetsAt, tier} ] }
 //   { status:'not_configured' }      — no Zhipu provider configured (HTTP 404)
 //   { status:'unavailable', sites }  — configured but every fetch failed (HTTP 502)
 
@@ -72,13 +73,20 @@ async function fetchZhipuUsage(preferHost, nowMs = Date.now(), deps = {}) {
     const usedPercent = finite(dto.utilization) !== null
       ? Math.round(dto.utilization * 100 * 1000) / 1000
       : null;
+    const weeklyUsedPercent = finite(dto.weeklyUtilization) !== null
+      ? Math.round(dto.weeklyUtilization * 100 * 1000) / 1000
+      : null;
     return {
       host: t.host,
       site: siteLabel(t.host),
       ok: true,
+      period: '5h',
       usedPercent,
       windowStatus: dto.status,
       resetsAt: finite(dto.resetsAt),
+      weeklyPeriod: weeklyUsedPercent !== null ? 'weekly' : null,
+      weeklyUsedPercent,
+      weeklyResetsAt: finite(dto.weeklyResetsAt),
       tier: dto.tier || null,
     };
   }));

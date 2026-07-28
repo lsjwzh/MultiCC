@@ -355,6 +355,12 @@
     .settings-card{background:linear-gradient(180deg,rgba(255,255,255,.018),transparent 120px),var(--panel);border:1px solid var(--line-strong);border-radius:var(--radius);overflow:hidden;margin-bottom:16px;max-width:780px;box-shadow:var(--elev)}
     .settings-card .sc-header{padding:14px 18px;border-bottom:1px solid var(--line-strong);font-size:14px;font-weight:620;color:var(--text);background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0))}
     .settings-card .sc-body{padding:18px;display:flex;flex-direction:column;gap:14px}
+    /* Provider-config protocol tabs. Scrollable row so narrow phones never overflow. */
+    .prov-tabs{display:flex;gap:8px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;margin:2px 0 14px;max-width:780px;-webkit-overflow-scrolling:touch}
+    .prov-tab{flex-shrink:0;height:34px;padding:0 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:13px;font-weight:600;font-family:var(--sans);cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.15s;white-space:nowrap}
+    .prov-tab:hover{color:var(--text);border-color:var(--line-strong)}
+    .prov-tab.active{background:var(--accent-dim);border-color:var(--accent-line);color:var(--accent)}
+    .prov-pane{min-width:0}
     .setting-row{display:flex;align-items:center;gap:14px}
     .setting-row label{flex:0 0 120px;font-size:13px;color:var(--muted);text-align:right}
     .setting-row input,.setting-row select,.setting-row textarea{flex:1;background:var(--well);border:1px solid var(--line-strong);border-radius:9px;padding:9px 12px;color:var(--text);font-size:13px;font-family:var(--mono);box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
@@ -975,12 +981,37 @@
             <div class="sc-footer"><button class="btn btn-green" onclick="saveProviderDefaults()">Save</button><span class="status-text" id="prov-default-status"></span></div>
           </div>
 
-          <div class="settings-card">
-            <div class="sc-header">已配置的 Provider</div>
-            <div class="sc-body" id="provider-list" style="gap:8px;"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+          <div class="prov-tabs" id="prov-tabs" role="tablist">
+            <button class="prov-tab active" data-ptab="anthropic" onclick="setProvTab('anthropic')">🤖 Anthropic</button>
+            <button class="prov-tab" data-ptab="openai_responses" onclick="setProvTab('openai_responses')">⚡ OpenAI Responses</button>
+            <button class="prov-tab" data-ptab="openai_chat" onclick="setProvTab('openai_chat')">🔄 OpenAI Chat</button>
+            <button class="prov-tab" data-ptab="zcode" onclick="setProvTab('zcode')">🔗 ZCode</button>
+            <button class="prov-tab" data-ptab="stats" onclick="setProvTab('stats')">📊 统计 / 用量</button>
           </div>
 
-          <div class="settings-card">
+          <div class="prov-pane" data-ptab="anthropic">
+            <div class="settings-card">
+              <div class="sc-header">Anthropic Messages <span style="font-weight:400;font-size:12px;color:var(--faint)" id="prov-count-anthropic"></span></div>
+              <div class="sc-body" id="prov-cards-anthropic" style="gap:8px;"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+            </div>
+          </div>
+
+          <div class="prov-pane" data-ptab="openai_responses" style="display:none">
+            <div class="settings-card">
+              <div class="sc-header">OpenAI Responses <span style="font-weight:400;font-size:12px;color:var(--faint)" id="prov-count-openai_responses"></span></div>
+              <div class="sc-body" id="prov-cards-openai_responses" style="gap:8px;"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+            </div>
+          </div>
+
+          <div class="prov-pane" data-ptab="openai_chat" style="display:none">
+            <div class="settings-card">
+              <div class="sc-header">OpenAI Chat（Codex 自动转 Responses） <span style="font-weight:400;font-size:12px;color:var(--faint)" id="prov-count-openai_chat"></span></div>
+              <div class="sc-body" id="prov-cards-openai_chat" style="gap:8px;"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+            </div>
+          </div>
+
+          <div class="prov-pane" data-ptab="zcode" style="display:none">
+            <div class="settings-card">
             <div class="sc-header">ZCode 原生连接 / Coding Plan</div>
             <div class="sc-body" id="zcode-auth-body" style="gap:8px;">
               <p style="font-size:12px;color:var(--faint);margin:0;line-height:1.55">这里管理会话选择「ZCode 原生 / Coding Plan」时使用的官方配置。普通 API Provider 请在上方创建（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 均可），ZCode 会按会话生成隔离配置，不改动此原生连接。</p>
@@ -1009,8 +1040,10 @@
                 </div>
               </div>
             </div>
+            </div>
           </div>
 
+          <div class="prov-pane" data-ptab="stats" style="display:none">
           <div class="settings-card">
             <div class="sc-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
               <span>全部 CLI 用量（Claude + Codex · 按模型 · 最准）</span>
@@ -1040,8 +1073,9 @@
               <div id="by-role-card-body"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
             </div>
           </div>
+          </div>
 
-          <div class="settings-card">
+          <div class="settings-card" id="prov-new-card">
             <div class="sc-header">新增 Provider</div>
             <div class="sc-body">
               <div class="setting-row"><label>模板</label>

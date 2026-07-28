@@ -171,3 +171,70 @@ test('manage loads classic auth/API/catalog scripts in order and provider calls 
   assert.doesNotMatch(manage, /fetch\([^)]*[`'"]\/api\/provider-defaults/);
   assert.doesNotMatch(manage, /\/api\/providers[^\n]+tokenQS/);
 });
+
+test('quotaKindForProvider routes providers to the matching quota route', () => {
+  const kind = (baseUrl, extra) => catalog.quotaKindForProvider(Object.assign({ baseUrl, appType: 'claude' }, extra || {}));
+  assert.equal(kind('https://ark.cn-beijing.volces.com/api/v3'), 'ark');
+  assert.equal(kind('https://api.z.ai/api/paas/v4'), 'zhipu');
+  assert.equal(kind('https://open.bigmodel.cn/api/paas/v4'), 'zhipu');
+  assert.equal(kind('https://api.moonshot.cn/v1'), 'kimi');
+  assert.equal(kind('https://api.kimi.com/v1'), 'kimi');
+  assert.equal(kind('https://qoder.com.cn'), 'qoder');
+  assert.equal(kind('https://opencode.ai'), 'opencode');
+  assert.equal(kind('', { appType: 'codex', isOfficial: true }), 'codex');
+  assert.equal(kind('https://api.chatgpt.com/v1', { appType: 'codex' }), 'codex');
+  assert.equal(kind('https://api.deepseek.com/anthropic'), null);
+  assert.equal(kind('not a url'), null);
+  assert.equal(catalog.quotaKindForProvider(null), null);
+});
+
+test('formatProviderQuotaBadge renders zhipu 5h + weekly periods', () => {
+  const view = catalog.formatProviderQuotaBadge('zhipu', {
+    status: 'ok',
+    sites: [{ host: 'api.z.ai', site: 'Z.ai', ok: true, period: '5h', usedPercent: 12.3456, weeklyPeriod: 'weekly', weeklyUsedPercent: 40 }],
+  });
+  assert.match(view.text, /Z\.ai 5h 12\.35%/);
+  assert.match(view.text, /周 40%/);
+  assert.equal(view.color, '#58a6ff');
+});
+
+test('formatProviderQuotaBadge renders kimi money and codex weekly', () => {
+  const kimi = catalog.formatProviderQuotaBadge('kimi', { status: 'ok', sites: [{ site: 'Kimi', ok: true, available: 49.589 }] });
+  assert.match(kimi.text, /Kimi ¥49\.59/);
+  const codex = catalog.formatProviderQuotaBadge('codex', { status: 'ok', weekly: { usedPercent: 91 }, planType: 'prolite' });
+  assert.match(codex.text, /周 91% 已用/);
+  assert.equal(codex.color, '#f85149');
+});
+
+test('formatProviderQuotaBadge renders ark worst period, qoder credits, opencode windows', () => {
+  const ark = catalog.formatProviderQuotaBadge('ark', {
+    status: 'ok',
+    items: [{ product: 'Coding', subscribed: true, periods: [{ label: '5h', used: 10, total: 100, percent: 10 }, { label: '周', used: 95, total: 100, percent: 95 }] }],
+  });
+  assert.match(ark.text, /Coding 周 95\/100 \(95%\)/);
+  assert.equal(ark.color, '#f85149');
+
+  const qoder = catalog.formatProviderQuotaBadge('qoder', {
+    status: 'ok',
+    quota: { total_quota: { quota_summary: { used_value: 30, limit_value: 100, remaining_value: 70, usage_percentage: 30 } } },
+  });
+  assert.match(qoder.text, /70\/100 credits \(30%\)/);
+
+  const opencode = catalog.formatProviderQuotaBadge('opencode', {
+    status: 'ok',
+    usage: { rolling: { usagePercent: 5 }, weekly: { usagePercent: 72 }, monthly: { usagePercent: 20 } },
+  });
+  assert.match(opencode.text, /5h 5%/);
+  assert.match(opencode.text, /周 72%/);
+  assert.match(opencode.text, /月 20%/);
+  assert.equal(opencode.color, '#d29922');
+});
+
+test('formatProviderQuotaBadge surfaces auth/config/unavailable fallbacks', () => {
+  assert.match(catalog.formatProviderQuotaBadge('zhipu', { status: 'not_configured' }).text, /未配置/);
+  assert.match(catalog.formatProviderQuotaBadge('ark', { status: 'needs_auth' }).text, /需登录/);
+  assert.match(catalog.formatProviderQuotaBadge('ark', { status: 'needs_install' }).text, /未安装/);
+  assert.match(catalog.formatProviderQuotaBadge('qoder', { status: 'chrome_unavailable' }).text, /Chrome 9222/);
+  assert.match(catalog.formatProviderQuotaBadge('kimi', { status: 'unavailable' }).text, /暂不可用/);
+  assert.equal(catalog.formatProviderQuotaBadge('kimi', null), null);
+});

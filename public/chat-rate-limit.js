@@ -1161,10 +1161,17 @@
     for (const s of okSites) {
       const pct = s.usedPercent;
       if (pct > maxPct) maxPct = pct;
-      parts.push(`${s.site} ${fmtZhipuPct(pct)}%`);
-      let line = `${s.site} (${s.host}): ${fmtZhipuPct(pct)}% 已用`;
-      if (s.tier) line += ` · ${s.tier}`;
+      const periodTag = s.period === 'weekly' ? '周' : '5h';
+      parts.push(`${s.site} ${periodTag} ${fmtZhipuPct(pct)}%`);
+      let line = `${s.site} (${s.host}): ${periodTag} ${fmtZhipuPct(pct)}% 已用`;
       if (s.resetsAt) line += ` · ${new Date(s.resetsAt).toLocaleString()} 重置`;
+      if (Number.isFinite(s.weeklyUsedPercent)) {
+        if (s.weeklyUsedPercent > maxPct) maxPct = s.weeklyUsedPercent;
+        parts.push(`周 ${fmtZhipuPct(s.weeklyUsedPercent)}%`);
+        line += ` · 周 ${fmtZhipuPct(s.weeklyUsedPercent)}% 已用`;
+        if (s.weeklyResetsAt) line += `（${new Date(s.weeklyResetsAt).toLocaleString()} 重置）`;
+      }
+      if (s.tier) line += ` · ${s.tier}`;
       titleLines.push(line);
     }
     let text = parts.join(' · ');

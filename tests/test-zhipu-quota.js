@@ -40,10 +40,26 @@ test('fetchZhipuUsage maps poller DTOs to a multi-site ok response', async () =>
   const zai = result.sites.find((s) => s.host === 'api.z.ai');
   assert.equal(zai.site, 'Z.ai');
   assert.equal(zai.ok, true);
+  assert.equal(zai.period, '5h');
   assert.equal(zai.usedPercent, 12.346);
   assert.equal(zai.windowStatus, 'allowed');
   assert.equal(zai.resetsAt, 2000);
   assert.equal(zai.tier, 'lite');
+  assert.equal(zai.weeklyUsedPercent, null);
+});
+
+test('fetchZhipuUsage surfaces the weekly window when the poller returns one', async () => {
+  const poll = async () => ({
+    status: 'allowed', utilization: 0.2, resetsAt: 1000,
+    weeklyUtilization: 0.55, weeklyResetsAt: 9000, tier: 'pro',
+  });
+  const result = await fetchZhipuUsage('', 1, { targets: [ZAI], poll });
+  const site = result.sites[0];
+  assert.equal(site.period, '5h');
+  assert.equal(site.usedPercent, 20);
+  assert.equal(site.weeklyPeriod, 'weekly');
+  assert.equal(site.weeklyUsedPercent, 55);
+  assert.equal(site.weeklyResetsAt, 9000);
 });
 
 test('fetchZhipuUsage orders the preferred host first', async () => {
@@ -103,15 +119,30 @@ test('formatZhipuQuota renders idle, not_configured and ok states', () => {
     status: 'ok',
     fetchedAt: Date.now(),
     sites: [
-      { host: 'api.z.ai', site: 'Z.ai', ok: true, usedPercent: 12.3456, resetsAt: null, tier: 'lite' },
-      { host: 'open.bigmodel.cn', site: 'BigModel', ok: true, usedPercent: 91.5, resetsAt: null, tier: 'pro' },
+      { host: 'api.z.ai', site: 'Z.ai', ok: true, period: '5h', usedPercent: 12.3456, resetsAt: null, tier: 'lite' },
+      { host: 'open.bigmodel.cn', site: 'BigModel', ok: true, period: '5h', usedPercent: 91.5, resetsAt: null, tier: 'pro' },
     ],
   });
-  // 2-decimal display, trailing zeros dropped.
-  assert.match(ok.text, /Z\.ai 12\.35%/);
-  assert.match(ok.text, /BigModel 91\.5%/);
+  // Period-labeled, 2-decimal display, trailing zeros dropped.
+  assert.match(ok.text, /Z\.ai 5h 12\.35%/);
+  assert.match(ok.text, /BigModel 5h 91\.5%/);
   // >=90% trips the red color.
   assert.equal(ok.color, '#f85149');
+});
+
+test('formatZhipuQuota shows both 5h and weekly windows with period labels', () => {
+  const view = formatZhipuQuota({
+    status: 'ok',
+    fetchedAt: Date.now(),
+    sites: [
+      { host: 'api.z.ai', site: 'Z.ai', ok: true, period: '5h', usedPercent: 10, resetsAt: null, weeklyPeriod: 'weekly', weeklyUsedPercent: 75, weeklyResetsAt: null, tier: 'pro' },
+    ],
+  });
+  assert.match(view.text, /Z\.ai 5h 10%/);
+  assert.match(view.text, /周 75%/);
+  // Color driven by the higher (weekly) window: 75% → yellow.
+  assert.equal(view.color, '#d29922');
+  assert.match(view.title, /周 75% 已用/);
 });
 
 test('formatZhipuQuota falls back to unavailable when no site has data', () => {
