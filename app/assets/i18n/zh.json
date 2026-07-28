@@ -361,6 +361,8 @@
   "phaseWrapping": "收尾中",
   "phaseDone": "已完成",
   "mergeBlockedBranch": "Worktree 有改动，但主目录当前未检出 {base}，无法合并。",
+  "mergeHintCollapse": "收起",
+  "mergeHintExpand": "展开合并提示",
   "sessionAliasHint": "会话别名（留空则重置为 ID）",
   "sessionIdMissing": "缺少会话 ID，无法执行此操作",
   "nameTooLong": "名称过长（最多 {n} 个字符）",
