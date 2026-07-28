@@ -85,7 +85,6 @@ function toSessionDto(source = {}) {
     experimentalMode: nullableString(source.experimentalMode, 80),
     subagent: subagentDto(source.subagent),
     autoCommit: !!source.autoCommit,
-    autoDispatch: !!source.autoDispatch,
     createdAt: timestamp(source.createdAt),
     lastActivity: timestamp(source.lastActivity),
     clients: Math.max(0, Math.floor(Number(source.clients) || 0)),

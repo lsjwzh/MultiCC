@@ -1671,7 +1671,6 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     agent: sessionAgent || null, // Claude/OpenCode/Qoder native --agent; unsupported CLIs keep null
     provider: providerId,  // cc-switch provider id; null = default login/subscription
     autoCommit: true,      // default: auto-commit & merge after task completion
-    autoDispatch: false,   // default: do NOT inject dispatch context prompt unless user opts in
     // streaming (流式常驻) is now claude's default mode: keep the claude process
     // alive across turns for faster, context-preserving continuation. Non-claude
     // CLIs ignore this field. Only claude chat sessions default on.

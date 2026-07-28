@@ -733,7 +733,7 @@
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
 
-    /* ── Pre-input bar (auto dispatch toggle) ── */
+    /* ── Pre-input bar ── */
     #pre-input-bar {
       flex-shrink: 0;
       width: min(100%, 980px);
@@ -749,20 +749,6 @@
       background: #0d1117;
       border-top: 1px solid #30363d;
     }
-    #auto-dispatch-label {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      cursor: pointer;
-      user-select: none;
-    }
-    #auto-dispatch-label input[type="checkbox"] {
-      accent-color: #388bfd;
-      width: 13px;
-      height: 13px;
-      margin: 0;
-    }
-    #auto-dispatch-label:hover { color: #c9d1d9; }
     /* ── Commander-only dispatch mode (three-way, mutually exclusive) ──
        Wide screens get a segmented control so the three choices read as one
        picker; narrow screens collapse to a single pill that opens a bottom
@@ -2356,11 +2342,7 @@
     <span id="diff-dock-count"></span>
   </button>
 
-  <!-- Auto dispatch toggle (above input bar) -->
   <div id="pre-input-bar">
-    <label id="auto-dispatch-label" title="勾选后允许会话自动派发任务到其它 session；不勾选时禁用派发">
-      <input type="checkbox" id="auto-dispatch-check" /> Auto dispatch to sessions
-    </label>
     <button id="subagent-pill" type="button" title="子任务 (subagent) 用的 provider+model，点击修改" style="margin-left:10px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;cursor:pointer;">子任务: <span id="subagent-pill-label">随主</span></button>
     <!-- Commander only: shown once /api/sessions/:id reports type==='commander'.
          Three-way, mutually exclusive; each choice appends its own English

@@ -133,9 +133,9 @@ function buildDispatchContextPrompt(sessionId) {
   if (!targets.length) return '';
   const current = records.get(sessionId);
   const isCommander = current?.type === 'commander';
-  // Commander always gets the dispatch prompt (it's a real-LLM dispatcher and
-  // routes one-way to workers); every other session must opt in via autoDispatch.
-  if (!isCommander && !current?.autoDispatch) return '';
+  // Only the commander gets the dispatch context prompt (target list + routing
+  // instructions). Ordinary sessions dispatch via MCP router tools directly.
+  if (!isCommander) return '';
   const ultra = normalizeEffort(current?.effort) === 'ultracode';
   const intro = isCommander
     ? [
