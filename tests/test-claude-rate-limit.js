@@ -13,6 +13,7 @@ const {
   formatBalance,
   consumeBalanceEvent,
   setCli,
+  setProviderBaseUrl,
 } = require('../public/chat-rate-limit');
 
 test('normalizes Claude five-hour rate-limit event into a privacy-minimal DTO', () => {
@@ -266,6 +267,54 @@ test('DeepSeek balance normalizes, formats, and renders in its own bar under cod
     setCli('claude');
     assert.equal(element.style.display, 'none', 'balance hidden under claude');
   } finally {
+    setCli('codex');
+    delete global.document;
+    delete global.localStorage;
+  }
+});
+
+test('rejects a weekly window that would resolve to the claude provider (Claude has only 5h)', () => {
+  assert.equal(normalizeFiveHourRateLimit({
+    status: 'allowed', rateLimitType: 'weekly', utilization: 0.5,
+  }, Date.now()), null, 'weekly without a glm/codex provider tag must not become "Claude 5h"');
+  const value = normalizeFiveHourRateLimit({
+    status: 'allowed', rateLimitType: 'five_hour', utilization: 0.5,
+    resetsAt: Math.floor(Date.now() / 1000) + 3600,
+  }, Date.now());
+  assert.equal(value.provider, 'claude');
+  assert.match(formatFiveHourRateLimit(value).text, /^Claude 5h 50%/);
+});
+
+test('hides the Claude bar (data and idle placeholder) under a non-Claude provider', () => {
+  const element = { style: {}, textContent: '', title: '' };
+  const values = new Map();
+  global.document = { getElementById: id => id === 'claude-rate-limit-bar' ? element : null };
+  global.localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, v) => values.set(key, v),
+    removeItem: key => values.delete(key),
+  };
+  try {
+    setCli('claude');
+    setProviderBaseUrl('');
+    assert.equal(element.style.display, 'block', 'idle placeholder shows on the default Claude login');
+    assert.match(element.textContent, /^Claude 5h · —/);
+
+    consumeRateLimitEvent({
+      status: 'allowed', rateLimitType: 'five_hour', utilization: 0.23,
+      resetsAt: Math.floor(Date.now() / 1000) + 3600,
+    }, 'prov-sess');
+    assert.match(element.textContent, /^Claude 5h 23%/);
+
+    setProviderBaseUrl('https://api.z.ai/api/paas/v4');
+    assert.equal(element.style.display, 'none', 'claude bar hidden under a zhipu provider');
+    assert.equal(element.textContent, '', 'no empty "Claude 5h · —" placeholder');
+
+    setProviderBaseUrl('https://api.anthropic.com');
+    assert.equal(element.style.display, 'block', 'anthropic-family hosts still count as Claude');
+    assert.match(element.textContent, /^Claude 5h 23%/);
+  } finally {
+    setProviderBaseUrl('');
     setCli('codex');
     delete global.document;
     delete global.localStorage;
