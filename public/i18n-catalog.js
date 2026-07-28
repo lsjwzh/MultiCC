@@ -688,7 +688,12 @@ window.MULTICC_I18N_CATALOG = {
     "statusAriaCancelled": "状态：已取消",
     "statusAriaArchived": "状态：已归档",
     "statusAriaOffline": "状态：已离线",
-    "statusAriaUnknown": "状态：未知"
+    "statusAriaUnknown": "状态：未知",
+    "restartSpawn": "重启进程",
+    "restartSpawnHint": "进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）",
+    "restartSpawnConfirm": "重启该会话的 CLI 进程？\n\n进行中的这一轮会被中断，对话上下文会保留——下一条消息会用同一个原生会话重新拉起进程。",
+    "restartSpawnDone": "✓ CLI 进程已重启（原 pid {pid}）。发下一条消息即可继续。",
+    "restartSpawnFailed": "重启进程失败：{error}"
   },
   "en": {
     "newDirectory": "New Directory",
@@ -1378,6 +1383,11 @@ window.MULTICC_I18N_CATALOG = {
     "statusAriaCancelled": "Status: cancelled",
     "statusAriaArchived": "Status: archived",
     "statusAriaOffline": "Status: offline",
-    "statusAriaUnknown": "Status: unknown"
+    "statusAriaUnknown": "Status: unknown",
+    "restartSpawn": "Restart Process",
+    "restartSpawnHint": "Process-level restart: kill and rebuild this session CLI process, keeping the conversation (use when ↻ reconnect does not help)",
+    "restartSpawnConfirm": "Restart this session CLI process?\n\nThe turn in flight is interrupted. The conversation is kept — your next message respawns the process on the same native session.",
+    "restartSpawnDone": "✓ CLI process restarted (was pid {pid}). Send your next message to continue.",
+    "restartSpawnFailed": "Restart process failed: {error}"
   }
 };

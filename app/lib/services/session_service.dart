@@ -129,11 +129,38 @@ class SessionService {
     if (res.statusCode >= 400) throw Exception('${res.statusCode}');
   }
 
+  /// Terminal-only: kills the tmux session and respawns the CLI with a fresh
+  /// conversation. The server rejects chat sessions here — they use
+  /// [restartSpawn], which has the opposite conversation semantics.
   Future<void> restartSession(String id) async {
     final res = await http
         .post(Uri.parse(_url('/api/sessions/$id/restart')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) throw Exception('${res.statusCode}');
+  }
+
+  /// Chat-only: destroys the CLI process and the server-side runtime state that
+  /// outlives it, so a session wedged mid-turn can be recovered without losing
+  /// the conversation — the next message respawns against the same native
+  /// session. Returns the server's `before` snapshot of what was torn down.
+  Future<Map<String, dynamic>> restartSpawn(String id) async {
+    final res = await http
+        .post(
+          Uri.parse(_url('/api/sessions/$id/restart-spawn')),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 15));
+    var map = <String, dynamic>{};
+    try {
+      final body = jsonDecode(res.body);
+      if (body is Map<String, dynamic>) map = body;
+    } catch (_) {
+      // A tunnel or proxy can answer with HTML; fall through to the status code.
+    }
+    if (res.statusCode >= 400) {
+      throw Exception(map['error'] ?? '${res.statusCode}');
+    }
+    return map;
   }
 
   /// Merge a session's worktree branch back into the directory's base branch.
