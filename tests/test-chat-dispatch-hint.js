@@ -1,6 +1,6 @@
 'use strict';
 
-// The commander-only「不派发给其他会话」switch: it must stay invisible and inert
+// The commander-only dispatch-mode radio group: it must stay invisible and inert
 // in ordinary sessions, and when it is live the sentence it appends has to reach
 // both the staged bubble and the WebSocket payload as one identical string.
 
@@ -14,10 +14,11 @@ const ROOT = path.join(__dirname, '..');
 const HINT_SRC = fs.readFileSync(path.join(ROOT, 'public/chat-dispatch-hint.js'), 'utf8');
 const COMPOSER_SRC = fs.readFileSync(path.join(ROOT, 'public/chat-composer.js'), 'utf8');
 
-function fakeElement(id) {
+const MODE_VALUES = ['dispatch_master', 'route_task', 'none'];
+
+function fakeRadio(value) {
   return {
-    id,
-    hidden: false,
+    value,
     checked: false,
     listeners: {},
     addEventListener(type, handler) { (this.listeners[type] = this.listeners[type] || []).push(handler); },
@@ -34,18 +35,33 @@ function fakeStorage(seed = {}) {
   };
 }
 
-function loadHint(extraWindow = {}) {
-  const label = fakeElement('no-dispatch-label');
-  const check = fakeElement('no-dispatch-check');
-  const document = {
-    readyState: 'complete',
-    getElementById(id) {
-      if (id === 'no-dispatch-label') return label;
-      if (id === 'no-dispatch-check') return check;
-      return null;
+// Each case drives its own DOM so nothing leaks between them.
+function hintDocument() {
+  const radios = MODE_VALUES.map(fakeRadio);
+  const group = {
+    id: 'dispatch-mode-group',
+    hidden: false,
+    querySelectorAll(selector) {
+      return selector === 'input[name="dispatch-mode"]' ? radios.slice() : [];
     },
-    addEventListener() {},
   };
+  return {
+    getElementById(id) { return id === 'dispatch-mode-group' ? group : null; },
+    addEventListener() {},
+    readyState: 'complete',
+    group,
+    radios,
+    radio(value) { return radios.find(r => r.value === value); },
+    // What a real click does: the browser flips the group, then fires `change`.
+    pick(value) {
+      radios.forEach(r => { r.checked = (r.value === value); });
+      radios.find(r => r.value === value).fire('change');
+    },
+  };
+}
+
+function loadHint(extraWindow = {}) {
+  const document = hintDocument();
   const window = Object.assign({
     document,
     // Auto-boot would fire a session fetch the tests never asked for.
@@ -53,36 +69,28 @@ function loadHint(extraWindow = {}) {
   }, extraWindow);
   const context = vm.createContext({ window, console, setTimeout, clearTimeout, Promise });
   vm.runInContext(HINT_SRC, context, { filename: 'chat-dispatch-hint.js' });
-  return { api: window.MultiCCChatDispatchHint, window, document, label, check };
+  return { api: window.MultiCCChatDispatchHint, window, document };
 }
 
-test('module exposes a frozen API and the two routing suffixes', () => {
+test('module exposes a frozen API and the three routing suffixes', () => {
   const { api } = loadHint();
   assert.equal(Object.isFrozen(api), true);
-  assert.match(api.SUFFIX_SPREAD, /route_task/);
-  // Suffixes are English on purpose — the model obeys English routing instructions.
-  assert.match(api.SUFFIX_SPREAD, /dispatch this task to other sessions/i);
-  assert.match(api.SUFFIX_KEEP, /do not dispatch this task/i);
-  assert.match(api.SUFFIX_KEEP, /route_task/);
-  assert.equal(api.STORE_PREFIX, 'multicc.noDispatch.');
+  // Suffixes are English on purpose — the model obeys English routing
+  // instructions more reliably — and each names the exact tool to call.
+  assert.match(api.SUFFIX_DISPATCH_MASTER, /dispatch_master/);
+  assert.match(api.SUFFIX_DISPATCH_MASTER, /wait for the result callback/i);
+  assert.match(api.SUFFIX_ROUTE_TASK, /route_task/);
+  assert.match(api.SUFFIX_ROUTE_TASK, /fire-and-forget/i);
+  assert.match(api.SUFFIX_NONE, /do not dispatch/i);
+  // The "no dispatch" wording must not name a tool the model could then call.
+  assert.equal(/dispatch_master|route_task/.test(api.SUFFIX_NONE), false);
+  assert.equal(api.MODE_DISPATCH_MASTER, 'dispatch_master');
+  assert.equal(api.MODE_ROUTE_TASK, 'route_task');
+  assert.equal(api.MODE_NONE, 'none');
+  assert.equal(api.STORE_PREFIX, 'multicc.dispatchMode.');
 });
 
-// Each case drives its own DOM so nothing leaks between them.
-function hintDocument() {
-  const label = fakeElement('no-dispatch-label');
-  const check = fakeElement('no-dispatch-check');
-  return {
-    getElementById(id) {
-      if (id === 'no-dispatch-label') return label;
-      if (id === 'no-dispatch-check') return check;
-      return null;
-    },
-    label,
-    check,
-  };
-}
-
-test('an ordinary session keeps the switch hidden and never rewrites the prompt', async () => {
+test('an ordinary session keeps the group hidden and never rewrites the prompt', async () => {
   const { api } = loadHint();
   const doc = hintDocument();
   const hint = api.createDispatchHint({
@@ -93,11 +101,11 @@ test('an ordinary session keeps the switch hidden and never rewrites the prompt'
   });
   assert.equal(await hint.mount(), false);
   assert.equal(hint.isEnabled(), false);
-  assert.equal(doc.label.hidden, true);
+  assert.equal(doc.group.hidden, true);
   assert.equal(hint.decorate('修一下 diff 面板'), '修一下 diff 面板');
 });
 
-test('a commander session shows the switch and defaults to spreading the work', async () => {
+test('a commander session shows the group and defaults to dispatch_master', async () => {
   const { api } = loadHint();
   const doc = hintDocument();
   const hint = api.createDispatchHint({
@@ -107,12 +115,15 @@ test('a commander session shows the switch and defaults to spreading the work', 
     loadSession: async () => ({ id: 'multicc-commander-01', type: 'commander' }),
   });
   assert.equal(await hint.mount(), true);
-  assert.equal(doc.label.hidden, false);
-  assert.equal(doc.check.checked, false);
-  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_SPREAD);
+  assert.equal(doc.group.hidden, false);
+  assert.equal(hint.getMode(), 'dispatch_master');
+  assert.equal(doc.radio('dispatch_master').checked, true);
+  assert.equal(doc.radio('route_task').checked, false);
+  assert.equal(doc.radio('none').checked, false);
+  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_DISPATCH_MASTER);
 });
 
-test('checking the box flips the appended sentence and persists per session', async () => {
+test('picking a mode swaps the appended sentence, exclusively, and persists it', async () => {
   const { api } = loadHint();
   const doc = hintDocument();
   const storage = fakeStorage();
@@ -124,21 +135,26 @@ test('checking the box flips the appended sentence and persists per session', as
   });
   await hint.mount();
 
-  doc.check.checked = true;
-  doc.check.fire('change');
-  assert.equal(hint.isNoDispatch(), true);
-  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_KEEP);
-  assert.equal(storage.getItem('multicc.noDispatch.multicc-commander-01'), '1');
+  doc.pick('route_task');
+  assert.equal(hint.getMode(), 'route_task');
+  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_ROUTE_TASK);
+  assert.equal(storage.getItem('multicc.dispatchMode.multicc-commander-01'), 'route_task');
+  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['route_task']);
 
-  doc.check.checked = false;
-  doc.check.fire('change');
-  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_SPREAD);
-  assert.equal(storage.getItem('multicc.noDispatch.multicc-commander-01'), '0');
+  doc.pick('none');
+  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_NONE);
+  assert.equal(storage.getItem('multicc.dispatchMode.multicc-commander-01'), 'none');
+  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['none']);
+
+  doc.pick('dispatch_master');
+  assert.equal(hint.decorate('部署新版本'), '部署新版本' + api.SUFFIX_DISPATCH_MASTER);
+  assert.equal(storage.getItem('multicc.dispatchMode.multicc-commander-01'), 'dispatch_master');
+  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['dispatch_master']);
 });
 
 test('a stored choice is restored on the next load of the same session only', async () => {
   const { api } = loadHint();
-  const storage = fakeStorage({ 'multicc.noDispatch.multicc-commander-01': '1' });
+  const storage = fakeStorage({ 'multicc.dispatchMode.multicc-commander-01': 'none' });
 
   const same = hintDocument();
   const restored = api.createDispatchHint({
@@ -146,8 +162,8 @@ test('a stored choice is restored on the next load of the same session only', as
     loadSession: async () => ({ type: 'commander' }),
   });
   await restored.mount();
-  assert.equal(restored.isNoDispatch(), true);
-  assert.equal(same.check.checked, true);
+  assert.equal(restored.getMode(), 'none');
+  assert.equal(same.radio('none').checked, true);
 
   const other = hintDocument();
   const fresh = api.createDispatchHint({
@@ -155,10 +171,42 @@ test('a stored choice is restored on the next load of the same session only', as
     loadSession: async () => ({ type: 'commander' }),
   });
   await fresh.mount();
-  assert.equal(fresh.isNoDispatch(), false);
+  assert.equal(fresh.getMode(), 'dispatch_master');
 });
 
-test('an unreadable session role fails closed: hidden switch, untouched prompt', async () => {
+test('the legacy boolean switch migrates to the matching mode', async () => {
+  const { api } = loadHint();
+
+  const kept = hintDocument();
+  const keeper = api.createDispatchHint({
+    document: kept, sessionId: 'legacy-on', storage: fakeStorage({ 'multicc.noDispatch.legacy-on': '1' }),
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await keeper.mount();
+  assert.equal(keeper.getMode(), 'none');
+
+  const spread = hintDocument();
+  const spreader = api.createDispatchHint({
+    document: spread, sessionId: 'legacy-off', storage: fakeStorage({ 'multicc.noDispatch.legacy-off': '0' }),
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await spreader.mount();
+  assert.equal(spreader.getMode(), 'dispatch_master');
+});
+
+test('an unknown stored value falls back to the default instead of throwing', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument();
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'c', storage: fakeStorage({ 'multicc.dispatchMode.c': 'broadcast' }),
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await hint.mount();
+  assert.equal(hint.getMode(), 'dispatch_master');
+  assert.equal(hint.decorate('x'), 'x' + api.SUFFIX_DISPATCH_MASTER);
+});
+
+test('an unreadable session role fails closed: hidden group, untouched prompt', async () => {
   const { api } = loadHint();
   const doc = hintDocument();
   const hint = api.createDispatchHint({
@@ -167,11 +215,11 @@ test('an unreadable session role fails closed: hidden switch, untouched prompt',
     loadSession: async () => { throw new Error('offline'); },
   });
   assert.equal(await hint.mount(), false);
-  assert.equal(doc.label.hidden, true);
+  assert.equal(doc.group.hidden, true);
   assert.equal(hint.decorate('部署新版本'), '部署新版本');
 });
 
-test('a transient boot-time failure retries and then reveals the switch', async () => {
+test('a transient boot-time failure retries and then reveals the group', async () => {
   const { api } = loadHint();
   const doc = hintDocument();
   let attempts = 0;
@@ -186,7 +234,7 @@ test('a transient boot-time failure retries and then reveals the switch', async 
   });
   assert.equal(await hint.mount(), true);
   assert.equal(attempts, 2);
-  assert.equal(doc.label.hidden, false);
+  assert.equal(doc.group.hidden, false);
 });
 
 test('blank and non-string input is passed through untouched', async () => {
@@ -210,7 +258,7 @@ test('the composer sends and stages the very same decorated string', () => {
     setTimeout,
     clearTimeout,
     MultiCCChatDispatchHint: {
-      decorate(text) { decorated.push(text); return text + '\n\n[派发要求] 不要派发给其它会话。'; },
+      decorate(text) { decorated.push(text); return text + '\n\n[Dispatch] Do not dispatch to other sessions this turn.'; },
     },
   };
   const context = vm.createContext({ window, console, setTimeout, clearTimeout });
@@ -236,7 +284,7 @@ test('the composer sends and stages the very same decorated string', () => {
   assert.equal(composer.send(), true);
   assert.deepEqual(decorated, ['部署新版本']);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].text, '部署新版本\n\n[派发要求] 不要派发给其它会话。');
+  assert.equal(sent[0].text, '部署新版本\n\n[Dispatch] Do not dispatch to other sessions this turn.');
   // Divergence here would show one message in the bubble and send another.
   assert.deepEqual(staged, [sent[0].text]);
 });
@@ -296,21 +344,35 @@ test('a session without the hint module keeps the prompt byte-identical', () => 
   assert.equal(sent[0].text, 'hello');
 });
 
-test('the chat host ships the switch: markup, hidden rule, and script order', () => {
+test('the chat host ships the radio group: markup, hidden rule, and script order', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
   const scripts = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map(match => match[1]);
   assert.ok(scripts.indexOf('chat-dispatch-hint.js') > scripts.indexOf('chat-ai-config.js'));
   assert.ok(scripts.indexOf('chat-dispatch-hint.js') < scripts.indexOf('chat.js'));
 
-  const bar = html.slice(html.indexOf('<div id="pre-input-bar">'), html.indexOf('</div>', html.indexOf('<div id="pre-input-bar">')) + 6);
-  assert.match(bar, /id="no-dispatch-label"[\s\S]*hidden/);
-  assert.match(bar, /id="no-dispatch-check"/);
+  const barStart = html.indexOf('<div id="pre-input-bar">');
+  const bar = html.slice(barStart, html.indexOf('<!-- Messages durably staged', barStart));
+  assert.match(bar, /id="dispatch-mode-group"\s+hidden/);
+  // One radio per mode, all in the same group so the browser enforces exclusivity.
+  for (const value of MODE_VALUES) {
+    assert.match(bar, new RegExp(`type="radio"\\s+name="dispatch-mode"\\s+value="${value}"`));
+  }
+  assert.match(bar, /value="dispatch_master"\s+checked/);
+  assert.match(bar, /优先分发给其他会话且需要回执/);
+  assert.match(bar, /优先分发给其他会话且不需要回执/);
   assert.match(bar, /不派发给其他会话/);
-  // display:flex on the label would otherwise defeat the hidden attribute.
-  assert.match(html, /#no-dispatch-label\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
+  // display:flex on the group would otherwise defeat the hidden attribute.
+  assert.match(html, /#dispatch-mode-group\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
 });
 
-test('the session detail endpoint carries the role the switch keys off', () => {
+test('the task panel input does not carry the dispatch-mode group', () => {
+  for (const file of ['public/index.html', 'public/chat.js']) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.equal(source.includes('dispatch-mode-group'), false, `${file} must not host the group`);
+  }
+});
+
+test('the session detail endpoint carries the role the group keys off', () => {
   const source = fs.readFileSync(path.join(ROOT, 'src/routes/session-admin.js'), 'utf8');
   const start = source.indexOf('function legacySessionDetailPresenter');
   assert.ok(start > 0);
