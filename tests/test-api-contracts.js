@@ -89,7 +89,6 @@ test('session DTO is canonical, schema-valid, and excludes process or filesystem
     provider: 'provider-safe-id',
     subagent: { providerId: 'sub-safe-id', model: 'sub-model', effectiveModel: 'sub-effective' },
     autoCommit: true,
-    autoDispatch: false,
     createdAt: 1784332800000,
     lastActivity: '2026-07-18T01:00:00.000Z',
     clients: 2,

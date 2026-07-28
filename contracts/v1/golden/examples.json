@@ -18,7 +18,6 @@
         "provider": "provider-1",
         "subagent": null,
         "autoCommit": false,
-        "autoDispatch": true,
         "createdAt": "2026-07-18T00:00:00.000Z",
         "lastActivity": null,
         "clients": 1,
@@ -53,7 +52,7 @@
               "model": "gpt-5.1-codex", "effectiveModel": "gpt-5.1-codex",
               "effort": "high", "effectiveEffort": "high", "agent": null,
               "provider": "provider-1", "subagent": null, "autoCommit": false,
-              "autoDispatch": true, "createdAt": "2026-07-18T00:00:00.000Z",
+              "createdAt": "2026-07-18T00:00:00.000Z",
               "lastActivity": "2026-07-18T00:01:00.000Z", "clients": 1,
               "active": true,
               "mergeState": { "ahead": 1, "behind": 0, "dirty": false, "mergeReady": true, "rebaseInProgress": false }

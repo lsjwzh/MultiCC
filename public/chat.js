@@ -1630,8 +1630,6 @@ async function loadSessionModel() {
     updateEffortBtn();
     _sessionAutoCommit = !!info.autoCommit;
     updateAutoCommitBtn();
-    _sessionAutoDispatch = !!info.autoDispatch;
-    updateAutoDispatchCheck();
     void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
       cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
       onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
@@ -2154,14 +2152,6 @@ autoCommitBtn?.addEventListener('click', async () => {
   }
 });
 
-/* ── Per-session auto-dispatch (auto dispatch tasks to other sessions) ── */
-const autoDispatchCheck = document.getElementById('auto-dispatch-check');
-let _sessionAutoDispatch = false;
-
-function updateAutoDispatchCheck() {
-  if (autoDispatchCheck) autoDispatchCheck.checked = _sessionAutoDispatch;
-}
-
 /* ── Subagent pill: shows the current sub-task model; click opens AI config ── */
 const subagentPill = document.getElementById('subagent-pill');
 function updateSubagentPill() {
@@ -2175,29 +2165,6 @@ function updateSubagentPill() {
   el.textContent = m || '随主';
 }
 subagentPill?.addEventListener('click', () => { modelBtn?.click(); });
-
-autoDispatchCheck?.addEventListener('change', async () => {
-  const newVal = autoDispatchCheck.checked;
-  try {
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}`), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ autoDispatch: newVal }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      addSystemMsg('保存失败：' + (data.error || `HTTP ${res.status}`));
-      autoDispatchCheck.checked = _sessionAutoDispatch; // rollback
-      return;
-    }
-    _sessionAutoDispatch = !!data.autoDispatch;
-    updateAutoDispatchCheck();
-    addSystemMsg(_sessionAutoDispatch ? '✓ 已开启「Auto dispatch」，会话可自动派发任务到其它 session' : '✓ 已关闭「Auto dispatch」');
-  } catch (e) {
-    addSystemMsg('保存失败：' + e.message);
-    autoDispatchCheck.checked = _sessionAutoDispatch; // rollback
-  }
-});
 
 /* ── Per-message auto-commit checkbox ── */
 // Add a small checkbox under an assistant message bubble.
