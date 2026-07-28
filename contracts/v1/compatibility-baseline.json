@@ -2,7 +2,7 @@
   "apiVersion": "v1",
   "schemas": {
     "session.schema.json": {
-      "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "autoDispatch", "createdAt", "lastActivity", "clients", "active", "mergeState"],
+      "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "createdAt", "lastActivity", "clients", "active", "mergeState"],
       "properties": {
         "id": { "type": "string" },
         "dirId": { "type": ["string", "null"] },
@@ -18,7 +18,6 @@
         "provider": { "type": ["string", "null"] },
         "subagent": { "type": ["object", "null"] },
         "autoCommit": { "type": "boolean" },
-        "autoDispatch": { "type": "boolean" },
         "createdAt": { "type": ["string", "null"] },
         "lastActivity": { "type": ["string", "null"] },
         "clients": { "type": "integer" },

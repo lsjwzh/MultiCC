@@ -128,7 +128,7 @@ function pick(value, fields) {
   const v1 = v1List.data.sessions.find(item => item.id === sessionId);
   const common = [
     'id', 'dirId', 'cli', 'kind', 'label', 'model', 'effectiveModel', 'effort',
-    'effectiveEffort', 'agent', 'provider', 'subagent', 'autoCommit', 'autoDispatch',
+    'effectiveEffort', 'agent', 'provider', 'subagent', 'autoCommit',
     'createdAt', 'lastActivity', 'clients', 'active',
   ];
   assert.deepEqual(pick(legacy, common), pick(v1, common));

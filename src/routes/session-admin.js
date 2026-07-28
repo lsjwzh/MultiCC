@@ -156,7 +156,6 @@ function createSessionAdminRuntime(rawDeps) {
       experimentalMode: record.experimentalMode || null,
       subagent: runtime.subagent,
       autoCommit: !!record.autoCommit,
-      autoDispatch: !!record.autoDispatch,
       cliStates: deps.cliStateSummary(record),
       pendingCliHandoff: deps.cliHandoffSummary(record),
       cwd: runtime.sessionCwd,
@@ -277,7 +276,6 @@ function createSessionAdminRuntime(rawDeps) {
       streaming: isClaudeChat,
       autoContinue: record.autoContinue !== false,
       autoCommit: !!record.autoCommit,
-      autoDispatch: !!record.autoDispatch,
     };
   }
 

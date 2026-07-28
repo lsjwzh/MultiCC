@@ -26,7 +26,6 @@ function sessionDtoPresenter({ record, runtime }) {
     experimentalMode: record.experimentalMode,
     subagent: runtime.subagent === undefined ? record.subagent : runtime.subagent,
     autoCommit: record.autoCommit,
-    autoDispatch: record.autoDispatch,
     createdAt: record.createdAt,
     lastActivity: runtime.lastActivity,
     clients: runtime.clients,

@@ -201,11 +201,6 @@ function createSessionProfileRoutes(rawDeps) {
         s.autoCommit = !!req.body.autoCommit;
         appendEvent(s.dirId, 'session_autocommit_changed', `${s.label || s.id} → ${s.autoCommit ? '自动提交合并' : '关闭'}`, s.id);
       }
-      if (req.body.autoDispatch !== undefined) {
-        // Per-session toggle: inject dispatch context prompt only when explicitly enabled.
-        s.autoDispatch = !!req.body.autoDispatch;
-        appendEvent(s.dirId, 'session_autodispatch_changed', `${s.label || s.id} → ${s.autoDispatch ? '允许派发' : '禁止派发'}`, s.id);
-      }
       if (req.body.provider !== undefined) {
         // Per-session cc-switch provider. '' / null clears the override → default login.
         const v = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());

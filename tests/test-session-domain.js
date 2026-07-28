@@ -80,7 +80,7 @@ test('workspace aggregation selects safe facts and never exposes directory/sessi
   const session = {
     id: 's1', dirId: 'd1', type: 'session', cli: 'claude', kind: 'chat', label: null,
     model: null, effectiveModel: null, effort: null, effectiveEffort: null, agent: null,
-    provider: null, subagent: null, autoCommit: false, autoDispatch: false,
+    provider: null, subagent: null, autoCommit: false,
     createdAt: null, lastActivity: null, clients: 0, active: false, mergeState: null,
   };
   const service = createWorkspaceService({
@@ -125,7 +125,7 @@ test('legacy and v1 workspace views consume the same canonical session and facts
     id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', label: null,
     model: null, effectiveModel: null, effort: null, effectiveEffort: null,
     agent: null, provider: null, subagent: null, autoCommit: false,
-    autoDispatch: false, createdAt: null, lastActivity: null, clients: 2,
+    createdAt: null, lastActivity: null, clients: 2,
     active: true, mergeState: null,
   };
   const query = {
