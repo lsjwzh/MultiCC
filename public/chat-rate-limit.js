@@ -45,6 +45,11 @@
     // (5h) and Codex (weekly) arrive from the poller carrying provider:'glm' /
     // 'codex'. It drives both the bar label and the source↔cli gate below.
     const provider = info.provider === 'glm' ? 'glm' : info.provider === 'codex' ? 'codex' : 'claude';
+    // Claude subscriptions have ONLY a 5h rolling window — no weekly/monthly
+    // quota exists upstream. A weekly-typed event that resolves to the claude
+    // provider is malformed (the poller always tags weekly with provider:
+    // 'codex'), so reject it rather than mislabel it as "Claude 5h".
+    if (info.rateLimitType === 'weekly' && provider === 'claude') return null;
     return Object.freeze({
       schemaVersion: 1,
       kind: 'five_hour',
@@ -157,6 +162,20 @@
     return cli === 'claude' || cli === 'opencode';
   }
 
+  // Whether the session's active provider is Claude's own subscription. Empty
+  // baseUrl = no provider override = the CLI's default login (Claude OAuth).
+  // A session pointed at another provider (zhipu / volcano / kimi / a relay)
+  // must not show Claude quota items — there is no Claude window there, and an
+  // idle "Claude 5h · —" placeholder would be noise next to the real bar.
+  function isClaudeProvider(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string' || !baseUrl.trim()) return true;
+    try {
+      return /(^|\.)(anthropic|claude)\.(com|ai)$/i.test(new URL(baseUrl).hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
   // Idle placeholder for the always-visible Claude bar (mirrors the opencode
   // formatQuotaIdle fixed-display pattern). Claude window data arrives only via
   // passive WS rate_limit_event (there is no fetch endpoint), so there is no ⟳
@@ -172,16 +191,20 @@
   function renderCurrent() {
     const element = global.document?.getElementById?.('claude-rate-limit-bar');
     if (!element) return;
-    const matches = currentLimit && providerMatchesCli(currentLimit.provider, currentCli);
+    const claudeProvider = isClaudeProvider(currentProviderBaseUrl);
+    const matches = currentLimit && providerMatchesCli(currentLimit.provider, currentCli)
+      && (currentLimit.provider !== 'claude' || claudeProvider);
     const view = matches ? formatFiveHourRateLimit(currentLimit) : null;
     if (view) {
       element.style.display = 'block';
       element.textContent = view.text;
       element.title = view.title;
       element.style.color = view.color;
-    } else if (currentCli === 'claude') {
-      // Always visible under the claude CLI: fall back to the idle placeholder
-      // rather than hiding, so the bar is a constant fixture (fixed display).
+    } else if (currentCli === 'claude' && claudeProvider) {
+      // Always visible under the claude CLI on the Claude subscription: fall
+      // back to the idle placeholder rather than hiding, so the bar is a
+      // constant fixture (fixed display). Under another provider the item is
+      // hidden entirely — no empty "Claude 5h · —" placeholder.
       const idle = formatClaudeIdle();
       element.style.display = 'block';
       element.textContent = idle.text;
@@ -867,6 +890,7 @@
 
   function setProviderBaseUrl(baseUrl) {
     currentProviderBaseUrl = String(baseUrl || '');
+    renderCurrent();
     renderArkQuota();
     renderZhipuQuota();
     renderKimiQuota();
