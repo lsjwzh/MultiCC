@@ -923,6 +923,28 @@
     return product || '?';
   }
 
+  // Which subscription plan the provider's baseUrl points to: Volcano Ark
+  // serves Coding Plan under /api/coding(/v3) and Agent Plan under /api/plan.
+  // Anything else (bare /api/v3, unparseable) stays unknown → no plan is
+  // marked as current rather than guessing wrong.
+  function arkPlanFromBaseUrl(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string') return null;
+    try {
+      const p = new URL(baseUrl).pathname.toLowerCase();
+      if (p.includes('/coding')) return 'coding-plan';
+      if (p.includes('/plan')) return 'agent-plan';
+    } catch (_) {}
+    return null;
+  }
+
+  function arkPeriodLabel(label) {
+    const l = String(label || '').toLowerCase();
+    if (l === 'weekly') return '周';
+    if (l === 'monthly') return '月';
+    if (l === 'session') return '会话';
+    return String(label || '?');
+  }
+
   // Round to at most 2 decimals for display (99.487123 -> 99.49, 12.3456 -> 12.35);
   // trailing zeros are dropped so integer counts stay clean (250 -> 250).
   function fmtArkNum(n) {
@@ -931,7 +953,7 @@
     return String(Number(v.toFixed(2)));
   }
 
-  function formatArkQuota(value) {
+  function formatArkQuota(value, baseUrl) {
     if (!value) {
       return Object.freeze({
         text: '火山方舟 余量 · ⟳ 刷新',
@@ -968,28 +990,35 @@
         title: '当前身份名下没有已订阅的 AgentPlan / CodingPlan',
       });
     }
+    // The plan matching the session's provider baseUrl goes first and is
+    // marked （当前）; every period (5h / 周 / 月 / 会话) is shown, not just
+    // the worst one, so the whole quota picture is visible at a glance.
+    const activePlan = arkPlanFromBaseUrl(baseUrl);
+    const ordered = activePlan
+      ? [...subscribed].sort((a, b) => Number(b.product === activePlan) - Number(a.product === activePlan))
+      : subscribed;
     let maxPct = 0;
     const parts = [];
     const titleLines = [];
-    for (const it of subscribed) {
-      const worst = it.periods.reduce((a, b) => ((b.percent ?? -1) > (a.percent ?? -1) ? b : a));
-      const pct = worst.percent ?? 0;
-      if (pct > maxPct) maxPct = pct;
-      const seg = (worst.used != null && worst.total != null)
-        ? `${worst.label} ${fmtArkNum(worst.used)}/${fmtArkNum(worst.total)} (${fmtArkNum(pct)}%)`
-        : `${worst.label} ${fmtArkNum(pct)}%`;
-      parts.push(`${arkProductLabel(it.product)} ${seg}`);
-      titleLines.push(`${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}`);
+    for (const it of ordered) {
+      const isActive = it.product === activePlan;
+      const segs = [];
+      const itemTitle = [`${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}${isActive ? '（当前 provider）' : ''}`];
       for (const p of it.periods) {
-        let line = `  ${p.label}: `;
+        const pct = p.percent ?? 0;
+        if (pct > maxPct) maxPct = pct;
+        segs.push(`${arkPeriodLabel(p.label)} ${fmtArkNum(pct)}%`);
+        let line = `  ${arkPeriodLabel(p.label)}: `;
         line += (p.used != null && p.total != null)
           ? `${fmtArkNum(p.used)}/${fmtArkNum(p.total)} (${fmtArkNum(p.percent ?? 0)}%)`
           : `${fmtArkNum(p.percent ?? 0)}%`;
         if (p.resetAt) line += ` · ${new Date(p.resetAt).toLocaleString()} 重置`;
-        titleLines.push(line);
+        itemTitle.push(line);
       }
+      parts.push(`${arkProductLabel(it.product)}${isActive ? '（当前）' : ''} ${segs.join(' · ')}`);
+      titleLines.push(...itemTitle);
     }
-    let text = parts.join(' · ');
+    let text = parts.join(' ｜ ');
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
@@ -1018,7 +1047,7 @@
       element.onclick = null;
       return;
     }
-    const view = formatArkQuota(currentArkQuota);
+    const view = formatArkQuota(currentArkQuota, currentProviderBaseUrl);
     if (arkInstallInFlight) {
       element.textContent = '火山方舟：正在安装 arkcli…';
       element.style.color = '#8b949e';
@@ -1462,6 +1491,8 @@
     setProviderBaseUrl,
     refreshArkQuota,
     restoreArkQuota,
+    formatArkQuota,
+    arkPlanFromBaseUrl,
     refreshZhipuQuota,
     restoreZhipuQuota,
     formatZhipuQuota,
