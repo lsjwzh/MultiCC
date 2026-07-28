@@ -439,9 +439,15 @@ function createRouterToolRuntime({
     const timeoutMs = boundedTimeout(args.timeout_seconds);
     const operation = await waitForOperation(admitted.operationId, timeoutMs, signal);
     if (!operation) {
+      // Slave did not complete within timeout. When the target is busy the
+      // dispatch entered FIFO — the message IS enqueued and the slave will run
+      // it when its turn comes. Treat as a successful enqueue (ok:true, fifo:true)
+      // so the calling Commander shows "enqueued — wait or re-route", not a bare
+      // failure.
       return {
-        ok: false,
-        status: 'timed_out',
+        ok: true,
+        fifo: true,
+        status: 'queued',
         operation_id: admitted.operationId,
         target_session_id: admitted.targetSessionId,
         execution_session_id: admitted.chatId || admitted.targetSessionId,
