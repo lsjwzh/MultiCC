@@ -4,7 +4,7 @@
   "title": "Session DTO v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "autoDispatch", "createdAt", "lastActivity", "clients", "active", "mergeState"],
+  "required": ["id", "dirId", "type", "cli", "kind", "label", "model", "effectiveModel", "effort", "effectiveEffort", "agent", "provider", "subagent", "autoCommit", "createdAt", "lastActivity", "clients", "active", "mergeState"],
   "properties": {
     "id": { "type": "string", "minLength": 1, "maxLength": 160 },
     "dirId": { "type": ["string", "null"], "maxLength": 160 },
@@ -30,7 +30,6 @@
       }
     },
     "autoCommit": { "type": "boolean" },
-    "autoDispatch": { "type": "boolean" },
     "createdAt": { "type": ["string", "null"], "format": "date-time" },
     "lastActivity": { "type": ["string", "null"], "format": "date-time" },
     "clients": { "type": "integer", "minimum": 0 },

@@ -18,7 +18,7 @@ function makeFactory(records, chatSessions, effort = () => 'normal') {
 }
 
 const BASE = [
-  { id: 'me', dirId: 'd1', type: 'chat', autoDispatch: true, effort: 'high' },
+  { id: 'me', dirId: 'd1', type: 'chat', effort: 'high' },
   { id: 'sib-a', dirId: 'd1', type: 'chat', label: 'Worker A', cli: 'claude', kind: 'chat' },
   { id: 'sib-b', dirId: 'd1', type: 'codex', label: '', cli: 'codex', kind: 'terminal' },
   {
@@ -85,39 +85,22 @@ test('dispatchTargetHintFor renders the target list or a no-target message', () 
   assert.equal(alone.dispatchTargetHintFor('solo'), '当前同目录没有可分发的目标 session');
 });
 
-test('buildDispatchContextPrompt is empty when there are no targets or autoDispatch is off', () => {
-  // autoDispatch on but no peers → empty
-  const solo = makeFactory([{ id: 'solo', dirId: 'd9', type: 'chat', autoDispatch: true }], {});
+test('buildDispatchContextPrompt is empty for non-commander sessions and when there are no targets', () => {
+  // no peers → empty
+  const solo = makeFactory([{ id: 'solo', dirId: 'd9', type: 'chat' }], {});
   assert.equal(solo.buildDispatchContextPrompt('solo'), '');
-  // peers exist but autoDispatch off → empty
-  const off = makeFactory(
-    [{ id: 'me', dirId: 'd1', type: 'chat', autoDispatch: false },
+  // non-commander with peers → empty (only commander gets the prompt)
+  const nonCmd = makeFactory(
+    [{ id: 'me', dirId: 'd1', type: 'chat' },
      { id: 'sib', dirId: 'd1', type: 'chat' }], {});
-  assert.equal(off.buildDispatchContextPrompt('me'), '');
-});
-
-test('buildDispatchContextPrompt (plain) includes the marker format and target list', () => {
-  const t = makeFactory(BASE, {}, () => 'normal');
-  const p = t.buildDispatchContextPrompt('me');
-  assert.match(p, /\[MultiCC cross-session dispatch\]/);
-  assert.match(p, /<<dispatch target=/);
-  assert.match(p, /可用目标 sessions: \[/);
-  assert.doesNotMatch(p, /Ultracode/);
-});
-
-test('buildDispatchContextPrompt (ultracode) switches to the ultra workflow intro', () => {
-  const t = makeFactory(BASE, {}, () => 'ultracode');
-  const p = t.buildDispatchContextPrompt('me');
-  assert.match(p, /\[MultiCC Ultracode workflow\]/);
-  assert.match(p, /Task\/Agent\/Workflow/);
-  assert.match(p, /<<dispatch target=/);
+  assert.equal(nonCmd.buildDispatchContextPrompt('me'), '');
 });
 
 // ── Commander role (type='commander') ───────────────────────────────────────
-// Commander is a host-owned router and never receives the legacy LLM dispatch
-// surface. Ordinary sessions retain their explicit opt-in behavior.
+// Commander is the only session type that receives the dispatch context prompt
+// (target list + routing instructions). Ordinary sessions use MCP router tools.
 const COMMANDER_BASE = [
-  { id: 'cmd', dirId: 'd1', type: 'commander' },                                  // no autoDispatch
+  { id: 'cmd', dirId: 'd1', type: 'commander' },
   { id: 'w-a', dirId: 'd1', type: 'chat', label: 'W A', cli: 'claude', kind: 'chat' },
   { id: 'w-b', dirId: 'd2', type: 'chat', label: 'W B', cli: 'codex', kind: 'chat' },   // other fleet
   { id: 'cmd2', dirId: 'd2', type: 'commander' },                                 // another fleet's commander
@@ -167,7 +150,7 @@ test('commander sees bounded roles and deduplicated recent task evidence', () =>
 
 test('a normal session never sees a commander peer as a dispatch target', () => {
   const recs = [
-    { id: 'me', dirId: 'd1', type: 'chat', autoDispatch: true },
+    { id: 'me', dirId: 'd1', type: 'chat' },
     { id: 'cmd', dirId: 'd1', type: 'commander' },
     { id: 'peer', dirId: 'd1', type: 'chat' },
   ];
@@ -178,12 +161,12 @@ test('a normal session never sees a commander peer as a dispatch target', () => 
 });
 
 test('a normal session stays in-directory', () => {
-  const t = makeFactory(COMMANDER_BASE.concat({ id: 'me', dirId: 'd1', type: 'chat', autoDispatch: true }), {});
+  const t = makeFactory(COMMANDER_BASE.concat({ id: 'me', dirId: 'd1', type: 'chat' }), {});
   const ids = t.dispatchableSessionsFor('me').map(s => s.id).sort();
   assert.deepEqual(ids, ['w-a']);   // only same-dir worker; not w-b (d2), not any commander
 });
 
-test('commander gets the dispatch prompt without needing autoDispatch', () => {
+test('commander gets the dispatch prompt', () => {
   const t = makeFactory(COMMANDER_BASE, {});
   const p = t.buildDispatchContextPrompt('cmd');
   assert.match(p, /\[MultiCC Commander routing\]/);
