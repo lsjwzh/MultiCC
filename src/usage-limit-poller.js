@@ -91,6 +91,9 @@ async function pollGlmMonitor(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
   const pct = finite(tokenWindows[0].percentage);
   if (pct === null) return null;
   const resetsAt = finite(tokenWindows[0].nextResetTime);
+  // Second TOKENS_LIMIT entry (when present) is the weekly window.
+  const weeklyPct = tokenWindows[1] ? finite(tokenWindows[1].percentage) : null;
+  const weeklyResetsAt = tokenWindows[1] ? finite(tokenWindows[1].nextResetTime) : null;
   return {
     kind: 'window',
     provider: 'glm',
@@ -98,6 +101,8 @@ async function pollGlmMonitor(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
     status: pct >= 100 ? 'rejected' : (pct >= 80 ? 'allowed_warning' : 'allowed'),
     utilization: Math.max(0, Math.min(1, pct / 100)),
     resetsAt: resetsAt !== null ? resetsAt : null,
+    weeklyUtilization: weeklyPct !== null ? Math.max(0, Math.min(1, weeklyPct / 100)) : null,
+    weeklyResetsAt: weeklyResetsAt !== null ? weeklyResetsAt : null,
     tier: (body.data && body.data.level) || null,
   };
 }

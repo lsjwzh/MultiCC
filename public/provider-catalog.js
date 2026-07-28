@@ -283,6 +283,158 @@
     });
   }
 
+  // ── Provider-card quota badges ──────────────────────────────────────────
+  // Reuses the same /api/<kind>/quota endpoints the chat rate-limit bars use,
+  // so each provider card shows the last-known value (cached in localStorage)
+  // and never a blank gap. Kinds map 1:1 to the quota routes in server.js.
+  const QUOTA_ROUTES = Object.freeze({
+    ark: '/api/ark/quota',
+    zhipu: '/api/zhipu/quota',
+    kimi: '/api/kimi/quota',
+    codex: '/api/codex/quota',
+    qoder: '/api/qoder/quota',
+    opencode: '/api/opencode/quota',
+  });
+  const QUOTA_CACHE_KEY = 'multicc.providerQuota.v1';
+  const QUOTA_GRAY = '#8b949e';
+  const QUOTA_AMBER = '#d29922';
+  // Throttle background refreshes (CDP-backed kinds open a Chrome tab, so we
+  // don't want to re-hit them on every speed-test / edit re-render).
+  const QUOTA_REFETCH_MS = 60000;
+  const quotaLastFetch = {};
+
+  function quotaPctColor(pct) {
+    if (pct >= 90) return '#f85149';
+    if (pct >= 70) return QUOTA_AMBER;
+    return '#58a6ff';
+  }
+  function quotaMoneyColor(v) {
+    if (v <= 0) return '#f85149';
+    if (v <= 5) return QUOTA_AMBER;
+    return '#58a6ff';
+  }
+  function quotaFmt2(n) { return String(Number(Number(n).toFixed(2))); }
+
+  function quotaKindForProvider(p) {
+    if (!p) return null;
+    let host = '';
+    try { host = p.baseUrl ? new URL(p.baseUrl).hostname.toLowerCase() : ''; } catch (_) { host = ''; }
+    if (/(^|\.)volces\.com$/.test(host)) return 'ark';
+    if (/(^|\.)(z\.ai|bigmodel\.cn)$/.test(host)) return 'zhipu';
+    if (/(^|\.)(moonshot|kimi)\.(cn|com|ai)$/.test(host)) return 'kimi';
+    if (/(^|\.)qoder\.com\.cn$/.test(host)) return 'qoder';
+    if (/(^|\.)opencode\.ai$/.test(host)) return 'opencode';
+    if (p.appType === 'codex' && (p.isOfficial === true || /(^|\.)(chatgpt|openai)\.com$/.test(host))) return 'codex';
+    return null;
+  }
+
+  function formatProviderQuotaBadge(kind, data) {
+    if (!data || typeof data !== 'object') return null;
+    const st = data.status;
+    if (st === 'not_configured') return { text: '余量：未配置', color: QUOTA_GRAY, title: '未配置对应 provider' };
+    if (st === 'needs_auth' || st === 'needs_login') return { text: '余量：需登录', color: QUOTA_AMBER, title: data.error || '需要登录后才能查询余量' };
+    if (st === 'needs_install') return { text: '余量：未安装 arkcli', color: QUOTA_AMBER, title: data.error || 'arkcli 未安装' };
+    if (st === 'chrome_unavailable') return { text: '余量：未开 Chrome 9222', color: QUOTA_AMBER, title: '需本机 Chrome 开启 9222 调试端口并登录' };
+    if (st !== 'ok') return { text: '余量：暂不可用', color: QUOTA_AMBER, title: data.error || '查询失败' };
+
+    if (kind === 'zhipu') {
+      const sites = (data.sites || []).filter(s => s && s.ok && Number.isFinite(s.usedPercent));
+      if (!sites.length) return { text: '余量：暂不可用', color: QUOTA_AMBER, title: '无有效窗口数据' };
+      let maxPct = 0; const parts = [];
+      for (const s of sites) {
+        maxPct = Math.max(maxPct, s.usedPercent, Number.isFinite(s.weeklyUsedPercent) ? s.weeklyUsedPercent : 0);
+        let seg = `${s.site} ${s.period === 'weekly' ? '周' : '5h'} ${quotaFmt2(s.usedPercent)}%`;
+        if (Number.isFinite(s.weeklyUsedPercent)) seg += ` · 周 ${quotaFmt2(s.weeklyUsedPercent)}%`;
+        parts.push(seg);
+      }
+      return { text: '余量 ' + parts.join(' · '), color: quotaPctColor(maxPct), title: 'Zhipu 窗口用量（5h / 周）' };
+    }
+    if (kind === 'kimi') {
+      const sites = (data.sites || []).filter(s => s && s.ok && Number.isFinite(s.available));
+      if (!sites.length) return { text: '余量：暂不可用', color: QUOTA_AMBER, title: '无有效余额数据' };
+      const minAvail = Math.min.apply(null, sites.map(s => s.available));
+      return { text: '余量 ' + sites.map(s => `${s.site} ¥${quotaFmt2(s.available)}`).join(' · '), color: quotaMoneyColor(minAvail), title: 'Kimi 预付余额（CNY）' };
+    }
+    if (kind === 'codex') {
+      const w = data.weekly || {};
+      if (!Number.isFinite(w.usedPercent)) return { text: '余量：暂不可用', color: QUOTA_AMBER, title: '无周窗口数据' };
+      return { text: `余量 周 ${quotaFmt2(w.usedPercent)}% 已用`, color: quotaPctColor(w.usedPercent), title: 'Codex 周窗口用量' + (data.planType ? ` · ${data.planType}` : '') };
+    }
+    if (kind === 'ark') {
+      let worst = null;
+      for (const it of (data.items || [])) {
+        if (!it || it.subscribed !== true) continue;
+        for (const pd of (it.periods || [])) {
+          if (pd && Number.isFinite(pd.percent) && (!worst || pd.percent > worst.percent)) worst = { label: pd.label, used: pd.used, total: pd.total, percent: pd.percent, product: it.product };
+        }
+      }
+      if (!worst) return { text: '余量：无生效套餐', color: QUOTA_GRAY, title: 'arkcli 未返回已订阅套餐' };
+      return { text: `余量 ${worst.product || 'Ark'} ${worst.label || ''} ${worst.used}/${worst.total} (${quotaFmt2(worst.percent)}%)`, color: quotaPctColor(worst.percent), title: '火山方舟套餐额度（最紧张周期）' };
+    }
+    if (kind === 'qoder') {
+      const total = (data.quota && data.quota.total_quota && data.quota.total_quota.quota_summary) || {};
+      const limit = Number(total.limit_value) || 0;
+      if (!limit) return { text: '余量：暂不可用', color: QUOTA_AMBER, title: '无 credits 数据' };
+      const remaining = Number(total.remaining_value) || 0;
+      const pct = Number(total.usage_percentage) || Math.round(((Number(total.used_value) || 0) / limit) * 100);
+      return { text: `余量 ${remaining}/${limit} credits (${pct}%)`, color: quotaPctColor(pct), title: 'Qoder CN credits' };
+    }
+    if (kind === 'opencode') {
+      const u = data.usage || {};
+      const parts = []; let maxPct = 0;
+      const win = (label, w) => { if (w && Number.isFinite(w.usagePercent)) { maxPct = Math.max(maxPct, w.usagePercent); parts.push(`${label} ${w.usagePercent}%`); } };
+      win('5h', u.rolling); win('周', u.weekly); win('月', u.monthly);
+      if (!parts.length) return { text: '余量：暂不可用', color: QUOTA_AMBER, title: '无用量窗口数据' };
+      return { text: '余量 ' + parts.join(' · '), color: quotaPctColor(maxPct), title: 'OpenCode Go 窗口用量' };
+    }
+    return null;
+  }
+
+  function quotaCacheRead(root) {
+    try {
+      const raw = root.localStorage ? root.localStorage.getItem(QUOTA_CACHE_KEY) : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) { return {}; }
+  }
+  function quotaCacheWrite(root, cache) {
+    try { if (root.localStorage) root.localStorage.setItem(QUOTA_CACHE_KEY, JSON.stringify(cache)); } catch (_) { /* quota cache is best-effort */ }
+  }
+
+  function injectProviderQuotas(catalog, jsonFn) {
+    const root = typeof window !== 'undefined' ? window : null;
+    if (!root || !root.document) return;
+    const providers = (catalog && catalog.providers) || [];
+    const cache = quotaCacheRead(root);
+    const byId = new Map(providers.map(p => [p.id, p]));
+
+    const paint = () => {
+      root.document.querySelectorAll('[data-quota-id]').forEach(el => {
+        const p = byId.get(el.getAttribute('data-quota-id'));
+        const kind = quotaKindForProvider(p);
+        if (!kind) { el.textContent = '余量 —（无 API）'; el.style.color = QUOTA_GRAY; el.title = '该 provider 无对应余量接口'; return; }
+        const entry = cache[kind];
+        const view = entry ? formatProviderQuotaBadge(kind, entry.data) : null;
+        if (view) { el.textContent = view.text; el.style.color = view.color; el.title = view.title; }
+        else { el.textContent = '余量 —'; el.style.color = QUOTA_GRAY; el.title = '暂无余量数据，正在加载…'; }
+      });
+    };
+    paint();
+
+    const fetchFn = jsonFn || (root.MultiCCApi && typeof root.MultiCCApi.json === 'function' ? root.MultiCCApi.json.bind(root.MultiCCApi) : null);
+    if (!fetchFn) return;
+    const kinds = new Set(providers.map(quotaKindForProvider).filter(Boolean));
+    const now = Date.now();
+    for (const kind of kinds) {
+      if (quotaLastFetch[kind] && now - quotaLastFetch[kind] < QUOTA_REFETCH_MS) continue;
+      quotaLastFetch[kind] = now;
+      const done = (data) => { cache[kind] = { fetchedAt: now, data }; quotaCacheWrite(root, cache); paint(); };
+      Promise.resolve()
+        .then(() => fetchFn(QUOTA_ROUTES[kind]))
+        .then(done, (err) => done((err && err.details && typeof err.details === 'object') ? err.details : { status: 'unavailable' }));
+    }
+  }
+
   return {
     normalizeProvider,
     normalizeCatalog,
@@ -298,5 +450,8 @@
     modelsFor,
     normalizeDeleteReferences,
     deleteReferenceDisplayData,
+    quotaKindForProvider,
+    formatProviderQuotaBadge,
+    injectProviderQuotas,
   };
 });
