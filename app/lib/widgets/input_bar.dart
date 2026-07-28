@@ -17,6 +17,7 @@ import '../services/voice_dictation_service.dart';
 import '../screens/voice_call_screen.dart';
 import '../utils/dispatch_hint.dart';
 import 'chat_runtime_panels.dart';
+import 'dispatch_mode_selector.dart';
 
 // Goal precheck dimension keys → short chip labels (web/app kept in sync).
 Map<String, String> get _goalDimShort => {
@@ -542,62 +543,6 @@ class _InputBarState extends State<InputBar> {
   void _setDispatchMode(ChatProvider provider, DispatchMode value) {
     setState(() => _dispatchMode = value);
     provider.settings.saveDispatchMode(provider.sessionName, value);
-  }
-
-  /// 一枚单选胶囊。用 Radio + 高亮边框而不是 Checkbox：三者互斥，选中态得一眼
-  /// 能看出来是哪一个。
-  Widget _dispatchModeChip(
-    ChatProvider provider, {
-    required DispatchMode mode,
-    required String label,
-    required String hint,
-    required Color accent,
-  }) {
-    final selected = _dispatchMode == mode;
-    return Tooltip(
-      message: hint,
-      child: GestureDetector(
-        key: Key('dispatch-mode-${mode.wireName}'),
-        onTap: () => _setDispatchMode(provider, mode),
-        child: Container(
-          padding: const EdgeInsets.only(left: 2, right: 10),
-          decoration: BoxDecoration(
-            color: selected ? accent.withValues(alpha: .14) : null,
-            border: Border.all(
-              color: selected ? accent : const Color(0xFF3a414b),
-            ),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: 22,
-                height: 22,
-                child: Radio<DispatchMode>(
-                  value: mode,
-                  groupValue: _dispatchMode,
-                  onChanged: (v) =>
-                      _setDispatchMode(provider, v ?? DispatchMode.defaultMode),
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  activeColor: accent,
-                ),
-              ),
-              const SizedBox(width: 2),
-              Text(
-                label,
-                style: TextStyle(
-                  color: selected ? accent : const Color(0xFF8a909b),
-                  fontSize: 12,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   // ── Send ──
@@ -1343,41 +1288,19 @@ class _InputBarState extends State<InputBar> {
                 ),
               ),
 
-            // Commander 专属：这一轮怎么派发（三选一，互斥）。跟在子任务 pill
-            // 之后、输入框之上，与 web 的 #pre-input-bar 顺序一致。窄屏靠 Wrap
-            // 换行，不会把输入区挤没。
+            // Commander 专属：这一轮怎么派发。三个选项平铺会把手机上的输入区
+            // 挤掉，所以只留一枚显示当前档位的胶囊，改档去 BottomSheet 里选 ——
+            // 与 web 窄屏同一形态。位置跟在子任务 pill 之后、输入框之上，和
+            // web 的 #pre-input-bar 顺序一致。
             if (isCommander)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: Wrap(
+                  child: DispatchModePill(
                     key: const Key('dispatch-mode-group'),
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: [
-                      _dispatchModeChip(
-                        provider,
-                        mode: DispatchMode.dispatchMaster,
-                        label: t('dispatchModeMasterLabel'),
-                        hint: t('dispatchModeMasterHint'),
-                        accent: const Color(0xFF58a6ff),
-                      ),
-                      _dispatchModeChip(
-                        provider,
-                        mode: DispatchMode.routeTask,
-                        label: t('dispatchModeRouteLabel'),
-                        hint: t('dispatchModeRouteHint'),
-                        accent: const Color(0xFF58a6ff),
-                      ),
-                      _dispatchModeChip(
-                        provider,
-                        mode: DispatchMode.none,
-                        label: t('dispatchModeNoneLabel'),
-                        hint: t('dispatchModeNoneHint'),
-                        accent: const Color(0xFFd29922),
-                      ),
-                    ],
+                    mode: _dispatchMode,
+                    onChanged: (value) => _setDispatchMode(provider, value),
                   ),
                 ),
               ),

@@ -763,44 +763,169 @@
       margin: 0;
     }
     #auto-dispatch-label:hover { color: #c9d1d9; }
-    /* Commander-only dispatch-mode radio group (three-way, mutually exclusive). */
+    /* ── Commander-only dispatch mode (three-way, mutually exclusive) ──
+       Wide screens get a segmented control so the three choices read as one
+       picker; narrow screens collapse to a single pill that opens a bottom
+       sheet, which keeps the input area from being squeezed. Both drive the
+       same native radios, so keyboard + screen readers keep working. */
     #dispatch-mode-group {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 4px 8px;
-      min-width: 0;
-    }
-    /* `display:flex` above would otherwise beat [hidden]. */
-    #dispatch-mode-group[hidden] { display: none; }
-    #dispatch-mode-group .dispatch-mode-opt {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      cursor: pointer;
-      user-select: none;
-      padding: 2px 8px;
-      border: 1px solid #30363d;
-      border-radius: 999px;
+      gap: 8px;
+      min-width: 0;
+    }
+    /* `display:inline-flex` above would otherwise beat [hidden]. */
+    #dispatch-mode-group[hidden] { display: none; }
+    #dispatch-mode-group .dm-title {
+      color: #6e7681;
+      font-size: 11px;
       white-space: nowrap;
     }
-    #dispatch-mode-group .dispatch-mode-opt:hover { color: #c9d1d9; border-color: #484f58; }
+    #dispatch-mode-group .dm-segments {
+      display: inline-flex;
+      align-items: stretch;
+      gap: 2px;
+      padding: 2px;
+      background: #010409;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+    }
+    #dispatch-mode-group .dispatch-mode-opt {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      /* Equal-width segments: the picker keeps its shape as the label changes. */
+      flex: 1 1 0;
+      min-width: 84px;
+      padding: 3px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: background .12s, color .12s;
+    }
+    #dispatch-mode-group .dispatch-mode-opt:hover { color: #c9d1d9; background: #161b22; }
+    /* Visually hidden, not display:none — the radios stay focusable and keep
+       arrow-key navigation inside the group. */
     #dispatch-mode-group input[type="radio"] {
-      accent-color: #388bfd;
-      width: 13px;
-      height: 13px;
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
       margin: 0;
+      pointer-events: none;
     }
-    #dispatch-mode-group input:checked + span { color: #58a6ff; font-weight: 600; }
+    #dispatch-mode-group .dispatch-mode-opt:focus-within {
+      outline: 2px solid #388bfd;
+      outline-offset: 1px;
+    }
     #dispatch-mode-group .dispatch-mode-opt:has(input:checked) {
-      border-color: #388bfd;
-      background: rgba(56, 139, 253, .14);
+      color: #58a6ff;
+      font-weight: 600;
+      background: rgba(56, 139, 253, .18);
+      box-shadow: inset 0 0 0 1px rgba(56, 139, 253, .55);
     }
-    #dispatch-mode-group input[value="none"]:checked + span { color: #d29922; }
     #dispatch-mode-group .dispatch-mode-opt:has(input[value="none"]:checked) {
-      border-color: #d29922;
-      background: rgba(210, 153, 34, .14);
+      color: #d29922;
+      background: rgba(210, 153, 34, .18);
+      box-shadow: inset 0 0 0 1px rgba(210, 153, 34, .55);
     }
+    .dm-icon { font-size: 12px; line-height: 1; }
+    /* The pill is the narrow-screen face of the same control (see the media
+       query below); on wide screens the segments carry the choice. */
+    #dispatch-mode-pill {
+      display: none;
+      align-items: center;
+      gap: 5px;
+      font: inherit;
+      color: #58a6ff;
+      background: rgba(56, 139, 253, .14);
+      border: 1px solid rgba(56, 139, 253, .55);
+      border-radius: 999px;
+      padding: 5px 10px;
+      min-height: 30px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #dispatch-mode-pill[data-mode="none"] {
+      color: #d29922;
+      background: rgba(210, 153, 34, .14);
+      border-color: rgba(210, 153, 34, .55);
+    }
+    #dispatch-mode-pill .dm-caret { font-size: 9px; opacity: .7; }
+
+    /* Bottom sheet: the narrow-screen expansion of the pill. */
+    #dispatch-mode-sheet {
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    #dispatch-mode-sheet[hidden] { display: none; }
+    #dispatch-mode-sheet .dm-sheet-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(1, 4, 9, .6);
+    }
+    #dispatch-mode-sheet .dm-sheet-panel {
+      position: relative;
+      width: min(100%, 520px);
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-bottom: none;
+      border-radius: 14px 14px 0 0;
+      padding: 8px 12px calc(12px + env(safe-area-inset-bottom));
+      animation: dm-sheet-in .16s ease-out;
+    }
+    @keyframes dm-sheet-in { from { transform: translateY(14px); opacity: .4; } }
+    #dispatch-mode-sheet .dm-sheet-handle {
+      width: 36px;
+      height: 4px;
+      margin: 2px auto 8px;
+      border-radius: 999px;
+      background: #30363d;
+    }
+    #dispatch-mode-sheet .dm-sheet-title {
+      color: #8b949e;
+      font-size: 12px;
+      padding: 0 4px 8px;
+    }
+    #dispatch-mode-sheet .dm-sheet-opt {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      /* Comfortably past the 44px touch-target floor. */
+      min-height: 52px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      text-align: left;
+      font: inherit;
+      color: #c9d1d9;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    #dispatch-mode-sheet .dm-sheet-opt .dm-icon { font-size: 16px; width: 20px; text-align: center; }
+    #dispatch-mode-sheet .dm-sheet-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+    #dispatch-mode-sheet .dm-sheet-text b { font-size: 13px; font-weight: 600; }
+    #dispatch-mode-sheet .dm-sheet-text small { font-size: 11px; color: #8b949e; }
+    #dispatch-mode-sheet .dm-tick { color: #58a6ff; font-size: 14px; visibility: hidden; }
+    #dispatch-mode-sheet .dm-sheet-opt[aria-checked="true"] {
+      border-color: rgba(56, 139, 253, .6);
+      background: rgba(56, 139, 253, .12);
+    }
+    #dispatch-mode-sheet .dm-sheet-opt[aria-checked="true"] .dm-tick { visibility: visible; }
+    #dispatch-mode-sheet .dm-sheet-opt[data-mode="none"][aria-checked="true"] {
+      border-color: rgba(210, 153, 34, .6);
+      background: rgba(210, 153, 34, .12);
+    }
+    #dispatch-mode-sheet .dm-sheet-opt[data-mode="none"][aria-checked="true"] .dm-tick { color: #d29922; }
 
     /* ── Durable messages staged behind the active turn ── */
     #session-queue-dock {
@@ -1483,6 +1608,11 @@
       #memo-text,
       #voice-panel textarea { font-size: 16px; }
       #debug-panel { width: 100vw; max-width: 100vw; }
+      /* Three segments plus a caption would eat the row above the input; show
+         the current choice as one pill and move the picking into the sheet. */
+      #dispatch-mode-group .dm-title,
+      #dispatch-mode-group .dm-segments { display: none; }
+      #dispatch-mode-pill { display: inline-flex; }
     }
 
     @media (max-width: 420px) {
@@ -2235,19 +2365,37 @@
     <!-- Commander only: shown once /api/sessions/:id reports type==='commander'.
          Three-way, mutually exclusive; each choice appends its own English
          dispatch instruction to the prompt (see chat-dispatch-hint.js). -->
-    <div id="dispatch-mode-group" hidden role="radiogroup" aria-label="派发方式">
-      <label class="dispatch-mode-opt" title="用 dispatch_master 派发给其它会话并等待结果回执（双向）">
-        <input type="radio" name="dispatch-mode" value="dispatch_master" checked />
-        <span>优先分发给其他会话且需要回执</span>
-      </label>
-      <label class="dispatch-mode-opt" title="用 route_task 单向派发给其它会话，不等回执（fire-and-forget）">
-        <input type="radio" name="dispatch-mode" value="route_task" />
-        <span>优先分发给其他会话且不需要回执</span>
-      </label>
-      <label class="dispatch-mode-opt" title="强制在当前会话内完成，不派发给其它会话">
-        <input type="radio" name="dispatch-mode" value="none" />
-        <span>不派发给其他会话</span>
-      </label>
+    <div id="dispatch-mode-group" hidden>
+      <span class="dm-title" data-i18n="dispatchModeTitle">分发模式</span>
+      <!-- Wide screens: the segmented control is the picker. -->
+      <div class="dm-segments" role="radiogroup"
+           data-i18n-aria-label="dispatchModeTitle" aria-label="分发模式">
+        <label class="dispatch-mode-opt" data-i18n-title="dispatchModeMasterHint"
+               title="用 dispatch_master 派发给其它会话并等待结果回执（双向）">
+          <input type="radio" name="dispatch-mode" value="dispatch_master" checked />
+          <span class="dm-icon" aria-hidden="true">⇄</span>
+          <span class="dm-text" data-i18n="dispatchModeMasterShort">需回执</span>
+        </label>
+        <label class="dispatch-mode-opt" data-i18n-title="dispatchModeRouteHint"
+               title="用 route_task 单向派发给其它会话，不等回执（fire-and-forget）">
+          <input type="radio" name="dispatch-mode" value="route_task" />
+          <span class="dm-icon" aria-hidden="true">➤</span>
+          <span class="dm-text" data-i18n="dispatchModeRouteShort">免回执</span>
+        </label>
+        <label class="dispatch-mode-opt" data-i18n-title="dispatchModeNoneHint"
+               title="强制在当前会话内完成，不派发给其它会话">
+          <input type="radio" name="dispatch-mode" value="none" />
+          <span class="dm-icon" aria-hidden="true">⊘</span>
+          <span class="dm-text" data-i18n="dispatchModeNoneShort">不派发</span>
+        </label>
+      </div>
+      <!-- Narrow screens: this pill shows the current choice and opens the sheet. -->
+      <button id="dispatch-mode-pill" type="button" aria-haspopup="dialog" aria-expanded="false"
+              data-i18n-title="dispatchModeTitle" title="分发模式">
+        <span class="dm-icon" id="dispatch-mode-pill-icon" aria-hidden="true">⇄</span>
+        <span id="dispatch-mode-pill-label" data-i18n="dispatchModeMasterShort">需回执</span>
+        <span class="dm-caret" aria-hidden="true">▾</span>
+      </button>
     </div>
     <span id="liveness-pill" title="" style="display:none;margin-left:8px;font-size:12px;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:999px;padding:3px 10px;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span></span>
   </div>
@@ -2314,6 +2462,47 @@
     </div>
     <div id="s2s-panel-footer">
       <button id="s2s-stop-btn" class="danger">结束对话</button>
+    </div>
+  </div>
+
+  <!-- Narrow-screen expansion of #dispatch-mode-pill. The buttons here drive the
+       same radios as the segmented control, so both faces stay in sync. -->
+  <div id="dispatch-mode-sheet" hidden>
+    <div class="dm-sheet-backdrop" data-dm-close></div>
+    <div class="dm-sheet-panel" role="dialog" aria-modal="true"
+         data-i18n-aria-label="dispatchModeSheetTitle" aria-label="选择分发模式">
+      <div class="dm-sheet-handle" aria-hidden="true"></div>
+      <div class="dm-sheet-title" data-i18n="dispatchModeSheetTitle">选择分发模式</div>
+      <div class="dm-sheet-list" role="radiogroup"
+           data-i18n-aria-label="dispatchModeTitle" aria-label="分发模式">
+        <button class="dm-sheet-opt" type="button" role="radio" aria-checked="true"
+                data-mode="dispatch_master">
+          <span class="dm-icon" aria-hidden="true">⇄</span>
+          <span class="dm-sheet-text">
+            <b data-i18n="dispatchModeMasterLabel">优先分发给其他会话且需要回执</b>
+            <small data-i18n="dispatchModeMasterDesc">用 dispatch_master 派出去，等结果回执</small>
+          </span>
+          <span class="dm-tick" aria-hidden="true">✓</span>
+        </button>
+        <button class="dm-sheet-opt" type="button" role="radio" aria-checked="false"
+                data-mode="route_task">
+          <span class="dm-icon" aria-hidden="true">➤</span>
+          <span class="dm-sheet-text">
+            <b data-i18n="dispatchModeRouteLabel">优先分发给其他会话且不需要回执</b>
+            <small data-i18n="dispatchModeRouteDesc">用 route_task 单向派出去，不等回执</small>
+          </span>
+          <span class="dm-tick" aria-hidden="true">✓</span>
+        </button>
+        <button class="dm-sheet-opt" type="button" role="radio" aria-checked="false"
+                data-mode="none">
+          <span class="dm-icon" aria-hidden="true">⊘</span>
+          <span class="dm-sheet-text">
+            <b data-i18n="dispatchModeNoneLabel">不派发给其他会话</b>
+            <small data-i18n="dispatchModeNoneDesc">留在当前会话自己做完</small>
+          </span>
+          <span class="dm-tick" aria-hidden="true">✓</span>
+        </button>
+      </div>
     </div>
   </div>
 

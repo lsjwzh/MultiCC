@@ -70,15 +70,61 @@
 
     var groupEl = null;
     var radios = [];
+    // The narrow-screen face: a pill showing the current choice, plus the sheet
+    // it opens. Both are optional — a page without them still works.
+    var pillEl = null;
+    var pillIconEl = null;
+    var pillLabelEl = null;
+    var sheetEl = null;
+    var sheetOpts = [];
     // `enabled` is the commander gate; a non-commander session never decorates.
     var enabled = false;
     var mode = DEFAULT_MODE;
 
     function storeKey() { return STORE_PREFIX + sessionId; }
 
+    function segmentFor(value) {
+      for (var i = 0; i < radios.length; i += 1) {
+        if (radios[i].value === value) return radios[i].parentNode || null;
+      }
+      return null;
+    }
+
+    // The pill mirrors whichever segment is selected, carrying over its i18n key
+    // so a language switch re-translates it like any other labelled element.
+    function renderPill() {
+      if (!pillEl) return;
+      if (typeof pillEl.setAttribute === 'function') pillEl.setAttribute('data-mode', mode);
+      var seg = segmentFor(mode);
+      if (!seg || typeof seg.querySelector !== 'function') return;
+      var icon = seg.querySelector('.dm-icon');
+      var text = seg.querySelector('.dm-text');
+      if (icon && pillIconEl) pillIconEl.textContent = icon.textContent;
+      if (text && pillLabelEl) {
+        pillLabelEl.textContent = text.textContent;
+        if (text.dataset && text.dataset.i18n && pillLabelEl.dataset) {
+          pillLabelEl.dataset.i18n = text.dataset.i18n;
+        }
+      }
+    }
+
     function render() {
       if (groupEl) groupEl.hidden = !enabled;
       radios.forEach(function (r) { r.checked = (r.value === mode); });
+      sheetOpts.forEach(function (opt) {
+        if (typeof opt.setAttribute === 'function') {
+          opt.setAttribute('aria-checked', opt.getAttribute('data-mode') === mode ? 'true' : 'false');
+        }
+      });
+      renderPill();
+    }
+
+    function setSheetOpen(open) {
+      if (!sheetEl) return;
+      sheetEl.hidden = !open;
+      if (pillEl && typeof pillEl.setAttribute === 'function') {
+        pillEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
     }
 
     function setMode(value, persist) {
@@ -90,6 +136,9 @@
 
     function setEnabled(value) {
       enabled = !!value;
+      // A sheet left open while the control is being hidden would float over a
+      // session that no longer has the switch.
+      if (!enabled) setSheetOpen(false);
       render();
     }
 
@@ -106,6 +155,38 @@
           r.addEventListener('change', function () { if (r.checked) setMode(r.value); });
         }
       });
+
+      pillEl = doc.getElementById('dispatch-mode-pill');
+      pillIconEl = doc.getElementById('dispatch-mode-pill-icon');
+      pillLabelEl = doc.getElementById('dispatch-mode-pill-label');
+      sheetEl = doc.getElementById('dispatch-mode-sheet');
+      if (sheetEl && typeof sheetEl.querySelectorAll === 'function') {
+        sheetOpts = Array.prototype.slice.call(sheetEl.querySelectorAll('.dm-sheet-opt'));
+      }
+      if (pillEl && typeof pillEl.addEventListener === 'function') {
+        pillEl.addEventListener('click', function () { setSheetOpen(true); });
+      }
+      sheetOpts.forEach(function (opt) {
+        if (typeof opt.addEventListener !== 'function') return;
+        opt.addEventListener('click', function () {
+          setMode(opt.getAttribute('data-mode'));
+          setSheetOpen(false);
+        });
+      });
+      // Tapping the scrim or pressing Escape dismisses without changing anything.
+      if (sheetEl && typeof sheetEl.addEventListener === 'function') {
+        sheetEl.addEventListener('click', function (event) {
+          var target = event && event.target;
+          if (target && typeof target.hasAttribute === 'function' && target.hasAttribute('data-dm-close')) {
+            setSheetOpen(false);
+          }
+        });
+      }
+      if (typeof doc.addEventListener === 'function') {
+        doc.addEventListener('keydown', function (event) {
+          if (event && event.key === 'Escape' && sheetEl && !sheetEl.hidden) setSheetOpen(false);
+        });
+      }
       // Restore: prefer the new mode key; fall back to the legacy boolean once,
       // then the default. Restore never writes back, so an untouched session
       // keeps an empty slot rather than a synthesised default.

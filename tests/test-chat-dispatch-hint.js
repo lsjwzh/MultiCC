@@ -16,14 +16,41 @@ const COMPOSER_SRC = fs.readFileSync(path.join(ROOT, 'public/chat-composer.js'),
 
 const MODE_VALUES = ['dispatch_master', 'route_task', 'none'];
 
-function fakeRadio(value) {
-  return {
-    value,
-    checked: false,
+const MODE_UI = {
+  dispatch_master: { icon: '⇄', short: '需回执', key: 'dispatchModeMasterShort' },
+  route_task: { icon: '➤', short: '免回执', key: 'dispatchModeRouteShort' },
+  none: { icon: '⊘', short: '不派发', key: 'dispatchModeNoneShort' },
+};
+
+function fakeNode(extra = {}) {
+  return Object.assign({
+    attributes: {},
+    dataset: {},
     listeners: {},
+    textContent: '',
+    hidden: false,
     addEventListener(type, handler) { (this.listeners[type] = this.listeners[type] || []).push(handler); },
-    fire(type) { (this.listeners[type] || []).forEach(handler => handler({})); },
-  };
+    fire(type, event = {}) { (this.listeners[type] || []).forEach(handler => handler(event)); },
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; },
+    hasAttribute(name) { return name in this.attributes; },
+  }, extra);
+}
+
+// A segment is the <label> wrapping the radio; the pill copies its icon + text.
+function fakeRadio(value) {
+  const ui = MODE_UI[value];
+  const icon = fakeNode({ className: 'dm-icon', textContent: ui.icon });
+  const text = fakeNode({ className: 'dm-text', textContent: ui.short, dataset: { i18n: ui.key } });
+  const label = fakeNode({
+    querySelector(selector) {
+      if (selector === '.dm-icon') return icon;
+      if (selector === '.dm-text') return text;
+      return null;
+    },
+  });
+  const radio = fakeNode({ value, checked: false, parentNode: label });
+  return radio;
 }
 
 function fakeStorage(seed = {}) {
@@ -35,29 +62,57 @@ function fakeStorage(seed = {}) {
   };
 }
 
-// Each case drives its own DOM so nothing leaks between them.
-function hintDocument() {
+// Each case drives its own DOM so nothing leaks between them. `bare: true`
+// drops the pill + sheet to prove the module still works without them.
+function hintDocument({ bare = false } = {}) {
   const radios = MODE_VALUES.map(fakeRadio);
-  const group = {
+  const group = fakeNode({
     id: 'dispatch-mode-group',
-    hidden: false,
     querySelectorAll(selector) {
       return selector === 'input[name="dispatch-mode"]' ? radios.slice() : [];
     },
-  };
-  return {
-    getElementById(id) { return id === 'dispatch-mode-group' ? group : null; },
-    addEventListener() {},
+  });
+  const pillIcon = fakeNode({ textContent: '⇄' });
+  const pillLabel = fakeNode({ textContent: '需回执', dataset: { i18n: 'dispatchModeMasterShort' } });
+  const pill = fakeNode({ attributes: { 'aria-expanded': 'false' } });
+  const sheetOpts = MODE_VALUES.map(value => fakeNode({
+    className: 'dm-sheet-opt',
+    attributes: { 'data-mode': value, 'aria-checked': value === 'dispatch_master' ? 'true' : 'false' },
+  }));
+  const backdrop = fakeNode({ attributes: { 'data-dm-close': '' } });
+  const sheet = fakeNode({
+    hidden: true,
+    querySelectorAll(selector) { return selector === '.dm-sheet-opt' ? sheetOpts.slice() : []; },
+  });
+  const byId = bare
+    ? { 'dispatch-mode-group': group }
+    : {
+      'dispatch-mode-group': group,
+      'dispatch-mode-pill': pill,
+      'dispatch-mode-pill-icon': pillIcon,
+      'dispatch-mode-pill-label': pillLabel,
+      'dispatch-mode-sheet': sheet,
+    };
+  const doc = fakeNode({
+    getElementById(id) { return byId[id] || null; },
     readyState: 'complete',
     group,
     radios,
+    pill,
+    pillIcon,
+    pillLabel,
+    sheet,
+    sheetOpts,
+    backdrop,
     radio(value) { return radios.find(r => r.value === value); },
+    sheetOpt(value) { return sheetOpts.find(o => o.getAttribute('data-mode') === value); },
     // What a real click does: the browser flips the group, then fires `change`.
     pick(value) {
       radios.forEach(r => { r.checked = (r.value === value); });
       radios.find(r => r.value === value).fire('change');
     },
-  };
+  });
+  return doc;
 }
 
 function loadHint(extraWindow = {}) {
@@ -237,6 +292,105 @@ test('a transient boot-time failure retries and then reveals the group', async (
   assert.equal(doc.group.hidden, false);
 });
 
+test('the narrow-screen pill mirrors the segment that is selected', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument();
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'c', storage: fakeStorage(),
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await hint.mount();
+  assert.equal(doc.pill.getAttribute('data-mode'), 'dispatch_master');
+  assert.equal(doc.pillIcon.textContent, '⇄');
+  assert.equal(doc.pillLabel.textContent, '需回执');
+
+  doc.pick('none');
+  assert.equal(doc.pill.getAttribute('data-mode'), 'none');
+  assert.equal(doc.pillIcon.textContent, '⊘');
+  assert.equal(doc.pillLabel.textContent, '不派发');
+  // Carrying the key over keeps the pill translatable like any other label.
+  assert.equal(doc.pillLabel.dataset.i18n, 'dispatchModeNoneShort');
+});
+
+test('the pill opens the sheet and a sheet choice applies everywhere at once', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument();
+  const storage = fakeStorage();
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'c', storage,
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await hint.mount();
+  assert.equal(doc.sheet.hidden, true);
+
+  doc.pill.fire('click');
+  assert.equal(doc.sheet.hidden, false);
+  assert.equal(doc.pill.getAttribute('aria-expanded'), 'true');
+
+  doc.sheetOpt('route_task').fire('click');
+  assert.equal(hint.getMode(), 'route_task');
+  assert.equal(hint.decorate('部署'), '部署' + api.SUFFIX_ROUTE_TASK);
+  // One choice, three surfaces: sheet ticks, segmented radios, and the pill.
+  assert.equal(doc.sheetOpt('route_task').getAttribute('aria-checked'), 'true');
+  assert.equal(doc.sheetOpt('dispatch_master').getAttribute('aria-checked'), 'false');
+  assert.deepEqual(doc.radios.filter(r => r.checked).map(r => r.value), ['route_task']);
+  assert.equal(doc.pillLabel.textContent, '免回执');
+  assert.equal(storage.getItem('multicc.dispatchMode.c'), 'route_task');
+  assert.equal(doc.sheet.hidden, true);
+  assert.equal(doc.pill.getAttribute('aria-expanded'), 'false');
+});
+
+test('the sheet dismisses on the scrim and on Escape without changing the mode', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument();
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'c', storage: fakeStorage(),
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await hint.mount();
+
+  doc.pill.fire('click');
+  doc.sheet.fire('click', { target: doc.backdrop });
+  assert.equal(doc.sheet.hidden, true);
+  assert.equal(hint.getMode(), 'dispatch_master');
+
+  doc.pill.fire('click');
+  doc.fire('keydown', { key: 'Escape' });
+  assert.equal(doc.sheet.hidden, true);
+
+  // A click inside the panel must not close it out from under the user.
+  doc.pill.fire('click');
+  doc.sheet.fire('click', { target: fakeNode() });
+  assert.equal(doc.sheet.hidden, false);
+});
+
+test('losing the commander role closes an open sheet', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument();
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'c', storage: fakeStorage(),
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await hint.mount();
+  doc.pill.fire('click');
+  hint.setEnabled(false);
+  assert.equal(doc.sheet.hidden, true);
+  assert.equal(doc.group.hidden, true);
+});
+
+test('a page without the pill or sheet still selects modes through the segments', async () => {
+  const { api } = loadHint();
+  const doc = hintDocument({ bare: true });
+  const hint = api.createDispatchHint({
+    document: doc, sessionId: 'c', storage: fakeStorage(),
+    loadSession: async () => ({ type: 'commander' }),
+  });
+  await hint.mount();
+  doc.pick('none');
+  assert.equal(hint.getMode(), 'none');
+  assert.equal(hint.decorate('x'), 'x' + api.SUFFIX_NONE);
+});
+
 test('blank and non-string input is passed through untouched', async () => {
   const { api } = loadHint();
   const hint = api.createDispatchHint({
@@ -358,11 +512,66 @@ test('the chat host ships the radio group: markup, hidden rule, and script order
     assert.match(bar, new RegExp(`type="radio"\\s+name="dispatch-mode"\\s+value="${value}"`));
   }
   assert.match(bar, /value="dispatch_master"\s+checked/);
-  assert.match(bar, /优先分发给其他会话且需要回执/);
-  assert.match(bar, /优先分发给其他会话且不需要回执/);
-  assert.match(bar, /不派发给其他会话/);
-  // display:flex on the group would otherwise defeat the hidden attribute.
+  // Segments read as one picker: a caption plus a labelled radiogroup.
+  assert.match(bar, /class="dm-title" data-i18n="dispatchModeTitle"/);
+  assert.match(bar, /class="dm-segments" role="radiogroup"/);
+  for (const key of ['dispatchModeMasterShort', 'dispatchModeRouteShort', 'dispatchModeNoneShort']) {
+    assert.match(bar, new RegExp(`class="dm-text" data-i18n="${key}"`));
+  }
+  assert.match(bar, /id="dispatch-mode-pill"[^>]*aria-haspopup="dialog"/);
+  // display:inline-flex on the group would otherwise defeat the hidden attribute.
   assert.match(html, /#dispatch-mode-group\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
+});
+
+test('the narrow-screen layout swaps the segments for the pill', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
+  // The swap has to sit inside a narrow-screen media query, not at top level.
+  const swap = html.indexOf('#dispatch-mode-pill { display: inline-flex; }');
+  assert.ok(swap > 0, 'the pill must be revealed somewhere');
+  const query = html.lastIndexOf('@media (max-width: 760px)', swap);
+  assert.ok(query > 0 && html.indexOf('@media', query + 10) > swap,
+    'the swap must live inside the max-width:760px query');
+  assert.match(html.slice(query, swap), /#dispatch-mode-group \.dm-segments \{ display: none; \}/);
+  // Off the narrow layout the pill must stay out of the way.
+  assert.match(html, /#dispatch-mode-pill \{\s*display: none;/);
+});
+
+test('the bottom sheet offers all three modes with tappable rows', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
+  const start = html.indexOf('<div id="dispatch-mode-sheet"');
+  assert.ok(start > 0, 'the sheet markup must exist');
+  const sheet = html.slice(start, html.indexOf('<!-- Voice panel -->', start));
+  assert.match(sheet, /role="dialog" aria-modal="true"/);
+  assert.match(sheet, /class="dm-sheet-list" role="radiogroup"/);
+  for (const value of MODE_VALUES) {
+    assert.match(sheet, new RegExp(`role="radio"[^>]*\\n?[^>]*data-mode="${value}"`));
+  }
+  // Long label + one-line description, per mode.
+  for (const key of ['dispatchModeMasterLabel', 'dispatchModeRouteLabel', 'dispatchModeNoneLabel',
+    'dispatchModeMasterDesc', 'dispatchModeRouteDesc', 'dispatchModeNoneDesc']) {
+    assert.match(sheet, new RegExp(`data-i18n="${key}"`));
+  }
+  assert.match(sheet, /data-dm-close/);
+  // Touch targets on the sheet must clear the 44px floor.
+  const minHeight = /#dispatch-mode-sheet \.dm-sheet-opt \{[^}]*min-height: (\d+)px/.exec(html);
+  assert.ok(minHeight && Number(minHeight[1]) >= 44, 'sheet rows need a >=44px touch target');
+});
+
+test('every new dispatch string is translated in both locales', () => {
+  const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+  const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/en.json'), 'utf8'));
+  const keys = ['dispatchModeTitle', 'dispatchModeSheetTitle',
+    'dispatchModeMasterShort', 'dispatchModeRouteShort', 'dispatchModeNoneShort',
+    'dispatchModeMasterDesc', 'dispatchModeRouteDesc', 'dispatchModeNoneDesc'];
+  for (const key of keys) {
+    assert.ok(zh[key], `zh.json is missing ${key}`);
+    assert.ok(en[key], `en.json is missing ${key}`);
+    assert.notEqual(zh[key], en[key], `${key} looks untranslated`);
+  }
+  // The web catalog is generated from those two files; a stale one ships the
+  // page with missing labels.
+  const catalog = fs.readFileSync(path.join(ROOT, 'public/i18n-catalog.js'), 'utf8');
+  for (const key of keys) assert.ok(catalog.includes(`"${key}"`), `i18n-catalog.js is stale: ${key}`);
 });
 
 test('the task panel input does not carry the dispatch-mode group', () => {
