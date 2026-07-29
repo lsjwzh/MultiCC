@@ -47,17 +47,25 @@
 
   // Context usage belongs to the latest assistant turn. A streaming tail with
   // no usage is explicitly zero; it must not inherit the preceding turn.
-  function lastTurnTokens(messages) {
+  function lastTurnUsage(messages) {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       if (message.role !== 'assistant') continue;
-      if (!message.usage) return 0;
-      return numberOrZero(message.usage.input_tokens)
-        + numberOrZero(message.usage.output_tokens)
-        + numberOrZero(message.usage.cache_read_input_tokens)
-        + numberOrZero(message.usage.cache_creation_input_tokens);
+      return message.usage && typeof message.usage === 'object' ? message.usage : null;
     }
-    return 0;
+    return null;
+  }
+
+  // Raw sum of the block. The host renders through chat-token-readout.js, which
+  // knows that a total above the context window means the CLI summed several
+  // requests; this stays as the unfiltered figure the plan has always carried.
+  function lastTurnTokens(messages) {
+    const usage = lastTurnUsage(messages);
+    if (!usage) return 0;
+    return numberOrZero(usage.input_tokens)
+      + numberOrZero(usage.output_tokens)
+      + numberOrZero(usage.cache_read_input_tokens)
+      + numberOrZero(usage.cache_creation_input_tokens);
   }
 
   function historyPlan(payload, options = {}) {
@@ -109,6 +117,7 @@
       sessionTokens: usageSummary(messages, source.tokenUsage),
       hasAuthoritativeUsage: !!source.tokenUsage,
       usedTokens: lastTurnTokens(messages),
+      lastTurnUsage: lastTurnUsage(messages),
       oldestMessageId: oldest ? messageId(oldest) : null,
       hasMore: !!source.hasMore,
       streamingTail,
