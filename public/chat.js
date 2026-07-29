@@ -360,7 +360,10 @@ let _pendingCancel = false; // cancel requested while WS was disconnected
 
 // Context window tracking
 let _contextWindow = 1000000;
-let _usedTokens = 0;
+// Raw usage block of the latest assistant turn. Kept raw (not pre-summed) so
+// chat-token-readout.js can tell a single-request block from a CLI that sums
+// every request in the turn — see the module header for why that matters.
+let _turnUsage = null;
 let _costText = '';  // latest cost summary string, kept separate from the context readout
 let _sessionTokens = { input: 0, output: 0 };  // per-session cumulative token usage
 let _turnStartMs = 0;  // wall-clock when the current turn was sent (live reply timing)
@@ -877,7 +880,7 @@ function applyHistoryPlan(plan) {
   if (plan.hasAuthoritativeUsage || plan.mode === 'initial') {
     _sessionTokens = { ...plan.sessionTokens };
   }
-  _usedTokens = plan.usedTokens;
+  _turnUsage = plan.lastTurnUsage;
   updateContextBar();
 
   if (viewPlan.streamingTail) {
@@ -955,14 +958,7 @@ function updateContextBar(usage, modelUsage) {
       if (modelUsage[key].contextWindow) _contextWindow = modelUsage[key].contextWindow;
     }
   }
-  // Calculate used tokens for the current turn
-  if (usage) {
-    const input = usage.input_tokens || 0;
-    const output = usage.output_tokens || 0;
-    const cacheRead = usage.cache_read_input_tokens || 0;
-    const cacheCreate = usage.cache_creation_input_tokens || 0;
-    _usedTokens = input + output + cacheRead + cacheCreate;
-  }
+  if (usage) _turnUsage = usage;
 
   const parts = [];
 
@@ -994,17 +990,34 @@ function updateContextBar(usage, modelUsage) {
   // ── Session cumulative tokens ──
   const total = _sessionTokens.input + _sessionTokens.output;
   if (total > 0) {
-    parts.push(`<span style="margin-right:10px;color:var(--faint);font-size:11px">会话累计 ${fmt(total)} tokens（in ${fmt(_sessionTokens.input)} / out ${fmt(_sessionTokens.output)}）</span>`);
+    parts.push(`<span title="整个会话累计的计费用量（含每次请求重复计入的缓存读取），不是当前上下文占用" style="margin-right:10px;color:var(--faint);font-size:11px">会话累计 ${fmt(total)} tokens（in ${fmt(_sessionTokens.input)} / out ${fmt(_sessionTokens.output)}）</span>`);
   }
 
   // ── Current-turn context ──
-  if (_usedTokens > 0) {
-    const pct = Math.min(100, (_usedTokens / _contextWindow) * 100);
-    const color = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#3fb950';
-    const usedK = (_usedTokens / 1000).toFixed(1);
+  // updateContextBar runs inside the history render on connect, so a missing
+  // readout module must degrade the bar rather than abort the whole page.
+  const ctx = window.MultiCCChatTokenReadout?.turnContext(_turnUsage, _contextWindow)
+    || { input: 0, output: 0, total: 0, billed: 0, aggregated: false, withinWindow: true };
+  if (ctx.total > 0) {
     const totalK = (_contextWindow / 1000).toFixed(0);
-    parts.push(`<span style="font-size:11px;color:${color}">本轮 ${usedK}k/${totalK}k (${pct.toFixed(1)}%)</span>`);
-    parts.push(`<span style="display:inline-block;width:60px;height:5px;background:#21262d;border-radius:3px;margin-left:4px;vertical-align:middle;"><span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span></span>`);
+    const k = value => (value / 1000).toFixed(1);
+    const pct = Math.min(100, (ctx.total / _contextWindow) * 100);
+    const color = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#3fb950';
+    if (!ctx.aggregated) {
+      parts.push(`<span style="font-size:11px;color:${color}">本轮 ${k(ctx.total)}k/${totalK}k (${pct.toFixed(1)}%)</span>`);
+    } else if (ctx.withinWindow) {
+      // The CLI billed this turn across several requests. in/out are each
+      // counted once per request, so their sum still overstates the window a
+      // little — say「约」rather than pass an estimate off as a measurement.
+      parts.push(`<span title="Codex 按整轮所有 API 请求合计上报（计费 ${fmt(ctx.billed)} tokens），其中缓存读取被逐次重复计入，已剔除；此处为上下文占用的估算上限" style="font-size:11px;color:${color}">本轮 in ${k(ctx.input)}k / out ${k(ctx.output)}k（约 ${pct.toFixed(1)}%）</span>`);
+    } else {
+      // Even the once-per-request buckets exceed the window; there is nothing
+      // left to honestly turn into a percentage.
+      parts.push(`<span title="Codex 按整轮所有 API 请求合计上报（计费 ${fmt(ctx.billed)} tokens），无法据此折算单轮上下文占用" style="font-size:11px;color:var(--faint)">本轮 in ${k(ctx.input)}k / out ${k(ctx.output)}k（累计口径）</span>`);
+    }
+    if (!ctx.aggregated || ctx.withinWindow) {
+      parts.push(`<span style="display:inline-block;width:60px;height:5px;background:#21262d;border-radius:3px;margin-left:4px;vertical-align:middle;"><span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px;"></span></span>`);
+    }
   }
   if (parts.length) costBar.innerHTML = parts.join('');
 }
