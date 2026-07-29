@@ -369,7 +369,12 @@
         }
       }
       if (!worst) return { text: '余量：无生效套餐', color: QUOTA_GRAY, title: 'arkcli 未返回已订阅套餐' };
-      return { text: `余量 ${worst.product || 'Ark'} ${worst.label || ''} ${worst.used}/${worst.total} (${quotaFmt2(worst.percent)}%)`, color: quotaPctColor(worst.percent), title: '火山方舟套餐额度（最紧张周期）' };
+      // coding-plan periods (session/周/月) carry only a percent — no used/total —
+      // so render percent-only instead of interpolating null into the text.
+      const usage = (worst.used != null && worst.total != null)
+        ? `${quotaFmt2(worst.used)}/${quotaFmt2(worst.total)} (${quotaFmt2(worst.percent)}%)`
+        : `${quotaFmt2(worst.percent)}%`;
+      return { text: `余量 ${worst.product || 'Ark'} ${worst.label || ''} ${usage}`, color: quotaPctColor(worst.percent), title: '火山方舟套餐额度（最紧张周期）' };
     }
     if (kind === 'qoder') {
       const total = (data.quota && data.quota.total_quota && data.quota.total_quota.quota_summary) || {};

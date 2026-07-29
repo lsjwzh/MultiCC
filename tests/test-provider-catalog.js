@@ -230,6 +230,46 @@ test('formatProviderQuotaBadge renders ark worst period, qoder credits, opencode
   assert.equal(opencode.color, '#d29922');
 });
 
+test('formatProviderQuotaBadge renders ark percent-only periods without null/null', () => {
+  // coding-plan periods (session/周/月) have no used/total — only a percent.
+  const monthlyWorst = catalog.formatProviderQuotaBadge('ark', {
+    status: 'ok',
+    items: [{
+      product: 'coding-plan',
+      subscribed: true,
+      periods: [
+        { label: 'session', used: null, total: null, percent: 0 },
+        { label: '周', used: null, total: null, percent: 26.85 },
+        { label: '月', used: null, total: null, percent: 98.42 },
+      ],
+    }],
+  });
+  assert.ok(!monthlyWorst.text.includes('null'), `text must not contain null: ${monthlyWorst.text}`);
+  assert.match(monthlyWorst.text, /coding-plan 月 98\.42%/);
+  assert.equal(monthlyWorst.color, '#f85149');
+
+  // An active coding session drives the session window to 100% — still no used/total.
+  const sessionWorst = catalog.formatProviderQuotaBadge('ark', {
+    status: 'ok',
+    items: [{
+      product: 'coding-plan',
+      subscribed: true,
+      periods: [{ label: 'session', used: null, total: null, percent: 100 }],
+    }],
+  });
+  assert.ok(!sessionWorst.text.includes('null'), `text must not contain null: ${sessionWorst.text}`);
+  assert.match(sessionWorst.text, /coding-plan session 100%/);
+  assert.equal(sessionWorst.color, '#f85149');
+
+  // percent 0 renders as 0%, not blank or 100%.
+  const zero = catalog.formatProviderQuotaBadge('ark', {
+    status: 'ok',
+    items: [{ product: 'coding-plan', subscribed: true, periods: [{ label: 'session', used: null, total: null, percent: 0 }] }],
+  });
+  assert.match(zero.text, /session 0%/);
+  assert.equal(zero.color, '#58a6ff');
+});
+
 test('formatProviderQuotaBadge surfaces auth/config/unavailable fallbacks', () => {
   assert.match(catalog.formatProviderQuotaBadge('zhipu', { status: 'not_configured' }).text, /未配置/);
   assert.match(catalog.formatProviderQuotaBadge('ark', { status: 'needs_auth' }).text, /需登录/);
