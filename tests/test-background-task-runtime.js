@@ -422,6 +422,61 @@ async function test(name, fn) {
     assert.strictEqual(h.injections.length, 1);
   });
 
+  await test('long sync Bash keeps its sync classification past the dedup TTL', () => {
+    const h = makeHarness();
+    h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'fg-long', name: 'Bash', input: { command: 'sleep 320', timeout: 600000 } }],
+    }, { subtype: 'task_started', task_id: 'long-sync', tool_use_id: 'fg-long', session_id: 'native' });
+    h.clock.advance(10 * 60 * 1000);
+    const result = h.runtime.handleEvent('s1', { cwd: '/repo', currentToolCalls: [] }, {
+      subtype: 'task_notification', task_id: 'long-sync', tool_use_id: 'fg-long', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'sync-bash');
+    h.clock.advance(100);
+    assert.strictEqual(h.notes.length, 0);
+    assert.strictEqual(h.injections.length, 0, 'a ten-minute sync command must not inject a silent nudge');
+  });
+
+  await test('completion whose tool result the turn already consumed is suppressed as turn-result', () => {
+    const h = makeHarness();
+    h.runtime.recordMainToolUseId('s1', 'done-tool');
+    const result = h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'done-tool', name: 'Bash', input: { command: 'make build' }, result: 'ok', is_error: false }],
+    }, { subtype: 'task_notification', task_id: 'late-notice', tool_use_id: 'done-tool', status: 'completed' });
+    assert.strictEqual(result.decision, 'turn-result');
+    h.clock.advance(100);
+    assert.strictEqual(h.notes.length, 0);
+    assert.strictEqual(h.injections.length, 0);
+  });
+
+  await test('run_in_background completion still injects despite the launch-ack result in the turn', () => {
+    const h = makeHarness();
+    h.runtime.recordMainToolUseId('s1', 'bg-tool');
+    const result = h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{
+        id: 'bg-tool', name: 'Bash',
+        input: { command: 'npm test', run_in_background: true },
+        result: 'started background task bg-task',
+      }],
+    }, { subtype: 'task_notification', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed' });
+    assert.strictEqual(result.decision, 'inject');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1, 'genuine background results keep flowing');
+  });
+
+  await test('TaskOutput awaiting mark still expires on the short dedup TTL', () => {
+    const h = makeHarness();
+    h.runtime.markTaskOutputAwaiting('s1', { block: true, task_id: 'stale-pull' });
+    h.clock.advance(5 * 60 * 1000 + 1);
+    const result = h.runtime.handleEvent('s1', {}, {
+      subtype: 'task_notification', task_id: 'stale-pull', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'inject');
+  });
+
   console.log(`\n${passed} background-task runtime tests passed`);
 })().catch(error => {
   console.error(error.stack || error);
