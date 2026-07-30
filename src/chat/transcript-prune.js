@@ -48,15 +48,30 @@ const os = require('os');
 
 // High-water mark: above this the transcript is examined. Below it, one stat().
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
-// What the cheap (near-lossless) levers aim for.
-const DEFAULT_TARGET_BYTES = 1200 * 1024;
-// Only above this do we resort to the lossy lever — dropping whole real turns,
-// which also drops claude's own compact summary and with it the model's memory of
-// everything before. Auto-compact normally keeps us far below this; crossing it
-// means compaction is not running (or not keeping up) and something has to give.
-const DEFAULT_HARD_MAX_BYTES = 4 * 1024 * 1024;
-// Tried in order once the lossy lever is unavoidable.
-const DEFAULT_KEEP_TURNS_LADDER = [20, 10, 5];
+// What the ladder actually aims for, and the correction that makes it work.
+//
+// Every threshold here used to be denominated in file bytes, which is not the thing
+// that fails. "Prompt is too long" is a token count, and a transcript is ~26% CLI
+// bookkeeping (`toolUseResult`, its own copy of every tool output) that is never
+// sent upstream. Measured on the 33.8MB session that produced the error: the old
+// ladder ran to its last rung, dropped 33 substantive turns, reached the 1.2MB file
+// target — and landed at 215,142 tokens, still over a 200K window. It did its worst
+// damage and the next turn failed anyway. Denominated in tokens instead, the same
+// file stops at 93,715 tokens and fits.
+//
+// Room is left for what shares the window with the transcript: the CLI's system
+// prompt, tool and MCP schemas, CLAUDE.md, injected memory, the new user turn, and
+// the model's own output.
+const DEFAULT_TARGET_TOKENS = 120000;
+// Above this the lossy lever engages — dropping whole real turns, which also risks
+// claude's own compact summary and with it the model's memory of everything before.
+// Auto-compact normally keeps us far below this; crossing it means compaction is not
+// running (or not keeping up) and something has to give.
+const DEFAULT_HARD_MAX_TOKENS = 160000;
+// Tried in order once the lossy lever is unavoidable. The low rungs exist because
+// the ladder must be able to REACH the target: on a session whose replayed slice is
+// mostly a few enormous turns, stopping at 5 leaves it over the wall.
+const DEFAULT_KEEP_TURNS_LADDER = [20, 10, 5, 3, 2];
 // An entry above this is elided. Sized so ordinary tool output (a file read, a
 // test run) survives verbatim and only genuine blobs are cut.
 const DEFAULT_MAX_ENTRY_BYTES = 200 * 1024;
@@ -495,20 +510,39 @@ function liveExtent(lines, cut) {
   return { liveBytes, largestEntryBytes };
 }
 
-// Only the `message` payloads: the CLI's own `toolUseResult` copy is never sent
-// upstream, and on a tool-heavy session it is most of the file. O(liveBytes) —
-// returns null rather than stall on a pathological file.
+// What one entry actually costs upstream. The CLI's own `toolUseResult` copy is
+// never sent, and on a tool-heavy session it is most of the line — which is exactly
+// why file bytes overstate the real load (0.74 file→api on the measured session).
+function apiBytesOfLine(text) {
+  const obj = parseLine(text);
+  if (!obj) return Buffer.byteLength(text);
+  return obj.message
+    ? Buffer.byteLength(JSON.stringify(obj.message))
+    : Math.min(Buffer.byteLength(text), 4096);
+}
+
+// O(liveBytes) — returns null rather than stall on a pathological file.
 function liveApiBytes(lines, cut, liveBytes, parseBudget) {
   if (liveBytes > parseBudget) return null;
   let apiBytes = 0;
-  for (let i = cut; i < lines.length; i++) {
-    const obj = parseLine(lines[i]);
-    if (!obj) { apiBytes += Buffer.byteLength(lines[i]); continue; }
-    apiBytes += obj.message
-      ? Buffer.byteLength(JSON.stringify(obj.message))
-      : Math.min(Buffer.byteLength(lines[i]), 4096);
-  }
+  for (let i = cut; i < lines.length; i++) apiBytes += apiBytesOfLine(lines[i]);
   return apiBytes;
+}
+
+/**
+ * What a candidate would cost upstream, in estimated tokens — the number the ladder
+ * stops on. Deliberately conservative on CJK: a Chinese character is \uXXXX-escaped
+ * to 6 bytes in the JSONL but is roughly one token, so BYTES_PER_TOKEN overestimates
+ * a Chinese session by ~1.5x. Erring high trims slightly more than necessary; erring
+ * low would let the very error we are here to prevent through.
+ */
+function candidateTokens(candidate) {
+  if (candidate.tokens == null) {
+    let bytes = 0;
+    for (const text of candidate.texts) bytes += apiBytesOfLine(text);
+    candidate.tokens = Math.round(bytes / BYTES_PER_TOKEN);
+  }
+  return candidate.tokens;
 }
 
 /**
@@ -526,7 +560,7 @@ function liveApiBytes(lines, cut, liveBytes, parseBudget) {
  * elide (their weight is many medium entries, not a few blobs), so the gate did ~10ms
  * of work per turn to return null and `wouldPrune` claimed a trim that would never
  * happen. The only lever that would bite there is dropping whole turns, and below
- * hardMaxBytes claude's own compaction summarises that same history far better than
+ * hardMaxTokens claude's own compaction summarises that same history far better than
  * we can truncate it. So the watermark stays a readout, not an action.
  *
  * Pure, and shared with measureFile() so the readout cannot promise a trim the gate
@@ -552,8 +586,8 @@ function triggersFor({ fileBytes, largestEntryBytes }, { maxBytes, hardEntryByte
  */
 function pruneFile(file, {
   maxBytes = DEFAULT_MAX_BYTES,
-  targetBytes = DEFAULT_TARGET_BYTES,
-  hardMaxBytes = DEFAULT_HARD_MAX_BYTES,
+  targetTokens = DEFAULT_TARGET_TOKENS,
+  hardMaxTokens = DEFAULT_HARD_MAX_TOKENS,
   keepTurnsLadder = DEFAULT_KEEP_TURNS_LADDER,
   maxEntryBytes = DEFAULT_MAX_ENTRY_BYTES,
   hardEntryBytes = DEFAULT_HARD_ENTRY_BYTES,
@@ -639,11 +673,15 @@ function pruneFile(file, {
     { max: Math.min(maxEntryBytes, 24 * 1024), chars: ELIDE_CHARS_TIGHT, protectFrom, name: 'elide-max' },
     { max: Math.min(maxEntryBytes, 24 * 1024), chars: ELIDE_CHARS_TIGHT, protectFrom: -1, name: 'elide-max-unprotected' },
   ];
+  // Every comparison here is in tokens, not bytes: bytes are what the file costs on
+  // disk, tokens are what the next turn costs against the window.
   const take = (candidate, cut, name) => {
-    if (!best || candidate.bytes < best.bytes) {
+    const tokens = candidateTokens(candidate);
+    if (!best || tokens < best.tokens) {
       best = { ...candidate, cut };
       strategy = name;
     }
+    return tokens;
   };
 
   let analyze = null;
@@ -654,16 +692,16 @@ function pruneFile(file, {
     // Levers 1+2: drop what claude already ignores, then elide the blobs.
     const plan = indicesFor(compactCut);
     const base = buildCandidate(lines, plan.indices, analyze, plan.splice);
-    take(base, compactCut, compactCut > 0 ? `compact-cut+${level.name}` : level.name);
-    // Under the ceiling: stop here rather than trade more detail for bytes we don't
+    const tokens = take(base, compactCut, compactCut > 0 ? `compact-cut+${level.name}` : level.name);
+    // Under the ceiling: stop here rather than trade more detail for room we don't
     // need. This also keeps the ordinary case to a single pass over the file.
-    if (base.bytes <= hardMaxBytes) break;
+    if (tokens <= hardMaxTokens) break;
   }
   // Lever 3 (lossy): drop whole real turns, but only when eliding everything we are
   // allowed to elide still left us far above target — i.e. auto-compaction is not
   // keeping this session in bounds on its own. Uses the most aggressive elision,
   // since giving up detail beats giving up more turns.
-  if (best && best.bytes > hardMaxBytes) {
+  if (best && best.tokens > hardMaxTokens) {
     for (const keep of keepTurnsLadder) {
       // keep-N spends its budget on turns that carry information. A session driven
       // by "继续" / "ok" burns N positional turns on maybe two real exchanges, so
@@ -679,8 +717,12 @@ function pruneFile(file, {
       if (cut <= compactCut) continue;   // would keep more, not less
       const plan = indicesFor(cut);
       const candidate = buildCandidate(lines, plan.indices, analyze, plan.splice);
-      take(candidate, cut, `keep-${keep}-turns`);
-      if (candidate.bytes <= targetBytes) break;
+      // Stop on tokens, not on file bytes. Measured on the 33.8MB session that
+      // produced "Prompt is too long": the byte rule stopped at keep-5 because
+      // 1.11MB was under the 1.2MB byte target — and that candidate was still
+      // 215,142 tokens, over a 200K window. It dropped 33 substantive turns and
+      // the next turn failed anyway. keep-2, one rung lower, fits in 93,715.
+      if (take(candidate, cut, `keep-${keep}-turns`) <= targetTokens) break;
     }
   }
   if (!best) return null;
@@ -721,6 +763,10 @@ function pruneFile(file, {
     triggers,
     beforeBytes: stat.size,
     afterBytes: best.bytes,
+    // What the plan costs upstream, and whether it actually clears the wall. Bytes
+    // alone cannot answer that — this is the number the ladder stopped on.
+    afterTokens: best.tokens,
+    fitsTarget: best.tokens <= targetTokens,
     beforeLines: lines.length,
     afterLines: best.texts.length,
     droppedLines: removed.length,
@@ -765,8 +811,8 @@ function maybePrune(cwd, sessionId, opts = {}) {
  */
 function measureFile(file, {
   maxBytes = DEFAULT_MAX_BYTES,
-  targetBytes = DEFAULT_TARGET_BYTES,
-  hardMaxBytes = DEFAULT_HARD_MAX_BYTES,
+  targetTokens = DEFAULT_TARGET_TOKENS,
+  hardMaxTokens = DEFAULT_HARD_MAX_TOKENS,
   hardEntryBytes = DEFAULT_HARD_ENTRY_BYTES,
   scanMinBytes = DEFAULT_SCAN_MIN_BYTES,
   tokenWatermark = DEFAULT_TOKEN_WATERMARK,
@@ -827,7 +873,10 @@ function measureFile(file, {
       summaryPresent: summaryIdx >= 0,
       droppedByCompaction: cut,
     },
-    thresholds: { maxBytes, targetBytes, hardMaxBytes, hardEntryBytes, tokenWatermark, scanMinBytes },
+    // Bytes gate the work; tokens are what the ladder stops on. Both are reported
+    // because reading one for the other is how the ladder came to aim at the wrong
+    // number in the first place.
+    thresholds: { maxBytes, hardEntryBytes, scanMinBytes, targetTokens, hardMaxTokens, tokenWatermark },
     // Computed by the same pure function the prune gate uses, so the readout cannot
     // promise a trim the next turn would not run.
     triggers,
@@ -835,8 +884,10 @@ function measureFile(file, {
     overWatermark,
     // 'over' is reserved for actual context pressure — a big file that already
     // auto-compacted is not it, and a session over the watermark is, whether or not
-    // we have any lever for it.
-    status: (overWatermark || stat.size > hardMaxBytes) ? 'over' : (triggers.length ? 'watch' : 'ok'),
+    // we have any lever for it. When the live slice was too large to parse we have
+    // no token figure at all; a slice that size is over the wall by construction.
+    status: (overWatermark || (estimatedTokens == null && liveBytes > hardMaxTokens * BYTES_PER_TOKEN))
+      ? 'over' : (triggers.length ? 'watch' : 'ok'),
     modifiedAt: stat.mtime instanceof Date ? stat.mtime.toISOString() : null,
   };
 }
@@ -858,8 +909,8 @@ module.exports = {
   triggersFor,
   compactCutIndex,
   DEFAULT_MAX_BYTES,
-  DEFAULT_TARGET_BYTES,
-  DEFAULT_HARD_MAX_BYTES,
+  DEFAULT_TARGET_TOKENS,
+  DEFAULT_HARD_MAX_TOKENS,
   DEFAULT_MAX_ENTRY_BYTES,
   DEFAULT_HARD_ENTRY_BYTES,
   DEFAULT_KEEP_TURNS_LADDER,

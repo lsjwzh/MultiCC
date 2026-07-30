@@ -23,7 +23,8 @@
  *   --apply           Actually rewrite the file (default is measure/dry-run only).
  *   --keep-turns N    Override the lossy-tier ladder with a single rung.
  *   --max-bytes N     High-water mark in bytes (default 2MB, same as the live gate).
- *   --target-bytes N  Byte target the lossy tier aims for (default ~1.2MB).
+ *   --target-tokens N Token target the ladder stops on (default 120K). Bytes are the
+ *                     gate; tokens are the wall — see transcript-prune.js.
  *
  * Removed entries are appended to <name>.pruned.jsonl so global token accounting
  * (src/token-global.js walks **\/*.jsonl) still reads their usage.
@@ -37,7 +38,7 @@ const prune = require('../src/chat/transcript-prune');
 function parseArgs(argv) {
   const args = {
     file: null, cwd: null, session: null, apply: false,
-    keepTurns: null, maxBytes: null, targetBytes: null,
+    keepTurns: null, maxBytes: null, targetTokens: null,
   };
   const num = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
   for (let i = 2; i < argv.length; i++) {
@@ -48,8 +49,11 @@ function parseArgs(argv) {
     else if (a === '--session') args.session = argv[++i];
     else if (a === '--keep-turns') args.keepTurns = num(argv[++i]);
     else if (a === '--max-bytes') args.maxBytes = num(argv[++i]);
-    else if (a === '--target-bytes') args.targetBytes = num(argv[++i]);
-    else if (!a.startsWith('--')) args.file = a;
+    else if (a === '--target-tokens') args.targetTokens = num(argv[++i]);
+    // An unknown flag here is an operator about to misread the output — the old
+    // --target-bytes silently did nothing once the ladder moved to tokens.
+    else if (a.startsWith('--')) { console.error(`Unknown flag: ${a}`); process.exit(1); }
+    else args.file = a;
   }
   return args;
 }
@@ -71,7 +75,7 @@ function main() {
 
   const opts = {};
   if (args.maxBytes != null) opts.maxBytes = args.maxBytes;
-  if (args.targetBytes != null) opts.targetBytes = args.targetBytes;
+  if (args.targetTokens != null) opts.targetTokens = args.targetTokens;
   if (args.keepTurns != null) opts.keepTurnsLadder = [args.keepTurns];
 
   const level = prune.measureFile(file, opts);
@@ -101,6 +105,12 @@ function main() {
   }
   console.log(`  Plan:      ${report.strategy} → ${mb(report.afterBytes)}`
     + ` (${report.droppedLines} lines out, ${report.elidedEntries} entries elided)`);
+  // The number that decides whether the next turn loads. A plan can hit any byte
+  // figure you like and still be over the window — that is exactly how a session
+  // lost 33 substantive turns and then failed anyway.
+  console.log(`  Sends:     ~${report.afterTokens.toLocaleString()} tokens`
+    + ` (target ${level.thresholds.targetTokens.toLocaleString()})`
+    + `   ${report.fitsTarget ? 'fits' : 'STILL OVER — the ladder has no lower rung'}`);
   if (report.lostTurns > 0) {
     console.log(`  COST:      ${report.lostTurns} replayed turn(s) lost`
       + ` — ${report.lostSubstantiveTurns} of them substantive`
