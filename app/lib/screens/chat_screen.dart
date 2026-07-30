@@ -371,6 +371,7 @@ class _ChatViewState extends State<ChatView> {
                 apiError: provider.apiErrorPolicy,
                 limit: provider.usageWindowLimit,
                 balance: provider.usageBalance,
+                vendorQuotas: provider.vendorQuotaViews,
                 showClaudeIdle: provider.showClaudeLimitIdle,
                 onRetry: provider.apiErrorPolicy?.canManualRetry == true
                     ? () => _retryApiError(provider)

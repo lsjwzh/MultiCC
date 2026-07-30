@@ -154,6 +154,10 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.sessionProviderName({ cli: 'claude', provider: 'throws' }), 'throws');
   assert.equal(policy.sessionProviderName({ cli: 'zcode', provider: 'zcode-primary' }), 'ZCode Primary');
   assert.equal(policy.sessionProviderName({ cli: 'zcode', provider: 'stale-provider' }), 'stale-provider');
+  assert.equal(policy.sessionProviderBaseUrl({ cli: 'claude', provider: 'relay' }), 'https://relay.invalid');
+  assert.equal(policy.sessionProviderBaseUrl({ cli: 'claude', provider: 'primary' }), null);
+  assert.equal(policy.sessionProviderBaseUrl({ cli: 'claude', provider: 'throws' }), null);
+  assert.equal(policy.sessionProviderBaseUrl({ cli: 'claude' }), null);
 });
 
 test('effort, agent and disconnect policies preserve each CLI contract', t => {

@@ -78,7 +78,8 @@ function createCliSwitchRuntime(options) {
     'ensureCliStates', 'cliStateSummary', 'gitWorktreeSnapshot', 'cwdForSession',
     'getChatStream', 'cancelClassify', 'assignKillReason', 'appendMessage',
     'appendEvent', 'chatBroadcast', 'workspaceBroadcast', 'saveBestEffort',
-    'cliAvailabilitySummary', 'sessionProviderName', 'effectiveSessionModel',
+    'cliAvailabilitySummary', 'sessionProviderName', 'sessionProviderBaseUrl',
+    'effectiveSessionModel',
     'effectiveSessionEffort', 'serializeSubagent',
   ]) requireFunction(options, name);
 
@@ -363,6 +364,7 @@ function createCliSwitchRuntime(options) {
       fresh: switchOptions.fresh === true,
       provider: session.provider || null,
       providerName: options.sessionProviderName(session),
+      providerBaseUrl: options.sessionProviderBaseUrl(session),
       model: session.model || null,
       effectiveModel: options.effectiveSessionModel(session),
       effort: session.effort || null,
@@ -460,6 +462,7 @@ function createCliSwitchRuntime(options) {
         effectiveEffort: options.effectiveSessionEffort(session),
         provider: session.provider || null,
         providerName: options.sessionProviderName(session),
+        providerBaseUrl: options.sessionProviderBaseUrl(session),
         model: session.model || null,
         effort: session.effort || null,
         agent: session.agent || null,
