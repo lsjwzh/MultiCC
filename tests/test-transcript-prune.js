@@ -449,6 +449,48 @@ test('the lossy ladder counts substantive turns, and falls back to positional', 
   validate(t.file, 'substance');
 });
 
+// ── 11b. the ladder stops on tokens, and only on a rung that fits ────────────
+// The failure this guards is the one that produced "Prompt is too long" in the
+// first place: a byte-denominated ladder stopped at keep-5 because 1.11MB was
+// under a 1.2MB byte target, while the candidate was still 215K tokens — over a
+// 200K window. It dropped 33 substantive turns and the next turn failed anyway.
+// keep-2, one rung lower, fit in 94K. This fixture reproduces that cliff: turns
+// whose weight sits in many medium entries nothing may elide, sized so keep-3
+// lands just over the token target and keep-2 just under it.
+test('the ladder descends until the plan fits the token target, not a byte one', () => {
+  const cwd = '/tmp/prune-tokenwall';
+  const t = makeTranscript(cwd, 'sess-tokenwall');
+  t.userTurn('a substantive opening request with real content');
+  // 12 turns x 18 pairs x 11KB. A toolPair line carries the message AND the CLI's
+  // own toolUseResult copy, so 11KB of payload is a ~23KB line — under even the
+  // tightest elision threshold (24KB), meaning elision saves nothing and only
+  // turn cuts can help. ~52K tokens per turn: keep-3 ≈ 157K (over), keep-2 ≈ 105K (fits).
+  for (let i = 0; i < 12; i++) {
+    t.userTurn(`real request ${i}: please rework the audit pipeline end to end`);
+    for (let j = 0; j < 18; j++) t.toolPair(11 * 1024);
+  }
+  const file = t.write();
+  assert.ok(fs.statSync(file).size > prune.DEFAULT_MAX_BYTES, 'gate must be armed');
+
+  const report = prune.maybePrune(cwd, 'sess-tokenwall', { dryRun: true });
+  assert.ok(report, 'a 4MB replay must produce a plan');
+  assert.strictEqual(report.strategy, 'keep-2-turns',
+    `keep-3 is over the token wall; the ladder must reach the rung that fits, got ${report.strategy}`);
+  assert.strictEqual(typeof report.afterTokens, 'number');
+  assert.ok(report.afterTokens <= prune.DEFAULT_TARGET_TOKENS,
+    `a plan is only acceptable when it fits: ${report.afterTokens} > ${prune.DEFAULT_TARGET_TOKENS}`);
+  assert.strictEqual(report.fitsTarget, true);
+  assert.ok(report.lostSubstantiveTurns >= 9, 'the cost is real and must stay visible');
+
+  // Forced to a single rung that cannot fit, the report must say so — an
+  // over-target plan presented as a success is how this bug went unseen.
+  const forced = prune.maybePrune(cwd, 'sess-tokenwall', { keepTurnsLadder: [5], dryRun: true });
+  assert.strictEqual(forced.strategy, 'keep-5-turns');
+  assert.strictEqual(forced.fitsTarget, false,
+    'keep-5 is ~262K tokens here: best effort, but it must not be reported as fitting');
+  assert.ok(forced.afterTokens > prune.DEFAULT_TARGET_TOKENS);
+});
+
 // ── 12. context pressure is not the same thing as an armed gate ──────────────
 test('a session over the watermark with nothing to elide is reported, not pruned', () => {
   const cwd = '/tmp/prune-watermark';
