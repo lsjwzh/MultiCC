@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../i18n.dart';
 import '../models/chat_runtime_state.dart';
+import '../models/vendor_quota.dart';
 import '../utils/status_presentation.dart';
 
 class PendingUserInputPanel extends StatefulWidget {
@@ -523,6 +524,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   final ApiErrorPolicyState? apiError;
   final UsageWindowLimit? limit;
   final UsageBalance? balance;
+  final List<VendorQuotaView> vendorQuotas;
   final bool showClaudeIdle;
   final VoidCallback? onRetry;
 
@@ -531,13 +533,18 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.apiError,
     this.limit,
     this.balance,
+    this.vendorQuotas = const [],
     this.showClaudeIdle = false,
     this.onRetry,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (apiError == null && limit == null && balance == null && !showClaudeIdle) {
+    if (apiError == null &&
+        limit == null &&
+        balance == null &&
+        vendorQuotas.isEmpty &&
+        !showClaudeIdle) {
       return const SizedBox.shrink();
     }
     return Container(
@@ -558,6 +565,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
           else if (showClaudeIdle)
             _claudeIdleView(),
           if (balance != null) _balanceView(balance!),
+          for (final v in vendorQuotas) _vendorQuotaView(v),
           if (apiError != null) _errorView(apiError!),
           if (apiError?.canManualRetry == true && onRetry != null)
             OutlinedButton.icon(
@@ -636,6 +644,16 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
             ? const Color(0xFF7ee787)
             : const Color(0xFFe3b341),
         fontSize: 11,
+      ),
+    );
+  }
+
+  Widget _vendorQuotaView(VendorQuotaView v) {
+    return Semantics(
+      label: v.tooltip.isNotEmpty ? '${v.text}\n${v.tooltip}' : v.text,
+      child: Text(
+        v.text,
+        style: TextStyle(color: Color(v.color), fontSize: 11),
       ),
     );
   }

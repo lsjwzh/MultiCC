@@ -79,6 +79,7 @@ function createHarness(overrides = {}) {
       opencode: { available: true }, zcode: { available: true }, qoder: { available: true },
     }),
     sessionProviderName: value => value.provider ? `name:${value.provider}` : null,
+    sessionProviderBaseUrl: value => value.provider ? `https://${value.provider}.example.com` : null,
     effectiveSessionModel: value => value.model || 'effective-default',
     effectiveSessionEffort: value => value.effort || 'effective-default',
     serializeSubagent: value => value,

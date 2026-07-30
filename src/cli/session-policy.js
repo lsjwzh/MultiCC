@@ -132,6 +132,22 @@ function createSessionPolicy(options) {
     }
   }
 
+  function sessionProviderBaseUrl(session) {
+    const providerId = session && session.provider;
+    if (!providerId) return null;
+    const appType = providers.appTypeForCli(session.cli);
+    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode';
+    if (!appType && !globalProviderCli) return null;
+    try {
+      return providerRouter.getProviderSummary(
+        globalProviderCli ? undefined : appType,
+        providerId,
+      )?.baseUrl || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function normalizeEffort(value) {
     const normalized = (value == null ? '' : String(value)).trim().toLowerCase();
     if (!normalized) return null;
@@ -275,6 +291,7 @@ function createSessionPolicy(options) {
     serializeSubagent,
     providerDefaultModel,
     sessionProviderName,
+    sessionProviderBaseUrl,
     normalizeEffort,
     validEffortForCli,
     cliEffortLevel,
