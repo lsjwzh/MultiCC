@@ -373,3 +373,27 @@ test('ark bar shows every period of both plans, marking the one matching the bas
   assert.ok(unknown.text.includes('当前') === false, 'no plan marked when baseUrl is inconclusive');
   assert.ok(unknown.text.startsWith('Agent 5h 0.11%'), unknown.text);
 });
+
+test('switching provider baseUrl to a vendor endpoint immediately refreshes its quota', async () => {
+  const calls = [];
+  const origFetch = global.fetch;
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, json: async () => ({ status: 'ok', fetchedAt: Date.now(), items: [] }) };
+  };
+  try {
+    setProviderBaseUrl(''); // baseline: no vendor active
+    setProviderBaseUrl('https://ark.cn-beijing.volces.com/api/coding/v3');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(calls.some((u) => u.includes('/api/ark/quota')), `expected an ark quota fetch, got: ${calls.join(', ') || '(none)'}`);
+
+    // Re-applying the same baseUrl must not refetch (only a real switch does).
+    calls.length = 0;
+    setProviderBaseUrl('https://ark.cn-beijing.volces.com/api/coding/v3');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.length, 0, 'unchanged baseUrl must not refetch');
+  } finally {
+    global.fetch = origFetch;
+    setProviderBaseUrl('');
+  }
+});
