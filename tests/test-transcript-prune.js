@@ -326,7 +326,166 @@ test('a .pruned.jsonl sidecar is never selected as the file to resume', () => {
   assert.strictEqual(prune.findTranscriptFile(cwd, null), file, 'the largest-file fallback must skip sidecars');
 });
 
-// ── 9. the call site actually resolves (this is how the gate died) ───────────
+// ── 9. what counts as a turn that said something ─────────────────────────────
+// multicc wraps every message in kilobytes of its own prompt layers, so measuring
+// the raw text would make a bare "继续" look substantial and collapse the
+// substantive count straight back into a positional one.
+test('substance is judged on the user\'s own words, not multicc\'s prompt layers', () => {
+  const { isSubstantiveTurn, userVisibleText } = prune;
+  const turn = (text) => ({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
+  const commanderPrefix = [
+    '# Fleet Commander', 'x'.repeat(9000),
+    '[MultiCC Commander routing end]',
+  ].join('\n');
+  const wrapped = (body) => `${commanderPrefix}\n${body}\n[Dispatch] Do not dispatch to other sessions this turn.`;
+
+  assert.strictEqual(userVisibleText(wrapped('继续')), '继续',
+    'the harness prefix and the trailing directive are not the user talking');
+  assert.strictEqual(isSubstantiveTurn(turn(wrapped('继续'))), false,
+    'a 9KB wrapper around "继续" is still a "继续"');
+  assert.strictEqual(isSubstantiveTurn(turn(wrapped('可以啊先把 P1 + P2 做掉'))), true);
+
+  // Several layers stack in one prompt; the user's text follows the LAST marker.
+  const layered = '[限制结束]\nsome gateway boilerplate\n[Gateway system prompt end]\nok';
+  assert.strictEqual(userVisibleText(layered), 'ok');
+  assert.strictEqual(isSubstantiveTurn(turn(layered)), false);
+
+  // A message that IS a marker line and nothing else must be measured, not erased.
+  assert.strictEqual(userVisibleText('[MultiCC Commander routing end]'), '[MultiCC Commander routing end]');
+  assert.strictEqual(isSubstantiveTurn(turn('[MultiCC Commander routing end]')), true);
+
+  assert.strictEqual(userVisibleText('<system-reminder>4KB of context</system-reminder>ok'), 'ok');
+  assert.strictEqual(isSubstantiveTurn(turn('继续')), false);
+  assert.strictEqual(isSubstantiveTurn(turn('api')), false);
+  assert.strictEqual(isSubstantiveTurn(turn('先看看目前的上下文拼接逻辑是怎么做的')), true);
+  assert.strictEqual(isSubstantiveTurn(turn('plain message, no marker at all')), true,
+    'no wrapper is the common case and must pass through unchanged');
+  // An image carries what no character count can see.
+  assert.strictEqual(isSubstantiveTurn({
+    type: 'user', message: { role: 'user', content: [{ type: 'image', source: { data: 'iVBOR' } }] },
+  }), true);
+  // Never a turn in the first place ⇒ never substantive.
+  assert.strictEqual(isSubstantiveTurn({
+    type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'out' }] },
+  }), false);
+});
+
+// ── 10. the oversized-entry trigger ──────────────────────────────────────────
+// File size is a poor proxy for context pressure in both directions. A single
+// 400KB tool result is ~100K tokens — half a window — on its own, yet on file size
+// alone nothing looks at it until the file crosses 2MB.
+test('one oversized entry arms the gate below the file threshold; many small ones do not', () => {
+  const cwd = '/tmp/prune-entry';
+  const t = makeTranscript(cwd, 'sess-entry');
+  t.userTurn('please read the giant log');
+  t.toolPair(250 * 1024);          // ~500KB on one line, over the hard per-entry ceiling
+  t.assistantText('done');
+  const file = t.write();
+  assert.ok(fs.statSync(file).size < prune.DEFAULT_MAX_BYTES,
+    'the point of this fixture is a file the size gate would ignore');
+
+  const level = prune.measure(cwd, 'sess-entry');
+  assert.deepStrictEqual(level.triggers, ['oversized-entry']);
+  assert.strictEqual(level.wouldPrune, true);
+  assert.strictEqual(level.overWatermark, false);
+
+  const report = prune.maybePrune(cwd, 'sess-entry');
+  assert.ok(report, 'a half-window blob must be reachable before the file crosses 2MB');
+  assert.deepStrictEqual(report.triggers, ['oversized-entry']);
+  assert.strictEqual(report.lostTurns, 0, 'this trigger buys pure elision — no turn is worth losing here');
+  assert.strictEqual(report.lostSubstantiveTurns, 0);
+  assert.ok(report.afterBytes < report.beforeBytes / 4);
+  validate(file, 'entry');
+
+  // Same weight, spread over ordinary entries: nothing to elide, so nothing to do.
+  const cwd2 = '/tmp/prune-entry-flat';
+  const t2 = makeTranscript(cwd2, 'sess-flat');
+  t2.userTurn('lots of small reads');
+  for (let i = 0; i < 14; i++) t2.toolPair(18 * 1024);
+  const flat = t2.write();
+  const before = fs.readFileSync(flat, 'utf8');
+  assert.deepStrictEqual(prune.measure(cwd2, 'sess-flat').triggers, []);
+  assert.strictEqual(prune.maybePrune(cwd2, 'sess-flat'), null,
+    'a file of ordinary entries must not be read-and-scanned into a rewrite');
+  assert.strictEqual(fs.readFileSync(flat, 'utf8'), before);
+});
+
+// ── 11. keep-N spends its budget on turns that said something ────────────────
+test('the lossy ladder counts substantive turns, and falls back to positional', () => {
+  const cwd = '/tmp/prune-substance';
+  const t = makeTranscript(cwd, 'sess-substance');
+  t.userTurn('an ancient turn with plenty of real content in it');
+  const preserved = t.assistantText('preserved');
+  t.compact([preserved]);
+  // 24 post-compaction turns, every other one a bare "继续" — the shape of a real
+  // agent session. Their tool traffic is below even the tightest elision threshold,
+  // so dropping turns is the only lever left.
+  for (let i = 0; i < 24; i++) {
+    t.userTurn(i % 2 === 0 ? `real request ${i}: please refactor the parser` : '继续');
+    for (let j = 0; j < 10; j++) t.toolPair(10 * 1024);
+  }
+  t.write();
+
+  const weighted = prune.maybePrune(cwd, 'sess-substance', { keepTurnsLadder: [5], dryRun: true });
+  assert.strictEqual(weighted.strategy, 'keep-5-turns');
+  assert.strictEqual(weighted.substantiveTurns, 13);
+  // 5 substantive turns kept out of 12 replayed ones ⇒ 7 lost. Purely positional,
+  // "keep 5" would have kept 2 real exchanges and 3 "继续"s.
+  assert.strictEqual(weighted.lostSubstantiveTurns, 7);
+  assert.strictEqual(weighted.lostTurns, 14,
+    'the filler between the kept exchanges rides along free — 10 turns kept, not 5');
+  assert.ok(weighted.lostTurns > weighted.lostSubstantiveTurns,
+    'reporting only lostTurns overstates the damage on a session half made of "继续"');
+
+  // Fewer substantive turns than the rung asks for: the substantive pool cannot
+  // supply a cut, and falling through to "no cut at all" would give up the lever.
+  const fallback = prune.maybePrune(cwd, 'sess-substance', { keepTurnsLadder: [20], dryRun: true });
+  assert.strictEqual(fallback.strategy, 'keep-20-turns');
+  assert.strictEqual(fallback.lostTurns, 4, 'positional: 20 of the 24 replayed turns kept');
+  assert.strictEqual(fallback.lostSubstantiveTurns, 2);
+
+  const report = prune.maybePrune(cwd, 'sess-substance', { keepTurnsLadder: [5] });
+  assert.strictEqual(report.dryRun, false);
+  validate(t.file, 'substance');
+});
+
+// ── 12. context pressure is not the same thing as an armed gate ──────────────
+test('a session over the watermark with nothing to elide is reported, not pruned', () => {
+  const cwd = '/tmp/prune-watermark';
+  const t = makeTranscript(cwd, 'sess-watermark');
+  t.userTurn('a long working session');
+  for (let i = 0; i < 42; i++) t.toolPair(15 * 1024);
+  const file = t.write();
+  const before = fs.readFileSync(file, 'utf8');
+
+  const level = prune.measure(cwd, 'sess-watermark');
+  assert.ok(level.estimatedTokens >= prune.DEFAULT_TOKEN_WATERMARK,
+    `fixture should sit over the watermark, got ${level.estimatedTokens}`);
+  assert.strictEqual(level.overWatermark, true);
+  assert.deepStrictEqual(level.triggers, [], 'no blob and a 1.25MB file: nothing for us to grab');
+  assert.strictEqual(level.wouldPrune, false,
+    'wouldPrune must describe the gate, not the pressure — of 57 real sessions over the '
+    + 'watermark alone, every one had nothing to elide, so promising a trim was a lie');
+  assert.strictEqual(level.status, 'over', 'the user still needs to know the context is nearly full');
+
+  assert.strictEqual(prune.maybePrune(cwd, 'sess-watermark'), null);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before);
+});
+
+// ── 13. the trigger rule is pure and shared ──────────────────────────────────
+test('triggersFor is the single source of truth for both the gate and the readout', () => {
+  const th = { maxBytes: 2 * 1024 * 1024, hardEntryBytes: 400 * 1024, scanMinBytes: 384 * 1024 };
+  assert.deepStrictEqual(prune.triggersFor({ fileBytes: 100 * 1024, largestEntryBytes: 90 * 1024 }, th), []);
+  assert.deepStrictEqual(prune.triggersFor({ fileBytes: 3 * 1024 * 1024, largestEntryBytes: 1024 }, th), ['file-bytes']);
+  assert.deepStrictEqual(prune.triggersFor({ fileBytes: 500 * 1024, largestEntryBytes: 500 * 1024 }, th), ['oversized-entry']);
+  assert.deepStrictEqual(prune.triggersFor({ fileBytes: 3 * 1024 * 1024, largestEntryBytes: 500 * 1024 }, th),
+    ['file-bytes', 'oversized-entry']);
+  // Below the scan floor the deeper trigger is unreachable by construction: a file
+  // this small cannot contain an entry over the hard ceiling.
+  assert.deepStrictEqual(prune.triggersFor({ fileBytes: 300 * 1024, largestEntryBytes: 500 * 1024 }, th), []);
+});
+
+// ── 14. the call site actually resolves (this is how the gate died) ──────────
 test('every require of the prune module in src/ resolves', () => {
   const roots = [path.join(__dirname, '..', 'src'), path.join(__dirname, '..', 'scripts')];
   const files = [];

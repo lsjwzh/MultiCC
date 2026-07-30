@@ -90,12 +90,22 @@
         tokens: t.estimatedTokens == null ? '?' : Number(t.estimatedTokens).toLocaleString(),
       })];
       if (t.compactBoundary && t.compactBoundary.present) parts.push(translate('contextLevelCompacted'));
-      if (t.wouldPrune) parts.push(translate('contextLevelOverWatermark'));
+      // Context pressure, not file size: `wouldPrune` only says the gate will look.
+      if (t.overWatermark) parts.push(translate('contextLevelOverWatermark'));
       const plan = data.plan;
       if (plan) {
         parts.push(plan.lostTurns > 0
-          ? translate('contextLevelPlanLossy', { after: mb(plan.afterBytes), turns: plan.lostTurns })
+          ? translate('contextLevelPlanLossy', {
+            after: mb(plan.afterBytes),
+            turns: plan.lostTurns,
+            // The turns that said something — the rest were "继续"-style filler.
+            substantive: plan.lostSubstantiveTurns == null ? plan.lostTurns : plan.lostSubstantiveTurns,
+          })
           : translate('contextLevelPlanSafe', { after: mb(plan.afterBytes) }));
+      } else if (t.wouldPrune) {
+        // The gate will run and find nothing worth rewriting. Saying nothing would
+        // leave "over the watermark" as the last word and imply a trim is coming.
+        parts.push(translate('contextLevelPlanNone'));
       }
       options.addSystemMsg(parts.join(' '));
     }
