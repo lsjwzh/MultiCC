@@ -47,6 +47,10 @@ const DEFAULT_IDLE_MAX_HOLD_MS = 2 * 60 * 60 * 1000; // 2h
 // How long close() lets a SIGTERM'd process exit on its own before SIGKILL.
 // Matches the cancel path's grace window in session-work-host.
 const CLOSE_KILL_GRACE_MS = 1_500;
+// How long a recycle waits for a graceful exit before escalating (and again before
+// giving up on the exit event entirely). Longer than the close path: a recycle is
+// not urgent, and the prompt exits on its own once stdin quiesces.
+const RECYCLE_KILL_GRACE_MS = 3_000;
 
 function isAlive(name) {
   const s = sessions.get(name);
@@ -230,6 +234,37 @@ function onExit(name, code, signal, err) {
   pump(name);
 }
 
+// SIGTERM the warm process so onExit → pump respawns it with `--resume <same id>`.
+// The caller must have re-queued whatever turn triggered this.
+//
+// `recycling` blocks every pump for this session until the exit lands, so a process
+// that ignores SIGTERM would wedge the session for good — hence the escalation to
+// SIGKILL and, if even that produces no exit event, releasing the flag so turns can
+// resume (a respawn alongside a zombie beats a session that accepts no messages).
+function killForRecycle(name, s) {
+  const proc = s.proc;
+  s.recycling = true;
+  clearIdle(s);
+  try { proc.kill('SIGTERM'); }
+  catch (_) {
+    s.recycling = false;
+    setImmediate(() => pump(name));
+    return false;
+  }
+  const escalate = setTimeout(() => {
+    if (s.proc !== proc || !s.recycling) return;
+    try { proc.kill('SIGKILL'); } catch (_) {}
+    const release = setTimeout(() => {
+      if (s.proc !== proc || !s.recycling) return;
+      s.recycling = false;
+      pump(name);
+    }, RECYCLE_KILL_GRACE_MS);
+    if (release.unref) release.unref();
+  }, RECYCLE_KILL_GRACE_MS);
+  if (escalate.unref) escalate.unref();
+  return true;
+}
+
 // Start the next queued message if the process is free.
 function pump(name) {
   const s = sessions.get(name);
@@ -248,11 +283,24 @@ function pump(name) {
   if (isAlive(name) && s.spawnedFingerprint !== null &&
       routeFingerprint(s.env) !== s.spawnedFingerprint) {
     s.queue.unshift(next);
-    s.recycling = true;
-    clearIdle(s);
-    try { s.proc.kill('SIGTERM'); }
-    catch (_) { s.recycling = false; setImmediate(() => pump(name)); }
+    s.recycleRequested = false;   // the respawn satisfies any pending request too
+    killForRecycle(name, s);
     return;
+  }
+
+  // An explicit recycle request (e.g. the transcript was trimmed on disk and the
+  // live process still holds the untrimmed context in memory). Same boundary, one
+  // extra condition: while background work is live, killing the process reaps the
+  // task and orphans its shadow monitor, so the request waits for a later boundary
+  // — the trimmed transcript is already on disk and loses nothing by waiting.
+  if (isAlive(name) && s.recycleRequested) {
+    const bgActive = typeof s.isBackgroundActive === 'function' && s.isBackgroundActive();
+    if (!bgActive) {
+      s.queue.unshift(next);
+      s.recycleRequested = false;
+      killForRecycle(name, s);
+      return;
+    }
   }
 
   if (!isAlive(name)) {
@@ -333,6 +381,7 @@ function ensure(name, cfg) {
       queue: [], current: null, lineBuf: '', stderrTail: '',
       idleTimer: null, idleHeldSince: 0,
       recycling: false, spawnedFingerprint: null,
+      recycleRequested: false, recycleReason: '',
     };
     s.started = cfg.resume === true;
     sessions.set(name, s);
@@ -372,6 +421,40 @@ function send(name, text, onEvent) {
  */
 function inject(name, text, onEvent) {
   return send(name, `${text}`, onEvent);
+}
+
+/**
+ * Replace the warm process so it re-reads its transcript from disk.
+ *
+ * A `-p` process holds the conversation in memory; trimming the transcript file
+ * underneath it changes nothing until it restarts. Since the restart is
+ * `--resume <same session id>`, the (now trimmed) transcript comes back with it —
+ * so this is how an on-disk prune becomes a smaller live context.
+ *
+ * Applied at a turn boundary, never mid-turn. Returns how the request landed:
+ *   now                  — idle, so the process was replaced immediately
+ *   deferred-boundary    — a turn is in flight; pump() applies it when it ends
+ *   deferred-background   — live background work owns the process; waits
+ *   not-running          — nothing to replace; the next spawn reads the new file
+ */
+function recycle(name, reason) {
+  const s = sessions.get(name);
+  if (!s) return { ok: false, applied: 'unknown-session' };
+  s.recycleReason = reason || 'recycle';
+  if (!isAlive(name)) return { ok: true, applied: 'not-running' };
+  if (s.busy || s.queue.length > 0 || s.recycling) {
+    s.recycleRequested = true;
+    return { ok: true, applied: 'deferred-boundary' };
+  }
+  const bgActive = typeof s.isBackgroundActive === 'function' && s.isBackgroundActive();
+  if (bgActive) {
+    s.recycleRequested = true;
+    return { ok: true, applied: 'deferred-background' };
+  }
+  s.recycleRequested = false;
+  return killForRecycle(name, s)
+    ? { ok: true, applied: 'now' }
+    : { ok: false, applied: 'kill-failed' };
 }
 
 // Kill the current turn (and process). Context is recoverable via --resume.
@@ -429,7 +512,9 @@ function status(name) {
     queued: s.queue.length,
     started: s.started,
     pid: s.proc ? s.proc.pid : null,
+    recycling: s.recycling,
+    recycleRequested: s.recycleRequested,
   };
 }
 
-module.exports = { ensure, send, inject, cancel, close, isAlive, status };
+module.exports = { ensure, send, inject, cancel, close, isAlive, status, recycle };

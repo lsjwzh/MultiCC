@@ -15,17 +15,22 @@ function element() {
   };
 }
 
-function fixture({ streaming = false, connected = true, confirmed = true } = {}) {
+function fixture({
+  streaming = false, connected = true, confirmed = true,
+  sessionId = 's1', level = undefined,
+} = {}) {
   const wrap = element();
   const menu = element();
   const clearAll = element();
   const clearKeep = element();
   const rotate = element();
+  const contextLevel = element();
   const keepInput = { value: '5' };
   menu.querySelector = selector => ({
     '[data-action="clear-all"]': clearAll,
     '[data-action="clear-keep"]': clearKeep,
     '[data-action="rotate-native"]': rotate,
+    '[data-action="context-level"]': contextLevel,
   })[selector];
   const documentListeners = new Map();
   const document = {
@@ -40,22 +45,34 @@ function fixture({ streaming = false, connected = true, confirmed = true } = {})
   };
   const sent = [];
   const notices = [];
+  const systemMsgs = [];
+  const requests = [];
   let confirmCalls = 0;
-  create({
+  const api = create({
     document,
     window: { confirm() { confirmCalls += 1; return confirmed; } },
-    translate: key => key,
+    translate: (key, vars) => (vars ? `${key}:${JSON.stringify(vars)}` : key),
     getIsStreaming: () => streaming,
     cancelStreaming() {},
     resetHistoryPagination() {},
     messagesEl: { querySelectorAll: () => [] },
-    addSystemMsg() {},
+    addSystemMsg: message => systemMsgs.push(message),
     clearMessages() {},
     isConnected: () => connected,
     send: payload => sent.push(payload),
     showNotifyToast: (message, kind) => notices.push({ message, kind }),
+    getSessionId: () => sessionId,
+    fetch: async (url) => {
+      requests.push(url);
+      if (level === 'http-error') return { ok: false, status: 500, json: async () => ({}) };
+      if (level === 'network-error') throw new Error('offline');
+      return { ok: true, status: 200, json: async () => level };
+    },
   });
-  return { wrap, menu, rotate, sent, notices, confirmCalls: () => confirmCalls };
+  return {
+    api, wrap, menu, rotate, contextLevel, sent, notices, systemMsgs, requests,
+    confirmCalls: () => confirmCalls,
+  };
 }
 
 test('manual rotation sends the preserve-history command only after confirmation', () => {
@@ -86,4 +103,71 @@ test('manual rotation reports an offline connection without sending', () => {
   fx.rotate.click();
   assert.deepEqual(fx.sent, []);
   assert.deepEqual(fx.notices, [{ message: 'rotateNativeContextOffline', kind: 'fail' }]);
+});
+
+// The readout is the only thing that tells a user how close the native CLI context
+// is to the wall before "Prompt is too long" does. It must state the cost of a trim
+// when there is one, and it must never mutate anything — it is a GET.
+test('context level reports the water level and the cost of a trim', async () => {
+  const fx = fixture({
+    level: {
+      ok: true,
+      supported: true,
+      transcript: {
+        found: true, fileBytes: 33.76 * 1048576, liveBytes: 26.6 * 1048576,
+        liveTurns: 39, estimatedTokens: 3782367, wouldPrune: true,
+        compactBoundary: { present: true, summaryPresent: true },
+      },
+      plan: { afterBytes: 1.08 * 1048576, lostTurns: 34, dryRun: true },
+    },
+  });
+  await fx.api.showContextLevel();
+  assert.deepEqual(fx.requests, ['/api/sessions/s1/context-level?plan=1']);
+  assert.equal(fx.sent.length, 0, 'a readout must not send commands');
+  assert.equal(fx.systemMsgs.length, 1);
+  const text = fx.systemMsgs[0];
+  assert.match(text, /contextLevelSummary/);
+  assert.match(text, /26\.60 MB/);
+  assert.match(text, /33\.76 MB/);
+  assert.match(text, /3,782,367/);
+  assert.match(text, /contextLevelCompacted/);
+  assert.match(text, /contextLevelOverWatermark/);
+  // A lossy plan must say so — the safe wording here would be a lie.
+  assert.match(text, /contextLevelPlanLossy/);
+  assert.match(text, /"turns":34/);
+  assert.doesNotMatch(text, /contextLevelPlanSafe/);
+});
+
+test('context level distinguishes a lossless trim, an unsupported session and a failure', async () => {
+  const safe = fixture({
+    level: {
+      ok: true, supported: true,
+      transcript: {
+        found: true, fileBytes: 35.44 * 1048576, liveBytes: 0.62 * 1048576,
+        liveTurns: 3, estimatedTokens: 108717, wouldPrune: true,
+        compactBoundary: { present: true, summaryPresent: true },
+      },
+      plan: { afterBytes: 0.62 * 1048576, lostTurns: 0, dryRun: true },
+    },
+  });
+  await safe.api.showContextLevel();
+  assert.match(safe.systemMsgs[0], /contextLevelPlanSafe/);
+  assert.doesNotMatch(safe.systemMsgs[0], /contextLevelPlanLossy/);
+
+  const unsupported = fixture({ level: { ok: true, supported: false, reason: 'cli-not-claude' } });
+  await unsupported.api.showContextLevel();
+  assert.deepEqual(unsupported.systemMsgs, ['contextLevelUnavailable']);
+  assert.deepEqual(unsupported.notices, []);
+
+  for (const mode of ['http-error', 'network-error']) {
+    const failed = fixture({ level: mode });
+    await failed.api.showContextLevel();
+    assert.deepEqual(failed.systemMsgs, [], `${mode}: no readout may be invented`);
+    assert.deepEqual(failed.notices, [{ message: 'contextLevelFail', kind: 'fail' }]);
+  }
+
+  const noSession = fixture({ sessionId: '' });
+  await noSession.api.showContextLevel();
+  assert.deepEqual(noSession.requests, []);
+  assert.deepEqual(noSession.notices, [{ message: 'contextLevelFail', kind: 'fail' }]);
 });
