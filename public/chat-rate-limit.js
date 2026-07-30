@@ -889,11 +889,21 @@
   }
 
   function setProviderBaseUrl(baseUrl) {
-    currentProviderBaseUrl = String(baseUrl || '');
+    const next = String(baseUrl || '');
+    const changed = next !== currentProviderBaseUrl;
+    currentProviderBaseUrl = next;
     renderCurrent();
     renderArkQuota();
     renderZhipuQuota();
     renderKimiQuota();
+    // A provider switch must immediately reflect the new provider's quota: pull
+    // fresh data for whichever vendor the new baseUrl points at. Each refresh is
+    // a no-op unless the baseUrl matches that vendor, and error backoff applies.
+    if (changed) {
+      refreshArkQuota();
+      refreshZhipuQuota();
+      refreshKimiQuota();
+    }
   }
 
   function arkQuotaStorageKey() { return 'multicc.ark.quota.v1'; }
@@ -1362,8 +1372,50 @@
     return s.reason || '';
   }
 
+  // Short bar-text reason (the full reason goes in the tooltip title).
+  function kimiShortReason(sites) {
+    if (!Array.isArray(sites) || !sites.length) return '';
+    const s = sites[0];
+    if (s.reason === 'auth_rejected') return '密钥不支持余额查询';
+    if (s.reason === 'endpoint_not_found') return '余额端点不存在';
+    if (s.reason === 'network_error') return '网络请求失败';
+    if (s.reason === 'bad_shape' || s.reason === 'no_balance_fields') return '接口格式异常';
+    return '';
+  }
+
+  function kimiCachedSites(cached) {
+    return (cached && cached.status === 'ok' && Array.isArray(cached.sites))
+      ? cached.sites.filter((s) => s && s.ok && Number.isFinite(s.available))
+      : [];
+  }
+
+  // Render the last good cached balance (live value missing or fetch failed) with
+  // a stale indicator so it is never confused with fresh data.
+  function kimiCachedView(cachedOk, fetchedAt, reason, headline) {
+    let minAvail = Infinity;
+    const parts = [];
+    for (const s of cachedOk) {
+      if (s.available < minAvail) minAvail = s.available;
+      parts.push(`${s.site} ¥${fmtKimiNum(s.available)}`);
+    }
+    const syncRel = relativeAgo(fetchedAt);
+    let text = parts.join(' · ');
+    if (syncRel) text += ` · 上次 ${syncRel}`;
+    text += ' ⟳';
+    let color = '#8b949e';
+    if (minAvail <= 0) color = '#f85149';
+    else if (minAvail <= 5) color = '#d29922';
+    let title = headline;
+    if (reason) title += `\n原因：${reason}`;
+    if (syncRel) title += `\n缓存于 ${syncRel}`;
+    title += '\n点击 bar 重试';
+    return Object.freeze({ text, color, title });
+  }
+
   function formatKimiQuota(value, cached) {
+    const cachedOk = kimiCachedSites(cached);
     if (!value) {
+      if (cachedOk.length) return kimiCachedView(cachedOk, cached.fetchedAt, '', '显示上次缓存值');
       return Object.freeze({
         text: 'Kimi 余量 · ⟳ 刷新',
         color: '#8b949e',
@@ -1381,35 +1433,13 @@
       ? value.sites.filter((s) => s && s.ok && Number.isFinite(s.available))
       : [];
     if (!okSites.length) {
-      // Current fetch failed — try to show cached value with stale indicator.
-      const cachedOk = (cached && cached.status === 'ok' && Array.isArray(cached.sites))
-        ? cached.sites.filter((s) => s && s.ok && Number.isFinite(s.available))
-        : [];
       const reason = kimiReasonText(value.sites);
-      if (cachedOk.length) {
-        let minAvail = Infinity;
-        const parts = [];
-        for (const s of cachedOk) {
-          if (s.available < minAvail) minAvail = s.available;
-          parts.push(`${s.site} ¥${fmtKimiNum(s.available)}`);
-        }
-        const syncRel = relativeAgo(cached.fetchedAt);
-        let text = parts.join(' · ');
-        if (syncRel) text += ` · 上次 ${syncRel}`;
-        text += ' ⟳';
-        let color = '#8b949e';
-        if (minAvail <= 0) color = '#f85149';
-        else if (minAvail <= 5) color = '#d29922';
-        let title = '余额刷新失败，显示上次缓存值';
-        if (reason) title += `\n原因：${reason}`;
-        if (syncRel) title += `\n缓存于 ${syncRel}`;
-        title += '\n点击 bar 重试';
-        return Object.freeze({ text, color, title });
-      }
+      if (cachedOk.length) return kimiCachedView(cachedOk, cached.fetchedAt, reason, '余额刷新失败，显示上次缓存值');
       let title = value.error || '无法从 api.moonshot.cn 拉取余额';
       if (reason) title = reason;
+      const short = kimiShortReason(value.sites);
       return Object.freeze({
-        text: 'Kimi：余额暂不可用 · ⟳ 重试',
+        text: short ? `Kimi：余额暂不可用（${short}）· ⟳ 重试` : 'Kimi：余额暂不可用 · ⟳ 重试',
         color: '#d29922',
         title,
       });
