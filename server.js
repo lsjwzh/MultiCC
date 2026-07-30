@@ -2363,7 +2363,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
   sessionPersistence,
   getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle',
   getActiveBackgroundTasks: id => backgroundTaskRuntime?.listActiveBackgroundTasks(id) || [],
-  chatStream,
+  chatStream, cwdForSession,
   trackPendingMemoryDistill: _trackPendingMemoryDistill,
   projectMessages: (_sessionId, messages) => projectHistoryUsage(messages),
   logger,

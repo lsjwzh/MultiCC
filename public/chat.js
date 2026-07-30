@@ -2470,6 +2470,7 @@ window.MultiCCChatContextControls.create({
   isConnected: () => ws?.readyState === WebSocket.OPEN,
   send: payload => chatTransport.send(payload),
   showNotifyToast,
+  getSessionId: () => _sessionName || sessionId || '',
 });
 
 /* ── Voice Notifications (task complete / waiting for action) ── */
