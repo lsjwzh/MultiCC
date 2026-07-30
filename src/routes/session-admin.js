@@ -27,7 +27,8 @@ function assertDependencies(deps) {
   for (const name of [
     'cwdForSession', 'chatLastActivity', 'effectiveSessionModel', 'effectiveSessionEffort',
     'serializeSubagent', 'mergeStateCached', 'cliStateSummary', 'cliHandoffSummary',
-    'cliAvailabilitySummary', 'getInvalidSession', 'getWorkspaceStatus',
+    'cliAvailabilitySummary', 'sessionProviderBaseUrl',
+    'getInvalidSession', 'getWorkspaceStatus',
     'getSessionSummary', 'getTaskState', 'pendingNotesFor', 'getAuxRuntime',
     'loadChatHistory', 'isInjectedOrJunkGoal', 'buildClassifySystemPrompt',
     'buildClassifyConversation', 'parseClassifyResult', 'dispatchStateAction',
@@ -268,6 +269,7 @@ function createSessionAdminRuntime(rawDeps) {
       rolePresetId: record.rolePresetId || null,
       memory: record.memory || null,
       provider: record.provider || null,
+      providerBaseUrl: deps.sessionProviderBaseUrl(record),
       experimentalMode: record.experimentalMode || null,
       subagent: runtime.subagent,
       cliStates: deps.cliStateSummary(record),

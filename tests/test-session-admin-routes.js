@@ -99,6 +99,7 @@ function createFixture(overrides = {}) {
     cliStateSummary: () => ({ claude: { available: true } }),
     cliHandoffSummary: () => null,
     cliAvailabilitySummary: () => ({ claude: true, codex: true }),
+    sessionProviderBaseUrl: record => record?.provider ? `https://${record.provider}.example.com` : null,
     getInvalidSession: id => id === 't1' ? 'test-invalid' : null,
     getWorkspaceStatus: id => id === 's1'
       ? { status: 'running', lastActivity: 3000, runStartedAt: 2500, runEndedAt: null }

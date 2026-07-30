@@ -482,6 +482,7 @@ class SessionCliConfig {
   final CliHandoff? pendingCliHandoff;
   final String? provider;
   final String? providerName;
+  final String? providerBaseUrl;
   final String? model;
   final String? effectiveModel;
   final String? effort;
@@ -498,6 +499,7 @@ class SessionCliConfig {
     this.pendingCliHandoff,
     this.provider,
     this.providerName,
+    this.providerBaseUrl,
     this.model,
     this.effectiveModel,
     this.effort,
@@ -517,6 +519,7 @@ class SessionCliConfig {
       pendingCliHandoff: handoff is Map ? CliHandoff.fromJson(handoff) : null,
       provider: json['provider']?.toString(),
       providerName: json['providerName']?.toString(),
+      providerBaseUrl: json['providerBaseUrl']?.toString(),
       model: json['model']?.toString(),
       effectiveModel: json['effectiveModel']?.toString(),
       effort: json['effort']?.toString(),
