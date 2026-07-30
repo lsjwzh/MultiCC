@@ -115,10 +115,10 @@ test('context level reports the water level and the cost of a trim', async () =>
       supported: true,
       transcript: {
         found: true, fileBytes: 33.76 * 1048576, liveBytes: 26.6 * 1048576,
-        liveTurns: 39, estimatedTokens: 3782367, wouldPrune: true,
+        liveTurns: 39, estimatedTokens: 3782367, wouldPrune: true, overWatermark: true,
         compactBoundary: { present: true, summaryPresent: true },
       },
-      plan: { afterBytes: 1.08 * 1048576, lostTurns: 34, dryRun: true },
+      plan: { afterBytes: 1.08 * 1048576, lostTurns: 34, lostSubstantiveTurns: 11, dryRun: true },
     },
   });
   await fx.api.showContextLevel();
@@ -135,7 +135,47 @@ test('context level reports the water level and the cost of a trim', async () =>
   // A lossy plan must say so — the safe wording here would be a lie.
   assert.match(text, /contextLevelPlanLossy/);
   assert.match(text, /"turns":34/);
+  // 34 dropped turns of which 11 said anything is a different cost from 34 real ones.
+  assert.match(text, /"substantive":11/);
   assert.doesNotMatch(text, /contextLevelPlanSafe/);
+});
+
+// `wouldPrune` says the gate will look; `overWatermark` says the context is nearly
+// full. They are independent, and reading one for the other misinforms both ways.
+test('context level separates gate arming from context pressure', async () => {
+  const armedButRoomy = fixture({
+    level: {
+      ok: true, supported: true,
+      transcript: {
+        found: true, fileBytes: 2.4 * 1048576, liveBytes: 0.2 * 1048576,
+        liveTurns: 4, estimatedTokens: 52000, wouldPrune: true, overWatermark: false,
+        triggers: ['file-bytes'],
+      },
+      plan: null,
+    },
+  });
+  await armedButRoomy.api.showContextLevel();
+  const armed = armedButRoomy.systemMsgs[0];
+  assert.doesNotMatch(armed, /contextLevelOverWatermark/, 'a big file is not a full context');
+  // A trigger with no plan means the gate will find nothing — silence would read as
+  // "a trim is coming" to anyone who saw the file size.
+  assert.match(armed, /contextLevelPlanNone/);
+
+  const fullButSmall = fixture({
+    level: {
+      ok: true, supported: true,
+      transcript: {
+        found: true, fileBytes: 0.3 * 1048576, liveBytes: 0.3 * 1048576,
+        liveTurns: 6, estimatedTokens: 160000, wouldPrune: false, overWatermark: true,
+        triggers: [],
+      },
+      plan: null,
+    },
+  });
+  await fullButSmall.api.showContextLevel();
+  const full = fullButSmall.systemMsgs[0];
+  assert.match(full, /contextLevelOverWatermark/, 'context pressure must show below the size gate');
+  assert.doesNotMatch(full, /contextLevelPlanNone/, 'nothing is armed, so promise nothing');
 });
 
 test('context level distinguishes a lossless trim, an unsupported session and a failure', async () => {
