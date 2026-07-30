@@ -4,8 +4,10 @@ import 'package:flutter/widgets.dart';
 import '../i18n.dart';
 import '../models/chat_runtime_state.dart';
 import '../models/message.dart';
+import '../models/vendor_quota.dart';
 import '../services/chat_service.dart';
 import '../services/notification_service.dart';
+import '../services/quota_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 
@@ -192,6 +194,34 @@ class ChatProvider extends ChangeNotifier {
   UsageBalance? get usageBalance => _usageBalance;
   Timer? _usageExpiryTimer;
 
+  // ── Vendor quota bars (ark / zhipu / kimi) ────────────────────────────────
+  // Fetch-based bars gated on the active provider's baseUrl host, mirroring the
+  // web chat-rate-limit.js bars. The backend does the vendor work; we only read
+  // its JSON routes. `_providerBaseUrl` is the gate: it is set on connect
+  // (system_init → session detail), on REST switch (applyCliConfig) and on the
+  // cli_switched WS broadcast, and a change triggers an immediate refresh so the
+  // bar swaps to the new provider's quota right away.
+  String _providerBaseUrl = '';
+  String get providerBaseUrl => _providerBaseUrl;
+
+  QuotaService? _quotaService;
+  QuotaService get _quota => _quotaService ??= QuotaService(settings: settings);
+
+  Map<String, dynamic>? _arkQuota;
+  Map<String, dynamic>? _zhipuQuota;
+  Map<String, dynamic>? _kimiQuota;
+  Map<String, dynamic>? _kimiLastOk; // cached fallback for error/no-data states
+  bool _arkLoading = false;
+  bool _zhipuLoading = false;
+  bool _kimiLoading = false;
+  bool _arkInFlight = false;
+  bool _zhipuInFlight = false;
+  bool _kimiInFlight = false;
+  int _arkErrorAt = 0;
+  int _zhipuErrorAt = 0;
+  int _kimiErrorAt = 0;
+  static const int _vendorQuotaBackoffMs = 60000;
+
   String _costText = '';
   String get costText => _costText;
 
@@ -359,6 +389,7 @@ class ChatProvider extends ChangeNotifier {
         if (msg['cli'] != null) {
           _cli = parseCli(msg['cli']?.toString());
         }
+        _loadProviderBaseUrl();
 
         final model = msg['model']?.toString();
         _statusText = model != null
@@ -384,6 +415,7 @@ class ChatProvider extends ChangeNotifier {
         final next = parseCli(msg['cli']?.toString());
         final from = parseCli(msg['fromCli']?.toString());
         _cli = next;
+        _setProviderBaseUrl(msg['providerBaseUrl']?.toString() ?? '');
         final model = msg['effectiveModel']?.toString();
         _statusText = model != null && model.isNotEmpty
             ? t('connectedModel', {'model': model})
@@ -680,6 +712,133 @@ class ChatProvider extends ChangeNotifier {
     _statusText = model != null && model.isNotEmpty
         ? 'Connected · $model'
         : 'Connected · ${config.cli.name}';
+    _setProviderBaseUrl(config.providerBaseUrl ?? '');
+    notifyListeners();
+  }
+
+  /// Update the active provider baseUrl and, when it changed, immediately pull
+  /// fresh quota for whichever vendor it points at (mirrors the web
+  /// setProviderBaseUrl refresh-on-change behavior).
+  void _setProviderBaseUrl(String baseUrl) {
+    final next = baseUrl.trim();
+    final changed = next != _providerBaseUrl;
+    _providerBaseUrl = next;
+    if (changed) refreshVendorQuotas();
+  }
+
+  /// Learn the active provider baseUrl on connect (system_init carries no
+  /// provider info), so the right vendor bar shows before any CLI switch.
+  Future<void> _loadProviderBaseUrl() async {
+    final sid = sessionId;
+    if (sid.isEmpty) return;
+    try {
+      final baseUrl = await _quota.fetchProviderBaseUrl(sid);
+      _setProviderBaseUrl(baseUrl ?? '');
+    } catch (_) {
+      // Non-fatal: the bar simply stays hidden until a switch provides a baseUrl.
+    }
+  }
+
+  /// Fetch quota for every vendor the current provider baseUrl points at.
+  /// Each fetcher is a no-op unless the baseUrl matches its vendor, so this is
+  /// safe to call on any provider change.
+  void refreshVendorQuotas() {
+    final baseUrl = _providerBaseUrl;
+    if (isArkBaseUrl(baseUrl)) _fetchArkQuota();
+    if (isZhipuBaseUrl(baseUrl)) _fetchZhipuQuota();
+    if (isKimiBaseUrl(baseUrl)) _fetchKimiQuota();
+  }
+
+  /// Formatted vendor quota bars for the current provider, in display order.
+  /// Empty when the active baseUrl points at no known vendor.
+  List<VendorQuotaView> get vendorQuotaViews {
+    final views = <VendorQuotaView>[];
+    if (isArkBaseUrl(_providerBaseUrl)) {
+      views.add(
+        formatArkQuota(_arkQuota, _providerBaseUrl, loading: _arkLoading),
+      );
+    }
+    if (isZhipuBaseUrl(_providerBaseUrl)) {
+      views.add(formatZhipuQuota(_zhipuQuota, loading: _zhipuLoading));
+    }
+    if (isKimiBaseUrl(_providerBaseUrl)) {
+      views.add(
+        formatKimiQuota(_kimiQuota, _kimiLastOk, loading: _kimiLoading),
+      );
+    }
+    return views;
+  }
+
+  int _nowMs() => DateTime.now().millisecondsSinceEpoch;
+
+  Future<void> _fetchArkQuota({bool force = false}) async {
+    if (_arkInFlight) return;
+    if (!force &&
+        _arkErrorAt != 0 &&
+        _nowMs() - _arkErrorAt < _vendorQuotaBackoffMs) {
+      return;
+    }
+    _arkInFlight = true;
+    _arkLoading = true;
+    notifyListeners();
+    final data = await _quota.fetchArkQuota();
+    _arkInFlight = false;
+    _arkLoading = false;
+    if (data == null) {
+      _arkErrorAt = _nowMs();
+    } else {
+      _arkErrorAt = 0;
+      _arkQuota = data;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _fetchZhipuQuota({bool force = false}) async {
+    if (_zhipuInFlight) return;
+    if (!force &&
+        _zhipuErrorAt != 0 &&
+        _nowMs() - _zhipuErrorAt < _vendorQuotaBackoffMs) {
+      return;
+    }
+    _zhipuInFlight = true;
+    _zhipuLoading = true;
+    notifyListeners();
+    final data = await _quota.fetchZhipuQuota(
+      zhipuHostFromBaseUrl(_providerBaseUrl),
+    );
+    _zhipuInFlight = false;
+    _zhipuLoading = false;
+    if (data == null) {
+      _zhipuErrorAt = _nowMs();
+    } else {
+      _zhipuErrorAt = 0;
+      _zhipuQuota = data;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _fetchKimiQuota({bool force = false}) async {
+    if (_kimiInFlight) return;
+    if (!force &&
+        _kimiErrorAt != 0 &&
+        _nowMs() - _kimiErrorAt < _vendorQuotaBackoffMs) {
+      return;
+    }
+    _kimiInFlight = true;
+    _kimiLoading = true;
+    notifyListeners();
+    final data = await _quota.fetchKimiQuota(
+      kimiHostFromBaseUrl(_providerBaseUrl),
+    );
+    _kimiInFlight = false;
+    _kimiLoading = false;
+    if (data == null) {
+      _kimiErrorAt = _nowMs();
+    } else {
+      _kimiErrorAt = 0;
+      _kimiQuota = data;
+      if (data['status'] == 'ok') _kimiLastOk = data;
+    }
     notifyListeners();
   }
 
