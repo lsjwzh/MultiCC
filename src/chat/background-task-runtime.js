@@ -6,6 +6,10 @@
 
 const DEFAULT_PROGRESS_THROTTLE_MS = 5000;
 const DEFAULT_DEDUP_TTL_MS = 5 * 60 * 1000;
+// Liveness marks (sync Bash / sub-agent / Monitor) must survive until the task
+// completes: a ten-minute sync command is still sync when its completion lands,
+// so these expire on a day-long leak guard instead of the short dedup window.
+const DEFAULT_LIVENESS_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAIN_TOOL_USE_CAP = 2000;
 const DEFAULT_OUTPUT_CAP = 2000;
 
@@ -35,16 +39,18 @@ function createBackgroundTaskRuntime(deps = {}) {
   const logger = deps.logger || {};
   const progressThrottleMs = positiveNumber(deps.progressThrottleMs, DEFAULT_PROGRESS_THROTTLE_MS);
   const dedupTtlMs = positiveNumber(deps.dedupTtlMs, DEFAULT_DEDUP_TTL_MS);
+  const livenessTtlMs = positiveNumber(deps.livenessTtlMs, DEFAULT_LIVENESS_TTL_MS);
   const mainToolUseCap = positiveNumber(deps.mainToolUseCap, DEFAULT_MAIN_TOOL_USE_CAP);
   const outputCap = positiveNumber(deps.outputCap, DEFAULT_OUTPUT_CAP);
 
   // Each bookkeeping structure is session-scoped. Besides preventing task-id
   // collisions, this lets stopSession deterministically release every resource.
   const shadows = new Map();
-  const taskOutputAwaiting = new Map();
-  const syncBashTasks = new Map();
-  const subagentTasks = new Map();
-  const monitorTasks = new Map();
+  const timedStore = ttl => ({ map: new Map(), ttl });
+  const taskOutputAwaiting = timedStore(dedupTtlMs);
+  const syncBashTasks = timedStore(livenessTtlMs);
+  const subagentTasks = timedStore(livenessTtlMs);
+  const monitorTasks = timedStore(livenessTtlMs);
   const mainToolUses = new Map();
   const knownSessions = new Set();
 
@@ -91,42 +97,42 @@ function createBackgroundTaskRuntime(deps = {}) {
     return value;
   }
 
-  function tagTimed(map, sessionName, taskId) {
+  function tagTimed(store, sessionName, taskId) {
     if (!sessionName || !taskId) return false;
     knownSessions.add(sessionName);
-    const entries = nested(map, sessionName, true);
+    const entries = nested(store.map, sessionName, true);
     const timestamp = now();
-    pruneTimed(entries, timestamp);
+    pruneTimed(entries, timestamp, store.ttl);
     entries.set(String(taskId), { at: timestamp });
     return true;
   }
 
-  function hasTimed(map, sessionName, taskId) {
+  function hasTimed(store, sessionName, taskId) {
     if (!sessionName || !taskId) return false;
-    const entries = nested(map, sessionName);
+    const entries = nested(store.map, sessionName);
     if (!entries) return false;
     const key = String(taskId);
     const value = entries.get(key);
     if (!value) return false;
-    if (now() - value.at > dedupTtlMs) {
+    if (now() - value.at > store.ttl) {
       entries.delete(key);
-      if (entries.size === 0) map.delete(sessionName);
+      if (entries.size === 0) store.map.delete(sessionName);
       return false;
     }
     return true;
   }
 
-  function consumeTimed(map, sessionName, taskId) {
-    const entries = nested(map, sessionName);
+  function consumeTimed(store, sessionName, taskId) {
+    const entries = nested(store.map, sessionName);
     if (!entries || !taskId) return false;
     const deleted = entries.delete(String(taskId));
-    if (entries.size === 0) map.delete(sessionName);
+    if (entries.size === 0) store.map.delete(sessionName);
     return deleted;
   }
 
-  function pruneTimed(entries, timestamp) {
+  function pruneTimed(entries, timestamp, ttl) {
     for (const [key, value] of entries) {
-      if (timestamp - value.at > dedupTtlMs) entries.delete(key);
+      if (timestamp - value.at > ttl) entries.delete(key);
     }
   }
 
@@ -393,6 +399,17 @@ function createBackgroundTaskRuntime(deps = {}) {
     return { handled: true, status };
   }
 
+  function turnAlreadyHasResult(chatState, toolUseId) {
+    if (!toolUseId) return false;
+    const tools = Array.isArray(chatState && chatState.currentToolCalls)
+      ? chatState.currentToolCalls
+      : [];
+    const tool = tools.find(item => item && item.id === toolUseId);
+    if (!tool || typeof tool.result !== 'string') return false;
+    if (tool.name === 'Bash' && tool.input && tool.input.run_in_background) return false;
+    return true;
+  }
+
   function handleCompletion(sessionName, chatState, event) {
     const taskId = event.task_id;
     stopShadow(sessionName, taskId);
@@ -444,6 +461,9 @@ function createBackgroundTaskRuntime(deps = {}) {
       else if (decision.reason === 'monitor') consumeTimed(monitorTasks, sessionName, taskId);
       return { handled: true, decision: decision.reason };
     }
+    if (turnAlreadyHasResult(chatState, event.tool_use_id)) {
+      return { handled: true, decision: 'turn-result' };
+    }
     const item = {
       desc: event.description || event.summary || '后台任务',
       status: event.status || 'completed',
@@ -487,10 +507,10 @@ function createBackgroundTaskRuntime(deps = {}) {
       }
     }
     coalescer.cancel(sessionName);
-    taskOutputAwaiting.delete(sessionName);
-    syncBashTasks.delete(sessionName);
-    subagentTasks.delete(sessionName);
-    monitorTasks.delete(sessionName);
+    taskOutputAwaiting.map.delete(sessionName);
+    syncBashTasks.map.delete(sessionName);
+    subagentTasks.map.delete(sessionName);
+    monitorTasks.map.delete(sessionName);
     mainToolUses.delete(sessionName);
     knownSessions.delete(sessionName);
     return killed;
@@ -500,10 +520,10 @@ function createBackgroundTaskRuntime(deps = {}) {
     const sessions = new Set([
       ...knownSessions,
       ...shadows.keys(),
-      ...taskOutputAwaiting.keys(),
-      ...syncBashTasks.keys(),
-      ...subagentTasks.keys(),
-      ...monitorTasks.keys(),
+      ...taskOutputAwaiting.map.keys(),
+      ...syncBashTasks.map.keys(),
+      ...subagentTasks.map.keys(),
+      ...monitorTasks.map.keys(),
       ...mainToolUses.keys(),
     ]);
     let killed = 0;
