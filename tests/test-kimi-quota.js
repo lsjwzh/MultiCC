@@ -163,5 +163,17 @@ test('formatKimiQuota shows cached value with stale indicator when fetch fails',
 test('formatKimiQuota shows specific reason for auth_rejected without cache', () => {
   const view = formatKimiQuota({ status: 'unavailable', sites: [{ host: 'api.kimi.com', ok: false, reason: 'auth_rejected' }] });
   assert.match(view.text, /暂不可用/);
+  assert.match(view.text, /密钥不支持余额查询/);
   assert.match(view.title, /Kimi-for-Coding/);
+});
+
+test('formatKimiQuota shows cached balance even when no live value exists yet', () => {
+  const cached = {
+    status: 'ok', fetchedAt: Date.now() - 3600000,
+    sites: [{ host: 'api.moonshot.cn', site: 'Moonshot', ok: true, available: 12.34, voucher: null, cash: 12.34, currency: 'CNY' }],
+  };
+  const view = formatKimiQuota(null, cached);
+  assert.match(view.text, /Moonshot ¥12\.34/);
+  assert.match(view.text, /上次/);
+  assert.match(view.title, /缓存值/);
 });
