@@ -75,6 +75,25 @@ const ELIDE_CHARS_TIGHT = 800;   // last-resort pass, last-turn protection lifte
 const MIN_GAIN_BYTES = 64 * 1024;
 // How far back from a compact boundary to look for its preserved messages.
 const PRESERVED_SCAN_LINES = 500;
+// Floor for anything past the O(1) stat() gate. Below it the deeper triggers are
+// unreachable by construction: a file this small cannot hold an entry over the hard
+// per-entry ceiling, nor a replay slice anywhere near the token watermark.
+const DEFAULT_SCAN_MIN_BYTES = 384 * 1024;
+// Context-pressure trigger, in estimated tokens of the *replayed* slice. ~70% of a
+// 200K window: below claude's own auto-compact threshold, so eliding stale blobs
+// relieves the pressure instead of racing compaction for the same bytes.
+const DEFAULT_TOKEN_WATERMARK = 140000;
+// Crude but honest: transcripts are JSON-escaped prose and tool output.
+const BYTES_PER_TOKEN = 4;
+// Parsing the live slice is what separates the payload from the CLI's own
+// bookkeeping, and it is cheap enough to do on demand: measured at ~290ms for a
+// 26MB live slice and ~580ms for the worst file on this machine (69MB). The budget
+// exists only so a pathological file degrades to "no estimate" instead of stalling.
+const MEASURE_PARSE_BUDGET = 128 * 1024 * 1024;
+// Characters of genuine user text below which a turn carries nothing a later reader
+// would miss ("继续", "ok", "api", "1"). Only decides whether a turn SPENDS the
+// keep-N budget — never whether it is kept.
+const FILLER_MAX_CHARS = 12;
 
 function claudeProjectDir(cwd) {
   // Claude Code stores transcripts under ~/.claude/projects/<sanitised-cwd>/, where
@@ -142,6 +161,50 @@ function isRealUserTurn(obj) {
   if (!Array.isArray(content)) return false;
   if (content.some((b) => b && b.type === 'tool_result')) return false;
   return content.some((b) => b && (b.type === 'text' || b.type === 'image'));
+}
+
+// multicc wraps the user's words in its own bracketed prompt layers — the gateway
+// system prompt, the Commander routing block, cross-agent notes, Goal-mode limits —
+// and the harness adds <system-reminder> blocks plus a trailing [Dispatch] directive.
+// That boilerplate runs to several KB and is near-identical every turn, so measuring
+// it would make even a bare "继续" look substantial and collapse the substantive
+// count back into a positional one. Every layer closes with a line of the form
+// `[... end]` / `[...结束]`, so the user's own text is whatever follows the last one.
+const HARNESS_END_LINE = /^\[[^\]\n]{0,64}(?:end|结束)\]$/gm;
+const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+const TRAILING_DIRECTIVE = /\n\[Dispatch\][\s\S]*$/;
+
+function userVisibleText(str) {
+  if (typeof str !== 'string' || !str) return '';
+  let text = str.replace(SYSTEM_REMINDER, '');
+  HARNESS_END_LINE.lastIndex = 0;
+  let end = -1;
+  for (let m = HARNESS_END_LINE.exec(text); m; m = HARNESS_END_LINE.exec(text)) {
+    end = m.index + m[0].length;
+  }
+  // Only strip when something survives it: a user whose entire message happens to
+  // be such a line should be measured, not erased.
+  if (end > 0 && text.slice(end).trim()) text = text.slice(end);
+  return text.replace(TRAILING_DIRECTIVE, '').trim();
+}
+
+/**
+ * Does this turn carry information a later reader would miss? "继续" / "ok" / "api"
+ * do not; anything carrying an image does. Deliberately generous — scoring filler as
+ * substantive only moves the keep-N cut earlier, i.e. keeps more than necessary,
+ * while the reverse would drop a real exchange.
+ */
+function isSubstantiveTurn(obj) {
+  if (!isRealUserTurn(obj)) return false;
+  const content = obj.message.content;
+  if (typeof content === 'string') return userVisibleText(content).length > FILLER_MAX_CHARS;
+  let chars = 0;
+  for (const b of content) {
+    if (!b || typeof b !== 'object') continue;
+    if (b.type === 'image') return true;
+    if (b.type === 'text') chars += userVisibleText(b.text).length;
+  }
+  return chars > FILLER_MAX_CHARS;
 }
 
 function elideMarker(kind, chars) {
@@ -418,8 +481,67 @@ function compactCutIndex(lines) {
   return { cut, boundaryIdx, summaryIdx };
 }
 
+// Cheap pass over the replayed slice: no JSON parsing, so it stays affordable on
+// every turn. `largestEntryBytes` is measured over the live slice only — an
+// oversized entry that sits before the compact cut costs file bytes but no context,
+// and the compact-cut lever removes it losslessly anyway.
+function liveExtent(lines, cut) {
+  let liveBytes = 0;
+  let largestEntryBytes = 0;
+  for (let i = cut; i < lines.length; i++) {
+    liveBytes += Buffer.byteLength(lines[i]) + 1;
+    if (lines[i].length > largestEntryBytes) largestEntryBytes = lines[i].length;
+  }
+  return { liveBytes, largestEntryBytes };
+}
+
+// Only the `message` payloads: the CLI's own `toolUseResult` copy is never sent
+// upstream, and on a tool-heavy session it is most of the file. O(liveBytes) —
+// returns null rather than stall on a pathological file.
+function liveApiBytes(lines, cut, liveBytes, parseBudget) {
+  if (liveBytes > parseBudget) return null;
+  let apiBytes = 0;
+  for (let i = cut; i < lines.length; i++) {
+    const obj = parseLine(lines[i]);
+    if (!obj) { apiBytes += Buffer.byteLength(lines[i]); continue; }
+    apiBytes += obj.message
+      ? Buffer.byteLength(JSON.stringify(obj.message))
+      : Math.min(Buffer.byteLength(lines[i]), 4096);
+  }
+  return apiBytes;
+}
+
 /**
- * Prune the transcript for (cwd, sessionId) when it is over the high-water mark
+ * When to look inside the file at all. File size alone is a poor proxy for context
+ * pressure in both directions: a 35MB transcript that auto-compacted replays 0.6MB
+ * and is harmless, while a 1.5MB one that never compacted replays all of itself.
+ * `oversized-entry` covers the case file size misses — a single 400KB tool result is
+ * ~100K tokens, half a window, on its own, yet on file size alone nothing looks at
+ * it until the file crosses 2MB. Measured on 3,985 real transcripts it fires on 5
+ * that the size gate ignored, each a pure elision with no replayed turn lost.
+ *
+ * Deliberately NOT a trigger: the estimated-token watermark. It reads well and it is
+ * reported by measureFile(), but as a prune trigger it was worthless — of 57 real
+ * sessions over the watermark on replay alone, every single one had nothing left to
+ * elide (their weight is many medium entries, not a few blobs), so the gate did ~10ms
+ * of work per turn to return null and `wouldPrune` claimed a trim that would never
+ * happen. The only lever that would bite there is dropping whole turns, and below
+ * hardMaxBytes claude's own compaction summarises that same history far better than
+ * we can truncate it. So the watermark stays a readout, not an action.
+ *
+ * Pure, and shared with measureFile() so the readout cannot promise a trim the gate
+ * would not run.
+ */
+function triggersFor({ fileBytes, largestEntryBytes }, { maxBytes, hardEntryBytes, scanMinBytes }) {
+  const reasons = [];
+  if (fileBytes > maxBytes) reasons.push('file-bytes');
+  if (fileBytes > scanMinBytes && largestEntryBytes >= hardEntryBytes) reasons.push('oversized-entry');
+  return reasons;
+}
+
+/**
+ * Prune the transcript for (cwd, sessionId) when triggersFor() says so — the file
+ * is over the high-water mark, or it holds an entry too large for any single turn
  * (or when `force` is set by a caller that has its own reason to compact).
  *
  * Returns null when nothing was done, otherwise a report. `contextAffected` says
@@ -435,6 +557,7 @@ function pruneFile(file, {
   keepTurnsLadder = DEFAULT_KEEP_TURNS_LADDER,
   maxEntryBytes = DEFAULT_MAX_ENTRY_BYTES,
   hardEntryBytes = DEFAULT_HARD_ENTRY_BYTES,
+  scanMinBytes = DEFAULT_SCAN_MIN_BYTES,
   minGainBytes = MIN_GAIN_BYTES,
   force = false,
   dryRun = false,
@@ -442,9 +565,11 @@ function pruneFile(file, {
   if (!file) return null;
   let stat;
   try { stat = fs.statSync(file); } catch (_) { return null; }
-  // O(1) pre-gate: the common case is a small transcript and a single stat().
-  if (!force && stat.size <= maxBytes) return null;
   if (stat.size <= minGainBytes) return null;
+  // O(1) pre-gate: the common case is a small transcript and a single stat(). The
+  // floor is the smaller of the two — past it we read the file (a few ms at these
+  // sizes) so the oversized-entry trigger below can see it at all.
+  if (!force && stat.size <= Math.min(maxBytes, scanMinBytes)) return null;
 
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { return null; }
@@ -452,7 +577,20 @@ function pruneFile(file, {
   while (lines.length && lines[lines.length - 1] === '') lines.pop();
   if (!lines.length) return null;
 
+  const { cut: compactCut, boundaryIdx, summaryIdx } = compactCutIndex(lines);
+
+  // Scan-only: no JSON parsing on the gate path, so a session that is merely large
+  // costs one read plus two linear scans per turn (~7ms at 2MB) and not a parse.
+  let triggers = ['forced'];
+  if (!force) {
+    const { largestEntryBytes } = liveExtent(lines, compactCut);
+    triggers = triggersFor({ fileBytes: stat.size, largestEntryBytes },
+      { maxBytes, hardEntryBytes, scanMinBytes });
+    if (!triggers.length) return null;
+  }
+
   const starts = [];
+  const substantiveStarts = [];
   for (let i = 0; i < lines.length; i++) {
     // Cheap pre-filter: a real user entry always carries a user role/type literal,
     // so only those lines are parsed. Multi-MB tool_result rows are the bulk of a
@@ -461,7 +599,10 @@ function pruneFile(file, {
     // cut EARLIER (keeping more) — it can never produce a mid-turn cut.
     if (lines[i].indexOf('"user"') < 0) continue;
     if (lines[i].length > 65536 && lines[i].indexOf('"tool_result"') >= 0) continue;
-    if (isRealUserTurn(parseLine(lines[i]))) starts.push(i);
+    const obj = parseLine(lines[i]);
+    if (!isRealUserTurn(obj)) continue;
+    starts.push(i);
+    if (isSubstantiveTurn(obj)) substantiveStarts.push(i);
   }
   // Shield the freshest entries from ordinary elision — but at most a small tail
   // window, and never past the start of the current turn. The last-resort pass
@@ -470,7 +611,6 @@ function pruneFile(file, {
     starts.length ? starts[starts.length - 1] : 0,
     lines.length - PROTECT_TAIL_LINES,
   );
-  const { cut: compactCut, boundaryIdx, summaryIdx } = compactCutIndex(lines);
 
   // Indices to keep for a given head cut. A cut deeper than the summary keeps the
   // compact prologue (preserved messages + boundary + summary) and grafts the
@@ -525,8 +665,17 @@ function pruneFile(file, {
   // since giving up detail beats giving up more turns.
   if (best && best.bytes > hardMaxBytes) {
     for (const keep of keepTurnsLadder) {
-      if (keep >= starts.length) continue;
-      const cut = starts[starts.length - keep];
+      // keep-N spends its budget on turns that carry information. A session driven
+      // by "继续" / "ok" burns N positional turns on maybe two real exchanges, so
+      // the filler is not counted: the cut lands on the Nth *substantive* turn and
+      // whatever filler follows rides along free (it is a few hundred bytes).
+      // Since substantiveStarts ⊆ starts, this cut is always at or before the
+      // positional one — it can only keep more than the old rule, never less.
+      // Fall back to positional when a session has fewer substantive turns than the
+      // rung asks for, otherwise the ladder would find no cut at all and give up.
+      const pool = substantiveStarts.length >= keep ? substantiveStarts : starts;
+      if (keep >= pool.length) continue;
+      const cut = pool[pool.length - keep];
       if (cut <= compactCut) continue;   // would keep more, not less
       const plan = indicesFor(cut);
       const candidate = buildCandidate(lines, plan.indices, analyze, plan.splice);
@@ -545,6 +694,10 @@ function pruneFile(file, {
   // own summary replaced them), so only dropping a turn after the boundary loses
   // anything claude would otherwise have replayed.
   const lostTurns = starts.filter((i) => i >= compactCut && !kept.has(i)).length;
+  // The honest cost figure: of the replayed turns we are dropping, how many said
+  // anything. Reporting only lostTurns overstates the damage on a session where
+  // half the turns were "继续".
+  const lostSubstantiveTurns = substantiveStarts.filter((i) => i >= compactCut && !kept.has(i)).length;
   if (!dryRun) {
     // Cut rows move to <id>.pruned.jsonl so global token accounting (which walks
     // ~/.claude/projects/**/*.jsonl — see src/token-global.js) still reads their
@@ -565,6 +718,7 @@ function pruneFile(file, {
   return {
     file,
     strategy,
+    triggers,
     beforeBytes: stat.size,
     afterBytes: best.bytes,
     beforeLines: lines.length,
@@ -572,8 +726,10 @@ function pruneFile(file, {
     droppedLines: removed.length,
     keptSummary: !!(summaryIdx >= 0 && kept.has(summaryIdx)),
     realUserTurns: starts.length,
+    substantiveTurns: substantiveStarts.length,
     droppedTurns,
     lostTurns,
+    lostSubstantiveTurns,
     compactBoundary: boundaryIdx >= 0,
     elidedEntries: best.elidedEntries,
     orphanBlocks: best.orphanBlocks,
@@ -589,13 +745,6 @@ function pruneFile(file, {
 function maybePrune(cwd, sessionId, opts = {}) {
   return pruneFile(findTranscriptFile(cwd, sessionId), opts);
 }
-
-// Parsing the live slice is what separates the payload from the CLI's own
-// bookkeeping, and it is cheap enough to always do: measured at ~290ms for a
-// 26MB live slice and ~580ms for the worst file on this machine (69MB). The
-// budget exists only so a pathological file degrades to "no estimate" instead of
-// stalling a request.
-const MEASURE_PARSE_BUDGET = 128 * 1024 * 1024;
 
 /**
  * Read-only water level for (cwd, sessionId). Answers "how close is this session
@@ -618,6 +767,9 @@ function measureFile(file, {
   maxBytes = DEFAULT_MAX_BYTES,
   targetBytes = DEFAULT_TARGET_BYTES,
   hardMaxBytes = DEFAULT_HARD_MAX_BYTES,
+  hardEntryBytes = DEFAULT_HARD_ENTRY_BYTES,
+  scanMinBytes = DEFAULT_SCAN_MIN_BYTES,
+  tokenWatermark = DEFAULT_TOKEN_WATERMARK,
   parseBudget = MEASURE_PARSE_BUDGET,
 } = {}) {
   if (!file) return { found: false };
@@ -630,37 +782,32 @@ function measureFile(file, {
   while (lines.length && lines[lines.length - 1] === '') lines.pop();
 
   const { cut, boundaryIdx, summaryIdx } = compactCutIndex(lines);
-  let liveBytes = 0;
-  let largestEntryBytes = 0;
-  for (let i = cut; i < lines.length; i++) {
-    liveBytes += Buffer.byteLength(lines[i]) + 1;
-    if (lines[i].length > largestEntryBytes) largestEntryBytes = lines[i].length;
-  }
+  const { liveBytes, largestEntryBytes } = liveExtent(lines, cut);
 
   let realUserTurns = 0;
   let liveTurns = 0;
+  let substantiveTurns = 0;
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].indexOf('"user"') < 0) continue;
     if (lines[i].length > 65536 && lines[i].indexOf('"tool_result"') >= 0) continue;
-    if (!isRealUserTurn(parseLine(lines[i]))) continue;
+    const obj = parseLine(lines[i]);
+    if (!isRealUserTurn(obj)) continue;
     realUserTurns++;
     if (i >= cut) liveTurns++;
+    if (isSubstantiveTurn(obj)) substantiveTurns++;
   }
 
-  // Parsing every live entry is the only honest way to separate the payload from
-  // the CLI's local bookkeeping, but it is O(liveBytes) — skip it rather than
-  // stall a UI request on a pathological file, and say so in the response.
-  let apiBytes = null;
-  if (liveBytes <= parseBudget) {
-    apiBytes = 0;
-    for (let i = cut; i < lines.length; i++) {
-      const obj = parseLine(lines[i]);
-      if (!obj) { apiBytes += Buffer.byteLength(lines[i]); continue; }
-      apiBytes += obj.message
-        ? Buffer.byteLength(JSON.stringify(obj.message))
-        : Math.min(Buffer.byteLength(lines[i]), 4096);
-    }
-  }
+  const apiBytes = liveApiBytes(lines, cut, liveBytes, parseBudget);
+  const estimatedTokens = apiBytes == null ? null : Math.round(apiBytes / BYTES_PER_TOKEN);
+  const triggers = triggersFor(
+    { fileBytes: stat.size, largestEntryBytes },
+    { maxBytes, hardEntryBytes, scanMinBytes },
+  );
+  // Reported, never acted on — see triggersFor(). This is the number that predicts
+  // "Prompt is too long", and also the one multicc has no lossless answer to: when
+  // it is high with no oversized entry, the room is gone to many medium entries and
+  // only claude's own compaction can reclaim it.
+  const overWatermark = estimatedTokens != null && estimatedTokens >= tokenWatermark;
 
   return {
     found: true,
@@ -669,21 +816,27 @@ function measureFile(file, {
     liveBytes,
     liveLines: lines.length - cut,
     apiBytes,
-    estimatedTokens: apiBytes == null ? null : Math.round(apiBytes / 4),
+    estimatedTokens,
     largestEntryBytes,
     realUserTurns,
     liveTurns,
+    substantiveTurns,
     compactBoundary: {
       present: boundaryIdx >= 0,
       atLine: boundaryIdx >= 0 ? boundaryIdx + 1 : null,
       summaryPresent: summaryIdx >= 0,
       droppedByCompaction: cut,
     },
-    thresholds: { maxBytes, targetBytes, hardMaxBytes },
-    // Same value the prune gate reads, so `wouldPrune` cannot disagree with what
-    // the next turn actually does.
-    wouldPrune: stat.size > maxBytes,
-    status: stat.size > hardMaxBytes ? 'over' : (stat.size > maxBytes ? 'watch' : 'ok'),
+    thresholds: { maxBytes, targetBytes, hardMaxBytes, hardEntryBytes, tokenWatermark, scanMinBytes },
+    // Computed by the same pure function the prune gate uses, so the readout cannot
+    // promise a trim the next turn would not run.
+    triggers,
+    wouldPrune: triggers.length > 0,
+    overWatermark,
+    // 'over' is reserved for actual context pressure — a big file that already
+    // auto-compacted is not it, and a session over the watermark is, whether or not
+    // we have any lever for it.
+    status: (overWatermark || stat.size > hardMaxBytes) ? 'over' : (triggers.length ? 'watch' : 'ok'),
     modifiedAt: stat.mtime instanceof Date ? stat.mtime.toISOString() : null,
   };
 }
@@ -700,6 +853,9 @@ module.exports = {
   findTranscriptFile,
   claudeProjectDir,
   isRealUserTurn,
+  isSubstantiveTurn,
+  userVisibleText,
+  triggersFor,
   compactCutIndex,
   DEFAULT_MAX_BYTES,
   DEFAULT_TARGET_BYTES,
@@ -707,4 +863,6 @@ module.exports = {
   DEFAULT_MAX_ENTRY_BYTES,
   DEFAULT_HARD_ENTRY_BYTES,
   DEFAULT_KEEP_TURNS_LADDER,
+  DEFAULT_SCAN_MIN_BYTES,
+  DEFAULT_TOKEN_WATERMARK,
 };

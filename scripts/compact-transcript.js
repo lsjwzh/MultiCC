@@ -79,12 +79,19 @@ function main() {
   console.log(`  File:      ${level.lines} lines / ${mb(level.fileBytes)}   [${level.status}]`);
   console.log(`  Replayed:  ${level.liveLines} lines / ${mb(level.liveBytes)}`
     + (level.estimatedTokens != null ? `  (~${level.estimatedTokens.toLocaleString()} tokens sent)` : ''));
-  console.log(`  Turns:     ${level.liveTurns} live / ${level.realUserTurns} total`);
+  console.log(`  Turns:     ${level.liveTurns} live / ${level.realUserTurns} total`
+    + ` (${level.substantiveTurns} substantive)`);
   console.log(`  Compacted: ${level.compactBoundary.present
     ? `yes, at line ${level.compactBoundary.atLine}`
       + `${level.compactBoundary.summaryPresent ? ' (summary present)' : ' (NO summary)'}`
     : 'never'}`);
   console.log(`  Largest entry: ${mb(level.largestEntryBytes)}`);
+  // The two are independent and the difference is the whole point: a trigger means
+  // the next turn will look at the file; the watermark means the context is nearly
+  // full, which multicc may well have no lever for.
+  console.log(`  Gate:      ${level.triggers.length ? level.triggers.join(', ') : 'not armed'}`
+    + `   watermark: ${level.overWatermark ? 'OVER' : 'under'}`
+    + ` (${level.thresholds.tokenWatermark.toLocaleString()} tokens)`);
 
   // force: the operator ran this on purpose, so plan even when under the gate.
   const report = prune.pruneFile(file, { ...opts, force: true, dryRun: !args.apply });
@@ -96,6 +103,7 @@ function main() {
     + ` (${report.droppedLines} lines out, ${report.elidedEntries} entries elided)`);
   if (report.lostTurns > 0) {
     console.log(`  COST:      ${report.lostTurns} replayed turn(s) lost`
+      + ` — ${report.lostSubstantiveTurns} of them substantive`
       + `${report.keptSummary ? ", claude's own compact summary kept" : ''}`);
   } else {
     console.log('  COST:      no replayed turn lost'
