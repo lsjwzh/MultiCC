@@ -603,3 +603,118 @@ test('opaque hostile session ids remain inside the repository data root', () => 
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+// The context readout exists so "Prompt is too long" stops being invisible until it
+// fails: it reports the water level of the CLI transcript that `--resume` reloads.
+// It is a GET the UI may poll, so it must never rewrite the transcript, and — like
+// every other diagnostic here — must not hand an absolute filesystem path to a client.
+test('context level reports the transcript water level read-only and without leaking paths', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-context-level-home-'));
+  const cwd = '/repo/.multicc-worktrees/s1';
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const { claudeProjectDir } = require('../src/chat/transcript-prune');
+    const dir = claudeProjectDir(cwd);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'stream-sid.jsonl');
+    const lines = [];
+    let uuid = 0;
+    const next = () => `u${++uuid}`;
+    let parent = null;
+    const push = (obj) => {
+      const id = next();
+      lines.push(JSON.stringify({ ...obj, uuid: id, parentUuid: parent }));
+      parent = id;
+    };
+    for (let t = 0; t < 3; t++) {
+      push({ type: 'user', message: { role: 'user', content: `question ${t}` } });
+      push({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } });
+    }
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+    const before = fs.readFileSync(file, 'utf8');
+
+    const fx = fixture({
+      persistedSessions: new Map([['s1', {
+        id: 's1', kind: 'chat', cli: 'claude', _streamSessionId: 'stream-sid',
+      }]]),
+      deps: {
+        cwdForSession: () => cwd,
+        chatStream: {
+          close() {},
+          status: () => ({ alive: true, busy: false, recycleRequested: true }),
+        },
+      },
+    });
+    const app = createFakeApp();
+    fx.runtime.mountRoutes(app);
+    const handler = app.routes.get('GET /api/sessions/:id/context-level');
+    assert.ok(handler, 'the readout must be mounted');
+
+    const call = (id, query = {}) => {
+      const res = createResponse();
+      handler({ params: { id }, query }, res, () => { throw new Error('unexpected next()'); });
+      return res;
+    };
+
+    assert.equal(call('missing').statusCode, 404);
+
+    const res = call('s1');
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.supported, true);
+    assert.equal(res.body.transcript.found, true);
+    assert.equal(res.body.transcript.lines, 6);
+    assert.equal(res.body.transcript.realUserTurns, 3);
+    assert.equal(res.body.transcript.liveTurns, 3);
+    assert.equal(res.body.transcript.compactBoundary.present, false);
+    // Small file: under the gate, so the next turn would not trim it.
+    assert.equal(res.body.transcript.wouldPrune, false);
+    assert.equal(res.body.transcript.status, 'ok');
+    // A pending recycle is the difference between "trimmed on disk" and "trimmed in
+    // the process that answers the next turn", so it belongs in the readout.
+    assert.deepEqual(res.body.process, { alive: true, busy: false, recycleRequested: true });
+    assert.equal(JSON.stringify(res.body).includes(home), false, 'no absolute path may reach the client');
+    assert.equal(JSON.stringify(res.body).includes('.jsonl'), false, 'no transcript filename either');
+
+    // ?plan=1 is a dry run: it may describe a rewrite, never perform one.
+    const planned = call('s1', { plan: '1' });
+    assert.equal(planned.statusCode, 200);
+    assert.equal('plan' in planned.body, true);
+    if (planned.body.plan) {
+      assert.equal(planned.body.plan.dryRun, true);
+      assert.equal('file' in planned.body.plan, false, 'the plan must not carry the transcript path');
+    }
+    assert.equal(fs.readFileSync(file, 'utf8'), before, 'a GET must never rewrite the transcript');
+
+    // A non-claude session has no such transcript; say so instead of guessing.
+    const other = fixture({
+      persistedSessions: new Map([['s1', { id: 's1', kind: 'chat', cli: 'codex' }]]),
+      deps: { cwdForSession: () => cwd },
+    });
+    const otherApp = createFakeApp();
+    other.runtime.mountRoutes(otherApp);
+    const otherRes = createResponse();
+    otherApp.routes.get('GET /api/sessions/:id/context-level')(
+      { params: { id: 's1' }, query: {} }, otherRes, () => {},
+    );
+    assert.equal(otherRes.body.supported, false);
+    assert.equal(otherRes.body.reason, 'cli-not-claude');
+
+    // A host that never supplied a cwd resolver degrades to unsupported, not a 500.
+    const noResolver = fixture({
+      persistedSessions: new Map([['s1', { id: 's1', kind: 'chat', cli: 'claude' }]]),
+    });
+    const nrApp = createFakeApp();
+    noResolver.runtime.mountRoutes(nrApp);
+    const nrRes = createResponse();
+    nrApp.routes.get('GET /api/sessions/:id/context-level')(
+      { params: { id: 's1' }, query: {} }, nrRes, () => {},
+    );
+    assert.equal(nrRes.body.supported, false);
+    assert.equal(nrRes.body.reason, 'no-cwd-resolver');
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

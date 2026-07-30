@@ -51,6 +51,11 @@ function assertChatHistoryDeps(deps) {
   if (deps.projectMessages != null && typeof deps.projectMessages !== 'function') {
     throw new TypeError('chat history dependency invalid: projectMessages');
   }
+  // Optional: only the context water-level readout needs it, and a host that does
+  // not supply it just gets `unsupported` from that one route.
+  if (deps.cwdForSession != null && typeof deps.cwdForSession !== 'function') {
+    throw new TypeError('chat history dependency invalid: cwdForSession');
+  }
   return deps;
 }
 
@@ -605,6 +610,58 @@ function createChatHistoryRuntime(rawDeps) {
         logFailure('chat_history_page_failed', error, sessionId);
         if (typeof next === 'function') return next(new Error('chat history operation failed'));
         return res.status(500).json({ error: 'chat history load failed' });
+      }
+    });
+
+    // Context water level. Read-only: it never rewrites the transcript, so it is
+    // safe to poll from the UI. `?plan=1` additionally runs a forced dry-run prune
+    // to answer "what would trimming actually cost", which is O(file) and therefore
+    // opt-in. The transcript path is deliberately never returned — responses must
+    // not leak absolute filesystem paths.
+    app.get('/api/sessions/:id/context-level', (req, res, next) => {
+      const sessionId = req.params.id;
+      const persisted = deps.persistedSessions.get(sessionId);
+      if (!persisted) return res.status(404).json({ error: 'session not found' });
+      try {
+        if (typeof deps.cwdForSession !== 'function') {
+          return res.json({ ok: true, supported: false, reason: 'no-cwd-resolver' });
+        }
+        if (persisted.cli !== 'claude') {
+          return res.json({ ok: true, supported: false, reason: 'cli-not-claude', cli: persisted.cli || null });
+        }
+        const { measure, maybePrune } = require('../chat/transcript-prune');
+        const cwd = deps.cwdForSession(persisted);
+        // The streaming path is where a chat session's context actually lives; the
+        // per-turn id is the fallback for sessions that never streamed.
+        const cliSessionId = persisted._streamSessionId || persisted.cliSessionId || null;
+        const transcript = measure(cwd, cliSessionId);
+        const body = { ok: true, supported: true, cli: 'claude', transcript };
+        const status = typeof deps.chatStream.status === 'function'
+          ? deps.chatStream.status(sessionId)
+          : null;
+        if (status) {
+          // A warm process holds its own copy of the conversation, so a trim on
+          // disk only lands after a recycle — surface whether one is pending.
+          body.process = {
+            alive: status.alive === true,
+            busy: status.busy === true,
+            recycleRequested: status.recycleRequested === true,
+          };
+        }
+        if (transcript.found && (req.query.plan === '1' || req.query.plan === 'true')) {
+          const report = maybePrune(cwd, cliSessionId, { dryRun: true, force: true }) || null;
+          if (report) {
+            const { file: _omitted, ...plan } = report;
+            body.plan = plan;
+          } else {
+            body.plan = null;
+          }
+        }
+        return res.json(body);
+      } catch (error) {
+        logFailure('context_level_failed', error, sessionId);
+        if (typeof next === 'function') return next(new Error('chat history operation failed'));
+        return res.status(500).json({ error: 'context level failed' });
       }
     });
 

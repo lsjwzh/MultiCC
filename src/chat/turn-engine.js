@@ -129,6 +129,74 @@ function createChatTurnEngine(deps) {
     CHAT_HISTORY_PAGE,
   } = deps;
 
+  // Keep the claude transcript inside the context window before `--resume` replays
+  // it. Claude Code auto-compacts on its own, so this is the second line of
+  // defence: it drops the pre-compaction weight claude no longer replays, and it
+  // elides individual oversized entries — the case compaction cannot fix, since a
+  // single multi-hundred-KB tool result is ~100K tokens on its own and has to fit
+  // in the very request that would summarise it.
+  //
+  // Two things this call site got wrong before, both silent:
+  //   • it required './src/chat/transcript-prune' — a path that cannot resolve from
+  //     inside src/chat/ — so the throw landed in an empty catch and the gate had
+  //     never once run in production;
+  //   • it passed cliSessionId, but a chat session's streaming context lives under
+  //     _streamSessionId. With the correct project directory that id resolves to a
+  //     different (dead) transcript, which the pruner would happily trim and report
+  //     success for while the live one kept growing.
+  function pruneTranscript(sessionName, persisted) {
+    let report = null;
+    try {
+      const { maybePrune } = require('./transcript-prune');
+      report = maybePrune(
+        cwdForSession(persisted),
+        persisted._streamSessionId || persisted.cliSessionId,
+      );
+    } catch (error) {
+      // Best-effort: a prune failure must never break the turn. But it must be
+      // visible — an empty catch here is what hid the broken require for months.
+      logger.warn('transcript_prune_failed', {
+        sessionId: sessionName,
+        error: error && error.message ? error.message : String(error),
+      });
+      return null;
+    }
+    if (!report) return null;
+    const mb = (n) => `${(n / (1024 * 1024)).toFixed(2)}MB`;
+    logger.info('transcript_pruned', {
+      sessionId: sessionName,
+      strategy: report.strategy,
+      beforeBytes: report.beforeBytes,
+      afterBytes: report.afterBytes,
+      droppedLines: report.droppedLines,
+      elidedEntries: report.elidedEntries,
+      lostTurns: report.lostTurns,
+      keptSummary: report.keptSummary,
+      contextAffected: report.contextAffected,
+    });
+    try {
+      appendEvent(persisted.dirId, 'context_pruned',
+        `上下文整理 ${mb(report.beforeBytes)} → ${mb(report.afterBytes)}（${report.strategy}）`,
+        sessionName);
+    } catch (_) {}
+    // Only surface a notice when the model's own view changed. A pure
+    // pre-compaction cut is invisible to it and would just be noise.
+    if (report.contextAffected) {
+      const detail = report.lostTurns > 0
+        ? `已丢弃 ${report.lostTurns} 轮最早的对话`
+        : `已压缩 ${report.elidedEntries} 条过大的工具输出`;
+      chatBroadcast(sessionName, {
+        type: 'system',
+        subtype: 'context_pruned',
+        message: `上下文已自动整理：${mb(report.beforeBytes)} → ${mb(report.afterBytes)}，${detail}。`,
+      });
+      // The live process still holds the untrimmed context in memory; only a
+      // restart (with --resume on the trimmed file) picks the change up.
+      try { chatStream.recycle(sessionName, 'transcript-pruned'); } catch (_) {}
+    }
+    return report;
+  }
+
   // Apply one claude-shaped stream-json event to chat session state, then forward
   // it to clients. Shared by the per-turn spawn path (handleLine) and the
   // persistent streaming path (runChatTurnStreaming) so the two never drift.
@@ -722,14 +790,7 @@ function createChatTurnEngine(deps) {
     cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
     cs.streamReplay = [];
     cs._resultSaved = false;
-    // Auto-prune the claude transcript before --resume so it never exceeds the
-    // context window. cwd MUST be cwdForSession(persisted): the record has no .cwd
-    // field, so persisted.cwd was undefined and this silently no-op'd. Best-effort —
-    // a prune failure must never crash the turn.
-    if (persisted.cli === 'claude') {
-      try { require('./src/chat/transcript-prune').maybePrune(cwdForSession(persisted), persisted.cliSessionId); }
-      catch (_) {}
-    }
+    if (persisted.cli === 'claude') pruneTranscript(sessionName, persisted);
     cs._adapterError = null;
     cs._sawApiError = false;
     cs._activeTurn = turn;
