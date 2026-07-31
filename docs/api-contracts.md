@@ -15,6 +15,8 @@ The initial v1 endpoints are:
 - `GET /api/v1/providers`
 - `GET /api/v1/sessions/{id}/waits`
 - `POST /api/v1/sessions/{id}/dispatch`
+- `GET /api/v1/voice-gateways`
+- `GET|PUT|DELETE /api/v1/directories/{id}/voice-gateway`
 
 The unversioned endpoints remain available during migration. They are legacy
 compatibility surfaces, not templates for new integrations. New consumers

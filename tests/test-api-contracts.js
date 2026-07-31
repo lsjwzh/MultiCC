@@ -22,6 +22,7 @@ const {
   validateSchemaDocument,
 } = require('../src/contract-validator');
 const { toSessionDto } = require('../src/session-dto');
+const { gatewayDto } = require('../src/voice-gateway');
 
 const ROOT = path.join(__dirname, '..');
 const CONTRACT_DIR = path.join(ROOT, 'contracts', API_VERSION);
@@ -66,6 +67,8 @@ test('all v1 schemas and OpenAPI references are self-contained and valid', () =>
     '/api/v1/providers',
     '/api/v1/sessions/{id}/waits',
     '/api/v1/sessions/{id}/dispatch',
+    '/api/v1/voice-gateways',
+    '/api/v1/directories/{id}/voice-gateway',
   ]) assert.ok(openapi.paths[endpoint], `OpenAPI path exists: ${endpoint}`);
 });
 
@@ -172,6 +175,38 @@ test('WebSocket envelope is additive and dispatch result uses the same metadata 
   assertValid('dispatch-response.schema.json', dispatch);
 });
 
+test('voice gateway contract exposes only the Fleet binding and never launch credentials or paths', () => {
+  const gatewayRecord = {
+    id: '__voice_gateway__contract',
+    dirId: 'directory-1',
+    type: 'gateway',
+    kind: 'voice',
+    gatewayKind: 'qwen-audio',
+    enabled: true,
+    commanderSessionId: 'commander-1',
+    createdAt: '2026-07-31T00:00:00.000Z',
+    updatedAt: '2026-07-31T00:01:00.000Z',
+    command: '/private/node',
+    accessToken: 'secret',
+  };
+  const records = new Map([['commander-1', {
+    id: 'commander-1',
+    dirId: 'directory-1',
+    type: 'commander',
+    kind: 'chat',
+    label: 'Commander',
+  }], [gatewayRecord.id, gatewayRecord]]);
+  const gateway = gatewayDto(records, gatewayRecord);
+  assertValid('voice-gateway.schema.json', gateway);
+  const response = withApiMeta(
+    { ok: true, gateway },
+    { requestId: 'req-voice', correlationId: 'corr-voice' },
+  );
+  assertValid('voice-gateway-response.schema.json', response);
+  assert.equal(serialized(response).includes('/private/'), false);
+  assert.equal(serialized(response).includes('secret'), false);
+});
+
 test('v1 compatibility baseline catches required-field, property, enum, const, and ref breaks', () => {
   const baseline = readJson(path.join(CONTRACT_DIR, 'compatibility-baseline.json'));
   assert.deepEqual(assertBackwardCompatible(baseline, registry), { compatible: true, errors: [] });
@@ -234,5 +269,6 @@ test('server composition uses canonical adapters without replacing legacy endpoi
   assert.ok(source.includes('authRuntime.mountRoutes(app)'));
   assert.ok(authRoutes.includes("/^\\/api\\/wait\\/[^/]+\\/resolve$/"));
   assert.ok(source.includes("app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler)"));
+  assert.ok(source.includes("createVoiceGatewayRoutes } = require('./src/routes/voice-gateway')"));
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
 });

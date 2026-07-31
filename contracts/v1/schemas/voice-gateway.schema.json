@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/voice-gateway.schema.json",
+  "title": "Fleet Voice Gateway v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "directoryId",
+    "type",
+    "provider",
+    "enabled",
+    "commanderSessionId",
+    "commanderLabel",
+    "binding",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "directoryId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "type": { "const": "voice_gateway" },
+    "provider": { "const": "qwen-audio-agent" },
+    "enabled": { "type": "boolean" },
+    "commanderSessionId": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 160 },
+        { "type": "null" }
+      ]
+    },
+    "commanderLabel": {
+      "oneOf": [
+        { "type": "string", "maxLength": 160 },
+        { "type": "null" }
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "code", "canonicalCommanderSessionId"],
+      "properties": {
+        "ready": { "type": "boolean" },
+        "code": {
+          "oneOf": [
+            {
+              "enum": [
+                "commander_not_found",
+                "commander_ambiguous",
+                "commander_binding_stale",
+                "voice_gateway_ambiguous",
+                "voice_gateway_disabled"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "canonicalCommanderSessionId": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 160 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "createdAt": {
+      "oneOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ]
+    },
+    "updatedAt": {
+      "oneOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ]
+    }
+  }
+}

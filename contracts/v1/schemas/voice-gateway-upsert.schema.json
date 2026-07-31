@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/voice-gateway-upsert.schema.json",
+  "title": "Fleet Voice Gateway upsert v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": { "type": "boolean" },
+    "provider": { "const": "qwen-audio-agent" }
+  }
+}
