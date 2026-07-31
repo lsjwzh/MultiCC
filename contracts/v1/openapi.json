@@ -151,6 +151,60 @@
           "409": { "$ref": "#/components/responses/Error" }
         }
       }
+    },
+    "/api/v1/voice-runtime": {
+      "get": {
+        "operationId": "getQwenAudioRuntimeV1",
+        "responses": {
+          "200": {
+            "description": "Path-free shared Qwen Audio runtime status",
+            "content": { "application/json": { "schema": { "$ref": "schemas/qwen-audio-runtime-response.schema.json" } } }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/voice-runtime/install": {
+      "post": {
+        "operationId": "installQwenAudioRuntimeV1",
+        "responses": {
+          "200": {
+            "description": "Pinned runtime was already installed",
+            "content": { "application/json": { "schema": { "$ref": "schemas/qwen-audio-runtime-response.schema.json" } } }
+          },
+          "202": {
+            "description": "Pinned runtime installation started",
+            "content": { "application/json": { "schema": { "$ref": "schemas/qwen-audio-runtime-response.schema.json" } } }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/directories/{id}/voice-gateway/runtime": {
+      "parameters": [{ "$ref": "#/components/parameters/DirectoryId" }],
+      "get": {
+        "operationId": "getQwenAudioFleetRuntimeV1",
+        "responses": {
+          "200": {
+            "description": "One Fleet's supervised Qwen Audio process status",
+            "content": { "application/json": { "schema": { "$ref": "schemas/qwen-audio-fleet-runtime-response.schema.json" } } }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/directories/{id}/voice-gateway/restart": {
+      "parameters": [{ "$ref": "#/components/parameters/DirectoryId" }],
+      "post": {
+        "operationId": "restartQwenAudioFleetRuntimeV1",
+        "responses": {
+          "200": {
+            "description": "Fleet Qwen Audio process restarted",
+            "content": { "application/json": { "schema": { "$ref": "schemas/qwen-audio-fleet-runtime-response.schema.json" } } }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
     }
   },
   "components": {

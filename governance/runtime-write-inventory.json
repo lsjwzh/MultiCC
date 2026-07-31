@@ -88,6 +88,16 @@
       ]
     },
     {
+      "id": "qwen-audio-runtime",
+      "classification": "external-owner",
+      "owner": "Qwen Audio runtime installer",
+      "rationale": "The pinned private Node distribution and Qwen package are large replaceable third-party runtime assets, not transactional MultiCC state.",
+      "migrationStrategy": "Keep production assets below the dedicated voice runtime root, verify every downloaded artifact before activation, and reinstall from the pinned manifest instead of copying binaries when the layout changes.",
+      "sources": [
+        { "file": "src/paths.js", "anchor": "? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')" }
+      ]
+    },
+    {
       "id": "claude-native-transcripts",
       "classification": "external-owner",
       "owner": "Claude CLI adapter",

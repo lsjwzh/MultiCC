@@ -37,7 +37,7 @@ async function invoke(app, method, routePath, req = {}) {
 
 function createHarness(overrides = {}) {
   const calls = {
-    enqueued: [], examples: [], vocabWrites: [], merged: [], envWrites: [], asrUpdates: [], ttsUpdates: [], voiceUpdates: [],
+    enqueued: [], examples: [], vocabWrites: [], merged: [], envWrites: [], asrUpdates: [], ttsUpdates: [], voiceUpdates: [], qwenRefreshes: [],
   };
   const runtimeEnv = {};
   const voice = {
@@ -84,6 +84,8 @@ function createHarness(overrides = {}) {
       },
     }),
     runtimeEnv,
+    getQwenAudioRuntimeStatus: () => ({ state: 'not_installed', installed: false }),
+    onQwenAudioConfigChanged: () => { calls.qwenRefreshes.push('restart'); },
     log: { log() {}, error() {} },
     ...overrides,
   };
@@ -219,6 +221,8 @@ test('voice settings mask credentials and expose provider status', async () => {
       WHISPER_API_KEY: 'abcdefgh12345678zzzz',
       ASR_PROVIDER: 'openai',
       TTS_PROVIDER: 'edge',
+      QWEN_AUDIO_DASHSCOPE_API_KEY: 'dashscope-secret-1234',
+      QWEN_AUDIO_REALTIME_MODEL: 'qwen-audio-3.0-realtime-plus',
     }),
   });
   const res = await invoke(app, 'GET', '/api/settings/voice');
@@ -226,6 +230,52 @@ test('voice settings mask credentials and expose provider status', async () => {
   assert.equal(res.body.whisperApiKey, 'abcdefgh****zzzz');
   assert.deepEqual(res.body.asr.status, { provider: 'fake-asr' });
   assert.deepEqual(res.body.tts.status, { provider: 'fake-tts' });
+  assert.equal(res.body.qwenAudio.hasApiKey, true);
+  assert.equal(res.body.qwenAudio.apiKey, 'dashsc****1234');
+  assert.equal(res.body.qwenAudio.runtime.state, 'not_installed');
+});
+
+test('Qwen Audio settings persist a scoped key and refresh supervised Fleet processes', async () => {
+  const { app, calls, runtimeEnv } = createHarness();
+  const res = await invoke(app, 'POST', '/api/settings/voice', {
+    body: {
+      qwenAudio: {
+        apiKey: 'dashscope-new-key',
+        model: 'qwen-audio-3.0-realtime-flash',
+        voice: 'longanqian',
+        baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+      },
+    },
+  });
+  assert.deepEqual(res.body, { ok: true });
+  assert.equal(calls.envWrites[0].QWEN_AUDIO_DASHSCOPE_API_KEY, 'dashscope-new-key');
+  assert.equal(runtimeEnv.QWEN_AUDIO_DASHSCOPE_API_KEY, 'dashscope-new-key');
+  assert.deepEqual(calls.qwenRefreshes, ['restart']);
+  assert.equal(calls.voiceUpdates.length, 1, 'existing hot-config transaction remains one atomic batch');
+});
+
+test('clearing the Qwen Audio key deletes it from the live environment', async () => {
+  const { app, calls, runtimeEnv } = createHarness({
+    runtimeEnv: { QWEN_AUDIO_DASHSCOPE_API_KEY: 'old-secret' },
+  });
+  const res = await invoke(app, 'POST', '/api/settings/voice', {
+    body: { qwenAudio: { clearApiKey: true } },
+  });
+  assert.deepEqual(res.body, { ok: true });
+  assert.deepEqual(calls.envWrites, [{ QWEN_AUDIO_DASHSCOPE_API_KEY: null }]);
+  assert.equal(Object.hasOwn(runtimeEnv, 'QWEN_AUDIO_DASHSCOPE_API_KEY'), false);
+  assert.deepEqual(calls.qwenRefreshes, ['restart']);
+});
+
+test('Qwen Audio settings reject insecure remote realtime endpoints', async () => {
+  const { app, calls } = createHarness();
+  await assert.rejects(
+    () => invoke(app, 'POST', '/api/settings/voice', {
+      body: { qwenAudio: { baseUrl: 'ws://remote.example/realtime' } },
+    }),
+    /requires wss/,
+  );
+  assert.equal(calls.envWrites.length, 0);
 });
 
 test('voice settings persist before applying hot runtime config and ignore masked secrets', async () => {

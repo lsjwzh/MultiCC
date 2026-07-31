@@ -103,8 +103,7 @@ const { mountScanRoutes } = require('./src/routes/scan');
 const { mountSystemRoutes } = require('./src/routes/system');
 const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
-const { mountVoiceRoutes } = require('./src/routes/voice');
-const { createVoiceGatewayRoutes } = require('./src/routes/voice-gateway');
+const { createVoiceHost } = require('./src/voice-host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board');
 const { createCommanderMigrationState } = require('./src/commander-migration');
@@ -2002,20 +2001,17 @@ const { readEnvFile, writeEnvFile, ensureVapidKeys } = hostEnv;
 if (readEnvFile().DEFAULT_CLI !== undefined) writeEnvFile({ DEFAULT_CLI: null });
 delete process.env.DEFAULT_CLI;
 
-// Voice REST/settings endpoints are isolated from the host composition. The Aux
-// queue is resolved lazily because it is initialized later during startup.
-mountVoiceRoutes(app, {
-  uploadVoice: upload.voice,
-  voice: require('./src/voice'),
-  asrLocal: require('./src/asr-local'),
-  voiceAsr,
-  ttsService,
-  readEnvFile,
-  writeEnvFile,
+// Voice settings and per-Fleet Qwen sidecars share one host-owned lifecycle.
+const voiceHost = createVoiceHost({
+  app, records: persistedSessions, directories, sessionPersistence,
+  runtimeRoot: MULTICC_PATHS.voiceRuntimesDir,
+  getBaseUrl: () => `http://127.0.0.1:${getPort()}`,
+  uploadVoice: upload.voice, voiceAsr, ttsService, readEnvFile, writeEnvFile,
   getAuxQueue: () => auxQueue,
   reportFailure: (stage, category) => reportHostControlFailure('voice_settings', stage, category),
+  log: logger,
 });
-createVoiceGatewayRoutes({ records: persistedSessions, directories, sessionPersistence, getBaseUrl: () => `http://127.0.0.1:${getPort()}` }).mountRoutes(app);
+const qwenAudioSupervisor = voiceHost.supervisor;
 const vapidKeys = ensureVapidKeys();
 webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.privKey);
 
@@ -2941,6 +2937,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   stopOutputCapture,
   routerToolHost,
   sessionPersistence,
+  qwenAudioSupervisor,
 });
 // Terminal error handler: catches errors that reach next(err) or throw out of
 // async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
@@ -2980,6 +2977,7 @@ app.use(safeErrorHandler(logger));
     backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
     skillSyncRuntime.start();
     triggerRuntime.start();
+    qwenAudioSupervisor.reconcileAll();
     // Periodic scan: re-judge non-terminal/junk sessions every minute. First
     // tick delayed 6s so aux warms up and WS clients reconnect. Replaces the
     // old one-shot startup reconcile - restart just means the first tick runs.
