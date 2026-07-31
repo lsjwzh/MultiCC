@@ -313,6 +313,8 @@ test('server composition uses canonical adapters without replacing legacy endpoi
   assert.ok(authRoutes.includes("/^\\/api\\/wait\\/[^/]+\\/resolve$/"));
   assert.ok(source.includes("app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler)"));
   assert.ok(source.includes("createVoiceHost } = require('./src/voice-host')"));
+  assert.ok(source.includes('getBaseUrl: () => `http://127.0.0.1:${PORT}`'));
+  assert.doesNotMatch(source, /getBaseUrl:\s*\(\)\s*=>[^\n]*\bgetPort\(\)/);
   assert.ok(voiceHost.includes("createVoiceGatewayRoutes } = require('./routes/voice-gateway')"));
   assert.ok(voiceHost.includes("createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime')"));
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
