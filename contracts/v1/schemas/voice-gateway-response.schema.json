@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/voice-gateway-response.schema.json",
+  "title": "Fleet Voice Gateway response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "requestId", "correlationId", "ok", "gateway"],
+  "properties": {
+    "apiVersion": { "const": "v1" },
+    "requestId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
+    "correlationId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
+    "ok": { "const": true },
+    "created": { "type": "boolean" },
+    "gateway": { "$ref": "voice-gateway.schema.json" }
+  }
+}

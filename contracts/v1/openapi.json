@@ -94,6 +94,63 @@
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
+    },
+    "/api/v1/voice-gateways": {
+      "get": {
+        "operationId": "listVoiceGatewaysV1",
+        "responses": {
+          "200": {
+            "description": "Credential-free Fleet Voice Gateway bindings",
+            "content": { "application/json": { "schema": { "$ref": "schemas/voice-gateways-response.schema.json" } } }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/directories/{id}/voice-gateway": {
+      "parameters": [{ "$ref": "#/components/parameters/DirectoryId" }],
+      "get": {
+        "operationId": "getVoiceGatewayV1",
+        "responses": {
+          "200": {
+            "description": "One Fleet Voice Gateway binding",
+            "content": { "application/json": { "schema": { "$ref": "schemas/voice-gateway-response.schema.json" } } }
+          },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "put": {
+        "operationId": "putVoiceGatewayV1",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "schemas/voice-gateway-upsert.schema.json" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Existing Voice Gateway updated",
+            "content": { "application/json": { "schema": { "$ref": "schemas/voice-gateway-response.schema.json" } } }
+          },
+          "201": {
+            "description": "Voice Gateway created",
+            "content": { "application/json": { "schema": { "$ref": "schemas/voice-gateway-response.schema.json" } } }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteVoiceGatewayV1",
+        "responses": {
+          "200": {
+            "description": "Voice Gateway removed",
+            "content": { "application/json": { "schema": { "$ref": "schemas/voice-gateway-delete-response.schema.json" } } }
+          },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
     }
   },
   "components": {
