@@ -1561,8 +1561,10 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet> {
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
     return SafeArea(
+      bottom: false,
       child: Container(
-        height: mq.size.height * 0.9,
+        height: mq.size.height * 0.9 + mq.padding.bottom,
+        padding: EdgeInsets.only(bottom: mq.padding.bottom),
         decoration: const BoxDecoration(
           color: AppColors.panel,
           borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
