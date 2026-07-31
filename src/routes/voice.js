@@ -92,8 +92,13 @@ function mountVoiceRoutes(app, deps = {}) {
     BlobCtor = globalThis.Blob,
     log = console,
     reportFailure = () => {},
+    getQwenAudioRuntimeStatus = () => null,
+    onQwenAudioConfigChanged = () => {},
     applyRuntimeEnv = (env, updates) => {
-      for (const [key, value] of Object.entries(updates)) env[key] = value;
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === null) delete env[key];
+        else env[key] = value;
+      }
     },
     rollbackRuntimeEnv = restoreRuntimeEnv,
   } = deps;
@@ -355,6 +360,11 @@ ${eventsStr}
     const env = readEnvFile();
     const key = env.OPENROUTER_API_KEY || runtimeEnv.OPENROUTER_API_KEY || '';
     const wsKey = env.WHISPER_API_KEY || runtimeEnv.WHISPER_API_KEY || '';
+    const qwenKey = env.QWEN_AUDIO_DASHSCOPE_API_KEY
+      || runtimeEnv.QWEN_AUDIO_DASHSCOPE_API_KEY
+      || env.DASHSCOPE_API_KEY
+      || runtimeEnv.DASHSCOPE_API_KEY
+      || '';
     res.json({
       baseUrl: env.OPENROUTER_BASE_URL || runtimeEnv.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       apiKey: key ? key.slice(0, 8) + '****' + key.slice(-4) : '',
@@ -388,6 +398,20 @@ ${eventsStr}
         volcanoVoice: env.VOLC_TTS_VOICE || runtimeEnv.VOLC_TTS_VOICE || 'zh_female_shuangkuaisisi_moon_bigtts',
         hasVolcanoAppId: !!(env.VOLC_TTS_APP_ID || runtimeEnv.VOLC_TTS_APP_ID),
         hasVolcanoToken: !!(env.VOLC_TTS_ACCESS_TOKEN || runtimeEnv.VOLC_TTS_ACCESS_TOKEN),
+      },
+      qwenAudio: {
+        hasApiKey: !!qwenKey,
+        apiKey: qwenKey ? `${qwenKey.slice(0, 6)}****${qwenKey.slice(-4)}` : '',
+        model: env.QWEN_AUDIO_REALTIME_MODEL
+          || runtimeEnv.QWEN_AUDIO_REALTIME_MODEL
+          || 'qwen-audio-3.0-realtime-plus',
+        voice: env.QWEN_AUDIO_REALTIME_VOICE
+          || runtimeEnv.QWEN_AUDIO_REALTIME_VOICE
+          || 'longanqian',
+        baseUrl: env.QWEN_AUDIO_REALTIME_BASE_URL
+          || runtimeEnv.QWEN_AUDIO_REALTIME_BASE_URL
+          || 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+        runtime: getQwenAudioRuntimeStatus(),
       },
     });
   });
@@ -433,6 +457,44 @@ ${eventsStr}
     setTts('VOLC_TTS_ACCESS_TOKEN', tts.volcanoToken);
     setTts('VOLC_TTS_URL', tts.volcanoUrl);
     setTts('VOLC_TTS_VOICE', tts.volcanoVoice);
+
+    const qwenAudio = req.body.qwenAudio || {};
+    const cleanQwenValue = (value, name, maxLength) => {
+      if (value === undefined) return undefined;
+      if (typeof value !== 'string' || /[\r\n\0]/.test(value) || value.length > maxLength) {
+        const error = new TypeError(`invalid ${name}`);
+        error.statusCode = 400;
+        throw error;
+      }
+      return value.trim();
+    };
+    if (qwenAudio.clearApiKey === true) {
+      updates.QWEN_AUDIO_DASHSCOPE_API_KEY = null;
+    } else if (qwenAudio.apiKey !== undefined && !String(qwenAudio.apiKey).includes('****')) {
+      updates.QWEN_AUDIO_DASHSCOPE_API_KEY = cleanQwenValue(qwenAudio.apiKey, 'qwenAudio.apiKey', 512);
+    }
+    if (qwenAudio.model !== undefined) {
+      updates.QWEN_AUDIO_REALTIME_MODEL = cleanQwenValue(qwenAudio.model, 'qwenAudio.model', 160);
+    }
+    if (qwenAudio.voice !== undefined) {
+      updates.QWEN_AUDIO_REALTIME_VOICE = cleanQwenValue(qwenAudio.voice, 'qwenAudio.voice', 80);
+    }
+    if (qwenAudio.baseUrl !== undefined) {
+      const baseUrl = cleanQwenValue(qwenAudio.baseUrl, 'qwenAudio.baseUrl', 500);
+      let parsed;
+      try { parsed = new URL(baseUrl); } catch (_) {
+        const error = new TypeError('invalid qwenAudio.baseUrl');
+        error.statusCode = 400;
+        throw error;
+      }
+      const loopback = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname);
+      if (parsed.protocol !== 'wss:' && !(parsed.protocol === 'ws:' && loopback)) {
+        const error = new TypeError('qwenAudio.baseUrl requires wss or loopback ws');
+        error.statusCode = 400;
+        throw error;
+      }
+      updates.QWEN_AUDIO_REALTIME_BASE_URL = baseUrl.replace(/\?+$/, '');
+    }
 
     const keys = Object.keys(updates);
     const oldEnv = readEnvFile();
@@ -483,6 +545,10 @@ ${eventsStr}
 
     log.log(`[multicc/voice] Settings updated: model=${voice.cfg.OPENROUTER_MODEL}, baseUrl=${voice.cfg.OPENROUTER_BASE_URL}, key=${voice.cfg.OPENROUTER_API_KEY ? 'set' : 'empty'}`);
     log.log(`[multicc/stt] Settings updated: model=${voice.cfg.WHISPER_MODEL}, baseUrl=${voice.cfg.WHISPER_BASE_URL}, key=${voice.cfg.WHISPER_API_KEY ? 'set' : 'empty'}`);
+    if (keys.some(keyName => keyName.startsWith('QWEN_AUDIO_'))) {
+      Promise.resolve(onQwenAudioConfigChanged())
+        .catch(() => safeReport('qwen_audio_runtime_refresh', 'apply_failed'));
+    }
     res.json({ ok: true });
   });
 

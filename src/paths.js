@@ -67,6 +67,12 @@ function createPaths({ dataDir } = {}) {
     detachedDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'detached')
       : path.join(root, 'detached'),
+    // Large, replaceable third-party runtimes do not belong in the source
+    // checkout. Production keeps them under ~/.multicc while isolated tests
+    // keep every byte below their MULTICC_DATA_DIR.
+    voiceRuntimesDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')
+      : path.join(root, 'runtimes', 'voice'),
     // Meta files still owned by server.js modules — export the paths so future
     // consolidation can move them onto the store without another rename.
     notesFile: path.join(root, 'notes.json'),

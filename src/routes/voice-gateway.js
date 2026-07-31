@@ -9,7 +9,8 @@ function resultStatus(code) {
   if (code === 'directory_required'
       || code === 'commander_binding_is_host_owned'
       || code === 'voice_gateway_provider_invalid'
-      || code === 'voice_gateway_enabled_invalid') return 400;
+      || code === 'voice_gateway_enabled_invalid'
+      || code === 'voice_gateway_auto_install_invalid') return 400;
   return 409;
 }
 
@@ -35,6 +36,7 @@ function createVoiceGatewayRoutes({
   acpAgentPath = path.join(__dirname, '..', 'voice', 'multicc-acp-agent.mjs'),
   nodePath = process.execPath,
   getBaseUrl = () => 'http://127.0.0.1:3000',
+  runtime = null,
 } = {}) {
   if (!sessionPersistence || typeof sessionPersistence.mutate !== 'function') {
     throw new TypeError('voice gateway routes require sessionPersistence.mutate');
@@ -103,12 +105,16 @@ function createVoiceGatewayRoutes({
     function put(req, res, next, versioned = false) {
       try {
         const body = req.body || {};
+        if (body.autoInstall !== undefined && typeof body.autoInstall !== 'boolean') {
+          return sendFailure(req, res, { code: 'voice_gateway_auto_install_invalid' }, versioned);
+        }
         const result = service.ensure(req.params.id, {
           enabled: body.enabled,
           provider: body.provider,
           commanderSessionId: body.commanderSessionId,
         });
         if (!result.ok) return sendFailure(req, res, result, versioned);
+        runtime?.reconcile?.(req.params.id, { installIfNeeded: body.autoInstall === true });
         res.set?.('Cache-Control', 'no-store');
         res.status(result.created ? 201 : 200);
         return sendSuccess(req, res, {
@@ -128,6 +134,7 @@ function createVoiceGatewayRoutes({
       try {
         const result = service.remove(req.params.id);
         if (!result.ok) return sendFailure(req, res, result, versioned);
+        Promise.resolve(runtime?.stop?.(req.params.id)).catch(() => {});
         return sendSuccess(req, res, result, versioned);
       } catch (error) {
         return typeof next === 'function' ? next(error) : res.status(500).json({ error: 'internal_error' });

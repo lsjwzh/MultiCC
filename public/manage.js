@@ -2749,6 +2749,10 @@ async function deleteProvider(appType, id, name) {
 /* ── Init ── */
 loadDashboard().then(() => {
   if (new URLSearchParams(location.search).get('focus') === 'aux') openAuxHistoryModal();
+  window.MultiCCManageQwenAudio.initialize({
+    getDirectories: () => _cachedDirectories || [],
+    notify: showToast,
+  });
 });
 loadProviders();
 loadVoiceSettings();
