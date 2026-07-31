@@ -2005,7 +2005,7 @@ delete process.env.DEFAULT_CLI;
 const voiceHost = createVoiceHost({
   app, records: persistedSessions, directories, sessionPersistence,
   runtimeRoot: MULTICC_PATHS.voiceRuntimesDir,
-  getBaseUrl: () => `http://127.0.0.1:${getPort()}`,
+  getBaseUrl: () => `http://127.0.0.1:${PORT}`,
   uploadVoice: upload.voice, voiceAsr, ttsService, readEnvFile, writeEnvFile,
   getAuxQueue: () => auxQueue,
   reportFailure: (stage, category) => reportHostControlFailure('voice_settings', stage, category),
