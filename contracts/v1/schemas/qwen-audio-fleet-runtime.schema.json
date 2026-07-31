@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/qwen-audio-fleet-runtime.schema.json",
+  "title": "Qwen Audio Fleet process status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["directoryId", "desired", "state", "url", "installedVersion", "restartCount", "health", "lastError", "lastExitAt"],
+  "properties": {
+    "directoryId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "desired": { "type": "boolean" },
+    "state": {
+      "enum": [
+        "stopped", "installing", "starting", "running", "backoff", "failed", "directory_not_found",
+        "voice_gateway_not_found", "commander_not_found", "commander_ambiguous",
+        "commander_binding_stale", "voice_gateway_ambiguous",
+        "qwen_runtime_not_installed", "qwen_api_key_missing",
+        "directory_path_missing", "port_unavailable"
+      ]
+    },
+    "url": { "type": ["string", "null"], "maxLength": 200 },
+    "installedVersion": { "type": ["string", "null"], "maxLength": 40 },
+    "restartCount": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "health": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["voiceConfigured", "backendReady", "model"],
+          "properties": {
+            "voiceConfigured": { "type": "boolean" },
+            "backendReady": { "type": "boolean" },
+            "model": { "type": ["string", "null"], "maxLength": 160 }
+          }
+        }
+      ]
+    },
+    "lastError": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 240 }
+          }
+        }
+      ]
+    },
+    "lastExitAt": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

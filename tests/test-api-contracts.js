@@ -69,6 +69,10 @@ test('all v1 schemas and OpenAPI references are self-contained and valid', () =>
     '/api/v1/sessions/{id}/dispatch',
     '/api/v1/voice-gateways',
     '/api/v1/directories/{id}/voice-gateway',
+    '/api/v1/voice-runtime',
+    '/api/v1/voice-runtime/install',
+    '/api/v1/directories/{id}/voice-gateway/runtime',
+    '/api/v1/directories/{id}/voice-gateway/restart',
   ]) assert.ok(openapi.paths[endpoint], `OpenAPI path exists: ${endpoint}`);
 });
 
@@ -207,6 +211,44 @@ test('voice gateway contract exposes only the Fleet binding and never launch cre
   assert.equal(serialized(response).includes('secret'), false);
 });
 
+test('Qwen Audio runtime contracts expose lifecycle state without paths, pids, logs, or credentials', () => {
+  const shared = withApiMeta({
+    ok: true,
+    runtime: {
+      state: 'ready',
+      installed: true,
+      supported: true,
+      platform: 'darwin-arm64',
+      package: { name: 'qwen-audio-agent', version: '1.1.1' },
+      node: { version: '24.15.0', managed: true },
+      progress: { stage: 'complete', detail: null },
+      lastError: null,
+    },
+  }, { requestId: 'req-qwen', correlationId: 'corr-qwen' });
+  assertValid('qwen-audio-runtime-response.schema.json', shared);
+
+  const fleet = withApiMeta({
+    ok: true,
+    runtime: {
+      directoryId: 'directory-1',
+      desired: true,
+      state: 'running',
+      url: 'http://127.0.0.1:32123',
+      installedVersion: '1.1.1',
+      restartCount: 0,
+      health: {
+        voiceConfigured: true,
+        backendReady: true,
+        model: 'qwen-audio-3.0-realtime-plus',
+      },
+      lastError: null,
+      lastExitAt: null,
+    },
+  }, { requestId: 'req-qwen-fleet', correlationId: 'corr-qwen-fleet' });
+  assertValid('qwen-audio-fleet-runtime-response.schema.json', fleet);
+  assert.doesNotMatch(serialized({ shared, fleet }), /api.?key|secret|pid|logs|\/private\//i);
+});
+
 test('v1 compatibility baseline catches required-field, property, enum, const, and ref breaks', () => {
   const baseline = readJson(path.join(CONTRACT_DIR, 'compatibility-baseline.json'));
   assert.deepEqual(assertBackwardCompatible(baseline, registry), { compatible: true, errors: [] });
@@ -248,6 +290,7 @@ test('server composition uses canonical adapters without replacing legacy endpoi
   const orchestrationRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'orchestration.js'), 'utf8');
   const workspaceRuntime = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'runtime.js'), 'utf8');
   const authRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'auth.js'), 'utf8');
+  const voiceHost = fs.readFileSync(path.join(ROOT, 'src', 'voice-host.js'), 'utf8');
   assert.ok(source.includes("} = require('./src/session')"));
   assert.ok(source.includes("createWorkspaceRuntime } = require('./src/workspace/runtime')"));
   assert.ok(source.includes('const workspaceRuntime = createWorkspaceRuntime({'));
@@ -269,6 +312,8 @@ test('server composition uses canonical adapters without replacing legacy endpoi
   assert.ok(source.includes('authRuntime.mountRoutes(app)'));
   assert.ok(authRoutes.includes("/^\\/api\\/wait\\/[^/]+\\/resolve$/"));
   assert.ok(source.includes("app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler)"));
-  assert.ok(source.includes("createVoiceGatewayRoutes } = require('./src/routes/voice-gateway')"));
+  assert.ok(source.includes("createVoiceHost } = require('./src/voice-host')"));
+  assert.ok(voiceHost.includes("createVoiceGatewayRoutes } = require('./routes/voice-gateway')"));
+  assert.ok(voiceHost.includes("createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime')"));
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
 });

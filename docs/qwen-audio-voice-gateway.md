@@ -7,7 +7,7 @@ Gateway is a voice channel, not a Worker and not a second Commander:
 microphone / speaker
         │
         ▼
-Qwen Audio Agent (realtime audio, VAD, interruption, TTS)
+Qwen Audio Agent sidecar (realtime audio, VAD, interruption, TTS)
         │ ACP v1 over stdio
         ▼
 MultiCC Voice Gateway ──► the Fleet's unique type=commander session
@@ -26,9 +26,14 @@ MultiCC Voice Gateway ──► the Fleet's unique type=commander session
 - The persisted record uses `type=gateway`, `kind=voice` and
   `gatewayKind=qwen-audio`; existing routing, memory, worktree and task-board
   filters therefore exclude it from Worker candidates.
-- Qwen owns realtime audio. MultiCC owns task routing and task state. The
-  DashScope API key remains in Qwen's `config.env` and is never copied into
-  `sessions.json` or a Voice Gateway response.
+- Qwen owns realtime audio. MultiCC owns task routing and task state. MultiCC
+  stores a scoped DashScope key as `QWEN_AUDIO_DASHSCOPE_API_KEY` in its private
+  `.env` and injects it only into the Qwen child as
+  `QWEN_AUDIO_REALTIME_API_KEY`. It is never copied into `sessions.json`, a
+  Voice Gateway response, command-line arguments, logs, or the Commander.
+- The official Qwen package is not loaded into the MultiCC server process. One
+  pinned package/runtime installation is shared, while every enabled Fleet has
+  its own Qwen process, loopback port, config directory and ACP child.
 - `taskId` is created only by the MultiCC task path. The ACP bridge never
   invents one.
 - One adapter process keeps at most 32 ACP session mappings, preventing a
@@ -41,7 +46,7 @@ The versioned API is the stable, path-free status surface:
 ```bash
 curl -X PUT http://127.0.0.1:3000/api/v1/directories/<directory-id>/voice-gateway \
   -H 'Content-Type: application/json' \
-  -d '{"enabled":true,"provider":"qwen-audio-agent"}'
+  -d '{"enabled":true,"provider":"qwen-audio-agent","autoInstall":true}'
 ```
 
 `GET /api/v1/directories/<directory-id>/voice-gateway` reports the canonical
@@ -55,9 +60,48 @@ Commander changed, PUT rebinds to the current unique typed Commander. If two
 Voice Gateway records somehow exist for one Fleet, both GET and PUT return
 `voice_gateway_ambiguous`; no record is guessed or deleted.
 
-## Connect Qwen Audio Agent
+## Managed install and startup
 
-Qwen Audio Agent v1.0.0 exposes a generic ACP backend using
+The Manage page's **Voice → Qwen Audio Agent** card performs the normal setup:
+
+1. enter a DashScope API Key, model, voice and realtime endpoint;
+2. choose a Fleet;
+3. click **Install and enable selected Fleet**.
+
+The shared installer pins `qwen-audio-agent@1.1.1` and a private Node 24.15.0.
+It verifies the Node SHA-256 from the official Node release manifest, lets npm
+verify the pinned package SRI, disables package install scripts, smoke-tests the
+CLI, and only then atomically promotes the staged version. This avoids relying
+on MultiCC's host Node: Qwen 1.1.1 supports Node 22.22.2, 24.15.0 and 26+, while
+MultiCC may itself be running on Node 20 or an unsupported odd release.
+
+Runtime state is path-free and credential-free:
+
+```bash
+curl http://127.0.0.1:3000/api/v1/voice-runtime
+curl -X POST http://127.0.0.1:3000/api/v1/voice-runtime/install
+curl http://127.0.0.1:3000/api/v1/directories/<directory-id>/voice-gateway/runtime
+curl -X POST http://127.0.0.1:3000/api/v1/directories/<directory-id>/voice-gateway/restart
+```
+
+An enabled Fleet starts automatically after MultiCC startup when the pinned
+runtime and key are present. The supervisor checks Qwen `/api/health`, restarts
+with bounded exponential backoff, stops after five crashes in ten minutes, and
+terminates the whole process group during disable/delete or graceful shutdown.
+It never downloads code merely because MultiCC restarted; installation happens
+only after the explicit install API/UI action.
+
+### Credentials
+
+Cloud realtime audio is not keyless. Qwen Audio Agent's frontend-only mode only
+removes the backend coding Agent; microphone audio still goes to Qwen Audio
+Realtime and therefore still requires an Alibaba Cloud Model Studio / DashScope
+API Key. Region and endpoint must match the key. The Commander keeps using its
+own MultiCC provider/authentication; no Commander model key is given to Qwen.
+
+## Manual compatibility launch
+
+Qwen Audio Agent v1.1.1 exposes a generic ACP backend using
 `AGENT_PROTOCOL=acp`, `ACP_COMMAND`, `ACP_ARGS`, `ACP_LABEL` and
 `ACP_WORKSPACE`. Copy the command and args from the unversioned Voice Gateway
 response into that Fleet's Qwen `config.env`:
@@ -75,7 +119,9 @@ MULTICC_BASE_URL=http://127.0.0.1:3000
 QWEN_AUDIO_AGENT_BACKEND_MODEL=
 ```
 
-Then start the official Qwen runtime and one of its clients:
+This manual path remains useful for diagnosis. Normally the MultiCC supervisor
+generates the same environment without writing a per-Fleet plaintext
+`config.env`. To launch manually, start the official runtime and a client:
 
 ```bash
 qwenaudio
@@ -131,9 +177,12 @@ This is deliberate compatibility behavior, not prompt convenience.
 ## Current boundary and next increment
 
 This increment provides the Fleet resource model, versioned management
-contract and a runnable ACP-to-Commander transport. It does not supervise the
-Qwen process, embed Qwen's microphone UI in Flutter, or yet turn later Task
-Board completion events into unsolicited voice announcements.
+contract, fixed-version installer, supervised Qwen sidecars and a runnable
+ACP-to-Commander transport. It does not embed Qwen's microphone UI in Flutter
+or yet turn later Task Board completion events into unsolicited voice
+announcements. The official WebUI is reachable through the loopback URL
+reported for a running Fleet; exposing that UI to remote/mobile clients needs a
+separate authenticated proxy rather than rebinding Qwen to all interfaces.
 
 The next safe increment is a Qwen-side `multicc` backend driver (or an upstream
 extension point) that treats MultiCC task receipts as native delegation:
@@ -155,11 +204,17 @@ MultiCC Task Board.
 | stale Commander binding | status reports `commander_binding_stale`; PUT repairs |
 | duplicate Gateway records | reports `voice_gateway_ambiguous`; no auto-delete |
 | Qwen/ACP disconnect | active prompt fails; Commander and task state remain durable |
+| runtime missing after restart | reports `qwen_runtime_not_installed`; no implicit download |
+| DashScope key missing/wrong region | reports configuration required / Qwen unauthorized; Commander credentials are not reused |
+| repeated Qwen crash | exponential backoff; after five crashes in ten minutes the Fleet parks in `failed` |
+| install interrupted | active version stays untouched; a later explicit install retries from staging |
 | ACP session mapping limit | `session_limit_reached`; close an old mapping and retry |
 | MultiCC HTTP/WS handshake stalls | bounded connect/request timeout; no unbounded startup hang |
 | remote URL without token or HTTPS | ACP process refuses to connect |
 | disable/delete Gateway | new ACP sessions fail; existing Commander/Workers are untouched |
 
-Rollback is data-only: disable or delete the Voice Gateway record and stop the
-external Qwen process. No chat session, branch, worktree, Task Board card or
-provider configuration is deleted.
+Rollback is bounded: disable/delete the Voice Gateway and the supervisor stops
+its Fleet process group. The previous runtime directory is retained when an
+invalid target is quarantined, and the active manifest changes only after a
+successful smoke test. No chat session, branch, worktree, Task Board card or
+Commander provider configuration is deleted.

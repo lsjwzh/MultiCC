@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "enabled": { "type": "boolean" },
-    "provider": { "const": "qwen-audio-agent" }
+    "provider": { "const": "qwen-audio-agent" },
+    "autoInstall": { "type": "boolean" }
   }
 }
