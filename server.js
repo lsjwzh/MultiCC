@@ -104,6 +104,7 @@ const { mountSystemRoutes } = require('./src/routes/system');
 const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { mountVoiceRoutes } = require('./src/routes/voice');
+const { createVoiceGatewayRoutes } = require('./src/routes/voice-gateway');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board');
 const { createCommanderMigrationState } = require('./src/commander-migration');
@@ -1824,7 +1825,6 @@ mountMemoryBrowserRoutes(app, {
   now: Date.now,
 });
 
-
 // ── Cross-machine handoff (Happier-parity: move a live session to another machine) ──
 // Export/import of the encrypted session bundle (metadata + chat history + memory
 // files + provider state + git bundle of the worktree branch) lives in
@@ -2015,7 +2015,7 @@ mountVoiceRoutes(app, {
   getAuxQueue: () => auxQueue,
   reportFailure: (stage, category) => reportHostControlFailure('voice_settings', stage, category),
 });
-
+createVoiceGatewayRoutes({ records: persistedSessions, directories, sessionPersistence, getBaseUrl: () => `http://127.0.0.1:${getPort()}` }).mountRoutes(app);
 const vapidKeys = ensureVapidKeys();
 webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.privKey);
 
