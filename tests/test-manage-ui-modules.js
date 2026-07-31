@@ -132,23 +132,30 @@ test('manage loads extracted classic modules before page bootstrap', () => {
   const html = read('public/manage.html');
   const bridge = html.indexOf('<script src="manage-bridges.js"></script>');
   const host = html.indexOf('<script src="manage-host-settings.js"></script>');
+  const qwen = html.indexOf('<script src="manage-qwen-audio.js"></script>');
   const page = html.indexOf('<script src="manage.js"></script>');
   const pwa = html.indexOf('<script src="pwa.js"></script>');
-  assert.ok(pwa > 0 && pwa < bridge && bridge < host && host < page);
-  assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+manage-(?:bridges|host-settings)/i);
+  assert.ok(pwa > 0 && pwa < bridge && bridge < host && host < qwen && qwen < page);
+  assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+manage-(?:bridges|host-settings|qwen-audio)/i);
 });
 
 test('manage facade stays below the migration ceiling and no longer owns extracted domains', () => {
   const page = read('public/manage.js');
   const bridges = read('public/manage-bridges.js');
   const host = read('public/manage-host-settings.js');
+  const qwen = read('public/manage-qwen-audio.js');
   assert.ok(page.split(/\r?\n/).length <= 5300, 'manage.js should stay at or below 5300 lines after this extraction');
   assert.ok(bridges.split(/\r?\n/).length < 2000);
   assert.ok(host.split(/\r?\n/).length < 2000);
+  assert.ok(qwen.split(/\r?\n/).length < 1000);
   assert.doesNotMatch(page, /function\s+(?:wechat|feishu|bridge)[A-Z]/);
   assert.doesNotMatch(page, /function\s+(?:load|save)TunnelSettings/);
   assert.match(page, /MultiCCManageBridges\.initialize\(\)/);
   assert.match(page, /MultiCCManageHostSettings\.initialize\(\)/);
+  assert.match(page, /MultiCCManageQwenAudio\.initialize\(/);
+  assert.doesNotMatch(qwen, /\.innerHTML\s*=|insertAdjacentHTML|document\.write/);
+  assert.match(qwen, /textContent\s*=/);
+  assert.match(qwen, /MultiCCManageQwenAudio\s*=\s*Object\.freeze/);
 });
 
 test('bridge controller keeps relative credential-free URLs and safe DOM log rendering', async () => {

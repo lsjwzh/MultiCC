@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multicc.local/contracts/v1/qwen-audio-runtime.schema.json",
+  "title": "Qwen Audio shared runtime status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["state", "installed", "supported", "platform", "package", "node", "progress", "lastError"],
+  "properties": {
+    "state": { "enum": ["not_installed", "installing", "ready", "error"] },
+    "installed": { "type": "boolean" },
+    "supported": { "type": "boolean" },
+    "platform": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "qwen-audio-agent" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 40 }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "managed"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "managed": { "const": true }
+      }
+    },
+    "progress": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stage", "detail"],
+          "properties": {
+            "stage": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "detail": { "type": ["string", "null"], "maxLength": 200 }
+          }
+        }
+      ]
+    },
+    "lastError": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 240 }
+          }
+        }
+      ]
+    }
+  }
+}

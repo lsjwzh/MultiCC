@@ -56,6 +56,7 @@ function createHostLifecycle(deps) {
     stopOutputCapture,
     routerToolHost,
     sessionPersistence,
+    qwenAudioSupervisor,
     log = console,
   } = deps;
 
@@ -256,6 +257,7 @@ function createHostLifecycle(deps) {
   }));
 
   shutdownCoordinator.onClose(() => stopBridgeRuntime());
+  shutdownCoordinator.onClose(() => qwenAudioSupervisor?.stopAll?.());
   shutdownCoordinator.onClose(() => closeWebSocketRuntime());
   shutdownCoordinator.onClose(async () => {
     stopAuxQueue();
