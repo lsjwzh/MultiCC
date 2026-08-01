@@ -162,6 +162,18 @@ DateTime sessionLastInteractionAt(Session session, SessionStatus? live) {
   return best;
 }
 
+/// 会话列表统一排序：commander（[Session.isCommander]）固定钉在最前、不参与其余
+/// 会话的排序；其余会话保持调用方已排好的相对顺序。对齐 web 的
+/// sortSessionsPinningCommander。Dart 的 List.sort 非稳定，故用「分区」而非
+/// 比较器：commander 与非 commander 各自保留传入顺序再拼接。调用方可先按自己
+/// 的规则（如最近交互时间）排好再传入。
+List<Session> pinCommanderFirst(List<Session> sessions) {
+  final commanders = sessions.where((s) => s.isCommander).toList();
+  if (commanders.isEmpty) return sessions;
+  final rest = sessions.where((s) => !s.isCommander).toList();
+  return [...commanders, ...rest];
+}
+
 String formatRelativeTime(DateTime value, {DateTime? now}) {
   final diff = (now ?? DateTime.now()).difference(value);
   if (diff.isNegative || diff.inMinutes < 1) return t('justNow');
