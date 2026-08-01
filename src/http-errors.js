@@ -47,7 +47,10 @@ function requestIdMiddleware(req, res, next) {
   res.setHeader('X-Multicc-Request-Id', id);
   res.setHeader('X-Correlation-Id', correlationId);
   res.setHeader('X-Multicc-API-Version', API_VERSION);
+  let logged = false;
   if (typeof res.once === 'function') res.once('finish', () => {
+    if (logged) return;
+    logged = true;
     const obs = req.app && req.app.locals && req.app.locals.observability;
     if (!obs || !obs.logger) return;
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
@@ -58,6 +61,22 @@ function requestIdMiddleware(req, res, next) {
       path: req.path,
       status: res.statusCode,
       durationMs: Math.round(durationMs * 1000) / 1000,
+    });
+  });
+  if (typeof res.on === 'function') res.on('close', () => {
+    if (logged || res.writableFinished) return;
+    logged = true;
+    const obs = req.app && req.app.locals && req.app.locals.observability;
+    if (!obs || !obs.logger) return;
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    obs.logger.info('http_request', {
+      requestId: id,
+      correlationId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      durationMs: Math.round(durationMs * 1000) / 1000,
+      aborted: true,
     });
   });
   next();

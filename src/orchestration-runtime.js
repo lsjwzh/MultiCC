@@ -747,7 +747,9 @@ function createOrchestrationRuntime({
   }
 
   async function completeDispatch(id, result) {
-    return operations.completeDispatch(id, result);
+    const completed = await operations.completeDispatch(id, result);
+    if (completed && completed.ok) await tick();
+    return completed;
   }
 
   async function observeTask(observation) {

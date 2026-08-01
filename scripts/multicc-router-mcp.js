@@ -199,19 +199,10 @@ const TOOLS = [
   },
   {
     name: 'dispatch_master',
-    title: 'Dispatch and await worker',
-    description: 'Durably dispatch to a same-directory chat worker and await its persisted result. Terminal sessions require allow_terminal=true. Busy targets are queued and never interrupted.',
+    title: 'Dispatch to worker',
+    description: 'Durably dispatch to a same-directory chat worker and return immediately. The result flows back to this session asynchronously as a new message once the worker calls dispatch_slave. Terminal sessions require allow_terminal=true. Busy targets are queued and never interrupted.',
     inputSchema: {
       ...TARGET_SCHEMA,
-      properties: {
-        ...TARGET_SCHEMA.properties,
-        timeout_seconds: {
-          type: 'number',
-          exclusiveMinimum: 0,
-          maximum: 21600,
-          description: 'How long this tool call waits. Timeout does not cancel the durable dispatch.',
-        },
-      },
     },
     annotations: {
       readOnlyHint: false,
@@ -225,7 +216,7 @@ const TOOLS = [
 TOOLS.push({
     name: 'dispatch_slave',
     title: 'Return dispatch result',
-    description: 'Complete the dispatch that created this turn. Call exactly once after finishing the assigned work so dispatch_master receives the persisted result. A server-side post-turn fallback also completes the dispatch if this tool is not called.',
+    description: 'Complete the dispatch that created this turn. Call exactly once after finishing the assigned work so the result flows back to the caller session. A server-side post-turn fallback also completes the dispatch if this tool is not called.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -283,7 +274,8 @@ async function callBridge(name, args, signal) {
   try { payload = await response.json(); } catch (_) { /* handled below */ }
   if (!response.ok) {
     const code = payload && typeof payload.code === 'string' ? payload.code : 'router_error';
-    const error = new Error(code);
+    const detail = payload && (payload.error || payload.message);
+    const error = new Error(detail ? `${code}: ${detail}` : code);
     error.code = code;
     throw error;
   }
@@ -338,9 +330,10 @@ async function handle(message) {
       write({ jsonrpc: '2.0', id, result: toolContent(result, false) });
     } catch (error) {
       const code = typeof error.code === 'string' ? error.code : 'router_error';
+      const message = error.message || code;
       write({
         jsonrpc: '2.0', id,
-        result: toolContent({ ok: false, code }, true),
+        result: toolContent({ ok: false, code, message }, true),
       });
     } finally {
       inflight.delete(id);

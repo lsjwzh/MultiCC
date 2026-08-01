@@ -133,7 +133,7 @@ test('module exposes a frozen API and the three routing suffixes', () => {
   // Suffixes are English on purpose — the model obeys English routing
   // instructions more reliably — and each names the exact tool to call.
   assert.match(api.SUFFIX_DISPATCH_MASTER, /dispatch_master/);
-  assert.match(api.SUFFIX_DISPATCH_MASTER, /wait for the result callback/i);
+  assert.match(api.SUFFIX_DISPATCH_MASTER, /flow back.*asynchronously/i);
   assert.match(api.SUFFIX_ROUTE_TASK, /route_task/);
   assert.match(api.SUFFIX_ROUTE_TASK, /fire-and-forget/i);
   assert.match(api.SUFFIX_NONE, /do not dispatch/i);
