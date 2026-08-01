@@ -16,7 +16,41 @@ const {
   setProviderBaseUrl,
   formatArkQuota,
   arkPlanFromBaseUrl,
+  humanizeCountdown,
+  unifiedRemaining,
+  unifiedWindowSeg,
+  unifiedBalanceText,
 } = require('../public/chat-rate-limit');
+
+test('unified helpers: countdown buckets, remaining clamp, window seg, balance text', () => {
+  // humanizeCountdown: <1h → minutes (min 1m), <24h → hours (1 decimal), else days+hours
+  assert.equal(humanizeCountdown(null), '');
+  assert.equal(humanizeCountdown(-1), '');
+  assert.equal(humanizeCountdown(30 * 60_000), '30m');
+  assert.equal(humanizeCountdown(3_600_000), '1h');
+  assert.equal(humanizeCountdown(5_400_000), '1.5h');
+  assert.equal(humanizeCountdown(25 * 3_600_000), '1d 1h');
+  assert.equal(humanizeCountdown(48 * 3_600_000), '2d');
+  assert.equal(humanizeCountdown(620 * 3_600_000), '25d 20h');
+
+  // unifiedRemaining: 100 - used, clamped to [0,100], null passthrough
+  assert.equal(unifiedRemaining(null), null);
+  assert.equal(unifiedRemaining(0), 100);
+  assert.equal(unifiedRemaining(72.4), 28);
+  assert.equal(unifiedRemaining(100), 0);
+  assert.equal(unifiedRemaining(150), 0);
+
+  // unifiedWindowSeg: `<label> <remaining>% [<countdown>]`, '' without a percent
+  assert.equal(unifiedWindowSeg('5h', null, 3_600_000), '');
+  assert.equal(unifiedWindowSeg('5h', 72.4, 3_600_000), '5h 28% 1h');
+  assert.equal(unifiedWindowSeg('1wk', 50, null), '1wk 50%');
+
+  // unifiedBalanceText: 2-decimal amount with currency symbol
+  assert.equal(unifiedBalanceText(null, 'CNY'), '');
+  assert.equal(unifiedBalanceText(110, 'CNY'), '¥110.00');
+  assert.equal(unifiedBalanceText(0, 'USD'), '$0.00');
+  assert.equal(unifiedBalanceText(42.5, null), '42.50');
+});
 
 test('normalizes Claude five-hour rate-limit event into a privacy-minimal DTO', () => {
   const now = 1_700_000_000_000;
@@ -93,11 +127,8 @@ test('formats active five-hour state and hides expired state deterministically',
     usedPercentage: 72.4,
     resetsAtMs: now + 3_600_000,
   };
-  assert.deepEqual(formatFiveHourRateLimit(limit, {
-    nowMs: now,
-    formatReset: () => '15:40',
-  }), {
-    text: 'Claude 5h 72.4% · 15:40 重置',
+  assert.deepEqual(formatFiveHourRateLimit(limit, { nowMs: now }), {
+    text: '5h 28% 1h',
     color: '#d29922',
     title: 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
   });
@@ -105,36 +136,7 @@ test('formats active five-hour state and hides expired state deterministically',
   assert.equal(formatFiveHourRateLimit({
     ...limit,
     status: 'rejected',
-  }, {
-    nowMs: now,
-    formatReset: () => '15:40',
-  }).text, 'Claude 5h 已达上限 · 15:40 重置');
-});
-
-test('appends 更新于 HH:MM for stale cached window data but keeps fresh data clean', () => {
-  const now = 1_700_000_000_000;
-  const stale = {
-    kind: 'five_hour',
-    status: 'allowed',
-    usedPercentage: 42,
-    resetsAtMs: now + 3_600_000,
-    observedAtMs: now - 120_000,
-  };
-  assert.deepEqual(formatFiveHourRateLimit(stale, {
-    nowMs: now,
-    formatReset: () => '15:40',
-    formatObserved: () => '14:28',
-  }), {
-    text: 'Claude 5h 42% · 更新于 14:28 · 15:40 重置',
-    color: '#58a6ff',
-    title: 'Claude 订阅五小时用量（来自 Claude Code 结构化 rate_limit_event）',
-  });
-  const fresh = { ...stale, observedAtMs: now - 1_000 };
-  assert.equal(formatFiveHourRateLimit(fresh, {
-    nowMs: now,
-    formatReset: () => '15:40',
-    formatObserved: () => 'should-not-appear',
-  }).text, 'Claude 5h 42% · 15:40 重置');
+  }, { nowMs: now }).text, '5h 0% 1h');
 });
 
 test('structured event renders directly in the Claude chat bar and hides for another CLI', () => {
@@ -154,7 +156,7 @@ test('structured event renders directly in the Claude chat bar and hides for ano
       resetsAt: Math.floor(Date.now() / 1000) + 3600,
     }, 'chat-1');
     assert.equal(limit.usedPercentage, 72);
-    assert.match(element.textContent, /^Claude 5h 72% · .+ 重置$/);
+    assert.match(element.textContent, /^5h 28%/);
     assert.equal(element.style.display, 'block');
     assert.equal(values.size, 1);
 
@@ -169,13 +171,13 @@ test('structured event renders directly in the Claude chat bar and hides for ano
   }
 });
 
-test('GLM window limit labels as GLM 5h and shows under codex, hides under claude', () => {
+test('GLM window renders in the unified 5h format under codex, idle placeholder under claude', () => {
   const value = normalizeFiveHourRateLimit({
     status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44,
     resetsAt: Math.floor(Date.now() / 1000) + 3600, provider: 'glm',
   }, Date.now());
   assert.equal(value.provider, 'glm');
-  assert.match(formatFiveHourRateLimit(value).text, /^GLM 5h 44% · .+ 重置$/);
+  assert.match(formatFiveHourRateLimit(value).text, /^5h 56%/);
 
   const element = { style: {}, textContent: '', title: '' };
   const values = new Map();
@@ -192,10 +194,10 @@ test('GLM window limit labels as GLM 5h and shows under codex, hides under claud
     }, 'glm-sess');
     setCli('codex');
     assert.equal(element.style.display, 'block', 'GLM window shows under codex');
-    assert.match(element.textContent, /^GLM 5h 44%/);
+    assert.match(element.textContent, /^5h 56%/);
     setCli('claude');
     assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
-    assert.match(element.textContent, /^Claude 5h · —/, 'GLM window replaced by Claude idle placeholder');
+    assert.match(element.textContent, /^5h · —/, 'GLM window replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;
@@ -203,13 +205,13 @@ test('GLM window limit labels as GLM 5h and shows under codex, hides under claud
   }
 });
 
-test('Codex weekly window labels as Codex 周 and shows under codex, hides under claude', () => {
+test('Codex weekly window renders in the unified 1wk format under codex, idle placeholder under claude', () => {
   const value = normalizeFiveHourRateLimit({
     status: 'allowed', rateLimitType: 'weekly', utilization: 0.64,
     resetsAt: Math.floor(Date.now() / 1000) + 3600, provider: 'codex',
   }, Date.now());
   assert.equal(value.provider, 'codex');
-  assert.match(formatFiveHourRateLimit(value).text, /^Codex 周 64% · .+ 重置$/);
+  assert.match(formatFiveHourRateLimit(value).text, /^1wk 36%/);
   assert.match(formatFiveHourRateLimit(value).title, /周额度/);
 
   const element = { style: {}, textContent: '', title: '' };
@@ -227,10 +229,10 @@ test('Codex weekly window labels as Codex 周 and shows under codex, hides under
     }, 'codex-sess');
     setCli('codex');
     assert.equal(element.style.display, 'block', 'Codex weekly shows under codex');
-    assert.match(element.textContent, /^Codex 周 64%/);
+    assert.match(element.textContent, /^1wk 36%/);
     setCli('claude');
     assert.equal(element.style.display, 'block', 'bar stays visible under claude (idle placeholder)');
-    assert.match(element.textContent, /^Claude 5h · —/, 'Codex weekly replaced by Claude idle placeholder');
+    assert.match(element.textContent, /^5h · —/, 'Codex weekly replaced by Claude idle placeholder');
   } finally {
     setCli('codex');
     delete global.document;
@@ -248,10 +250,10 @@ test('DeepSeek balance normalizes, formats, and renders in its own bar under cod
   assert.equal(normalizeBalance({ kind: 'window' }), null, 'rejects non-balance');
   const bal = normalizeBalance({ kind: 'balance', available: true, currency: 'CNY', total: 110 });
   assert.equal(bal.provider, 'deepseek');
-  assert.equal(formatBalance(bal).text, 'DeepSeek 余额 ¥110.00');
+  assert.equal(formatBalance(bal).text, '¥110.00');
   const exhausted = normalizeBalance({ kind: 'balance', available: false, currency: 'USD', total: 0 });
   assert.match(formatBalance(exhausted).text, /余额不足/);
-  assert.equal(formatBalance(exhausted).text, 'DeepSeek 余额 $0.00 · 余额不足');
+  assert.equal(formatBalance(exhausted).text, '$0.00 · 余额不足');
 
   const element = { style: {}, textContent: '', title: '' };
   const values = new Map();
@@ -265,7 +267,7 @@ test('DeepSeek balance normalizes, formats, and renders in its own bar under cod
     consumeBalanceEvent({ kind: 'balance', available: true, currency: 'CNY', total: 42.5 }, 'ds-sess');
     setCli('codex');
     assert.equal(element.style.display, 'block', 'balance shows under codex');
-    assert.equal(element.textContent, 'DeepSeek 余额 ¥42.50');
+    assert.equal(element.textContent, '¥42.50');
     setCli('claude');
     assert.equal(element.style.display, 'none', 'balance hidden under claude');
   } finally {
@@ -284,7 +286,7 @@ test('rejects a weekly window that would resolve to the claude provider (Claude 
     resetsAt: Math.floor(Date.now() / 1000) + 3600,
   }, Date.now());
   assert.equal(value.provider, 'claude');
-  assert.match(formatFiveHourRateLimit(value).text, /^Claude 5h 50%/);
+  assert.match(formatFiveHourRateLimit(value).text, /^5h 50%/);
 });
 
 test('hides the Claude bar (data and idle placeholder) under a non-Claude provider', () => {
@@ -300,21 +302,21 @@ test('hides the Claude bar (data and idle placeholder) under a non-Claude provid
     setCli('claude');
     setProviderBaseUrl('');
     assert.equal(element.style.display, 'block', 'idle placeholder shows on the default Claude login');
-    assert.match(element.textContent, /^Claude 5h · —/);
+    assert.match(element.textContent, /^5h · —/);
 
     consumeRateLimitEvent({
       status: 'allowed', rateLimitType: 'five_hour', utilization: 0.23,
       resetsAt: Math.floor(Date.now() / 1000) + 3600,
     }, 'prov-sess');
-    assert.match(element.textContent, /^Claude 5h 23%/);
+    assert.match(element.textContent, /^5h 77%/);
 
     setProviderBaseUrl('https://api.z.ai/api/paas/v4');
     assert.equal(element.style.display, 'none', 'claude bar hidden under a zhipu provider');
-    assert.equal(element.textContent, '', 'no empty "Claude 5h · —" placeholder');
+    assert.equal(element.textContent, '', 'no empty "5h · —" placeholder');
 
     setProviderBaseUrl('https://api.anthropic.com');
     assert.equal(element.style.display, 'block', 'anthropic-family hosts still count as Claude');
-    assert.match(element.textContent, /^Claude 5h 23%/);
+    assert.match(element.textContent, /^5h 77%/);
   } finally {
     setProviderBaseUrl('');
     setCli('codex');
@@ -356,22 +358,22 @@ test('detects the Ark plan family from the provider baseUrl path', () => {
   assert.equal(arkPlanFromBaseUrl('not a url'), null);
 });
 
-test('ark bar shows every period of both plans, marking the one matching the baseUrl', () => {
+test('ark bar shows the active plan windows compactly, with all plans in the tooltip', () => {
   const agent = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/plan');
-  assert.ok(agent.text.startsWith('Agent（当前） 5h 0.11% · 周 16.5% · 月 29.77%'), agent.text);
-  assert.ok(agent.text.includes('｜ Coding 会话 100% · 周 26.85% · 月 98.42%'), agent.text);
-  assert.equal(agent.color, '#f85149', 'worst period (coding 会话 100%) drives the color');
+  assert.ok(agent.text.startsWith('5h 100% · 1wk 84% · 1m 70%'), agent.text);
+  assert.equal(agent.color, '#58a6ff', 'color from the displayed (agent) plan, max used 29.77%');
   assert.ok(agent.title.includes('Agent · medium（当前 provider）'), agent.title);
   assert.ok(agent.title.includes('  5h: 10.55/10000 (0.11%)'), agent.title);
+  assert.ok(agent.title.includes('Coding'), 'coding plan stays reachable in the tooltip');
   assert.ok(agent.title.includes('Coding（当前 provider）') === false, 'coding not marked current');
 
   const coding = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/coding/v3');
-  assert.ok(coding.text.startsWith('Coding（当前） 会话 100% · 周 26.85% · 月 98.42%'), coding.text);
-  assert.ok(coding.text.includes('｜ Agent 5h 0.11% · 周 16.5% · 月 29.77%'), coding.text);
+  assert.ok(coding.text.startsWith('会话 0% · 1wk 73% · 1m 2%'), coding.text);
+  assert.equal(coding.color, '#f85149', 'coding 会话 100% used → 0% remaining → red');
 
   const unknown = formatArkQuota(ARK_FIXTURE, 'https://ark.cn-beijing.volces.com/api/v3');
-  assert.ok(unknown.text.includes('当前') === false, 'no plan marked when baseUrl is inconclusive');
-  assert.ok(unknown.text.startsWith('Agent 5h 0.11%'), unknown.text);
+  assert.ok(unknown.text.startsWith('5h 100%'), unknown.text);
+  assert.ok(unknown.text.includes('当前') === false, 'no plan marked in the bar text');
 });
 
 test('switching provider baseUrl to a vendor endpoint immediately refreshes its quota', async () => {
