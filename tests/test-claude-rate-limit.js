@@ -376,6 +376,30 @@ test('ark bar shows the active plan windows compactly, with all plans in the too
   assert.ok(unknown.text.includes('当前') === false, 'no plan marked in the bar text');
 });
 
+test('ark bar renders reset countdowns when resetAt is present', () => {
+  const now = Date.now();
+  const fixture = {
+    status: 'ok',
+    fetchedAt: now,
+    viewer: null,
+    items: [
+      {
+        product: 'agent-plan', edition: 'personal', tier: 'medium', subscribed: true, error: null,
+        periods: [
+          { label: '5h', used: 7200, total: 10000, percent: 72, resetAt: now + 3600000 },
+          { label: 'weekly', used: 5000, total: 50000, percent: 10, resetAt: now + 3 * 86400000 + 5 * 3600000 },
+          { label: 'monthly', used: 30000, total: 200000, percent: 15, resetAt: now + 25 * 86400000 + 20 * 3600000 },
+        ],
+      },
+    ],
+  };
+  const view = formatArkQuota(fixture, 'https://ark.cn-beijing.volces.com/api/plan');
+  assert.ok(view.text.includes('5h 28% 1h'), `expected '5h 28% 1h' in: ${view.text}`);
+  assert.ok(view.text.includes('1wk 90% 3d 5h'), `expected '1wk 90% 3d 5h' in: ${view.text}`);
+  assert.ok(view.text.includes('1m 85% 25d 20h'), `expected '1m 85% 25d 20h' in: ${view.text}`);
+  assert.ok(view.title.includes('重置'), 'tooltip shows reset timestamp');
+});
+
 test('switching provider baseUrl to a vendor endpoint immediately refreshes its quota', async () => {
   const calls = [];
   const origFetch = global.fetch;
