@@ -43,27 +43,33 @@ async function main() {
   const label = me && me.label || '';
 
   if (label.includes('master')) {
-    const slave = sessions.find(s => s.dirId === me.dirId && String(s.label||'').includes('slave'));
-    if (!slave) throw new Error('no slave found');
     const args = process.argv.slice(2);
     const prompt = String(args[args.length - 1] || '');
-    const mode = prompt.includes('FAIL_MODE') ? 'failed' : 'completed';
-    const body = {
-      arguments: {
-        target_session_id: slave.id,
-        message: 'do the work: ' + mode,
-        timeout_seconds: 30,
-      },
-    };
-    const res = await fetch(base + '/api/internal/router-tools/dispatch_master', {
-      method: 'POST', headers, body: JSON.stringify(body),
-    });
-    const result = await res.json();
-    const text = 'MASTER_RESULT:' + JSON.stringify(result.result || result);
-    process.stdout.write(JSON.stringify({
-      type: 'item.completed',
-      item: { type: 'agent_message', text },
-    }) + '\\n');
+    if (prompt.includes('dispatch 结果回流')) {
+      process.stdout.write(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: 'BACKFLOW_RECEIVED:' + prompt },
+      }) + '\\n');
+    } else {
+      const slave = sessions.find(s => s.dirId === me.dirId && String(s.label||'').includes('slave'));
+      if (!slave) throw new Error('no slave found');
+      const mode = prompt.includes('FAIL_MODE') ? 'failed' : 'completed';
+      const body = {
+        arguments: {
+          target_session_id: slave.id,
+          message: 'do the work: ' + mode,
+        },
+      };
+      const res = await fetch(base + '/api/internal/router-tools/dispatch_master', {
+        method: 'POST', headers, body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      const text = 'MASTER_RESULT:' + JSON.stringify(result.result || result);
+      process.stdout.write(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text },
+      }) + '\\n');
+    }
   } else {
     const args = process.argv.slice(2);
     const prompt = String(args[args.length - 1] || '');
@@ -245,19 +251,41 @@ function sendWsMessage(port, sessionId, text) {
     assert.match(slaveEntry.prompt, /dispatch_slave/, 'S3: slave prompt must mention dispatch_slave');
     assert.match(slaveEntry.prompt, /回传/, 'S3: slave prompt must contain callback keyword');
     assert.match(slaveEntry.prompt, /status:"completed"/, 'S3: must show completed example');
-    assert.match(slaveEntry.prompt, /master 会一直等待/, 'S3: must warn about waiting');
+    assert.match(slaveEntry.prompt, /master 无法收到结果/, 'S3: must warn about missing result');
 
-    // D1: master got the result (verify via history API)
-    const d1History = await waitUntil(async () => {
+    // D1: verify register-and-return + backflow outbox emission
+    // (a) Master's first turn output contains the admitted receipt
+    const masterHistory = await waitUntil(async () => {
       const history = normalizeHistory(await api('GET', `/api/sessions/${master.id}/history`));
       const msgs = history.filter(m => m.role === 'assistant');
-      return msgs.find(m => contentText(m).includes('work done successfully')) || null;
-    }, 'D1: master history did not contain the slave result');
-    assert.match(contentText(d1History), /work done successfully/, 'D1: master got slave result');
+      return msgs.find(m => contentText(m).includes('MASTER_RESULT')) || null;
+    }, 'D1: master history did not contain the dispatch receipt');
+    assert.match(contentText(masterHistory), /admitted/, 'D1: master got admitted receipt');
+
+    // (b) Slave completed and called dispatch_slave
+    const slaveHistory = await waitUntil(async () => {
+      const history = normalizeHistory(await api('GET', `/api/sessions/${slave.id}/history`));
+      const msgs = history.filter(m => m.role === 'assistant');
+      return msgs.find(m => contentText(m).includes('SLAVE_DONE')) || null;
+    }, 'D1: slave history did not contain SLAVE_DONE');
+    assert.match(contentText(slaveHistory), /SLAVE_DONE:completed/, 'D1: slave completed');
+
+    // (c) Backflow outbox entry emitted with correct format
+    const orchFile = path.join(dataRoot, 'orchestration.json');
+    const backflowEntry = await waitUntil(() => {
+      if (!fs.existsSync(orchFile)) return null;
+      const state = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+      const entries = Object.values(state.outbox || {}).filter(
+        v => v.payload?.type === 'dispatch.result' && v.sessionId === master.id,
+      );
+      return entries.length > 0 ? entries[0] : null;
+    }, 'D1: backflow outbox entry not emitted for master');
+    assert.match(backflowEntry.payload.deliveryText, /dispatch 结果回流/, 'D1: backflow format correct');
+    assert.match(backflowEntry.payload.deliveryText, /work done successfully/, 'D1: backflow contains result');
 
     await stop();
     console.log('Bidirectional dispatch closed-loop integration: ALL PASSED');
-    console.log('  D1: master dispatches → slave returns completed → master gets result ✓');
+    console.log('  D1: master dispatches → admitted receipt + backflow outbox emitted ✓');
     console.log('  S3: slave prompt contains dispatch_slave callback instruction ✓');
   } catch (error) {
     await stop();

@@ -425,18 +425,21 @@ test('explicit idempotency survives a fresh turn without creating a second logic
   assert.equal(admissions.length, 2, 'both HTTP/tool attempts reach the canonical idempotent admission');
 });
 
-test('dispatch_master waits for the durable slave result without a result outbox', async t => {
+test('dispatch_master returns admitted immediately and backflow outbox is emitted on completion', async t => {
   const { admissions, operations, runtime, store } = fixture(t);
   const masterCapability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-master' });
-  const pending = runtime.execute(masterCapability, 'dispatch_master', {
+  const result = await runtime.execute(masterCapability, 'dispatch_master', {
     target_session_id: 'worker-a',
     message: 'run deterministic checks',
     idempotency_key: 'master-1',
-    timeout_seconds: 5,
   });
-  await nextTurn();
+  assert.equal(result.ok, true);
+  assert.equal(result.admitted, true);
+  assert.equal(result.status, 'admitted');
+  assert.equal(result.queued, true);
+  assert.equal(result.result, undefined);
   assert.equal(admissions.length, 1);
-  const operationId = (await operations.list({ kind: 'dispatch' }))[0].id;
+  const operationId = result.operation_id;
   const slaveCapability = runtime.issueContext({
     sessionId: 'worker-a',
     turnId: 'turn-slave',
@@ -445,53 +448,35 @@ test('dispatch_master waits for the durable slave result without a result outbox
   const slave = await runtime.execute(slaveCapability, 'dispatch_slave', {
     result: 'checks passed',
   });
-  const result = await pending;
   assert.equal(slave.accepted, true);
-  assert.equal(result.ok, true);
-  assert.equal(result.result.text, 'checks passed');
-  assert.equal(result.result.source, 'dispatch_slave');
   const snapshot = await store.snapshot();
-  assert.equal(snapshot.outbox[`operation:${operationId}:result`], undefined);
+  const outboxEntry = snapshot.outbox[`operation:${operationId}:result`];
+  assert.ok(outboxEntry, 'backflow outbox entry must exist');
+  assert.equal(outboxEntry.payload.type, 'dispatch.result');
+  assert.match(outboxEntry.payload.deliveryText, /📜 dispatch 结果回流/);
+  assert.match(outboxEntry.payload.deliveryText, /checks passed/);
 });
 
-test('dispatch_master timeout is non-destructive and retry reattaches idempotently', async t => {
-  const clock = { value: 1_000 };
-  const fakeTimer = (fn, ms) => {
-    const timer = { unref() {} };
-    queueMicrotask(() => {
-      clock.value += ms;
-      fn();
-    });
-    return timer;
-  };
-  const { admissions, operations, runtime } = fixture(t, {
-    now: () => clock.value,
-    setTimeoutFn: fakeTimer,
-    clearTimeoutFn: () => {},
-    pollIntervalMs: 250,
-  });
-  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-timeout' });
+test('dispatch_master retry reattaches idempotently without duplicate operations', async t => {
+  const { admissions, operations, runtime } = fixture(t);
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-retry' });
   const args = {
     target_session_id: 'worker-a',
     message: 'slow task',
     idempotency_key: 'slow-1',
-    timeout_seconds: 1,
   };
-  const timedOut = await runtime.execute(capability, 'dispatch_master', args);
-  assert.equal(timedOut.status, 'timed_out');
-  assert.equal((await operations.get(timedOut.operation_id)).status, 'admitted');
-  const retry = runtime.execute(capability, 'dispatch_master', {
-    ...args,
-    timeout_seconds: 5,
-  });
-  await operations.completeDispatch(timedOut.operation_id, {
-    status: 'completed', text: 'late result',
-  });
-  const completed = await retry;
+  const first = await runtime.execute(capability, 'dispatch_master', args);
+  assert.equal(first.ok, true);
+  assert.equal(first.admitted, true);
+  assert.equal(first.status, 'admitted');
+  assert.equal((await operations.get(first.operation_id)).status, 'admitted');
+  const retry = await runtime.execute(capability, 'dispatch_master', args);
+  assert.equal(retry.ok, true);
+  assert.equal(retry.operation_id, first.operation_id);
+  assert.equal(retry.duplicate, true);
   assert.equal(admissions.length, 2);
   assert.equal(admissions[1].opts.idempotencyKey, admissions[0].opts.idempotencyKey);
-  assert.equal(completed.operation_id, timedOut.operation_id);
-  assert.equal(completed.result.text, 'late result');
+  assert.equal((await operations.list({ kind: 'dispatch' })).length, 1);
 });
 
 test('target and slave lineage validation fail closed', async t => {

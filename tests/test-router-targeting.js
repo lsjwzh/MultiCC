@@ -325,7 +325,7 @@ test('S1: dispatch_master message to slave contains dispatch_slave callback inst
   assert.match(delivered, /回传/, 'must contain callback instruction keyword');
   assert.match(delivered, /status:"completed"/, 'must show completed status example');
   assert.match(delivered, /status:"failed"/, 'must show failed status example');
-  assert.match(delivered, /master 会一直等待/, 'must warn about master waiting');
+  assert.match(delivered, /master 无法收到结果/, 'must warn about missing result');
   // Resolve to avoid dangling promise
   const ops = await operations.list({ kind: 'dispatch' });
   const slaveCap = runtime.issueContext({
