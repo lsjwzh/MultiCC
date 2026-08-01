@@ -8,6 +8,7 @@ import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/workspace_service.dart';
+import '../utils/session_status_helpers.dart';
 import 'chat_provider.dart';
 
 class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
@@ -151,7 +152,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         )
         .toList();
     list.sort((a, b) => _lastInteractionAt(b).compareTo(_lastInteractionAt(a)));
-    return list;
+    return pinCommanderFirst(list);
   }
 
   /// Sessions currently waiting on user input (resolved from the aggregate).
@@ -351,7 +352,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     for (final ss in groups.values) {
       ss.sort((a, b) => sessionTs(b).compareTo(sessionTs(a)));
     }
-    return groups;
+    return groups.map((key, ss) => MapEntry(key, pinCommanderFirst(ss)));
   }
 
   /// Returns sessions scoped to a directory, split by kind only
@@ -375,7 +376,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         _lastInteractionAt(b).compareTo(_lastInteractionAt(a));
     chats.sort(cmp);
     terminals.sort(cmp);
-    return {'chat': chats, 'terminal': terminals};
+    return {
+      'chat': pinCommanderFirst(chats),
+      'terminal': pinCommanderFirst(terminals),
+    };
   }
 
   /// The special `__aux__` session (voice refine / intent classifier), if loaded.
