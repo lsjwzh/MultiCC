@@ -286,15 +286,20 @@ function createOperationService({
       const label = operation.spec.targetLabel
         ? `${targetId}（${operation.spec.targetLabel}）`
         : targetId;
-      const text = status === 'completed'
-        ? `【${label} 回复】\n${String(result.text || '').trim() || '（本次运行没有产生文本输出）'}`
-        : `🔇【分发任务已中断】发往 ${label} 的任务在 MultiCC 服务重启时未找到可恢复的完成结果。请检查目标会话后决定是否重试。`;
+      const resultBody = String(result.text || '').trim() || '（本次运行没有产生文本输出）';
+      const text = operation.spec.resultMode === 'tool'
+        ? (status === 'completed'
+          ? `📜 dispatch 结果回流 [${label}]: ${resultBody}`
+          : `📜 dispatch 结果回流 [${label}]: ❌ ${result.error || resultBody}`)
+        : (status === 'completed'
+          ? `【${label} 回复】\n${resultBody}`
+          : `🔇【分发任务已中断】发往 ${label} 的任务在 MultiCC 服务重启时未找到可恢复的完成结果。请检查目标会话后决定是否重试。`);
       return completeOperationDraft(draft, operation, result, {
         status,
-        // One-way routes and MCP dispatch_master calls keep completion durable
-        // without injecting a second chat turn. dispatch_master returns this
-        // operation result through the original tool_call instead.
-        outboxPayload: operation.spec.oneWay === true || operation.spec.resultMode === 'tool' ? null : {
+        // One-way routes keep completion durable without injecting a second
+        // chat turn. dispatch_master (resultMode=tool) now delivers the result
+        // back to the caller session as an async backflow message.
+        outboxPayload: operation.spec.oneWay === true ? null : {
           type: 'dispatch.result',
           operationId: operation.id,
           targetId,
