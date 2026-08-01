@@ -46,6 +46,47 @@ void main() {
     });
   });
 
+  group('unified helpers', () {
+    test('humanizeCountdown buckets: minutes, hours, days', () {
+      expect(humanizeCountdown(null), '');
+      expect(humanizeCountdown(-1), '');
+      expect(humanizeCountdown(30 * 60000), '30m');
+      expect(humanizeCountdown(3600000), '1h');
+      expect(humanizeCountdown(5400000), '1.5h');
+      expect(humanizeCountdown(25 * 3600000), '1d 1h');
+      expect(humanizeCountdown(48 * 3600000), '2d');
+      expect(humanizeCountdown(620 * 3600000), '25d 20h');
+    });
+
+    test('unifiedRemaining clamps 100 - used to [0,100]', () {
+      expect(unifiedRemaining(null), null);
+      expect(unifiedRemaining(0), 100);
+      expect(unifiedRemaining(72.4), 28);
+      expect(unifiedRemaining(100), 0);
+      expect(unifiedRemaining(150), 0);
+    });
+
+    test('unifiedWindowSeg builds `<label> <remaining>% [<countdown>]`', () {
+      expect(unifiedWindowSeg('5h', null, 3600000), '');
+      expect(unifiedWindowSeg('5h', 72.4, 3600000), '5h 28% 1h');
+      expect(unifiedWindowSeg('1wk', 50, null), '1wk 50%');
+    });
+
+    test('unifiedBalanceText renders 2-decimal amount with currency symbol', () {
+      expect(unifiedBalanceText(null, 'CNY'), '');
+      expect(unifiedBalanceText(110, 'CNY'), '¥110.00');
+      expect(unifiedBalanceText(0, 'USD'), '\$0.00');
+      expect(unifiedBalanceText(42.5, null), '42.50');
+    });
+
+    test('arkWindowLabel maps period names to compact tokens', () {
+      expect(arkWindowLabel('5h'), '5h');
+      expect(arkWindowLabel('weekly'), '1wk');
+      expect(arkWindowLabel('monthly'), '1m');
+      expect(arkWindowLabel('session'), '会话');
+    });
+  });
+
   group('formatArkQuota', () {
     test('renders percent-only periods without null/null', () {
       final value = {
@@ -68,13 +109,14 @@ void main() {
         'https://ark.cn-beijing.volces.com/api/coding/v3',
       );
       expect(view.text.contains('null'), false);
-      expect(view.text, contains('Coding（当前）'));
-      expect(view.text, contains('会话 100%'));
-      expect(view.text, contains('周 42.5%'));
-      expect(view.color, VendorQuotaColor.red); // maxPct 100 >= 90
+      expect(view.text, contains('会话 0%'));
+      expect(view.text, contains('1wk 58%'));
+      expect(view.text.contains('（当前）'), false, reason: 'plan marker lives in tooltip');
+      expect(view.tooltip, contains('Coding（当前 provider）'));
+      expect(view.color, VendorQuotaColor.red); // 会话 100% used → 0% remaining
     });
 
-    test('marks the plan matching the baseUrl as current', () {
+    test('marks the plan matching the baseUrl as current in the tooltip', () {
       final value = {
         'status': 'ok',
         'fetchedAt': DateTime.now().millisecondsSinceEpoch,
@@ -90,9 +132,9 @@ void main() {
         ],
       };
       final coding = formatArkQuota(value, 'https://x.volces.com/api/coding/v3');
-      expect(coding.text.contains('（当前）'), false);
+      expect(coding.tooltip.contains('（当前 provider）'), false);
       final agent = formatArkQuota(value, 'https://x.volces.com/api/plan');
-      expect(agent.text, contains('Agent（当前）'));
+      expect(agent.tooltip, contains('Agent（当前 provider）'));
     });
 
     test('surfaces needs_auth / needs_install / no-plan states', () {
@@ -123,9 +165,10 @@ void main() {
         ],
       };
       final view = formatZhipuQuota(value);
-      expect(view.text, contains('Z.ai 5h 33.33%'));
-      expect(view.text, contains('周 75%'));
-      expect(view.color, VendorQuotaColor.yellow); // maxPct 75 >= 70
+      expect(view.text, contains('5h 67%'));
+      expect(view.text, contains('1wk 25%'));
+      expect(view.tooltip, contains('Z.ai'));
+      expect(view.color, VendorQuotaColor.yellow); // 周 75% used → 25% remaining
     });
 
     test('surfaces not_configured / unavailable', () {
@@ -140,11 +183,12 @@ void main() {
         'status': 'ok',
         'fetchedAt': DateTime.now().millisecondsSinceEpoch,
         'sites': [
-          {'host': 'api.moonshot.cn', 'site': 'Moonshot', 'ok': true, 'available': 49.58},
+          {'host': 'api.moonshot.cn', 'site': 'Moonshot', 'ok': true, 'available': 49.58, 'currency': 'CNY'},
         ],
       };
       final view = formatKimiQuota(value, null);
-      expect(view.text, contains('Moonshot ¥49.58'));
+      expect(view.text, contains('¥49.58'));
+      expect(view.tooltip, contains('Moonshot'));
       expect(view.color, VendorQuotaColor.blue);
     });
 
@@ -153,7 +197,7 @@ void main() {
         'status': 'ok',
         'fetchedAt': DateTime.now().millisecondsSinceEpoch,
         'sites': [
-          {'host': 'api.moonshot.cn', 'site': 'Moonshot', 'ok': true, 'available': 12.34},
+          {'host': 'api.moonshot.cn', 'site': 'Moonshot', 'ok': true, 'available': 12.34, 'currency': 'CNY'},
         ],
       };
       final live = {
@@ -163,7 +207,7 @@ void main() {
         ],
       };
       final view = formatKimiQuota(live, cached);
-      expect(view.text, contains('Moonshot ¥12.34'));
+      expect(view.text, contains('¥12.34'));
       expect(view.text, contains('上次'));
       expect(view.tooltip, contains('余额刷新失败'));
     });

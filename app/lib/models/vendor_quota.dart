@@ -105,6 +105,61 @@ String quotaRelAgo(int? tsMs) {
   return '${h ~/ 24} 天前';
 }
 
+// ── Unified compact quota display ───────────────────────────────────────────
+// Mirrors the web `public/chat-rate-limit.js` unified format: every provider
+// renders its windows as `<window> <remaining%> <countdown>` segments joined by
+// ' · ' (e.g. `5h 20% 1.2h · 1wk 50% 3d 5h`); money providers render `¥<amount>`.
+
+/// Remaining percent from a used percent (rounded, clamped 0..100); null when the
+/// input is not a finite number.
+int? unifiedRemaining(num? usedPercent) {
+  if (usedPercent == null || usedPercent.isNaN || usedPercent.isInfinite) {
+    return null;
+  }
+  return (100 - usedPercent).round().clamp(0, 100);
+}
+
+/// Humanized reset countdown (`45m`, `1.2h`, `3d 5h`, `14d`) from a duration in
+/// ms; '' when missing/negative.
+String humanizeCountdown(num? ms) {
+  if (ms == null || ms.isNaN || ms.isInfinite || ms < 0) return '';
+  final totalH = ms / 3600000;
+  if (totalH < 1) {
+    var m = (ms / 60000).round();
+    if (m < 1) m = 1;
+    return '${m}m';
+  }
+  if (totalH < 24) {
+    final h = (totalH * 10).round() / 10;
+    return h == h.truncateToDouble() ? '${h.toInt()}h' : '${h.toStringAsFixed(1)}h';
+  }
+  final d = totalH ~/ 24;
+  final remH = (totalH % 24).floor();
+  return remH > 0 ? '${d}d ${remH}h' : '${d}d';
+}
+
+/// One window → `<label> <remaining>% [<countdown>]`; '' when percent is missing.
+String unifiedWindowSeg(String label, num? usedPercent, num? resetMs) {
+  final rem = unifiedRemaining(usedPercent);
+  if (rem == null) return '';
+  final cd = humanizeCountdown(resetMs);
+  return cd.isEmpty ? '$label $rem%' : '$label $rem% $cd';
+}
+
+int unifiedColorFromRemaining(int? rem) {
+  if (rem == null) return VendorQuotaColor.blue;
+  if (rem <= 10) return VendorQuotaColor.red;
+  if (rem <= 30) return VendorQuotaColor.yellow;
+  return VendorQuotaColor.blue;
+}
+
+/// Money balance text (`¥110.00` / `$5.00`); '' when amount is missing.
+String unifiedBalanceText(num? amount, String? currency) {
+  if (amount == null || amount.isNaN || amount.isInfinite) return '';
+  final sym = currency == 'USD' ? '\$' : currency == 'CNY' ? '¥' : '';
+  return '$sym${amount.toStringAsFixed(2)}';
+}
+
 String arkProductLabel(String? product) {
   switch (product) {
     case 'agent-plan':
@@ -126,6 +181,16 @@ String arkPeriodLabel(String? label) {
   if (l == 'monthly') return '月';
   if (l == 'session') return '会话';
   return (label == null || label.isEmpty) ? '?' : label;
+}
+
+/// Short unified window token for the compact bar (vs. the Chinese tooltip label).
+String arkWindowLabel(String? label) {
+  final l = (label ?? '').toLowerCase();
+  if (l == '5h') return '5h';
+  if (l == 'weekly') return '1wk';
+  if (l == 'monthly') return '1m';
+  if (l == 'session') return '会话';
+  return (label == null || label.isEmpty) ? '?' : l;
 }
 
 // ── Ark (火山方舟) ──────────────────────────────────────────────────────────
@@ -196,35 +261,55 @@ VendorQuotaView formatArkQuota(
     );
   }
 
-  var maxPct = 0.0;
-  final parts = <String>[];
-  for (final it in ordered) {
-    final isActive = it['product'] == activePlan;
-    final segs = <String>[];
-    for (final p in it['periods'] as List) {
-      if (p is! Map) continue;
-      final pct = (p['percent'] as num?)?.toDouble() ?? 0;
-      if (pct > maxPct) maxPct = pct;
-      segs.add('${arkPeriodLabel(p['label']?.toString())} ${fmtQuotaNum(pct)}%');
-    }
-    parts.add(
-      '${arkProductLabel(it['product']?.toString())}'
-      '${isActive ? '（当前）' : ''} ${segs.join(' · ')}',
+  final plan = ordered.first;
+  final segs = <String>[];
+  var maxUsed = 0.0;
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  for (final p in plan['periods'] as List) {
+    if (p is! Map) continue;
+    final pct = (p['percent'] as num?)?.toDouble() ?? 0;
+    if (pct > maxUsed) maxUsed = pct;
+    final resetAt = (p['resetAt'] as num?)?.toInt();
+    final resetMs =
+        resetAt == null ? null : (resetAt - nowMs < 0 ? 0 : resetAt - nowMs);
+    segs.add(
+      unifiedWindowSeg(arkWindowLabel(p['label']?.toString()), pct, resetMs),
     );
   }
 
-  var text = parts.join(' ｜ ');
+  final titleLines = <String>[];
+  for (final it in ordered) {
+    final isActive = it['product'] == activePlan;
+    titleLines.add(
+      '${arkProductLabel(it['product']?.toString())}'
+      '${it['tier'] != null ? ' · ${it['tier']}' : ''}'
+      '${isActive ? '（当前 provider）' : ''}',
+    );
+    for (final p in it['periods'] as List) {
+      if (p is! Map) continue;
+      final used = p['used'] as num?;
+      final total = p['total'] as num?;
+      final pct = (p['percent'] as num?)?.toDouble() ?? 0;
+      var line = '  ${arkPeriodLabel(p['label']?.toString())}: ';
+      line += (used != null && total != null)
+          ? '${fmtQuotaNum(used)}/${fmtQuotaNum(total)} (${fmtQuotaNum(pct)}%)'
+          : '${fmtQuotaNum(pct)}%';
+      titleLines.add(line);
+    }
+  }
+
+  var text = segs.where((x) => x.isNotEmpty).join(' · ');
+  if (text.isEmpty) text = '—';
   final syncRel = quotaRelAgo((value['fetchedAt'] as num?)?.toInt());
   if (syncRel.isNotEmpty) text += ' · $syncRel';
   text += ' ⟳';
 
-  var color = VendorQuotaColor.blue;
-  if (maxPct >= 90) {
-    color = VendorQuotaColor.red;
-  } else if (maxPct >= 70) {
-    color = VendorQuotaColor.yellow;
-  }
-  return VendorQuotaView(text, color, '火山方舟套餐额度（arkcli usage plan）');
+  final color = unifiedColorFromRemaining(unifiedRemaining(maxUsed));
+
+  var title = '火山方舟套餐额度（arkcli usage plan）';
+  title += '\n${titleLines.join('\n')}';
+  if (syncRel.isNotEmpty) title += '\n同步于 $syncRel';
+  return VendorQuotaView(text, color, title);
 }
 
 // ── Zhipu (z.ai / bigmodel.cn) ──────────────────────────────────────────────
@@ -270,32 +355,55 @@ VendorQuotaView formatZhipuQuota(
     );
   }
 
-  var maxPct = 0.0;
-  final parts = <String>[];
-  for (final s in okSites) {
-    final pct = (s['usedPercent'] as num).toDouble();
-    if (pct > maxPct) maxPct = pct;
-    final periodTag = s['period'] == 'weekly' ? '周' : '5h';
-    parts.add('${s['site']} $periodTag ${fmtQuotaNum(pct)}%');
-    final weekly = s['weeklyUsedPercent'];
-    if (weekly is num) {
-      if (weekly.toDouble() > maxPct) maxPct = weekly.toDouble();
-      parts.add('周 ${fmtQuotaNum(weekly)}%');
-    }
+  final s = okSites.first;
+  final segs = <String>[];
+  var maxUsed = 0.0;
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  final pct = (s['usedPercent'] as num).toDouble();
+  if (pct > maxUsed) maxUsed = pct;
+  final resetsAt = (s['resetsAt'] as num?)?.toInt();
+  segs.add(unifiedWindowSeg(
+    '5h',
+    pct,
+    resetsAt == null ? null : (resetsAt - nowMs < 0 ? 0 : resetsAt - nowMs),
+  ));
+  final weekly = s['weeklyUsedPercent'];
+  if (weekly is num) {
+    if (weekly.toDouble() > maxUsed) maxUsed = weekly.toDouble();
+    final weeklyResetsAt = (s['weeklyResetsAt'] as num?)?.toInt();
+    segs.add(unifiedWindowSeg(
+      '1wk',
+      weekly.toDouble(),
+      weeklyResetsAt == null
+          ? null
+          : (weeklyResetsAt - nowMs < 0 ? 0 : weeklyResetsAt - nowMs),
+    ));
   }
 
-  var text = parts.join(' · ');
+  final titleLines = <String>[];
+  for (final site in okSites) {
+    var line =
+        '${site['site']} (${site['host']}): 5h ${fmtQuotaNum((site['usedPercent'] as num).toDouble())}% 已用';
+    final weeklyPct = site['weeklyUsedPercent'];
+    if (weeklyPct is num) {
+      line += ' · 周 ${fmtQuotaNum(weeklyPct.toDouble())}% 已用';
+    }
+    if (site['tier'] != null) line += ' · ${site['tier']}';
+    titleLines.add(line);
+  }
+
+  var text = segs.where((x) => x.isNotEmpty).join(' · ');
+  if (text.isEmpty) text = '—';
   final syncRel = quotaRelAgo((value['fetchedAt'] as num?)?.toInt());
   if (syncRel.isNotEmpty) text += ' · $syncRel';
   text += ' ⟳';
 
-  var color = VendorQuotaColor.blue;
-  if (maxPct >= 90) {
-    color = VendorQuotaColor.red;
-  } else if (maxPct >= 70) {
-    color = VendorQuotaColor.yellow;
-  }
-  return VendorQuotaView(text, color, 'Zhipu 官方站点窗口用量（glm-monitor 额度端点）');
+  final color = unifiedColorFromRemaining(unifiedRemaining(maxUsed));
+
+  var title = 'Zhipu 官方站点窗口用量（glm-monitor 额度端点）';
+  title += '\n${titleLines.join('\n')}';
+  if (syncRel.isNotEmpty) title += '\n同步于 $syncRel';
+  return VendorQuotaView(text, color, title);
 }
 
 // ── Kimi / Moonshot (prepaid balance) ───────────────────────────────────────
@@ -356,21 +464,17 @@ VendorQuotaView kimiCachedView(
   String reason,
   String headline,
 ) {
-  var minAvail = double.infinity;
-  final parts = <String>[];
-  for (final s in cachedOk) {
-    final avail = (s['available'] as num).toDouble();
-    if (avail < minAvail) minAvail = avail;
-    parts.add('${s['site']} ¥${fmtQuotaNum(avail)}');
-  }
+  final s = cachedOk.first;
+  final avail = (s['available'] as num).toDouble();
+  var text = unifiedBalanceText(avail, s['currency']?.toString());
+  if (text.isEmpty) text = '—';
   final syncRel = quotaRelAgo(fetchedAt);
-  var text = parts.join(' · ');
   if (syncRel.isNotEmpty) text += ' · 上次 $syncRel';
   text += ' ⟳';
   var color = VendorQuotaColor.gray;
-  if (minAvail <= 0) {
+  if (avail <= 0) {
     color = VendorQuotaColor.red;
-  } else if (minAvail <= 5) {
+  } else if (avail <= 5) {
     color = VendorQuotaColor.yellow;
   }
   var tooltip = headline;
@@ -438,23 +542,35 @@ VendorQuotaView formatKimiQuota(
     );
   }
 
-  var minAvail = double.infinity;
-  final parts = <String>[];
-  for (final s in okSites) {
-    final avail = (s['available'] as num).toDouble();
-    if (avail < minAvail) minAvail = avail;
-    parts.add('${s['site']} ¥${fmtQuotaNum(avail)}');
+  final s = okSites.first;
+  final avail = (s['available'] as num).toDouble();
+  var text = unifiedBalanceText(avail, s['currency']?.toString());
+  if (text.isEmpty) text = '—';
+
+  final titleLines = <String>[];
+  for (final site in okSites) {
+    var line =
+        '${site['site']} (${site['host']}): 可用 ¥${fmtQuotaNum((site['available'] as num).toDouble())}';
+    final voucher = site['voucher'];
+    if (voucher is num) line += ' · 券 ¥${fmtQuotaNum(voucher.toDouble())}';
+    final cash = site['cash'];
+    if (cash is num) line += ' · 现金 ¥${fmtQuotaNum(cash.toDouble())}';
+    titleLines.add(line);
   }
-  var text = parts.join(' · ');
+
   final syncRel = quotaRelAgo((value['fetchedAt'] as num?)?.toInt());
   if (syncRel.isNotEmpty) text += ' · $syncRel';
   text += ' ⟳';
 
   var color = VendorQuotaColor.blue;
-  if (minAvail <= 0) {
+  if (avail <= 0) {
     color = VendorQuotaColor.red;
-  } else if (minAvail <= 5) {
+  } else if (avail <= 5) {
     color = VendorQuotaColor.yellow;
   }
-  return VendorQuotaView(text, color, 'Kimi / Moonshot 预付余额');
+
+  var title = 'Kimi / Moonshot 预付余额';
+  title += '\n${titleLines.join('\n')}';
+  if (syncRel.isNotEmpty) title += '\n同步于 $syncRel';
+  return VendorQuotaView(text, color, title);
 }
