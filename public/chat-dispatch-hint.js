@@ -28,7 +28,7 @@
 
   // English on purpose — the model obeys English tool-routing instructions more
   // reliably. Each suffix names the exact tool so the constraint is unambiguous.
-  var SUFFIX_DISPATCH_MASTER = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the dispatch_master tool and wait for the result callback.';
+  var SUFFIX_DISPATCH_MASTER = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the dispatch_master tool. The result will flow back to this session asynchronously.';
   var SUFFIX_ROUTE_TASK = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the route_task tool (fire-and-forget, no callback needed).';
   var SUFFIX_NONE = '\n\n[Dispatch] Do not dispatch to other sessions this turn. Handle it entirely within the current session.';
 

@@ -164,7 +164,7 @@ test('one-way Commander dispatch completes durably without a result outbox', asy
   assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
 });
 
-test('tool-return dispatch completes durably without injecting a result turn', async t => {
+test('tool-return dispatch completes durably and emits a backflow outbox entry', async t => {
   const { store, service } = fixture(t);
   const admitted = await service.admitDispatch({
     ownerSessionId: 'master',
@@ -182,8 +182,11 @@ test('tool-return dispatch completes durably without injecting a result turn', a
   const snapshot = await store.snapshot();
   assert.equal(operation.status, 'completed');
   assert.equal(operation.result.text, 'done');
-  assert.equal(operation.resultOutboxId, null);
-  assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
+  const outboxEntry = snapshot.outbox[`operation:${admitted.id}:result`];
+  assert.ok(outboxEntry, 'backflow outbox entry must exist for resultMode=tool');
+  assert.equal(outboxEntry.payload.type, 'dispatch.result');
+  assert.match(outboxEntry.payload.deliveryText, /📜 dispatch 结果回流/);
+  assert.match(outboxEntry.payload.deliveryText, /done/);
 });
 
 test('task ledger records terminal output and interrupts only unproven active tasks', async t => {

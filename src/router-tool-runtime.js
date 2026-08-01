@@ -331,7 +331,7 @@ function createRouterToolRuntime({
     '---',
     '【回传要求】完成本任务后，你必须调用 dispatch_slave 工具回传结果：',
     'dispatch_slave({result:"<结论/改动/证据/风险摘要>", status:"completed"})；',
-    '若失败用 status:"failed"。不回传则 master 会一直等待。',
+    '若失败用 status:"failed"。不回传则 master 无法收到结果。',
   ].join('\n');
 
   async function admit(context, tool, args, resultMode) {
@@ -417,53 +417,31 @@ function createRouterToolRuntime({
     };
   }
 
-  async function dispatchMaster(context, args, signal) {
+  async function dispatchMaster(context, args) {
     let admitted;
     try {
       admitted = await admit(context, 'dispatch_master', args, 'tool');
     } catch (e) {
-      // admit throws when dispatchToSession returns ok:false (e.g. target busy
-      // entering FIFO) even though the message may already be enqueued. Do not
-      // surface this as a bare router_error; return a structured fifo receipt so
-      // the calling Commander can show "enqueued — wait or re-route" to the user.
+      const code = (e && e.code) || 'dispatch_rejected';
+      if (code !== 'dispatch_rejected' && code !== 'target_busy') throw e;
       return {
         ok: false,
         fifo: true,
         status: 'rejected_possible_fifo',
         error: (e && (e.message || e.error)) || String(e),
-        code: (e && e.code) || 'dispatch_rejected',
+        code,
         target_session_id: args.target_session_id,
         retryable: true,
       };
     }
-    const timeoutMs = boundedTimeout(args.timeout_seconds);
-    const operation = await waitForOperation(admitted.operationId, timeoutMs, signal);
-    if (!operation) {
-      // Slave did not complete within timeout. When the target is busy the
-      // dispatch entered FIFO — the message IS enqueued and the slave will run
-      // it when its turn comes. Treat as a successful enqueue (ok:true, fifo:true)
-      // so the calling Commander shows "enqueued — wait or re-route", not a bare
-      // failure.
-      return {
-        ok: true,
-        fifo: true,
-        status: 'queued',
-        operation_id: admitted.operationId,
-        target_session_id: admitted.targetSessionId,
-        execution_session_id: admitted.chatId || admitted.targetSessionId,
-        task_id: admitted.taskId,
-        queued: true,
-        retryable: true,
-      };
-    }
     return {
-      ok: operation.status === 'completed',
-      status: operation.status,
-      operation_id: operation.id,
-      target_session_id: operation.spec.targetId,
-      execution_session_id: operation.spec.chatId,
-      task_id: operation.spec.taskId || admitted.taskId,
-      result: operation.result || null,
+      ok: true,
+      admitted: true,
+      status: 'admitted',
+      operation_id: admitted.operationId,
+      target_session_id: admitted.targetSessionId,
+      execution_session_id: admitted.chatId || admitted.targetSessionId,
+      task_id: admitted.taskId,
       duplicate: admitted.duplicate,
       queued: true,
     };
