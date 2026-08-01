@@ -2128,12 +2128,11 @@ const PROVIDER_PRESETS = [
   { key: 'claude-subscription', label: 'Claude 官方订阅', appType: 'claude', baseUrl: '', model: '', note: '无需 key，留空 Key 直接创建=走本地登录/订阅' },
   { key: 'claude-api', label: 'Claude 官方 API', appType: 'claude', baseUrl: 'https://api.anthropic.com', model: '' },
   { key: 'claude-glm', label: '智谱 GLM', appType: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-4.6' },
-  { key: 'claude-deepseek', label: 'DeepSeek 官方', appType: 'claude', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-v4-pro', models: 'deepseek-v4-pro\ndeepseek-v4-flash' },
+  { key: 'claude-deepseek', label: 'DeepSeek', appType: 'claude', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-chat' },
   { key: 'claude-minimax', label: 'MiniMax', appType: 'claude', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2' },
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
   { key: 'codex-official', label: 'OpenAI（Codex 官方）', appType: 'codex', baseUrl: '', model: 'gpt-5.5', models: 'gpt-5.5\ngpt-5.4\ngpt-5.4-mini\ngpt-5.3-codex-spark', note: '走 ChatGPT 登录；Provider 是 OpenAI，模型在 Model 层选择' },
-  { key: 'codex-deepseek', label: 'DeepSeek 官方', appType: 'codex', apiFormat: 'openai_chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro', models: 'deepseek-v4-pro\ndeepseek-v4-flash', note: '通过本地 Chat→Responses 兼容代理接入 DeepSeek 官方 API' },
   { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', apiFormat: 'openai_responses', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopdeepseekv4pro', models: 'xopdeepseekv4pro\nxopglm52', note: 'Responses 协议经稳定性兼容代理；模型在 DeepSeek/GLM 间选择' },
 ];
 
