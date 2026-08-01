@@ -173,15 +173,12 @@ test('provider fallback keeps model and name priority plus id name fallback', as
     presets: {
       presets: [
         { id: 'openai', defaultProviderKey: 'OPENAI-CODEX', defaultCli: 'codex' },
-        { id: 'deepseek', defaultProviderKey: 'DEEPSEEK-OFFICIAL', defaultCli: 'codex', defaultModel: 'deepseek-v4-pro' },
         { id: 'xf', defaultProviderKey: 'XF-MAAS-CODING', defaultCli: 'claude', defaultModel: 'missing' },
       ],
     },
     providerLists: {
       codex: [
         { id: 'other', name: 'Relay', modelOptions: [] },
-        { id: 'xf-deepseek', name: '讯飞 DeepSeek', modelOptions: ['deepseek-v4-pro'] },
-        { id: 'deepseek', name: 'DeepSeek', modelOptions: ['deepseek-v4-pro', 'deepseek-v4-flash'] },
         { id: 'gpt', name: 'Generic', modelOptions: ['gpt-next'] },
       ],
       claude: [
@@ -193,9 +190,6 @@ test('provider fallback keeps model and name priority plus id name fallback', as
   const openai = await invoke(current.app, 'GET', '/api/agent-presets/:id', { params: { id: 'openai' } });
   assert.equal(openai.body.defaultProviderId, 'gpt');
   assert.equal(openai.body.defaultProviderName, 'gpt');
-  const deepseek = await invoke(current.app, 'GET', '/api/agent-presets/:id', { params: { id: 'deepseek' } });
-  assert.equal(deepseek.body.defaultProviderId, 'deepseek');
-  assert.equal(deepseek.body.defaultProviderName, 'deepseek');
   const xf = await invoke(current.app, 'GET', '/api/agent-presets/:id', { params: { id: 'xf' } });
   assert.equal(xf.body.defaultProviderId, 'xf-name');
 });

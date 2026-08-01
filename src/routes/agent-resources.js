@@ -96,13 +96,6 @@ function createAgentResourcesRoutes(rawDeps) {
         || (provider.modelOptions || []).some(item => /^gpt-/i.test(item)));
       return byModel ? byModel.id : null;
     }
-    if (key === 'deepseek-official') {
-      const byNameAndModel = list.find(provider => /^deepseek(?:\s*官方)?$/i.test(String(provider.name || '').trim())
-        && (!model || (provider.modelOptions || []).includes(model)));
-      if (byNameAndModel) return byNameAndModel.id;
-      const byName = list.find(provider => /^deepseek(?:\s*官方)?$/i.test(String(provider.name || '').trim()));
-      return byName ? byName.id : null;
-    }
     if (key === 'xf-maas-coding') {
       const byModel = list.find(provider => model && (provider.modelOptions || []).includes(model));
       if (byModel) return byModel.id;
