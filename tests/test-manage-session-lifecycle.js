@@ -257,6 +257,19 @@ test('agent preset index coalesces concurrent reads through MultiCCApi', async (
   assert.equal(calls, 1, 'resolved catalog should remain cached');
 });
 
+test('game presets resolve the official DeepSeek provider instead of a similarly named relay', () => {
+  const harness = createHarness();
+  const providers = [
+    { id: 'xf-deepseek', name: '讯飞 DeepSeek', modelOptions: ['deepseek-v4-pro'] },
+    { id: 'deepseek-official', name: 'DeepSeek 官方', modelOptions: ['deepseek-v4-pro', 'deepseek-v4-flash'] },
+  ];
+  const providerId = harness.context.providerIdForPresetDefault({
+    defaultProviderKey: 'deepseek-official',
+    defaultModel: 'deepseek-v4-pro',
+  }, providers);
+  assert.equal(providerId, 'deepseek-official');
+});
+
 test('create dialog guards every late preset continuation after close', () => {
   const source = read('public/manage-session-lifecycle.js');
   assert.match(source, /fetchAgentPresetIndex\(\)\.then\(\(idx\) => \{\s*if \(closed\) return;/);

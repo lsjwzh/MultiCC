@@ -304,6 +304,13 @@
       const byName = providers.find(p => /讯飞|xf|maas/i.test(p.name || ''));
       return byName ? byName.id : '';
     }
+    if (key === 'deepseek-official') {
+      const byNameAndModel = providers.find(p => /^deepseek(?:\s*官方)?$/i.test(String(p.name || '').trim())
+        && (!model || (p.modelOptions || []).includes(model)));
+      if (byNameAndModel) return byNameAndModel.id;
+      const byName = providers.find(p => /^deepseek(?:\s*官方)?$/i.test(String(p.name || '').trim()));
+      return byName ? byName.id : '';
+    }
     if (key === 'openai-codex') {
       const byName = providers.find(p => /openai|codex\s*官方|官方/i.test(p.name || ''));
       if (byName) return byName.id;

@@ -84,6 +84,20 @@ test('测试工程师 template is complete, categorized, and keeps existing pres
   assert.ok(catalog.presets.some(item => item.id === 'specialized__agent-commander'));
 });
 
+test('game technical presets use DeepSeek official while design roles keep their existing route', () => {
+  const { catalog } = testEngineerPreset();
+  const gamePresets = catalog.presets.filter(item => item.category === 'game-development');
+  const technical = gamePresets.filter(item => item.defaultModel === 'deepseek-v4-pro');
+  assert.ok(technical.length > 0, 'game technical presets exist');
+  for (const preset of technical) {
+    assert.equal(preset.defaultCli, 'codex');
+    assert.equal(preset.defaultProviderKey, 'deepseek-official');
+    assert.match(preset.defaultModelNote, /official DeepSeek API/);
+  }
+  assert.equal(gamePresets.some(item => item.defaultModel === 'xopdeepseekv4pro'), false);
+  assert.ok(gamePresets.some(item => item.defaultModel === 'xopglm52'));
+});
+
 test('role worker spec follows fleet defaults and rejects incomplete templates', () => {
   const { preset } = testEngineerPreset();
   const spec = roleWorkerSpec({ ...preset, defaultProviderId: null });
@@ -201,4 +215,3 @@ test('created role is injected into the system prompt and visible to Commander r
   assert.match(candidate.role, /质量验证与发布把关/);
   assert.match(targeting.buildDispatchContextPrompt('commander'), /测试工程师/);
 });
-
