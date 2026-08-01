@@ -101,6 +101,13 @@ function defaultModelForPreset(preset) {
     defaultEffort: effort,
     defaultModelNote: note,
   });
+  const deepseek = (model = 'deepseek-v4-pro', effort = 'xhigh', note = 'official DeepSeek specialist role') => ({
+    defaultCli: 'codex',
+    defaultProviderKey: 'deepseek-official',
+    defaultModel: model,
+    defaultEffort: effort,
+    defaultModelNote: note,
+  });
 
   if (id === 'specialized__agent-commander') {
     return openai('gpt-5.5', 'xhigh', 'fleet commander; needs strongest planning, routing and QA judgment');
@@ -139,7 +146,7 @@ function defaultModelForPreset(preset) {
   }
   if (cat === 'game-development') {
     if (has(/engineer|developer|scripter|shader|addon|multiplayer|unity|unreal|godot|roblox|blender|audio/)) {
-      return xf('xopdeepseekv4pro', 'xhigh', 'game technical implementation role');
+      return deepseek('deepseek-v4-pro', 'xhigh', 'game technical implementation role; official DeepSeek API');
     }
     return xf('xopglm52', 'xhigh', 'game design/narrative role');
   }
