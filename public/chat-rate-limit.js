@@ -7,6 +7,57 @@
     return Number.isFinite(number) ? number : null;
   }
 
+  // ── Unified compact quota display ─────────────────────────────────────────
+  // Every provider renders its quota windows as `<window> <remaining%> <countdown>`
+  // segments joined by ' · ', e.g. `5h 20% 1.2h · 1wk 50% 3d 5h · 1m 60% 14d`.
+  // Window labels are short tokens (5h / 1wk / 1m); the percent is REMAINING
+  // (100 − used), not used; the countdown is a humanized time-to-reset. Money
+  // providers (DeepSeek / Kimi) render `¥<amount>` instead. Missing fields
+  // degrade gracefully: a window with no percent is dropped, one with no reset
+  // shows just `<window> <pct>%`.
+
+  function unifiedRemaining(usedPercent) {
+    const used = finiteNumber(usedPercent);
+    if (used === null) return null;
+    return Math.max(0, Math.min(100, Math.round(100 - used)));
+  }
+
+  function humanizeCountdown(ms) {
+    const total = finiteNumber(ms);
+    if (total === null || total < 0) return '';
+    const totalH = total / 3_600_000;
+    if (totalH < 1) return `${Math.max(1, Math.round(total / 60_000))}m`;
+    if (totalH < 24) {
+      const h = Math.round(totalH * 10) / 10;
+      return `${Number.isInteger(h) ? h.toFixed(0) : h.toFixed(1)}h`;
+    }
+    const d = Math.floor(totalH / 24);
+    const remH = Math.floor(totalH % 24);
+    return remH ? `${d}d ${remH}h` : `${d}d`;
+  }
+
+  // One window → `<label> <remaining>% [<countdown>]`; '' when percent is missing.
+  function unifiedWindowSeg(label, usedPercent, resetMs) {
+    const rem = unifiedRemaining(usedPercent);
+    if (rem === null) return '';
+    const cd = humanizeCountdown(resetMs);
+    return cd ? `${label} ${rem}% ${cd}` : `${label} ${rem}%`;
+  }
+
+  function unifiedColorFromRemaining(rem) {
+    if (rem === null) return '#58a6ff';
+    if (rem <= 10) return '#f85149';
+    if (rem <= 30) return '#d29922';
+    return '#58a6ff';
+  }
+
+  function unifiedBalanceText(amount, currency) {
+    const a = finiteNumber(amount);
+    if (a === null) return '';
+    const sym = currency === 'USD' ? '$' : currency === 'CNY' ? '¥' : '';
+    return `${sym}${a.toFixed(2)}`;
+  }
+
   function isActive(value, nowMs) {
     if (!value || value.kind !== 'five_hour') return false;
     if (!['allowed', 'allowed_warning', 'rejected'].includes(value.status)) return false;
@@ -98,39 +149,14 @@
     const used = finiteNumber(value.usedPercentage);
     const rejected = value.status === 'rejected';
     // Codex reports a WEEKLY window (no 5h); Claude/GLM report 5h.
-    const label = value.provider === 'glm' ? 'GLM 5h'
-      : value.provider === 'codex' ? 'Codex 周'
-        : 'Claude 5h';
-    let text = rejected ? `${label} 已达上限` : label;
-    if (!rejected && used !== null) {
-      const rounded = Math.round(used * 10) / 10;
-      text += ` ${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
-    }
-
-    // Staleness hint: window data arrives passively (WS rate_limit_event) and is
-    // also restored from localStorage, so a cached value may be old. Surface
-    // "更新于 HH:MM" once it's >1min old so the user knows it isn't live.
-    const observed = finiteNumber(value.observedAtMs);
-    if (observed !== null && (nowMs - observed) > 60_000) {
-      const formatObserved = typeof options.formatObserved === 'function'
-        ? options.formatObserved
-        : defaultResetLabel;
-      text += ` · 更新于 ${formatObserved(observed)}`;
-    }
-
+    const windowLabel = value.provider === 'codex' ? '1wk' : '5h';
     const reset = finiteNumber(value.resetsAtMs);
-    if (reset !== null) {
-      const formatReset = typeof options.formatReset === 'function'
-        ? options.formatReset
-        : defaultResetLabel;
-      text += ` · ${formatReset(reset)} 重置`;
-    }
-
-    const color = rejected || (used !== null && used >= 90)
-      ? '#f85149'
-      : used !== null && used >= 70
-        ? '#d29922'
-        : '#58a6ff';
+    const resetMs = reset === null ? null : Math.max(0, reset - nowMs);
+    // Rejected = window exhausted → force 0% remaining.
+    const effectiveUsed = rejected ? 100 : used;
+    let text = unifiedWindowSeg(windowLabel, effectiveUsed, resetMs);
+    if (!text) text = windowLabel;
+    const color = unifiedColorFromRemaining(unifiedRemaining(effectiveUsed));
     return Object.freeze({
       text,
       color,
@@ -182,7 +208,7 @@
   // refresh affordance — just a "—" until the first event lands.
   function formatClaudeIdle() {
     return Object.freeze({
-      text: 'Claude 5h · —',
+      text: '5h · —',
       color: '#8b949e',
       title: 'Claude 订阅五小时用量（暂无数据，等待 Claude Code 上报 rate_limit_event）',
     });
@@ -269,12 +295,7 @@
 
   function formatBalance(value) {
     if (!value) return null;
-    const sym = value.currency === 'USD' ? '$' : value.currency === 'CNY' ? '¥' : '';
-    let text = 'DeepSeek 余额';
-    if (value.total !== null) {
-      const amount = Math.round(value.total * 100) / 100;
-      text += ` ${sym}${amount.toFixed(2)}`;
-    }
+    let text = unifiedBalanceText(value.total, value.currency) || '—';
     if (!value.available) text += ' · 余额不足';
     const color = !value.available || (value.total !== null && value.total <= 5)
       ? '#f85149'
@@ -483,10 +504,17 @@
       const r = Math.round(n);
       return Number.isInteger(r) ? String(r) : (Math.round(n * 10) / 10).toString();
     };
-    let text = 'OpenCode Go';
-    if (u.rolling && Number.isFinite(u.rolling.usagePercent))  text += ` · 5h ${fmt(u.rolling.usagePercent)}%`;
-    if (u.weekly  && Number.isFinite(u.weekly.usagePercent))   text += ` · 周 ${fmt(u.weekly.usagePercent)}%`;
-    if (u.monthly && Number.isFinite(u.monthly.usagePercent))  text += ` · 月 ${fmt(u.monthly.usagePercent)}%`;
+    const segs = [];
+    if (u.rolling && Number.isFinite(u.rolling.usagePercent)) {
+      segs.push(unifiedWindowSeg('5h', u.rolling.usagePercent, u.rolling.resetInSec * 1000));
+    }
+    if (u.weekly && Number.isFinite(u.weekly.usagePercent)) {
+      segs.push(unifiedWindowSeg('1wk', u.weekly.usagePercent, u.weekly.resetInSec * 1000));
+    }
+    if (u.monthly && Number.isFinite(u.monthly.usagePercent)) {
+      segs.push(unifiedWindowSeg('1m', u.monthly.usagePercent, u.monthly.resetInSec * 1000));
+    }
+    let text = segs.filter(Boolean).join(' · ') || '—';
     // Sync time: appended as "· N分钟前 ⟳" so users see how stale the data is
     // and have a visible refresh affordance.
     const syncRel = relativeAgo(value.fetchedAt);
@@ -646,15 +674,12 @@
     const remaining = total.remaining_value ?? 0;
     const pct = total.usage_percentage ?? (limit > 0 ? Math.round(used / limit * 100) : 0);
 
-    let text = `Qoder CN ${remaining}/${limit} credits (${pct}%)`;
-    if (pkg.limit_value > 0) text += ` · 加油包 ${pkg.remaining_value}/${pkg.limit_value}`;
+    let text = unifiedWindowSeg('1m', pct, null) || '—';
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
 
-    let color = '#58a6ff';
-    if (pct >= 90) color = '#f85149';
-    else if (pct >= 70) color = '#d29922';
+    let color = unifiedColorFromRemaining(unifiedRemaining(pct));
 
     const planTier = value.plan?.plan_tier?.replace('PLAN_TIER_', '') || '';
     let title = `Qoder CN 用量（CDP 抓 qoder.com.cn）\n套餐: ${planTier}\n总计: ${used}/${limit} · 剩余 ${remaining}`;
@@ -783,22 +808,15 @@
     }
     const w = value.weekly;
     const used = w.usedPercent ?? 0;
-    const remaining = w.remainingPercent ?? 0;
-    let text = `Codex 周 ${remaining}% 剩余 (${used}% 已用)`;
-    if (w.resetsAt) text += ` · ${formatResetRemaining(Math.max(0, w.resetsAt * 1000 - Date.now()) / 1000)}重置`;
-    if (value.additional && value.additional.length) {
-      const spark = value.additional[0];
-      text += ` · ${spark.name} ${spark.usedPercent}%`;
-    }
+    const resetMs = w.resetsAt ? Math.max(0, w.resetsAt * 1000 - Date.now()) : null;
+    let text = unifiedWindowSeg('1wk', used, resetMs) || '—';
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
 
-    let color = '#58a6ff';
-    if (value.limitReached || used >= 90) color = '#f85149';
-    else if (used >= 70) color = '#d29922';
+    let color = unifiedColorFromRemaining(unifiedRemaining(value.limitReached ? 100 : used));
 
-    let title = `Codex 周额度（chatgpt.com/backend-api/wham/usage）\n套餐: ${value.planType || '?'}${value.email ? ' · ' + value.email : ''}\n已用 ${used}% · 剩余 ${remaining}%`;
+    let title = `Codex 周额度（chatgpt.com/backend-api/wham/usage）\n套餐: ${value.planType || '?'}${value.email ? ' · ' + value.email : ''}\n已用 ${used}% · 剩余 ${w.remainingPercent ?? 0}%`;
     if (w.resetsAt) title += `\n重置: ${new Date(w.resetsAt * 1000).toLocaleString()}`;
     for (const a of (value.additional || [])) title += `\n${a.name}: ${a.usedPercent}% 已用`;
     if (value.credits && value.credits.hasCredits) title += `\nCredits 余额: ${value.credits.balance}`;
@@ -955,6 +973,16 @@
     return String(label || '?');
   }
 
+  // Short unified window token for the compact bar (vs. the Chinese tooltip label).
+  function arkWindowLabel(label) {
+    const l = String(label || '').toLowerCase();
+    if (l === '5h') return '5h';
+    if (l === 'weekly') return '1wk';
+    if (l === 'monthly') return '1m';
+    if (l === 'session') return '会话';
+    return l || '?';
+  }
+
   // Round to at most 2 decimals for display (99.487123 -> 99.49, 12.3456 -> 12.35);
   // trailing zeros are dropped so integer counts stay clean (250 -> 250).
   function fmtArkNum(n) {
@@ -1000,24 +1028,27 @@
         title: '当前身份名下没有已订阅的 AgentPlan / CodingPlan',
       });
     }
-    // The plan matching the session's provider baseUrl goes first and is
-    // marked （当前）; every period (5h / 周 / 月 / 会话) is shown, not just
-    // the worst one, so the whole quota picture is visible at a glance.
+    // The plan matching the session's provider baseUrl (or the first subscribed
+    // plan when inconclusive) drives the compact bar; every plan's detail still
+    // goes to the tooltip so the whole quota picture stays reachable.
     const activePlan = arkPlanFromBaseUrl(baseUrl);
     const ordered = activePlan
       ? [...subscribed].sort((a, b) => Number(b.product === activePlan) - Number(a.product === activePlan))
       : subscribed;
-    let maxPct = 0;
-    const parts = [];
+    const plan = ordered[0];
+    const segs = [];
+    let maxUsed = 0;
+    for (const p of plan.periods) {
+      const pct = p.percent ?? 0;
+      if (pct > maxUsed) maxUsed = pct;
+      const resetMs = p.resetAt ? Math.max(0, p.resetAt - Date.now()) : null;
+      segs.push(unifiedWindowSeg(arkWindowLabel(p.label), pct, resetMs));
+    }
     const titleLines = [];
     for (const it of ordered) {
-      const isActive = it.product === activePlan;
-      const segs = [];
+      const isActive = it === plan;
       const itemTitle = [`${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}${isActive ? '（当前 provider）' : ''}`];
       for (const p of it.periods) {
-        const pct = p.percent ?? 0;
-        if (pct > maxPct) maxPct = pct;
-        segs.push(`${arkPeriodLabel(p.label)} ${fmtArkNum(pct)}%`);
         let line = `  ${arkPeriodLabel(p.label)}: `;
         line += (p.used != null && p.total != null)
           ? `${fmtArkNum(p.used)}/${fmtArkNum(p.total)} (${fmtArkNum(p.percent ?? 0)}%)`
@@ -1025,17 +1056,14 @@
         if (p.resetAt) line += ` · ${new Date(p.resetAt).toLocaleString()} 重置`;
         itemTitle.push(line);
       }
-      parts.push(`${arkProductLabel(it.product)}${isActive ? '（当前）' : ''} ${segs.join(' · ')}`);
       titleLines.push(...itemTitle);
     }
-    let text = parts.join(' ｜ ');
+    let text = segs.filter(Boolean).join(' · ') || '—';
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
 
-    let color = '#58a6ff';
-    if (maxPct >= 90) color = '#f85149';
-    else if (maxPct >= 70) color = '#d29922';
+    let color = unifiedColorFromRemaining(unifiedRemaining(maxUsed));
 
     const viewer = value.viewer;
     let title = '火山方舟套餐额度（arkcli usage plan）';
@@ -1218,33 +1246,34 @@
         title: '所有 Zhipu 站点的额度端点都未返回有效窗口数据',
       });
     }
-    let maxPct = 0;
-    const parts = [];
+    // The backend orders the caller's current site first; it drives the compact
+    // bar (5h + 1wk windows) while every site's detail stays in the tooltip.
+    const s = okSites[0];
+    const segs = [];
+    let maxUsed = 0;
+    if (s.usedPercent > maxUsed) maxUsed = s.usedPercent;
+    segs.push(unifiedWindowSeg('5h', s.usedPercent, s.resetsAt ? Math.max(0, s.resetsAt - Date.now()) : null));
+    if (Number.isFinite(s.weeklyUsedPercent)) {
+      if (s.weeklyUsedPercent > maxUsed) maxUsed = s.weeklyUsedPercent;
+      segs.push(unifiedWindowSeg('1wk', s.weeklyUsedPercent, s.weeklyResetsAt ? Math.max(0, s.weeklyResetsAt - Date.now()) : null));
+    }
     const titleLines = [];
-    for (const s of okSites) {
-      const pct = s.usedPercent;
-      if (pct > maxPct) maxPct = pct;
-      const periodTag = s.period === 'weekly' ? '周' : '5h';
-      parts.push(`${s.site} ${periodTag} ${fmtZhipuPct(pct)}%`);
-      let line = `${s.site} (${s.host}): ${periodTag} ${fmtZhipuPct(pct)}% 已用`;
-      if (s.resetsAt) line += ` · ${new Date(s.resetsAt).toLocaleString()} 重置`;
-      if (Number.isFinite(s.weeklyUsedPercent)) {
-        if (s.weeklyUsedPercent > maxPct) maxPct = s.weeklyUsedPercent;
-        parts.push(`周 ${fmtZhipuPct(s.weeklyUsedPercent)}%`);
-        line += ` · 周 ${fmtZhipuPct(s.weeklyUsedPercent)}% 已用`;
-        if (s.weeklyResetsAt) line += `（${new Date(s.weeklyResetsAt).toLocaleString()} 重置）`;
+    for (const site of okSites) {
+      let line = `${site.site} (${site.host}): 5h ${fmtZhipuPct(site.usedPercent)}% 已用`;
+      if (site.resetsAt) line += ` · ${new Date(site.resetsAt).toLocaleString()} 重置`;
+      if (Number.isFinite(site.weeklyUsedPercent)) {
+        line += ` · 周 ${fmtZhipuPct(site.weeklyUsedPercent)}% 已用`;
+        if (site.weeklyResetsAt) line += `（${new Date(site.weeklyResetsAt).toLocaleString()} 重置）`;
       }
-      if (s.tier) line += ` · ${s.tier}`;
+      if (site.tier) line += ` · ${site.tier}`;
       titleLines.push(line);
     }
-    let text = parts.join(' · ');
+    let text = segs.filter(Boolean).join(' · ') || '—';
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
 
-    let color = '#58a6ff';
-    if (maxPct >= 90) color = '#f85149';
-    else if (maxPct >= 70) color = '#d29922';
+    let color = unifiedColorFromRemaining(unifiedRemaining(maxUsed));
 
     let title = 'Zhipu 官方站点窗口用量（glm-monitor 额度端点）';
     title += '\n' + titleLines.join('\n');
@@ -1392,19 +1421,14 @@
   // Render the last good cached balance (live value missing or fetch failed) with
   // a stale indicator so it is never confused with fresh data.
   function kimiCachedView(cachedOk, fetchedAt, reason, headline) {
-    let minAvail = Infinity;
-    const parts = [];
-    for (const s of cachedOk) {
-      if (s.available < minAvail) minAvail = s.available;
-      parts.push(`${s.site} ¥${fmtKimiNum(s.available)}`);
-    }
+    const s = cachedOk[0];
+    let text = unifiedBalanceText(s.available, s.currency) || '—';
     const syncRel = relativeAgo(fetchedAt);
-    let text = parts.join(' · ');
     if (syncRel) text += ` · 上次 ${syncRel}`;
     text += ' ⟳';
     let color = '#8b949e';
-    if (minAvail <= 0) color = '#f85149';
-    else if (minAvail <= 5) color = '#d29922';
+    if (s.available <= 0) color = '#f85149';
+    else if (s.available <= 5) color = '#d29922';
     let title = headline;
     if (reason) title += `\n原因：${reason}`;
     if (syncRel) title += `\n缓存于 ${syncRel}`;
@@ -1444,25 +1468,22 @@
         title,
       });
     }
-    let minAvail = Infinity;
-    const parts = [];
+    const s = okSites[0];
+    let text = unifiedBalanceText(s.available, s.currency) || '—';
     const titleLines = [];
-    for (const s of okSites) {
-      if (s.available < minAvail) minAvail = s.available;
-      parts.push(`${s.site} ¥${fmtKimiNum(s.available)}`);
-      let line = `${s.site} (${s.host}): 可用 ¥${fmtKimiNum(s.available)}`;
-      if (Number.isFinite(s.voucher)) line += ` · 券 ¥${fmtKimiNum(s.voucher)}`;
-      if (Number.isFinite(s.cash)) line += ` · 现金 ¥${fmtKimiNum(s.cash)}`;
+    for (const site of okSites) {
+      let line = `${site.site} (${site.host}): 可用 ¥${fmtKimiNum(site.available)}`;
+      if (Number.isFinite(site.voucher)) line += ` · 券 ¥${fmtKimiNum(site.voucher)}`;
+      if (Number.isFinite(site.cash)) line += ` · 现金 ¥${fmtKimiNum(site.cash)}`;
       titleLines.push(line);
     }
-    let text = parts.join(' · ');
     const syncRel = relativeAgo(value.fetchedAt);
     if (syncRel) text += ` · ${syncRel}`;
     text += ' ⟳';
 
     let color = '#58a6ff';
-    if (minAvail <= 0) color = '#f85149';
-    else if (minAvail <= 5) color = '#d29922';
+    if (s.available <= 0) color = '#f85149';
+    else if (s.available <= 5) color = '#d29922';
 
     let title = 'Kimi / Moonshot 预付余额（api.moonshot.cn/v1/users/me/balance）';
     title += '\n' + titleLines.join('\n');
@@ -1544,6 +1565,10 @@
     formatBalance,
     restoreBalance,
     consumeBalanceEvent,
+    humanizeCountdown,
+    unifiedRemaining,
+    unifiedWindowSeg,
+    unifiedBalanceText,
     refreshOpenCodeQuota,
     restoreOpenCodeQuota,
     refreshQoderQuota,
