@@ -2324,13 +2324,15 @@ class _SessionGroup extends StatelessWidget {
               final columns = constraints.maxWidth >= 520 ? 2 : 1;
               final cardWidth =
                   (constraints.maxWidth - gap * (columns - 1)) / columns;
-              final sortedSessions = [...sessions]
-                ..sort(
-                  (a, b) => sessionLastInteractionAt(
-                    b,
-                    statuses[b.id],
-                  ).compareTo(sessionLastInteractionAt(a, statuses[a.id])),
-                );
+              final sortedSessions = pinCommanderFirst(
+                [...sessions]
+                  ..sort(
+                    (a, b) => sessionLastInteractionAt(
+                      b,
+                      statuses[b.id],
+                    ).compareTo(sessionLastInteractionAt(a, statuses[a.id])),
+                  ),
+              );
               return Wrap(
                 spacing: gap,
                 runSpacing: gap,

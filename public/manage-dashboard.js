@@ -1024,9 +1024,10 @@ function isRecentlyUsed(s) {
   return ms > 0 && (Date.now() - ms) <= RECENT_USE_WINDOW_MS;
 }
 function recentlyUsedSessions() {
-  return (_cachedSessions || [])
+  const byRecent = (_cachedSessions || [])
     .filter(isRecentlyUsed)
     .sort((a, b) => sessionLastInteractionMs(b) - sessionLastInteractionMs(a));
+  return sortSessionsPinningCommander(byRecent);
 }
 
 // Popup from the "活跃会话" KPI tile.
@@ -1074,9 +1075,11 @@ function renderDirSessionGroups(dirSessions) {
   const renderGroup = (kind, label) => {
     const ss = groups[kind];
     if (!ss || !ss.length) return '';
-    // Commander stays pinned to the top of its group (D1 keeps it ≤1 per fleet).
-    ss.sort((a, b) => (b.type === 'commander' ? 1 : 0) - (a.type === 'commander' ? 1 : 0));
-    const rows = ss.map(s => renderSessionRow(s)).join('');
+    // Commander stays pinned to the top of its group (D1 keeps it ≤1 per fleet);
+    // the rest are recency-ordered. Shared helper keeps every list consistent.
+    const ordered = sortSessionsPinningCommander(
+      [...ss].sort((a, b) => sessionLastInteractionMs(b) - sessionLastInteractionMs(a)));
+    const rows = ordered.map(s => renderSessionRow(s)).join('');
     return `
       <div class="sess-group ${kind}">
         <div class="sess-group-label">${label} (${ss.length})</div>
@@ -1107,6 +1110,15 @@ function sessionLastInteractionMs(s) {
     if (Number.isFinite(ms) && ms > best) best = ms;
   }
   return best;
+}
+
+// 会话列表统一排序：commander（type==='commander'）固定钉在最前、不参与其余
+// 会话的排序；其余会话保持调用方已排好的相对顺序（依赖稳定排序）。所有会话
+// 列表（活跃会话弹层、目录分组列表、目录预览取最近会话）都走它，保证 commander
+// 永远第一。调用方可先按自己的规则（如最近交互时间）排好再传入。
+function sortSessionsPinningCommander(list) {
+  return [...list].sort(
+    (a, b) => (b.type === 'commander' ? 1 : 0) - (a.type === 'commander' ? 1 : 0));
 }
 
 // ── 任务运行时长 ──────────────────────────────────────────────────────────
@@ -1149,8 +1161,9 @@ function renderDirPreview(dirId, dirSessions) {
   // 取「最近交互过」的 session（按最近交互时间降序，含实时活动）
   let latestSession = null;
   if (dirSessions && dirSessions.length > 0) {
-    const sorted = [...dirSessions].sort(
-      (a, b) => sessionLastInteractionMs(b) - sessionLastInteractionMs(a));
+    const sorted = sortSessionsPinningCommander(
+      [...dirSessions].sort(
+        (a, b) => sessionLastInteractionMs(b) - sessionLastInteractionMs(a)));
     latestSession = sorted[0];
   }
 

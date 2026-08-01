@@ -629,6 +629,7 @@ class Session {
   }
 
   bool get isAux => type == 'aux';
+  bool get isCommander => type == 'commander';
   bool get isChat => kind == SessionKind.chat;
   bool get isTerminal => kind == SessionKind.terminal;
 
