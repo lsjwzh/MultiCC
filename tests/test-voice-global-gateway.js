@@ -419,7 +419,50 @@ test('an ambiguous global request lands on the router, never on a guessed Fleet'
   assert.notEqual(context.targetSessionId, 'commander-1');
 });
 
-test('replacing a Fleet Commander takes effect on the next utterance, with no restart', async () => {
+test('a conflicting reserved Voice Router id fails closed before ticket issue', async () => {
+  const records = baseRecords();
+  records.set(VOICE_ROUTER_ID, {
+    id: VOICE_ROUTER_ID, dirId: 'dir-1', type: 'worker', kind: 'chat', label: 'Impostor',
+  });
+  const direct = createVoiceLaunchRegistry({
+    records,
+    directories: baseDirectories(),
+    resolveCommander: resolveDirectoryCommander,
+  });
+  assert.deepEqual(direct.issue({}), { ok: false, code: 'voice_router_id_conflict' });
+  assert.equal(direct.size(), 0);
+
+  const harness = launchHarness({ records, provisionRouter: false });
+  const response = await issueLaunch(harness.app, {});
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.code, 'voice_router_id_conflict');
+  assert.equal(harness.launchRegistry.size(), 0);
+
+  const valid = launchHarness();
+  const issued = await issueLaunch(valid.app, {});
+  const launchId = launchIdFromUrl(issued.body.launch.url);
+  valid.records.set(VOICE_ROUTER_ID, {
+    id: VOICE_ROUTER_ID, dirId: 'dir-1', type: 'worker', kind: 'chat', label: 'Reclassified',
+  });
+  const reclassified = await resolveLaunch(valid.app, launchId);
+  assert.equal(reclassified.statusCode, 409);
+  assert.equal(reclassified.body.code, 'voice_router_id_conflict');
+
+  const racedRecords = baseRecords();
+  const raced = createVoiceRouterProvisioner({
+    records: racedRecords,
+    runtimeRoot: tempDir('multicc-voice-router-race-'),
+    mutate: (_source, operation) => {
+      racedRecords.set(VOICE_ROUTER_ID, {
+        id: VOICE_ROUTER_ID, dirId: 'dir-1', type: 'worker', kind: 'chat', label: 'Raced',
+      });
+      operation(racedRecords);
+    },
+  });
+  assert.deepEqual(raced.ensure(), { ok: false, code: 'voice_router_id_conflict' });
+});
+
+test('chat launch refreshes compatibility Commander metadata without changing its source target', async () => {
   const harness = launchHarness();
   const issued = await issueLaunch(harness.app, { sourceSessionId: 'chat-1' });
   const launchId = launchIdFromUrl(issued.body.launch.url);
@@ -435,6 +478,7 @@ test('replacing a Fleet Commander takes effect on the next utterance, with no re
 
   const after = (await resolveLaunch(harness.app, launchId)).body.context;
   assert.equal(after.commanderSessionId, 'commander-9', 'the ticket is re-resolved, not a snapshot');
+  assert.equal(after.targetSessionId, 'chat-1', 'Commander metadata never redirects a chat launch');
   assert.equal(after.launchId, launchId, 'the user does not have to re-launch');
   assert.equal(harness.calls.restart, 0, 'no process restart is involved');
 });

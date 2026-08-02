@@ -52,7 +52,14 @@ function createRouterToolHost({
         const settled = await Promise.allSettled(observers.map(
           // The async wrapper also contains a *synchronous* throw, which would
           // otherwise escape before the other observer was ever scheduled.
-          ([, run]) => (async () => (typeof run === 'function' ? run(admission) : undefined))(),
+          ([name, run]) => (async () => {
+            if (typeof run !== 'function') return;
+            const projected = await run(admission);
+            // Projection APIs use false for a deliberate refusal. Treat that as
+            // an observer failure for telemetry while keeping the durable
+            // dispatch and every other observer independent.
+            if (projected === false) throw new Error(`${name}_declined_admission`);
+          })(),
         ));
         settled.forEach((outcome, index) => {
           if (outcome.status !== 'rejected') return;

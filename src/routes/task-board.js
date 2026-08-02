@@ -19,6 +19,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const core = require('../task-board');
+const { isVoiceRouterRecord } = require('../voice-router');
 const { runStateForFreezeReason } = require('../session-work-scheduler');
 const { classifyDisplay } = require('../classify/vocab');
 
@@ -233,10 +234,23 @@ function createTaskBoardRuntime(deps) {
     const caller = records.get(admission.callerSessionId);
     const worker = records.get(admission.targetSessionId);
     const taskId = String(admission.taskId || '').trim();
-    if (!caller || !worker || !taskId || caller.dirId !== worker.dirId) return false;
+    const operationId = String(admission.operationId || '').trim();
+    const globalVoiceRoute = isVoiceRouterRecord(caller) && caller.dirId == null;
+    const sameDirectory = !!caller?.dirId && caller.dirId === worker?.dirId;
+    // Ordinary sessions and Commanders remain confined to their own Fleet. A
+    // Host-owned Voice Router is the one capability allowed here to project a
+    // worker admission across Fleets; that card belongs to the *worker's* Fleet.
+    // This mirrors router-tool-runtime's admission boundary without turning the
+    // task board into a second dispatcher.
+    if (!caller || !worker || !taskId || !operationId
+        || (!sameDirectory && !globalVoiceRoute)
+        || !worker.dirId
+        || worker.type === 'aux' || worker.type === 'gateway' || worker.type === 'commander') {
+      return false;
+    }
     const existing = board.tasks[taskId];
     if (existing?.routing?.operationId
-        && existing.routing.operationId === admission.operationId) return true;
+        && existing.routing.operationId === operationId) return true;
     const commanderRoute = caller.type === 'commander';
     const indexed = ensureTaskIndex({
       taskId,
@@ -250,7 +264,9 @@ function createTaskBoardRuntime(deps) {
           ? (caller.id || admission.callerSessionId)
           : (worker.id || admission.targetSessionId),
         workerSessionId: worker.id || admission.targetSessionId,
-        operationId: admission.operationId || '',
+        // The card observes the already-durable dispatch; it must retain the
+        // exact operation id returned by that admission, never mint another one.
+        operationId,
         status: admission.status || 'admitted',
         oneWay: admission.resultMode !== 'tool',
         routedAt: Date.now(),
