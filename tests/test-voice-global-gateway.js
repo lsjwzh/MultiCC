@@ -566,7 +566,7 @@ test('voice admission is emitted only from an authoritative MCP admission', () =
   assert.equal(frames[0].message.outcome, 'admitted');
   assert.equal(frames[0].message.operationId, 'op-voice-1');
   assert.equal(frames[0].message.duplicate, true);
-  assert.equal(frames[0].message.targetLabel, '前端会话');
+  assert.equal(frames[0].message.targetLabel, undefined, 'target metadata never enters the voice frame');
 });
 
 test('a voice turn with no MCP admission emits no_dispatch, while WeChat needs no outcome frame', () => {

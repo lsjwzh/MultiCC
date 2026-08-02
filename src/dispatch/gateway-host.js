@@ -12,6 +12,7 @@
 // setSessionStatus are likewise resolved per call through getters. The
 
 const bus = require('../bus');
+const { sanitizeVoiceSpeech } = require('../voice-speech');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -186,9 +187,7 @@ function createGatewayHost(rawDeps) {
   //
   // The payload is deliberately narrow. It carries the outcome, admission's
   // proof and the speakable text — never the dispatched instruction, the
-  // gateway prompt, a token, a cwd, or a target session id. A target appears at
-  // most as its human label, so a hot microphone can never become a channel for
-  // reading the Fleet's internals back out.
+  // gateway prompt, a token, a cwd, a target label or a target session id.
   function emitVoiceAdmission(sessionId, turnId, requestId, fields = {}) {
     const key = `${sessionId}\0${turnId}\0${requestId}`;
     if (voiceAdmissionsEmitted.has(key)) return;
@@ -206,6 +205,21 @@ function createGatewayHost(rawDeps) {
         publicMessage: '任务提交结果不完整，请稍后重试。',
       };
     }
+    const privateValues = [
+      sessionId,
+      turnId,
+      requestId,
+      ...(Array.isArray(fields.privateValues) ? fields.privateValues : []),
+    ];
+    const speechText = sanitizeVoiceSpeech(fields.speechText, { privateValues });
+    const error = publicError && typeof publicError === 'object'
+      ? {
+          code: String(publicError.code || 'voice_admission_failed'),
+          retryable: publicError.retryable === true,
+          publicMessage: sanitizeVoiceSpeech(publicError.publicMessage, { privateValues })
+            || '这条语音任务没有提交成功。',
+        }
+      : null;
     // An operation id is what "admitted" means. Nothing else may carry one, and
     // an admission without one is not an admission.
     const admitted = outcome === 'admitted';
@@ -214,16 +228,14 @@ function createGatewayHost(rawDeps) {
       version: VOICE_ADMISSION_VERSION,
       requestId: String(requestId || ''),
       turnId: String(turnId || ''),
-      gatewaySessionId: sessionId,
       outcome,
       operationId: admitted ? String(fields.operationId || '') || null : null,
       // A deduped replay landed on the same durable operation. That is still an
       // admission — the work is submitted exactly once, not lost.
       duplicate: fields.duplicate === true,
       queueStatus: admitted ? String(fields.queueStatus || '') || null : null,
-      speechText: typeof fields.speechText === 'string' ? fields.speechText : '',
-      targetLabel: String(fields.targetLabel || ''),
-      error: publicError,
+      speechText,
+      error,
     });
   }
 
@@ -241,7 +253,10 @@ function createGatewayHost(rawDeps) {
       duplicate: admission.duplicate === true,
       queueStatus: admission.status || 'admitted',
       speechText: '任务已提交，完成后结果会发回这里。',
-      targetLabel: String(target?.label || ''),
+      privateValues: [
+        admission.targetSessionId,
+        target ? cwdForSession(target) : '',
+      ],
     });
   }
 
@@ -249,9 +264,14 @@ function createGatewayHost(rawDeps) {
   // no_dispatch for the voice caller. WeChat needs no out-of-band frame.
   function handleGatewayTurnComplete(finalText, sessionId = GATEWAY_ID, turnId = '', requestId = '') {
     if (sessionId !== VOICE_ROUTER_ID) return;
+    const privateValues = [];
+    for (const target of addressableSessions()) {
+      privateValues.push(target.id, cwdForSession(target));
+    }
     emitVoiceAdmission(sessionId, turnId, requestId, {
       outcome: 'no_dispatch',
       speechText: String(finalText || '').trim(),
+      privateValues,
     });
   }
   // Gateway domain owns this handler; chat emits after a gateway session's own turn.

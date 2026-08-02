@@ -345,7 +345,8 @@ test('ACP prompt waits for its correlated Commander turn and strips Qwen second-
   assert.deepEqual(result.usage, { totalTokens: 5, inputTokens: 2, outputTokens: 3 });
   assert.deepEqual(
     updates.filter(update => update.sessionUpdate === 'agent_message_chunk').map(update => update.content.text),
-    ['已', '处理'],
+    ['已处理'],
+    'TTS receives one fully buffered and sanitized response',
   );
   assert.equal(updates.find(update => update.sessionUpdate === 'tool_call').name, 'route_task');
   assert.equal(updates.find(update => update.sessionUpdate === 'tool_call_update').status, 'completed');
