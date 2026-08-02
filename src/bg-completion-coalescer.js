@@ -94,14 +94,11 @@ function buildNudge(items) {
 //   TaskOutput pull  →  sync/foreground Bash  →  sidechain/subagent
 //   → Monitor stream  →  inject.
 //
-// KNOWN GAP (reproduced in the unit test): a `run_in_background` *daemon* — e.g.
-// `node server.js &`, which the CLI reports "completed (exit 0)" the instant `&`
-// detaches it while the process keeps running — that the model uses through a
-// side channel (curl / reading its output file / a browser) and NEVER pulls with
-// TaskOutput matches NONE of the suppressors. So it returns { action:'inject' },
-// a false-positive wake for work the model already consumed. The 'inject' verdict
-// on the all-false input IS the reported bug; the fix will add a signal that the
-// task is still-running/daemon-like and suppress it there.
+// The pure classifier remains conservative when all predicates are false. The
+// runtime performs one additional, turn-aware check before injection: a
+// run_in_background tool with a result is suppressed only while its recorded
+// origin turn is still active. Once that turn has ended, completion must still
+// inject so genuinely asynchronous work can wake the session.
 function classifyBgCompletion({
   awaitingTaskOutput = false,
   sync = false,

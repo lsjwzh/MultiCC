@@ -186,26 +186,19 @@ test('classify: precedence — TaskOutput wins even if other flags set', () => {
   assert.strictEqual(classifyBgCompletion({ awaitingTaskOutput: true, sync: true, subagent: true, monitor: true }).reason, 'taskoutput');
 });
 
-// ── BUG REPRODUCTION (false-positive observed 2026-07-12, session chat-05) ───────
-// A `run_in_background` daemon (`node server.js &`) that the model used only via a
-// side channel (curl / CDP / reading its output file) and NEVER pulled with
-// TaskOutput matches none of the suppressors → the completion is INJECTED as a
-// wake-up nudge, long after the work was already done.
-//
-// This test PINS that known-bad behavior: all four predicates false → inject.
-// It is a characterization/regression anchor — when the daemon-suppression fix
-// lands, this assertion flips to { action:'suppress' } and the two below stop
-// producing a nudge. See the module-doc on classifyBgCompletion.
-test('REPRO: daemon consumed via side-channel (no TaskOutput) → currently INJECTS (the reported bug)', () => {
+// The pure classifier has no turn identity, so all-false remains conservative.
+// background-task-runtime performs the origin-turn + tool-result check before a
+// completion reaches this fallback.
+test('classify: unknown consumption state remains injectable for a later wake-up', () => {
   const d = classifyBgCompletion({ awaitingTaskOutput: false, sync: false, subagent: false, sidechainByToolUse: false });
   assert.deepStrictEqual(d, { action: 'inject', reason: 'unconsumed' },
-    'documents the false-positive: a side-channel-consumed daemon still fires a nudge');
+    'without origin-turn evidence, a completion must not be silently lost');
 });
 
-test('REPRO end-to-end: the daemon completion flows to a nudge with the exact observed wording', () => {
+test('later-turn completion flows to a nudge with the established wording', () => {
   // Mirror the real event: only an "inject" decision reaches coalescer.add().
   const decision = classifyBgCompletion({ awaitingTaskOutput: false, sync: false, subagent: false, sidechainByToolUse: false });
-  assert.strictEqual(decision.action, 'inject', 'precondition: the daemon case injects');
+  assert.strictEqual(decision.action, 'inject', 'precondition: the later-turn case injects');
 
   const flushed = [];
   const clk = makeClock();

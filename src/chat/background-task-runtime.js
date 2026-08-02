@@ -51,6 +51,10 @@ function createBackgroundTaskRuntime(deps = {}) {
   const syncBashTasks = timedStore(livenessTtlMs);
   const subagentTasks = timedStore(livenessTtlMs);
   const monitorTasks = timedStore(livenessTtlMs);
+  // Native task ids outlive the tool event that created them. Keep the owning
+  // MultiCC turn so a completion can distinguish "the originating turn is
+  // still consuming this tool" from "the turn already ended; wake it again".
+  const taskOrigins = new Map();
   const mainToolUses = new Map();
   const knownSessions = new Set();
 
@@ -157,6 +161,26 @@ function createBackgroundTaskRuntime(deps = {}) {
   function isMainToolUseId(sessionName, id) {
     const record = mainToolUses.get(sessionName);
     return !!(record && id && record.set.has(String(id)));
+  }
+
+  function recordTaskOrigin(sessionName, taskId, chatState, toolUseId) {
+    const turnId = String(chatState && chatState._activeTurn && chatState._activeTurn.turnId || '').trim();
+    if (!sessionName || !taskId || !turnId) return null;
+    knownSessions.add(sessionName);
+    const entries = nested(taskOrigins, sessionName, true);
+    const origin = { turnId, toolUseId: toolUseId ? String(toolUseId) : null };
+    entries.set(String(taskId), origin);
+    return origin;
+  }
+
+  function consumeTaskOrigin(sessionName, taskId) {
+    const entries = nested(taskOrigins, sessionName);
+    if (!entries || !taskId) return null;
+    const key = String(taskId);
+    const origin = entries.get(key) || null;
+    entries.delete(key);
+    if (entries.size === 0) taskOrigins.delete(sessionName);
+    return origin;
   }
 
   function markTaskOutputAwaiting(sessionName, input) {
@@ -280,11 +304,17 @@ function createBackgroundTaskRuntime(deps = {}) {
       const background = isBackgroundShadow(sessionName, taskId);
       const description = sessionShadows.get(taskId)?.description || '';
       stopShadow(sessionName, taskId);
+      const origin = consumeTaskOrigin(sessionName, taskId);
       observe({
         sessionId: sessionName,
         taskId,
         status: 'interrupted',
-        detail: { description, reason, error: `background task interrupted (${reason})` },
+        detail: {
+          description,
+          reason,
+          originTurnId: origin && origin.turnId || null,
+          error: `background task interrupted (${reason})`,
+        },
       }, `task ledger reap ${taskId}`);
       broadcast(sessionName, {
         type: 'monitor_done',
@@ -348,6 +378,7 @@ function createBackgroundTaskRuntime(deps = {}) {
     const monitor = !!(tool && tool.name === 'Monitor');
     const persistentMonitor = monitor && tool.input && tool.input.persistent === true;
     const subagent = !!(event.tool_use_id && !tool);
+    const origin = recordTaskOrigin(sessionName, taskId, chatState, event.tool_use_id);
     if (sync) tagTimed(syncBashTasks, sessionName, taskId);
     if (monitor) tagTimed(monitorTasks, sessionName, taskId);
     if (subagent) tagTimed(subagentTasks, sessionName, taskId);
@@ -360,6 +391,7 @@ function createBackgroundTaskRuntime(deps = {}) {
         kind: sync ? 'sync-bash' : persistentMonitor ? 'monitor-persistent' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task',
         description: event.description || '',
         toolUseId: event.tool_use_id || null,
+        originTurnId: origin && origin.turnId || null,
         outputFile,
       },
     }, `task ledger start ${taskId}`);
@@ -399,20 +431,28 @@ function createBackgroundTaskRuntime(deps = {}) {
     return { handled: true, status };
   }
 
-  function turnAlreadyHasResult(chatState, toolUseId) {
+  function turnAlreadyHasResult(chatState, toolUseId, origin) {
     if (!toolUseId) return false;
     const tools = Array.isArray(chatState && chatState.currentToolCalls)
       ? chatState.currentToolCalls
       : [];
     const tool = tools.find(item => item && item.id === toolUseId);
     if (!tool || typeof tool.result !== 'string') return false;
-    if (tool.name === 'Bash' && tool.input && tool.input.run_in_background) return false;
+    if (tool.name === 'Bash' && tool.input && tool.input.run_in_background) {
+      const activeTurnId = String(chatState && chatState._activeTurn && chatState._activeTurn.turnId || '').trim();
+      return !!(
+        chatState && chatState.isStreaming === true
+        && origin && origin.turnId
+        && activeTurnId === origin.turnId
+      );
+    }
     return true;
   }
 
   function handleCompletion(sessionName, chatState, event) {
     const taskId = event.task_id;
     stopShadow(sessionName, taskId);
+    const origin = consumeTaskOrigin(sessionName, taskId);
     const outputFile = event.output_file || (taskId && event.session_id
       ? monitorOutputFilePath(event.session_id, taskId, chatState && chatState.cwd)
       : null);
@@ -425,6 +465,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       detail: {
         description: event.description || event.summary || '',
         toolUseId: event.tool_use_id || null,
+        originTurnId: origin && origin.turnId || null,
         outputFile,
         lastOutput: snippet,
         error: event.error || (ledgerStatus === 'failed' ? event.summary || 'task failed' : null),
@@ -461,7 +502,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       else if (decision.reason === 'monitor') consumeTimed(monitorTasks, sessionName, taskId);
       return { handled: true, decision: decision.reason };
     }
-    if (turnAlreadyHasResult(chatState, event.tool_use_id)) {
+    if (turnAlreadyHasResult(chatState, event.tool_use_id, origin)) {
       return { handled: true, decision: 'turn-result' };
     }
     const item = {
@@ -511,6 +552,7 @@ function createBackgroundTaskRuntime(deps = {}) {
     syncBashTasks.map.delete(sessionName);
     subagentTasks.map.delete(sessionName);
     monitorTasks.map.delete(sessionName);
+    taskOrigins.delete(sessionName);
     mainToolUses.delete(sessionName);
     knownSessions.delete(sessionName);
     return killed;
@@ -524,6 +566,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       ...syncBashTasks.map.keys(),
       ...subagentTasks.map.keys(),
       ...monitorTasks.map.keys(),
+      ...taskOrigins.keys(),
       ...mainToolUses.keys(),
     ]);
     let killed = 0;
