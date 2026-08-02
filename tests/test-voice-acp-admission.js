@@ -55,9 +55,10 @@ function baseDirectories() {
 
 // Records the Host-owned structured outcome. MCP admission, rather than
 // assistant prose, is the only event allowed to produce an admitted frame.
-function hostFixture() {
+function hostFixture({ admitDispatch, tick } = {}) {
   const records = baseRecords();
   const frames = [];
+  const warnings = [];
   const chatSessions = new Map();
   const setTurn = (turnId, requestId) => {
     chatSessions.set(VOICE_ROUTER_ID, {
@@ -69,7 +70,7 @@ function hostFixture() {
     persistedSessions: records,
     chatSessions,
     directories: baseDirectories(),
-    logger: { warn() {} },
+    logger: { warn: (event, fields) => warnings.push({ event, fields }) },
     appendEvent() {},
     getSessionDelivery: () => ({ deliverContinuation() {}, deliverSystem() {} }),
     normalizeEffort: value => value,
@@ -80,7 +81,9 @@ function hostFixture() {
     getOrchestrationRuntime: () => ({
       operations: { get: async () => null },
       completeDispatch: async () => ({ ok: true }),
-      tick: async () => {},
+      admitDispatch: admitDispatch
+        || (async () => ({ id: 'op-1', status: 'queued', createdAt: 1 })),
+      tick: tick || (async () => {}),
     }),
     getTaskContextHost: () => ({ dispatchSpec: () => ({}) }),
     getCreateSessionRecord: () => async () => {
@@ -92,8 +95,59 @@ function hostFixture() {
   const admissions = () => frames
     .filter(frame => frame.message?.type === 'voice_admission')
     .map(frame => frame.message);
-  return { admissions, chatSessions, frames, host, records, setTurn };
+  return { admissions, chatSessions, frames, host, records, setTurn, warnings };
 }
+
+// The operation is durable the moment admitDispatch returns; the scheduler pass
+// that follows is only a wake-up. If a failed wake-up were reported as a failed
+// dispatch, the caller would resubmit work that is already committed and the
+// user would receive the same task twice.
+test('a wake-up that fails after a durable admission is still an admission', async () => {
+  const fixture = hostFixture({
+    tick: async () => { throw new Error('scheduler unavailable'); },
+  });
+  const result = await fixture.host.dispatchToSession('chat-1', DISPATCH_MESSAGE, {
+    ownerSessionId: VOICE_ROUTER_ID,
+    oneWay: true,
+  });
+  assert.equal(result.ok, true, 'a committed dispatch is never reported as a failure');
+  assert.equal(result.operationId, 'op-1');
+  assert.equal(result.wakeupError, 'scheduler unavailable');
+  const deferred = fixture.warnings.filter(w => w.event === 'dispatch_wakeup_deferred');
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0].fields.operationId, 'op-1');
+});
+
+test('a queue notice that failed upstream is reported, not swallowed', async () => {
+  const fixture = hostFixture({
+    admitDispatch: async () => ({
+      id: 'op-2', status: 'queued', createdAt: 1, wakeupError: 'queue notice failed',
+    }),
+  });
+  const result = await fixture.host.dispatchToSession('chat-1', DISPATCH_MESSAGE, {
+    ownerSessionId: VOICE_ROUTER_ID,
+    oneWay: true,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.wakeupError, 'queue notice failed');
+  assert.equal(fixture.warnings.filter(w => w.event === 'dispatch_wakeup_deferred').length, 1);
+});
+
+// The dangerous direction: an admission that genuinely failed must still reject,
+// or committed-looking work would never be committed at all.
+test('an admission that genuinely fails is never dressed up as success', async () => {
+  const fixture = hostFixture({
+    admitDispatch: async () => { throw new Error('store unavailable'); },
+  });
+  await assert.rejects(
+    () => fixture.host.dispatchToSession('chat-1', DISPATCH_MESSAGE, {
+      ownerSessionId: VOICE_ROUTER_ID,
+      oneWay: true,
+    }),
+    /store unavailable/,
+  );
+  assert.equal(fixture.warnings.filter(w => w.event === 'dispatch_wakeup_deferred').length, 0);
+});
 
 test('an MCP voice dispatch reports admission with an operation id and no task payload', () => {
   const fixture = hostFixture();

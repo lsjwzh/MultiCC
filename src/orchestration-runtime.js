@@ -729,7 +729,17 @@ function createOrchestrationRuntime({
   async function admitDispatch(spec) {
     const admitted = await operations.admitDispatch(spec);
     if (admitted.requestOutboxId && !admitted.idempotent) {
-      await sessionScheduler.noteQueued(admitted.requestOutboxId);
+      // The operation is durable the moment operations.admitDispatch returns.
+      // A scheduler that then fails to record the queue entry has cost the
+      // immediate wake-up and nothing more — the regular tick still claims the
+      // work. Rethrowing would report committed work as rejected, and the caller
+      // would submit it a second time.
+      try {
+        await sessionScheduler.noteQueued(admitted.requestOutboxId);
+      } catch (error) {
+        log(`[orchestration] dispatch ${admitted.id} queue notice failed: ${error.message}`);
+        return { ...admitted, wakeupError: error?.message || String(error) };
+      }
     }
     return admitted;
   }

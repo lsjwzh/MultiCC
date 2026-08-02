@@ -366,13 +366,29 @@ function createGatewayHost(rawDeps) {
     // Await one canonical scheduler pass so a never-opened chat is claimed and
     // lazily initialized/spawned before route_task reports success. Busy targets
     // remain durably queued; no process is pre-spawned and no parallel turn starts.
-    await runtime.tick();
+    //
+    // The admission is already durable by this point. A scheduler pass that
+    // throws costs the immediate wake-up and nothing else — the operation stays
+    // queued and the next tick claims it — so the failure rides along with the
+    // admission rather than replacing it. Reporting failure here would be a
+    // false negative: the caller would resubmit work that is already committed
+    // and the user would get it twice.
+    let wakeupError = admitted.wakeupError || null;
+    try {
+      await runtime.tick();
+    } catch (error) {
+      wakeupError = error?.message || String(error);
+    }
+    if (wakeupError) {
+      logger.warn('dispatch_wakeup_deferred', { operationId: dispatchId, targetId, error: wakeupError });
+    }
     return {
       ok: true,
       chatId,
       operationId: dispatchId,
       status: admitted.status,
       duplicate: !!admitted.idempotent,
+      ...(wakeupError ? { wakeupError } : {}),
     };
   }
 

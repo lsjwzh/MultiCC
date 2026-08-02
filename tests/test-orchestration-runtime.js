@@ -44,6 +44,7 @@ function fixture(t, overrides = {}) {
       ...(overrides.outboxOptions || {}),
     },
     waitOptions: overrides.waitOptions || {},
+    storeOptions: overrides.storeOptions || {},
   });
   return { dir, file, clock, history, injections, runtime, scheduled: () => scheduled };
 }
@@ -180,6 +181,46 @@ test('dispatch delivery carries canonical task metadata into runChatTurn', async
       taskText: '执行正文',
     },
   );
+  await runtime.stop();
+});
+
+test('a queue notice that fails cannot falsify a durable dispatch admission', async t => {
+  // Two writes make one admitted dispatch: the operation and its outbox request
+  // land first, then the scheduler's queue notice records the wake-up. Only the
+  // second one is failed here. noteQueued is a notice, not the commitment — so
+  // reporting "not admitted" because it failed would be a false negative, and a
+  // voice caller acting on it would submit work that is already committed twice.
+  let queueNoticeArmed = true;
+  const { runtime, injections } = fixture(t, {
+    storeOptions: {
+      hooks: {
+        beforeRename: ({ state }) => {
+          // The admission's own write carries no session schedule; the queue
+          // notice's write is the one that creates it.
+          if (!queueNoticeArmed || !Object.keys(state.sessionSchedules || {}).length) return;
+          queueNoticeArmed = false;
+          throw new Error('scheduler unavailable');
+        },
+      },
+    },
+  });
+  const admitted = await runtime.admitDispatch({
+    ownerSessionId: 'commander',
+    resultSessionId: 'commander',
+    idempotencyKey: 'task-wakeup-1',
+    spec: { targetId: 'worker', chatId: 'worker', message: '执行正文', oneWay: true },
+  });
+
+  assert.equal(typeof admitted.id, 'string', 'the admission still has its operation id');
+  assert.equal(admitted.status, 'admitted');
+  assert.equal(admitted.wakeupError, 'scheduler unavailable', 'the lost wake-up is reported alongside it');
+
+  // And it really is durable: the next scheduler pass delivers it, exactly once.
+  await runtime.tick();
+  assert.equal(injections.length, 1);
+  assert.equal(injections[0].sessionId, 'worker');
+  await runtime.tick();
+  assert.equal(injections.length, 1, 'a deferred wake-up does not duplicate the delivery');
   await runtime.stop();
 });
 
