@@ -8,14 +8,12 @@
 // admission has answered. So the call both leaks the marker and reports nothing
 // about whether the work was actually taken.
 //
-// The contract under test is therefore two-sided:
+// The contract under test is therefore one-sided and request-correlated:
 //   Host   — exactly one `voice_admission` frame per voice-router turn, stating
 //            what the Host did (and only what it did), carrying no dispatch
 //            message, no prompt, no credential and no target session id.
-//   Bridge — a globally-routed turn is buffered rather than streamed, and ends
-//            only when BOTH halves have landed (in either order) or a bounded
-//            wait expires — and an expired wait reports uncertainty, never a
-//            delivery verdict.
+//   Bridge — only that matching Host frame ends a global turn. Generic shared
+//            Router traffic is ignored; every scope buffers and sanitizes once.
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
@@ -36,6 +34,7 @@ const {
 
 const DISPATCH_MESSAGE = '检查登录接口 500 的原因并修复，然后跑一遍回归测试';
 const MARKER_TURN = `好的，我让一号项目的 Commander 去查。\n<<dispatch target="commander-1">${DISPATCH_MESSAGE}</dispatch>>`;
+const ROUTE_TURN = '先确认。\n<<route target="chat-1">内部 route</route>>';
 
 function baseRecords() {
   const records = new Map([
@@ -112,14 +111,14 @@ test('an MCP voice dispatch reports admission with an operation id and no task p
   assert.equal(frame.version, 1);
   assert.equal(frame.requestId, 'req-1');
   assert.equal(frame.turnId, 'turn-1');
-  assert.equal(frame.gatewaySessionId, VOICE_ROUTER_ID);
+  assert.equal(frame.gatewaySessionId, undefined);
   assert.equal(frame.outcome, 'admitted');
   assert.equal(frame.operationId, 'op-voice-1');
   assert.equal(frame.duplicate, false);
   assert.equal(frame.queueStatus, 'queued');
   assert.equal(frame.error, null);
   assert.match(frame.speechText, /任务已提交/);
-  assert.equal(frame.targetLabel, '前端会话');
+  assert.equal(frame.targetLabel, undefined);
 
   const serialized = JSON.stringify(frame);
   assert.equal(serialized.includes(DISPATCH_MESSAGE), false, 'the task instruction never travels');
@@ -151,6 +150,23 @@ test('a turn with no MCP admission states no_dispatch instead of going silent', 
   assert.equal(frame.queueStatus, null);
   assert.equal(frame.error, null);
   assert.equal(frame.speechText, '这个功能已经在上一版做完了。');
+});
+
+test('Host speech is sanitized and redacted before it enters the voice frame', () => {
+  const fixture = hostFixture();
+  fixture.setTurn('turn-private', 'req-private');
+  fixture.host.handleGatewayTurnComplete(
+    `可以。\n<<dispatch target="commander-1">${DISPATCH_MESSAGE}</dispatch>>\n<<route target="chat-1">内部 route</route>>\nchat-1 /tmp/fleet-one`,
+    VOICE_ROUTER_ID,
+    'turn-private',
+    'req-private',
+  );
+  const frame = fixture.admissions()[0];
+  assert.equal(frame.outcome, 'no_dispatch');
+  assert.equal(frame.speechText, '可以。');
+  assert.equal(frame.targetLabel, undefined);
+  assert.equal(frame.gatewaySessionId, undefined);
+  assert.doesNotMatch(frame.speechText, /dispatch|route|chat-1|\/tmp\/fleet-one/i);
 });
 
 test('an idempotent MCP replay is still an admission and is flagged duplicate', () => {
@@ -248,13 +264,16 @@ class FakeWebSocket extends EventEmitter {
   }
 }
 
+let harnessId = 0;
+
 function okJson(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
 // Launch mode (the one machine-wide child): no directoryId, and the routing
 // target is resolved per utterance from the launch id in the prompt envelope.
-function launchHarness({ scope = 'global' } = {}) {
+function launchHarness({ scope = 'global', queueStatus = 200, queueThrows = null } = {}) {
+  const instanceId = ++harnessId;
   FakeWebSocket.instances = [];
   const requests = [];
   const timers = [];
@@ -282,7 +301,10 @@ function launchHarness({ scope = 'global' } = {}) {
             },
       });
     }
-    if (url.includes('/queue/action')) return okJson({ ok: true });
+    if (url.includes('/queue/action')) {
+      if (queueThrows) throw queueThrows;
+      return okJson(queueStatus === 200 ? { ok: true } : { error: `queue_${queueStatus}` }, queueStatus);
+    }
     throw new Error(`unexpected request: ${url}`);
   };
   const bridge = createVoiceAcpBridge({
@@ -290,7 +312,7 @@ function launchHarness({ scope = 'global' } = {}) {
     WebSocketImpl: FakeWebSocket,
     randomUUID: (() => {
       let value = 0;
-      return () => `uuid-${++value}`;
+      return () => `h${instanceId}-uuid-${++value}`;
     })(),
     // The real deadline is 15–30 s; firing it by hand is the only way to test it
     // without waiting it out.
@@ -301,7 +323,7 @@ function launchHarness({ scope = 'global' } = {}) {
   });
   const fireTimeout = () => {
     const entry = timers.find(t => !t.cancelled && !t.fired);
-    assert.ok(entry, 'a structured turn must arm its bounded wait');
+    assert.ok(entry, 'a voice turn must arm its overall deadline when sent');
     entry.fired = true;
     entry.fn();
   };
@@ -364,6 +386,15 @@ function admissionFrame(turn, overrides = {}) {
   };
 }
 
+test('the launch ticket is consumed by the Bridge and never written into source Chat', async () => {
+  const harness = launchHarness({ scope: 'chat' });
+  const turn = await startTurn(harness, { text: '只把这一句话发到会话' });
+  assert.equal(turn.outgoing.text, '只把这一句话发到会话');
+  assert.doesNotMatch(JSON.stringify(turn.outgoing), /qwen_audio_agent_request|voice_session_id|launch-1/);
+  turn.socket.serverSend({ type: 'result' });
+  await turn.promise;
+});
+
 test('a globally routed turn never leaks a dispatch marker, character by character', async () => {
   const harness = launchHarness();
   const turn = await startTurn(harness);
@@ -376,14 +407,24 @@ test('a globally routed turn never leaks a dispatch marker, character by charact
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(turn.chunks(), [], 'a turn that may carry a marker is buffered, never streamed');
 
+  // Generic result/error/tool traffic on the shared Router has no authority.
   turn.socket.serverSend({ type: 'result' });
-  turn.socket.serverSend(admissionFrame(turn, { speechText: '' }));
+  turn.socket.serverSend({ type: 'error', error: 'another call failed' });
+  turn.socket.serverSend({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'foreign', name: 'dispatch_master' }] },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(turn.isSettled(), false);
+  turn.socket.serverSend(admissionFrame(turn, {
+    speechText: `任务已提交。\n<<dispatch target="commander-1">${DISPATCH_MESSAGE}</dispatch>>\n<<route target="chat-1">内部 route</route>>\n/tmp/project`,
+  }));
   const result = await turn.promise;
 
   assert.equal(result.stopReason, 'end_turn');
   const spoken = turn.spoken();
-  assert.equal(spoken, '好的，我让一号项目的 Commander 去查。');
-  assert.doesNotMatch(spoken, /<<|dispatch|>>/i);
+  assert.equal(spoken, '任务已提交。');
+  assert.doesNotMatch(spoken, /<<|dispatch|route|>>/i);
   assert.equal(spoken.includes(DISPATCH_MESSAGE), false);
   assert.equal(spoken.includes('commander-1'), false);
 });
@@ -393,43 +434,32 @@ test('a turn cut off mid-marker still says nothing about the marker', () => {
   assert.equal(speakableFromBuffer('好的。\n<<dispa'), '好的。');
   assert.equal(speakableFromBuffer('好的。\n<<'), '好的。');
   assert.equal(speakableFromBuffer(MARKER_TURN), '好的，我让一号项目的 Commander 去查。');
+  assert.equal(speakableFromBuffer(`${MARKER_TURN}\n${ROUTE_TURN}`), '好的，我让一号项目的 Commander 去查。\n先确认。');
+  assert.equal(speakableFromBuffer('好的。\n<<route target="chat'), '好的。');
   assert.equal(speakableFromBuffer('普通回答'), '普通回答');
 });
 
-test('the turn settles when the result lands first, and when the outcome lands first', async () => {
-  for (const order of ['result-first', 'outcome-first']) {
-    const harness = launchHarness();
-    const turn = await startTurn(harness);
-    turn.socket.serverSend({
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: MARKER_TURN }] },
-    });
+test('the matching Host admission is the only terminal truth', async () => {
+  const harness = launchHarness();
+  const turn = await startTurn(harness);
+  turn.socket.serverSend({ type: 'result', usage: { total_tokens: 99 } });
+  turn.socket.serverSend({ type: 'assistant', message: { content: [{ type: 'text', text: 'foreign' }] } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(turn.isSettled(), false);
+  assert.deepEqual(turn.chunks(), []);
 
-    if (order === 'result-first') {
-      turn.socket.serverSend({ type: 'result', usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 } });
-      await new Promise(resolve => setImmediate(resolve));
-      assert.equal(turn.isSettled(), false, `${order}: a result alone is only half the answer`);
-      turn.socket.serverSend(admissionFrame(turn));
-    } else {
-      turn.socket.serverSend(admissionFrame(turn));
-      await new Promise(resolve => setImmediate(resolve));
-      assert.equal(turn.isSettled(), false, `${order}: an outcome alone is only half the answer`);
-      turn.socket.serverSend({ type: 'result', usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 } });
-    }
-
-    const result = await turn.promise;
-    assert.equal(result.stopReason, 'end_turn');
-    assert.deepEqual(result.usage, { totalTokens: 5, inputTokens: 2, outputTokens: 3 });
-    assert.equal(turn.spoken(), '好的，我让一号项目的 Commander 去查。');
-    assert.equal(turn.chunks().length, 1, `${order}: a buffered turn speaks exactly once`);
-  }
+  turn.socket.serverSend(admissionFrame(turn));
+  const result = await turn.promise;
+  assert.equal(result.stopReason, 'end_turn');
+  assert.equal(result.usage, undefined, 'uncorrelated generic usage cannot pollute this call');
+  assert.equal(turn.spoken(), '好的，我让一号项目的 Commander 去查。');
+  assert.equal(turn.chunks().length, 1);
 });
 
-test('an outcome frame for another request, turn or version cannot settle this turn', async () => {
+test('an outcome frame for another request or version cannot settle this turn', async () => {
   const harness = launchHarness();
   const turn = await startTurn(harness);
   turn.socket.serverSend({ type: 'assistant', message: { content: [{ type: 'text', text: MARKER_TURN }] } });
-  turn.socket.serverSend({ type: 'result' });
   await new Promise(resolve => setImmediate(resolve));
 
   turn.socket.serverSend(admissionFrame(turn, { requestId: 'someone-elses-request' }));
@@ -439,14 +469,37 @@ test('an outcome frame for another request, turn or version cannot settle this t
   assert.equal(turn.isSettled(), false, 'a mismatched envelope is not this turn’s answer');
 
   turn.socket.serverSend(admissionFrame(turn, { outcome: 'admitted' }));
-  // A duplicate — and a late frame from a different turn on the same socket —
-  // must not speak again or re-finish the turn.
+  // requestId is sufficient and unique; turnId is metadata, not a second join.
   turn.socket.serverSend(admissionFrame(turn, { outcome: 'failed', speechText: '重复帧' }));
-  turn.socket.serverSend(admissionFrame(turn, { turnId: 'turn-2', speechText: '另一个 turn' }));
   const result = await turn.promise;
   assert.equal(result.stopReason, 'end_turn');
   assert.equal(turn.chunks().length, 1);
   assert.equal(turn.spoken(), '好的，我让一号项目的 Commander 去查。');
+});
+
+test('two concurrent calls settle only from their own request ids', async () => {
+  const firstHarness = launchHarness();
+  const first = await startTurn(firstHarness, { text: '第一条' });
+  const secondHarness = launchHarness();
+  const second = await startTurn(secondHarness, { text: '第二条' });
+
+  first.socket.serverSend(admissionFrame(first, {
+    requestId: second.outgoing.clientMsgId,
+    speechText: '第二条回答',
+  }));
+  second.socket.serverSend(admissionFrame(second, {
+    requestId: first.outgoing.clientMsgId,
+    speechText: '第一条回答',
+  }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(first.isSettled(), false);
+  assert.equal(second.isSettled(), false);
+
+  first.socket.serverSend(admissionFrame(first, { speechText: '第一条回答' }));
+  second.socket.serverSend(admissionFrame(second, { speechText: '第二条回答' }));
+  await Promise.all([first.promise, second.promise]);
+  assert.equal(first.spoken(), '第一条回答');
+  assert.equal(second.spoken(), '第二条回答');
 });
 
 test('a no_dispatch turn simply speaks its answer', async () => {
@@ -482,13 +535,27 @@ test('a failed admission is spoken as a failure, never as the model’s optimist
   assert.equal(turn.spoken().includes('去查'), false, 'a failed turn must not claim the work is under way');
 });
 
+test('the Bridge fails closed when admitted has no operation id', async () => {
+  const harness = launchHarness();
+  const turn = await startTurn(harness);
+  turn.socket.serverSend(admissionFrame(turn, {
+    outcome: 'admitted',
+    operationId: '',
+    speechText: '任务已提交。',
+    error: null,
+  }));
+  const result = await turn.promise;
+  assert.equal(result.stopReason, 'end_turn');
+  assert.equal(turn.spoken(), '任务提交结果不完整，请稍后重试。');
+  assert.doesNotMatch(turn.spoken(), /已提交/);
+});
+
 test('a bounded wait that expires reports uncertainty and never claims non-delivery', async () => {
   const harness = launchHarness();
   const turn = await startTurn(harness);
-  turn.socket.serverSend({ type: 'assistant', message: { content: [{ type: 'text', text: MARKER_TURN }] } });
-  turn.socket.serverSend({ type: 'result' });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(turn.isSettled(), false);
+  assert.equal(harness.timers.filter(timer => !timer.cancelled).length, 1, 'deadline starts when prompt is sent');
 
   harness.fireTimeout();
   const result = await turn.promise;
@@ -522,6 +589,32 @@ test('cancelling before admission ends the call without claiming anything was de
   assert.deepEqual(updates.filter(u => u.sessionUpdate === 'agent_message_chunk'), []);
 });
 
+test('queued cancel 404/409/5xx and transport errors all settle and clear the call', async () => {
+  for (const setup of [
+    { queueStatus: 404 },
+    { queueStatus: 409 },
+    { queueStatus: 500 },
+    { queueThrows: new Error('socket reset') },
+  ]) {
+    const harness = launchHarness(setup);
+    const created = await harness.bridge.createSession({ cwd: '/tmp/project' });
+    const promise = harness.bridge.prompt(
+      { sessionId: created.sessionId, prompt: promptBlocks('取消这次语音') },
+      () => {},
+    );
+    await new Promise(resolve => setImmediate(resolve));
+    await harness.bridge.cancel({ sessionId: created.sessionId });
+    assert.equal((await promise).stopReason, 'cancelled');
+    const next = harness.bridge.prompt(
+      { sessionId: created.sessionId, prompt: promptBlocks('下一次') },
+      () => {},
+    );
+    await new Promise(resolve => setImmediate(resolve));
+    await harness.bridge.cancel({ sessionId: created.sessionId });
+    assert.equal((await next).stopReason, 'cancelled', 'active entry was cleaned after cancel failure');
+  }
+});
+
 test('cancelling after admission only stops the speech — it never claims the task was withdrawn', async () => {
   const harness = launchHarness();
   const turn = await startTurn(harness);
@@ -540,28 +633,71 @@ test('cancelling after admission only stops the speech — it never claims the t
   );
 });
 
-test('a cancelled turn whose host never answers still ends, rather than hanging the call', async () => {
+test('error and socket close after a started cancellation cannot reopen or hang it', async () => {
   const harness = launchHarness();
   const turn = await startTurn(harness);
   await harness.bridge.cancel({ sessionId: turn.created.sessionId });
-  harness.fireTimeout();
+  turn.socket.serverSend({ type: 'error', error: 'late error' });
+  turn.socket.close();
   const result = await turn.promise;
   assert.equal(result.stopReason, 'cancelled');
+  assert.deepEqual(turn.chunks(), []);
 });
 
-test('a chat-scoped voice turn keeps streaming word by word and needs no outcome frame', async () => {
+test('an unexpected socket close speaks unknown and clears the active entry', async () => {
+  const harness = launchHarness();
+  const turn = await startTurn(harness);
+  turn.socket.close();
+  const result = await turn.promise;
+  assert.equal(result.stopReason, 'end_turn');
+  assert.match(turn.spoken(), /还没有确认/);
+});
+
+test('a chat-scoped voice turn buffers fully and sanitizes once at result', async () => {
   const harness = launchHarness({ scope: 'chat' });
   const turn = await startTurn(harness, { text: '把这一段改成中文' });
   turn.socket.serverSend({ type: 'assistant', message: { textSnapshot: true, content: [{ type: 'text', text: '好' }] } });
   turn.socket.serverSend({ type: 'assistant', message: { textSnapshot: true, content: [{ type: 'text', text: '好的' }] } });
-  turn.socket.serverSend({ type: 'assistant', message: { textSnapshot: true, content: [{ type: 'text', text: '好的，改完了' }] } });
+  turn.socket.serverSend({
+    type: 'assistant',
+    message: {
+      textSnapshot: true,
+      content: [{
+        type: 'text',
+        text: `好的，改完了\n<<dispatch target="commander-1">${DISPATCH_MESSAGE}</dispatch>>\n<<rou`,
+      }],
+    },
+  });
+  turn.socket.serverSend({
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'text',
+        text: 'te target="chat-1">内部 route</route>>\nchat-1 /tmp/project',
+      }],
+    },
+  });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(turn.chunks(), ['好', '的', '，改完了'], 'chat scope is unchanged: it streams');
+  assert.deepEqual(turn.chunks(), [], 'chat TTS waits for the complete response');
 
   turn.socket.serverSend({ type: 'result' });
   const result = await turn.promise;
   assert.equal(result.stopReason, 'end_turn');
-  assert.equal(harness.timers.length, 0, 'chat scope arms no admission wait — it has no admission to wait for');
+  assert.deepEqual(turn.chunks(), ['好的，改完了']);
+  assert.equal(harness.timers.length, 1, 'chat scope has the same bounded overall deadline');
+});
+
+test('close settles even when queued cancellation fails', async () => {
+  const harness = launchHarness({ queueStatus: 500 });
+  const created = await harness.bridge.createSession({ cwd: '/tmp/project' });
+  const promise = harness.bridge.prompt(
+    { sessionId: created.sessionId, prompt: promptBlocks('关闭会话') },
+    () => {},
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  await harness.bridge.closeSession({ sessionId: created.sessionId });
+  assert.equal((await promise).stopReason, 'cancelled');
+  assert.equal(harness.bridge.sessionCount(), 0);
 });
 
 test('a chat launch targets the source session exactly, with no dynamic prompt in between', async () => {
@@ -597,8 +733,8 @@ test('spoken text prefers the Host’s own stripped text over the local buffer',
   );
   assert.equal(
     admissionSpeech('admitted', { speechText: '' }, MARKER_TURN),
-    '好的，我让一号项目的 Commander 去查。',
-    'without the Host’s text the local buffer is stripped locally',
+    '任务已提交到 MultiCC；后续状态以任务板为准。',
+    'an admission never trusts generic Router prose as delivery evidence',
   );
   assert.equal(
     admissionSpeech('admitted', null, ''),
@@ -610,7 +746,7 @@ test('spoken text prefers the Host’s own stripped text over the local buffer',
   assert.doesNotMatch(unknown, /<<|dispatch/i);
   assert.equal(
     admissionSpeech('unknown', null, '今天没有待办。'),
-    '今天没有待办。\n这条任务的提交状态还没有确认，请稍后在 MultiCC 任务板上查看。',
-    'without the Host outcome even ordinary-looking prose cannot prove whether a tool ran',
+    '这条任务的提交状态还没有确认，请稍后在 MultiCC 任务板上查看。',
+    'unknown is explicit and contains no uncorrelated prose',
   );
 });
