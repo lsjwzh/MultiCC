@@ -334,6 +334,16 @@ function createRouterToolRuntime({
     '若失败用 status:"failed"。不回传则 master 无法收到结果。',
   ].join('\n');
 
+  // A short attribution line prepended to every router-tool dispatch. Without it
+  // the recipient sees the task but not who sent it, and neither the task board
+  // nor the chat history records the caller — the exact traceability gap that
+  // made "who dispatched this to me?" unanswerable from the artifacts.
+  function senderAttribution(caller, sessionId, tool) {
+    const label = (caller && (caller.label || caller.name)) || sessionId || 'unknown';
+    const verb = tool === 'dispatch_master' ? '双向派发方' : '任务派发方';
+    return `【${verb}：${label} · ${sessionId}】\n\n`;
+  }
+
   async function admit(context, tool, args, resultMode) {
     const { targetId } = targetFor(
       context, args.target_session_id, args.allow_terminal === true,
@@ -345,7 +355,11 @@ function createRouterToolRuntime({
     const identity = admissionIdentity(
       context, tool, targetId, message, args.idempotency_key,
     );
-    const result = await dispatchToSession(targetId, message, {
+    // Attribute the sender so the recipient, the task board and the chat history
+    // can all trace who dispatched this. Prepended AFTER admissionIdentity so
+    // dedup still keys on the caller's own content, not on the attribution line.
+    const delivered = senderAttribution(records.get(context.sessionId), context.sessionId, tool) + message;
+    const result = await dispatchToSession(targetId, delivered, {
       ownerSessionId: context.sessionId,
       replyTo: resultMode === 'tool' ? context.sessionId : null,
       oneWay: resultMode !== 'tool',
@@ -355,7 +369,7 @@ function createRouterToolRuntime({
       taskId: identity.taskId,
       taskStart: identity.taskStart,
       taskSource: identity.taskSource,
-      taskText: identity.taskStart ? message : undefined,
+      taskText: identity.taskStart ? delivered : undefined,
     });
     if (!result || result.ok !== true) {
       throw new RouterToolError(
