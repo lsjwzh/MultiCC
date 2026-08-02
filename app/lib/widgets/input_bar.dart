@@ -140,8 +140,9 @@ class _InputBarState extends State<InputBar> {
   // ── Voice recording ──
 
   // 实时语音改为全局 Qwen 语音网关：这里只向 Host 申请一张 launch 票据，
-  // 带上当前会话 id 表示「在这个会话里说话」。投给哪个项目 / Commander、用什么
-  // cwd 和提示词，全部由 Host 自己解析，App 不参与决定，也不携带长期 token。
+  // 带上当前会话 id 表示「在这个会话里说话」，Host 会固定投给该会话。只有
+  // Dashboard 的全局入口才由 worker-only Router 选择项目和普通 Worker；App
+  // 不参与决定，也不携带长期 token。
   Future<void> _openVoiceCall() async {
     final provider = context.read<ChatProvider>();
     final service = VoiceLaunchService(settings: provider.settings);

@@ -71,8 +71,10 @@ function createGatewayHost(rawDeps) {
   }
 
   // The voice router needs two fields the WeChat prompt does not carry: `type`
-  // (so it can prefer a Fleet's Commander) and `dirId` (so "这个项目" resolves to
-  // one Fleet instead of a guess).
+  // makes its worker-only candidate contract explicit, while `dirId` lets
+  // "这个项目" resolve to one Fleet instead of being guessed. Commander and
+  // system sessions are deliberately excluded above; the task board only
+  // observes the resulting durable worker admission.
   function voiceRouterPrompt(userText) {
     const context = JSON.stringify(addressableSessions().map(s => ({
       id: s.id,

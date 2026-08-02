@@ -2822,7 +2822,8 @@ connect();
  *
  * 这个按钮不再在页面内跑一套 S2S 状态机，而是向 Host 申请一张 launch 票据、
  * 打开全局语音网关。带上 sourceSessionId 就意味着「在当前这个会话里说话」，
- * 具体投给哪个 Fleet / Commander / cwd 全部由 Host 自己解析，前端不参与决定。
+ * Host 会把这类通话固定投给当前 source session；只有 Dashboard 发起的全局
+ * 通话才由 worker-only Router 选择项目和普通 Worker，前端不参与决定。
  * 输入框里的普通麦克风听写完全不走这里，保持原样。
  * ════════════════════════════════════════════════════════════════════════════ */
 (function initVoiceCall() {

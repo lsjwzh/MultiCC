@@ -24,6 +24,7 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   const userInputSignals = [];
   const admissionObservers = [];
   const observerWarnings = [];
+  let taskBoardObserverCalls = 0;
   const operations = new Map();
   const waits = new Map();
   let syncProgressSink = null;
@@ -100,7 +101,11 @@ test('internal bridge requires loopback plus its scoped process capability', asy
       return { ok: true, duplicate: false };
     },
     taskBoard: {
-      recordRouterAdmission() { throw new Error('task board unavailable'); },
+      recordRouterAdmission() {
+        taskBoardObserverCalls += 1;
+        if (taskBoardObserverCalls === 1) throw new Error('task board unavailable');
+        return false;
+      },
     },
     recordRouterAdmission: async admission => { admissionObservers.push(admission); },
   });
@@ -224,4 +229,7 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   });
   assert.equal(frames[1].type, 'result');
   assert.equal(frames[1].result.result, 'inline final');
+  assert.equal(observerWarnings.length, 2, 'a fulfilled false projection is observable too');
+  assert.equal(observerWarnings[1].fields.observer, 'task_board');
+  assert.equal(observerWarnings[1].fields.error, 'task_board_declined_admission');
 });
