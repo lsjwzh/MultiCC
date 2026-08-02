@@ -2400,7 +2400,7 @@ const {
   consumeHandoff: consumePendingCliHandoff,
   emitTurnComplete: (sessionId, state, completion) => bus.emit('chat:turn-complete', sessionId, state, completion),
   emitDispatchComplete: (operationId, sessionId, text) => bus.emit('chat:dispatch-complete', operationId, sessionId, text),
-  emitGatewayComplete: (text, sessionId, turnId) => bus.emit('chat:gateway-turn-complete', text, sessionId, turnId),
+  emitGatewayComplete: (...args) => bus.emit('chat:gateway-turn-complete', ...args),   // text, sessionId, turnId, requestId
   inspectDispatchMarkers: maybeDispatchFromChatTurn,
   logSuppressed: (detail) => logger.info('chat_post_turn_suppressed', detail),
 });
