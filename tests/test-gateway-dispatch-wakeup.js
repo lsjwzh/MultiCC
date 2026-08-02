@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createGatewayHost } = require('../src/dispatch/gateway-host');
 
-function hostFixture({ busy = false } = {}) {
+function hostFixture({ busy = false, tickError = null } = {}) {
   const records = new Map([
     ['commander', {
       id: 'commander', dirId: 'dir-a', kind: 'chat', type: 'commander',
@@ -31,14 +31,16 @@ function hostFixture({ busy = false } = {}) {
     },
     tick: async () => {
       tickCalls += 1;
+      if (tickError) throw tickError;
       await tickGate;
     },
   };
+  const warnings = [];
   const host = createGatewayHost({
     persistedSessions: records,
     chatSessions: new Map(),
     directories,
-    logger: { warn() {} },
+    logger: { warn: (event, fields) => warnings.push({ event, fields }) },
     getChatHistoryService: () => ({ replace() {} }),
     appendEvent() {},
     getSessionDelivery: () => ({ deliverContinuation() {}, deliverSystem() {} }),
@@ -61,6 +63,7 @@ function hostFixture({ busy = false } = {}) {
     host,
     releaseTick,
     tickCalls: () => tickCalls,
+    warnings,
   };
 }
 
@@ -101,4 +104,46 @@ test('running targets keep the same admission path and remain scheduler-owned', 
   assert.equal(fixture.tickCalls(), 1);
   fixture.releaseTick();
   assert.equal((await pending).ok, true);
+});
+
+// The wake-up runs after the durable admission, so it is an observer: a failing
+// tick only delays the first delivery attempt, which the periodic worker tick
+// and startup recovery retry from the same outbox row. Reporting a failure here
+// would tell the caller its task was never submitted when in fact it is queued.
+test('a failing scheduler wake-up degrades the tick, not the admission', async () => {
+  const fixture = hostFixture({ tickError: new Error('scheduler unavailable') });
+  const result = await fixture.host.dispatchToSession('fresh-worker', 'do the work', {
+    ownerSessionId: 'commander',
+    oneWay: true,
+    requireIdle: false,
+    idempotencyKey: 'wakeup-failure-1',
+  });
+
+  assert.equal(fixture.admissions.length, 1, 'the dispatch is still admitted durably');
+  assert.equal(fixture.tickCalls(), 1);
+  assert.equal(result.ok, true, 'admission is not reported as a failure');
+  assert.equal(result.operationId, 'op-fresh-worker', 'the caller keeps its operation id');
+  assert.equal(result.status, 'admitted');
+  assert.equal(result.wakeupError, 'scheduler unavailable', 'the degraded wake-up is stated, not hidden');
+  assert.deepEqual(
+    fixture.warnings.map(entry => entry.event),
+    ['dispatch_wakeup_deferred'],
+  );
+  assert.equal(fixture.warnings[0].fields.operationId, 'op-fresh-worker');
+  assert.equal(fixture.warnings[0].fields.error, 'scheduler unavailable');
+});
+
+test('a successful wake-up carries no degraded marker', async () => {
+  const fixture = hostFixture();
+  const pending = fixture.host.dispatchToSession('fresh-worker', 'do the work', {
+    ownerSessionId: 'commander',
+    oneWay: true,
+    requireIdle: false,
+    idempotencyKey: 'wakeup-ok-1',
+  });
+  fixture.releaseTick();
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal('wakeupError' in result, false);
+  assert.deepEqual(fixture.warnings, []);
 });

@@ -22,10 +22,12 @@ function fixture(t, overrides = {}) {
     history.set(sessionId, ids);
     return true;
   });
+  const logs = overrides.logs || [];
   const runtime = createOrchestrationRuntime({
     file,
     now: () => clock.value,
     runChatTurn,
+    log: message => logs.push(message),
     isBusy: overrides.isBusy || (() => false),
     hasPersistedDelivery: async (sessionId, deliveryId) => (
       history.get(sessionId)?.has(deliveryId) || false
@@ -46,7 +48,7 @@ function fixture(t, overrides = {}) {
     waitOptions: overrides.waitOptions || {},
     storeOptions: overrides.storeOptions || {},
   });
-  return { dir, file, clock, history, injections, runtime, scheduled: () => scheduled };
+  return { dir, file, clock, history, injections, logs, runtime, scheduled: () => scheduled };
 }
 
 test('callback resolution is durable, private and payload-idempotent', async t => {
@@ -449,4 +451,54 @@ test('session teardown atomically cancels pending waits and admitted deliveries'
   assert.equal((await runtime.waits.get(pending.id)).status, 'cancelled');
   assert.equal((await runtime.outbox.get(`wait:${resolved.id}`)).state, 'cancelled');
   assert.equal(runtime.hasPending('A'), false);
+});
+
+// The operation + request outbox row land in one atomic write; that write is the
+// admission commit point. Refreshing the queue projection afterwards is an
+// observer of already-durable work, so its failure may degrade the queue view
+// but must never be reported to the caller as "not submitted".
+test('a failed queue projection does not un-admit a durably committed dispatch', async t => {
+  let writes = 0;
+  const { logs, runtime } = fixture(t, {
+    storeOptions: {
+      hooks: {
+        // Write #1 is the atomic admission; write #2 is the projection refresh
+        // inside noteQueued. Fail only the observer.
+        beforeRename: () => {
+          writes += 1;
+          if (writes === 2) throw new Error('projection write failed');
+        },
+      },
+    },
+  });
+  const spec = {
+    ownerSessionId: 'owner',
+    resultSessionId: 'owner',
+    idempotencyKey: 'projection-degraded-1',
+    spec: { targetId: 'B', chatId: 'B', message: 'do the work', oneWay: true },
+  };
+
+  const admitted = await runtime.admitDispatch(spec);
+  assert.equal(admitted.status, 'admitted');
+  assert.ok(admitted.id, 'the caller still receives its operation id');
+
+  const stored = await runtime.operations.get(admitted.id);
+  assert.equal(stored.status, 'admitted', 'the admission is durable on disk');
+  assert.equal(
+    (await runtime.outbox.get(admitted.requestOutboxId)).state,
+    'pending',
+    'the request row survives for the worker tick to pick up',
+  );
+  assert.equal(
+    logs.some(line => line.includes('admission_queue_projection_degraded')
+      && line.includes(admitted.id)),
+    true,
+    'the degraded projection is reported as a structured warning',
+  );
+
+  // The same request must still deduplicate onto the same durable operation —
+  // a lost projection cannot cause the caller to submit the work twice.
+  const replay = await runtime.admitDispatch(spec);
+  assert.equal(replay.id, admitted.id);
+  assert.equal(replay.idempotent, true);
 });

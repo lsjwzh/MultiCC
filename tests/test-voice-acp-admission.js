@@ -180,6 +180,41 @@ test('an MCP voice dispatch reports admission with an operation id and no task p
   assert.equal(serialized.includes('/tmp/fleet-one'), false, 'no cwd travels');
 });
 
+test('voice admission stays bound to the tool-call turn after the live turn switches', () => {
+  const fixture = hostFixture();
+  fixture.setTurn('turn-new', 'req-new');
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    callerTurnId: 'turn-original',
+    callerRequestId: 'req-original',
+    targetSessionId: 'chat-1',
+    operationId: 'op-original',
+    status: 'admitted',
+  });
+
+  const [frame] = fixture.admissions();
+  assert.equal(frame.turnId, 'turn-original');
+  assert.equal(frame.requestId, 'req-original');
+  assert.equal(frame.operationId, 'op-original');
+});
+
+test('explicit voice admission metadata fails closed unless both correlation keys exist', () => {
+  const fixture = hostFixture();
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    callerTurnId: 'turn-explicit',
+    callerRequestId: '',
+    targetSessionId: 'chat-1',
+    operationId: 'op-unaddressable',
+    status: 'admitted',
+  });
+
+  assert.equal(fixture.admissions().length, 0);
+  assert.deepEqual(fixture.warnings.map(entry => entry.event), [
+    'voice_admission_correlation_unresolved',
+  ]);
+});
+
 test('authoritative MCP admission wins over turn-end no_dispatch fallback', () => {
   const fixture = hostFixture();
   fixture.host.recordRouterAdmission({
