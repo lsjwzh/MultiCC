@@ -164,15 +164,15 @@ test('one-way Commander dispatch completes durably without a result outbox', asy
   assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
 });
 
-test('tool-return dispatch completes durably and emits a backflow outbox entry', async t => {
+test('async dispatch completes durably and emits a backflow outbox entry', async t => {
   const { store, service } = fixture(t);
   const admitted = await service.admitDispatch({
     ownerSessionId: 'master',
     resultSessionId: 'master',
-    idempotencyKey: 'tool-return-1',
+    idempotencyKey: 'async-return-1',
     spec: {
       targetId: 'worker', chatId: 'worker', message: 'implement',
-      replyTo: 'master', gateway: false, oneWay: false, resultMode: 'tool',
+      replyTo: 'master', gateway: false, oneWay: false, resultMode: 'async',
     },
   });
   await service.completeDispatch(admitted.id, {
@@ -183,10 +183,31 @@ test('tool-return dispatch completes durably and emits a backflow outbox entry',
   assert.equal(operation.status, 'completed');
   assert.equal(operation.result.text, 'done');
   const outboxEntry = snapshot.outbox[`operation:${admitted.id}:result`];
-  assert.ok(outboxEntry, 'backflow outbox entry must exist for resultMode=tool');
+  assert.ok(outboxEntry, 'backflow outbox entry must exist for resultMode=async');
   assert.equal(outboxEntry.payload.type, 'dispatch.result');
   assert.match(outboxEntry.payload.deliveryText, /📜 dispatch 结果回流/);
   assert.match(outboxEntry.payload.deliveryText, /done/);
+});
+
+test('sync dispatch completes durably without inserting a result message', async t => {
+  const { store, service } = fixture(t);
+  const admitted = await service.admitDispatch({
+    ownerSessionId: 'master',
+    resultSessionId: 'master',
+    idempotencyKey: 'sync-return-1',
+    spec: {
+      targetId: 'worker', chatId: 'worker', message: 'implement',
+      replyTo: 'master', gateway: false, oneWay: false, resultMode: 'sync',
+    },
+  });
+  await service.completeDispatch(admitted.id, {
+    status: 'completed', text: 'inline result', source: 'post_turn',
+  });
+  const operation = await service.get(admitted.id);
+  const snapshot = await store.snapshot();
+  assert.equal(operation.result.text, 'inline result');
+  assert.equal(operation.resultOutboxId, null);
+  assert.equal(snapshot.outbox[`operation:${admitted.id}:result`], undefined);
 });
 
 test('task ledger records terminal output and interrupts only unproven active tasks', async t => {

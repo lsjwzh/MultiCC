@@ -292,7 +292,7 @@ test('E4: dispatch_master receipt contains queued field (contract parity with ro
     target_session_id: 'slave-idle',
     message: 'e4 check',
     idempotency_key: 'e4-key',
-    timeout_seconds: 5,
+    mode: 'async',
   });
   await nextTurn();
   const ops = await operations.list({ kind: 'dispatch' });
@@ -315,7 +315,7 @@ test('S1: dispatch_master message to slave contains dispatch_slave callback inst
     target_session_id: 'slave-idle',
     message: 'implement feature X',
     idempotency_key: 's1-key',
-    timeout_seconds: 5,
+    mode: 'async',
   });
   await nextTurn();
   assert.equal(admissions.length, 1);
@@ -325,7 +325,7 @@ test('S1: dispatch_master message to slave contains dispatch_slave callback inst
   assert.match(delivered, /回传/, 'must contain callback instruction keyword');
   assert.match(delivered, /status:"completed"/, 'must show completed status example');
   assert.match(delivered, /status:"failed"/, 'must show failed status example');
-  assert.match(delivered, /master 无法收到结果/, 'must warn about missing result');
+  assert.match(delivered, /不要轮询/, 'must forbid polling the master');
   // Resolve to avoid dangling promise
   const ops = await operations.list({ kind: 'dispatch' });
   const slaveCap = runtime.issueContext({
@@ -344,7 +344,8 @@ test('S2: route_task (one-way) message does NOT contain dispatch_slave callback 
   });
   assert.equal(admissions.length, 1);
   const delivered = admissions[0].message;
-  assert.equal(delivered, 'one-way work', 'route_task message must be passed through unchanged');
+  assert.match(delivered, /【任务派发方：master · master】/);
+  assert.match(delivered, /one-way work/, 'route_task preserves the original message');
   assert.doesNotMatch(delivered, /dispatch_slave/);
   assert.doesNotMatch(delivered, /回传要求/);
 });

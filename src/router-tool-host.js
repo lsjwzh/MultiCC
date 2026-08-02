@@ -27,6 +27,8 @@ function createRouterToolHost({
     resolveContext,
     taskBoard,
     recordUserInput,
+    subscribeDispatchProgress,
+    recordRouterAdmission,
   } = {}) {
     runtime = createRouterToolRuntime({
       records,
@@ -37,8 +39,12 @@ function createRouterToolHost({
       getExternalWait: id => orchestrationRuntime.waits.get(id),
       listExternalWaits: sessionId => orchestrationRuntime.listForSession(sessionId),
       cancelExternalWait: id => orchestrationRuntime.cancel(id),
-      onAdmitted: taskBoard?.recordRouterAdmission,
+      onAdmitted: async admission => {
+        await taskBoard?.recordRouterAdmission?.(admission);
+        await recordRouterAdmission?.(admission);
+      },
       recordUserInput,
+      subscribeDispatchProgress,
       resolveContext: resolveContext || (sessionId => {
         const turn = activeTurnForSession(sessionId);
         return turn ? {
@@ -71,13 +77,34 @@ function createRouterToolHost({
         };
         req.once('aborted', abort);
         res.once('close', abort);
+        const tool = String(req.params.tool || '');
+        const streaming = tool === 'dispatch_master'
+          && req.body?.arguments?.mode === 'sync';
+        const writeFrame = (frame) => {
+          if (!res.writableEnded) res.write(`${JSON.stringify(frame)}\n`);
+        };
+        if (streaming) {
+          res.status(200);
+          res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
+          res.setHeader('cache-control', 'no-store');
+          res.flushHeaders?.();
+        }
         try {
           const result = await runtime.execute(
             req.get('x-multicc-router-capability') || '',
-            String(req.params.tool || ''),
+            tool,
             req.body?.arguments,
-            { signal: controller.signal },
+            {
+              signal: controller.signal,
+              onProgress: streaming
+                ? progress => writeFrame({ type: 'progress', progress })
+                : undefined,
+            },
           );
+          if (streaming) {
+            writeFrame({ type: 'result', result, requestId });
+            return res.end();
+          }
           return res.json({ ok: true, result, requestId });
         } catch (error) {
           const status = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
@@ -88,6 +115,13 @@ function createRouterToolHost({
             code: error?.code || null,
             error: error?.message || String(error),
           });
+          if (streaming) {
+            writeFrame({
+              type: 'error', code, requestId,
+              message: status >= 500 ? 'router_internal_error' : (error?.message || code),
+            });
+            return res.end();
+          }
           return res.status(status).json({ ok: false, code, requestId });
         } finally {
           req.removeListener('aborted', abort);

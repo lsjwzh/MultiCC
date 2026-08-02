@@ -284,7 +284,7 @@ test('v1 compatibility baseline catches required-field, property, enum, const, a
   assert.ok(result.errors.filter(item => item.includes('ref changed')).length >= 3);
 });
 
-test('server composition uses canonical adapters without replacing legacy endpoints', () => {
+test('server composition uses canonical adapters and retires legacy dispatch endpoints', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   const sessionAdmin = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'session-admin.js'), 'utf8');
   const orchestrationRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'orchestration.js'), 'utf8');
@@ -311,7 +311,8 @@ test('server composition uses canonical adapters without replacing legacy endpoi
   assert.ok(source.includes("createAuthRuntime } = require('./src/routes/auth')"));
   assert.ok(source.includes('authRuntime.mountRoutes(app)'));
   assert.ok(authRoutes.includes("/^\\/api\\/wait\\/[^/]+\\/resolve$/"));
-  assert.ok(source.includes("app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler)"));
+  assert.doesNotMatch(source, /app\.post\(['"]\/api\/(?:v1\/)?sessions\/:id\/dispatch/);
+  assert.equal(fs.existsSync(path.join(ROOT, 'src', 'routes', 'dispatch-contract.js')), false);
   assert.ok(source.includes("createVoiceHost } = require('./src/voice-host')"));
   assert.ok(source.includes('getBaseUrl: () => `http://127.0.0.1:${PORT}`'));
   assert.doesNotMatch(source, /getBaseUrl:\s*\(\)\s*=>[^\n]*\bgetPort\(\)/);

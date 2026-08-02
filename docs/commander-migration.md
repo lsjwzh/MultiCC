@@ -30,8 +30,8 @@ The Commander prompt is route-first, not route-only. It tells the model to prefe
 cross-provider work, and multi-module parallel work. Lightweight analysis,
 planning, explanation, or explicitly user-requested local handling may stay in
 the Commander session. Cross-session delivery still has a single authority:
-`route_task`; prose, `<<route>>`, and `<<dispatch>>` do not count as Commander
-delivery.
+`route_task` / `dispatch_master`; prose and retired text markers do not count as
+Commander delivery.
 
 CLI selection uses this explicit compatibility order, skipping every entry
 whose executable is unavailable:

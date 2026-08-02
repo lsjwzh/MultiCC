@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * MultiCC 跨 CLI 边界回归测试 (v3 — WS-based, no false-pass)
+ * MultiCC 跨 CLI 边界回归测试 (v4 — MCP-only dispatch surface)
  * ==============================================================
  * v3 变更（vs v1/v2）:
  *   - F1: sendChatMessage 改为 WebSocket (ws://.../ws/chat?session=SID)，
@@ -10,22 +10,19 @@
  *   - F2: waitForRunComplete 废弃，改用 WS stream_end 事件判定回合结束
  *   - history false-pass: 所有 history 断言只取 role==='assistant' 的 content，
  *         不再 JSON.stringify 整个 history 含 user 消息
- *   - 回流验证: T2.5-T2.8 每个 cross-CLI dispatch 用例额外验证 dispatcher
- *         历史含 "【...回复】" 回流消息
  *   - F3: ensureDir POST /api/directories body 加 create:true
- *   - F4: T2.5-T2.8 统一走 dispatch API (POST /api/sessions/:id/dispatch)，
- *         不再依赖 marker 路径
+ *   - F4: 旧 HTTP dispatch 入口已删除；sync/async 回执由 agent-scoped
+ *         MCP runtime/host 测试覆盖，不从此黑盒 HTTP 脚本伪造调用方身份
  *   - T1.17 负向断言收紧: 400 时验证 error 含 provider/pool 关键词；
  *         else 分支（非 400/200/201）必须 fail
  *   - T1.17 反向池: 补 claude/opencode/zcode 各绑 codex 池 provider → 应 400
  *   - T1.8 边缘: 补 cli=null/''/'CODEX'；restore 前 clamp effort，包 try/catch
  *   - T1.2: illegalCLIs 补 null
- *   - 新增 T2.9 originDispatchId 反分派守卫
- *   - 所有 Tier2 失败路径补诊断日志（dispatch 返回体、target 文本、dispatcher 回流标记）
+ *   - marker 文本不再执行，相关防回归由 post-turn/interface-retirement 测试覆盖
  *
  * Tier 结构:
- *   Tier1 — 结构/API（20 用例）：纯 HTTP 验证，不 spawn CLI，恒跑
- *   Tier2 — 活体（10 用例）：真实 CLI ping 回合 + 跨 CLI dispatch 回流，缺二进制 skip
+ *   Tier1 — 结构/API：纯 HTTP 验证，不 spawn CLI，恒跑
+ *   Tier2 — 活体：真实 CLI ping 回合；跨会话 MCP 语义由单元/集成测试覆盖
  *
  * Skip 规则:
  *   Tier1: 永不 skip（纯 API 层）
@@ -584,112 +581,24 @@ function validEffortForCli(cli, effort) {
     else fail('T1.8 default-cli API 已删除', `期望 404，实际 ${res.status}`);
   }
 
-  // ── T1.11-1.15: Dispatch 安全边界 ──
-  hdr('T1.11-1.15 Dispatch 安全边界');
-
-  // Need dispatcher + opencode target
-  const dispatcherSid = createdSessions['claude'] ? createdSessions['claude'].id : null;
-  let opencodeTargetId = createdSessions['opencode'] ? createdSessions['opencode'].id : null;
-  let secondDirId = null;
-
-  // Ensure we have a dispatcher
-  if (!dispatcherSid) {
-    const res = await createSession(dirId, 'claude', 'chat');
-    if (res.status === 200 || res.status === 201) {
-      const sid = res.body.id || res.body.sessionId;
-      if (sid) {
-        createdSessions['claude'] = { id: sid };
-        tier1Sessions.push(sid);
-      }
-    }
-  }
-
-  // Ensure we have an opencode target
-  if (!opencodeTargetId) {
-    const res = await createSession(dirId, 'opencode', 'chat');
-    if (res.status === 200 || res.status === 201) {
-      opencodeTargetId = res.body.id || res.body.sessionId;
-      if (opencodeTargetId) tier1Sessions.push(opencodeTargetId);
-    }
-  }
-
-  const dsid = createdSessions['claude'] ? createdSessions['claude'].id : null;
-
-  // T1.11: Cross-CLI dispatch (claude → opencode)
-  if (dsid && opencodeTargetId) {
-    diag('T1.11 dispatch', `dSid=${dsid} tSid=${opencodeTargetId}`);
-    const res = await post(`/api/sessions/${dsid}/dispatch`, {
-      target: opencodeTargetId,
-      message: 'say: cross-cli-test-ping',
-    });
-    diag('T1.11 dispatch response', `status=${res.status} body=${JSON.stringify(res.body).slice(0, 200)}`);
-    if (res.status === 400) {
-      const err = (res.body.error || '').toLowerCase();
-      if (err.includes('cli not supported') || err.includes('不支持的 cli') || err.includes('invalid cli')) {
-        fail('T1.11 跨 CLI dispatch', `被 CLI 过滤拒绝: ${err.slice(0, 80)}`);
-      } else {
-        ok('T1.11 跨 CLI dispatch', `status ${res.status}（非 CLI 过滤原因: ${(res.body.error || '').slice(0, 60)}）`);
-      }
-    } else if (res.status === 200) {
-      ok('T1.11 跨 CLI dispatch', `200 — 目标=${opencodeTargetId} 跨 CLI 分派接受`);
-    } else if (res.status === 409) {
-      ok('T1.11 跨 CLI dispatch', `409 — busy/health（非 CLI 拒绝）`);
-    } else {
-      fail('T1.11 跨 CLI dispatch', `status ${res.status}`);
-    }
-  } else {
-    skip('T1.11 跨 CLI dispatch', '缺少 dispatcher 或 opencode target');
-  }
-
-  // T1.12: dispatch→aux → 400
-  if (dsid) {
-    const res = await post(`/api/sessions/${dsid}/dispatch`, { target: '__aux__', message: 'test' });
-    if (res.status === 400) ok('T1.12 dispatch→aux 被拒', `400 — ${(res.body.error || '').slice(0, 80)}`);
-    else fail('T1.12 dispatch→aux 被拒', `期望 400，实际 ${res.status}`);
-  } else skip('T1.12 dispatch→aux 被拒', '缺少 dispatcher');
-
-  // T1.13: dispatch→gateway → 400
-  if (dsid) {
-    const res = await post(`/api/sessions/${dsid}/dispatch`, { target: '__gateway__', message: 'test' });
-    if (res.status === 400) ok('T1.13 dispatch→gateway 被拒', `400 — ${(res.body.error || '').slice(0, 80)}`);
-    else fail('T1.13 dispatch→gateway 被拒', `期望 400，实际 ${res.status}`);
-  } else skip('T1.13 dispatch→gateway 被拒', '缺少 dispatcher');
-
-  // T1.14: dispatch cross-directory → 400
+  // ── T1.11: legacy Dispatch HTTP surface is gone ──
+  hdr('T1.11 MCP-only Dispatch surface');
   {
-    try {
-      const dir2Res = await post('/api/directories', {
-        name: 'Cross CLI Test Dir2',
-        path: '/tmp/multicc-cross-cli-test-dir2',
-        create: true,
+    const probeSid = createdSessions.claude && createdSessions.claude.id;
+    if (!probeSid) {
+      skip('T1.11 旧 HTTP dispatch 已退役', '缺少可用于探测路由的 session');
+    } else {
+      const res = await post(`/api/sessions/${probeSid}/dispatch`, {
+        target: probeSid,
+        message: 'must not dispatch',
       });
-      if (dir2Res.body && dir2Res.body.id) {
-        secondDirId = dir2Res.body.id;
-        extraDirs.push(secondDirId);
+      if (res.status === 404 || res.status === 405) {
+        ok('T1.11 旧 HTTP dispatch 已退役', `status ${res.status}`);
+      } else {
+        fail('T1.11 旧 HTTP dispatch 已退役', `期望 404/405，实际 ${res.status}`);
       }
-    } catch (_) {}
-
-    if (dsid && secondDirId) {
-      const crossRes = await createSession(secondDirId, 'claude', 'chat');
-      const crossId = crossRes.body && (crossRes.body.id || crossRes.body.sessionId);
-      if (crossId) {
-        const res = await post(`/api/sessions/${dsid}/dispatch`, { target: crossId, message: 'test' });
-        if (res.status === 400) ok('T1.14 dispatch 跨目录被拒', `400 — ${(res.body.error || '').slice(0, 80)}`);
-        else fail('T1.14 dispatch 跨目录被拒', `期望 400，实际 ${res.status}`);
-        await deleteSession(crossId);
-      } else skip('T1.14 dispatch 跨目录被拒', '无法在 dir2 创建 session');
-    } else skip('T1.14 dispatch 跨目录被拒', '缺少 dispatcher 或 second directory');
-  }
-
-  // T1.15: dispatch→placeholder → 400
-  if (dsid) {
-    const placeholders = ['sid', 'session_id', 'target', '目标会话id', '<目标会话id>', '<session_id>'];
-    for (const ph of placeholders) {
-      const res = await post(`/api/sessions/${dsid}/dispatch`, { target: ph, message: 'test' });
-      if (res.status === 400) ok(`T1.15 占位符 "${ph}" 被拒`, `400`);
-      else fail(`T1.15 占位符 "${ph}" 被拒`, `期望 400，实际 ${res.status}`);
     }
-  } else skip('T1.15 占位符被拒', '缺少 dispatcher');
+  }
 
   // ── T1.16: 四会话 cli 字段无 clamp ──
   hdr('T1.16 Worker CLI 持久化字段验证');
@@ -879,8 +788,13 @@ function validEffortForCli(cli, effort) {
   if (hasZcode && t2DirId) await livePingTest('zcode', 'ping-zc-ok', 'T2.4 zcode ping');
   else skip('T2.4 zcode ping', 'zcode 不可用');
 
-  // ── Cross-CLI dispatch test (F4: dispatch API; F2: WS-based; history: assistant-only) ──
+  // Cross-session dispatch is intentionally not driven from this HTTP black-box
+  // script. The MCP host owns caller capabilities and sync/async semantics; see
+  // test-router-tool-runtime/host/mcp for executable cross-CLI dispatch coverage.
   async function crossDispatchTest(fromCli, toCli, testId) {
+    skip(testId, `MCP-only dispatch is covered by scoped runtime tests (${fromCli}→${toCli})`);
+    return;
+    /* c8 ignore start -- retained diagnostic harness, unreachable after HTTP retirement */
     if (!t2DirId) return;
     if (!wsAvailable) { skip(testId, 'ws module 不可用'); return; }
 
@@ -1008,7 +922,9 @@ function validEffortForCli(cli, effort) {
   // a <<dispatch>> marker) does NOT trigger a new dispatch because originDispatchId
   // routes the worker's turn completion to finalizeDispatch, NOT maybeDispatchFromChatTurn.
   hdr('T2.9 originDispatchId 反分派守卫');
-  if (!hasClaude || !t2DirId) {
+  if (true) {
+    skip('T2.9 retired marker path', 'marker text is inert; covered by test-dispatch-interface-retirement');
+  } else if (!hasClaude || !t2DirId) {
     skip('T2.9 originDispatchId 反分派', 'claude binary 不可用或无目录');
   } else if (!wsAvailable) {
     skip('T2.9 originDispatchId 反分派', 'ws module 不可用');
@@ -1081,6 +997,7 @@ function validEffortForCli(cli, effort) {
       }
     }
   }
+  /* c8 ignore stop */
 
   // ── T2.10: 清理 Tier2 sessions ──
   hdr('T2.10 Tier2 清理');

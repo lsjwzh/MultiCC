@@ -15,7 +15,7 @@
 - 内部 chat WS 连 `ws://127.0.0.1:<port>/ws/chat?session=__<platform>_gateway__`
 - 入站长连接（NAT 后可用）→ 提取文本 → `_sendUserMessage`；出站分块 + echo 抑制 + 日志
 - 命令 `/help /status /reset`；REST `/status /config /gateway(GET/PUT/DELETE) /gateway/reset /start /stop /send /log /events(SSE)`
-- SDK 懒加载，`<platform>-config.json` 存凭证，剥离 `<<dispatch>>` marker
+- SDK 懒加载，`<platform>-config.json` 存凭证；跨会话执行只走受限 MCP。桥接层可防御性隐藏历史 marker 形文本，但不得解析执行。
 
 ## 分工
 | 工人 | 平台 | 文件 | 入站 | SDK |

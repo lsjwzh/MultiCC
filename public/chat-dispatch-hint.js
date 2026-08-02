@@ -1,8 +1,8 @@
 /* ── chat-dispatch-hint.js ───────────────────────────────────────────────────
  * Commander-only dispatch-mode radio group on #pre-input-bar. Evolves the old
  * two-state「不派发」checkbox into a three-way choice the user pins from the UI:
- *   dispatch_master (default) → dispatch via dispatch_master and WAIT for the
- *                                result callback (two-way / needs receipt).
+ *   dispatch_master (default) → dispatch via mode=async; finish naturally and
+ *                                let the result wake the next turn.
  *   route_task                → dispatch via route_task, fire-and-forget
  *                                (one-way / no callback).
  *   none                      → no dispatch; finish in this session.
@@ -28,7 +28,7 @@
 
   // English on purpose — the model obeys English tool-routing instructions more
   // reliably. Each suffix names the exact tool so the constraint is unambiguous.
-  var SUFFIX_DISPATCH_MASTER = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the dispatch_master tool. The result will flow back to this session asynchronously.';
+  var SUFFIX_DISPATCH_MASTER = '\n\n[Dispatch] After a brief analysis, call dispatch_master with mode="async". Do not poll, inspect, or wait on the worker; continue only independent work, then end naturally. MultiCC will inject the result as a new message and wake this session.';
   var SUFFIX_ROUTE_TASK = '\n\n[Dispatch] After a brief analysis, dispatch this to another session via the route_task tool (fire-and-forget, no callback needed).';
   var SUFFIX_NONE = '\n\n[Dispatch] Do not dispatch to other sessions this turn. Handle it entirely within the current session.';
 

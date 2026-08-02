@@ -287,7 +287,7 @@ function createOperationService({
         ? `${targetId}（${operation.spec.targetLabel}）`
         : targetId;
       const resultBody = String(result.text || '').trim() || '（本次运行没有产生文本输出）';
-      const text = operation.spec.resultMode === 'tool'
+      const text = operation.spec.resultMode === 'async' || operation.spec.resultMode === 'tool'
         ? (status === 'completed'
           ? `📜 dispatch 结果回流 [${label}]: ${resultBody}`
           : `📜 dispatch 结果回流 [${label}]: ❌ ${result.error || resultBody}`)
@@ -296,10 +296,12 @@ function createOperationService({
           : `🔇【分发任务已中断】发往 ${label} 的任务在 MultiCC 服务重启时未找到可恢复的完成结果。请检查目标会话后决定是否重试。`);
       return completeOperationDraft(draft, operation, result, {
         status,
-        // One-way routes keep completion durable without injecting a second
-        // chat turn. dispatch_master (resultMode=tool) now delivers the result
-        // back to the caller session as an async backflow message.
-        outboxPayload: operation.spec.oneWay === true ? null : {
+        // One-way routes and synchronous dispatches keep completion durable
+        // without injecting another chat turn. Async dispatch alone wakes the
+        // caller later with a normal queued result message. `tool` remains a
+        // read-only compatibility value for operations admitted pre-upgrade.
+        outboxPayload: operation.spec.oneWay === true || operation.spec.resultMode === 'sync'
+          ? null : {
           type: 'dispatch.result',
           operationId: operation.id,
           targetId,

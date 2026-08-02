@@ -131,6 +131,11 @@ function controlAllowedByClassify(item, classifyState) {
   // Classify P is the only staging gate; W/B/E/D may start a fresh CLI turn
   // even when the previous -p process and its physical active slot are gone.
   if (item?.payload?.type === 'session.work') return classifyState !== 'P';
+  // An async dispatch result is a new conversation message, not a background
+  // wait state. It must never interrupt an active P turn, but once that turn
+  // ends it wakes the Master from D/W/E just like direct chat input. No B state
+  // is required (or manufactured) for this path.
+  if (item?.payload?.type === 'dispatch.result') return classifyState !== 'P';
   if (classifyState === 'W') return kind === 'answer' || kind === 'approval' || kind === 'continuation';
   if (classifyState === 'B') return kind === 'callback' || kind === 'continuation';
   if (classifyState === 'E') return kind === 'retry' || kind === 'resume';

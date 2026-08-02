@@ -1173,7 +1173,7 @@ function createTaskBoardRuntime(deps) {
       });
     }
     if (routeMode === 'commander') {
-      // Commander receives the message and routes asynchronously via <<route>> markers.
+      // Commander receives the message and may route it with MCP route_task.
       res.json({
         ok: true,
         taskId: null,

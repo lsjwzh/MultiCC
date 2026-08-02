@@ -8,7 +8,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 const core = require('../src/task-board');
 const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
-const { routeLegacyCommanderMarkers } = require('../src/dispatch/legacy-commander-route');
 const taskBoardUi = require('../public/task-board-ui');
 
 test('task board snapshot reconciliation is taskId-idempotent and prunes replay ghosts', () => {
@@ -816,107 +815,6 @@ test('host task-board dispatch rejects busy targets before durable admission', (
   assert.match(source, /replayRecoveredDispatchEffects: \(\) => \{\}/);
 });
 
-test('legacy Commander marker admission uses the canonical task source and honest queue receipt', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  const gatewayHost = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'dispatch', 'gateway-host.js'),
-    'utf8',
-  );
-  const legacyRoute = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'dispatch', 'legacy-commander-route.js'),
-    'utf8',
-  );
-  const start = gatewayHost.indexOf('function maybeDispatchFromChatTurn(');
-  const body = gatewayHost.slice(start);
-  assert.ok(start >= 0);
-  assert.match(body, /routeLegacyCommanderMarkers/);
-  assert.match(legacyRoute, /taskSource: 'commander'/);
-  assert.doesNotMatch(legacyRoute, /taskSource: 'commander-route'/);
-  assert.match(legacyRoute, /explicitlyNamesTerminal\(sourceUserText, terminal\)/);
-  assert.match(legacyRoute, /已持久排队给/);
-  assert.ok(legacyRoute.indexOf('已持久排队给') > legacyRoute.indexOf('.then(result =>'),
-    'the receipt must be emitted only after durable admission resolves');
-});
-
-test('legacy Commander marker reuses chat workers and keeps terminal gateways internal', async () => {
-  const records = new Map([
-    ['chat-a', { id: 'chat-a', kind: 'chat', dirId: 'dir-1', label: 'Worker A' }],
-    ['chat-b', { id: 'chat-b', kind: 'chat', dirId: 'dir-2', label: 'Worker B' }],
-    ['term-a', { id: 'term-a', kind: 'terminal', dirId: 'dir-1', label: 'Terminal A' }],
-    ['term-a-gw-chat', {
-      id: 'term-a-gw-chat', kind: 'chat', dirId: 'dir-1',
-      ephemeral: true, label: 'Terminal A (gw)',
-    }],
-  ]);
-  const calls = [];
-  const notices = [];
-  const base = {
-    dispatcherId: 'commander',
-    from: { id: 'commander', type: 'commander', dirId: 'dir-1' },
-    sourceKey: 'source-1',
-    records,
-    crypto: { randomUUID: () => '12345678-1234-1234-1234-123456789abc' },
-    isPlaceholder: () => false,
-    validateTarget: target => {
-      const rec = records.get(target);
-      return rec ? { ok: true, rec } : { ok: false, error: 'missing' };
-    },
-    appendEvent: () => {},
-    dispatch: async (target, message, options) => {
-      calls.push({ target, message, options });
-      return {
-        ok: true,
-        chatId: target === 'term-a' ? 'term-a-gw-chat' : target,
-      };
-    },
-    inject: text => notices.push(text),
-  };
-
-  const genericTerminal = routeLegacyCommanderMarkers({
-    ...base,
-    markers: [{ target: 'term-a', message: 'install terminal software' }],
-    sourceUserText: '给我安装好 zcode 和 qoder 终端',
-  });
-  assert.equal(genericTerminal.length, 0);
-  assert.equal(calls.length, 0);
-  assert.match(notices.pop(), /没有点名/);
-
-  const gateway = routeLegacyCommanderMarkers({
-    ...base,
-    markers: [{ target: 'term-a-gw-chat', message: 'x' }],
-    sourceUserText: '派给 term-a',
-  });
-  assert.equal(gateway.length, 0);
-  assert.match(notices.pop(), /执行网关/);
-
-  const crossDirectory = routeLegacyCommanderMarkers({
-    ...base,
-    markers: [{ target: 'chat-b', message: 'cross-directory task' }],
-    sourceUserText: '完成任务',
-  });
-  assert.equal(crossDirectory.length, 0);
-  assert.match(notices.pop(), /同目录/);
-
-  const chat = routeLegacyCommanderMarkers({
-    ...base,
-    markers: [{ target: 'chat-a', message: 'reuse existing worker' }],
-    sourceUserText: '完成任务',
-  });
-  await Promise.all(chat);
-  assert.equal(calls.at(-1).target, 'chat-a');
-  assert.equal(calls.at(-1).options.taskSource, 'commander');
-  assert.match(notices.pop(), /已持久排队给/);
-
-  const terminal = routeLegacyCommanderMarkers({
-    ...base,
-    markers: [{ target: 'term-a', message: 'run there' }],
-    sourceUserText: '明确派给 Terminal A',
-  });
-  await Promise.all(terminal);
-  assert.equal(calls.at(-1).target, 'term-a');
-  assert.match(notices.pop(), /实际执行会话「term-a-gw-chat」/);
-});
-
 test('onTurnEnd skips aux/gateway sessions, short replies and injected turns', () => {
   const { runtime, auxCalls, deps } = mkRuntime();
   runtime.onTurnEnd({ currentUserText: 'x', currentAssistantText: '短' }, 'sess-1');
@@ -1148,7 +1046,7 @@ test('automatic board routing is Commander-first even with multiple active ordin
   assert.equal(res.body.routingMode, 'commander');
   assert.equal(commanderCalls.length, 0, 'task board no longer calls routeCommanderTask synchronously');
   assert.equal(workerCalls.length, 0, 'task board must never bypass Commander');
-  assert.equal(res.body.workerSessionId, null, 'worker assignment happens async via LLM <<route>> markers');
+  assert.equal(res.body.workerSessionId, null, 'worker assignment happens later through Commander MCP routing');
 });
 
 test('same panel client id reuses taskId and operation without a second Commander decision', async () => {
@@ -1528,7 +1426,7 @@ test('goal-flagged sends prepend the goal note; board-level send routes by dir',
   assert.equal(r2.body.ok, true);
   assert.equal(r2.body.target, 'commander-1');
   assert.equal(r2.body.routingMode, 'commander');
-  // Commander mode: taskId is null (async routing via LLM <<route>> markers)
+  // Commander mode: taskId remains null until the Commander admits MCP work.
   assert.equal(r2.body.taskId, null);
   assert.equal(r2.body.routingMode, 'commander');
 

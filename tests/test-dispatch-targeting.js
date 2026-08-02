@@ -239,7 +239,7 @@ test('commander with ultracode stays on route-first route_task surface', () => {
   assert.match(p, /具备 Ultracode 能力/);
   assert.match(p, /可以在当前会话完成/);
   assert.match(p, /route_task/);
-  assert.match(p, /跨 session 派发仍只使用 route_task/);
+  assert.match(p, /跨 session 派发仍只使用 MCP route_task \/ dispatch_master/);
   assert.doesNotMatch(p, /\[MultiCC Ultracode workflow\]/);
   assert.doesNotMatch(p, /Task\/Agent\/Workflow/);
   assert.doesNotMatch(p, /<<dispatch target=/);

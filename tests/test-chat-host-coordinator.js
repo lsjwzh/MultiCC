@@ -409,7 +409,6 @@ test('host runtime composes production ports without leaking effect switches bac
     },
     emitDispatchComplete: () => { throw new Error('unexpected dispatch'); },
     emitGatewayComplete: () => { throw new Error('unexpected gateway'); },
-    inspectDispatchMarkers: (sessionId, text) => events.push(['inspect', sessionId, text]),
     logSuppressed: detail => events.push(['suppressed', detail.reason]),
   });
 
@@ -429,7 +428,6 @@ test('host runtime composes production ports without leaking effect switches bac
     ['usage-observed', 'session-1'],
     ['handoff', 'session-1'],
     ['turn-complete', 'session-1', 'turn-1'],
-    ['inspect', 'session-1', 'done'],
   ]);
   assert.equal(state._continuationLineage, null);
 });
@@ -449,7 +447,6 @@ test('host runtime never lets a typed Commander fan out through assistant marker
     emitTurnComplete: () => events.push('turn-complete'),
     emitDispatchComplete: operationId => events.push(`return:${operationId}`),
     emitGatewayComplete: () => { throw new Error('unexpected gateway'); },
-    inspectDispatchMarkers: () => events.push('unexpected-fan-out'),
     logSuppressed: detail => events.push(`suppressed:${detail.reason}`),
   });
 

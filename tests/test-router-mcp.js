@@ -33,9 +33,14 @@ function clientFor(port, originDispatchId = '') {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const pending = new Map();
+  const notifications = [];
   const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
   lines.on('line', line => {
     const message = JSON.parse(line);
+    if (message.id == null) {
+      notifications.push(message);
+      return;
+    }
     const waiter = pending.get(message.id);
     if (waiter) {
       pending.delete(message.id);
@@ -59,7 +64,7 @@ function clientFor(port, originDispatchId = '') {
       }, 500).unref();
     });
   }
-  return { call, stop };
+  return { call, notifications, stop };
 }
 
 test('stdio MCP advertises scoped tools and bridges calls with the capability', async t => {
@@ -74,6 +79,13 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
         capability: req.headers['x-multicc-router-capability'],
         body: JSON.parse(body),
       });
+      if (req.url.endsWith('/dispatch_master') && JSON.parse(body).arguments?.mode === 'sync') {
+        res.setHeader('content-type', 'application/x-ndjson');
+        res.write(`${JSON.stringify({ type: 'progress', progress: { kind: 'reasoning', message: 'worker thought' } })}\n`);
+        res.write(`${JSON.stringify({ type: 'progress', progress: { kind: 'text', message: 'worker delta' } })}\n`);
+        res.end(`${JSON.stringify({ type: 'result', result: { ok: true, mode: 'sync', result: 'worker final' } })}\n`);
+        return;
+      }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({
         ok: true,
@@ -140,6 +152,28 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(requests[1].body.arguments, {
     target_session_id: 'worker',
     message: 'do it',
+  });
+  const masterTool = listed.result.tools.find(tool => tool.name === 'dispatch_master');
+  assert.deepEqual(masterTool.inputSchema.required, ['target_session_id', 'message', 'mode']);
+  assert.deepEqual(masterTool.inputSchema.properties.mode.enum, ['sync', 'async']);
+  assert.match(masterTool.description, /do not poll/i);
+  const sync = await plain.call('tools/call', {
+    name: 'dispatch_master',
+    arguments: {
+      target_session_id: 'worker', message: 'sync work', mode: 'sync',
+    },
+    _meta: { progressToken: 'progress-1' },
+  });
+  assert.equal(sync.result.structuredContent.result, 'worker final');
+  assert.deepEqual(plain.notifications[0], {
+    jsonrpc: '2.0',
+    method: 'notifications/progress',
+    params: { progressToken: 'progress-1', progress: 1, message: 'worker thought' },
+  });
+  assert.deepEqual(plain.notifications[1], {
+    jsonrpc: '2.0',
+    method: 'notifications/progress',
+    params: { progressToken: 'progress-1', progress: 2, message: 'worker delta' },
   });
 
   const dispatched = clientFor(port, 'op-origin');

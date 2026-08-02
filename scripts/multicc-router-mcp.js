@@ -4,7 +4,7 @@
 const readline = require('readline');
 
 const SERVER_NAME = 'multicc-router';
-const SERVER_VERSION = '1.3.0';
+const SERVER_VERSION = '1.4.0';
 const BASE_URL = String(process.env.MULTICC_BASE_URL || '').replace(/\/+$/, '');
 const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
 
@@ -36,6 +36,25 @@ const TARGET_SCHEMA = {
       type: 'boolean',
       default: false,
       description: 'Set true only when the originating user message names this terminal session by its exact id or complete label. Mentioning terminal/CLI software is not sufficient.',
+    },
+  },
+};
+
+const DISPATCH_MASTER_SCHEMA = {
+  ...TARGET_SCHEMA,
+  required: [...TARGET_SCHEMA.required, 'mode'],
+  properties: {
+    ...TARGET_SCHEMA.properties,
+    mode: {
+      type: 'string',
+      enum: ['sync', 'async'],
+      description: 'sync keeps this tool call open and streams safe provider-emitted reasoning plus worker progress before returning the final result inline. async returns after admission and later wakes this session with a new result message.',
+    },
+    timeout_seconds: {
+      type: 'number',
+      minimum: 1,
+      maximum: 21600,
+      description: 'Maximum synchronous attachment time (up to 6 hours). Valid only for mode=sync.',
     },
   },
 };
@@ -200,10 +219,8 @@ const TOOLS = [
   {
     name: 'dispatch_master',
     title: 'Dispatch to worker',
-    description: 'Durably dispatch to a same-directory chat worker and return immediately. The result flows back to this session asynchronously as a new message once the worker calls dispatch_slave. Terminal sessions require allow_terminal=true. Busy targets are queued and never interrupted.',
-    inputSchema: {
-      ...TARGET_SCHEMA,
-    },
+    description: 'Durably dispatch to a same-directory worker. mode=sync keeps this call pending, streams safe provider-emitted reasoning and worker dialogue progress, and returns the final worker result inline without dispatch_slave or a new chat message. mode=async returns after admission; do not poll or inspect the worker—continue only independent work and end naturally, then MultiCC wakes this session with the dispatch_slave result as a new message. Busy targets are queued and never interrupted.',
+    inputSchema: DISPATCH_MASTER_SCHEMA,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -216,7 +233,7 @@ const TOOLS = [
 TOOLS.push({
     name: 'dispatch_slave',
     title: 'Return dispatch result',
-    description: 'Complete the dispatch that created this turn. Call exactly once after finishing the assigned work so the result flows back to the caller session. A server-side post-turn fallback also completes the dispatch if this tool is not called.',
+    description: 'Complete the async dispatch that created this turn. Call exactly once after finishing so the result is inserted into and wakes the caller session. Sync dispatches complete automatically from the final turn output and reject this tool.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -259,7 +276,45 @@ function toolContent(value, isError = false) {
   };
 }
 
-async function callBridge(name, args, signal) {
+async function readNdjson(response, onProgress) {
+  if (!response.body) throw new Error('router stream ended without a body');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult;
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const frame = JSON.parse(line);
+      if (frame.type === 'progress') onProgress?.(frame.progress || {});
+      if (frame.type === 'result') finalResult = frame.result;
+      if (frame.type === 'error') {
+        const error = new Error(frame.message || frame.code || 'router_error');
+        error.code = frame.code || 'router_error';
+        throw error;
+      }
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) {
+    const frame = JSON.parse(buffer);
+    if (frame.type === 'progress') onProgress?.(frame.progress || {});
+    if (frame.type === 'result') finalResult = frame.result;
+    if (frame.type === 'error') {
+      const error = new Error(frame.message || frame.code || 'router_error');
+      error.code = frame.code || 'router_error';
+      throw error;
+    }
+  }
+  if (finalResult === undefined) throw new Error('router stream ended without a result');
+  return finalResult;
+}
+
+async function callBridge(name, args, signal, onProgress) {
   if (!BASE_URL || !CAPABILITY) throw new Error('MultiCC router environment is unavailable');
   const response = await fetch(`${BASE_URL}/api/internal/router-tools/${encodeURIComponent(name)}`, {
     method: 'POST',
@@ -270,6 +325,10 @@ async function callBridge(name, args, signal) {
     body: JSON.stringify({ arguments: args || {} }),
     signal,
   });
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('application/x-ndjson')) {
+    return readNdjson(response, onProgress);
+  }
   let payload = null;
   try { payload = await response.json(); } catch (_) { /* handled below */ }
   if (!response.ok) {
@@ -326,7 +385,22 @@ async function handle(message) {
     const controller = new AbortController();
     inflight.set(id, controller);
     try {
-      const result = await callBridge(tool.name, params.arguments || {}, controller.signal);
+      const progressToken = params._meta?.progressToken;
+      let progress = 0;
+      const result = await callBridge(
+        tool.name,
+        params.arguments || {},
+        controller.signal,
+        progressToken == null ? null : update => write({
+          jsonrpc: '2.0',
+          method: 'notifications/progress',
+          params: {
+            progressToken,
+            progress: ++progress,
+            message: String(update?.message || update?.kind || 'worker progress'),
+          },
+        }),
+      );
       write({ jsonrpc: '2.0', id, result: toolContent(result, false) });
     } catch (error) {
       const code = typeof error.code === 'string' ? error.code : 'router_error';

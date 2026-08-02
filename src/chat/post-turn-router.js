@@ -12,7 +12,7 @@ function deliveryEffect(type, effectId, fields) {
   });
 }
 
-// Returns effect descriptions only. No bus emit, persistence, marker parsing or
+// Returns effect descriptions only. No bus emit, persistence or
 // network work occurs here. Stable effectIds make the caller's durable receipt
 // ledger the exactly-once authority.
 function routePostTurn(input = {}) {
@@ -49,8 +49,9 @@ function routePostTurn(input = {}) {
         finalText,
       }));
     }
-    // Origin dispatch always owns the result return. A dispatched reply is
-    // never sent through the marker scanner (anti-fan-out guard).
+    // Origin dispatch always owns completion bookkeeping. The dispatch host
+    // decides whether final output closes a sync/one-way operation or whether
+    // an async worker omitted its required dispatch_slave receipt.
     return Object.freeze({ route: 'dispatch-return', effects: Object.freeze(effects) });
   }
 
@@ -71,36 +72,11 @@ function routePostTurn(input = {}) {
     return Object.freeze({ route: 'aux', effects: Object.freeze(effects) });
   }
   if (input.sessionType === 'commander') {
-    // Commander runs the LLM and routes one-way via <<route>> markers in its
-    // reply, so its turn must go through the marker scanner like a normal turn.
-    // A Commander-originated turn carries no originDispatchId (the dispatch-return
-    // branch above already returned for dispatched workers), so it gets no result
-    // 回流 — only the one-way marker inspection.
-    const effectId = `commander-turn:${turnId}`;
-    if (turnId && !receipts.has(effectId)) {
-      effects.push(Object.freeze({
-        type: 'inspect-dispatch-markers',
-        effectId,
-        requiresDeliveryProof: false,
-        sessionId,
-        turnId,
-        finalText,
-      }));
-    }
+    // Cross-session routing is MCP-only. Assistant text is never parsed as an
+    // executable dispatch instruction.
     return Object.freeze({ route: 'commander', effects: Object.freeze(effects) });
   }
 
-  const effectId = `normal-turn:${turnId}`;
-  if (turnId && !receipts.has(effectId)) {
-    effects.push(Object.freeze({
-      type: 'inspect-dispatch-markers',
-      effectId,
-      requiresDeliveryProof: false,
-      sessionId,
-      turnId,
-      finalText,
-    }));
-  }
   return Object.freeze({ route: 'normal', effects: Object.freeze(effects) });
 }
 

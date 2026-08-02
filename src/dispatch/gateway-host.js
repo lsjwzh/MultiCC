@@ -1,34 +1,17 @@
 'use strict';
 
-// Gateway/dispatch orchestration host: the WeChat gateway system prompt, the
-// confirm/cancel control path, dispatch admission + pending bookkeeping, and
-// the turn-end marker sweep that turns <<dispatch>>/<<route>> markers into real
-// cross-session deliveries.
-//
-// Extracted verbatim from server.js. Behaviour is preserved exactly; mutable
+// Gateway/dispatch orchestration host: gateway prompts, canonical dispatch
+// admission, pending bookkeeping and result completion. Cross-session routing
+// is MCP-only; assistant text is never parsed as an executable instruction.
+// Mutable
 // host state is reached through injected getters or function wrappers only —
-// orchestrationRuntime, chatHistoryService and sessionDelivery are host `let`/`const`
+// orchestrationRuntime and sessionDelivery are host `let`/`const`
 // bindings resolved after this factory runs (getters), appendChatMessage /
-// chatBroadcast / loadChatHistory wrap host functions that resolve their own
+// chatBroadcast wrap host functions that resolve their own
 // late-bound dependencies per call, and createSessionRecord / taskContextHost /
 // setSessionStatus are likewise resolved per call through getters. The
-// cross-fleet double gate in maybeDispatchFromChatTurn (same-dir unless
-// commander, for BOTH dispatch and legacy route markers) is pinned
-// byte-for-byte by tests.
 
-const crypto = require('crypto');
 const bus = require('../bus');
-const {
-  DISPATCH_RE,
-  DISPATCH_CONFIRM_RE,
-  DISPATCH_CANCEL_RE,
-  parseDispatchMarker,
-  parseAllDispatchMarkers,
-  parseAllRouteMarkers,
-  ROUTE_RE_G,
-  isDispatchPlaceholderTarget,
-} = require('./markers');
-const { routeLegacyCommanderMarkers } = require('./legacy-commander-route');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -43,7 +26,6 @@ function createGatewayHost(rawDeps) {
     chatSessions,
     directories,
     logger,
-    getChatHistoryService,
     appendEvent,
     getSessionDelivery,
     normalizeEffort,
@@ -56,7 +38,6 @@ function createGatewayHost(rawDeps) {
     getCreateSessionRecord,
     appendChatMessage,
     chatBroadcast,
-    loadChatHistory,
   } = deps;
 
   if (!persistedSessions || typeof persistedSessions.get !== 'function') {
@@ -72,7 +53,7 @@ function createGatewayHost(rawDeps) {
     throw new TypeError('[gateway-host] logger.warn is required');
   }
   for (const [fn, name] of [
-    [appendEvent, 'appendEvent'], [getSessionDelivery, 'getSessionDelivery'], [getChatHistoryService, 'getChatHistoryService'],
+    [appendEvent, 'appendEvent'], [getSessionDelivery, 'getSessionDelivery'],
     [normalizeEffort, 'normalizeEffort'], [dispatchTargetHintFor, 'dispatchTargetHintFor'],
     [cwdForSession, 'cwdForSession'], [getSetSessionStatus, 'getSetSessionStatus'],
     [isTargetBusy, 'isTargetBusy'],
@@ -80,12 +61,11 @@ function createGatewayHost(rawDeps) {
     [getTaskContextHost, 'getTaskContextHost'],
     [getCreateSessionRecord, 'getCreateSessionRecord'],
     [appendChatMessage, 'appendChatMessage'], [chatBroadcast, 'chatBroadcast'],
-    [loadChatHistory, 'loadChatHistory'],
   ]) assertFunction(fn, name);
 
   function addressableSessions() {
     return [...persistedSessions.values()]
-      .filter(s => s.type !== 'aux' && s.type !== 'gateway')
+      .filter(s => s.type !== 'aux' && s.type !== 'gateway' && s.type !== 'commander')
       .slice(0, 30);
   }
 
@@ -107,13 +87,11 @@ function createGatewayHost(rawDeps) {
       '[MultiCC 实时语音 Router system prompt]',
       '你是 MultiCC 的全局实时语音 Router 会话。用户通过实时语音发起、且没有指定来源会话的请求都进入这里。',
       '你负责判断如何回应：可以直接回答、追问澄清，或把任务投给某个具体 session。',
-      '当用户确实要求执行、修改、检查或推进某项工作时，在回复的最后单独输出一行分发标记：',
-      '<<dispatch target="真实 session id">要交给该 session 执行的完整、自包含指令</dispatch>>',
-      '其中 target 必须逐字使用上面可见 sessions 列表里的某个 id；不要使用 ...、SID、SESSION_ID、<目标会话id> 等占位符。dispatch 内的指令要完整到该 session 无需追问即可执行。',
-      '优先投给目标项目的 Commander（type 为 commander）会话，由它再挑选合适的 Worker；只有用户明确点名了某个会话时才直接投给那个会话。',
-      '语音场景没有二次确认：标记一旦输出就会立即投递，所以只有用户确实要求干活时才输出。',
+      '当用户确实要求执行、修改、检查或推进某项工作时，调用 dispatch_master，mode 必须是 async；target_session_id 必须逐字使用下面列表里的真实 id，message 必须完整、自包含。',
+      '不要输出 <<dispatch>> 或 <<route>> 文本；文本不会触发任何投递。不要调用旧 HTTP dispatch 接口。',
+      '语音场景没有二次确认，所以只有用户确实要求干活时才调用工具。工具返回 admitted 后才可声称已提交。',
       '如果用户没说清是哪个项目或哪个会话，而请求又必须落到某一个上，就只用一句话反问，不要自己挑一个 id 投出去。',
-      '纯聊天、答疑、澄清类回复不要输出标记。每条回复最多一个 dispatch 标记。',
+      '纯聊天、答疑、澄清类回复不要调用分派工具。',
       `当前可见 sessions: ${context}`,
       '[Voice router system prompt end]',
       '',
@@ -142,11 +120,10 @@ function createGatewayHost(rawDeps) {
       '[MultiCC Gateway system prompt]',
       '你是 MultiCC 的微信 Gateway 会话。所有微信消息都统一进入这个会话。',
       '你负责基于用户消息和可用 session 上下文判断如何回应：可以直接回答、追问澄清，或把任务分发给某个具体 session。',
-      '当你判断需要某个 session 来处理任务时，在回复的最后单独输出一行分发标记：',
-      '<<dispatch target="真实 session id">要交给该 session 执行的完整、自包含指令</dispatch>>',
-      '其中 target 必须逐字使用上面可见 sessions 列表里的某个 id；不要使用 ...、SID、SESSION_ID、<目标会话id> 等占位符。dispatch 内的指令要完整到该 session 无需追问即可执行。',
-      '分发不会立即生效——系统会先向用户复述并等待用户回复「确认」后才真正投递，所以你可以在标记前用自然语言说明你打算交给谁、做什么。',
-      '只有真的需要某个 session 干活时才输出该标记；纯聊天、答疑、澄清类回复不要输出标记。每条回复最多一个 dispatch 标记。',
+      '需要 session 执行任务时，先用自然语言复述目标与任务并等待用户明确回复「确认」；确认后的下一轮才调用 dispatch_master，mode 必须是 async。',
+      'target_session_id 必须逐字使用下面列表里的真实 id，message 必须完整、自包含；工具返回 admitted 后才可声称已投递。',
+      '不要输出 <<dispatch>> 或 <<route>> 文本；文本不会触发任何投递。不要调用旧 HTTP dispatch 接口。',
+      '纯聊天、答疑、澄清类回复不要调用分派工具。',
       '当用户问 Gateway/Router/会话管理相关问题时，直接以 Gateway 身份回答，不要输出标记。',
       `当前可见 sessions: ${context}`,
       '[Gateway system prompt end]',
@@ -155,17 +132,12 @@ function createGatewayHost(rawDeps) {
     ].join('\n');
   }
 
-  // ── Gateway dispatch (auto-dispatch v1) ──
-  // The gateway LLM can emit a <<dispatch target="ID">...</dispatch>> marker; we
-  // hold it as a pending request, ask the WeChat user to confirm, and only then
-  // drive the target session via runChatTurn. The target's result is pushed back.
+  // ── Gateway dispatch ──
   const GATEWAY_ID = '__gateway__';
   // The realtime-voice router is a second gateway instance. Every piece of
   // gateway state below is therefore keyed by session id: two gateways must
   // never share a pending confirmation, a history sink or a result sink.
   const VOICE_ROUTER_ID = '__voice_router__';
-  const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;   // pending confirmation expires after 10 min
-  const pendingDispatches = new Map();           // gatewaySessionId → { id, targetId, message, createdAt }
   // Structured terminal outcome of one voice-router turn. `cancelled`/`unknown`
   // are part of the contract but are decided by the caller (a hung or aborted
   // call), never claimed by the Host — the Host only reports what it did.
@@ -177,6 +149,12 @@ function createGatewayHost(rawDeps) {
   const voiceAdmissionsEmitted = new Set();      // `${sessionId}\0${turnId}\0${requestId}`
   const dispatchRuns = new Map();                // hot cache; durable source of truth is orchestrationRuntime
   const TERMINAL_DISPATCH_STATUS = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
+
+  function isPlaceholderTarget(targetId) {
+    const value = String(targetId || '').trim().toLowerCase();
+    return !value || /^(\.{2,}|…+|xxx|yyy|zzz|sid|session[-_ ]?id|target[-_ ]?id|worker[-_ ]?\d*)$/i.test(value)
+      || value.includes('<') || value.includes('>');
+  }
 
 
   // Push a server-originated assistant message into the gateway chat. Web clients
@@ -191,7 +169,7 @@ function createGatewayHost(rawDeps) {
   // A dispatch target must be a real, non-system session.
   function validateDispatchTarget(targetId, fromSessionId = null, allowCommander = false) {
     const hint = fromSessionId ? `；${dispatchTargetHintFor(fromSessionId)}` : '';
-    if (isDispatchPlaceholderTarget(targetId)) {
+    if (isPlaceholderTarget(targetId)) {
       return { ok: false, error: `「${targetId}」是占位符，不是真实 session id；请从可用目标 sessions 中选择一个真实 id${hint}` };
     }
     const rec = persistedSessions.get(targetId);
@@ -201,47 +179,10 @@ function createGatewayHost(rawDeps) {
     return { ok: true, rec };
   }
 
-  // Remove the raw marker from the most recent persisted gateway assistant message.
-  function stripMarkerFromGatewayHistory(sessionId = GATEWAY_ID) {
-    const hist = loadChatHistory(sessionId);
-    for (let i = hist.length - 1; i >= 0; i--) {
-      const m = hist[i];
-      if (m.role !== 'assistant') continue;
-      if (typeof m.content === 'string' && DISPATCH_RE.test(m.content)) {
-        m.content = m.content.replace(DISPATCH_RE, '').replace(/\n{3,}/g, '\n\n').trim();
-        try { getChatHistoryService().replace(sessionId, hist, { reason: 'strip-dispatch-marker' }); }
-        catch (error) {
-          logger.warn('chat_history_marker_strip_failed', { sessionId, error: error.message });
-        }
-      }
-      return;   // only inspect the latest assistant message
-    }
-  }
-
-  function stripRouteMarkerFromHistory(sessionId) {
-    const hist = loadChatHistory(sessionId);
-    for (let i = hist.length - 1; i >= 0; i--) {
-      const m = hist[i];
-      if (m.role !== 'assistant') continue;
-      if (typeof m.content === 'string' && ROUTE_RE_G.test(m.content)) {
-        ROUTE_RE_G.lastIndex = 0;
-        m.content = m.content.replace(ROUTE_RE_G, '').replace(/\n{3,}/g, '\n\n').trim();
-        try { getChatHistoryService().replace(sessionId, hist, { reason: 'strip-route-marker' }); }
-        catch (error) {
-          logger.warn('chat_history_route_marker_strip_failed', { sessionId, error: error.message });
-        }
-      }
-      ROUTE_RE_G.lastIndex = 0;
-      return;   // only inspect the latest assistant message
-    }
-  }
-
   // Exactly one structured terminal frame per voice-router turn.
   //
-  // A live call cannot learn the outcome from the assistant stream: the marker
-  // arrives fragmented character by character, and the turn's `result` frame
-  // lands before the durable admission has an answer. So the Host states the
-  // outcome itself, out of band, once.
+  // A live call cannot infer durable admission from assistant prose. The Host
+  // therefore states the MCP admission outcome out of band, exactly once.
   //
   // The payload is deliberately narrow. It carries the outcome, admission's
   // proof and the speakable text — never the dispatched instruction, the
@@ -249,13 +190,22 @@ function createGatewayHost(rawDeps) {
   // most as its human label, so a hot microphone can never become a channel for
   // reading the Fleet's internals back out.
   function emitVoiceAdmission(sessionId, turnId, requestId, fields = {}) {
-    const key = `${sessionId} ${turnId} ${requestId}`;
+    const key = `${sessionId}\0${turnId}\0${requestId}`;
     if (voiceAdmissionsEmitted.has(key)) return;
     if (voiceAdmissionsEmitted.size >= VOICE_ADMISSION_MEMORY) {
       voiceAdmissionsEmitted.delete(voiceAdmissionsEmitted.values().next().value);
     }
     voiceAdmissionsEmitted.add(key);
-    const outcome = VOICE_ADMISSION_OUTCOMES.has(fields.outcome) ? fields.outcome : 'unknown';
+    let outcome = VOICE_ADMISSION_OUTCOMES.has(fields.outcome) ? fields.outcome : 'unknown';
+    let publicError = fields.error || null;
+    if (outcome === 'admitted' && !String(fields.operationId || '').trim()) {
+      outcome = 'failed';
+      publicError = {
+        code: 'operation_id_missing',
+        retryable: true,
+        publicMessage: '任务提交结果不完整，请稍后重试。',
+      };
+    }
     // An operation id is what "admitted" means. Nothing else may carry one, and
     // an admission without one is not an admission.
     const admitted = outcome === 'admitted';
@@ -273,132 +223,43 @@ function createGatewayHost(rawDeps) {
       queueStatus: admitted ? String(fields.queueStatus || '') || null : null,
       speechText: typeof fields.speechText === 'string' ? fields.speechText : '',
       targetLabel: String(fields.targetLabel || ''),
-      error: fields.error || null,
+      error: publicError,
     });
   }
 
-  // Called when a gateway turn completes: detect a dispatch marker, stage it as a
-  // pending request, and ask the user to confirm. Does NOT deliver yet.
-  function handleGatewayTurnComplete(finalText, sessionId = GATEWAY_ID, turnId = '', requestId = '') {
-    const voice = sessionId === VOICE_ROUTER_ID;
-    const parsed = parseDispatchMarker(finalText);
-    if (!parsed) {
-      // Deciding not to dispatch is an outcome. Without saying so, a caller
-      // cannot tell "there was nothing to submit" from "the answer never came".
-      if (voice) {
-        emitVoiceAdmission(sessionId, turnId, requestId, {
-          outcome: 'no_dispatch',
-          speechText: String(finalText || '').trim(),
-        });
-      }
-      return;
-    }
-    stripMarkerFromGatewayHistory(sessionId);
-    // Voice may address a Fleet's Commander directly; WeChat may not.
-    const v = validateDispatchTarget(parsed.target, null, voice);
-    if (!v.ok) {
-      // The frame states the class of failure rather than v.error, which names
-      // the rejected target id verbatim.
-      if (voice) {
-        emitVoiceAdmission(sessionId, turnId, requestId, {
-          outcome: 'rejected',
-          speechText: parsed.cleanText,
-          error: {
-            code: 'dispatch_target_rejected',
-            publicMessage: '这次语音请求没有可以执行它的目标会话。',
-            retryable: false,
-          },
-        });
-      }
-      pushToGateway(`⚠️ 无法分发：${v.error}`, { sessionId });
-      return;
-    }
-    const label = (v.rec.label && v.rec.label !== parsed.target) ? `${parsed.target}（${v.rec.label}）` : parsed.target;
-    if (voice) {
-      // A live voice call has nowhere to park a 确认 state, and borrowing
-      // WeChat's would let one channel resolve the other's pending dispatch.
-      // An explicit spoken execution request is admitted directly instead —
-      // and only reported as submitted once admission actually succeeds.
-      // The turn id keys idempotency, so a replayed turn cannot double-deliver.
-      const targetLabel = String(v.rec.label || '');
-      return dispatchToSession(parsed.target, parsed.message, {
-        ownerSessionId: sessionId,
-        idempotencyKey: `voice:${sessionId}:${turnId || crypto.randomUUID()}`,
-        allowCommander: true,
-        queueIfBusy: true,
-        requireIdle: false,
-      })
-        .then(r => {
-          const admitted = r.ok === true && !!r.operationId;
-          // The structured frame goes out before the prose push: the prose push
-          // also broadcasts a `result`, and a caller that is still waiting for
-          // its outcome must have it in hand by then.
-          emitVoiceAdmission(sessionId, turnId, requestId, {
-            outcome: admitted ? 'admitted' : 'failed',
-            operationId: admitted ? r.operationId : null,
-            duplicate: r.duplicate === true,
-            queueStatus: admitted ? r.status : null,
-            speechText: parsed.cleanText,
-            targetLabel,
-            error: admitted ? null : {
-              code: r.ok === true ? 'operation_id_missing' : String(r.code || 'dispatch_not_admitted'),
-              publicMessage: '这条语音任务没有提交成功。',
-              retryable: true,
-            },
-          });
-          pushToGateway(
-            r.ok ? `✅ 已提交给 ${label}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`,
-            { sessionId },
-          );
-        })
-        .catch(e => {
-          emitVoiceAdmission(sessionId, turnId, requestId, {
-            outcome: 'failed',
-            speechText: parsed.cleanText,
-            targetLabel,
-            error: { code: 'dispatch_error', publicMessage: '这条语音任务投递时出错了。', retryable: true },
-          });
-          pushToGateway(`⚠️ 投递异常：${e.message}`, { sessionId });
-        });
-    }
-    pendingDispatches.set(sessionId, {
-      id: crypto.randomUUID(), targetId: parsed.target, message: parsed.message, createdAt: Date.now(),
+  // MCP admission is authoritative. The voice bridge still needs one narrow,
+  // structured terminal frame; emit it when the router tool has durably admitted
+  // work, never by inspecting assistant prose.
+  function recordRouterAdmission(admission = {}) {
+    if (admission.callerSessionId !== VOICE_ROUTER_ID) return;
+    const turn = chatSessions.get(VOICE_ROUTER_ID)?._activeTurn;
+    if (!turn?.turnId) return;
+    const target = persistedSessions.get(admission.targetSessionId);
+    emitVoiceAdmission(VOICE_ROUTER_ID, turn.turnId, turn.requestId || '', {
+      outcome: 'admitted',
+      operationId: admission.operationId,
+      duplicate: admission.duplicate === true,
+      queueStatus: admission.status || 'admitted',
+      speechText: '任务已提交，完成后结果会发回这里。',
+      targetLabel: String(target?.label || ''),
     });
-    const summary = parsed.message.length > 80 ? parsed.message.slice(0, 80) + '…' : parsed.message;
-    pushToGateway(`📨 准备把任务投给 ${label}：\n「${summary}」\n回复「确认」执行，回复「取消」放弃。`, { sessionId });
+  }
+
+  // A gateway turn that made no MCP admission is explicitly classified as
+  // no_dispatch for the voice caller. WeChat needs no out-of-band frame.
+  function handleGatewayTurnComplete(finalText, sessionId = GATEWAY_ID, turnId = '', requestId = '') {
+    if (sessionId !== VOICE_ROUTER_ID) return;
+    emitVoiceAdmission(sessionId, turnId, requestId, {
+      outcome: 'no_dispatch',
+      speechText: String(finalText || '').trim(),
+    });
   }
   // Gateway domain owns this handler; chat emits after a gateway session's own turn.
   bus.on('chat:gateway-turn-complete', handleGatewayTurnComplete);
 
-  // Intercept gateway inbound messages for confirm/cancel of a pending dispatch.
-  // Returns true if the message was consumed (caller should NOT run the LLM).
-  function handleGatewayControl(rawText, sessionId = GATEWAY_ID) {
-    const pendingDispatch = pendingDispatches.get(sessionId);
-    if (!pendingDispatch) return false;
-    if (Date.now() - pendingDispatch.createdAt > DISPATCH_TIMEOUT_MS) {
-      pendingDispatches.delete(sessionId);   // expired → fall through to the LLM
-      return false;
-    }
-    const text = (rawText || '').trim();
-    if (DISPATCH_CONFIRM_RE.test(text)) {
-      const pd = pendingDispatch; pendingDispatches.delete(sessionId);
-      appendChatMessage(sessionId, { role: 'user', content: rawText, ts: Date.now() });
-      dispatchToSession(pd.targetId, pd.message, {
-        ownerSessionId: sessionId,
-        idempotencyKey: `gateway:${pd.id}`,
-      })
-        .then(r => pushToGateway(r.ok ? `✅ 已投递给 ${pd.targetId}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`, { sessionId }))
-        .catch(e => pushToGateway(`⚠️ 投递异常：${e.message}`, { sessionId }));
-      return true;
-    }
-    if (DISPATCH_CANCEL_RE.test(text)) {
-      pendingDispatches.delete(sessionId);
-      appendChatMessage(sessionId, { role: 'user', content: rawText, ts: Date.now() });
-      pushToGateway('已取消分发。', { sessionId });
-      return true;
-    }
-    return false;   // anything else → let the LLM handle (user may revise/add)
-  }
+  // Confirmation now stays in the Gateway conversation: the model asks first,
+  // then calls MCP only after the user's next explicit confirmation.
+  function handleGatewayControl() { return false; }
 
   // Deliver a confirmed dispatch; terminal targets receive an ephemeral chat.
   async function dispatchToSession(targetId, message, opts = {}) {
@@ -474,8 +335,11 @@ function createGatewayHost(rawDeps) {
       replyTo: opts.replyTo || null,
       createdAt: admitted.createdAt,
     });
-    // Keep the dispatcher's card waiting while its worker runs.
-    if (opts.replyTo && !opts.oneWay && !TERMINAL_DISPATCH_STATUS.has(admitted.status)) {
+    // Only a synchronous master is actually blocked on the worker. Async mode
+    // deliberately releases the master to finish independent work and end its
+    // turn; its eventual dispatch.result is the new message that wakes it.
+    if (opts.replyTo && opts.resultMode === 'sync'
+        && !TERMINAL_DISPATCH_STATUS.has(admitted.status)) {
       addPendingDispatch(opts.replyTo, dispatchId, targetId);
     }
     // Dispatch admission owns its wake-up just like direct chat admission does.
@@ -493,10 +357,9 @@ function createGatewayHost(rawDeps) {
   }
 
   // ── Dispatch ↔ currentTask bridge (step 2, idle fix) ──────────────────────────
-  // When a dispatcher sends work out to a worker and waits for回流, we track the
-  // pending dispatch on the dispatcher's currentTask so setSessionStatus can keep
-  // the dispatcher at 'waiting' instead of 'idle'. Best-effort: if the dispatcher
-  // has no currentTask (e.g. a gateway), these are no-ops.
+  // A sync dispatcher is blocked inside dispatch_master, so expose that narrow
+  // dependency on its current task. Async dispatches never enter this list:
+  // they finish the current master turn and are later woken by a result message.
   function addPendingDispatch(dispatcherId, dispatchId, targetId) {
     if (!dispatcherId) return;
     const cs = chatSessions.get(dispatcherId);
@@ -528,9 +391,10 @@ function createGatewayHost(rawDeps) {
     return before - remaining;
   }
 
-  // A dispatched turn finished → route its final text back to whoever dispatched
-  // it: a normal session (the commander) gets it injected as a new turn so it can
-  // aggregate; a gateway/WeChat dispatch falls back to pushToGateway.
+  // A dispatched turn finished. Sync and one-way operations complete from the
+  // worker's final output. Async success is authoritative only when the worker
+  // called dispatch_slave; a normal final response without that tool is a
+  // protocol failure, never an implicit success/backflow.
   async function finalizeDispatch(dispatchId, sessionName, finalText) {
     const run = dispatchRuns.get(dispatchId);
     dispatchRuns.delete(dispatchId);
@@ -541,10 +405,22 @@ function createGatewayHost(rawDeps) {
     // dispatcher's status can leave 'waiting' once all workers回流).
     if (replyTo) removePendingDispatch(replyTo, dispatchId);
     if (operation && TERMINAL_DISPATCH_STATUS.has(operation.status)) return;
+    const resultMode = operation?.spec?.resultMode || null;
+    if (resultMode === 'async') {
+      await getOrchestrationRuntime().completeDispatch(dispatchId, {
+        status: 'failed',
+        sessionName,
+        text: 'worker 已结束，但没有调用 dispatch_slave 提交 async 回执。',
+        error: 'worker 已结束，但没有调用 dispatch_slave 提交 async 回执。',
+        source: 'missing_dispatch_slave',
+      });
+      return;
+    }
     const completed = await getOrchestrationRuntime().completeDispatch(dispatchId, {
       status: 'completed',
       sessionName,
       text: (finalText || '').trim() || '（本次运行没有产生文本输出）',
+      source: resultMode === 'sync' ? 'sync_final_output' : 'turn_final_output',
     });
     // Compatibility fallback for a dispatch that began before this deployment
     // and therefore has no durable operation record.
@@ -565,51 +441,6 @@ function createGatewayHost(rawDeps) {
       .catch(error => console.error(`[multicc/dispatch] finalize ${dispatchId} failed: ${error.message}`));
   });
 
-  // Cross-session dispatch is driven only by structured evidence: a parsed
-  // <<dispatch>> marker here, or the dispatch HTTP API. Assistant prose is never
-  // interpreted as routing intent.
-  function maybeDispatchFromChatTurn(dispatcherId, finalText) {
-    const dispatchMarkers = parseAllDispatchMarkers(finalText);
-    const routeMarkers = parseAllRouteMarkers(finalText);
-    if (!dispatchMarkers.length && !routeMarkers.length) return;
-    const from = persistedSessions.get(dispatcherId);
-    if (!from) return;
-    const deliveries = [];
-    const history = loadChatHistory(dispatcherId);
-    const sourceMessage = [...history].reverse().find(entry => entry && entry.role === 'assistant');
-    const sourceUserMessage = [...history].reverse().find(entry => entry && entry.role === 'user');
-    const sourceUserText = String(sourceUserMessage?.content || '');
-    const sourceKey = sourceMessage?.id || crypto.createHash('sha256').update(String(finalText || '')).digest('hex').slice(0, 24);
-
-    // <<dispatch>> markers: two-way (worker results flow back to dispatcher)
-    for (const [markerIndex, mk] of dispatchMarkers.entries()) {
-      if (mk.target === dispatcherId) continue;
-      const v = validateDispatchTarget(mk.target, dispatcherId);
-      if (!v.ok) { getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 无法分发给 ${mk.target}：${v.error}`); continue; }
-      if (v.rec.dirId !== from.dirId && from.type !== 'commander') { getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 只能分发给同目录会话，已跳过 ${mk.target}`); continue; }
-      appendEvent(from.dirId, 'dispatch', `→ ${v.rec.label || mk.target}`, dispatcherId);
-      deliveries.push(dispatchToSession(mk.target, mk.message, {
-        replyTo: dispatcherId,
-        oneWay: false,
-        idempotencyKey: `marker:${dispatcherId}:${sourceKey}:${markerIndex}`,
-      })
-        .then(r => { if (!r.ok) getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 分发给 ${mk.target} 失败：${r.error}`); })
-        .catch(e => getSessionDelivery().deliverSystem(dispatcherId, `⚠️ 分发 ${mk.target} 异常：${e.message}`)));
-    }
-
-    deliveries.push(...routeLegacyCommanderMarkers({
-      markers: routeMarkers, dispatcherId, from, sourceUserText, sourceKey,
-      records: persistedSessions, crypto, isPlaceholder: isDispatchPlaceholderTarget,
-      validateTarget: target => validateDispatchTarget(target, dispatcherId),
-      appendEvent, dispatch: dispatchToSession,
-      inject: text => getSessionDelivery().deliverSystem(dispatcherId, text),
-    }));
-
-    // Strip <<route>> markers from displayed history (like Gateway strips <<dispatch>>)
-    if (routeMarkers.length) stripRouteMarkerFromHistory(dispatcherId);
-
-    return Promise.all(deliveries);
-  }
   return {
     GATEWAY_ID,
     VOICE_ROUTER_ID,
@@ -618,9 +449,9 @@ function createGatewayHost(rawDeps) {
     validateDispatchTarget,
     handleGatewayTurnComplete,
     handleGatewayControl,
+    recordRouterAdmission,
     dispatchToSession,
     finalizeDispatch,
-    maybeDispatchFromChatTurn,
   };
 }
 

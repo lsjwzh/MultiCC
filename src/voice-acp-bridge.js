@@ -3,8 +3,6 @@
 const crypto = require('crypto');
 const WebSocket = require('ws');
 
-const { parseDispatchMarker } = require('./dispatch/markers');
-
 const QWEN_INSTRUCTION_BLOCK = /<qwen_audio_agent_backend_instructions>[\s\S]*?<\/qwen_audio_agent_backend_instructions>\s*/gi;
 const QWEN_REQUEST_ENVELOPE = /<qwen_audio_agent_request>([\s\S]*?)<\/qwen_audio_agent_request>/i;
 
@@ -105,34 +103,32 @@ function assistantDelta(previous, next, snapshot) {
   return { text: value, snapshot: value };
 }
 
-// Only ever applied to a complete buffered turn, never to a streamed chunk: a
-// marker split across chunks cannot be recognised, so a per-chunk filter would
-// leak half of it. Anything that still looks like the start of a marker (a turn
-// cut off mid-marker) is dropped rather than spoken.
 function speakableFromBuffer(raw) {
-  const value = String(raw || '');
-  const parsed = parseDispatchMarker(value);
-  let text = parsed ? parsed.cleanText : value;
-  const opener = text.search(/<<\s*dispatch\b/i);
-  if (opener >= 0) text = text.slice(0, opener);
+  let text = String(raw || '')
+    // Retired marker-shaped prose is inert, but still must never be spoken as
+    // user-facing text if an old/stale model happens to emit it.
+    .replace(/<<(?:dispatch|route)\s+[^>]*>[\s\S]*?<\/(?:dispatch|route)>>?/gi, '');
+  const markerStart = text.lastIndexOf('<<');
+  if (markerStart >= 0) {
+    const token = text.slice(markerStart).trim().split(/\s/, 1)[0].toLowerCase();
+    if (token === '<<' || '<<dispatch'.startsWith(token) || '<<route'.startsWith(token)) {
+      text = text.slice(0, markerStart);
+    }
+  }
   return text
-    .replace(/<<(?:d(?:i(?:s(?:p(?:a(?:t(?:c(?:h)?)?)?)?)?)?)?)?$/i, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
-// What the call actually says. The Host's own marker-stripped text is preferred
+// What the call actually says. The Host's structured text is preferred
 // because the Host saw the whole turn; the buffer is the fallback, and a canned
 // line is the last resort so a settled turn is never silent.
 function admissionSpeech(outcome, admission, buffered) {
   const hosted = clean(admission?.speechText);
   const spoken = hosted || speakableFromBuffer(buffered);
   if (outcome === 'unknown') {
-    // Only a turn that actually carried a marker is uncertain about delivery;
-    // a pure conversational turn has nothing pending to qualify.
-    const pending = !clean(admission?.speechText) && !!parseDispatchMarker(String(buffered || ''));
     if (!spoken) return ADMISSION_UNCERTAIN;
-    return pending ? `${spoken}\n${ADMISSION_UNCERTAIN}` : spoken;
+    return `${spoken}\n${ADMISSION_UNCERTAIN}`;
   }
   if (outcome === 'rejected' || outcome === 'failed') {
     // Never lead with the model's own prose here: it says the work is under way,
@@ -421,11 +417,9 @@ function createVoiceAcpBridge({
       // as the buffer a structured turn settles from.
       active.assistantText = delta.snapshot;
       if (!delta.text) return;
-      // A globally-routed turn is buffered, never streamed: its dispatch marker
-      // arrives split across chunks, and the smallest unit that can be filtered
-      // safely is the whole turn. Chat scope keeps streaming word by word — it
-      // routes to the session the user is already looking at and carries no
-      // marker to leak.
+      // A globally-routed turn is buffered until the Host emits its structured
+      // MCP admission outcome. Chat scope keeps streaming word by word because
+      // it already targets the session the user is looking at.
       if (active.structured) return;
       active.emittedText = true;
       this.notify(active, {
@@ -653,9 +647,8 @@ function createVoiceAcpBridge({
           started: false,
           cancelRequested: false,
           finished: false,
-          // A globally-routed turn may carry a dispatch marker, so it is buffered
-          // and only spoken once the Host's terminal outcome frame has arrived.
-          // Chat/fleet scope streams as before.
+          // A globally-routed turn is spoken only after the Host's structured
+          // admission/no-dispatch outcome arrives. Chat/fleet scope streams.
           structured: this.target.scope === 'global',
           settled: false,
           resultSeen: false,

@@ -154,7 +154,8 @@ test('preset list strips prompts while detail preserves them and returns legacy 
   assert.equal(detail.body.prompt, COMMANDER_ROUTER_PROMPT);
   assert.match(detail.body.description, /Route-first/);
   assert.match(detail.body.prompt, /不是强制 route-only/);
-  assert.match(detail.body.prompt, /跨 session 派发的【唯一通道】是调用 route_task/);
+  assert.match(detail.body.prompt, /跨 session 派发的【唯一通道】是 MCP/);
+  assert.match(detail.body.prompt, /dispatch_master 的两种回执模式/);
   assert.match(detail.body.prompt, /不要输出 <<route>> 或 <<dispatch>>/);
   assert.match(detail.body.prompt, /routingState="waiting_user"/);
   assert.match(detail.body.prompt, /相关性相近时优先选择非 waiting_user/);
