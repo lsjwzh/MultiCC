@@ -538,16 +538,33 @@ function createQwenAudioSupervisor({
   // global gateway record is present it is the only runtime reconciled up;
   // legacy per-Fleet records are reconciled *down*, so two Fleets that were both
   // enabled before the migration still resolve to exactly one process.
+  //
+  // Every call is serialized on a shared lifecycle chain: a concurrent reconcile
+  // (boot + install + a Fleet toggle landing at once) must not re-enter and start
+  // the global child while a legacy child is still exiting — that overlap is a
+  // double-spawn. We await every legacy stop *fully* before reconciling global.
+  // The chain never rejects, so fire-and-forget callers cannot cause an unhandled
+  // rejection; the caller still receives the Promise and may await the result.
+  let lifecycleChain = Promise.resolve();
   function reconcileAll(options = {}) {
-    const legacy = [...records.values()]
-      .filter(record => isVoiceGatewayRecord(record))
-      .map(record => record.dirId);
-    if (hasGlobalGateway()) {
-      for (const directoryId of legacy) stop(directoryId).catch(() => {});
-      return reconcile(GLOBAL_KEY, options);
-    }
-    for (const directoryId of legacy) reconcile(directoryId, options);
-    return undefined;
+    const run = async () => {
+      try {
+        const legacy = [...records.values()]
+          .filter(record => isVoiceGatewayRecord(record))
+          .map(record => record.dirId);
+        if (hasGlobalGateway()) {
+          await Promise.allSettled(legacy.map(directoryId => stop(directoryId)));
+          return reconcile(GLOBAL_KEY, options);
+        }
+        for (const directoryId of legacy) reconcile(directoryId, options);
+        return undefined;
+      } catch (error) {
+        try { log.error?.('[multicc/qwen-audio] reconcileAll failed', { error: error?.message }); } catch (_) {}
+        return undefined;
+      }
+    };
+    lifecycleChain = lifecycleChain.then(run);
+    return lifecycleChain;
   }
 
   async function restart(directoryId) {
