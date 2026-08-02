@@ -242,10 +242,31 @@ function createGatewayHost(rawDeps) {
   // MCP admission is authoritative. The voice bridge still needs one narrow,
   // structured terminal frame; emit it when the router tool has durably admitted
   // work, never by inspecting assistant prose.
+  //
+  // The receipt is addressed to the turn that made the call. That turn travels
+  // with the admission itself (`callerTurnId`/`callerRequestId`, captured by the
+  // router tool runtime at call time) because `_activeTurn` is mutable: an
+  // observer that re-reads it after a fast turn switch would answer the wrong
+  // call. Callers that predate the metadata still work — they fall back to the
+  // live turn — but a voice admission that names a turn is bound to that turn,
+  // and one that names an unusable turn is dropped rather than misaddressed.
   function recordRouterAdmission(admission = {}) {
     if (admission.callerSessionId !== VOICE_ROUTER_ID) return;
-    const turn = chatSessions.get(VOICE_ROUTER_ID)?._activeTurn;
-    if (!turn?.turnId) return;
+    const hasExplicitTurn = admission.callerTurnId !== undefined
+      || admission.callerRequestId !== undefined;
+    const turn = hasExplicitTurn
+      ? { turnId: String(admission.callerTurnId || ''), requestId: String(admission.callerRequestId || '') }
+      : chatSessions.get(VOICE_ROUTER_ID)?._activeTurn;
+    if (!turn?.turnId || !turn?.requestId) {
+      if (hasExplicitTurn) {
+        logger.warn('voice_admission_correlation_unresolved', {
+          operationId: admission.operationId || null,
+          hasTurnId: !!turn?.turnId,
+          hasRequestId: !!turn?.requestId,
+        });
+      }
+      return;
+    }
     const target = persistedSessions.get(admission.targetSessionId);
     emitVoiceAdmission(VOICE_ROUTER_ID, turn.turnId, turn.requestId || '', {
       outcome: 'admitted',

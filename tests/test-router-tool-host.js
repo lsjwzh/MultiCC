@@ -22,6 +22,8 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   ]);
   let sequence = 0;
   const userInputSignals = [];
+  const admissionObservers = [];
+  const observerWarnings = [];
   const operations = new Map();
   const waits = new Map();
   let syncProgressSink = null;
@@ -62,7 +64,11 @@ test('internal bridge requires loopback plus its scoped process capability', asy
       return { ok: true, idempotent: false };
     },
   };
-  const host = createRouterToolHost({ express, isLocalRequest });
+  const host = createRouterToolHost({
+    express,
+    isLocalRequest,
+    logger: { warn: (event, fields) => observerWarnings.push({ event, fields }), error() {} },
+  });
   host.configure({
     records,
     orchestrationRuntime,
@@ -93,6 +99,10 @@ test('internal bridge requires loopback plus its scoped process capability', asy
       userInputSignals.push(signal);
       return { ok: true, duplicate: false };
     },
+    taskBoard: {
+      recordRouterAdmission() { throw new Error('task board unavailable'); },
+    },
+    recordRouterAdmission: async admission => { admissionObservers.push(admission); },
   });
   const app = express();
   host.mount(app);
@@ -106,6 +116,7 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   const context = host.processContext({
     sessionId: 'caller',
     turnId: 'turn-1',
+    requestId: 'request-1',
     baseUrl: `http://127.0.0.1:${port}`,
   });
   t.after(() => context.revoke());
@@ -132,6 +143,13 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   assert.equal(accepted.status, 200);
   const body = await accepted.json();
   assert.equal(body.result.operation_id, 'op-1');
+  assert.equal(admissionObservers.length, 1, 'voice observer still runs when task board throws');
+  assert.equal(admissionObservers[0].callerTurnId, 'turn-1');
+  assert.equal(admissionObservers[0].callerRequestId, 'request-1');
+  assert.deepEqual(observerWarnings.map(entry => entry.event), [
+    'router_admission_observer_failed',
+  ]);
+  assert.equal(observerWarnings[0].fields.observer, 'task_board');
 
   const callback = await fetch(
     `http://127.0.0.1:${port}/api/internal/router-tools/wait_for_external_result`,
