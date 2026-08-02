@@ -82,7 +82,8 @@ function createChatHostRuntime(rawPorts) {
     if (effect.type === 'gateway-turn-complete') {
       // sessionId/turnId identify which gateway instance produced the marker and
       // key its idempotency; a second gateway must not inherit the first's state.
-      return ports.emitGatewayComplete(effect.finalText, effect.sessionId, effect.turnId);
+      // requestId is the caller's correlation key for the terminal outcome frame.
+      return ports.emitGatewayComplete(effect.finalText, effect.sessionId, effect.turnId, effect.requestId);
     }
     if (effect.type === 'inspect-dispatch-markers') {
       return ports.inspectDispatchMarkers(effect.sessionId, effect.finalText);

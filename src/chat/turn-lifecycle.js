@@ -28,6 +28,10 @@ function createTurnLifecycle(request, input = {}) {
   if (!turnId) throw new TypeError('turnId is required');
   return {
     turnId,
+    // The caller's own id for this request (a WS clientMsgId for a live voice
+    // turn). Post-turn effects carry it so an out-of-band terminal frame can be
+    // correlated back to the exact request that produced it.
+    requestId: clean(request.requestId),
     sessionId: request.sessionId,
     userText: clean(request.text),
     lineage: freezeLineage(request.origin),

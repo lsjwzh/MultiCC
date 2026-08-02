@@ -166,6 +166,15 @@ function createGatewayHost(rawDeps) {
   const VOICE_ROUTER_ID = '__voice_router__';
   const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;   // pending confirmation expires after 10 min
   const pendingDispatches = new Map();           // gatewaySessionId → { id, targetId, message, createdAt }
+  // Structured terminal outcome of one voice-router turn. `cancelled`/`unknown`
+  // are part of the contract but are decided by the caller (a hung or aborted
+  // call), never claimed by the Host — the Host only reports what it did.
+  const VOICE_ADMISSION_VERSION = 1;
+  const VOICE_ADMISSION_OUTCOMES = new Set([
+    'no_dispatch', 'admitted', 'rejected', 'failed', 'cancelled', 'unknown',
+  ]);
+  const VOICE_ADMISSION_MEMORY = 256;
+  const voiceAdmissionsEmitted = new Set();      // `${sessionId}\0${turnId}\0${requestId}`
   const dispatchRuns = new Map();                // hot cache; durable source of truth is orchestrationRuntime
   const TERMINAL_DISPATCH_STATUS = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
 
@@ -227,16 +236,83 @@ function createGatewayHost(rawDeps) {
     }
   }
 
+  // Exactly one structured terminal frame per voice-router turn.
+  //
+  // A live call cannot learn the outcome from the assistant stream: the marker
+  // arrives fragmented character by character, and the turn's `result` frame
+  // lands before the durable admission has an answer. So the Host states the
+  // outcome itself, out of band, once.
+  //
+  // The payload is deliberately narrow. It carries the outcome, admission's
+  // proof and the speakable text — never the dispatched instruction, the
+  // gateway prompt, a token, a cwd, or a target session id. A target appears at
+  // most as its human label, so a hot microphone can never become a channel for
+  // reading the Fleet's internals back out.
+  function emitVoiceAdmission(sessionId, turnId, requestId, fields = {}) {
+    const key = `${sessionId} ${turnId} ${requestId}`;
+    if (voiceAdmissionsEmitted.has(key)) return;
+    if (voiceAdmissionsEmitted.size >= VOICE_ADMISSION_MEMORY) {
+      voiceAdmissionsEmitted.delete(voiceAdmissionsEmitted.values().next().value);
+    }
+    voiceAdmissionsEmitted.add(key);
+    const outcome = VOICE_ADMISSION_OUTCOMES.has(fields.outcome) ? fields.outcome : 'unknown';
+    // An operation id is what "admitted" means. Nothing else may carry one, and
+    // an admission without one is not an admission.
+    const admitted = outcome === 'admitted';
+    chatBroadcast(sessionId, {
+      type: 'voice_admission',
+      version: VOICE_ADMISSION_VERSION,
+      requestId: String(requestId || ''),
+      turnId: String(turnId || ''),
+      gatewaySessionId: sessionId,
+      outcome,
+      operationId: admitted ? String(fields.operationId || '') || null : null,
+      // A deduped replay landed on the same durable operation. That is still an
+      // admission — the work is submitted exactly once, not lost.
+      duplicate: fields.duplicate === true,
+      queueStatus: admitted ? String(fields.queueStatus || '') || null : null,
+      speechText: typeof fields.speechText === 'string' ? fields.speechText : '',
+      targetLabel: String(fields.targetLabel || ''),
+      error: fields.error || null,
+    });
+  }
+
   // Called when a gateway turn completes: detect a dispatch marker, stage it as a
   // pending request, and ask the user to confirm. Does NOT deliver yet.
-  function handleGatewayTurnComplete(finalText, sessionId = GATEWAY_ID, turnId = '') {
-    const parsed = parseDispatchMarker(finalText);
-    if (!parsed) return;
+  function handleGatewayTurnComplete(finalText, sessionId = GATEWAY_ID, turnId = '', requestId = '') {
     const voice = sessionId === VOICE_ROUTER_ID;
+    const parsed = parseDispatchMarker(finalText);
+    if (!parsed) {
+      // Deciding not to dispatch is an outcome. Without saying so, a caller
+      // cannot tell "there was nothing to submit" from "the answer never came".
+      if (voice) {
+        emitVoiceAdmission(sessionId, turnId, requestId, {
+          outcome: 'no_dispatch',
+          speechText: String(finalText || '').trim(),
+        });
+      }
+      return;
+    }
     stripMarkerFromGatewayHistory(sessionId);
     // Voice may address a Fleet's Commander directly; WeChat may not.
     const v = validateDispatchTarget(parsed.target, null, voice);
-    if (!v.ok) { pushToGateway(`⚠️ 无法分发：${v.error}`, { sessionId }); return; }
+    if (!v.ok) {
+      // The frame states the class of failure rather than v.error, which names
+      // the rejected target id verbatim.
+      if (voice) {
+        emitVoiceAdmission(sessionId, turnId, requestId, {
+          outcome: 'rejected',
+          speechText: parsed.cleanText,
+          error: {
+            code: 'dispatch_target_rejected',
+            publicMessage: '这次语音请求没有可以执行它的目标会话。',
+            retryable: false,
+          },
+        });
+      }
+      pushToGateway(`⚠️ 无法分发：${v.error}`, { sessionId });
+      return;
+    }
     const label = (v.rec.label && v.rec.label !== parsed.target) ? `${parsed.target}（${v.rec.label}）` : parsed.target;
     if (voice) {
       // A live voice call has nowhere to park a 确认 state, and borrowing
@@ -244,6 +320,7 @@ function createGatewayHost(rawDeps) {
       // An explicit spoken execution request is admitted directly instead —
       // and only reported as submitted once admission actually succeeds.
       // The turn id keys idempotency, so a replayed turn cannot double-deliver.
+      const targetLabel = String(v.rec.label || '');
       return dispatchToSession(parsed.target, parsed.message, {
         ownerSessionId: sessionId,
         idempotencyKey: `voice:${sessionId}:${turnId || crypto.randomUUID()}`,
@@ -251,11 +328,38 @@ function createGatewayHost(rawDeps) {
         queueIfBusy: true,
         requireIdle: false,
       })
-        .then(r => pushToGateway(
-          r.ok ? `✅ 已提交给 ${label}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`,
-          { sessionId },
-        ))
-        .catch(e => pushToGateway(`⚠️ 投递异常：${e.message}`, { sessionId }));
+        .then(r => {
+          const admitted = r.ok === true && !!r.operationId;
+          // The structured frame goes out before the prose push: the prose push
+          // also broadcasts a `result`, and a caller that is still waiting for
+          // its outcome must have it in hand by then.
+          emitVoiceAdmission(sessionId, turnId, requestId, {
+            outcome: admitted ? 'admitted' : 'failed',
+            operationId: admitted ? r.operationId : null,
+            duplicate: r.duplicate === true,
+            queueStatus: admitted ? r.status : null,
+            speechText: parsed.cleanText,
+            targetLabel,
+            error: admitted ? null : {
+              code: r.ok === true ? 'operation_id_missing' : String(r.code || 'dispatch_not_admitted'),
+              publicMessage: '这条语音任务没有提交成功。',
+              retryable: true,
+            },
+          });
+          pushToGateway(
+            r.ok ? `✅ 已提交给 ${label}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`,
+            { sessionId },
+          );
+        })
+        .catch(e => {
+          emitVoiceAdmission(sessionId, turnId, requestId, {
+            outcome: 'failed',
+            speechText: parsed.cleanText,
+            targetLabel,
+            error: { code: 'dispatch_error', publicMessage: '这条语音任务投递时出错了。', retryable: true },
+          });
+          pushToGateway(`⚠️ 投递异常：${e.message}`, { sessionId });
+        });
     }
     pendingDispatches.set(sessionId, {
       id: crypto.randomUUID(), targetId: parsed.target, message: parsed.message, createdAt: Date.now(),

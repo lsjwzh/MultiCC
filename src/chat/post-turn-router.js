@@ -57,7 +57,13 @@ function routePostTurn(input = {}) {
   if (input.sessionType === 'gateway') {
     const effectId = `gateway-turn:${turnId}`;
     if (turnId && !receipts.has(effectId)) {
-      effects.push(deliveryEffect('gateway-turn-complete', effectId, { sessionId, turnId, finalText }));
+      // requestId travels with the effect so the gateway host can address its
+      // terminal outcome frame back at the exact request (the voice bridge's
+      // clientMsgId). The effectId stays keyed on turnId alone: correlation is
+      // additive, exactly-once is not.
+      effects.push(deliveryEffect('gateway-turn-complete', effectId, {
+        sessionId, turnId, finalText, requestId: clean(input.requestId),
+      }));
     }
     return Object.freeze({ route: 'gateway', effects: Object.freeze(effects) });
   }
