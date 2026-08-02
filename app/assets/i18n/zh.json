@@ -2,6 +2,7 @@
   "multicc": "MultiCC",
   "dirs_sessions": "{dirs} dirs · {sessions} sessions",
   "newDirectory": "新建目录",
+  "globalVoiceCall": "全局实时语音",
   "refresh": "刷新",
   "settings": "设置",
   "retry": "重试",

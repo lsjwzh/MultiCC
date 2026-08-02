@@ -13,6 +13,7 @@ import '../services/manage_service.dart';
 import '../services/dashboard_workspace_coordinator.dart';
 import '../services/dashboard_workspace_store.dart';
 import '../services/workspace_service.dart';
+import '../services/voice_launch_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
@@ -412,6 +413,19 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     _loadProviders();
   }
 
+  // Machine-wide voice entry. No sourceSessionId is sent, which is exactly what
+  // tells the Host to route through the global voice router instead of a chat.
+  Future<void> _openGlobalVoice() async {
+    final result = await VoiceLaunchService(settings: widget.settings).launch();
+    if (!mounted || result.ok) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message ?? VoiceLaunchService.describe(result.errorCode)),
+        backgroundColor: const Color(0xFFff6b63),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final mgr = context.watch<SessionManager>();
@@ -457,6 +471,13 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
           ],
         ),
         actions: [
+          // Global realtime voice: no session id, so the Host routes through the
+          // voice router rather than binding the call to any one session.
+          IconButton(
+            icon: const Icon(Icons.phone_in_talk_rounded, size: 20),
+            tooltip: t('globalVoiceCall'),
+            onPressed: _openGlobalVoice,
+          ),
           IconButton(
             icon: const Icon(Icons.add_rounded, size: 22),
             tooltip: t('newDirectory'),

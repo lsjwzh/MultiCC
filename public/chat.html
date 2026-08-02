@@ -2192,7 +2192,7 @@
     <span class="hdr-spacer"></span>
     <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
     <button id="notify-btn" class="hdr-btn" data-i18n-title="taskNotificationToggle" title="任务通知开关">&#128276;</button>
-    <button id="s2s-btn" class="hdr-btn" data-i18n-title="voiceConversationToggle" title="S2S 语音对话模式开关">&#127897;</button>
+    <button id="s2s-btn" class="hdr-btn" data-i18n-title="voiceConversationToggle" title="实时语音通话（在本会话上下文里说话）">&#128222;</button>
     <button id="dbg-btn" class="hdr-btn" data-i18n-title="debugPanel" title="Debug 面板">&#128027;</button>
     <button class="hdr-btn" id="cli-btn" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
     <button class="hdr-btn" id="model-btn" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
@@ -2431,22 +2431,8 @@
   <!-- Notify toast -->
   <div id="notify-toast"><span class="toast-close">&#10005;</span></div>
 
-  <!-- S2S voice conversation panel -->
-  <div id="s2s-panel">
-    <div id="s2s-panel-header">
-      <span>&#127897; S2S 语音对话</span>
-      <span id="s2s-state-badge">IDLE</span>
-    </div>
-    <div id="s2s-panel-body">
-      <div id="s2s-volume-bar"><div id="s2s-volume-fill"></div></div>
-      <div id="s2s-vad-debug" style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#8b949e;white-space:pre;margin:2px 0 4px;"></div>
-      <div id="s2s-transcript">点击右上角耳机按钮开启语音对话…</div>
-      <div id="s2s-breakdown"></div>
-    </div>
-    <div id="s2s-panel-footer">
-      <button id="s2s-stop-btn" class="danger">结束对话</button>
-    </div>
-  </div>
+  <!-- The realtime voice call now runs in the global Qwen gateway window, so the
+       old in-page S2S panel is gone. Plain microphone dictation is unaffected. -->
 
   <!-- Narrow-screen expansion of #dispatch-mode-pill. The buttons here drive the
        same radios as the segmented control, so both faces stay in sync. -->
@@ -2603,7 +2589,7 @@
   <script src="voice-output.js"></script>
   <script src="vad-monitor.js"></script>
   <script src="voice-stream.js"></script>
-  <script src="s2s-session.js"></script>
+  <script src="voice-launch-client.js"></script>
   <script src="pwa.js"></script>
   <script src="auth-client.js"></script>
   <script src="api-client.js"></script>
