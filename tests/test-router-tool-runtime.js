@@ -367,6 +367,23 @@ test('route_task durably admits one-way work and is turn-idempotent', async t =>
   assert.equal(operation.spec.taskId, first.task_id);
 });
 
+test('route_task attributes the sender so the recipient can trace who dispatched', async t => {
+  const { admissions, runtime } = fixture(t);
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-sender' });
+  await runtime.execute(capability, 'route_task', {
+    target_session_id: 'worker-a',
+    message: 'inspect the module',
+  });
+  // The delivered message carries an attribution line naming the caller, with
+  // the caller's own content preserved verbatim after it.
+  assert.match(
+    admissions[0].message,
+    /^【任务派发方：caller · caller】\n\ninspect the module$/,
+  );
+  // The caller is still passed as structured metadata for the task board.
+  assert.equal(admissions[0].opts.ownerSessionId, 'caller');
+});
+
 test('route_task preserves an inherited logical task across follow-up turns', async t => {
   let active = {
     turnId: 'turn-task-start',
