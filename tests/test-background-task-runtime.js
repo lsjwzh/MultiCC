@@ -145,6 +145,7 @@ async function test(name, fn) {
     const h = makeHarness();
     const foreground = h.runtime.handleEvent('s1', {
       cwd: '/repo',
+      _activeTurn: { turnId: 'turn-fg' },
       currentToolCalls: [{ id: 'tool-fg', name: 'Bash', input: { command: 'echo hi' } }],
     }, {
       subtype: 'task_started', task_id: 'task-fg', tool_use_id: 'tool-fg',
@@ -157,6 +158,8 @@ async function test(name, fn) {
     assert.strictEqual(foreground.kind, 'sync-bash');
     assert.strictEqual(sidechain.kind, 'agent-task');
     assert.deepStrictEqual(h.observations.map(item => item.detail.kind), ['sync-bash', 'agent-task']);
+    assert.strictEqual(h.observations[0].detail.originTurnId, 'turn-fg');
+    assert.strictEqual(h.observations[1].detail.originTurnId, null);
     assert.strictEqual(h.broadcasts[0].event.background, false);
     assert.strictEqual(h.broadcasts[0].event.command, 'echo hi');
     assert.strictEqual(h.broadcasts[1].event.background, true);
@@ -451,20 +454,76 @@ async function test(name, fn) {
     assert.strictEqual(h.injections.length, 0);
   });
 
-  await test('run_in_background completion still injects despite the launch-ack result in the turn', () => {
+  await test('run_in_background completion is suppressed when its origin turn already consumed the tool result', () => {
     const h = makeHarness();
     h.runtime.recordMainToolUseId('s1', 'bg-tool');
-    const result = h.runtime.handleEvent('s1', {
+    const state = {
       cwd: '/repo',
+      isStreaming: true,
+      _activeTurn: { turnId: 'turn-bg' },
       currentToolCalls: [{
         id: 'bg-tool', name: 'Bash',
         input: { command: 'npm test', run_in_background: true },
-        result: 'started background task bg-task',
+        result: 'Command running in background with ID: bg-task.',
       }],
-    }, { subtype: 'task_notification', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed' });
+    };
+    h.runtime.handleEvent('s1', state, {
+      subtype: 'task_started', task_id: 'bg-task', tool_use_id: 'bg-tool', session_id: 'native',
+    });
+    const result = h.runtime.handleEvent('s1', state, {
+      subtype: 'task_notification', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'turn-result');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 0, 'same-turn completion must not create a redundant wake-up');
+    assert.strictEqual(h.observations[0].detail.originTurnId, 'turn-bg');
+    assert.strictEqual(h.observations[1].detail.originTurnId, 'turn-bg');
+  });
+
+  await test('run_in_background completion after its origin turn still injects a wake-up', () => {
+    const h = makeHarness();
+    h.runtime.recordMainToolUseId('s1', 'bg-tool');
+    const originState = {
+      cwd: '/repo', isStreaming: true, _activeTurn: { turnId: 'turn-bg' },
+      currentToolCalls: [{
+        id: 'bg-tool', name: 'Bash', input: { run_in_background: true },
+        result: 'Command running in background with ID: bg-task.',
+      }],
+    };
+    h.runtime.handleEvent('s1', originState, {
+      subtype: 'task_started', task_id: 'bg-task', tool_use_id: 'bg-tool', session_id: 'native',
+    });
+    const result = h.runtime.handleEvent('s1', {
+      ...originState, isStreaming: false,
+    }, {
+      subtype: 'task_notification', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed',
+    });
     assert.strictEqual(result.decision, 'inject');
     h.clock.advance(100);
-    assert.strictEqual(h.injections.length, 1, 'genuine background results keep flowing');
+    assert.strictEqual(h.injections.length, 1, 'post-turn completion must still wake the session');
+  });
+
+  await test('run_in_background completion in a newer active turn does not borrow the old tool result', () => {
+    const h = makeHarness();
+    h.runtime.recordMainToolUseId('s1', 'bg-tool');
+    const originState = {
+      cwd: '/repo', isStreaming: true, _activeTurn: { turnId: 'turn-old' },
+      currentToolCalls: [{
+        id: 'bg-tool', name: 'Bash', input: { run_in_background: true },
+        result: 'Command running in background with ID: bg-task.',
+      }],
+    };
+    h.runtime.handleEvent('s1', originState, {
+      subtype: 'task_started', task_id: 'bg-task', tool_use_id: 'bg-tool', session_id: 'native',
+    });
+    const result = h.runtime.handleEvent('s1', {
+      ...originState, _activeTurn: { turnId: 'turn-new' },
+    }, {
+      subtype: 'task_notification', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed',
+    });
+    assert.strictEqual(result.decision, 'inject');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
   });
 
   await test('TaskOutput awaiting mark still expires on the short dedup TTL', () => {
