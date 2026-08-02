@@ -903,20 +903,19 @@
         <section class="view" data-view="voice">
           <div class="sec-head"><h2 data-i18n="voiceSettings">语音设置</h2><div class="line"></div></div>
           <div class="settings-card">
-            <div class="sc-header">Qwen Audio Agent — Fleet 实时语音 Gateway</div>
+            <div class="sc-header">Qwen Audio Agent — 全局实时语音 Gateway</div>
             <div class="sc-body">
-              <div class="sec-desc" style="margin:0">Qwen 负责全双工语音、打断和播报；任务经 ACP 进入该 Fleet 的唯一 Commander。运行时由 MultiCC 固定版本安装并按 Fleet 隔离托管。</div>
+              <div class="sec-desc" style="margin:0">全机只有一个实时语音进程。Dashboard 的全局入口和各个 Chat 的电话按钮都连它：从 Chat 打开就默认说给那个会话，从 Dashboard 打开则由语音 Router 决定投给哪个项目的 Commander。Key / 模型 / 音色本来就是全局配置。</div>
               <div class="setting-row"><label>DashScope Key</label><input id="qwen-audio-key" type="password" autocomplete="off" placeholder="sk-..." /></div>
               <div class="setting-row"><label>Realtime Endpoint</label><input id="qwen-audio-url" type="text" placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/realtime" /></div>
               <div class="setting-row"><label>Voice Model</label><input id="qwen-audio-model" type="text" placeholder="qwen-audio-3.0-realtime-plus" /></div>
               <div class="setting-row"><label>Voice</label><input id="qwen-audio-voice" type="text" placeholder="longanqian" /></div>
-              <div class="setting-row"><label>目标 Fleet</label><select id="qwen-audio-fleet" style="min-width:260px"></select></div>
-              <div id="qwen-audio-fleets" style="display:flex;flex-direction:column;gap:8px;"></div>
+              <div id="qwen-audio-global" style="display:flex;flex-direction:column;gap:8px;"></div>
             </div>
             <div class="sc-footer" style="flex-wrap:wrap;gap:8px;">
               <button class="btn" onclick="saveQwenAudioSettings()">保存语音配置</button>
               <button class="btn" id="qwen-audio-install" onclick="installQwenAudioRuntime()">安装运行时</button>
-              <button class="btn btn-green" id="qwen-audio-enable" onclick="enableQwenAudioFleet()">安装并启用所选 Fleet</button>
+              <button class="btn btn-green" id="qwen-audio-enable" onclick="enableQwenAudioGlobal()">安装并启用全局语音</button>
               <span class="status-text" id="qwen-audio-status"></span>
             </div>
           </div>
@@ -1997,6 +1996,7 @@
   <script src="task-board-ui.js"></script>
   <script src="manage-taskboard.js"></script>
   <script src="manage-dashboard.js"></script>
+  <script src="voice-launch-client.js"></script>
   <script src="manage-qwen-audio.js"></script>
   <script src="manage.js"></script>
   <script>

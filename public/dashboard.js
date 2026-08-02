@@ -276,9 +276,34 @@
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   }
 
+  // ── Global realtime voice ───────────────────────────────────
+  // No sourceSessionId: this is the machine-wide entry point, so the Host routes
+  // through the voice router rather than binding to any one session.
+  function initGlobalVoice() {
+    var btn = el('voice-global-btn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var client = window.MultiCCVoiceLaunch;
+      if (!client || typeof client.launch !== 'function') {
+        showError('语音模块未加载，请刷新页面后重试');
+        return;
+      }
+      btn.disabled = true;
+      client.launch({}).then(function (result) {
+        if (!result.ok) showError('语音：' + (result.message || result.code));
+        else hideError();
+      }).catch(function (err) {
+        showError('语音启动异常: ' + (err && err.message ? err.message : err));
+      }).then(function () {
+        btn.disabled = false;
+      });
+    });
+  }
+
   // ── Init ────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', function () {
     initFilters();
+    initGlobalVoice();
     showLoading();
     loadAll().then(function () {
       startAutoRefresh();

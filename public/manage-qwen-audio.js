@@ -2,7 +2,6 @@
   'use strict';
 
   let pollTimer = null;
-  let getDirectories = () => [];
   let notify = () => {};
 
   function authPath(path, prefix = '?') {
@@ -46,64 +45,51 @@
     return element;
   }
 
-  function renderFleets(gateways, runtimes) {
-    const directories = getDirectories() || [];
-    const select = document.getElementById('qwen-audio-fleet');
-    if (select) {
-      const previous = select.value;
-      select.replaceChildren();
-      for (const directory of directories) {
-        const option = document.createElement('option');
-        option.value = directory.id;
-        option.textContent = directory.name || directory.path || directory.id;
-        select.appendChild(option);
-      }
-      if (directories.some(directory => directory.id === previous)) select.value = previous;
-    }
-
-    const container = document.getElementById('qwen-audio-fleets');
+  // One machine, one gateway: this panel shows a single row, not a Fleet list.
+  // Legacy per-Fleet records may still exist on disk; they are surfaced as a
+  // migration note rather than as separate, separately-startable gateways.
+  function renderGlobal(gateway, runtime, legacy) {
+    const container = document.getElementById('qwen-audio-global');
     if (!container) return;
     container.replaceChildren();
-    if (!gateways.length) {
-      const empty = document.createElement('div');
-      empty.className = 'sec-desc';
-      empty.textContent = '尚未给任何 Fleet 启用 Qwen Audio Gateway。';
-      container.appendChild(empty);
-      return;
-    }
 
-    for (const gateway of gateways) {
-      const directory = directories.find(item => item.id === gateway.directoryId);
-      const runtime = runtimes.get(gateway.directoryId) || {};
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap;';
-      const title = document.createElement('span');
-      title.style.cssText = 'font-size:13px;color:var(--text);font-weight:600;flex:1;min-width:180px;';
-      title.textContent = directory?.name || gateway.directoryId;
-      const badge = document.createElement('span');
-      badge.className = 'status-text';
-      badge.textContent = runtimeLabel(runtime);
-      badge.style.color = runtime.state === 'running' ? '#3fb950'
-        : ['failed', 'error'].includes(runtime.state) ? '#f85149' : '#d29922';
-      row.append(title, badge);
-      row.appendChild(button(gateway.enabled ? '停用' : '启用', () => (
-        setFleetEnabled(gateway.directoryId, !gateway.enabled)
-      )));
-      if (gateway.enabled) row.appendChild(button('重启进程', () => restartFleet(gateway.directoryId)));
-      if (runtime.state === 'running' && runtime.url) {
-        row.appendChild(button('打开语音界面', () => global.open(runtime.url, '_blank', 'noopener')));
-      }
-      container.appendChild(row);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap;';
+    const title = document.createElement('span');
+    title.style.cssText = 'font-size:13px;color:var(--text);font-weight:600;flex:1;min-width:180px;';
+    title.textContent = '全局实时语音 Gateway';
+    const badge = document.createElement('span');
+    badge.className = 'status-text';
+    badge.textContent = gateway.enabled ? runtimeLabel(runtime) : '未启用';
+    badge.style.color = runtime.state === 'running' ? '#3fb950'
+      : ['failed', 'error'].includes(runtime.state) ? '#f85149' : '#d29922';
+    row.append(title, badge);
+    row.appendChild(button(gateway.enabled ? '停用' : '启用', () => setGlobalEnabled(!gateway.enabled)));
+    if (gateway.enabled) {
+      row.appendChild(button('重启进程', restartGlobal));
+      // Opening always goes through launch, never through a raw runtime URL, so
+      // the window carries a host-issued ticket instead of a bare address.
+      row.appendChild(button('打开语音界面', openGlobalVoice));
+    }
+    container.appendChild(row);
+
+    if (Array.isArray(legacy) && legacy.length) {
+      const note = document.createElement('div');
+      note.className = 'sec-desc';
+      note.style.margin = '0';
+      note.textContent = `已迁移：${legacy.length} 条旧的按 Fleet 配置只作兼容保留，不会再各自拉起进程。`;
+      container.appendChild(note);
     }
   }
 
   async function loadPanel() {
     const status = document.getElementById('qwen-audio-status');
     try {
-      const [settings, runtimeBody, gatewaysBody] = await Promise.all([
+      const [settings, runtimeBody, gatewayBody, childBody] = await Promise.all([
         fetchJson(authPath('/api/settings/voice')),
         fetchJson(authPath('/api/v1/voice-runtime')),
-        fetchJson(authPath('/api/v1/voice-gateways')),
+        fetchJson(authPath('/api/v1/voice-gateway')),
+        fetchJson(authPath('/api/v1/voice-gateway/runtime')).catch(() => ({ runtime: {} })),
       ]);
       const qwen = settings.qwenAudio || {};
       const runtime = runtimeBody.runtime || {};
@@ -133,21 +119,13 @@
         status.className = `status-text ${runtime.state === 'error' ? 'err' : runtime.installed && qwen.hasApiKey ? 'ok' : ''}`;
       }
 
-      const gateways = gatewaysBody.gateways || [];
-      const runtimeEntries = await Promise.all(gateways.map(async gateway => {
-        try {
-          const body = await fetchJson(authPath(`/api/v1/directories/${encodeURIComponent(gateway.directoryId)}/voice-gateway/runtime`));
-          return [gateway.directoryId, body.runtime || {}];
-        } catch (_) {
-          return [gateway.directoryId, {}];
-        }
-      }));
-      renderFleets(gateways, new Map(runtimeEntries));
+      const gateway = gatewayBody.gateway || {};
+      const child = childBody.runtime || {};
+      renderGlobal(gateway, child, gatewayBody.legacy);
 
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = null;
-      if (runtime.state === 'installing'
-          || runtimeEntries.some(([, item]) => ['installing', 'starting', 'backoff'].includes(item.state))) {
+      if (runtime.state === 'installing' || ['installing', 'starting', 'backoff'].includes(child.state)) {
         pollTimer = setTimeout(loadPanel, 2000);
       }
     } catch (error) {
@@ -206,31 +184,28 @@
     }
   }
 
-  async function setFleetEnabled(directoryId, enabled, autoInstall = false) {
+  function reportError(prefix, error) {
     const status = document.getElementById('qwen-audio-status');
+    if (!status) return;
+    status.textContent = `${prefix}：${error.message}`;
+    status.className = 'status-text err';
+  }
+
+  async function setGlobalEnabled(enabled, autoInstall = false) {
     try {
-      await fetchJson(authPath(`/api/v1/directories/${encodeURIComponent(directoryId)}/voice-gateway`), {
+      await fetchJson(authPath('/api/v1/voice-gateway'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled, provider: 'qwen-audio-agent', autoInstall }),
       });
-      notify(enabled ? 'Qwen Audio Fleet Gateway 已启用' : 'Qwen Audio Fleet Gateway 已停用');
+      notify(enabled ? '全局实时语音已启用' : '全局实时语音已停用');
       await loadPanel();
     } catch (error) {
-      if (status) {
-        status.textContent = `Fleet 操作失败：${error.message}`;
-        status.className = 'status-text err';
-      }
+      reportError('语音网关操作失败', error);
     }
   }
 
-  async function enableFleet() {
-    const select = document.getElementById('qwen-audio-fleet');
-    const directoryId = select?.value;
-    if (!directoryId) {
-      notify('请先创建并选择 Fleet', true);
-      return;
-    }
+  async function enableGlobal() {
     const keyInput = document.getElementById('qwen-audio-key');
     if (!keyInput?.value && keyInput?.placeholder !== '已配置（留空不修改）') {
       const status = document.getElementById('qwen-audio-status');
@@ -242,33 +217,40 @@
       return;
     }
     if (!await persistSettings({ quiet: true })) return;
-    await setFleetEnabled(directoryId, true, true);
+    await setGlobalEnabled(true, true);
   }
 
-  async function restartFleet(directoryId) {
-    const status = document.getElementById('qwen-audio-status');
+  async function restartGlobal() {
     try {
-      await fetchJson(authPath(`/api/v1/directories/${encodeURIComponent(directoryId)}/voice-gateway/restart`), { method: 'POST' });
-      notify('Qwen Audio 进程已重启');
+      await fetchJson(authPath('/api/v1/voice-gateway/restart'), { method: 'POST' });
+      notify('实时语音进程已重启');
       await loadPanel();
     } catch (error) {
-      if (status) {
-        status.textContent = `重启失败：${error.message}`;
-        status.className = 'status-text err';
-      }
+      reportError('重启失败', error);
     }
   }
 
+  // Same launch path as the Dashboard button: scope is global here, so the Host
+  // routes through the voice router instead of binding to a session.
+  async function openGlobalVoice() {
+    const client = global.MultiCCVoiceLaunch;
+    if (!client || typeof client.launch !== 'function') {
+      notify('语音模块未加载，请刷新页面后重试', true);
+      return;
+    }
+    const result = await client.launch({ withToken: path => authPath(path) });
+    if (!result.ok) reportError('打开语音界面失败', new Error(result.message || result.code));
+  }
+
   function initialize(options = {}) {
-    if (typeof options.getDirectories === 'function') getDirectories = options.getDirectories;
     if (typeof options.notify === 'function') notify = options.notify;
     return loadPanel();
   }
 
   global.saveQwenAudioSettings = saveSettings;
   global.installQwenAudioRuntime = installRuntime;
-  global.enableQwenAudioFleet = enableFleet;
-  global.setQwenAudioFleetEnabled = setFleetEnabled;
-  global.restartQwenAudioFleet = restartFleet;
+  global.enableQwenAudioGlobal = enableGlobal;
+  global.setQwenAudioGlobalEnabled = setGlobalEnabled;
+  global.restartQwenAudioGlobal = restartGlobal;
   global.MultiCCManageQwenAudio = Object.freeze({ initialize, loadPanel });
 })(window);

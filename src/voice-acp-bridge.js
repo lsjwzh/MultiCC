@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const WebSocket = require('ws');
 
 const QWEN_INSTRUCTION_BLOCK = /<qwen_audio_agent_backend_instructions>[\s\S]*?<\/qwen_audio_agent_backend_instructions>\s*/gi;
+const QWEN_REQUEST_ENVELOPE = /<qwen_audio_agent_request>([\s\S]*?)<\/qwen_audio_agent_request>/i;
 
 function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -45,6 +46,25 @@ function textFromPrompt(blocks) {
     }
   }
   return values.join('\n').replace(QWEN_INSTRUCTION_BLOCK, '').trim();
+}
+
+// The Qwen web client carries `?session=<launch id>` from the page URL through
+// to every ACP prompt as `voice_session_id`. That is how one machine-wide child
+// serves many concurrent calls: the routing target is a property of the
+// utterance, not of the process.
+function launchIdFromPrompt(blocks) {
+  const raw = [];
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    if (block?.type === 'text') raw.push(String(block.text || ''));
+  }
+  const match = QWEN_REQUEST_ENVELOPE.exec(raw.join('\n'));
+  if (!match) return '';
+  try {
+    const envelope = JSON.parse(match[1]);
+    return clean(envelope?.voice_session_id).slice(0, 200);
+  } catch (_) {
+    return '';
+  }
 }
 
 function stableQueueEntryId(sessionId, clientMsgId) {
@@ -115,7 +135,10 @@ function createVoiceAcpBridge({
   log = () => {},
 } = {}) {
   const dirId = clean(directoryId);
-  if (!dirId) throw new TypeError('MultiCC ACP bridge requires directoryId');
+  // Two modes share one bridge. Directory mode (legacy, one child per Fleet)
+  // binds the routing target at startup. Launch mode (the global child) binds
+  // nothing at startup and resolves a target per utterance from its launch id.
+  const launchMode = !dirId;
   if (typeof fetchImpl !== 'function') throw new TypeError('MultiCC ACP bridge requires fetch');
   const security = validateTransportSecurity(baseUrl, accessToken);
   const root = security.url.toString().replace(/\/$/, '');
@@ -164,6 +187,20 @@ function createVoiceAcpBridge({
     return value;
   }
 
+  // Resolved fresh for every utterance. The Host re-derives the target from live
+  // records, so a replaced Commander or a deleted session takes effect on the
+  // next thing the user says — and a forged or expired id simply fails.
+  async function launchContext(launchId) {
+    const id = clean(launchId);
+    if (!id) throw publicError({ error: 'voice_launch_required' }, 400);
+    const body = await request(`/api/v1/voice-gateway/launch/${encodeURIComponent(id)}`);
+    const context = body?.context;
+    if (!context || !clean(context.targetSessionId)) {
+      throw publicError({ error: 'voice_launch_unresolved' }, 409);
+    }
+    return context;
+  }
+
   async function wsTicket() {
     if (!accessToken) return '';
     const body = await request('/api/auth/ws-ticket', {
@@ -203,22 +240,45 @@ function createVoiceAcpBridge({
   }
 
   class BridgeSession {
-    constructor({ id, cwd, gatewayRecord }) {
+    constructor({ id, cwd, gatewayRecord = null }) {
       this.id = id;
       this.cwd = cwd;
       this.gatewayRecord = gatewayRecord;
+      // Where this session's next turn will be delivered. In launch mode it is
+      // null until the first utterance names a launch id.
+      this.target = gatewayRecord
+        ? { sessionId: gatewayRecord.commanderSessionId, key: gatewayRecord.id, scope: 'fleet' }
+        : null;
       this.socket = null;
       this.openPromise = null;
       this.active = null;
       this.closed = false;
     }
 
+    // Re-pointing the target must always drop the old socket: a turn opened for
+    // one session must never continue against another.
+    retarget(next) {
+      if (this.target?.sessionId !== next.sessionId) this.closeSocket();
+      this.target = next;
+    }
+
     async refreshBinding() {
       const latest = await gateway();
-      if (this.gatewayRecord.commanderSessionId !== latest.commanderSessionId) {
-        this.closeSocket();
-      }
       this.gatewayRecord = latest;
+      this.retarget({ sessionId: latest.commanderSessionId, key: latest.id, scope: 'fleet' });
+    }
+
+    async refreshLaunchTarget(launchId) {
+      const context = await launchContext(launchId);
+      this.retarget({
+        sessionId: context.targetSessionId,
+        key: context.scope === 'chat' ? 'chat' : 'global',
+        scope: context.scope,
+        directoryId: context.directoryId || null,
+        commanderSessionId: context.commanderSessionId || null,
+        display: context.display || '',
+      });
+      return context;
     }
 
     closeSocket() {
@@ -237,7 +297,7 @@ function createVoiceAcpBridge({
       this.openPromise = (async () => {
         const ticket = await wsTicket();
         await new Promise((resolve, reject) => {
-          const socket = new WebSocketImpl(chatUrl(this.gatewayRecord.commanderSessionId, ticket));
+          const socket = new WebSocketImpl(chatUrl(this.target.sessionId, ticket));
           this.socket = socket;
           let settled = false;
           const fail = error => {
@@ -400,9 +460,10 @@ function createVoiceAcpBridge({
         error.code = 'empty_prompt';
         throw error;
       }
-      await this.refreshBinding();
+      if (launchMode) await this.refreshLaunchTarget(launchIdFromPrompt(blocks));
+      else await this.refreshBinding();
       await this.connect();
-      const clientMsgId = `voice:${this.gatewayRecord.id}:${randomUUID()}`.slice(0, 128);
+      const clientMsgId = `voice:${this.target.key}:${randomUUID()}`.slice(0, 128);
       const result = new Promise((resolve, reject) => {
         const active = {
           clientMsgId,
@@ -441,7 +502,9 @@ function createVoiceAcpBridge({
         }
         return { ok: true, active: true };
       }
-      const result = await cancelQueued(this.gatewayRecord.commanderSessionId, active.clientMsgId);
+      // Cancel against whatever this turn was actually delivered to, never a
+      // stale startup binding — otherwise a cancel could hit another session.
+      const result = await cancelQueued(this.target.sessionId, active.clientMsgId);
       if (result.ok) this.finish(active, null, { stopReason: 'cancelled' });
       return result;
     }
@@ -463,18 +526,22 @@ function createVoiceAcpBridge({
       error.code = 'session_limit_reached';
       throw error;
     }
-    const gatewayRecord = await gateway();
+    const gatewayRecord = launchMode ? null : await gateway();
     const id = randomUUID();
     sessions.set(id, new BridgeSession({ id, cwd: clean(cwd), gatewayRecord }));
     return {
       sessionId: id,
       _meta: {
-        multicc: {
-          directoryId: dirId,
-          gatewayId: gatewayRecord.id,
-          commanderSessionId: gatewayRecord.commanderSessionId,
-          taskAuthority: 'multicc-task-board',
-        },
+        multicc: launchMode
+          // In launch mode there is nothing truthful to announce yet: the
+          // routing target only exists once an utterance carries a launch id.
+          ? { routing: 'voice-launch', taskAuthority: 'multicc-task-board' }
+          : {
+              directoryId: dirId,
+              gatewayId: gatewayRecord.id,
+              commanderSessionId: gatewayRecord.commanderSessionId,
+              taskAuthority: 'multicc-task-board',
+            },
       },
     };
   }
@@ -489,7 +556,7 @@ function createVoiceAcpBridge({
       throw error;
     }
     await previous?.close();
-    const gatewayRecord = await gateway();
+    const gatewayRecord = launchMode ? null : await gateway();
     sessions.set(id, new BridgeSession({ id, cwd: clean(cwd), gatewayRecord }));
     return {};
   }

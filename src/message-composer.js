@@ -235,7 +235,8 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
     //   buildGatewayPrompt('') + X === buildGatewayPrompt(X)  (byte-verified).
     // buildDispatchContextPrompt returns text ending in '\n'.
     if (persisted.type === 'gateway') {
-      contextLayers.push({ kind: 'gateway', order: 20, text: deps.buildGatewayPrompt('') });
+      // sessionName selects the gateway's own prompt (WeChat vs realtime voice).
+      contextLayers.push({ kind: 'gateway', order: 20, text: deps.buildGatewayPrompt('', sessionName) });
     } else if (persisted.type !== 'aux') {
       const dc = deps.buildDispatchContextPrompt(sessionName);
       if (dc) contextLayers.push({ kind: 'dispatch-context', order: 20, text: dc });

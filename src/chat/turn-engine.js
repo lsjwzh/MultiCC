@@ -1312,14 +1312,17 @@ function createChatTurnEngine(deps) {
   function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
     if (item.payload?.type === 'dispatch.request' && isNetworkUnhealthy()) return false;
     if (item.payload?.type === 'dispatch.result' && item.payload.gateway) {
-      const saved = appendChatMessage(GATEWAY_ID, {
+      // The result sink is the gateway that owns the dispatch (item.sessionId is
+      // the operation's resultSessionId), not a hardcoded WeChat thread.
+      const gatewaySessionId = sessionId || GATEWAY_ID;
+      const saved = appendChatMessage(gatewaySessionId, {
         role: 'assistant',
         content: text,
         ts: Date.now(),
         clientMsgId: opts.clientMsgId,
         deliveryId: opts.deliveryId,
       });
-      if (saved) pushToGateway(text, { persist: false });
+      if (saved) pushToGateway(text, { persist: false, sessionId: gatewaySessionId });
       return saved;
     }
     return runChatTurn(sessionId, text, opts);
@@ -1768,7 +1771,7 @@ function createChatTurnEngine(deps) {
 
         if (msg.type === 'user_message' && msg.text) {
           // Gateway: a bare 确认/取消 resolves a pending dispatch without running the LLM.
-          if (persisted.type === 'gateway' && handleGatewayControl(msg.text)) return;
+          if (persisted.type === 'gateway' && handleGatewayControl(msg.text, sessionName)) return;
           // Non-browser clients may still send the input-box control as a
           // user_message. Treat it exactly like the cancel transport event so
           // it resets the active scheduler slot to classify E without reaching

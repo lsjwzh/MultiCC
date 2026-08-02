@@ -37,17 +37,27 @@ function createQwenAudioRuntimeRoutes({ installer, supervisor, log = console } =
       return res.json(payload(req, res, { ok: true, runtime }, versioned));
     }
 
+    // Once the global gateway exists there is only one child, so the legacy
+    // per-Fleet runtime endpoints must report *that* child rather than an
+    // always-stopped Fleet slot — otherwise an old client shows "未运行" while
+    // realtime voice is in fact running.
+    function projectsGlobal() {
+      return supervisor.hasGlobalGateway?.() === true;
+    }
+
     function getFleetRuntime(req, res, versioned = false) {
       res.set?.('Cache-Control', 'no-store');
-      return res.json(payload(req, res, {
-        ok: true,
-        runtime: supervisor.status(req.params.id),
-      }, versioned));
+      const runtime = projectsGlobal()
+        ? { ...supervisor.statusGlobal(), projectedFrom: 'global', requestedDirectoryId: req.params.id }
+        : supervisor.status(req.params.id);
+      return res.json(payload(req, res, { ok: true, runtime }, versioned));
     }
 
     async function restartFleet(req, res, next, versioned = false) {
       try {
-        const runtime = await supervisor.restart(req.params.id);
+        const runtime = projectsGlobal()
+          ? { ...(await supervisor.restartGlobal()), projectedFrom: 'global', requestedDirectoryId: req.params.id }
+          : await supervisor.restart(req.params.id);
         res.set?.('Cache-Control', 'no-store');
         return res.json(payload(req, res, { ok: true, runtime }, versioned));
       } catch (error) {
