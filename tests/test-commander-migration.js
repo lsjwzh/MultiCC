@@ -239,5 +239,5 @@ test('a newly migrated Commander is identified by the task board and safely queu
   assert.equal(response.body.routingMode, 'commander');
   assert.equal(response.body.workerSessionId, null, 'worker assignment is async via LLM');
   assert.equal(response.body.queued, false);
-  assert.equal(dispatches.length, 0, 'no synchronous dispatch; Commander LLM routes via <<route>>');
+  assert.equal(dispatches.length, 0, 'the task board never bypasses Commander MCP routing');
 });

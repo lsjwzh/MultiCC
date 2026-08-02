@@ -183,7 +183,7 @@ test('canonical session ingress runs both ordinary and Commander sessions throug
   assert.equal(runTurns.length, 1);
   assert.equal(runTurns[0].sessionId, 'worker');
 
-  // Commander now goes through the same runTurn path; the LLM decides routing via <<route>> markers.
+  // Commander goes through the same runTurn path and may route through MCP.
   const commander = await host.deliverSessionMessage('commander', '派给工程师改 README', {
     clientMsgId: 'commander-1',
     taskSource: 'task-board',

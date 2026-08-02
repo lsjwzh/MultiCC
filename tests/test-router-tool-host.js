@@ -24,6 +24,7 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   const userInputSignals = [];
   const operations = new Map();
   const waits = new Map();
+  let syncProgressSink = null;
   const orchestrationRuntime = {
     operations: { get: async id => operations.get(id) || null },
     waits: { get: async id => waits.get(id) || null },
@@ -65,14 +66,28 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   host.configure({
     records,
     orchestrationRuntime,
-    dispatchToSession: async (targetId, message) => {
+    dispatchToSession: async (targetId, message, opts) => {
       const operationId = `op-${++sequence}`;
       operations.set(operationId, {
         id: operationId,
         status: 'admitted',
-        spec: { targetId, chatId: targetId, message },
+        spec: { targetId, chatId: targetId, message, resultMode: opts.resultMode },
       });
+      if (opts.resultMode === 'sync') {
+        setImmediate(() => {
+          syncProgressSink?.({ kind: 'text', message: 'live delta' });
+          operations.set(operationId, {
+            ...operations.get(operationId),
+            status: 'completed',
+            result: { status: 'completed', text: 'inline final' },
+          });
+        });
+      }
       return { ok: true, operationId, status: 'admitted', chatId: targetId };
+    },
+    subscribeDispatchProgress: ({ onProgress }) => {
+      syncProgressSink = onProgress;
+      return () => { syncProgressSink = null; };
     },
     recordUserInput: async signal => {
       userInputSignals.push(signal);
@@ -166,4 +181,29 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   assert.equal(userInputSignals.length, 1);
   assert.equal(userInputSignals[0].sessionId, 'caller');
   assert.equal(userInputSignals[0].turnId, 'turn-1');
+
+  const syncResponse = await fetch(
+    `http://127.0.0.1:${port}/api/internal/router-tools/dispatch_master`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-multicc-router-capability': context.env.MULTICC_ROUTER_CAPABILITY,
+      },
+      body: JSON.stringify({
+        arguments: {
+          target_session_id: 'worker', message: 'sync work', mode: 'sync',
+          timeout_seconds: 2,
+        },
+      }),
+    },
+  );
+  assert.equal(syncResponse.status, 200);
+  assert.match(syncResponse.headers.get('content-type'), /application\/x-ndjson/);
+  const frames = (await syncResponse.text()).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(frames[0], {
+    type: 'progress', progress: { kind: 'text', message: 'live delta' },
+  });
+  assert.equal(frames[1].type, 'result');
+  assert.equal(frames[1].result.result, 'inline final');
 });

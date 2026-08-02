@@ -216,6 +216,34 @@ test('released W keeps ordinary FIFO staged but runs a correlated answer control
   assert.notEqual(futureClaim.id, active.entry.id);
 });
 
+test('async dispatch result waits during P then wakes D/W/E without manufacturing B', async t => {
+  for (const classifyState of ['D', 'W', 'E']) {
+    const h = fixture(t);
+    await h.scheduler.admit({ sessionId: 's1', text: 'active', idempotencyKey: 'active' });
+    await startClaim(h, await claimOne(h));
+    await h.scheduler.admit({
+      sessionId: 's1', text: 'ordinary queued task', source: 'operation',
+      idempotencyKey: 'ordinary',
+    });
+    const callback = await h.outbox.enqueue({
+      id: 'operation:dispatch-1:result',
+      sessionId: 's1',
+      payload: {
+        type: 'dispatch.result', operationId: 'dispatch-1',
+        deliveryText: 'worker result', result: { status: 'completed', text: 'done' },
+      },
+      source: { type: 'operation', kind: 'dispatch', operationId: 'dispatch-1' },
+    });
+    assert.equal(await claimOne(h), null, `callback cannot interrupt classify P (${classifyState})`);
+
+    await h.scheduler.complete('s1', { classifyState });
+    const claim = await claimOne(h);
+    assert.equal(claim.id, callback.id, `dispatch result must wake classify ${classifyState}`);
+    assert.equal(claim.payload.type, 'dispatch.result');
+    assert.notEqual((await h.scheduler.status('s1')).classifyState, 'B');
+  }
+});
+
 test('an early structured answer stays off the public FIFO then runs first after the asking turn releases', async t => {
   const h = fixture(t);
   const asking = await h.scheduler.admit({

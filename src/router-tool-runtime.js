@@ -173,6 +173,7 @@ function createRouterToolRuntime({
   getExternalWait,
   listExternalWaits,
   cancelExternalWait,
+  subscribeDispatchProgress = () => () => {},
 } = {}) {
   if (!records || typeof records.get !== 'function') {
     throw new TypeError('[router-tool-runtime] records map is required');
@@ -194,6 +195,9 @@ function createRouterToolRuntime({
       || typeof listExternalWaits !== 'function'
       || typeof cancelExternalWait !== 'function') {
     throw new TypeError('[router-tool-runtime] durable external wait ports are required');
+  }
+  if (typeof subscribeDispatchProgress !== 'function') {
+    throw new TypeError('[router-tool-runtime] dispatch progress subscription port is required');
   }
 
   const capabilities = new Map();
@@ -273,7 +277,7 @@ function createRouterToolRuntime({
     const caller = records.get(context.sessionId);
     const target = records.get(targetId);
     if (!target) throw new RouterToolError('target_not_found', 'target session not found', 404);
-    if (target.dirId !== caller.dirId) {
+    if (target.dirId !== caller.dirId && caller.type !== 'gateway') {
       throw new RouterToolError('cross_directory', 'target session must be in the same directory');
     }
     if (target.type === 'aux' || target.type === 'gateway' || target.type === 'commander') {
@@ -331,7 +335,14 @@ function createRouterToolRuntime({
     '---',
     '【回传要求】完成本任务后，你必须调用 dispatch_slave 工具回传结果：',
     'dispatch_slave({result:"<结论/改动/证据/风险摘要>", status:"completed"})；',
-    '若失败用 status:"failed"。不回传则 master 无法收到结果。',
+    '若失败用 status:"failed"。这是 async 回执；不要轮询、读取或等待 master 会话。',
+  ].join('\n');
+
+  const SYNC_DISPATCH_INSTRUCTION = [
+    '',
+    '---',
+    '【同步回传】宿主正在把本轮模型明确输出的 reasoning/thinking 与可公开对话进度直接回传给派发方。',
+    '正常完成任务并给出最终答复即可；无需调用任何回执工具。',
   ].join('\n');
 
   // A short attribution line prepended to every router-tool dispatch. Without it
@@ -349,8 +360,10 @@ function createRouterToolRuntime({
       context, args.target_session_id, args.allow_terminal === true,
     );
     let message = cleanText(args.message, 'message', MAX_MESSAGE_LENGTH);
-    if (resultMode === 'tool') {
+    if (resultMode === 'async') {
       message += DISPATCH_SLAVE_CALLBACK_INSTRUCTION;
+    } else if (resultMode === 'sync') {
+      message += SYNC_DISPATCH_INSTRUCTION;
     }
     const identity = admissionIdentity(
       context, tool, targetId, message, args.idempotency_key,
@@ -361,8 +374,8 @@ function createRouterToolRuntime({
     const delivered = senderAttribution(records.get(context.sessionId), context.sessionId, tool) + message;
     const result = await dispatchToSession(targetId, delivered, {
       ownerSessionId: context.sessionId,
-      replyTo: resultMode === 'tool' ? context.sessionId : null,
-      oneWay: resultMode !== 'tool',
+      replyTo: resultMode === 'sync' || resultMode === 'async' ? context.sessionId : null,
+      oneWay: resultMode !== 'sync' && resultMode !== 'async',
       resultMode,
       requireIdle: false,
       idempotencyKey: identity.idempotencyKey,
@@ -385,6 +398,7 @@ function createRouterToolRuntime({
         taskId: identity.taskId,
         operationId: result.operationId,
         status: result.status || 'admitted',
+        duplicate: result.duplicate === true,
         resultMode,
         taskStart: identity.taskStart,
         taskSource: identity.taskSource,
@@ -431,10 +445,44 @@ function createRouterToolRuntime({
     };
   }
 
-  async function dispatchMaster(context, args) {
+  function dispatchResult(operation, admitted) {
+    const result = operation?.result && typeof operation.result === 'object'
+      ? operation.result : {};
+    const status = operation?.status || 'failed';
+    const text = String(result.text || result.error || operation?.lastError || '').trim();
+    return {
+      ok: status === 'completed',
+      mode: 'sync',
+      status,
+      operation_id: operation.id,
+      target_session_id: admitted.targetSessionId,
+      execution_session_id: admitted.chatId || admitted.targetSessionId,
+      task_id: admitted.taskId,
+      duplicate: admitted.duplicate,
+      queued: false,
+      result: text,
+      ...(status === 'completed' ? {} : { error: text || status }),
+    };
+  }
+
+  async function dispatchMaster(context, args, options = {}) {
+    rejectUnknownArguments(args, new Set([
+      'target_session_id', 'message', 'idempotency_key', 'allow_terminal',
+      'mode', 'timeout_seconds',
+    ]));
+    const mode = String(args.mode || '');
+    if (mode !== 'sync' && mode !== 'async') {
+      throw new RouterToolError('invalid_arguments', 'mode must be sync or async');
+    }
+    if (mode === 'async' && args.timeout_seconds != null) {
+      throw new RouterToolError(
+        'invalid_arguments',
+        'timeout_seconds is only valid when mode is sync',
+      );
+    }
     let admitted;
     try {
-      admitted = await admit(context, 'dispatch_master', args, 'tool');
+      admitted = await admit(context, 'dispatch_master', args, mode);
     } catch (e) {
       const code = (e && e.code) || 'dispatch_rejected';
       if (code !== 'dispatch_rejected' && code !== 'target_busy') throw e;
@@ -448,17 +496,50 @@ function createRouterToolRuntime({
         retryable: true,
       };
     }
-    return {
-      ok: true,
-      admitted: true,
-      status: 'admitted',
-      operation_id: admitted.operationId,
-      target_session_id: admitted.targetSessionId,
-      execution_session_id: admitted.chatId || admitted.targetSessionId,
-      task_id: admitted.taskId,
-      duplicate: admitted.duplicate,
-      queued: true,
-    };
+    if (mode === 'async') {
+      return {
+        ok: true,
+        mode,
+        admitted: true,
+        status: 'admitted',
+        operation_id: admitted.operationId,
+        target_session_id: admitted.targetSessionId,
+        execution_session_id: admitted.chatId || admitted.targetSessionId,
+        task_id: admitted.taskId,
+        duplicate: admitted.duplicate,
+        queued: true,
+        instruction: 'Do not poll, inspect, or wait on the worker. Continue only independent work, then end this turn naturally. MultiCC will inject the dispatch result as a new message and wake this session automatically.',
+      };
+    }
+
+    const timeoutMs = boundedTimeout(args.timeout_seconds);
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = subscribeDispatchProgress({
+        operationId: admitted.operationId,
+        targetSessionId: admitted.targetSessionId,
+        onProgress: typeof options.onProgress === 'function' ? options.onProgress : () => {},
+      }) || (() => {});
+      const operation = await waitForOperation(admitted.operationId, timeoutMs, options.signal);
+      if (!operation) {
+        return {
+          ok: false,
+          mode,
+          status: 'pending',
+          timed_out: true,
+          operation_id: admitted.operationId,
+          target_session_id: admitted.targetSessionId,
+          execution_session_id: admitted.chatId || admitted.targetSessionId,
+          task_id: admitted.taskId,
+          duplicate: admitted.duplicate,
+          queued: true,
+          instruction: 'The worker is still running. Retry dispatch_master with the same idempotency_key and mode="sync" to reattach without creating a duplicate operation.',
+        };
+      }
+      return dispatchResult(operation, admitted);
+    } finally {
+      try { unsubscribe(); } catch (_) {}
+    }
   }
 
   async function dispatchSlave(context, args) {
@@ -476,8 +557,12 @@ function createRouterToolRuntime({
     if (operation.spec.chatId !== context.sessionId) {
       throw new RouterToolError('dispatch_lineage_mismatch', 'origin dispatch belongs to another session', 403);
     }
-    if (operation.spec.resultMode !== 'tool') {
-      throw new RouterToolError('invalid_result_mode', 'origin dispatch does not accept a tool result', 409);
+    if (operation.spec.resultMode !== 'async' && operation.spec.resultMode !== 'tool') {
+      throw new RouterToolError(
+        'invalid_result_mode',
+        'dispatch_slave is only accepted for an async dispatch',
+        409,
+      );
     }
     if (TERMINAL_OPERATION_STATES.has(operation.status)) {
       return {
@@ -812,7 +897,7 @@ function createRouterToolRuntime({
       return cancelExternalWaitForContext(context, args);
     }
     if (tool === 'route_task') return routeTask(context, args);
-    if (tool === 'dispatch_master') return dispatchMaster(context, args, options.signal);
+    if (tool === 'dispatch_master') return dispatchMaster(context, args, options);
     return dispatchSlave(context, args);
   }
 

@@ -13,6 +13,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
+const {
+  AGENT_COMMANDER_PRESET_ID,
+  COMMANDER_ROUTER_PROMPT,
+} = require('../src/routes/agent-resources');
 
 const REPO_URL = 'https://github.com/msitarzewski/agency-agents.git';
 const OUT_PATH = path.join(__dirname, '..', 'public', 'agent-presets.json');
@@ -218,6 +222,12 @@ function main() {
           vibe: meta.vibe || '',
           prompt: body,
         };
+        if (id === AGENT_COMMANDER_PRESET_ID) {
+          // The upstream role still documents retired HTTP/marker dispatch.
+          // MultiCC owns the executable routing contract, so generated assets
+          // must carry the same MCP-only prompt returned by the API.
+          preset.prompt = COMMANDER_ROUTER_PROMPT;
+        }
         presets.push({ ...preset, ...defaultModelForPreset(preset) });
         added++;
       }

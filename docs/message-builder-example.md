@@ -1,5 +1,7 @@
 # 统一消息构建模块 -- 详细消息构造与举例
 
+> 历史快照说明：本文保留旧版本 message-builder 的逐字节样例，其中出现的 dispatch marker 仅用于解释当时的字符串构造，不是当前可执行协议。当前跨会话派发只走 Router MCP。
+
 ## 1. 一句话总览
 
 **今天**：`runChatTurn`（server.js:9035）以 `promptText = text` 起步，按 notes → dispatch/gateway → goal-limit 的顺序逐层内联 prepend（gateway 特殊：wrap），最后追加 ultracode suffix，得到最终 `promptText`；streaming 路径经 `runChatTurnStreaming` → `chatStream.send` → `userMessageLine` 包成 JSON 行写 stdin。

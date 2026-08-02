@@ -2354,7 +2354,7 @@
       <div class="dm-segments" role="radiogroup"
            data-i18n-aria-label="dispatchModeTitle" aria-label="分发模式">
         <label class="dispatch-mode-opt" data-i18n-title="dispatchModeMasterHint"
-               title="用 dispatch_master 派发给其它会话并等待结果回执（双向）">
+               title="用 dispatch_master async 派发；结果消息会自动唤醒本会话">
           <input type="radio" name="dispatch-mode" value="dispatch_master" checked />
           <span class="dm-icon" aria-hidden="true">⇄</span>
           <span class="dm-text" data-i18n="dispatchModeMasterShort">需回执</span>
@@ -2449,7 +2449,7 @@
           <span class="dm-icon" aria-hidden="true">⇄</span>
           <span class="dm-sheet-text">
             <b data-i18n="dispatchModeMasterLabel">优先分发给其他会话且需要回执</b>
-            <small data-i18n="dispatchModeMasterDesc">用 dispatch_master 派出去，等结果回执</small>
+            <small data-i18n="dispatchModeMasterDesc">异步派发，结果消息自动唤醒</small>
           </span>
           <span class="dm-tick" aria-hidden="true">✓</span>
         </button>

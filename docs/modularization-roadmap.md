@@ -10,7 +10,7 @@
 
 | 文件 | 行数 | 结构概要 |
 |---|---|---|
-| `server.js` | **11219** | 117 路由（GET 63 + POST 54 + 其他）+ 252 个顶层函数；已把 20+ 模块拆到 `src/`，残留路由 handler + 大块业务逻辑（WS/classify/dispatch-gateway/push/cron） |
+| `server.js` | **11219** | 历史基线：117 路由（GET 63 + POST 54 + 其他）+ 252 个顶层函数；当前版本已继续拆分，跨会话分派改为 MCP-only。 |
 | `public/manage.js` | **7099** | 全局函数风格（无 IIFE/模块），全是顶层 `function`；职责：dashboard 渲染、目录/会话卡、拖拽、菜单、model picker、session dialog、memo、监控… |
 | `public/chat.js` | **4858** | 全局函数风格；职责：WS 连接、流处理、工具卡、历史 replay、发送、merge/sync 状态、diff、model/effort/provider picker、memory… |
 | `app/lib/screens/main_shell.dart` | **4938** | **32 个 class**，大量独立 StatefulWidget/StatelessWidget 子类（天然拆分单元） |
@@ -37,7 +37,7 @@
 > **判回归标准**：每次拆分后，以上 6 个必须保持全 green。
 
 ### 集成测试（需 server / claude CLI 在跑，按需抽查）
-- `tests/test.js`（auto-detects `:3000`）、`tests/smoke-core.js`（14 个核心 API 场景）、`tests/test-cross-cli-dispatch.js`（跨 CLI 分派边界，54 pass/8 skip）。
+- `tests/test.js`（auto-detects `:3000`）、`tests/smoke-core.js`（含旧 HTTP dispatch 退役探针）、`tests/test-cross-cli-dispatch.js`（多 CLI 活体 smoke；MCP sync/async 分派由 Router runtime/host/MCP 测试覆盖）。
 - 拆完 server.js 后：启动 server → curl 抽查被搬路由仍可达 → 跑 smoke-core。
 
 ---

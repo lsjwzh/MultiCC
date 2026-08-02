@@ -449,13 +449,18 @@ test('dispatch_master returns admitted immediately and backflow outbox is emitte
     target_session_id: 'worker-a',
     message: 'run deterministic checks',
     idempotency_key: 'master-1',
+    mode: 'async',
   });
   assert.equal(result.ok, true);
   assert.equal(result.admitted, true);
   assert.equal(result.status, 'admitted');
   assert.equal(result.queued, true);
   assert.equal(result.result, undefined);
+  assert.match(result.instruction, /Do not poll/);
+  assert.match(result.instruction, /end this turn naturally/);
   assert.equal(admissions.length, 1);
+  assert.match(admissions[0].message, /dispatch_slave/);
+  assert.match(admissions[0].message, /不要轮询/);
   const operationId = result.operation_id;
   const slaveCapability = runtime.issueContext({
     sessionId: 'worker-a',
@@ -474,6 +479,24 @@ test('dispatch_master returns admitted immediately and backflow outbox is emitte
   assert.match(outboxEntry.payload.deliveryText, /checks passed/);
 });
 
+test('dispatch_master requires an explicit receipt mode and rejects async timeouts', async t => {
+  const { runtime } = fixture(t);
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-mode-guard' });
+  await assert.rejects(
+    runtime.execute(capability, 'dispatch_master', {
+      target_session_id: 'worker-a', message: 'missing mode',
+    }),
+    error => error.code === 'invalid_arguments' && /mode must be sync or async/.test(error.message),
+  );
+  await assert.rejects(
+    runtime.execute(capability, 'dispatch_master', {
+      target_session_id: 'worker-a', message: 'invalid async timeout',
+      mode: 'async', timeout_seconds: 30,
+    }),
+    error => error.code === 'invalid_arguments' && /only valid when mode is sync/.test(error.message),
+  );
+});
+
 test('dispatch_master retry reattaches idempotently without duplicate operations', async t => {
   const { admissions, operations, runtime } = fixture(t);
   const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-retry' });
@@ -481,6 +504,7 @@ test('dispatch_master retry reattaches idempotently without duplicate operations
     target_session_id: 'worker-a',
     message: 'slow task',
     idempotency_key: 'slow-1',
+    mode: 'async',
   };
   const first = await runtime.execute(capability, 'dispatch_master', args);
   assert.equal(first.ok, true);
@@ -519,7 +543,7 @@ test('target and slave lineage validation fail closed', async t => {
     runtime.execute(capability, 'dispatch_master', {
       target_session_id: 'terminal-a',
       message: 'must not reach a terminal by default',
-      timeout_seconds: 1,
+      mode: 'async',
     }),
     error => error.code === 'terminal_target_requires_explicit_opt_in',
   );
@@ -571,6 +595,47 @@ test('target and slave lineage validation fail closed', async t => {
     runtime.execute(capability, 'dispatch_slave', { result: 'no lineage' }),
     error => error.code === 'dispatch_lineage_required',
   );
+});
+
+test('dispatch_master sync streams progress and returns final result inline without backflow', async t => {
+  let progressSink = null;
+  let unsubscribed = false;
+  const { operations, runtime, store } = fixture(t, {
+    subscribeDispatchProgress: ({ onProgress }) => {
+      progressSink = onProgress;
+      return () => { unsubscribed = true; };
+    },
+  });
+  const progress = [];
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-sync' });
+  const pending = runtime.execute(capability, 'dispatch_master', {
+    target_session_id: 'worker-a',
+    message: 'produce a synchronous result',
+    idempotency_key: 'sync-1',
+    mode: 'sync',
+    timeout_seconds: 2,
+  }, { onProgress: update => progress.push(update) });
+
+  let operation;
+  for (let i = 0; i < 20 && !operation; i++) {
+    await new Promise(resolve => setImmediate(resolve));
+    [operation] = await operations.list({ kind: 'dispatch' });
+  }
+  assert.ok(operation);
+  progressSink({ kind: 'text', message: 'half way' });
+  await operations.completeDispatch(operation.id, {
+    status: 'completed', sessionName: 'worker-a', text: 'sync finished',
+  });
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'sync');
+  assert.equal(result.result, 'sync finished');
+  assert.deepEqual(progress, [{ kind: 'text', message: 'half way' }]);
+  assert.equal(unsubscribed, true);
+  const snapshot = await store.snapshot();
+  assert.equal(snapshot.outbox[`operation:${operation.id}:result`], undefined);
+  assert.match(operation.spec.message, /reasoning\/thinking/);
+  assert.doesNotMatch(operation.spec.message, /dispatch_slave/);
 });
 
 test('slave completion is exactly-once and capabilities revoke or expire', async t => {

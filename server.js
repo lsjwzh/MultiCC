@@ -95,7 +95,6 @@ const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session-persistence');
 const { createOrchestrationRuntime } = require('./src/orchestration-runtime');
 const { createRouterToolHost } = require('./src/router-tool-host');
-const { routeLegacyCommanderMarkers } = require('./src/dispatch/legacy-commander-route');
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
@@ -162,18 +161,9 @@ const {
 } = require('./src/classify/vocab');
 const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint,
   recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
-const {
-  DISPATCH_RE,
-  DISPATCH_CONFIRM_RE,
-  DISPATCH_CANCEL_RE,
-  parseDispatchMarker,
-  parseAllDispatchMarkers,
-  parseAllRouteMarkers,
-  ROUTE_RE_G,
-  isDispatchPlaceholderTarget,
-} = require('./src/dispatch/markers');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
+const { createSafeProgressReducer } = require('./src/dispatch/progress');
 const { createClassifyStateMachine } = require('./src/classify/state-machine');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
@@ -212,7 +202,6 @@ const {
   createErrorDto,
   createWsEnvelope,
   requestContext,
-  toDispatchResultDto,
   toProviderDto,
   toWaitDto,
   withApiMeta,
@@ -514,7 +503,7 @@ const MULTICC_IMG_HINT = [
   '     此法是 harness 原生能力，不需要子任务配合、不依赖标记文件，首选。',
   '  ③ fallback（子任务不在本进程 harness 内、拿不到 task_id，如 run-detached / 跨 session 任务）：启动时要求子任务把完成信号写入约定标记文件 `echo "DONE" > /tmp/multicc_task_<任务名>.done`，主进程每隔 5-10s 用 Bash 检查（`cat /tmp/multicc_task_<任务名>.done 2>/dev/null`）直到出现，每次检查报一句进度。',
   '  ④ 拿到最终结果后，汇总并正常结束本轮。',
-  '  ⑤ 对于确实需要跨轮存活的长时间任务（>5 分钟），仍优先用 multicc 的 run-detached 接口或 `<<dispatch>>` 派给独立 session。',
+  '  ⑤ 对于确实需要跨轮存活的长时间任务（>5 分钟），仍优先用 multicc 的 run-detached 接口或 MCP `dispatch_master` / `route_task` 派给独立 session。',
   '',
   '【Monitor 监控必须用 persistent: true】在 multicc chat 会话里调用 Monitor 工具时，persistent 参数必须设为 true，不要用默认的 false。',
   'chat 会话是常驻 streaming 进程、没有单轮超时，Monitor 若用 persistent:false 会被 timeout_ms（默认5分钟/最长1小时）提前杀掉，导致长时间的日志跟踪/事件监听中途断掉。用 persistent:true 让它一直跟到目标出现或会话结束。',
@@ -524,7 +513,7 @@ const MULTICC_IMG_HINT = [
   '不要一启动就长时间静默、让对话框看起来像卡住；也不要只说「我等一下」就停下不续接。这是面向所有 multicc 用户的统一约定，请默认遵循。',
   '',
   '【跨会话协作时的 worktree 同步纪律】每个 chat 会话在自己独立的 git worktree + 分支（multicc/<sessionId>）里干活，基分支通常是 main。多个会话并行改代码时，worktree 之间不会自动一致，必须按下面纪律同步，否则会基于过时代码工作、产生冲突或覆盖别人的改动：',
-  '  · 派活方（把任务用 <<dispatch>> 或留言交给兄弟会话前）：先由派活方直接调用目标会话的 sync 接口；成功后在任务指令里说明 sync 已完成及结果，不要要求目标会话启动后再重复 sync。任务仍须要求目标完成后 commit、调用自己的 merge 接口，并报告文件、合并与冲突情况。',
+  '  · 派活方（通过 MCP 把任务交给兄弟会话前）：先由派活方直接调用目标会话的 sync 接口；成功后在任务指令里说明 sync 已完成及结果，不要要求目标会话启动后再重复 sync。任务仍须要求目标完成后 commit、调用自己的 merge 接口，并报告文件、合并与冲突情况。',
   '  · 被派方（你收到一个自包含任务时）：若派活方已明确报告 sync HTTP 200，只读确认 worktree clean 且 HEAD 与基分支一致后直接开工；否则先尝试 sync。干完 commit + merge 回基分支，并如实报告。',
   '  · self-active 例外：当前会话在处理用户消息时本来就是 running；调用“当前会话自己的 sync”可能仅因这一轮正在执行而返回 HTTP 409 busy。只有当唯一阻塞原因是 busy/running、目标正是 $MULTICC_SESSION_ID 时，才把它视为 self-active 而非代码冲突：立即只读检查 `git status --short` 与 `git rev-list --left-right --count HEAD...main`。工作区 clean 且结果为 `0 0` 才可继续；dirty、conflict、分支落后/分叉、存在其他阻塞原因时必须停止报告，禁止 force。',
   '  · 收回成果后（派活方拿到对方「已合并」的回复时）：确认 merge 的自动 sibling sync 结果，并只读确认本会话 HEAD 与基分支一致；只有未同步时才调用自己的 sync。若遇纯 self-active，按上一条规则判定，不要把“正在回答本轮消息”误报成 worktree 冲突。',
@@ -1083,10 +1072,9 @@ const {
   GATEWAY_ID,
   buildGatewayPrompt,
   pushToGateway,
-  validateDispatchTarget,
   handleGatewayControl,
+  recordRouterAdmission,
   dispatchToSession,
-  maybeDispatchFromChatTurn,
 } = gatewayHost;
 
 // ── Session management ──
@@ -1898,84 +1886,6 @@ createSessionMetaRuntime({
   getLivenessRuntime: () => livenessRuntime,
 }).mountRoutes(app);
 
-// Curl-friendly dispatch: same semantics as the <<dispatch>> reply marker, but
-// callable mid-turn. Every other multicc capability (wait/run-detached/notes)
-// is reachable via curl, so models — third-party ones especially — habitually
-// reach for curl; without this door they "dispatch" into run-detached and the
-// ultra workers never hear about it. Result flows back automatically as a
-// 【target 回复】message via finalizeDispatch.
-async function executeDispatchContract(fromId, body, options = {}) {
-  const from = persistedSessions.get(fromId);
-  if (!from) return { status: 404, error: 'session not found', code: 'session_not_found' };
-  const target = String((body && body.target) || '').trim();
-  const message = String((body && body.message) || '').trim();
-  if (!target || !message) return { status: 400, error: 'target 和 message 必填', code: 'invalid_dispatch' };
-  if (target === from.id) return { status: 400, error: '不能把任务分发给自己', code: 'self_dispatch' };
-  const validation = validateDispatchTarget(target, from.id);
-  if (!validation.ok) return { status: 400, error: validation.error, code: 'invalid_target' };
-  if (validation.rec.dirId !== from.dirId) return { status: 400, error: '只能分发给同目录会话', code: 'cross_directory' };
-  appendEvent(from.dirId, 'dispatch', `→ ${validation.rec.label || target}`, from.id);
-  try {
-    const result = await dispatchToSession(target, message, {
-      replyTo: from.id,
-      idempotencyKey: options.idempotencyKey || null,
-    });
-    if (!result.ok) return { status: 409, error: result.error, code: 'dispatch_rejected' };
-    return {
-      status: 200,
-      value: {
-        ...toDispatchResultDto({
-        ok: true,
-        target,
-        chatId: result.chatId,
-        note: '任务已投递；完成后结果会以【回复】消息自动回流到本会话',
-        }),
-        operationId: result.operationId,
-        status: result.status,
-      },
-    };
-  } catch (error) {
-    logger.error('dispatch_failed', { fromId, target, error: error && error.message });
-    if (error && error.statusCode === 409) {
-      return { status: 409, error: error.message, code: 'dispatch_conflict' };
-    }
-    return { status: 500, error: 'internal_error', code: 'internal_error' };
-  }
-}
-
-function sendDispatchContract(req, res, result) {
-  const context = requestContext(req, res);
-  if (result.status === 200) {
-    const dto = withApiMeta(result.value, context);
-    // /api/v1 remains byte/schema compatible. The unversioned endpoint gains
-    // durable-operation metadata without changing the published v1 schema.
-    if (req.path.startsWith('/api/v1/')) {
-      delete dto.operationId;
-      delete dto.status;
-    }
-    return res.json(dto);
-  }
-  return res.status(result.status).json(createErrorDto({
-    ...context,
-    message: result.error,
-    code: result.code,
-  }));
-}
-
-function dispatchContractHandler(req, res) {
-  executeDispatchContract(req.params.id, req.body, {
-    idempotencyKey: req.get('Idempotency-Key') || null,
-  })
-    .then(result => sendDispatchContract(req, res, result))
-    .catch(error => {
-      logger.error('dispatch_contract_failed', { sessionId: req.params.id, error: error && error.message });
-      sendDispatchContract(req, res, { status: 500, error: 'internal_error', code: 'internal_error' });
-    });
-}
-
-app.post('/api/sessions/:id/dispatch', dispatchContractHandler);
-app.post('/api/v1/sessions/:id/dispatch', dispatchContractHandler);
-
 // ── File browser, download and upload lifecycle ──
 mountFileTransferRoutes(app, {
   fs,
@@ -2401,7 +2311,6 @@ const {
   emitTurnComplete: (sessionId, state, completion) => bus.emit('chat:turn-complete', sessionId, state, completion),
   emitDispatchComplete: (operationId, sessionId, text) => bus.emit('chat:dispatch-complete', operationId, sessionId, text),
   emitGatewayComplete: (...args) => bus.emit('chat:gateway-turn-complete', ...args),   // text, sessionId, turnId, requestId
-  inspectDispatchMarkers: maybeDispatchFromChatTurn,
   logSuppressed: (detail) => logger.info('chat_post_turn_suppressed', detail),
 });
 // Codex usage is cumulative upstream; this host converts it before any consumer sees it.
@@ -2417,7 +2326,35 @@ const codexUsageHost = createCodexUsageHost({
 });
 
 function chatBroadcast(sessionName, payload) {
+  // The sync dispatch bridge observes the same normalized stream as Web/App,
+  // but only through an operation-lineage filter and a redacting reducer.
+  bus.emit('chat:stream-progress', sessionName, payload);
   taskContextHost.broadcast(sessionName, payload);
+}
+
+function subscribeDispatchProgress({ operationId, targetSessionId, onProgress } = {}) {
+  const reducer = createSafeProgressReducer(onProgress, {
+    cli: persistedSessions.get(targetSessionId)?.cli || '',
+  });
+  const belongsToOperation = () => {
+    const turn = chatSessions.get(targetSessionId)?._activeTurn;
+    return turn?.lineage?.kind === 'dispatch'
+      && turn.lineage.operationId === operationId;
+  };
+  const handle = (sessionId, payload) => {
+    if (sessionId !== targetSessionId || !belongsToOperation()) return;
+    try { reducer.push(payload); } catch (_) {}
+  };
+  bus.on('chat:stream-progress', handle);
+
+  // Admission may start an idle worker before dispatch_master has returned far
+  // enough to attach this listener. Replay the bounded current-turn stream once
+  // so the first deltas are not lost; the reducer suppresses duplicates.
+  const current = chatSessions.get(targetSessionId);
+  if (belongsToOperation() && Array.isArray(current?.streamReplay)) {
+    for (const event of current.streamReplay) reducer.push(event);
+  }
+  return () => bus.off('chat:stream-progress', handle);
 }
 
 // Usage-limit poller — the active-poll half of the limit subsystem. Claude 5h /
@@ -2778,7 +2715,8 @@ const processingWatchdog = createProcessingWatchdog({
 });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession,
   orchestrationRuntime, taskBoard: taskBoardRuntime,
-  recordUserInput: signal => sessionWorkHost.recordInput(signal) });
+  recordUserInput: signal => sessionWorkHost.recordInput(signal),
+  subscribeDispatchProgress, recordRouterAdmission });
 
 waitInjector.init({
   inject: (session, text, opts) => sessionDelivery.deliverContinuation(session, text, opts),

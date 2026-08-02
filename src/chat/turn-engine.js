@@ -41,6 +41,16 @@ function appendAdapterAssistantText(current, text) {
   return prior ? `${prior}\n\n${next}` : next;
 }
 
+function adapterReasoningProgressEvent(event) {
+  if (!event || typeof event.text !== 'string' || !event.text) return null;
+  return {
+    type: 'reasoning',
+    id: typeof event.id === 'string' ? event.id : null,
+    text: event.text,
+    snapshot: true,
+  };
+}
+
 function createChatTurnEngine(deps) {
   const {
     // ── Getters for reassigned / late-composed host bindings ──
@@ -487,6 +497,12 @@ function createChatTurnEngine(deps) {
       }
       if (evt.type === 'thinking') {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
+        // Publish the provider-normalized reasoning text as its own safe event.
+        // Sync dispatch subscribes to this event; the existing synthetic
+        // Thinking tool card remains for Web/App compatibility. No tool input,
+        // result, signature or raw provider envelope crosses this boundary.
+        const reasoningProgress = adapterReasoningProgressEvent(evt);
+        if (reasoningProgress) forward(reasoningProgress);
         const tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, result: evt.text || '' };
         cs.currentToolCalls.push(tool);
         getBackgroundTaskRuntime().recordMainToolUseId(sessionName, evt.id);
@@ -1823,4 +1839,8 @@ function createChatTurnEngine(deps) {
   };
 }
 
-module.exports = { createChatTurnEngine, appendAdapterAssistantText };
+module.exports = {
+  adapterReasoningProgressEvent,
+  appendAdapterAssistantText,
+  createChatTurnEngine,
+};

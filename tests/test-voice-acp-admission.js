@@ -54,19 +54,23 @@ function baseDirectories() {
   return new Map([['dir-1', { id: 'dir-1', path: '/tmp/fleet-one', label: 'Fleet 一' }]]);
 }
 
-// Records every broadcast frame, not just the prose pushes: the structured
-// frame is exactly the thing the existing global-gateway fixture filters out.
-function hostFixture({ admit } = {}) {
+// Records the Host-owned structured outcome. MCP admission, rather than
+// assistant prose, is the only event allowed to produce an admitted frame.
+function hostFixture() {
   const records = baseRecords();
   const frames = [];
-  const pushes = [];
-  const seen = new Set();
+  const chatSessions = new Map();
+  const setTurn = (turnId, requestId) => {
+    chatSessions.set(VOICE_ROUTER_ID, {
+      _activeTurn: { turnId, requestId },
+    });
+  };
+  setTurn('turn-1', 'req-1');
   const host = createGatewayHost({
     persistedSessions: records,
-    chatSessions: new Map(),
+    chatSessions,
     directories: baseDirectories(),
     logger: { warn() {} },
-    getChatHistoryService: () => ({ replace() {} }),
     appendEvent() {},
     getSessionDelivery: () => ({ deliverContinuation() {}, deliverSystem() {} }),
     normalizeEffort: value => value,
@@ -75,31 +79,32 @@ function hostFixture({ admit } = {}) {
     getSetSessionStatus: () => () => {},
     isTargetBusy: () => false,
     getOrchestrationRuntime: () => ({
-      admitDispatch: async spec => {
-        if (typeof admit === 'function') return admit(spec);
-        const duplicate = seen.has(spec.idempotencyKey);
-        seen.add(spec.idempotencyKey);
-        return { id: 'op-voice-1', status: 'admitted', createdAt: 1, idempotent: duplicate };
-      },
+      operations: { get: async () => null },
+      completeDispatch: async () => ({ ok: true }),
       tick: async () => {},
     }),
     getTaskContextHost: () => ({ dispatchSpec: () => ({}) }),
-    getCreateSessionRecord: () => async () => { throw new Error('voice dispatch must reuse existing sessions'); },
-    appendChatMessage() {},
-    chatBroadcast: (sessionId, message) => {
-      frames.push({ sessionId, message });
-      const text = message?.message?.content?.[0]?.text;
-      if (text) pushes.push({ sessionId, text });
+    getCreateSessionRecord: () => async () => {
+      throw new Error('voice dispatch must reuse existing sessions');
     },
-    loadChatHistory: () => [],
+    appendChatMessage() {},
+    chatBroadcast: (sessionId, message) => frames.push({ sessionId, message }),
   });
-  const admissions = () => frames.filter(f => f.message?.type === 'voice_admission').map(f => f.message);
-  return { frames, host, pushes, records, admissions };
+  const admissions = () => frames
+    .filter(frame => frame.message?.type === 'voice_admission')
+    .map(frame => frame.message);
+  return { admissions, chatSessions, frames, host, records, setTurn };
 }
 
-test('a voice turn that dispatches reports admission with an operation id and nothing else', async () => {
+test('an MCP voice dispatch reports admission with an operation id and no task payload', () => {
   const fixture = hostFixture();
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-1', 'req-1');
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    targetSessionId: 'chat-1',
+    operationId: 'op-voice-1',
+    status: 'queued',
+    duplicate: false,
+  });
 
   const frames = fixture.admissions();
   assert.equal(frames.length, 1, 'exactly one terminal frame per turn');
@@ -111,112 +116,100 @@ test('a voice turn that dispatches reports admission with an operation id and no
   assert.equal(frame.outcome, 'admitted');
   assert.equal(frame.operationId, 'op-voice-1');
   assert.equal(frame.duplicate, false);
-  assert.equal(frame.queueStatus, 'admitted');
+  assert.equal(frame.queueStatus, 'queued');
   assert.equal(frame.error, null);
-  assert.equal(frame.speechText, '好的，我让一号项目的 Commander 去查。');
+  assert.match(frame.speechText, /任务已提交/);
+  assert.equal(frame.targetLabel, '前端会话');
 
-  // The payload is an outcome, not a copy of the work.
   const serialized = JSON.stringify(frame);
-  assert.doesNotMatch(serialized, /dispatch/i, 'the marker itself never travels in the outcome frame');
-  assert.equal(serialized.includes(DISPATCH_MESSAGE), false, 'the dispatch instruction never travels');
-  assert.equal(serialized.includes('commander-1'), false, 'a target session id is never disclosed');
+  assert.equal(serialized.includes(DISPATCH_MESSAGE), false, 'the task instruction never travels');
+  assert.equal(serialized.includes('chat-1'), false, 'a target session id is never disclosed');
   assert.equal(serialized.includes('/tmp/fleet-one'), false, 'no cwd travels');
-  assert.equal(frame.targetLabel, 'Fleet 一 Commander', 'a human label is the most that may be named');
-
-  assert.equal(fixture.pushes.at(-1).sessionId, VOICE_ROUTER_ID);
-  assert.match(fixture.pushes.at(-1).text, /已提交给/);
 });
 
-test('the structured frame is broadcast before the prose push that also carries a result', async () => {
+test('authoritative MCP admission wins over turn-end no_dispatch fallback', () => {
   const fixture = hostFixture();
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-order', 'req-order');
-  const kinds = fixture.frames.map(f => (f.message?.type === 'voice_admission' ? 'admission' : 'prose'));
-  assert.equal(kinds.indexOf('admission') >= 0, true);
-  assert.ok(
-    kinds.indexOf('admission') < kinds.indexOf('prose'),
-    'a caller waiting on the outcome must hold it before the push that ends its turn',
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    targetSessionId: 'chat-1',
+    operationId: 'op-voice-1',
+    status: 'admitted',
+  });
+  fixture.host.handleGatewayTurnComplete('模型最终文本', VOICE_ROUTER_ID, 'turn-1', 'req-1');
+  assert.deepEqual(fixture.admissions().map(frame => frame.outcome), ['admitted']);
+});
+
+test('a turn with no MCP admission states no_dispatch instead of going silent', () => {
+  const fixture = hostFixture();
+  fixture.setTurn('turn-2', 'req-2');
+  fixture.host.handleGatewayTurnComplete(
+    '这个功能已经在上一版做完了。', VOICE_ROUTER_ID, 'turn-2', 'req-2',
   );
-});
-
-test('a turn with no marker states no_dispatch instead of going silent', async () => {
-  const fixture = hostFixture();
-  await fixture.host.handleGatewayTurnComplete('这个功能已经在上一版做完了。', VOICE_ROUTER_ID, 'turn-2', 'req-2');
   const frame = fixture.admissions()[0];
   assert.equal(frame.outcome, 'no_dispatch');
-  assert.equal(frame.operationId, null, 'nothing was admitted, so nothing has an operation id');
+  assert.equal(frame.operationId, null);
   assert.equal(frame.queueStatus, null);
   assert.equal(frame.error, null);
   assert.equal(frame.speechText, '这个功能已经在上一版做完了。');
 });
 
-test('an idempotent replay is still an admission, and is flagged as a duplicate', async () => {
+test('an idempotent MCP replay is still an admission and is flagged duplicate', () => {
   const fixture = hostFixture();
-  // Same turn id (so the durable key matches) reached through a second request —
-  // what a reconnecting bridge produces.
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-3', 'req-3a');
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-3', 'req-3b');
-  const frames = fixture.admissions();
-  assert.deepEqual(frames.map(f => f.outcome), ['admitted', 'admitted']);
-  assert.deepEqual(frames.map(f => f.duplicate), [false, true]);
-  assert.deepEqual(frames.map(f => f.operationId), ['op-voice-1', 'op-voice-1']);
-});
-
-test('the same request is never answered twice', async () => {
-  const fixture = hostFixture();
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-4', 'req-4');
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-4', 'req-4');
-  assert.equal(fixture.admissions().length, 1, 'exactly-once per (session, turn, request)');
-});
-
-test('an unroutable target is reported as rejected without naming the target id', async () => {
-  const fixture = hostFixture();
-  await fixture.host.handleGatewayTurnComplete(
-    '<<dispatch target="ghost-9">干活</dispatch>>',
-    VOICE_ROUTER_ID,
-    'turn-5',
-    'req-5',
-  );
-  const frame = fixture.admissions()[0];
-  assert.equal(frame.outcome, 'rejected');
-  assert.equal(frame.operationId, null);
-  assert.equal(frame.error.code, 'dispatch_target_rejected');
-  assert.equal(frame.error.retryable, false);
-  assert.equal(frame.error.publicMessage.includes('ghost-9'), false);
-  // The operator-facing push keeps the detail the spoken frame withholds.
-  assert.match(fixture.pushes.at(-1).text, /无法分发/);
-});
-
-test('an admission that throws is reported as failed and retryable, never as submitted', async () => {
-  const fixture = hostFixture({ admit: async () => { throw new Error('durable store offline'); } });
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-6', 'req-6');
-  const frame = fixture.admissions()[0];
-  assert.equal(frame.outcome, 'failed');
-  assert.equal(frame.operationId, null);
-  assert.equal(frame.error.code, 'dispatch_error');
-  assert.equal(frame.error.retryable, true);
-  assert.equal(JSON.stringify(frame).includes('durable store offline'), false, 'internal errors stay internal');
-});
-
-test('an admission without an operation id is not an admission', async () => {
-  const fixture = hostFixture({
-    admit: async () => ({ id: '', status: 'admitted', createdAt: 1, idempotent: false }),
+  fixture.setTurn('turn-3', 'req-3a');
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    targetSessionId: 'chat-1',
+    operationId: 'op-voice-1',
+    status: 'admitted',
+    duplicate: false,
   });
-  await fixture.host.handleGatewayTurnComplete(MARKER_TURN, VOICE_ROUTER_ID, 'turn-7', 'req-7');
-  const frame = fixture.admissions()[0];
-  assert.equal(frame.outcome, 'failed');
-  assert.equal(frame.error.code, 'operation_id_missing');
+  fixture.setTurn('turn-3', 'req-3b');
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    targetSessionId: 'chat-1',
+    operationId: 'op-voice-1',
+    status: 'admitted',
+    duplicate: true,
+  });
+  const frames = fixture.admissions();
+  assert.deepEqual(frames.map(frame => frame.outcome), ['admitted', 'admitted']);
+  assert.deepEqual(frames.map(frame => frame.duplicate), [false, true]);
+  assert.deepEqual(frames.map(frame => frame.operationId), ['op-voice-1', 'op-voice-1']);
 });
 
-test('the WeChat gateway emits no voice outcome frame', async () => {
+test('the same MCP admission request is never answered twice', () => {
   const fixture = hostFixture();
-  await fixture.host.handleGatewayTurnComplete('闲聊', fixture.host.GATEWAY_ID, 'wechat-1', 'req-w1');
-  await fixture.host.handleGatewayTurnComplete(
-    '<<dispatch target="chat-1">派活</dispatch>>',
-    fixture.host.GATEWAY_ID,
-    'wechat-2',
-    'req-w2',
-  );
-  assert.equal(fixture.admissions().length, 0, 'the structured frame belongs to the live voice channel only');
+  const admission = {
+    callerSessionId: VOICE_ROUTER_ID,
+    targetSessionId: 'chat-1',
+    operationId: 'op-voice-1',
+    status: 'admitted',
+  };
+  fixture.host.recordRouterAdmission(admission);
+  fixture.host.recordRouterAdmission(admission);
+  assert.equal(fixture.admissions().length, 1);
+});
+
+test('an admitted frame without an operation id is downgraded to failure', () => {
+  const fixture = hostFixture();
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    targetSessionId: 'chat-1',
+    operationId: '',
+    status: 'admitted',
+  });
+  const frame = fixture.admissions()[0];
+  assert.equal(frame.outcome, 'failed');
+  assert.equal(frame.operationId, null);
+  assert.equal(frame.error.code, 'operation_id_missing');
+  assert.equal(frame.error.retryable, true);
+});
+
+test('the WeChat gateway emits no voice outcome frame', () => {
+  const fixture = hostFixture();
+  fixture.host.handleGatewayTurnComplete('闲聊', fixture.host.GATEWAY_ID, 'wechat-1', 'req-w1');
+  fixture.host.handleGatewayTurnComplete('普通回复', fixture.host.GATEWAY_ID, 'wechat-2', 'req-w2');
+  assert.equal(fixture.admissions().length, 0);
 });
 
 // ── Bridge ───────────────────────────────────────────────────────────────────
@@ -590,8 +583,7 @@ test('a chat launch targets the source session exactly, with no dynamic prompt i
   assert.equal(resolved.context.targetSessionId, 'chat-1', 're-resolution does not re-route');
   assert.equal(resolved.context.targetSessionId, resolved.context.sourceSessionId);
 
-  // The global path is the only one that goes through the router — which is the
-  // only session that gets a routing prompt and can therefore emit a marker.
+  // The global path is the only one that goes through the MCP-aware router.
   const global = registry.issue({ scope: 'global' });
   assert.equal(global.context.scope, 'global');
   assert.equal(global.context.targetSessionId, VOICE_ROUTER_ID);
@@ -618,7 +610,7 @@ test('spoken text prefers the Host’s own stripped text over the local buffer',
   assert.doesNotMatch(unknown, /<<|dispatch/i);
   assert.equal(
     admissionSpeech('unknown', null, '今天没有待办。'),
-    '今天没有待办。',
-    'a turn with nothing pending has nothing to be uncertain about',
+    '今天没有待办。\n这条任务的提交状态还没有确认，请稍后在 MultiCC 任务板上查看。',
+    'without the Host outcome even ordinary-looking prose cannot prove whether a tool ran',
   );
 });

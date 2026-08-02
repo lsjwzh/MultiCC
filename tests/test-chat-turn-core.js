@@ -30,11 +30,24 @@ const {
   CHAT_TURN_PORTS,
   assertChatTurnPorts,
 } = require('../src/chat');
-const { appendAdapterAssistantText } = require('../src/chat/turn-engine');
+const {
+  adapterReasoningProgressEvent,
+  appendAdapterAssistantText,
+} = require('../src/chat/turn-engine');
 
 test('adapter assistant snapshots preserve every OpenCode text part canonically', () => {
   assert.equal(appendAdapterAssistantText('', 'first'), 'first');
   assert.equal(appendAdapterAssistantText('first', 'second'), 'first\n\nsecond');
+});
+
+test('adapter reasoning publishes only normalized display text for sync progress', () => {
+  assert.deepEqual(adapterReasoningProgressEvent({
+    id: 'reason-1', text: 'inspect protocol', signature: 'must-not-cross', raw: { secret: true },
+  }), {
+    type: 'reasoning', id: 'reason-1', text: 'inspect protocol', snapshot: true,
+  });
+  assert.equal(adapterReasoningProgressEvent({ text: { secret: true } }), null);
+  assert.equal(adapterReasoningProgressEvent({ text: '' }), null);
 });
 
 test('Qoder Claude-compatible assistant events are normalized to snapshots', () => {
@@ -393,17 +406,13 @@ test('origin dispatch return wins routing and exactly-once receipt prevents redi
 });
 
 test('typed Commander cannot fan out through assistant markers', () => {
-  // A Commander-originated turn now goes through the marker scanner so its
-  // <<route>> markers get executed one-way. It carries no originDispatchId, so
-  // there is no result 回流 (that branch returned above for dispatched workers).
+  // Marker-shaped assistant prose is inert. Cross-session execution is MCP-only.
   const direct = routePostTurn({
     turnId: 'commander-direct', sessionId: 'commander-1', sessionType: 'commander',
     finalText: '<<route target="worker-1">do the work</route>>',
   });
   assert.equal(direct.route, 'commander');
-  assert.deepEqual(direct.effects.map(effect => effect.type), ['inspect-dispatch-markers']);
-  assert.equal(direct.effects[0].effectId, 'commander-turn:commander-direct');
-  assert.equal(direct.effects[0].requiresDeliveryProof, false);
+  assert.deepEqual(direct.effects, []);
   const directRepeated = routePostTurn({
     turnId: 'commander-direct', sessionId: 'commander-1', sessionType: 'commander',
     finalText: 'same', receipts: ['commander-turn:commander-direct'],
@@ -662,7 +671,7 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
     turnId: 't1', sessionId: 's1', sessionType: 'normal', finalText: 'ok',
     handoff: { id: 'h1', status: 'pending', completed: true },
   });
-  assert.deepEqual(handoff.effects.map(effect => effect.type), ['ack-handoff', 'inspect-dispatch-markers']);
+  assert.deepEqual(handoff.effects.map(effect => effect.type), ['ack-handoff']);
   const handoffRepeated = routePostTurn({
     turnId: 't1', sessionId: 's1', sessionType: 'normal', finalText: 'ok',
     handoff: { id: 'h1', status: 'pending', completed: true }, receipts: ['handoff:h1'],

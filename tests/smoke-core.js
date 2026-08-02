@@ -16,7 +16,7 @@
  *
  *  B1 Provider list      — GET /api/providers
  *  B2 Per-session CLI    — session creation with cli=codex
- *  B3 Dispatch           — POST /api/sessions/:id/dispatch
+ *  B3 Dispatch surface   — legacy HTTP dispatch is retired (MCP-only)
  *  B4 Agent presets      — GET /api/agent-presets
  *  B5 Aux queue          — GET /api/aux/health
  *
@@ -382,19 +382,22 @@ async function ensureDir(label) {
     }
   }
 
-  // B3: Dispatch
+  // B3: Legacy HTTP dispatch must stay retired. Cross-session dispatch is
+  // exercised through the agent-scoped MCP runtime tests instead.
   if (testDirId) {
     // Create a target session
     const ts = await post(`/api/directories/${testDirId}/sessions`, { cli: 'claude', type: 'chat' });
     const targetId = ts.body.id || ts.body.sessionId;
     if (targetId) {
       const res = await post(`/api/sessions/${targetId}/dispatch`, { target: targetId, message: 'ping' });
-      if (res.status === 200) ok('B3 Dispatch', 'API accepted');
-      else if (res.status === 400) ok('B3 Dispatch', `status ${res.status} (expected: no self-dispatch)`);
-      else fail('B3 Dispatch', `status ${res.status}`);
+      if (res.status === 404 || res.status === 405) {
+        ok('B3 Legacy dispatch 已退役', `status ${res.status}`);
+      } else {
+        fail('B3 Legacy dispatch 已退役', `期望 404/405，实际 ${res.status}`);
+      }
       await del(`/api/sessions/${targetId}`);
     } else {
-      skip('B3 Dispatch', 'no target session');
+      skip('B3 Legacy dispatch 已退役', 'no target session');
     }
   }
 

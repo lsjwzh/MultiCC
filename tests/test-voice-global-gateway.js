@@ -505,11 +505,16 @@ function gatewayHostFixture() {
     id: VOICE_ROUTER_ID, type: 'gateway', kind: 'chat', label: '🎙️ 实时语音 Router', dirId: null,
   });
   const admissions = [];
-  const pushes = [];
+  const broadcasts = [];
+  const completions = [];
+  const chatSessions = new Map([[VOICE_ROUTER_ID, {
+    _activeTurn: { turnId: 'voice-turn-1', requestId: 'voice-request-1' },
+  }]]);
+  const operations = new Map();
   const seen = new Set();
   const host = createGatewayHost({
     persistedSessions: records,
-    chatSessions: new Map(),
+    chatSessions,
     directories: baseDirectories(),
     logger: { warn() {} },
     getChatHistoryService: () => ({ replace() {} }),
@@ -521,86 +526,111 @@ function gatewayHostFixture() {
     getSetSessionStatus: () => () => {},
     isTargetBusy: () => false,
     getOrchestrationRuntime: () => ({
+      operations: { get: async id => operations.get(id) || null },
       admitDispatch: async spec => {
         admissions.push(spec);
         const duplicate = seen.has(spec.idempotencyKey);
         seen.add(spec.idempotencyKey);
         return { id: 'op-voice-1', status: 'admitted', createdAt: 1, idempotent: duplicate };
       },
+      completeDispatch: async (id, result) => {
+        completions.push({ id, result });
+        return { ok: true };
+      },
       tick: async () => {},
     }),
     getTaskContextHost: () => ({ dispatchSpec: () => ({}) }),
     getCreateSessionRecord: () => async () => { throw new Error('voice dispatch must reuse existing sessions'); },
     appendChatMessage() {},
-    chatBroadcast: (sessionId, message) => {
-      const text = message?.message?.content?.[0]?.text;
-      if (text) pushes.push({ sessionId, text });
-    },
+    chatBroadcast: (sessionId, message) => broadcasts.push({ sessionId, message }),
     loadChatHistory: () => [],
   });
-  return { admissions, host, pushes, records };
+  return { admissions, broadcasts, chatSessions, completions, host, operations, records };
 }
 
-test('a repeated voice turn admits once and is reported only after admission', async () => {
+test('voice admission is emitted only from an authoritative MCP admission', () => {
   const fixture = gatewayHostFixture();
-  const marker = '好的\n<<dispatch target="commander-1">检查登录失败的原因并修复</dispatch>>';
+  fixture.host.recordRouterAdmission({
+    callerSessionId: VOICE_ROUTER_ID,
+    targetSessionId: 'chat-1',
+    operationId: 'op-voice-1',
+    status: 'queued',
+    duplicate: true,
+  });
+  // Turn completion must not overwrite an already-emitted admission.
+  fixture.host.handleGatewayTurnComplete('已处理', VOICE_ROUTER_ID, 'voice-turn-1', 'voice-request-1');
 
-  await fixture.host.handleGatewayTurnComplete(marker, VOICE_ROUTER_ID, 'turn-1');
-  await fixture.host.handleGatewayTurnComplete(marker, VOICE_ROUTER_ID, 'turn-1');
-
-  assert.deepEqual(
-    fixture.admissions.map(spec => spec.idempotencyKey),
-    ['voice:__voice_router__:turn-1', 'voice:__voice_router__:turn-1'],
-    'a replayed turn reuses its key so the durable runtime can dedupe it',
-  );
-  assert.equal(new Set(fixture.admissions.map(spec => spec.idempotencyKey)).size, 1);
-  assert.equal(fixture.admissions[0].ownerSessionId, VOICE_ROUTER_ID);
-  assert.equal(fixture.admissions[0].spec.targetId, 'commander-1');
-
-  assert.ok(fixture.pushes.length >= 2);
-  for (const push of fixture.pushes) {
-    assert.equal(push.sessionId, VOICE_ROUTER_ID, 'a voice result must never surface in the WeChat gateway');
-    assert.doesNotMatch(push.text, /回复「确认」/, 'a live call has nowhere to park a confirmation state');
-  }
-  assert.match(fixture.pushes[0].text, /已提交给/);
-
-  // A distinct turn is distinct work.
-  await fixture.host.handleGatewayTurnComplete(marker, VOICE_ROUTER_ID, 'turn-2');
-  assert.equal(new Set(fixture.admissions.map(spec => spec.idempotencyKey)).size, 2);
+  const frames = fixture.broadcasts.filter(entry => entry.message.type === 'voice_admission');
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].sessionId, VOICE_ROUTER_ID);
+  assert.equal(frames[0].message.outcome, 'admitted');
+  assert.equal(frames[0].message.operationId, 'op-voice-1');
+  assert.equal(frames[0].message.duplicate, true);
+  assert.equal(frames[0].message.targetLabel, '前端会话');
 });
 
-test('the WeChat gateway keeps its confirmation step and its Commander ban', async () => {
+test('a voice turn with no MCP admission emits no_dispatch, while WeChat needs no outcome frame', () => {
   const fixture = gatewayHostFixture();
-  await fixture.host.handleGatewayTurnComplete(
-    '<<dispatch target="commander-1">派活</dispatch>>',
-    fixture.host.GATEWAY_ID,
-    'wechat-1',
+  fixture.host.handleGatewayTurnComplete(
+    '需要你先说明项目', VOICE_ROUTER_ID, 'voice-turn-2', 'voice-request-2',
   );
-  assert.equal(fixture.admissions.length, 0, 'WeChat may not address a Commander directly');
-  assert.equal(fixture.pushes.at(-1).sessionId, fixture.host.GATEWAY_ID);
-  assert.match(fixture.pushes.at(-1).text, /无法分发/);
-
-  await fixture.host.handleGatewayTurnComplete(
-    '<<dispatch target="chat-1">派活</dispatch>>',
-    fixture.host.GATEWAY_ID,
-    'wechat-2',
-  );
-  assert.equal(fixture.admissions.length, 0, 'WeChat still waits for an explicit 确认');
-  assert.match(fixture.pushes.at(-1).text, /回复「确认」执行/);
+  fixture.host.handleGatewayTurnComplete('普通微信回复', fixture.host.GATEWAY_ID, 'wechat-1', 'wechat-1');
+  const frames = fixture.broadcasts.filter(entry => entry.message.type === 'voice_admission');
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].message.outcome, 'no_dispatch');
+  assert.equal(frames[0].message.speechText, '需要你先说明项目');
 });
 
 test('the voice router prompt routes by Fleet and asks instead of guessing', () => {
   const fixture = gatewayHostFixture();
   const voice = fixture.host.buildGatewayPrompt('把这个交给一号项目', VOICE_ROUTER_ID);
   assert.match(voice, /实时语音 Router/);
-  assert.match(voice, /优先投给目标项目的 Commander/);
+  assert.match(voice, /调用 dispatch_master，mode 必须是 async/);
   assert.match(voice, /就只用一句话反问，不要自己挑一个 id 投出去/);
-  assert.match(voice, /"type":"commander"/, 'the router needs session type to prefer a Commander');
+  assert.doesNotMatch(voice, /<<dispatch target=/);
+  assert.doesNotMatch(voice, /"type":"commander"/, 'Commander sessions are not worker targets');
   assert.match(voice, /"dirId":"dir-1"/, 'the router needs the Fleet id to resolve 这个项目');
   assert.equal(voice.includes(VOICE_ROUTER_ID), false, 'system sessions are not dispatch targets');
 
   const wechat = fixture.host.buildGatewayPrompt('把这个交给一号项目');
   assert.equal(wechat.includes('实时语音 Router'), false, 'the WeChat prompt is untouched');
+  assert.match(wechat, /等待用户明确回复「确认」/);
+  assert.match(wechat, /dispatch_master，mode 必须是 async/);
+});
+
+test('dispatch finalization keeps sync inline and requires dispatch_slave for async', async () => {
+  const fixture = gatewayHostFixture();
+  fixture.operations.set('op-sync', {
+    id: 'op-sync', kind: 'dispatch', status: 'running',
+    spec: { resultMode: 'sync', targetId: 'chat-1', replyTo: 'commander-1' },
+  });
+  await fixture.host.finalizeDispatch('op-sync', 'chat-1', 'sync result');
+  assert.deepEqual(fixture.completions.at(-1), {
+    id: 'op-sync',
+    result: {
+      status: 'completed', sessionName: 'chat-1', text: 'sync result',
+      source: 'sync_final_output',
+    },
+  });
+
+  fixture.operations.set('op-async-missing', {
+    id: 'op-async-missing', kind: 'dispatch', status: 'running',
+    spec: { resultMode: 'async', targetId: 'chat-1', replyTo: 'commander-1' },
+  });
+  await fixture.host.finalizeDispatch('op-async-missing', 'chat-1', 'untrusted final');
+  const missing = fixture.completions.at(-1);
+  assert.equal(missing.id, 'op-async-missing');
+  assert.equal(missing.result.status, 'failed');
+  assert.match(missing.result.error, /没有调用 dispatch_slave/);
+  assert.equal(missing.result.source, 'missing_dispatch_slave');
+
+  fixture.operations.set('op-async-done', {
+    id: 'op-async-done', kind: 'dispatch', status: 'completed',
+    spec: { resultMode: 'async', targetId: 'chat-1', replyTo: 'commander-1' },
+  });
+  const count = fixture.completions.length;
+  await fixture.host.finalizeDispatch('op-async-done', 'chat-1', 'ignored');
+  assert.equal(fixture.completions.length, count, 'dispatch_slave completion is not overwritten');
 });
 
 test('the repo-owned frontend prompt carries identity only, never per-call context', () => {

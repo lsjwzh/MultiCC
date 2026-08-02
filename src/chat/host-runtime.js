@@ -11,7 +11,6 @@ const REQUIRED_PORTS = Object.freeze([
   'emitTurnComplete',
   'emitDispatchComplete',
   'emitGatewayComplete',
-  'inspectDispatchMarkers',
   'logSuppressed',
 ]);
 
@@ -80,13 +79,10 @@ function createChatHostRuntime(rawPorts) {
       return ports.emitDispatchComplete(effect.operationId, effect.sessionId, effect.finalText);
     }
     if (effect.type === 'gateway-turn-complete') {
-      // sessionId/turnId identify which gateway instance produced the marker and
+      // sessionId/turnId identify which gateway instance produced the turn and
       // key its idempotency; a second gateway must not inherit the first's state.
       // requestId is the caller's correlation key for the terminal outcome frame.
       return ports.emitGatewayComplete(effect.finalText, effect.sessionId, effect.turnId, effect.requestId);
-    }
-    if (effect.type === 'inspect-dispatch-markers') {
-      return ports.inspectDispatchMarkers(effect.sessionId, effect.finalText);
     }
     throw new Error(`unsupported chat post-turn effect: ${effect.type}`);
   }

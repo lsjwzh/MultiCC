@@ -1,69 +1,38 @@
-# Gateway 自动分发 — 实现 Brief (v1)
+# Gateway 分派契约（MCP-only）
 
-## 目标
-Gateway 收到微信消息后，可决定把任务**分发**给某个具体 session。
-- **要人确认**：分发前必须用户回「确认」才真正投递。
-- **产出自动回流**：目标 session 跑完后，结果自动推回微信。
-- **v1 只分发给 chat 类 session**；目标若没有 chat（terminal-only），临时创建一个同目录 chat 来接活。
+## 唯一入口
 
-## 现状（已核对代码）
-- Gateway 是单例 chat 会话：`type='gateway'`，id=`__gateway__`（见 `wechat-ilink.js:28,307`）。
-- 微信桥以 WS 客户端连 `/ws/chat?session=__gateway__`，把微信消息作为 Gateway 回合输入；读 Gateway 回复发回微信。
-- `buildGatewayPrompt`（`server.js:923`）把 session 列表 JSON + 用户文本拼成 prompt。当前提示词明确「不要假装转发」，**无任何投递逻辑**。
-- 普通 chat 回合触发逻辑全在 `handleChatWs` 的 `ws.on('message')`（`server.js:3326`）里，最终走 `spawnChat`（`server.js:3711`）；子进程退出 = 回合结束。
-- 跨 agent 留言 `/api/sessions/:id/notes`（`server.js:1623`）限制同目录（`:1631`）、被动送达——**不复用**。
+Gateway 与普通 chat 一样，只能通过会话内注入的 MultiCC Router MCP 跨会话派发：
 
-## 改动点
+- `route_task`：单向任务，不回传结果。
+- `dispatch_master({ mode: "sync" })`：工具调用保持挂起，安全进度通过 MCP progress notification 返回，Worker 最终答复直接成为工具结果。
+- `dispatch_master({ mode: "async" })`：持久登记后立即返回；Worker 必须调用 `dispatch_slave`，结果稍后作为新消息唤醒 Master。
 
-### 0. 前置重构（最关键）
-把 `ws.on('message')`（`server.js:3326`～`3711`）里「构建 prompt → spawnChat → 流式 → 落库」的核心抽成可后台调用的函数：
-```
-async function runChatTurn(sessionName, text, { isFirstTurn, originDispatchId } = {})
-```
-WS 入口改为调用它。这样分发路径无需 WS 客户端也能触发目标 session 跑回合。
+旧的 `POST /api/sessions/:id/dispatch`、`/api/v1/...` 与文本 marker 均已删除，任何 marker 形文本只按普通文本处理。
 
-### 1. Gateway 输出结构化分发意图
-改 `buildGatewayPrompt`（`server.js:923`）提示词：
-- 删掉「不要假装已自动转发」，改为：需要分发时，在回复末尾输出一行标记
-  `<<dispatch target="SESSION_ID">要交给该 session 的完整指令</dispatch>>`
-- 仍可同时给自然语言说明。
+## Gateway 行为
 
-### 2. 拦截 Gateway 回复 → 生成待确认
-在 Gateway 回合**完成**处（runChatTurn 落库 assistant text 时，判断 `persisted.type==='gateway'`）：
-- 正则解析 `<<dispatch target=...>...</dispatch>>`。
-- 若命中：**不立即投递**，存
-  `pendingDispatch = { id, targetId, message, createdAt }`（单例即可，新的覆盖旧的；或按目标存 Map）。
-- 向 Gateway clients 广播一条确认提示（桥会转发到微信）：
-  `「准备把任务投给 {targetId}：{message 摘要}。回复 确认 执行，回复 取消 放弃。」`
-- 标记从展示给用户的文本里剥掉（用户不该看到 raw 标记）。
+- 微信 Gateway：先自然语言复述目标与任务，等待用户明确确认；下一轮调用 `dispatch_master(mode="async")`。
+- 实时语音 Router：用户已明确要求执行时可直接调用 `dispatch_master(mode="async")`；含糊的项目/会话目标必须先追问。
+- 工具返回 `admitted` 和 `operation_id` 后，Gateway 才能声称任务已提交。
+- Gateway 不解析 assistant 输出，不从自然语言推断“已经派发”。
 
-### 3. 入站确认/取消拦截
-在 Gateway 收到新消息、**调用 buildGatewayPrompt 之前**（`server.js:3439` 一带）：
-- 若存在 pendingDispatch 且文本匹配 `^(确认|确定|yes|y|ok)$` → 调 `dispatchToSession()`，清空 pending，**不跑 LLM**。
-- 若匹配 `^(取消|算了|no|n)$` → 清空 pending，回一句「已取消」，不跑 LLM。
-- 否则照常走 Gateway LLM（用户可能改主意/补充）。
+## Async 不等待规则
 
-### 4. dispatchToSession(targetId, message)
-- 取 `persistedSessions.get(targetId)`。
-- **保证有 chat 目标**：
-  - 若该 record `kind==='chat'` → 直接用。
-  - 否则（terminal-only）→ 在**同 dirId** 下创建/复用一个临时 chat session（复用 `app.post('/api/sessions')` 的创建逻辑，抽成 `createChatSession({dirId, cli, ephemeral:true})`）。命名如 `${targetId}-gw-chat`，打 `ephemeral` 标记便于后续回收。
-- 调 `runChatTurn(chatSessionId, message, { isFirstTurn, originDispatchId })`。
+Async Master 得到 admission 后，只能继续处理与 Worker 结果无依赖的工作，然后自然结束当前 turn。不得轮询 operation、读取 Worker 会话、调用 wait 或用其他方式同步等待。Worker 的 `dispatch_slave` 回执形成一条正常会话消息；调度器仅在 Master 处于 `P`（当前 turn 正执行）时暂存，turn 结束进入 `D`、`W` 或 `E` 后即可投递并唤醒。分派协议不制造 `B` 状态。
 
-### 5. 自动回流
-- 给该次运行带 `originDispatchId`。
-- 在回合完成处：若 `originDispatchId` 存在 → 取目标 session 最终 assistant text，推回微信。
-  - 推送实现：复用桥的出站通道（`wechat-ilink.js` 内向微信发消息的路径，见 router `target==='wechat'` @ `wechat-ilink.js:699`），或向 `__gateway__` clients 广播一条带前缀的 system 消息让桥转发：
-    `「{targetId} 回复：\n{result}」`
+若 Async Worker 结束却没有调用 `dispatch_slave`，Host 将 operation 终结为 `missing_dispatch_slave` 失败，并把失败回执唤醒 Master；不会把普通最终文本误当作成功。
 
-## 边界 / 待定（实现时注意，先用保守默认）
-- 目标 session 正忙（已有回合在跑）：v1 直接拒绝并回提示「{targetId} 正在忙，稍后再试」，不排队。
-- pendingDispatch 过期：>10 分钟未确认自动失效。
-- 临时 chat 的回收：先不自动删，留 `ephemeral` 标记，后续做清理。
-- 安全：dispatch target 必须在 persistedSessions 内且非 aux/gateway，否则回错误提示。
+## Sync 规则
 
-## 验收
-1. 微信对 Gateway 说「让 metaads 看下今天预算」→ Gateway 回带确认提示。
-2. 回「确认」→ 自动给 meta-ads 目录起临时 chat 并投递。
-3. 该 chat 跑完 → 结果自动推回微信，前缀「metaads 回复：」。
-4. 回「取消」→ 不投递。
+Sync Worker 不调用 `dispatch_slave`。Host 订阅该 operation 对应 Worker turn 的规范化事件，持续转发模型明确输出的 reasoning/thinking 增量、文本增量、安全工具名、心跳阶段和公开错误；工具输入、工具结果、thinking signature、redacted thinking、凭证及原始内部事件不会透出。Worker 最终 assistant 输出会完成 operation，并直接关闭原 MCP 调用，不插入新消息。
+
+目标忙时，两种模式都进入持久 FIFO：Sync 继续挂起；Async 已经返回 admission，之后由结果消息唤醒。
+
+## 验收不变量
+
+1. 生产代码不存在公开 HTTP dispatch route，也不存在 marker 执行器。
+2. `dispatch_master` 必须显式传 `mode`；Async 不接受 `timeout_seconds`。
+3. Sync 最终结果不产生 `dispatch.result` outbox；Async 只接受同一 operation lineage 的 `dispatch_slave`。
+4. Async 回执不会打断 `P`，但可从 `D/W/E` 启动新 turn。
+5. operation、task board 与接收消息均保留真实发送者和 task lineage，重试由 idempotency key 去重。

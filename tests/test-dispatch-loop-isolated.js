@@ -58,6 +58,7 @@ async function main() {
         arguments: {
           target_session_id: slave.id,
           message: 'do the work: ' + mode,
+          mode: 'async',
         },
       };
       const res = await fetch(base + '/api/internal/router-tools/dispatch_master', {

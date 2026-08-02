@@ -41,7 +41,7 @@ For ZCode, install the official desktop app from [zcode.z.ai](https://zcode.z.ai
 
 - **Git worktree isolation.** Each normal session runs in `<repo>/.multicc-worktrees/<sessionId>` on branch `multicc/<sessionId>`. Parallel agents edit safely; merge/sync APIs move changes between session branches and the base branch.
 - **Agent Commander.** Every new directory is seeded with an Agent Commander chat session — a fleet conductor that can coordinate specialized sibling sessions. Comes with role presets for common agent profiles.
-- **Cross-session dispatch.** Any chat session can emit `<<dispatch target="SESSION_ID">...</dispatch>>`; MultiCC runs the task on the target session and injects the result back. IM bridges use the same mechanism with explicit confirmation.
+- **MCP-only cross-session dispatch.** `route_task` is one-way. `dispatch_master` requires `mode="sync"` (stream safe, provider-emitted reasoning plus worker progress and return inline) or `mode="async"` (return after admission; `dispatch_slave` later inserts a result message and wakes the caller). The retired HTTP and text-marker paths are not executable.
 - **In-place cross-CLI handoff (chat sessions only).** A chat can switch among Claude, Codex, OpenCode, ZCode, and Qoder CN without changing its logical session or worktree. Terminal sessions are fixed to the CLI they were created with. See [Multi-CLI switching](cli-switching.md). Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
 - **Passive inter-agent notes.** Sessions leave notes for siblings in the same directory; notes are prepended to the target agent's next chat turn.
 - **Syntax-gated merges.** Merge is rejected if a session's changes introduce JS syntax errors — broken code can't reach the base branch.
@@ -113,7 +113,7 @@ MultiCC can be your agents' gateway to the world — reply from WeChat, Feishu, 
 
 All bridges support:
 - Bidirectional relay between IM and a MultiCC chat session.
-- `<<dispatch>>` with explicit confirmation — the agent proposes a task, you confirm in-chat, and the result flows back.
+- MCP dispatch with bridge-specific confirmation — the agent proposes a task, you confirm in-chat where required, then the Gateway calls `dispatch_master(mode="async")`; the result returns as a new message.
 - Live SSE log stream in the browser UI.
 - Start/stop controls and credential management from `/manage`.
 

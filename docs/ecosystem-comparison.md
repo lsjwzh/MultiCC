@@ -185,7 +185,7 @@ MultiCC is the only project in this list that is a **self-hosted server** rather
 
 1. **Always-on, headless operation.** Runs on your Mac mini / Linux box / VPS. No desktop needed. Agents keep working after you close your laptop.
 2. **Multi-client per session.** Web, Flutter app, and IM bridges can all attach to the same session simultaneously — output fans out to all.
-3. **IM-native.** Five IM bridges (WeChat, Feishu, Telegram, Discord, Slack) with bidirectional relay and `<<dispatch>>` confirmation. cc-connect does bridging only; MultiCC does bridging + orchestration.
+3. **IM-native.** Five IM bridges (WeChat, Feishu, Telegram, Discord, Slack) with bidirectional relay and MCP-backed dispatch confirmation. cc-connect does bridging only; MultiCC does bridging + orchestration.
 4. **Scheduled & autonomous work.** Cron jobs with persistent context, wait/poll auto-resume, run-detached background tasks — agents continue without human nudges.
 5. **Voice.** S2S real-time voice (VAD → ASR → LLM → TTS → barge-in) and classic STT with vocabulary learning. No other harness offers voice.
 6. **Per-session provider isolation.** One session on Claude Max, another on DeepSeek, no env bleed. Other tools switch globally or don't manage providers.

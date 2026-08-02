@@ -29,7 +29,7 @@ multicc/
 │   ├── auth-security.js          # HMAC cookies, timing-safe token compare, WS tickets
 │   ├── request-locality.js       # Loopback detection (localhost bypasses ACCESS_TOKEN)
 │   ├── directories.js / directory/ # Directory workspace registry & per-directory services
-│   ├── dispatch/                 # Cross-session dispatch markers, targeting, gateway host
+│   ├── dispatch/                 # MCP dispatch targeting, progress reduction, gateway host
 │   ├── commander-*.js            # Agent Commander runtime + router
 │   ├── task-board.js             # Shared task board store
 │   ├── notes-store.js            # Inter-agent notes
