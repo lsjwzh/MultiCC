@@ -2977,7 +2977,8 @@ app.use(safeErrorHandler(logger));
     backfillReportedModels();                       // recover runtime model for pre-upgrade sessions
     skillSyncRuntime.start();
     triggerRuntime.start();
-    qwenAudioSupervisor.reconcileAll();
+    try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
+    qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
     // Periodic scan: re-judge non-terminal/junk sessions every minute. First
     // tick delayed 6s so aux warms up and WS clients reconnect. Replaces the
     // old one-shot startup reconcile - restart just means the first tick runs.
