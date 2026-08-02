@@ -282,6 +282,7 @@ function createChatHostCoordinator(rawPorts, options = {}) {
     turn.postTurnReservation = Object.freeze({ reservationId, runnerId: runner.runnerId });
     const routed = routePostTurn({
       turnId: turn.turnId,
+      requestId: turn.requestId,
       sessionId: turn.sessionId,
       sessionType: input.sessionType,
       finalText: input.finalText,
@@ -321,6 +322,7 @@ function createChatHostCoordinator(rawPorts, options = {}) {
     }
     const routed = routePostTurn({
       turnId: turn.turnId,
+      requestId: turn.requestId,
       sessionId: turn.sessionId,
       sessionType: input.sessionType,
       finalText: input.finalText,

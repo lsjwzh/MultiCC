@@ -3,8 +3,29 @@
 const crypto = require('crypto');
 const WebSocket = require('ws');
 
+const { parseDispatchMarker } = require('./dispatch/markers');
+
 const QWEN_INSTRUCTION_BLOCK = /<qwen_audio_agent_backend_instructions>[\s\S]*?<\/qwen_audio_agent_backend_instructions>\s*/gi;
 const QWEN_REQUEST_ENVELOPE = /<qwen_audio_agent_request>([\s\S]*?)<\/qwen_audio_agent_request>/i;
+
+// A globally-routed voice turn ends twice: once with the transport's `result`,
+// and once with the Host's structured `voice_admission` frame. Either may land
+// first, so the caller waits for both — but only for a bounded time, and a wait
+// that expires reports uncertainty instead of inventing a delivery verdict.
+const ADMISSION_VERSION = 1;
+const ADMISSION_OUTCOMES = new Set([
+  'no_dispatch', 'admitted', 'rejected', 'failed', 'cancelled', 'unknown',
+]);
+const ADMISSION_TIMEOUT_MIN_MS = 15_000;
+const ADMISSION_TIMEOUT_MAX_MS = 30_000;
+const ADMISSION_TIMEOUT_DEFAULT_MS = 20_000;
+const ADMISSION_UNCERTAIN = '这条任务的提交状态还没有确认，请稍后在 MultiCC 任务板上查看。';
+
+function boundedAdmissionTimeout(value) {
+  return Number.isFinite(value) && value > 0
+    ? Math.min(Math.max(Math.floor(value), ADMISSION_TIMEOUT_MIN_MS), ADMISSION_TIMEOUT_MAX_MS)
+    : ADMISSION_TIMEOUT_DEFAULT_MS;
+}
 
 function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -84,6 +105,45 @@ function assistantDelta(previous, next, snapshot) {
   return { text: value, snapshot: value };
 }
 
+// Only ever applied to a complete buffered turn, never to a streamed chunk: a
+// marker split across chunks cannot be recognised, so a per-chunk filter would
+// leak half of it. Anything that still looks like the start of a marker (a turn
+// cut off mid-marker) is dropped rather than spoken.
+function speakableFromBuffer(raw) {
+  const value = String(raw || '');
+  const parsed = parseDispatchMarker(value);
+  let text = parsed ? parsed.cleanText : value;
+  const opener = text.search(/<<\s*dispatch\b/i);
+  if (opener >= 0) text = text.slice(0, opener);
+  return text
+    .replace(/<<(?:d(?:i(?:s(?:p(?:a(?:t(?:c(?:h)?)?)?)?)?)?)?)?$/i, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// What the call actually says. The Host's own marker-stripped text is preferred
+// because the Host saw the whole turn; the buffer is the fallback, and a canned
+// line is the last resort so a settled turn is never silent.
+function admissionSpeech(outcome, admission, buffered) {
+  const hosted = clean(admission?.speechText);
+  const spoken = hosted || speakableFromBuffer(buffered);
+  if (outcome === 'unknown') {
+    // Only a turn that actually carried a marker is uncertain about delivery;
+    // a pure conversational turn has nothing pending to qualify.
+    const pending = !clean(admission?.speechText) && !!parseDispatchMarker(String(buffered || ''));
+    if (!spoken) return ADMISSION_UNCERTAIN;
+    return pending ? `${spoken}\n${ADMISSION_UNCERTAIN}` : spoken;
+  }
+  if (outcome === 'rejected' || outcome === 'failed') {
+    // Never lead with the model's own prose here: it says the work is under way,
+    // and nothing was admitted. The failure line is the whole answer.
+    return clean(admission?.error?.publicMessage) || '这条语音任务没有提交成功。';
+  }
+  if (spoken) return spoken;
+  if (outcome === 'admitted') return '任务已提交到 MultiCC；后续状态以任务板为准。';
+  return 'MultiCC 已处理这条语音请求。';
+}
+
 function toolKind(name) {
   const value = String(name || '').toLowerCase();
   if (/read|search|find|list|status/.test(value)) return 'read';
@@ -132,6 +192,10 @@ function createVoiceAcpBridge({
   maxSessions = 32,
   requestTimeoutMs = 10_000,
   connectTimeoutMs = 10_000,
+  admissionTimeoutMs = ADMISSION_TIMEOUT_DEFAULT_MS,
+  // Injected only so the settle deadline is testable without waiting it out;
+  // production always uses the real, bounded timer.
+  admissionTimers = { setTimeout, clearTimeout },
   log = () => {},
 } = {}) {
   const dirId = clean(directoryId);
@@ -148,6 +212,7 @@ function createVoiceAcpBridge({
     : 32;
   const httpTimeout = boundedTimeout(requestTimeoutMs, 10_000);
   const socketTimeout = boundedTimeout(connectTimeoutMs, 10_000);
+  const admissionTimeout = boundedAdmissionTimeout(admissionTimeoutMs);
 
   async function request(pathname, options = {}) {
     const controller = new AbortController();
@@ -326,6 +391,12 @@ function createVoiceAcpBridge({
           socket.on('close', () => {
             if (!settled) fail(new Error('Commander WebSocket closed during connect'));
             if (this.socket === socket) this.socket = null;
+            // FOLLOW-UP RISK: `voice_admission` is a live broadcast with no durable
+            // replay. A socket that drops after the Host admitted the dispatch but
+            // before its frame arrived loses that outcome permanently — the turn
+            // ends as an error even though the work is queued and will run. Closing
+            // this hole needs a replayable outcome log the bridge can re-read on
+            // reconnect (keyed by requestId), which is out of scope here.
             if (this.active) this.finish(this.active, new Error('Commander WebSocket closed before turn completion'));
           });
         });
@@ -346,13 +417,102 @@ function createVoiceAcpBridge({
 
     emitText(active, value, snapshot = false) {
       const delta = assistantDelta(active.assistantText, value, snapshot);
+      // assistantText is the full raw turn under both transports, so it doubles
+      // as the buffer a structured turn settles from.
       active.assistantText = delta.snapshot;
       if (!delta.text) return;
+      // A globally-routed turn is buffered, never streamed: its dispatch marker
+      // arrives split across chunks, and the smallest unit that can be filtered
+      // safely is the whole turn. Chat scope keeps streaming word by word — it
+      // routes to the session the user is already looking at and carries no
+      // marker to leak.
+      if (active.structured) return;
       active.emittedText = true;
       this.notify(active, {
         sessionUpdate: 'agent_message_chunk',
         messageId: active.messageId,
         content: { type: 'text', text: delta.text },
+      });
+    }
+
+    speak(active, text) {
+      const value = String(text || '');
+      if (!value) return;
+      active.emittedText = true;
+      this.notify(active, {
+        sessionUpdate: 'agent_message_chunk',
+        messageId: active.messageId,
+        content: { type: 'text', text: value },
+      });
+    }
+
+    armSettleTimeout(active) {
+      if (!active.structured || active.settled || active.finished || active.settleTimer) return;
+      const timer = admissionTimers.setTimeout(() => {
+        active.settleTimer = null;
+        if (active.settled || active.finished) return;
+        // Silence from either half is uncertainty, not evidence. Claiming "not
+        // delivered" here would be unsupportable: the admission may well have
+        // succeeded and only its frame been lost.
+        log('voice_acp_admission_timeout', {
+          sessionId: this.id,
+          resultSeen: active.resultSeen,
+          outcomeSeen: !!active.admission,
+        });
+        this.settle(active, 'unknown');
+      }, admissionTimeout);
+      timer?.unref?.();
+      active.settleTimer = timer;
+    }
+
+    // Correlation key is (requestId, turnId). requestId is this turn's own
+    // clientMsgId; turnId is bound by the first matching envelope, so a later
+    // envelope from a different turn — or from another concurrent call sharing
+    // this router's socket — is ignored rather than allowed to settle this one.
+    handleAdmission(active, message) {
+      if (!active.structured || active.settled || active.finished) return;
+      if (message.version !== ADMISSION_VERSION) return;
+      if (clean(message.requestId) !== active.clientMsgId) return;
+      const turnId = clean(message.turnId);
+      if (active.turnId && turnId && turnId !== active.turnId) return;
+      if (active.admission) return;
+      active.turnId = turnId || active.turnId;
+      const outcome = ADMISSION_OUTCOMES.has(message.outcome) ? message.outcome : 'unknown';
+      active.admission = {
+        outcome,
+        // An operation id is what admission proves; no other outcome keeps one.
+        operationId: outcome === 'admitted' ? clean(message.operationId) : '',
+        duplicate: message.duplicate === true,
+        queueStatus: clean(message.queueStatus),
+        speechText: typeof message.speechText === 'string' ? message.speechText : '',
+        error: message.error && typeof message.error === 'object' ? message.error : null,
+      };
+      this.armSettleTimeout(active);
+      this.trySettle(active);
+    }
+
+    trySettle(active) {
+      if (!active.structured || active.settled || active.finished) return;
+      if (!active.resultSeen || !active.admission) return;
+      this.settle(active, active.admission.outcome);
+    }
+
+    settle(active, outcome) {
+      if (active.settled || active.finished) return;
+      active.settled = true;
+      if (active.settleTimer) {
+        admissionTimers.clearTimeout(active.settleTimer);
+        active.settleTimer = null;
+      }
+      // A cancelled call stops speaking; it does not announce a withdrawal.
+      // Work already admitted keeps running, and saying otherwise would be a
+      // false statement the user would act on.
+      if (!active.cancelRequested) {
+        this.speak(active, admissionSpeech(outcome, active.admission, active.assistantText));
+      }
+      this.finish(active, null, {
+        stopReason: active.cancelRequested ? 'cancelled' : 'end_turn',
+        ...(active.usage && active.usage.totalTokens ? { usage: active.usage } : {}),
       });
     }
 
@@ -396,6 +556,13 @@ function createVoiceAcpBridge({
         }
         return;
       }
+      // Checked before the started guard: the outcome frame carries its own
+      // requestId, which is a stricter correlation than the echoed user message,
+      // and "either half may land first" has to hold for this half too.
+      if (message.type === 'voice_admission') {
+        this.handleAdmission(active, message);
+        return;
+      }
       if (!active.started) return;
       if (message.type === 'assistant' && Array.isArray(message.message?.content)) {
         const snapshot = message.message.textSnapshot === true;
@@ -418,12 +585,6 @@ function createVoiceAcpBridge({
         return;
       }
       if (message.type !== 'result') return;
-      if (!active.emittedText) {
-        const fallback = message.commanderRoute
-          ? '任务已提交到 MultiCC；后续状态以任务板为准。'
-          : 'MultiCC 已处理这条语音请求。';
-        this.emitText(active, fallback, false);
-      }
       const usage = message.usage && typeof message.usage === 'object'
         ? {
             totalTokens: Number(message.usage.total_tokens || message.usage.totalTokens) || 0,
@@ -431,6 +592,21 @@ function createVoiceAcpBridge({
             outputTokens: Number(message.usage.output_tokens || message.usage.outputTokens) || 0,
           }
         : null;
+      if (active.structured) {
+        // Half the answer. The turn ends when the Host's outcome frame has also
+        // been seen — in either order — or when the bounded wait expires.
+        active.resultSeen = true;
+        if (usage) active.usage = usage;
+        this.armSettleTimeout(active);
+        this.trySettle(active);
+        return;
+      }
+      if (!active.emittedText) {
+        const fallback = message.commanderRoute
+          ? '任务已提交到 MultiCC；后续状态以任务板为准。'
+          : 'MultiCC 已处理这条语音请求。';
+        this.emitText(active, fallback, false);
+      }
       this.finish(active, null, {
         stopReason: active.cancelRequested ? 'cancelled' : 'end_turn',
         ...(usage && usage.totalTokens ? { usage } : {}),
@@ -440,6 +616,10 @@ function createVoiceAcpBridge({
     finish(active, error = null, result = null) {
       if (this.active !== active || active.finished) return;
       active.finished = true;
+      if (active.settleTimer) {
+        admissionTimers.clearTimeout(active.settleTimer);
+        active.settleTimer = null;
+      }
       this.active = null;
       active.signal?.removeEventListener('abort', active.abortListener);
       active.notifyChain.finally(() => {
@@ -473,6 +653,16 @@ function createVoiceAcpBridge({
           started: false,
           cancelRequested: false,
           finished: false,
+          // A globally-routed turn may carry a dispatch marker, so it is buffered
+          // and only spoken once the Host's terminal outcome frame has arrived.
+          // Chat/fleet scope streams as before.
+          structured: this.target.scope === 'global',
+          settled: false,
+          resultSeen: false,
+          usage: null,
+          admission: null,
+          turnId: '',
+          settleTimer: null,
           notify,
           notifyChain: Promise.resolve(),
           signal,
@@ -500,6 +690,10 @@ function createVoiceAcpBridge({
         if (this.socket?.readyState === WebSocketImpl.OPEN) {
           this.socket.send(JSON.stringify({ type: 'cancel', operationId: active.clientMsgId }));
         }
+        // The turn is already running host-side; cancelling it does not recall a
+        // dispatch that was already admitted. Arm the bounded wait so a host that
+        // never answers still ends the call instead of hanging it.
+        this.armSettleTimeout(active);
         return { ok: true, active: true };
       }
       // Cancel against whatever this turn was actually delivered to, never a
@@ -602,11 +796,16 @@ function createVoiceAcpBridge({
 }
 
 module.exports = {
+  ADMISSION_TIMEOUT_MAX_MS,
+  ADMISSION_TIMEOUT_MIN_MS,
   QWEN_INSTRUCTION_BLOCK,
+  admissionSpeech,
   assistantDelta,
+  boundedAdmissionTimeout,
   boundedTimeout,
   createVoiceAcpBridge,
   normalizeBaseUrl,
+  speakableFromBuffer,
   stableQueueEntryId,
   textFromPrompt,
   validateTransportSecurity,
