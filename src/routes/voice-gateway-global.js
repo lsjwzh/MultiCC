@@ -159,7 +159,12 @@ function createGlobalVoiceGatewayRoutes({
         return fail(req, res, 'voice_gateway_not_found', versioned);
       }
       // Backfill for a gateway configured before the router existed.
-      if (!body.sourceSessionId) voiceRouter?.ensure?.();
+      if (!body.sourceSessionId) {
+        const provisioned = voiceRouter?.ensure?.();
+        if (provisioned && provisioned.ok === false) {
+          return fail(req, res, provisioned.code || 'voice_router_not_provisioned', versioned);
+        }
+      }
       const issued = launchRegistry.issue({ sourceSessionId: body.sourceSessionId });
       if (!issued.ok) return fail(req, res, issued.code, versioned);
 
@@ -200,8 +205,8 @@ function createGlobalVoiceGatewayRoutes({
   }
 
   // Redeemed once per voice utterance by the ACP agent, never by a browser.
-  // Re-resolving here is what makes a Commander swap take effect without a
-  // restart and a forged or expired id inert.
+  // Re-resolving here makes source/Router changes take effect without a restart
+  // and keeps a forged or expired id inert.
   function resolveLaunch(req, res, versioned) {
     const result = launchRegistry.resolve(req.params.launchId);
     if (!result.ok) return fail(req, res, result.code, versioned);

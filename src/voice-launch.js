@@ -9,13 +9,12 @@
 // is an opaque id that means nothing outside this registry.
 //
 // The ticket is not a snapshot. `resolve` re-derives the routing target from
-// live records on every prompt, so replacing a Fleet's Commander takes effect on
-// the next utterance with no restart and no re-launch. A ticket whose session or
-// directory disappeared stops resolving rather than falling back to some other
-// target — a voice request must never land somewhere the user did not mean.
+// live records on every prompt, so a deleted/retyped source session or Router is
+// rejected on the next utterance. A ticket never falls back to some other target
+// — a voice request must not land somewhere the user did not mean.
 
 const crypto = require('crypto');
-const { VOICE_ROUTER_ID } = require('./voice-router');
+const { VOICE_ROUTER_ID, isVoiceRouterRecord } = require('./voice-router');
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const MAX_TICKETS = 64;
@@ -94,6 +93,7 @@ function createVoiceLaunchRegistry({
   function globalContext() {
     const router = records.get(GLOBAL_VOICE_ROUTER_ID);
     if (!router) return { ok: false, code: 'voice_router_not_provisioned' };
+    if (!isVoiceRouterRecord(router)) return { ok: false, code: 'voice_router_id_conflict' };
     return {
       ok: true,
       context: {
@@ -113,8 +113,9 @@ function createVoiceLaunchRegistry({
     const resolved = scope === 'chat' ? chatContext(sourceSessionId) : globalContext();
     if (!resolved.ok) return resolved;
     const context = resolved.context;
-    // The Commander is looked up fresh rather than stored, so a Fleet that
-    // swaps Commanders mid-call routes correctly on the very next utterance.
+    // Retain fresh Commander information as compatibility/diagnostic metadata
+    // for chat launches. It never selects the delivery target: chat scope stays
+    // on its source session and global scope stays on the worker-only Router.
     if (context.directoryId) {
       const commander = resolveCommander(records, context.directoryId);
       context.commanderSessionId = commander.ok ? commander.sessionId : null;
@@ -155,8 +156,8 @@ function createVoiceLaunchRegistry({
   }
 
   // Called once per voice utterance. Re-validating here (instead of trusting the
-  // ticket's issue-time snapshot) is what makes a deleted session or a replaced
-  // Commander take effect immediately, and what makes a forged id inert.
+  // ticket's issue-time snapshot) is what makes deletion/reclassification take
+  // effect immediately and what makes a forged id inert.
   function resolve(launchId) {
     sweep();
     const id = clean(launchId);

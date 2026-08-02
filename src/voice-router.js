@@ -5,9 +5,10 @@
 // A chat launch already knows where it belongs — the session the user pressed
 // the phone button in. A *global* launch does not, and guessing a Fleet from a
 // spoken sentence is exactly the failure mode invariant 6 forbids. So global
-// voice lands in one dedicated gateway session whose only job is to decide, in
-// the open, which Fleet's Commander should receive the work — the same shape as
-// the WeChat gateway, with its own prompt and its own pending state.
+// voice lands in one dedicated gateway session whose job is to decide, in the
+// open, which concrete ordinary Worker should receive the work. Commander and
+// system sessions are not candidates; after durable admission the task board
+// projects the same operation into the selected Worker's Fleet.
 //
 // It is provisioned when the global voice gateway is first configured, on the
 // same principle as the WeChat bridge creating `__gateway__` at start: a router
@@ -50,6 +51,7 @@ function createVoiceRouterProvisioner({
     try { fs.mkdirSync(cwd, { recursive: true }); } catch (_) {}
     const stamp = now();
     let record = null;
+    let created = false;
     mutate('voice.router-provision', draft => {
       const collision = draft.get(VOICE_ROUTER_ID);
       if (collision) { record = collision; return; }
@@ -66,8 +68,13 @@ function createVoiceRouterProvisioner({
         updatedAt: stamp,
       };
       draft.set(VOICE_ROUTER_ID, record);
+      created = true;
     });
-    return { ok: true, created: true, record };
+    // Re-check after the atomic mutation. Another writer may have claimed the
+    // reserved id between the optimistic read above and this mutation; only the
+    // exact Host-owned Router shape is acceptable.
+    if (!isVoiceRouterRecord(record)) return { ok: false, code: 'voice_router_id_conflict' };
+    return { ok: true, created, record };
   }
 
   return Object.freeze({ cwd, ensure, get, id: VOICE_ROUTER_ID });

@@ -720,6 +720,73 @@ test('a released delivery claim returns its routed task card to queued', () => {
   assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'queued');
 });
 
+test('global gateway projects a cross-Fleet worker admission with the durable operation id', () => {
+  const records = new Map([
+    ['__voice_router__', {
+      id: '__voice_router__', kind: 'chat', type: 'gateway', dirId: null,
+      label: 'Realtime Voice Router',
+    }],
+    ['worker-1', {
+      id: 'worker-1', kind: 'chat', type: 'worker', dirId: 'dir-1', label: 'Worker 1',
+    }],
+    ['worker-2', {
+      id: 'worker-2', kind: 'chat', type: 'worker', dirId: 'dir-2', label: 'Worker 2',
+    }],
+  ]);
+  const { runtime, broadcasts } = mkRuntime({ records });
+  assert.equal(runtime.recordRouterAdmission({
+    callerSessionId: '__voice_router__',
+    targetSessionId: 'worker-2',
+    taskId: 'tsk-voice-cross-fleet',
+    taskText: '修复二号项目',
+    operationId: 'op-durable-worker-2',
+    status: 'admitted',
+    resultMode: 'async',
+  }), true);
+
+  const board = runtime.getBoard();
+  const task = board.tasks['tsk-voice-cross-fleet'];
+  assert.equal(board.modules[task.moduleId].dirId, 'dir-2');
+  assert.equal(task.refs[0].dirId, 'dir-2');
+  assert.equal(task.refs[0].sessionId, 'worker-2');
+  assert.equal(task.routing.mode, 'router-tool');
+  assert.equal(task.routing.targetSessionId, 'worker-2');
+  assert.equal(task.routing.workerSessionId, 'worker-2');
+  assert.equal(task.routing.operationId, 'op-durable-worker-2');
+  assert.equal(broadcasts.at(-1).dirId, null, 'meta clients receive the canonical global board update');
+});
+
+test('only the real Voice Router may project a cross-Fleet admission', () => {
+  const records = new Map([
+    ['caller-1', {
+      id: 'caller-1', kind: 'chat', type: 'worker', dirId: 'dir-1', label: 'Caller',
+    }],
+    ['worker-2', {
+      id: 'worker-2', kind: 'chat', type: 'worker', dirId: 'dir-2', label: 'Worker',
+    }],
+    ['__gateway__', {
+      id: '__gateway__', kind: 'chat', type: 'gateway', dirId: null, label: 'Other Gateway',
+    }],
+  ]);
+  const { runtime } = mkRuntime({ records });
+  assert.equal(runtime.recordRouterAdmission({
+    callerSessionId: 'caller-1',
+    targetSessionId: 'worker-2',
+    taskId: 'tsk-cross-fleet-rejected',
+    operationId: 'op-cross-fleet-rejected',
+    status: 'admitted',
+  }), false);
+  assert.equal(runtime.getBoard().tasks['tsk-cross-fleet-rejected'], undefined);
+  assert.equal(runtime.recordRouterAdmission({
+    callerSessionId: '__gateway__',
+    targetSessionId: 'worker-2',
+    taskId: 'tsk-other-gateway-rejected',
+    operationId: 'op-other-gateway-rejected',
+    status: 'admitted',
+  }), false);
+  assert.equal(runtime.getBoard().tasks['tsk-other-gateway-rejected'], undefined);
+});
+
 test('canonical task messages create one projection, retain full body, and classify updates it', () => {
   const history = [];
   const { runtime, broadcasts } = mkRuntime({ loadHistory: () => history });
