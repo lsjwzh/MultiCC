@@ -2,14 +2,20 @@
 
 const crypto = require('crypto');
 const WebSocket = require('ws');
+const { speakableText } = require('./voice-speakable');
 
 const QWEN_INSTRUCTION_BLOCK = /<qwen_audio_agent_backend_instructions>[\s\S]*?<\/qwen_audio_agent_backend_instructions>\s*/gi;
 const QWEN_REQUEST_ENVELOPE = /<qwen_audio_agent_request>([\s\S]*?)<\/qwen_audio_agent_request>/i;
+const QWEN_REQUEST_ENVELOPE_G = /<qwen_audio_agent_request>[\s\S]*?<\/qwen_audio_agent_request>\s*/gi;
+const QWEN_REQUEST_ENVELOPE_OPENER = /<qwen_audio_agent_request>/i;
 
-// A globally-routed voice turn ends twice: once with the transport's `result`,
-// and once with the Host's structured `voice_admission` frame. Either may land
-// first, so the caller waits for both — but only for a bounded time, and a wait
-// that expires reports uncertainty instead of inventing a delivery verdict.
+// A globally-routed voice turn is ended by exactly one fact: the Host's
+// structured `voice_admission` frame, correlated to this turn's own requestId.
+// The router session is shared — every concurrent call connected to it receives
+// the same generic `assistant`/`tool`/`result` frames, and none of those carry a
+// requestId or turnId — so none of them may end, or speak for, this turn. The
+// wait is bounded, and a wait that expires reports uncertainty instead of
+// inventing a delivery verdict.
 const ADMISSION_VERSION = 1;
 const ADMISSION_OUTCOMES = new Set([
   'no_dispatch', 'admitted', 'rejected', 'failed', 'cancelled', 'unknown',
@@ -54,6 +60,18 @@ function validateTransportSecurity(baseUrl, accessToken) {
   return normalized;
 }
 
+// The launch envelope is addressed to this bridge, not to the session the turn
+// lands in: it carries the `voice_session_id` ticket that names the routing
+// target. Only the user's own words may travel on as the chat message — the
+// ticket must never be persisted into a session's history, echoed back to the
+// user, or forwarded to a worker. An envelope that arrives truncated is cut to
+// the end of the text for the same reason: half a ticket is still a ticket.
+function stripLaunchEnvelope(value) {
+  const text = String(value || '').replace(QWEN_REQUEST_ENVELOPE_G, '');
+  const residue = text.search(QWEN_REQUEST_ENVELOPE_OPENER);
+  return residue >= 0 ? text.slice(0, residue) : text;
+}
+
 function textFromPrompt(blocks) {
   const values = [];
   for (const block of Array.isArray(blocks) ? blocks : []) {
@@ -64,7 +82,7 @@ function textFromPrompt(blocks) {
       if (uri) values.push(`[${name}](${uri})`);
     }
   }
-  return values.join('\n').replace(QWEN_INSTRUCTION_BLOCK, '').trim();
+  return stripLaunchEnvelope(values.join('\n').replace(QWEN_INSTRUCTION_BLOCK, '')).trim();
 }
 
 // The Qwen web client carries `?session=<launch id>` from the page URL through
@@ -103,21 +121,12 @@ function assistantDelta(previous, next, snapshot) {
   return { text: value, snapshot: value };
 }
 
+// Retired marker-shaped prose is inert, but must still never be spoken. One
+// shared sanitizer covers both marker families in all three shapes, and both
+// ends of this contract use it: the Host before it puts text in a frame, the
+// bridge before it puts text on the wire to TTS.
 function speakableFromBuffer(raw) {
-  let text = String(raw || '')
-    // Retired marker-shaped prose is inert, but still must never be spoken as
-    // user-facing text if an old/stale model happens to emit it.
-    .replace(/<<(?:dispatch|route)\s+[^>]*>[\s\S]*?<\/(?:dispatch|route)>>?/gi, '');
-  const markerStart = text.lastIndexOf('<<');
-  if (markerStart >= 0) {
-    const token = text.slice(markerStart).trim().split(/\s/, 1)[0].toLowerCase();
-    if (token === '<<' || '<<dispatch'.startsWith(token) || '<<route'.startsWith(token)) {
-      text = text.slice(0, markerStart);
-    }
-  }
-  return text
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return speakableText(typeof raw === 'string' ? raw : String(raw || ''));
 }
 
 // What the call actually says. The Host's structured text is preferred
@@ -393,7 +402,12 @@ function createVoiceAcpBridge({
             // ends as an error even though the work is queued and will run. Closing
             // this hole needs a replayable outcome log the bridge can re-read on
             // reconnect (keyed by requestId), which is out of scope here.
-            if (this.active) this.finish(this.active, new Error('Commander WebSocket closed before turn completion'));
+            if (this.active) {
+              // A cancelled call converges rather than raising: the user stopped
+              // it, so a dropped socket is the expected end, not a failure.
+              if (this.active.cancelRequested) this.finish(this.active, null, { stopReason: 'cancelled' });
+              else this.finish(this.active, new Error('Commander WebSocket closed before turn completion'));
+            }
           });
         });
       })().finally(() => {
@@ -412,20 +426,36 @@ function createVoiceAcpBridge({
     }
 
     emitText(active, value, snapshot = false) {
+      // A globally-routed turn neither streams nor buffers this text. The router
+      // session is shared by every concurrent global call, and these frames carry
+      // no correlation, so the text arriving here may belong to somebody else's
+      // utterance. Keeping it would only give the fallback path another call's
+      // words to say. This turn speaks from its own correlated outcome frame.
+      if (active.structured) return;
       const delta = assistantDelta(active.assistantText, value, snapshot);
-      // assistantText is the full raw turn under both transports, so it doubles
-      // as the buffer a structured turn settles from.
       active.assistantText = delta.snapshot;
       if (!delta.text) return;
-      // A globally-routed turn is buffered until the Host emits its structured
-      // MCP admission outcome. Chat scope keeps streaming word by word because
-      // it already targets the session the user is looking at.
-      if (active.structured) return;
+      // Chat scope streams word by word — but only words the sanitizer has
+      // already cleared. Re-running it over the whole buffer is what withholds a
+      // marker still arriving character by character: its fragment is not yet
+      // speakable, so it simply is not emitted until it resolves one way or the
+      // other.
+      const safe = speakableText(active.assistantText);
+      if (!safe.startsWith(active.spokenText)) {
+        // The buffer grew in a way that retracts something already spoken (a
+        // late `<` completing an opener). Never un-say it; resync and go quiet
+        // rather than repeat.
+        active.spokenText = safe;
+        return;
+      }
+      const chunk = safe.slice(active.spokenText.length);
+      if (!chunk) return;
+      active.spokenText = safe;
       active.emittedText = true;
       this.notify(active, {
         sessionUpdate: 'agent_message_chunk',
         messageId: active.messageId,
-        content: { type: 'text', text: delta.text },
+        content: { type: 'text', text: chunk },
       });
     }
 
@@ -440,17 +470,19 @@ function createVoiceAcpBridge({
       });
     }
 
+    // Armed the moment a structured turn starts, not when its first frame
+    // arrives: the failure this bounds is precisely the case where nothing
+    // correlated ever arrives at all.
     armSettleTimeout(active) {
       if (!active.structured || active.settled || active.finished || active.settleTimer) return;
       const timer = admissionTimers.setTimeout(() => {
         active.settleTimer = null;
         if (active.settled || active.finished) return;
-        // Silence from either half is uncertainty, not evidence. Claiming "not
-        // delivered" here would be unsupportable: the admission may well have
-        // succeeded and only its frame been lost.
+        // Silence is uncertainty, not evidence. Claiming "not delivered" here
+        // would be unsupportable: the admission may well have succeeded and only
+        // its frame been lost.
         log('voice_acp_admission_timeout', {
           sessionId: this.id,
-          resultSeen: active.resultSeen,
           outcomeSeen: !!active.admission,
         });
         this.settle(active, 'unknown');
@@ -471,23 +503,35 @@ function createVoiceAcpBridge({
       if (active.turnId && turnId && turnId !== active.turnId) return;
       if (active.admission) return;
       active.turnId = turnId || active.turnId;
-      const outcome = ADMISSION_OUTCOMES.has(message.outcome) ? message.outcome : 'unknown';
+      const claimed = ADMISSION_OUTCOMES.has(message.outcome) ? message.outcome : 'unknown';
+      // An operation id is what admission proves; no other outcome keeps one.
+      const operationId = claimed === 'admitted' ? clean(message.operationId) : '';
+      // Enforced on both ends. A frame claiming admission without an operation
+      // id is not evidence that anything durable happened, whatever it says, so
+      // the call is told the submission failed rather than that it succeeded.
+      const missingOperationId = claimed === 'admitted' && !operationId;
+      const outcome = missingOperationId ? 'failed' : claimed;
       active.admission = {
         outcome,
-        // An operation id is what admission proves; no other outcome keeps one.
-        operationId: outcome === 'admitted' ? clean(message.operationId) : '',
+        operationId,
         duplicate: message.duplicate === true,
         queueStatus: clean(message.queueStatus),
-        speechText: typeof message.speechText === 'string' ? message.speechText : '',
-        error: message.error && typeof message.error === 'object' ? message.error : null,
+        // Sanitized on arrival too: the Host strips marker-shaped prose before
+        // it frames the text, and this is the last gate before TTS.
+        speechText: typeof message.speechText === 'string' ? speakableText(message.speechText) : '',
+        error: missingOperationId
+          ? { code: 'operation_id_missing', retryable: true, publicMessage: '任务提交结果不完整，请稍后重试。' }
+          : (message.error && typeof message.error === 'object' ? message.error : null),
       };
-      this.armSettleTimeout(active);
       this.trySettle(active);
     }
 
+    // The Host's correlated outcome is the whole terminal fact. Nothing else on
+    // this shared socket is allowed a vote, so there is no second half to wait
+    // for — only the bounded deadline, for the case where this never arrives.
     trySettle(active) {
       if (!active.structured || active.settled || active.finished) return;
-      if (!active.resultSeen || !active.admission) return;
+      if (!active.admission) return;
       this.settle(active, active.admission.outcome);
     }
 
@@ -502,7 +546,11 @@ function createVoiceAcpBridge({
       // Work already admitted keeps running, and saying otherwise would be a
       // false statement the user would act on.
       if (!active.cancelRequested) {
-        this.speak(active, admissionSpeech(outcome, active.admission, active.assistantText));
+        // A structured turn has no local buffer to fall back on — foreign prose
+        // from the shared router socket is exactly what must not be spoken.
+        this.speak(active, admissionSpeech(
+          outcome, active.admission, active.structured ? '' : active.assistantText,
+        ));
       }
       this.finish(active, null, {
         stopReason: active.cancelRequested ? 'cancelled' : 'end_turn',
@@ -551,13 +599,33 @@ function createVoiceAcpBridge({
         return;
       }
       // Checked before the started guard: the outcome frame carries its own
-      // requestId, which is a stricter correlation than the echoed user message,
-      // and "either half may land first" has to hold for this half too.
+      // requestId, a stricter correlation than the echoed user message, and it
+      // may legitimately arrive before that echo does.
       if (message.type === 'voice_admission') {
         this.handleAdmission(active, message);
         return;
       }
       if (!active.started) return;
+      if (message.type === 'error') {
+        // A cancelled call converges here instead of raising: the user already
+        // stopped it, and a late failure cannot change that outcome.
+        if (active.cancelRequested) {
+          this.finish(active, null, { stopReason: 'cancelled' });
+          return;
+        }
+        // Uncorrelated on the shared router socket — another call's failure must
+        // not fail this one. The bounded deadline still ends this turn, and says
+        // the honest thing about it: unknown.
+        if (active.structured) return;
+        const error = new Error(clean(message.error) || 'Commander turn failed');
+        error.code = clean(message.code) || 'commander_turn_failed';
+        this.finish(active, error);
+        return;
+      }
+      // Everything below is a generic broadcast: no requestId, no turnId, and on
+      // the shared router session not necessarily even this call's. A structured
+      // turn consumes none of it — not to speak, not to buffer, not to settle.
+      if (active.structured) return;
       if (message.type === 'assistant' && Array.isArray(message.message?.content)) {
         const snapshot = message.message.textSnapshot === true;
         for (const block of message.message.content) {
@@ -572,12 +640,6 @@ function createVoiceAcpBridge({
         }
         return;
       }
-      if (message.type === 'error') {
-        const error = new Error(clean(message.error) || 'Commander turn failed');
-        error.code = clean(message.code) || 'commander_turn_failed';
-        this.finish(active, error);
-        return;
-      }
       if (message.type !== 'result') return;
       const usage = message.usage && typeof message.usage === 'object'
         ? {
@@ -586,15 +648,6 @@ function createVoiceAcpBridge({
             outputTokens: Number(message.usage.output_tokens || message.usage.outputTokens) || 0,
           }
         : null;
-      if (active.structured) {
-        // Half the answer. The turn ends when the Host's outcome frame has also
-        // been seen — in either order — or when the bounded wait expires.
-        active.resultSeen = true;
-        if (usage) active.usage = usage;
-        this.armSettleTimeout(active);
-        this.trySettle(active);
-        return;
-      }
       if (!active.emittedText) {
         const fallback = message.commanderRoute
           ? '任务已提交到 MultiCC；后续状态以任务板为准。'
@@ -643,15 +696,15 @@ function createVoiceAcpBridge({
           clientMsgId,
           messageId: `voice_msg_${randomUUID()}`,
           assistantText: '',
+          spokenText: '',
           emittedText: false,
           started: false,
           cancelRequested: false,
           finished: false,
-          // A globally-routed turn is spoken only after the Host's structured
-          // admission/no-dispatch outcome arrives. Chat/fleet scope streams.
+          // A globally-routed turn is spoken only from the Host's structured
+          // admission/no-dispatch outcome. Chat/fleet scope streams.
           structured: this.target.scope === 'global',
           settled: false,
-          resultSeen: false,
           usage: null,
           admission: null,
           turnId: '',
@@ -665,6 +718,10 @@ function createVoiceAcpBridge({
         active.abortListener = () => this.cancel();
         signal?.addEventListener('abort', active.abortListener, { once: true });
         this.active = active;
+        // Armed before the message is even sent. The outcome frame is the only
+        // thing that can end this turn, so the deadline has to cover a turn that
+        // never produces one at all — a host that dies mid-turn included.
+        this.armSettleTimeout(active);
         this.socket.send(JSON.stringify({
           type: 'user_message',
           text,
@@ -692,7 +749,15 @@ function createVoiceAcpBridge({
       // Cancel against whatever this turn was actually delivered to, never a
       // stale startup binding — otherwise a cancel could hit another session.
       const result = await cancelQueued(this.target.sessionId, active.clientMsgId);
-      if (result.ok) this.finish(active, null, { stopReason: 'cancelled' });
+      // 404/409 means the queue entry is no longer cancellable — it was already
+      // claimed and is running. The user still asked to stop, so the call ends as
+      // cancelled either way; what it must not do is hang waiting for frames of a
+      // turn nobody is listening to any more. Whatever the turn admits keeps
+      // running, which is why the call says nothing about delivery.
+      if (!result.ok && this.socket?.readyState === WebSocketImpl.OPEN) {
+        this.socket.send(JSON.stringify({ type: 'cancel', operationId: active.clientMsgId }));
+      }
+      this.finish(active, null, { stopReason: 'cancelled' });
       return result;
     }
 
@@ -800,6 +865,7 @@ module.exports = {
   normalizeBaseUrl,
   speakableFromBuffer,
   stableQueueEntryId,
+  stripLaunchEnvelope,
   textFromPrompt,
   validateTransportSecurity,
 };

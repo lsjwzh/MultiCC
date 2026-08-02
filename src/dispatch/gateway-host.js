@@ -12,6 +12,7 @@
 // setSessionStatus are likewise resolved per call through getters. The
 
 const bus = require('../bus');
+const { speakableText } = require('../voice-speakable');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -221,7 +222,10 @@ function createGatewayHost(rawDeps) {
       // admission — the work is submitted exactly once, not lost.
       duplicate: fields.duplicate === true,
       queueStatus: admitted ? String(fields.queueStatus || '') || null : null,
-      speechText: typeof fields.speechText === 'string' ? fields.speechText : '',
+      // Marker-shaped prose is inert but must never be spoken: it carries the
+      // task payload and a target session id straight to a loudspeaker. Stripped
+      // here so it is not even in the frame, and again at the bridge before TTS.
+      speechText: typeof fields.speechText === 'string' ? speakableText(fields.speechText) : '',
       targetLabel: String(fields.targetLabel || ''),
       error: publicError,
     });
@@ -346,13 +350,29 @@ function createGatewayHost(rawDeps) {
     // Await one canonical scheduler pass so a never-opened chat is claimed and
     // lazily initialized/spawned before route_task reports success. Busy targets
     // remain durably queued; no process is pre-spawned and no parallel turn starts.
-    await runtime.tick();
+    //
+    // The admission is already durable by this point. A scheduler pass that
+    // throws costs the immediate wake-up and nothing else — the operation stays
+    // queued and the next tick claims it — so the failure is reported alongside
+    // the admission rather than instead of it. Reporting "failed" here would be a
+    // false negative: a voice caller would resubmit work that is already
+    // committed, and the user would get it twice.
+    let wakeupError = admitted.wakeupError || null;
+    try {
+      await runtime.tick();
+    } catch (error) {
+      wakeupError = error?.message || String(error);
+    }
+    if (wakeupError) {
+      logger.warn('dispatch_wakeup_deferred', { operationId: dispatchId, targetId, error: wakeupError });
+    }
     return {
       ok: true,
       chatId,
       operationId: dispatchId,
       status: admitted.status,
       duplicate: !!admitted.idempotent,
+      ...(wakeupError ? { wakeupError } : {}),
     };
   }
 
