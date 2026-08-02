@@ -129,23 +129,23 @@ function defaultModelForPreset(preset) {
     if (has(/code reviewer|minimal change|backend architect|software architect|database optimizer|multi-agent systems architect/)) {
       return openai('gpt-5.5', 'xhigh', 'engineering review/architecture role; needs conservative judgment');
     }
-    return xf('xopdeepseekv4pro', 'xhigh', 'coding implementation role; DeepSeek V4 Pro is the default code worker');
+    return xf('xopglm52', 'xhigh', 'coding implementation role; GLM 5.2 is the default code worker (DS4 retired)');
   }
   if (cat === 'testing') {
     if (has(/api|performance|test results|tool evaluator|workflow optimizer/)) {
-      return xf('xopdeepseekv4pro', 'xhigh', 'technical QA execution role');
+      return xf('xopglm52', 'xhigh', 'technical QA execution role');
     }
     return openai('gpt-5.5', 'xhigh', 'QA judgment role; needs strict evidence and risk assessment');
   }
   if (cat === 'game-development') {
     if (has(/engineer|developer|scripter|shader|addon|multiplayer|unity|unreal|godot|roblox|blender|audio/)) {
-      return xf('xopdeepseekv4pro', 'xhigh', 'game technical implementation role');
+      return xf('xopglm52', 'xhigh', 'game technical implementation role');
     }
     return xf('xopglm52', 'xhigh', 'game design/narrative role');
   }
   if (cat === 'gis' || cat === 'spatial-computing') {
     if (has(/engineer|developer|data|pipeline|gis|arcgis|qgis|spatial|geospatial|mapping/)) {
-      return xf('xopdeepseekv4pro', 'xhigh', 'spatial/GIS technical role');
+      return xf('xopglm52', 'xhigh', 'spatial/GIS technical role');
     }
     return xf('xopglm52', 'xhigh', 'spatial planning/research role');
   }
@@ -157,7 +157,7 @@ function defaultModelForPreset(preset) {
   }
   if (cat === 'specialized') {
     if (has(/data extraction|data consolidation|report distribution|identity graph|lsp|index|mcp builder|document generator|salesforce/)) {
-      return xf('xopdeepseekv4pro', 'xhigh', 'technical specialized role');
+      return xf('xopglm52', 'xhigh', 'technical specialized role');
     }
     if (has(/translator|customer|hospitality|retail|hr|recruitment|study abroad|personal growth|grant writer|training|developer advocate|cultural|french|korean|zk steward|language/)) {
       return xf('xopglm52', 'xhigh', 'communication/research specialized role');

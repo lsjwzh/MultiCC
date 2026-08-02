@@ -2133,7 +2133,7 @@ const PROVIDER_PRESETS = [
   { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
   { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
   { key: 'codex-official', label: 'OpenAI（Codex 官方）', appType: 'codex', baseUrl: '', model: 'gpt-5.5', models: 'gpt-5.5\ngpt-5.4\ngpt-5.4-mini\ngpt-5.3-codex-spark', note: '走 ChatGPT 登录；Provider 是 OpenAI，模型在 Model 层选择' },
-  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', apiFormat: 'openai_responses', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopdeepseekv4pro', models: 'xopdeepseekv4pro\nxopglm52', note: 'Responses 协议经稳定性兼容代理；模型在 DeepSeek/GLM 间选择' },
+  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', apiFormat: 'openai_responses', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopglm52', models: 'xopglm52', note: 'Responses 协议经稳定性兼容代理；DeepSeek V4 Pro (DS4) 已废弃，统一用 GLM 5.2' },
 ];
 
 function providerModelList(primary, raw) {
