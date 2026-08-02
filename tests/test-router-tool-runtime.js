@@ -709,3 +709,41 @@ test('persistent CLI capability resolves the active turn dynamically', async t =
   assert.notEqual(first.operation_id, second.operation_id);
   assert.equal(admissions.length, 2);
 });
+
+test('admission observers receive the turn correlation captured before dispatch resolves', async t => {
+  let active = { turnId: 'turn-original', requestId: 'request-original' };
+  let releaseDispatch;
+  let markEntered;
+  const dispatchGate = new Promise(resolve => { releaseDispatch = resolve; });
+  const dispatchEntered = new Promise(resolve => { markEntered = resolve; });
+  const observed = [];
+  const { runtime } = fixture(t, {
+    resolveContext: () => active,
+    dispatchToSession: async targetId => {
+      markEntered();
+      await dispatchGate;
+      return {
+        ok: true,
+        operationId: 'op-correlation-original',
+        status: 'admitted',
+        duplicate: false,
+        chatId: targetId,
+      };
+    },
+    onAdmitted: async admission => { observed.push(admission); },
+  });
+  const capability = runtime.issueContext({ sessionId: 'caller', dynamic: true });
+  const pending = runtime.execute(capability, 'route_task', {
+    target_session_id: 'worker-a',
+    message: 'capture this turn',
+  });
+  await dispatchEntered;
+  active = { turnId: 'turn-next', requestId: 'request-next' };
+  releaseDispatch();
+  await pending;
+
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].callerTurnId, 'turn-original');
+  assert.equal(observed[0].callerRequestId, 'request-original');
+  assert.equal(observed[0].operationId, 'op-correlation-original');
+});

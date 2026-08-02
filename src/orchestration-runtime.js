@@ -726,6 +726,16 @@ function createOrchestrationRuntime({
     return { operation: current, state, idempotent: operation.idempotent };
   }
 
+  // `operations.admitDispatch` writes the operation and its request outbox row in
+  // one atomic mutation — that write *is* the admission commit point. Everything
+  // after it is an observer of already-durable work.
+  //
+  // noteQueued only refreshes the in-memory queue projection and emits a
+  // `queued` UI event; it owns no durability. So a failure there must never turn
+  // a committed admission into a rejected call — the caller would report "not
+  // submitted" for work that is in fact queued and will run. Log it, keep the
+  // admitted operation as-is, and let the next tick/recover() rebuild the same
+  // projection from the store.
   async function admitDispatch(spec) {
     const admitted = await operations.admitDispatch(spec);
     if (admitted.requestOutboxId && !admitted.idempotent) {
@@ -735,9 +745,24 @@ function createOrchestrationRuntime({
       // work. Rethrowing would report committed work as rejected, and the caller
       // would submit it a second time.
       try {
-        await sessionScheduler.noteQueued(admitted.requestOutboxId);
+        const notice = await sessionScheduler.noteQueued(admitted.requestOutboxId);
+        if (!notice?.ok) {
+          const message = `queue notice failed: ${notice?.code || 'unknown'}`;
+          log(`[orchestration] admission_queue_projection_degraded ${JSON.stringify({
+            operationId: admitted.id,
+            entryId: admitted.requestOutboxId,
+            sessionId: spec?.spec?.chatId || spec?.ownerSessionId || null,
+            error: message,
+          })}`);
+          return { ...admitted, wakeupError: message };
+        }
       } catch (error) {
-        log(`[orchestration] dispatch ${admitted.id} queue notice failed: ${error.message}`);
+        log(`[orchestration] admission_queue_projection_degraded ${JSON.stringify({
+          operationId: admitted.id,
+          entryId: admitted.requestOutboxId,
+          sessionId: spec?.spec?.chatId || spec?.ownerSessionId || null,
+          error: error?.message || String(error),
+        })}`);
         return { ...admitted, wakeupError: error?.message || String(error) };
       }
     }

@@ -39,9 +39,30 @@ function createRouterToolHost({
       getExternalWait: id => orchestrationRuntime.waits.get(id),
       listExternalWaits: sessionId => orchestrationRuntime.listForSession(sessionId),
       cancelExternalWait: id => orchestrationRuntime.cancel(id),
+      // Both of these run *after* the dispatch is durably admitted, so neither
+      // owns the admission and neither may cancel the other. The task board
+      // failing to file a card must not cost the live voice caller its terminal
+      // outcome frame (and vice versa), so run them as isolated observers and
+      // report each failure on its own.
       onAdmitted: async admission => {
-        await taskBoard?.recordRouterAdmission?.(admission);
-        await recordRouterAdmission?.(admission);
+        const observers = [
+          ['task_board', taskBoard?.recordRouterAdmission?.bind(taskBoard)],
+          ['voice_admission', recordRouterAdmission],
+        ];
+        const settled = await Promise.allSettled(observers.map(
+          // The async wrapper also contains a *synchronous* throw, which would
+          // otherwise escape before the other observer was ever scheduled.
+          ([, run]) => (async () => (typeof run === 'function' ? run(admission) : undefined))(),
+        ));
+        settled.forEach((outcome, index) => {
+          if (outcome.status !== 'rejected') return;
+          logger.warn?.('router_admission_observer_failed', {
+            observer: observers[index][0],
+            callerSessionId: admission?.callerSessionId || null,
+            operationId: admission?.operationId || null,
+            error: outcome.reason?.message || String(outcome.reason),
+          });
+        });
       },
       recordUserInput,
       subscribeDispatchProgress,
@@ -49,6 +70,10 @@ function createRouterToolHost({
         const turn = activeTurnForSession(sessionId);
         return turn ? {
           turnId: turn.turnId,
+          // The caller's correlation key, resolved once at tool-call time. Post
+          // admission observers must not re-read the live turn: it may already
+          // have been replaced by the next one.
+          requestId: turn.requestId || '',
           originDispatchId: turn.lineage?.kind === 'dispatch' ? turn.lineage.operationId : null,
           userText: turn.userText || '',
           taskId: turn.task?.id || null,
@@ -134,6 +159,7 @@ function createRouterToolHost({
   function processContext({
     sessionId,
     turnId,
+    requestId = '',
     originDispatchId = null,
     userText = '',
     taskId = null,
@@ -144,7 +170,7 @@ function createRouterToolHost({
   } = {}) {
     if (!runtime) throw new Error('router tool runtime is not configured');
     const token = runtime.issueContext({
-      sessionId, turnId, originDispatchId, userText,
+      sessionId, turnId, requestId, originDispatchId, userText,
       taskId, taskStart, taskSource, dynamic, baseUrl,
     });
     let revoked = false;
@@ -194,6 +220,7 @@ function createRouterToolHost({
     env,
     sessionId,
     turnId,
+    requestId,
     originDispatchId,
     userText,
     taskId,
@@ -202,7 +229,7 @@ function createRouterToolHost({
     baseUrl,
   } = {}) {
     const processCapability = processContext({
-      sessionId, turnId, originDispatchId, userText,
+      sessionId, turnId, requestId, originDispatchId, userText,
       taskId, taskStart, taskSource, baseUrl,
     });
     if (processCapability) Object.assign(env, processCapability.env);
