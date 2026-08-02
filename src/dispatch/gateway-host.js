@@ -83,10 +83,49 @@ function createGatewayHost(rawDeps) {
     [loadChatHistory, 'loadChatHistory'],
   ]) assertFunction(fn, name);
 
-  function buildGatewayPrompt(userText) {
-    const sessionsForPrompt = [...persistedSessions.values()]
+  function addressableSessions() {
+    return [...persistedSessions.values()]
       .filter(s => s.type !== 'aux' && s.type !== 'gateway')
-      .slice(0, 30)
+      .slice(0, 30);
+  }
+
+  // The voice router needs two fields the WeChat prompt does not carry: `type`
+  // (so it can prefer a Fleet's Commander) and `dirId` (so "这个项目" resolves to
+  // one Fleet instead of a guess).
+  function voiceRouterPrompt(userText) {
+    const context = JSON.stringify(addressableSessions().map(s => ({
+      id: s.id,
+      label: s.label || '',
+      type: s.type || 'worker',
+      dirId: s.dirId || '',
+      cli: s.cli || 'claude',
+      kind: s.kind || 'terminal',
+      cwd: cwdForSession(s),
+      active: !!isTargetBusy(s.id),
+    })));
+    return [
+      '[MultiCC 实时语音 Router system prompt]',
+      '你是 MultiCC 的全局实时语音 Router 会话。用户通过实时语音发起、且没有指定来源会话的请求都进入这里。',
+      '你负责判断如何回应：可以直接回答、追问澄清，或把任务投给某个具体 session。',
+      '当用户确实要求执行、修改、检查或推进某项工作时，在回复的最后单独输出一行分发标记：',
+      '<<dispatch target="真实 session id">要交给该 session 执行的完整、自包含指令</dispatch>>',
+      '其中 target 必须逐字使用上面可见 sessions 列表里的某个 id；不要使用 ...、SID、SESSION_ID、<目标会话id> 等占位符。dispatch 内的指令要完整到该 session 无需追问即可执行。',
+      '优先投给目标项目的 Commander（type 为 commander）会话，由它再挑选合适的 Worker；只有用户明确点名了某个会话时才直接投给那个会话。',
+      '语音场景没有二次确认：标记一旦输出就会立即投递，所以只有用户确实要求干活时才输出。',
+      '如果用户没说清是哪个项目或哪个会话，而请求又必须落到某一个上，就只用一句话反问，不要自己挑一个 id 投出去。',
+      '纯聊天、答疑、澄清类回复不要输出标记。每条回复最多一个 dispatch 标记。',
+      `当前可见 sessions: ${context}`,
+      '[Voice router system prompt end]',
+      '',
+      userText,
+    ].join('\n');
+  }
+
+  // Byte-identical to the pre-multi-gateway version for `__gateway__`; the voice
+  // router takes the branch above. Both are pinned by tests.
+  function buildGatewayPrompt(userText, sessionId = GATEWAY_ID) {
+    if (sessionId === VOICE_ROUTER_ID) return voiceRouterPrompt(userText);
+    const sessionsForPrompt = addressableSessions()
       .map(s => ({
         id: s.id,
         label: s.label || '',
@@ -121,19 +160,23 @@ function createGatewayHost(rawDeps) {
   // hold it as a pending request, ask the WeChat user to confirm, and only then
   // drive the target session via runChatTurn. The target's result is pushed back.
   const GATEWAY_ID = '__gateway__';
+  // The realtime-voice router is a second gateway instance. Every piece of
+  // gateway state below is therefore keyed by session id: two gateways must
+  // never share a pending confirmation, a history sink or a result sink.
+  const VOICE_ROUTER_ID = '__voice_router__';
   const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;   // pending confirmation expires after 10 min
-  let pendingDispatch = null;                    // { id, targetId, message, createdAt }
+  const pendingDispatches = new Map();           // gatewaySessionId → { id, targetId, message, createdAt }
   const dispatchRuns = new Map();                // hot cache; durable source of truth is orchestrationRuntime
   const TERMINAL_DISPATCH_STATUS = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
 
 
   // Push a server-originated assistant message into the gateway chat. Web clients
   // render it; the WeChat bridge (a gateway WS client) forwards it on `result`.
-  function pushToGateway(text, { persist = true } = {}) {
+  function pushToGateway(text, { persist = true, sessionId = GATEWAY_ID } = {}) {
     if (!text) return;
-    if (persist) appendChatMessage(GATEWAY_ID, { role: 'assistant', content: text, ts: Date.now() });
-    chatBroadcast(GATEWAY_ID, { type: 'assistant', message: { content: [{ type: 'text', text }] } });
-    chatBroadcast(GATEWAY_ID, { type: 'result', total_cost_usd: null });
+    if (persist) appendChatMessage(sessionId, { role: 'assistant', content: text, ts: Date.now() });
+    chatBroadcast(sessionId, { type: 'assistant', message: { content: [{ type: 'text', text }] } });
+    chatBroadcast(sessionId, { type: 'result', total_cost_usd: null });
   }
 
   // A dispatch target must be a real, non-system session.
@@ -150,16 +193,16 @@ function createGatewayHost(rawDeps) {
   }
 
   // Remove the raw marker from the most recent persisted gateway assistant message.
-  function stripMarkerFromGatewayHistory() {
-    const hist = loadChatHistory(GATEWAY_ID);
+  function stripMarkerFromGatewayHistory(sessionId = GATEWAY_ID) {
+    const hist = loadChatHistory(sessionId);
     for (let i = hist.length - 1; i >= 0; i--) {
       const m = hist[i];
       if (m.role !== 'assistant') continue;
       if (typeof m.content === 'string' && DISPATCH_RE.test(m.content)) {
         m.content = m.content.replace(DISPATCH_RE, '').replace(/\n{3,}/g, '\n\n').trim();
-        try { getChatHistoryService().replace(GATEWAY_ID, hist, { reason: 'strip-dispatch-marker' }); }
+        try { getChatHistoryService().replace(sessionId, hist, { reason: 'strip-dispatch-marker' }); }
         catch (error) {
-          logger.warn('chat_history_marker_strip_failed', { sessionId: GATEWAY_ID, error: error.message });
+          logger.warn('chat_history_marker_strip_failed', { sessionId, error: error.message });
         }
       }
       return;   // only inspect the latest assistant message
@@ -186,41 +229,68 @@ function createGatewayHost(rawDeps) {
 
   // Called when a gateway turn completes: detect a dispatch marker, stage it as a
   // pending request, and ask the user to confirm. Does NOT deliver yet.
-  function handleGatewayTurnComplete(finalText) {
+  function handleGatewayTurnComplete(finalText, sessionId = GATEWAY_ID, turnId = '') {
     const parsed = parseDispatchMarker(finalText);
     if (!parsed) return;
-    stripMarkerFromGatewayHistory();
-    const v = validateDispatchTarget(parsed.target);
-    if (!v.ok) { pushToGateway(`⚠️ 无法分发：${v.error}`); return; }
-    pendingDispatch = { id: crypto.randomUUID(), targetId: parsed.target, message: parsed.message, createdAt: Date.now() };
+    const voice = sessionId === VOICE_ROUTER_ID;
+    stripMarkerFromGatewayHistory(sessionId);
+    // Voice may address a Fleet's Commander directly; WeChat may not.
+    const v = validateDispatchTarget(parsed.target, null, voice);
+    if (!v.ok) { pushToGateway(`⚠️ 无法分发：${v.error}`, { sessionId }); return; }
     const label = (v.rec.label && v.rec.label !== parsed.target) ? `${parsed.target}（${v.rec.label}）` : parsed.target;
+    if (voice) {
+      // A live voice call has nowhere to park a 确认 state, and borrowing
+      // WeChat's would let one channel resolve the other's pending dispatch.
+      // An explicit spoken execution request is admitted directly instead —
+      // and only reported as submitted once admission actually succeeds.
+      // The turn id keys idempotency, so a replayed turn cannot double-deliver.
+      return dispatchToSession(parsed.target, parsed.message, {
+        ownerSessionId: sessionId,
+        idempotencyKey: `voice:${sessionId}:${turnId || crypto.randomUUID()}`,
+        allowCommander: true,
+        queueIfBusy: true,
+        requireIdle: false,
+      })
+        .then(r => pushToGateway(
+          r.ok ? `✅ 已提交给 ${label}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`,
+          { sessionId },
+        ))
+        .catch(e => pushToGateway(`⚠️ 投递异常：${e.message}`, { sessionId }));
+    }
+    pendingDispatches.set(sessionId, {
+      id: crypto.randomUUID(), targetId: parsed.target, message: parsed.message, createdAt: Date.now(),
+    });
     const summary = parsed.message.length > 80 ? parsed.message.slice(0, 80) + '…' : parsed.message;
-    pushToGateway(`📨 准备把任务投给 ${label}：\n「${summary}」\n回复「确认」执行，回复「取消」放弃。`);
+    pushToGateway(`📨 准备把任务投给 ${label}：\n「${summary}」\n回复「确认」执行，回复「取消」放弃。`, { sessionId });
   }
   // Gateway domain owns this handler; chat emits after a gateway session's own turn.
   bus.on('chat:gateway-turn-complete', handleGatewayTurnComplete);
 
   // Intercept gateway inbound messages for confirm/cancel of a pending dispatch.
   // Returns true if the message was consumed (caller should NOT run the LLM).
-  function handleGatewayControl(rawText) {
+  function handleGatewayControl(rawText, sessionId = GATEWAY_ID) {
+    const pendingDispatch = pendingDispatches.get(sessionId);
     if (!pendingDispatch) return false;
     if (Date.now() - pendingDispatch.createdAt > DISPATCH_TIMEOUT_MS) {
-      pendingDispatch = null;            // expired → fall through to the LLM
+      pendingDispatches.delete(sessionId);   // expired → fall through to the LLM
       return false;
     }
     const text = (rawText || '').trim();
     if (DISPATCH_CONFIRM_RE.test(text)) {
-      const pd = pendingDispatch; pendingDispatch = null;
-      appendChatMessage(GATEWAY_ID, { role: 'user', content: rawText, ts: Date.now() });
-      dispatchToSession(pd.targetId, pd.message, { idempotencyKey: `gateway:${pd.id}` })
-        .then(r => pushToGateway(r.ok ? `✅ 已投递给 ${pd.targetId}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`))
-        .catch(e => pushToGateway(`⚠️ 投递异常：${e.message}`));
+      const pd = pendingDispatch; pendingDispatches.delete(sessionId);
+      appendChatMessage(sessionId, { role: 'user', content: rawText, ts: Date.now() });
+      dispatchToSession(pd.targetId, pd.message, {
+        ownerSessionId: sessionId,
+        idempotencyKey: `gateway:${pd.id}`,
+      })
+        .then(r => pushToGateway(r.ok ? `✅ 已投递给 ${pd.targetId}，完成后会把结果发回这里。` : `⚠️ 投递失败：${r.error}`, { sessionId }))
+        .catch(e => pushToGateway(`⚠️ 投递异常：${e.message}`, { sessionId }));
       return true;
     }
     if (DISPATCH_CANCEL_RE.test(text)) {
-      pendingDispatch = null;
-      appendChatMessage(GATEWAY_ID, { role: 'user', content: rawText, ts: Date.now() });
-      pushToGateway('已取消分发。');
+      pendingDispatches.delete(sessionId);
+      appendChatMessage(sessionId, { role: 'user', content: rawText, ts: Date.now() });
+      pushToGateway('已取消分发。', { sessionId });
       return true;
     }
     return false;   // anything else → let the LLM handle (user may revise/add)
@@ -379,7 +449,9 @@ function createGatewayHost(rawDeps) {
       if (replyTo && persistedSessions.get(replyTo)) {
         getSessionDelivery().deliverContinuation(replyTo, `【${targetId} 回复】\n${text}`);
       } else {
-        pushToGateway(`【${targetId} 回复】\n${text}`);
+        // Route the legacy fallback back to whichever gateway owns this
+        // dispatch, so a voice result never surfaces in the WeChat thread.
+        pushToGateway(`【${targetId} 回复】\n${text}`, { sessionId: operation?.resultSessionId || GATEWAY_ID });
       }
     }
   }
@@ -436,6 +508,7 @@ function createGatewayHost(rawDeps) {
   }
   return {
     GATEWAY_ID,
+    VOICE_ROUTER_ID,
     buildGatewayPrompt,
     pushToGateway,
     validateDispatchTarget,

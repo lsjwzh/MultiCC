@@ -3,9 +3,13 @@
 const path = require('path');
 const { mountVoiceRoutes } = require('./routes/voice');
 const { createVoiceGatewayRoutes } = require('./routes/voice-gateway');
+const { createGlobalVoiceGatewayRoutes } = require('./routes/voice-gateway-global');
 const { createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime');
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');
 const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
+const { createVoiceLaunchRegistry } = require('./voice-launch');
+const { createVoiceRouterProvisioner } = require('./voice-router');
+const { resolveDirectoryCommander } = require('./task-board');
 
 const DEFAULT_MODEL = 'qwen-audio-3.0-realtime-plus';
 const DEFAULT_VOICE = 'longanqian';
@@ -75,17 +79,38 @@ function createVoiceHost({
     getQwenAudioRuntimeStatus: () => installer.status(),
     onQwenAudioConfigChanged: () => supervisor.restartAll(),
   });
-  createVoiceGatewayRoutes({
+  const gatewayRoutes = createVoiceGatewayRoutes({
     records,
     directories,
     sessionPersistence,
     getBaseUrl,
     runtime: supervisor,
+  });
+  gatewayRoutes.mountRoutes(app);
+  const launchRegistry = createVoiceLaunchRegistry({
+    records,
+    directories,
+    resolveCommander: (map, directoryId) => resolveDirectoryCommander(map, directoryId),
+  });
+  const voiceRouter = createVoiceRouterProvisioner({
+    records,
+    mutate: (source, operation) => sessionPersistence.mutate(source, operation),
+    runtimeRoot,
+  });
+  createGlobalVoiceGatewayRoutes({
+    service: gatewayRoutes.service,
+    launchRegistry,
+    voiceRouter,
+    runtime: supervisor,
+    getBaseUrl,
+    log,
   }).mountRoutes(app);
   createQwenAudioRuntimeRoutes({ installer, supervisor, log }).mountRoutes(app);
 
   return Object.freeze({
     installer,
+    launchRegistry,
+    voiceRouter,
     supervisor,
     reconcileAll: () => supervisor.reconcileAll(),
   });

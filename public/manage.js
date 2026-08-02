@@ -2749,10 +2749,8 @@ async function deleteProvider(appType, id, name) {
 /* ── Init ── */
 loadDashboard().then(() => {
   if (new URLSearchParams(location.search).get('focus') === 'aux') openAuxHistoryModal();
-  window.MultiCCManageQwenAudio.initialize({
-    getDirectories: () => _cachedDirectories || [],
-    notify: showToast,
-  });
+  // One global gateway now: the panel no longer needs the Fleet list.
+  window.MultiCCManageQwenAudio.initialize({ notify: showToast });
 });
 loadProviders();
 loadVoiceSettings();

@@ -14,7 +14,7 @@ import '../providers/session_manager.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
 import '../services/voice_dictation_service.dart';
-import '../screens/voice_call_screen.dart';
+import '../services/voice_launch_service.dart';
 import '../utils/dispatch_hint.dart';
 import 'chat_runtime_panels.dart';
 import 'dispatch_mode_selector.dart';
@@ -139,13 +139,18 @@ class _InputBarState extends State<InputBar> {
 
   // ── Voice recording ──
 
-  void _openVoiceCall() {
-    // ChatProvider 只在 ChatView 子树内 provide；本页 push 到根 Navigator，
-    // 必须在此先读出 provider 再传入，否则 VoiceCallScreen 拿不到会灰屏。
+  // 实时语音改为全局 Qwen 语音网关：这里只向 Host 申请一张 launch 票据，
+  // 带上当前会话 id 表示「在这个会话里说话」。投给哪个项目 / Commander、用什么
+  // cwd 和提示词，全部由 Host 自己解析，App 不参与决定，也不携带长期 token。
+  Future<void> _openVoiceCall() async {
     final provider = context.read<ChatProvider>();
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => VoiceCallScreen(chatProvider: provider),
+    final service = VoiceLaunchService(settings: provider.settings);
+    final result = await service.launch(sourceSessionId: provider.sessionName);
+    if (!mounted || result.ok) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message ?? VoiceLaunchService.describe(result.errorCode)),
+        backgroundColor: const Color(0xFFff6b63),
       ),
     );
   }
@@ -1367,9 +1372,10 @@ class _InputBarState extends State<InputBar> {
                 ),
                 const SizedBox(width: 4),
 
-                // Voice call-mode button — opens the 豆包式 full-duplex call screen.
+                // Realtime voice — opens the one global voice gateway, scoped to
+                // this session. Plain dictation stays on the mic button below.
                 _SmallButton(
-                  onTap: isConnected ? _openVoiceCall : null,
+                  onTap: isConnected ? () { _openVoiceCall(); } : null,
                   icon: Icons.phone_in_talk_rounded,
                   color: const Color(0xFF22ab9c),
                 ),
