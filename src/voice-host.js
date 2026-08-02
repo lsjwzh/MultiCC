@@ -4,6 +4,7 @@ const path = require('path');
 const { mountVoiceRoutes } = require('./routes/voice');
 const { createVoiceGatewayRoutes } = require('./routes/voice-gateway');
 const { createGlobalVoiceGatewayRoutes } = require('./routes/voice-gateway-global');
+const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./voice-gateway');
 const { createQwenAudioRuntimeRoutes } = require('./routes/qwen-audio-runtime');
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');
 const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
@@ -107,11 +108,40 @@ function createVoiceHost({
   }).mountRoutes(app);
   createQwenAudioRuntimeRoutes({ installer, supervisor, log }).mountRoutes(app);
 
+  const gatewayService = gatewayRoutes.service;
+
+  // Idempotent boot migration. ensureGlobal only ever ran on an HTTP PUT before,
+  // so a boot that found legacy per-Fleet voice records but no global record let
+  // reconcileAll start the old children (over-spawn). This runs once at startup,
+  // before any reconcile: it creates the global record ONLY when there is no
+  // global yet AND at least one legacy record exists — inheriting "enabled" from
+  // any enabled legacy record. A brand-new empty record set creates nothing; an
+  // existing global record is never mutated. When the effective global gateway is
+  // enabled the __voice_router__ session is provisioned so global launches have
+  // somewhere to land. Safe to call any number of times.
+  function prepareBoot() {
+    if (supervisor.hasGlobalGateway()) {
+      const existing = records.get(GLOBAL_VOICE_GATEWAY_ID);
+      const enabled = !!(existing && existing.enabled === true);
+      if (enabled) voiceRouter.ensure();
+      return { migrated: false, reason: 'global_exists', enabled };
+    }
+    const legacy = legacyGatewayProjection(records);
+    if (!legacy.length) {
+      return { migrated: false, reason: 'no_legacy', enabled: false };
+    }
+    const result = gatewayService.ensureGlobal({});
+    const enabled = !!(result && result.record && result.record.enabled === true);
+    if (enabled) voiceRouter.ensure();
+    return { migrated: true, reason: 'migrated', enabled, created: !!(result && result.created) };
+  }
+
   return Object.freeze({
     installer,
     launchRegistry,
     voiceRouter,
     supervisor,
+    prepareBoot,
     reconcileAll: () => supervisor.reconcileAll(),
   });
 }
