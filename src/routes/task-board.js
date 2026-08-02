@@ -245,6 +245,7 @@ function createTaskBoardRuntime(deps) {
       taskText: admission.taskText || '',
       routing: {
         mode: commanderRoute ? 'commander' : 'router-tool',
+        callerSessionId: caller.id || admission.callerSessionId || null,
         targetSessionId: commanderRoute
           ? (caller.id || admission.callerSessionId)
           : (worker.id || admission.targetSessionId),
