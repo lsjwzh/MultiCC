@@ -978,6 +978,8 @@ function createChatTurnEngine(deps) {
         cli: persisted.cli, spawn, command: invocation.cmd,
         args: spawnArgs, cwd: cs.cwd, env: childEnv,
         sessionId: sessionName, turnId: turn.turnId, originDispatchId,
+        // Correlation key for post-admission receipts addressed to this turn.
+        requestId: turn.requestId || '',
         userText: turn.userText,
         taskId: turn.task?.id,
         taskStart: turn.task?.start,

@@ -46,6 +46,13 @@ function cleanId(value, field) {
   return text;
 }
 
+// The caller's per-turn correlation key. Unlike an id it is never used to look
+// anything up, so it is bounded and sanitized rather than rejected — a client
+// message id must not be able to fail a router tool call.
+function cleanCorrelationId(value) {
+  return String(value == null ? '' : value).trim().slice(0, 256);
+}
+
 function cleanText(value, field, maxLength) {
   const text = value == null ? '' : String(value).trim();
   if (!text) throw new RouterToolError('invalid_arguments', `${field} is required`);
@@ -205,6 +212,7 @@ function createRouterToolRuntime({
   function issueContext({
     sessionId,
     turnId = null,
+    requestId = '',
     originDispatchId = null,
     userText = '',
     taskId = null,
@@ -219,6 +227,7 @@ function createRouterToolRuntime({
     capabilities.set(token, Object.freeze({
       sessionId: String(sessionId),
       turnId: turnId ? cleanId(turnId, 'turnId') : null,
+      requestId: cleanCorrelationId(requestId),
       originDispatchId: originDispatchId ? cleanId(originDispatchId, 'originDispatchId') : null,
       userText: String(userText || '').slice(0, MAX_MESSAGE_LENGTH),
       taskId: taskId ? cleanId(taskId, 'taskId') : null,
@@ -259,6 +268,7 @@ function createRouterToolRuntime({
     return Object.freeze({
       ...context,
       turnId: cleanId(current.turnId, 'turnId'),
+      requestId: cleanCorrelationId(current.requestId),
       originDispatchId: current.originDispatchId
         ? cleanId(current.originDispatchId, 'originDispatchId')
         : null,
@@ -394,6 +404,11 @@ function createRouterToolRuntime({
     try {
       await onAdmitted({
         callerSessionId: context.sessionId,
+        // The turn that actually made this call, captured here rather than read
+        // back from live session state by the observer: by the time an observer
+        // runs, the caller may already be on its next turn.
+        callerTurnId: context.turnId || '',
+        callerRequestId: context.requestId || '',
         targetSessionId: targetId,
         taskId: identity.taskId,
         operationId: result.operationId,
