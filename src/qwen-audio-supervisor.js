@@ -5,8 +5,24 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
-const { bindingState, resolveVoiceGateway } = require('./voice-gateway');
+const {
+  GLOBAL_VOICE_GATEWAY_ID,
+  bindingState,
+  isGlobalVoiceGatewayRecord,
+  isVoiceGatewayRecord,
+  resolveVoiceGateway,
+} = require('./voice-gateway');
 const { ensurePrivateDir } = require('./runtime-security');
+
+// Realtime voice is a single machine-wide child. GLOBAL_KEY is its slot in the
+// same state map the per-Fleet runtimes use, so restart budgets, health polling
+// and shutdown are shared code rather than a parallel implementation.
+//
+// The per-Fleet path below is retained only for the compatibility window: it is
+// still directly reachable (and still pinned by tests), but `reconcileAll` will
+// not start it once a global gateway exists, which is what keeps "two Fleets
+// enabled" from becoming two processes.
+const GLOBAL_KEY = '__global__';
 
 const RESTART_WINDOW_MS = 10 * 60 * 1000;
 const MAX_RESTARTS_PER_WINDOW = 5;
@@ -69,6 +85,7 @@ function createQwenAudioSupervisor({
   getConfig,
   getBaseUrl,
   acpAgentPath,
+  frontendPromptDir = path.join(__dirname, 'voice', 'frontend-prompt'),
   spawnImpl = spawn,
   fetchImpl = globalThis.fetch,
   now = () => Date.now(),
@@ -93,6 +110,7 @@ function createQwenAudioSupervisor({
     if (!state) {
       state = {
         directoryId,
+        scope: directoryId === GLOBAL_KEY ? 'global' : 'fleet',
         state: 'stopped',
         child: null,
         desired: false,
@@ -119,12 +137,51 @@ function createQwenAudioSupervisor({
     return result.ok ? result.record : null;
   }
 
+  function globalGateway() {
+    const record = records.get(GLOBAL_VOICE_GATEWAY_ID);
+    return isGlobalVoiceGatewayRecord(record) ? record : null;
+  }
+
+  function hasGlobalGateway() {
+    return !!globalGateway();
+  }
+
   function desiredFor(directoryId) {
+    if (directoryId === GLOBAL_KEY) {
+      const record = globalGateway();
+      return !!(record && record.enabled === true);
+    }
+    // Once the global gateway exists it is the only realtime runtime, so a
+    // leftover per-Fleet record must not read as "should be running".
+    if (hasGlobalGateway()) return false;
     const gateway = gatewayFor(directoryId);
     return !!(gateway && gateway.enabled === true);
   }
 
+  function globalStatus() {
+    const state = stateFor(GLOBAL_KEY);
+    state.desired = desiredFor(GLOBAL_KEY);
+    const installed = installer.status();
+    return {
+      scope: 'global',
+      id: GLOBAL_VOICE_GATEWAY_ID,
+      desired: state.desired,
+      state: state.state,
+      url: state.url,
+      installedVersion: installed.installed ? installed.package.version : null,
+      restartCount: state.restartTimes.filter(ts => now() - ts < RESTART_WINDOW_MS).length,
+      health: state.health ? {
+        voiceConfigured: state.health.voiceConfigured === true,
+        backendReady: state.health.backend?.ok === true,
+        model: state.health.realtimeModel || null,
+      } : null,
+      lastError: state.lastError,
+      lastExitAt: state.lastExitAt,
+    };
+  }
+
   function status(directoryId) {
+    if (directoryId === GLOBAL_KEY) return globalStatus();
     if (!directories.has(directoryId)) {
       const installed = installer.status();
       return {
@@ -249,22 +306,30 @@ function createQwenAudioSupervisor({
   }
 
   function childEnvironment(runtime, directory, directoryId, port, config) {
+    const isGlobal = directoryId === GLOBAL_KEY;
+    const configDirectory = path.join(runtime.fleetConfigRoot, fleetRuntimeKey(directoryId));
     const env = {
       HOME: process.env.HOME || '',
       PATH: `${path.dirname(runtime.nodePath)}${path.delimiter}${process.env.PATH || ''}`,
       HOST: '127.0.0.1',
       PORT: String(port),
       NODE_ENV: 'production',
-      QWAUDIO_CONFIG_DIR: path.join(runtime.fleetConfigRoot, fleetRuntimeKey(directoryId)),
+      QWAUDIO_CONFIG_DIR: configDirectory,
       QWEN_AUDIO_AGENT_RUNTIME_ROOT: runtime.packageRoot,
+      // Repo-owned identity prompt. Only the stable identity lives here; the
+      // per-call session/Fleet/project context is injected by the Host at launch
+      // resolution time, never baked into a machine-wide prompt.
+      QWEN_AUDIO_AGENT_FRONTEND_PROMPT_DIR: frontendPromptDir,
       QWEN_AUDIO_REALTIME_API_KEY: config.apiKey,
       QWEN_AUDIO_REALTIME_MODEL: config.model || 'qwen-audio-3.0-realtime-plus',
       QWEN_AUDIO_REALTIME_VOICE: config.voice || 'longanqian',
       AGENT_PROTOCOL: 'acp',
       ACP_COMMAND: runtime.nodePath,
-      ACP_ARGS: JSON.stringify([acpAgentPath, '--directory-id', directoryId]),
-      ACP_LABEL: 'MultiCC Commander',
-      ACP_WORKSPACE: directory.path || directory.cwd,
+      // The global child is not bound to a Fleet at spawn time: every prompt
+      // carries its own launch id, which the ACP agent resolves against the Host.
+      ACP_ARGS: JSON.stringify(isGlobal ? [acpAgentPath] : [acpAgentPath, '--directory-id', directoryId]),
+      ACP_LABEL: isGlobal ? 'MultiCC 实时语音' : 'MultiCC Commander',
+      ACP_WORKSPACE: isGlobal ? configDirectory : (directory.path || directory.cwd),
       QWEN_AUDIO_AGENT_BACKEND_MODEL: '',
       QWEN_AUDIO_AGENT_BACKEND_PERMISSION_MODE: 'native',
       MULTICC_BASE_URL: getBaseUrl(),
@@ -290,7 +355,22 @@ function createQwenAudioSupervisor({
     return null;
   }
 
+  // The global runtime has no Commander binding to validate: it is not bound to a
+  // Fleet at all. Routing is decided per utterance from the launch ticket, which
+  // is what lets one child serve every Fleet without a restart.
+  function validateStartGlobal() {
+    const gateway = globalGateway();
+    if (!gateway) return { ok: false, code: 'voice_gateway_not_found' };
+    if (gateway.enabled !== true) return { ok: false, code: 'voice_gateway_disabled' };
+    const runtime = installer.resolveInstalled();
+    if (!runtime) return { ok: false, code: 'qwen_runtime_not_installed' };
+    const config = getConfig();
+    if (!config?.apiKey) return { ok: false, code: 'qwen_api_key_missing' };
+    return { ok: true, gateway, runtime, config, directory: null };
+  }
+
   function validateStart(directoryId) {
+    if (directoryId === GLOBAL_KEY) return validateStartGlobal();
     const gateway = gatewayFor(directoryId);
     if (!gateway) return { ok: false, code: 'voice_gateway_not_found' };
     const binding = bindingState(records, gateway);
@@ -304,8 +384,12 @@ function createQwenAudioSupervisor({
     return { ok: true, gateway, runtime, config, directory };
   }
 
+  function known(directoryId) {
+    return directoryId === GLOBAL_KEY || directories.has(directoryId);
+  }
+
   async function start(directoryId) {
-    if (!directories.has(directoryId)) return status(directoryId);
+    if (!known(directoryId)) return status(directoryId);
     const state = stateFor(directoryId);
     state.desired = desiredFor(directoryId);
     if (state.startPromise) return state.startPromise;
@@ -394,7 +478,7 @@ function createQwenAudioSupervisor({
   }
 
   async function stop(directoryId) {
-    if (!directories.has(directoryId)) return status(directoryId);
+    if (!known(directoryId)) return status(directoryId);
     const state = stateFor(directoryId);
     state.desired = desiredFor(directoryId);
     clearRuntimeTimers(state);
@@ -450,12 +534,20 @@ function createQwenAudioSupervisor({
     return status(directoryId);
   }
 
+  // The single point that decides how many realtime children exist. Once the
+  // global gateway record is present it is the only runtime reconciled up;
+  // legacy per-Fleet records are reconciled *down*, so two Fleets that were both
+  // enabled before the migration still resolve to exactly one process.
   function reconcileAll(options = {}) {
-    for (const record of records.values()) {
-      if (record?.type === 'gateway' && record.gatewayKind === 'qwen-audio') {
-        reconcile(record.dirId, options);
-      }
+    const legacy = [...records.values()]
+      .filter(record => isVoiceGatewayRecord(record))
+      .map(record => record.dirId);
+    if (hasGlobalGateway()) {
+      for (const directoryId of legacy) stop(directoryId).catch(() => {});
+      return reconcile(GLOBAL_KEY, options);
     }
+    for (const directoryId of legacy) reconcile(directoryId, options);
+    return undefined;
   }
 
   async function restart(directoryId) {
@@ -475,25 +567,34 @@ function createQwenAudioSupervisor({
     const ids = new Set([
       ...states.keys(),
       ...[...records.values()]
-        .filter(record => record?.type === 'gateway' && record.gatewayKind === 'qwen-audio')
+        .filter(record => isVoiceGatewayRecord(record))
         .map(record => record.dirId),
     ]);
-    await Promise.allSettled([...ids].map(id => stop(id)));
+    if (hasGlobalGateway()) ids.add(GLOBAL_KEY);
+    await Promise.allSettled([...ids].filter(Boolean).map(id => stop(id)));
   }
 
   return Object.freeze({
+    globalKey: GLOBAL_KEY,
+    hasGlobalGateway,
     reconcile,
     reconcileAll,
+    reconcileGlobal: (options = {}) => reconcile(GLOBAL_KEY, options),
     restart,
     restartAll,
+    restartGlobal: () => restart(GLOBAL_KEY),
     start,
+    startGlobal: () => start(GLOBAL_KEY),
     status,
+    statusGlobal: () => status(GLOBAL_KEY),
     stop,
+    stopGlobal: () => stop(GLOBAL_KEY),
     stopAll,
   });
 }
 
 module.exports = {
+  GLOBAL_KEY,
   HEALTH_INTERVAL_MS,
   MAX_RESTARTS_PER_WINDOW,
   RESTART_WINDOW_MS,

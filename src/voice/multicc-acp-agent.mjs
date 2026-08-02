@@ -11,11 +11,10 @@ function option(name) {
   return index >= 0 ? String(process.argv[index + 1] || '').trim() : ''
 }
 
+// No --directory-id means launch mode: one machine-wide child that resolves the
+// delivery target per utterance from the launch id the Qwen page carries. The
+// old per-Fleet invocation stays supported for the compatibility window.
 const directoryId = option('--directory-id') || process.env.MULTICC_DIRECTORY_ID || ''
-if (!directoryId) {
-  process.stderr.write('[multicc-acp] --directory-id or MULTICC_DIRECTORY_ID is required\n')
-  process.exit(2)
-}
 
 const bridge = createVoiceAcpBridge({
   directoryId,
@@ -40,12 +39,12 @@ const app = acp.agent({ name: 'multicc-voice-gateway' })
       },
       agentInfo: {
         name: 'multicc-voice-gateway',
-        title: 'MultiCC Fleet Voice Gateway',
+        title: directoryId ? 'MultiCC Fleet Voice Gateway' : 'MultiCC Voice Gateway',
         version: '1.0.0',
       },
       _meta: {
         multicc: {
-          directoryId,
+          ...(directoryId ? { directoryId } : { routing: 'voice-launch' }),
           taskAuthority: 'multicc-task-board',
           qwenExternalMcp: 'ignored',
         },

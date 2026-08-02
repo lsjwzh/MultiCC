@@ -2818,159 +2818,43 @@ dbg('state', 'page loaded — 开始连接');
 connect();
 
 /* ════════════════════════════════════════════════════════════════════════════
- * S2S 语音对话模式 (Speech-to-Speech, 豆包式交互)
+ * 实时语音通话 — 全局 Qwen 语音网关
+ *
+ * 这个按钮不再在页面内跑一套 S2S 状态机，而是向 Host 申请一张 launch 票据、
+ * 打开全局语音网关。带上 sourceSessionId 就意味着「在当前这个会话里说话」，
+ * 具体投给哪个 Fleet / Commander / cwd 全部由 Host 自己解析，前端不参与决定。
+ * 输入框里的普通麦克风听写完全不走这里，保持原样。
  * ════════════════════════════════════════════════════════════════════════════ */
-(function initS2S() {
-  const s2sBtn = document.getElementById('s2s-btn');
-  const s2sPanel = document.getElementById('s2s-panel');
-  const s2sStateBadge = document.getElementById('s2s-state-badge');
-  const s2sTranscript = document.getElementById('s2s-transcript');
-  const s2sBreakdown = document.getElementById('s2s-breakdown');
-  const s2sVolumeFill = document.getElementById('s2s-volume-fill');
-  const s2sStopBtn = document.getElementById('s2s-stop-btn');
-  if (!s2sBtn) return;
+(function initVoiceCall() {
+  const btn = document.getElementById('s2s-btn');
+  if (!btn) return;
 
-  let s2sSession = null;
-  let s2sActive = false;
+  let pending = false;
 
-  const STATE_LABELS = {
-    IDLE: 'IDLE',
-    LISTENING: '聆听中',
-    CONFIRMING: '确认中',
-    EXECUTING: '执行中',
-    REPORTING: '汇报中',
-  };
-
-  function updateS2SPanel(state) {
-    s2sStateBadge.textContent = STATE_LABELS[state] || state;
-    s2sStateBadge.className = '';
-    if (state === 'LISTENING') s2sStateBadge.classList.add('listening');
-    else if (state === 'CONFIRMING') s2sStateBadge.classList.add('confirming');
-    else if (state === 'EXECUTING') s2sStateBadge.classList.add('executing');
-    else if (state === 'REPORTING') s2sStateBadge.classList.add('reporting');
-
-    if (state === 'LISTENING' && s2sSession && !s2sSession.currentBreakdown) {
-      s2sTranscript.innerHTML = '<span class="partial">🎤 请说出你的需求…</span>';
-    } else if (state === 'LISTENING' && s2sSession && s2sSession.currentBreakdown) {
-      s2sTranscript.innerHTML = '<span class="partial">🎤 请确认或修改…</span>';
+  btn.addEventListener('click', async () => {
+    if (pending) return;
+    // Optional chaining + explicit fallback: a missing module must never throw
+    // here, or the ReferenceError would take the rest of chat.js down with it.
+    const client = window.MultiCCVoiceLaunch;
+    if (!client || typeof client.launch !== 'function') {
+      addSystemMsg('语音模块未加载，请刷新页面后重试');
+      return;
     }
-  }
-
-  function renderBreakdown(bd) {
-    if (!bd) { s2sBreakdown.innerHTML = ''; return; }
-    let html = '';
-    if (bd.summary) {
-      html += `<div class="bd-summary">${escapeHtml(bd.summary)}</div>`;
-    }
-    if (bd.items && bd.items.length) {
-      bd.items.forEach((item, i) => {
-        html += `<div class="bd-item"><span class="bd-item-num">${i + 1}.</span><span>${escapeHtml(item)}</span></div>`;
-      });
-    }
-    if (bd.questions && bd.questions.length) {
-      bd.questions.forEach(q => {
-        html += `<div class="bd-question">❓ ${escapeHtml(q)}</div>`;
-      });
-    }
-    s2sBreakdown.innerHTML = html;
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  }
-
-  async function startS2S() {
-    if (s2sActive) return;
-    s2sActive = true;
-    s2sBtn.classList.add('active');
-    s2sPanel.classList.add('open');
-    s2sBreakdown.innerHTML = '';
-    s2sTranscript.innerHTML = '<span class="partial">正在启动语音…</span>';
-
-    // Determine ASR provider from voice settings
-    let asrProvider = 'auto';
-    let ttsProvider = 'edge';
+    if (!_sessionName) { addSystemMsg('无 session id，无法启动语音'); return; }
+    pending = true;
+    btn.classList.add('active');
     try {
-      const res = await fetch(withToken('/api/settings/voice'));
-      const config = await res.json();
-      if (config.asr?.provider) asrProvider = config.asr.provider;
-      if (config.tts?.provider) ttsProvider = config.tts.provider;
-    } catch (_) {}
-
-    const wsUrl = location.origin.replace(/^http/, 'ws');
-    s2sSession = new S2SSession({
-      wsUrl,
-      asrProvider,
-      ttsProvider,
-      onStateChange: (state) => updateS2SPanel(state),
-      onText: (text, isFinal) => {
-        s2sTranscript.innerHTML = `<span class="partial">${escapeHtml(text)}</span>`;
-      },
-      onBreakdown: (bd) => renderBreakdown(bd),
-      onAiText: (text) => {
-        s2sTranscript.innerHTML = escapeHtml(text);
-      },
-      onVolume: (level) => {
-        // level is RMS amplitude (~0.02-0.15 for speech). Scale into a
-        // responsive 0-100% bar with a gentle curve so quiet speech still moves.
-        const pct = Math.min(100, Math.round(Math.sqrt(level) * 220));
-        s2sVolumeFill.style.width = pct + '%';
-      },
-      onVadDebug: (info) => {
-        const dbg = document.getElementById('s2s-vad-debug');
-        if (!dbg) return;
-        const f = (n) => (n || 0).toFixed(4);
-        dbg.textContent =
-          `rms ${f(info.rms)} | 说话阈 ${f(info.speechLvl)} | 静音阈 ${f(info.silenceLvl)}\n` +
-          `底噪 ${f(info.noiseFloor)} | ${info.calibrated ? '已校准' : '校准中…'} | ${info.isSpeaking ? '🎙说话中' : '静默'}`;
-      },
-      onAsrStatus: (status) => {
-        if (status === 'recording') {
-          s2sStateBadge.textContent = '录音中';
-        } else if (status === 'transcribing') {
-          s2sStateBadge.textContent = '识别中';
-        } else if (status === 'idle' && s2sSession && s2sSession.state === 'LISTENING') {
-          s2sStateBadge.textContent = '聆听中';
-        }
-      },
-      onLog: (msg) => {
-        console.log('[S2S]', msg);
-      },
-      onError: (msg) => {
-        console.error('[S2S] Error:', msg);
-        s2sTranscript.innerHTML = `<span style="color:#f85149;">错误: ${escapeHtml(msg)}</span>`;
-      },
-    });
-
-    await s2sSession.start();
-    updateS2SPanel('LISTENING');
-  }
-
-  function stopS2S() {
-    if (!s2sActive) return;
-    s2sActive = false;
-    s2sBtn.classList.remove('active');
-    s2sPanel.classList.remove('open');
-    if (s2sSession) {
-      s2sSession.stop();
-      s2sSession = null;
+      const result = await client.launch({ sourceSessionId: _sessionName, withToken });
+      if (!result.ok) addSystemMsg('语音：' + (result.message || result.code));
+      else addSystemMsg('已打开实时语音（当前会话：' + (result.launch.display || _sessionName) + '）');
+    } catch (e) {
+      addSystemMsg('语音启动异常：' + (e && e.message ? e.message : e));
+    } finally {
+      pending = false;
+      btn.classList.remove('active');
     }
-    s2sVolumeFill.style.width = '0%';
-    s2sBreakdown.innerHTML = '';
-    s2sTranscript.innerHTML = '语音对话已结束';
-    setTimeout(() => {
-      if (!s2sActive) s2sTranscript.innerHTML = '点击右上角耳机按钮开启语音对话…';
-    }, 2000);
-  }
-
-  s2sBtn.addEventListener('click', () => {
-    if (s2sActive) stopS2S();
-    else startS2S();
   });
-
-  s2sStopBtn.addEventListener('click', stopS2S);
 })();
 /* ════════════════════════════════════════════════════════════════════════════
- * S2S 语音对话模式 — 结束
+ * 实时语音通话 — 结束
  * ════════════════════════════════════════════════════════════════════════════ */

@@ -7,6 +7,14 @@ const GATEWAY_RECORD_TYPE = 'gateway';
 const GATEWAY_KIND = 'qwen-audio';
 const GATEWAY_PROVIDER = 'qwen-audio-agent';
 
+// Realtime voice is one machine-wide runtime, not one per Fleet. The per-Fleet
+// records below predate that and are kept only so an upgrade loses no user
+// intent: they are projected read-only as `legacy`, and the supervisor refuses
+// to start them. Deleting them on upgrade would be a destructive migration for
+// no gain, so they stay until the compatibility window closes.
+const GLOBAL_VOICE_GATEWAY_ID = '__voice_gateway__';
+const GATEWAY_SCOPE_GLOBAL = 'global';
+
 function cleanId(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -24,10 +32,21 @@ function voiceGatewayId(directoryId) {
   return `__voice_gateway__${suffix}`;
 }
 
+function isGlobalVoiceGatewayRecord(record) {
+  return !!record
+    && record.id === GLOBAL_VOICE_GATEWAY_ID
+    && record.type === GATEWAY_RECORD_TYPE
+    && record.gatewayKind === GATEWAY_KIND;
+}
+
+// Fleet-scoped predicate. The global record deliberately fails this test: every
+// existing caller means "the gateway belonging to this Fleet", and answering yes
+// for the global singleton would let legacy code start a second child.
 function isVoiceGatewayRecord(record, directoryId = null) {
   if (!record || record.type !== GATEWAY_RECORD_TYPE || record.gatewayKind !== GATEWAY_KIND) {
     return false;
   }
+  if (isGlobalVoiceGatewayRecord(record)) return false;
   const dirId = cleanId(directoryId);
   return !dirId || record.dirId === dirId;
 }
@@ -101,6 +120,47 @@ function gatewayDto(records, gateway) {
     createdAt: timestamp(gateway.createdAt),
     updatedAt: timestamp(gateway.updatedAt),
   };
+}
+
+function globalGatewayDto(record) {
+  if (!record) {
+    return {
+      id: GLOBAL_VOICE_GATEWAY_ID,
+      scope: GATEWAY_SCOPE_GLOBAL,
+      type: 'voice_gateway',
+      provider: GATEWAY_PROVIDER,
+      configured: false,
+      enabled: false,
+      createdAt: null,
+      updatedAt: null,
+    };
+  }
+  return {
+    id: GLOBAL_VOICE_GATEWAY_ID,
+    scope: GATEWAY_SCOPE_GLOBAL,
+    type: 'voice_gateway',
+    provider: GATEWAY_PROVIDER,
+    configured: true,
+    enabled: record.enabled === true,
+    createdAt: timestamp(record.createdAt),
+    updatedAt: timestamp(record.updatedAt),
+  };
+}
+
+// Read-only view of the pre-global records, so the管理页 can explain where a
+// Fleet's old toggle went instead of silently dropping it.
+function legacyGatewayProjection(records) {
+  return [...(records || new Map()).values()]
+    .filter(record => isVoiceGatewayRecord(record))
+    .sort((left, right) => String(left.dirId).localeCompare(String(right.dirId)))
+    .map(record => ({
+      id: record.id,
+      directoryId: record.dirId,
+      enabled: record.enabled === true,
+      legacy: true,
+      active: false,
+      supersededBy: GLOBAL_VOICE_GATEWAY_ID,
+    }));
 }
 
 function createVoiceGatewayService({
@@ -213,11 +273,86 @@ function createVoiceGatewayService({
     return { ok: true, id: gateway.record.id, directoryId: directory.dirId };
   }
 
+  function globalRecord() {
+    const record = records.get(GLOBAL_VOICE_GATEWAY_ID);
+    return isGlobalVoiceGatewayRecord(record) ? record : null;
+  }
+
+  function inspectGlobal() {
+    return {
+      ok: true,
+      record: globalRecord(),
+      gateway: globalGatewayDto(globalRecord()),
+      legacy: legacyGatewayProjection(records),
+    };
+  }
+
+  // First write also carries the migration: if any Fleet had realtime voice
+  // switched on before this became global, the global gateway inherits that
+  // intent instead of silently arriving disabled. The old records are left
+  // untouched — read-only projection, never a second running child.
+  function ensureGlobal(options = {}) {
+    if (options.commanderSessionId !== undefined) {
+      return { ok: false, code: 'commander_binding_is_host_owned' };
+    }
+    if (options.provider !== undefined && options.provider !== GATEWAY_PROVIDER) {
+      return { ok: false, code: 'voice_gateway_provider_invalid' };
+    }
+    if (options.enabled !== undefined && typeof options.enabled !== 'boolean') {
+      return { ok: false, code: 'voice_gateway_enabled_invalid' };
+    }
+    const stamp = now();
+    let created = false;
+    let record = null;
+    mutate('http.voice-gateway-global-put', draft => {
+      const existing = draft.get(GLOBAL_VOICE_GATEWAY_ID);
+      if (existing && !isGlobalVoiceGatewayRecord(existing)) {
+        const error = new Error('voice gateway id collision');
+        error.code = 'voice_gateway_id_conflict';
+        throw error;
+      }
+      if (!existing) {
+        const inheritedEnabled = legacyGatewayProjection(records).some(entry => entry.enabled);
+        record = {
+          id: GLOBAL_VOICE_GATEWAY_ID,
+          dirId: null,
+          type: GATEWAY_RECORD_TYPE,
+          kind: 'voice',
+          gatewayKind: GATEWAY_KIND,
+          scope: GATEWAY_SCOPE_GLOBAL,
+          label: 'Qwen Realtime Voice Gateway',
+          enabled: options.enabled === undefined ? inheritedEnabled : options.enabled,
+          createdAt: stamp,
+          updatedAt: stamp,
+        };
+        draft.set(GLOBAL_VOICE_GATEWAY_ID, record);
+        created = true;
+        return;
+      }
+      record = existing;
+      record.scope = GATEWAY_SCOPE_GLOBAL;
+      record.kind = 'voice';
+      record.dirId = null;
+      if (options.enabled !== undefined) record.enabled = options.enabled;
+      record.updatedAt = stamp;
+    });
+    return { ok: true, created, record, gateway: globalGatewayDto(record) };
+  }
+
+  function removeGlobal() {
+    if (!globalRecord()) return { ok: false, code: 'voice_gateway_not_found' };
+    mutate('http.voice-gateway-global-delete', draft => draft.delete(GLOBAL_VOICE_GATEWAY_ID));
+    return { ok: true, id: GLOBAL_VOICE_GATEWAY_ID };
+  }
+
   return Object.freeze({
     ensure,
+    ensureGlobal,
     inspect,
+    inspectGlobal,
     list,
     remove,
+    removeGlobal,
   });
 }
 
@@ -225,10 +360,15 @@ module.exports = {
   GATEWAY_KIND,
   GATEWAY_PROVIDER,
   GATEWAY_RECORD_TYPE,
+  GATEWAY_SCOPE_GLOBAL,
+  GLOBAL_VOICE_GATEWAY_ID,
   bindingState,
   createVoiceGatewayService,
   gatewayDto,
+  globalGatewayDto,
+  isGlobalVoiceGatewayRecord,
   isVoiceGatewayRecord,
+  legacyGatewayProjection,
   recordsForDirectory,
   resolveVoiceGateway,
   voiceGatewayId,
