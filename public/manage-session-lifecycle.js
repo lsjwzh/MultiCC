@@ -25,8 +25,21 @@
     return cli === 'claude' || cli === 'codex' || cli === 'opencode' || cli === 'zcode';
   }
 
+  // Qoder CN's real catalog comes from `qoderclicn --list-models` via
+  // /api/qoder/models (1-day cache, shared with chat.html through
+  // shared/models.js). Fall back to the built-in routing tiers on a cache miss
+  // — the dialog builds its <select> synchronously and cannot await.
+  function qoderModelOptions() {
+    const live = typeof root.readQoderModelsSync === 'function' ? root.readQoderModelsSync() : [];
+    if (!live.length) return QODER_MODEL_OPTIONS;
+    return [
+      QODER_MODEL_OPTIONS[0],
+      ...live.map(entry => ({ value: entry.model, label: entry.label || entry.model })),
+    ];
+  }
+
   function vendorModelOptions(cli) {
-    if (cli === 'qoder') return QODER_MODEL_OPTIONS;
+    if (cli === 'qoder') return qoderModelOptions();
     return null;
   }
 
@@ -807,6 +820,12 @@
     effortOptionsForCli,
     defaultEffortForCli,
   });
+
+  // Warm the Qoder catalog so the create/edit dialogs render the live list on
+  // first open. One request per day — a warm localStorage cache never goes out.
+  if (typeof root.loadQoderModels === 'function') {
+    try { root.loadQoderModels(); } catch (_) { /* picker keeps the tiers */ }
+  }
 
   Object.assign(root, {
     providerAliasMap,

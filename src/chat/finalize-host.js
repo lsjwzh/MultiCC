@@ -113,7 +113,10 @@ function createTurnFinalizationExecutor(rawPorts) {
         ports.setStatus(sessionName, entry.status);
         break;
       case 'classify-turn-end':
-        ports.classifyTurnEnd(cs, sessionName);
+        // The plan's classification is the turn boundary's own verdict. It is
+        // forwarded rather than dropped so the classify centre can skip the Aux
+        // guess for outcomes the boundary already proved.
+        ports.classifyTurnEnd(cs, sessionName, { classification: entry.classification || null });
         break;
       case 'complete-session-turn':
         Promise.resolve(ports.completeSessionTurn(sessionName)).catch(error => {
