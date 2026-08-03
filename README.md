@@ -156,6 +156,17 @@ The second CLI answers with full awareness of the conversation, on the same bran
 
 Then open the same URL on your phone, or install the [Flutter app](docs/installation.md#build-the-flutter-app) — the session is right there, mid-conversation.
 
+### 4. Keep it up to date
+
+```bash
+./multicc update           # pull latest, reinstall deps if they changed, restart
+./multicc update --force   # same, but don't stop for a dirty or diverged tree
+```
+
+Plain `update` refuses to touch a working tree it can't safely fast-forward — a local edit, a leftover experiment, a branch that diverged after an upstream force-push. `--force` gets you to the remote tip anyway: it first stashes everything, including untracked files, into a labelled `multicc-force-update-<timestamp>` stash, then hard-resets the branch. **Nothing is deleted, but the stash is not restored** — you land on a clean checkout and recover your work yourself with `git stash list` / `git stash pop`.
+
+Or do it from the browser: click the **version number at the bottom of the `/manage` sidebar** → a dialog shows current vs. latest and a *强制更新* checkbox → confirm, and MultiCC runs the same update in the background, streams the log into the dialog, restarts itself, and reloads the page once it's back. If the update fails, the dialog keeps the full output and offers a force retry.
+
 **→ Install flags, `./multicc` service manager, systemd unit, app builds: [Installation](docs/installation.md)**
 
 ---
