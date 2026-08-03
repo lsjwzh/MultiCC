@@ -184,3 +184,49 @@ test('manage UI gates the restart button and exposes the monitorOnly switch', ()
   assert.match(html, /id="tnl-sf-monitoronly"/);
   assert.match(html, /id="tnl-sf-restart"/);
 });
+
+test('stale restart failure is cleared once the probe turns healthy', withFreshTunnel(async tunnel => {
+  tunnel.applyConfig({
+    failThreshold: 1,
+    sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
+  });
+  await tunnel.checkProvider('sakurafrp', {
+    probeFn: async () => 0,
+    restarter: async () => { throw new Error('sakurafrp 未安装, 请先安装其客户端'); },
+  });
+  assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /重启失败/);
+  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 302 });
+  const provider = tunnel.getStatus().providers.sakurafrp;
+  assert.equal(provider.healthy, true);
+  assert.equal(provider.lastAction, '', 'stale failure text must not survive a healthy probe');
+}));
+
+test('active guardrail note survives a healthy probe', withFreshTunnel(async tunnel => {
+  tunnel.applyConfig({
+    failThreshold: 1,
+    restartCooldownSec: 0,
+    maxRestartsPerHour: 1,
+    sakurafrp: { enabled: true, url: 'https://tunnel.example.test/' },
+  });
+  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
+  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 0, restarter: async () => '已后台启动' });
+  assert.match(tunnel.getStatus().providers.sakurafrp.lastAction, /已达每小时重启上限/);
+  await tunnel.checkProvider('sakurafrp', { probeFn: async () => 302 });
+  assert.match(
+    tunnel.getStatus().providers.sakurafrp.lastAction,
+    /已达每小时重启上限/,
+    'still-effective cap note must not be cleared',
+  );
+}));
+
+test('manage UI never renders historical restart text for monitorOnly or uninstalled clients', () => {
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-host-settings.js'), 'utf8');
+  // tnlFmtStatus returns inside the monitorOnly branch before any restart text.
+  const monitorOnlyReturn = ui.indexOf("s += ' · 仅监控（不自动重启）'");
+  const lastActionRender = ui.indexOf('p.lastAction');
+  assert.ok(monitorOnlyReturn > -1 && lastActionRender > monitorOnlyReturn, 'monitorOnly must short-circuit before lastAction');
+  // Uninstalled client → neutral fact instead of historical failure.
+  assert.match(ui, /function tnlFmtStatus\(p, prov, avail\)/);
+  assert.match(ui, /客户端: 未安装（非 multicc 托管）/);
+  assert.match(ui, /tnlFmtStatus\(pr\.sakurafrp \|\| \{\}, sf, av\.sakurafrp\)/);
+});
