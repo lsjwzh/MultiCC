@@ -435,6 +435,18 @@ function createClassifyStateMachine(rawDeps) {
         note(sid, ts.classifyState, 'skipped-cancelled', 'explicit cancellation remains authoritative until next user turn');
         continue;
       }
+      // Same reasoning for an E the API-error policy decided: `fail_fast` means
+      // the boundary already ruled out an automatic retry, so no system-side
+      // event is coming and the transcript the scan would judge has not changed.
+      // Without this the 60s sweep re-judged the failed turn, Aux saw an empty
+      // reply, answered P, and the P-fallthrough below republished it as W —
+      // silently converting「异常」back into「等待用户操作」one minute later.
+      // ensureCurrentTask flips the letter to P on the next real user turn,
+      // which is what lets a session leave this state.
+      if (ts.classifyState === 'E' && ts.apiError && ts.apiError.action === 'fail_fast') {
+        note(sid, ts.classifyState, 'skipped-api-error', 'API 策略已判定 fail_fast，等待用户手动处理');
+        continue;
+      }
 
       // Skip sessions parked by the degrade防线 (held for API recovery). Re-judging a
       // held session every 60s is pure waste — its history hasn't changed (no new turn
@@ -659,14 +671,50 @@ function createClassifyStateMachine(rawDeps) {
     });
   }
 
+  // A turn that ended on an exhausted API failure has a KNOWN outcome: the
+  // runner boundary already ran the centralized policy and chose fail_fast (a
+  // planned retry never reaches finalize). Asking Aux to re-derive that from the
+  // transcript is both wasteful and wrong — such a turn usually died before its
+  // first token, and the classify prompt's own rule ("回复为空判 P") then answers
+  // P, which dispatchStateAction's waiting branch renders as W. That is how an
+  // API error surfaced to the dispatcher as「等待用户操作」instead of「异常」.
+  //
+  // So build the verdict from the structured decision and hand it to the SAME
+  // central applier every other verdict goes through: liveness admission, cancel
+  // precedence, the pending-user-input override, history, persistence and the
+  // notify fan-out all stay in one place. This is a new *source* of a classify
+  // result, not a new writer of classifyState.
+  function apiErrorResult(cs, sessionName) {
+    const ts = getTaskState(persistedSessions.get(sessionName));
+    return {
+      state: 'E',
+      goal: cs?.currentTask?.goal || ts.goal || '',
+      phase: cs?.currentTask?.phase || ts.phase || 'planning',
+      evidence: 'api_error_policy',
+    };
+  }
+
   // Fire classify immediately after a turn ends — classify is the ONLY decider of
   // C/W/E/P/D. No in-turn loop: while streaming the output is still changing so a
   // mid-turn verdict would be judged against an incomplete reply. We judge once at
   // turn end (definitive) and the periodic scan re-judges anything not yet D/W.
   // runClassifyNow handles the empty-reply case itself (falls back to user msg).
-  function classifyTurnEnd(cs, sessionName) {
+  // `classification` is the turn boundary's own verdict when it has one; today
+  // only 'api-error' short-circuits the Aux judgement.
+  function classifyTurnEnd(cs, sessionName, { classification } = {}) {
     cancelClassify(cs);
-    runClassifyNow(cs, sessionName);
+    if (classification === 'api-error') {
+      // Drop this session's queued/in-flight classify. Whatever it was judging
+      // is now superseded, and letting it resolve would overwrite the
+      // deterministic E with the guess this branch exists to avoid.
+      getAuxQueue().cancelClassifyFor(sessionName);
+      if (cs) cs._classifyTaskId = null;
+      const sessionId = persistedSessions.get(sessionName)?.id || sessionName;
+      applyClassifyResult(cs, sessionName, sessionId, apiErrorResult(cs, sessionName),
+        { cwd: cs?.cwd, source: 'multicc/api-error' });
+    } else {
+      runClassifyNow(cs, sessionName);
+    }
     getTaskBoardRuntime().onTurnEnd(cs, sessionName);
   }
 
