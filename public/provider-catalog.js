@@ -334,7 +334,7 @@
     if (st === 'not_configured') return { text: '余量：未配置', color: QUOTA_GRAY, title: '未配置对应 provider' };
     if (st === 'needs_auth' || st === 'needs_login') return { text: '余量：需登录', color: QUOTA_AMBER, title: data.error || '需要登录后才能查询余量' };
     if (st === 'needs_install') return { text: '余量：未安装 arkcli', color: QUOTA_AMBER, title: data.error || 'arkcli 未安装' };
-    if (st === 'chrome_unavailable') return { text: '余量：未开 Chrome 9222', color: QUOTA_AMBER, title: '需本机 Chrome 开启 9222 调试端口并登录' };
+    if (st === 'chrome_unavailable') return { text: '余量：无可连的 Chrome', color: QUOTA_AMBER, title: '需要一个开了调试端点的 Chrome 并在其中登录；端口随意（--remote-debugging-port=0），会自动发现' };
     if (st !== 'ok') return { text: '余量：暂不可用', color: QUOTA_AMBER, title: data.error || '查询失败' };
 
     if (kind === 'zhipu') {

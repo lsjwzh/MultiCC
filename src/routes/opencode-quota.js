@@ -17,85 +17,30 @@
 //     useBalance:false, region:["us","eu","sg"], ...
 //   }
 //
-// So we drive the user's local Chrome via CDP (127.0.0.1:9222) — which already
-// holds their opencode.ai login session — open a tab at /auth (auto-redirects
-// to /workspace/<wsid>/go), read the SSR HTML, regex out the three usage
-// triplets, close the tab. We do NOT call any client-side REST API because
-// there is none.
+// So we drive a browser that holds the user's session — see ../chrome-cdp.js
+// for what reaching one requires — opening a throwaway tab at /auth
+// (auto-redirects to /workspace/<wsid>/go), reading the SSR HTML, regexing out
+// the three usage triplets, and closing the tab again. We do NOT call any
+// client-side REST API because there is none. Unlike the qoder route, there is
+// no cookie shortcut here: the numbers exist only in the rendered page.
 //
 // Failure modes we surface to the frontend so the rate-limit bar can prompt
 // the user instead of silently degrading:
-//   chrome_unavailable — CDP 9222 not reachable (Chrome not started with
-//                        --remote-debugging-port=9222)
+//   chrome_unavailable — no browser we can reach over CDP
 //   needs_login       — page redirected to the /authorize login screen
-//                        (no session in this Chrome)
+//                        (no session in that browser)
 //   unavailable       — any other error / parse timeout
 
-const { execFile } = require('child_process');
-const http = require('http');
-const path = require('path');
-const WebSocket = require('ws');
+const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 
-const CDP_HOST = process.env.OPENCODE_QUOTA_CDP_HOST || '127.0.0.1';
-const CDP_PORT = Number(process.env.OPENCODE_QUOTA_CDP_PORT || 9222);
 const CDP_TIMEOUT_MS = Number(process.env.OPENCODE_QUOTA_TIMEOUT_MS || 10000);
 const OPENCODE_AUTH_URL = process.env.OPENCODE_QUOTA_URL || 'https://opencode.ai/auth';
-const WS_OPTIONS = { perMessageDeflate: false, maxPayload: 16 * 1024 * 1024 };
 
-function cdpJson(endpoint) {
-  return new Promise((resolve, reject) => {
-    const req = http.get(
-      { host: CDP_HOST, port: CDP_PORT, path: endpoint, timeout: 2000 },
-      (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => { body += chunk; });
-        res.on('end', () => {
-          try { resolve(JSON.parse(body)); }
-          catch (err) { reject(new Error('CDP returned non-JSON')); }
-        });
-      },
-    );
-    req.on('timeout', () => req.destroy(new Error('CDP http timeout')));
-    req.on('error', reject);
-  });
-}
-
-function cdpPut(endpoint, payload) {
-  return new Promise((resolve, reject) => {
-    const data = payload ? JSON.stringify(payload) : '';
-    const req = http.request(
-      {
-        host: CDP_HOST, port: CDP_PORT, path: endpoint, method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-        timeout: 3000,
-      },
-      (res) => {
-        let body = ''; res.setEncoding('utf8');
-        res.on('data', (c) => { body += c; });
-        res.on('end', () => { try { resolve(body ? JSON.parse(body) : {}); } catch (_) { resolve({}); } });
-      },
-    );
-    req.on('timeout', () => req.destroy(new Error('CDP http timeout')));
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
-}
-
-function openChromeTab(url) {
-  // /json/new?<url> with PUT (GET is 405 on newer Chrome).
-  const safeUrl = encodeURIComponent(url);
-  return cdpPut(`/json/new?${safeUrl}`, null);
-}
-
-function closeChromeTab(targetId) {
-  return cdpJson(`/json/close/${targetId}`).catch(() => ({}));
-}
-
-function evalInTab(wsConnection, expression, returnByValue = true) {
-  return wsConnection.send('Runtime.evaluate', { expression, returnByValue });
-}
+const chrome = createChromeCdp({
+  ports: portsFromEnv(process.env, [process.env.OPENCODE_QUOTA_CDP_PORT].filter(Boolean)),
+  profileDirs: profileDirsFromEnv(process.env),
+  commandTimeoutMs: CDP_TIMEOUT_MS,
+});
 
 // Extract rolling/weekly/monthly usage triplets from the SSR HTML. SolidStart
 // serializes the lite.subscription.get hydration data with stable key names
@@ -146,161 +91,94 @@ function parseUsage(scriptText) {
   };
 }
 
-// Connect to a page's DevTools websocket and run eval + close protocol.
-function openPageSession(tab) {
-  const ws = new WebSocket(tab.webSocketDebuggerUrl, WS_OPTIONS);
-  let nextId = 0;
-  const pending = new Map();
-  const handlers = [];
-  function send(method, params) {
-    const id = ++nextId;
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params: params || {} }));
-    });
-  }
-  ws.on('message', (msg) => {
-    let obj;
-    try { obj = JSON.parse(msg.toString()); } catch (_) { return; }
-    if (obj.id && pending.has(obj.id)) {
-      const p = pending.get(obj.id); pending.delete(obj.id);
-      if (obj.error) p.reject(new Error(obj.error.message || 'CDP error'));
-      else p.resolve(obj.result);
-    } else {
-      for (const h of handlers) h(obj);
+async function readUsageFromPage(page) {
+  await page.enable(['Runtime', 'Page']);
+  await page.navigate(OPENCODE_AUTH_URL);
+
+  // 1. Wait for the redirect chain to settle — either into a workspace (logged
+  //    in) or onto the login screen. Half the deadline; the rest is for the
+  //    /go navigation and the SSR wait below.
+  const finalUrl = await page.waitFor(async () => {
+    const raw = await page.evaluate(
+      'JSON.stringify({u:location.href,r:document.readyState,h:document.documentElement?document.documentElement.outerHTML.length:0})',
+    );
+    let js = null;
+    try { js = JSON.parse(raw); } catch (_) { return null; }
+    if (!js || !js.u) return null;
+    if (/auth\.opencode\.ai\/authorize/.test(js.u) && js.h > 200) return js.u;
+    if (/\/workspace\/[^/?#]+/.test(js.u) && js.r === 'complete') return js.u;
+    return null;
+  }, { timeoutMs: Math.floor(CDP_TIMEOUT_MS / 2) });
+
+  if (!finalUrl) return { status: 'unavailable', error: 'page never settled' };
+
+  // 2. Login-page detection.
+  if (/auth\.opencode\.ai\/authorize/.test(finalUrl)) {
+    const domText = await page.evaluate('document.body?document.body.innerText.slice(0,500):""') || '';
+    if (/Continue with GitHub|Continue with Google/i.test(domText)) {
+      return { status: 'needs_login', error: 'opencode.ai login required in this Chrome' };
     }
-  });
-  return new Promise((resolve, reject) => {
-    ws.on('open', () => resolve({
-      send,
-      onEvent: (fn) => handlers.push(fn),
-      close: () => ws.close(),
-    }));
-    ws.on('error', reject);
-  });
+  }
+
+  // 3. If we landed at /workspace/<id> without /go, navigate explicitly to the
+  //    /go console route — the SSR hydration data we want is only injected on
+  //    that page. If already at /go, we're done.
+  if (/\/workspace\/[^/?#]+$/.test(finalUrl) && !/\/go$/.test(finalUrl)) {
+    try {
+      await page.navigate(`${finalUrl.replace(/\/$/, '')}/go`);
+    } catch (err) {
+      return { status: 'unavailable', error: 'navigate to /go failed: ' + err.message };
+    }
+  }
+
+  // 4. Poll until the inline hydration script containing usagePercent is
+  //    present in the DOM. On most machines /go SSR lands within ~3s; allow the
+  //    rest of the deadline for slow renders. We keep the last text we saw so a
+  //    page that rendered *something* reports a parse failure rather than
+  //    claiming the scripts were missing.
+  let lastScriptText = '';
+  const hit = await page.waitFor(async () => {
+    const text = await page.evaluate(
+      '[...document.querySelectorAll("script")].map(s=>s.textContent||"").join("\\n").slice(0,262144)',
+    );
+    if (typeof text !== 'string') return null;
+    lastScriptText = text;
+    return text.includes('usagePercent') ? text : null;
+  }, { timeoutMs: Math.floor(CDP_TIMEOUT_MS / 2), intervalMs: 800 });
+
+  const scriptText = hit || lastScriptText;
+  if (!scriptText) return { status: 'unavailable', error: 'script tags missing' };
+
+  // 5. Regex the usage triplets out of the SSR script body.
+  const parsed = parseUsage(scriptText);
+  if (!parsed) return { status: 'unavailable', error: 'usage literals not found in HTML' };
+
+  const wsidMatch = finalUrl.match(/\/workspace\/([^/?#]+)/);
+  return {
+    status: 'ok',
+    workspaceId: wsidMatch ? wsidMatch[1] : null,
+    fetchedAt: Date.now(),
+    url: finalUrl,
+    usage: parsed,
+  };
 }
 
 async function fetchOpenCodeUsage() {
-  // 1. Verify CDP is reachable.
-  let version;
-  try { version = await cdpJson('/json/version'); }
-  catch (err) { return { status: 'chrome_unavailable', error: 'CDP 9222 unreachable' }; }
-  if (!version || !version['webSocketDebuggerUrl']) {
-    return { status: 'chrome_unavailable', error: 'CDP version missing' };
+  let browser;
+  try { browser = await chrome.attach(); }
+  catch (err) {
+    if (err.code === 'chrome_unavailable') {
+      return { status: 'chrome_unavailable', error: '没有可连接的 Chrome 调试端点' };
+    }
+    return { status: 'unavailable', error: err.message };
   }
 
-  // 2. Open a new tab (about:blank) — we'll navigate explicitly via
-  //    Page.navigate so we can wait for the SSR render. Some Chrome builds
-  //    accept the URL in /json/new?<u> but the tab stays on about:blank until
-  //    the renderer is ready; explicit Page.navigate + frameStoppedLoading is
-  //    the reliable cross-version path.
-  let tab;
-  try { tab = await openChromeTab('about:blank'); }
-  catch (err) { return { status: 'chrome_unavailable', error: 'open tab failed: ' + err.message }; }
-  if (!tab || !tab.id || !tab.webSocketDebuggerUrl) {
-    return { status: 'chrome_unavailable', error: 'tab created without ws url' };
-  }
-  const targetId = tab.id;
-
-  let session;
   try {
-    session = await openPageSession(tab);
-    await session.send('Runtime.enable', {});
-    await session.send('Page.enable', {});
-
-    let navError = null;
-    session.onEvent((evt) => {
-      if (evt.method === 'Page.frameStoppedLoading') {
-        // informational only — polling below drives the readiness check
-      }
-    });
-
-    // 3. Trigger navigation.
-    try {
-      await session.send('Page.navigate', { url: OPENCODE_AUTH_URL });
-    } catch (err) { return { status: 'unavailable', error: 'navigate failed: ' + err.message }; }
-
-    // 4. Poll until location stabilizes (either logged into a workspace, or hit
-    //    the login screen). Cap at CDP_TIMEOUT_MS / 2 — we leave the rest for
-    //    the /go navigation + script-wait below.
-    const settleDeadline = Date.now() + Math.floor(CDP_TIMEOUT_MS / 2);
-    let finalUrl = '';
-    while (Date.now() < settleDeadline) {
-      await new Promise((r) => setTimeout(r, 600));
-      try {
-        const nav = await session.send('Runtime.evaluate', {
-          expression: 'JSON.stringify({u:location.href,r:document.readyState,h:document.documentElement?document.documentElement.outerHTML.length:0})',
-          returnByValue: true,
-        });
-        const v = nav && nav.result && nav.result.value;
-        if (!v) continue;
-        let js; try { js = JSON.parse(v); } catch (_) { continue; }
-        finalUrl = js.u || '';
-        if (/auth\.opencode\.ai\/authorize/.test(finalUrl) && js.h > 200) break;
-        if (/\/workspace\/[^/?#]+/.test(finalUrl) && js.r === 'complete') break;
-      } catch (_) { /* keep waiting */ }
-    }
-
-    if (!finalUrl) {
-      return { status: 'unavailable', error: 'page never settled' };
-    }
-
-    // 5. Login-page detection.
-    if (/auth\.opencode\.ai\/authorize/.test(finalUrl)) {
-      const domRes = await session.send('Runtime.evaluate', { expression: 'document.body?document.body.innerText.slice(0,500):""', returnByValue: true });
-      const domText = (domRes && domRes.result && domRes.result.value) || '';
-      if (/Continue with GitHub|Continue with Google/i.test(domText)) {
-        return { status: 'needs_login', error: 'opencode.ai login required in this Chrome' };
-      }
-    }
-
-    // 6. If we landed at /workspace/<id> without /go, navigate explicitly to
-    //    the /go console route — the SSR hydration data we want is only
-    //    injected on that page. If already at /go, we're done.
-    if (/\/workspace\/[^/?#]+$/.test(finalUrl) && !/\/go$/.test(finalUrl)) {
-      try {
-        await session.send('Page.navigate', { url: finalUrl.replace(/\/$/, '') + '/go' });
-      } catch (err) {
-        return { status: 'unavailable', error: 'navigate to /go failed: ' + err.message };
-      }
-    }
-
-    // 7. Poll until the inline hydration script containing usagePercent is
-    //    present in the DOM. On most machines /go SSR lands within ~3s; allow
-    //    the rest of the deadline for slow renders.
-    const scriptDeadline = Date.now() + Math.floor(CDP_TIMEOUT_MS / 2);
-    let scriptText = '';
-    while (Date.now() < scriptDeadline) {
-      await new Promise((r) => setTimeout(r, 800));
-      try {
-        const scriptRes = await session.send('Runtime.evaluate', {
-          expression: '[...document.querySelectorAll("script")].map(s=>s.textContent||"").join("\\n").slice(0,262144)',
-          returnByValue: true,
-        });
-        scriptText = (scriptRes && scriptRes.result && scriptRes.result.value) || '';
-        if (scriptText.includes('usagePercent')) break;
-      } catch (_) { /* keep waiting */ }
-    }
-    if (!scriptText) {
-      return { status: 'unavailable', error: 'script tags missing' };
-    }
-
-    // 8. Regex the usage triplets out of the SSR script body.
-    const parsed = parseUsage(scriptText);
-    if (!parsed) {
-      return { status: 'unavailable', error: 'usage literals not found in HTML' };
-    }
-    const wsidMatch = finalUrl.match(/\/workspace\/([^/?#]+)/);
-    return {
-      status: 'ok',
-      workspaceId: wsidMatch ? wsidMatch[1] : null,
-      fetchedAt: Date.now(),
-      url: finalUrl,
-      usage: parsed,
-    };
+    return await chrome.withPage(readUsageFromPage, { browser });
+  } catch (err) {
+    return { status: 'unavailable', error: err.message };
   } finally {
-    if (session) try { session.close(); } catch (_) {}
-    try { await closeChromeTab(targetId); } catch (_) {}
+    browser.close();
   }
 }
 
@@ -325,9 +203,5 @@ module.exports = {
   fetchOpenCodeUsage,
   parseUsage,
   // exposed for tests
-  _cdpJson: cdpJson,
-  _cdpPut: cdpPut,
-  _openChromeTab: openChromeTab,
-  _closeChromeTab: closeChromeTab,
-  _openPageSession: openPageSession,
+  readUsageFromPage,
 };

@@ -1,112 +1,55 @@
 'use strict';
 
-// GET /api/qoder/quota — fetch Qoder CN credit usage via CDP network interception.
+// GET /api/qoder/quota — fetch Qoder CN credit usage from the user's own
+// logged-in browser session.
 //
-// Qoder CN's usage page (qoder.com.cn/account/usage) is a SPA that fetches
-// quota data from its own /api/v2/me/usages/big_model_credits endpoint with
-// session cookies. There is no public Bearer-token API for credits (the CLI
-// auth file uses a custom encryption we can't decode). So we drive the user's
-// local Chrome via CDP (127.0.0.1:9222), navigate to the usage page, and
-// intercept the network responses to capture the quota JSON.
+// Qoder CN publishes credits only to its web app: the usage page is a SPA that
+// calls /api/v2/me/usages/big_model_credits with session cookies, and the CLI's
+// auth file uses an encryption we can't decode, so there is no token API to
+// point at. What the browser has that we don't is the cookie.
+//
+// So take the cookie, not the browser. Reading it needs a browser we can reach
+// over CDP (see ../chrome-cdp.js for what that requires), but once read, the
+// usage API answers a plain HTTPS request — no CSRF header, no tab, no
+// navigation, and no visible disturbance in someone's own browser. We cache the
+// cookies, so refreshes for the next week need no browser running at all; the
+// browser is only how the session gets in here the first time.
+//
+// The tab-and-intercept path the route used to take is kept as a fallback for
+// the day the API starts demanding something only the page can produce.
 //
 // Failure modes surfaced to the frontend:
-//   chrome_unavailable — CDP 9222 not reachable
-//   needs_login       — page redirected to sign-in (no session)
-//   unavailable       — any other error / timeout
+//   chrome_unavailable — no reachable browser, and no cached session either
+//   needs_login        — a browser is there, but not logged in to qoder.com.cn
+//   unavailable        — anything else
 
-const http = require('http');
 const fs = require('fs');
+const https = require('https');
 const path = require('path');
-const WebSocket = require('ws');
 
-const CDP_HOST = process.env.QODER_QUOTA_CDP_HOST || '127.0.0.1';
-const CDP_PORT = Number(process.env.QODER_QUOTA_CDP_PORT || 9222);
-const CDP_TIMEOUT_MS = Number(process.env.QODER_QUOTA_TIMEOUT_MS || 15000);
-const USAGE_URL = 'https://qoder.com.cn/account/usage';
-const WS_OPTIONS = { perMessageDeflate: false, maxPayload: 16 * 1024 * 1024 };
+const {
+  createChromeCdp,
+  portsFromEnv,
+  profileDirsFromEnv,
+} = require('../chrome-cdp');
+
+const SITE = 'qoder.com.cn';
+const QUOTA_URL = `https://${SITE}/api/v2/me/usages/big_model_credits`;
+const PLAN_URL = `https://${SITE}/api/v1/me/userplan`;
+const USAGE_PAGE_URL = `https://${SITE}/account/usage`;
+const LOGIN_PAGE_URL = `https://${SITE}/account`;
+const HTTP_TIMEOUT_MS = Number(process.env.QODER_QUOTA_HTTP_TIMEOUT_MS || 8000);
+const PAGE_TIMEOUT_MS = Number(process.env.QODER_QUOTA_TIMEOUT_MS || 15000);
+const COOKIE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 const DATA_DIR = process.env.MULTICC_DATA_DIR || path.join(require('os').homedir(), '.multicc');
 const COOKIE_FILE = path.join(DATA_DIR, 'qoder-cookies.json');
 
-function cdpJson(endpoint) {
-  return new Promise((resolve, reject) => {
-    const req = http.get(
-      { host: CDP_HOST, port: CDP_PORT, path: endpoint, timeout: 2000 },
-      (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (c) => { body += c; });
-        res.on('end', () => {
-          try { resolve(JSON.parse(body)); }
-          catch (_) { reject(new Error('CDP returned non-JSON')); }
-        });
-      },
-    );
-    req.on('timeout', () => req.destroy(new Error('CDP http timeout')));
-    req.on('error', reject);
-  });
-}
-
-function cdpPut(endpoint) {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { host: CDP_HOST, port: CDP_PORT, path: endpoint, method: 'PUT', timeout: 3000 },
-      (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (c) => { body += c; });
-        res.on('end', () => { try { resolve(body ? JSON.parse(body) : {}); } catch (_) { resolve({}); } });
-      },
-    );
-    req.on('timeout', () => req.destroy(new Error('CDP http timeout')));
-    req.on('error', reject);
-    req.end();
-  });
-}
-
-function openChromeTab(url) {
-  return cdpPut(`/json/new?${encodeURIComponent(url)}`);
-}
-
-function closeChromeTab(targetId) {
-  return cdpJson(`/json/close/${targetId}`).catch(() => ({}));
-}
-
-function openPageSession(tab) {
-  const ws = new WebSocket(tab.webSocketDebuggerUrl, WS_OPTIONS);
-  let nextId = 0;
-  const pending = new Map();
-  const handlers = [];
-  function send(method, params) {
-    const id = ++nextId;
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params: params || {} }));
-      setTimeout(() => {
-        if (pending.has(id)) { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }
-      }, CDP_TIMEOUT_MS);
-    });
-  }
-  ws.on('message', (msg) => {
-    let obj;
-    try { obj = JSON.parse(msg.toString()); } catch (_) { return; }
-    if (obj.id && pending.has(obj.id)) {
-      const p = pending.get(obj.id); pending.delete(obj.id);
-      if (obj.error) p.reject(new Error(obj.error.message || 'CDP error'));
-      else p.resolve(obj.result);
-    } else {
-      for (const h of handlers) h(obj);
-    }
-  });
-  return new Promise((resolve, reject) => {
-    ws.on('open', () => resolve({
-      send,
-      onEvent: (fn) => handlers.push(fn),
-      close: () => ws.close(),
-    }));
-    ws.on('error', reject);
-  });
-}
+const chrome = createChromeCdp({
+  ports: portsFromEnv(process.env, [process.env.QODER_QUOTA_CDP_PORT].filter(Boolean)),
+  profileDirs: profileDirsFromEnv(process.env),
+  commandTimeoutMs: PAGE_TIMEOUT_MS,
+});
 
 function saveCookies(cookies) {
   try {
@@ -118,133 +61,153 @@ function saveCookies(cookies) {
 function loadSavedCookies() {
   try {
     const raw = JSON.parse(fs.readFileSync(COOKIE_FILE, 'utf8'));
-    if (raw && raw.cookies && raw.savedAt && (Date.now() - raw.savedAt) < 7 * 24 * 3600 * 1000) {
-      return raw;
-    }
+    if (raw && Array.isArray(raw.cookies) && raw.savedAt
+      && (Date.now() - raw.savedAt) < COOKIE_MAX_AGE_MS) return raw;
   } catch (_) {}
   return null;
 }
 
-async function fetchQoderUsage() {
-  let version;
-  try { version = await cdpJson('/json/version'); }
-  catch (_) { return { status: 'chrome_unavailable', error: 'CDP 9222 unreachable' }; }
-  if (!version || !version['webSocketDebuggerUrl']) {
-    return { status: 'chrome_unavailable', error: 'CDP version missing' };
+function cookieHeader(cookies) {
+  return (cookies || [])
+    .filter((cookie) => cookie && cookie.name)
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ');
+}
+
+function httpsGetJson(url, jar) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, {
+      method: 'GET',
+      timeout: HTTP_TIMEOUT_MS,
+      headers: {
+        Cookie: jar,
+        Accept: 'application/json',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(body); } catch (_) {}
+        resolve({ statusCode: res.statusCode, location: res.headers.location || '', json });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('qoder API timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function looksLikeQuota(json) {
+  if (!json || typeof json !== 'object') return false;
+  return Boolean(json.total_quota || json.plan_quota || json.resource_package_quota);
+}
+
+// A dead session doesn't always answer 401 — some deployments redirect an
+// unauthenticated XHR to the sign-in page instead — so both shapes count.
+function isUnauthenticated(response) {
+  if (response.statusCode === 401 || response.statusCode === 403) return true;
+  if (response.statusCode >= 300 && response.statusCode < 400) {
+    return /sign-?in|login/i.test(response.location || '');
+  }
+  return false;
+}
+
+async function fetchWithCookies(cookies) {
+  const jar = cookieHeader(cookies);
+  if (!jar) return { status: 'needs_login', error: '没有 qoder.com.cn 的会话 cookie' };
+
+  const quotaRes = await httpsGetJson(QUOTA_URL, jar);
+  if (isUnauthenticated(quotaRes)) {
+    return { status: 'needs_login', error: 'qoder.com.cn 会话已失效' };
+  }
+  if (quotaRes.statusCode !== 200 || !looksLikeQuota(quotaRes.json)) {
+    return { status: 'unavailable', error: `用量 API 返回 HTTP ${quotaRes.statusCode}` };
   }
 
-  // Reuse existing qoder tab if present
-  let tab;
-  let existingTab = false;
+  let plan = null;
   try {
-    const targets = await cdpJson('/json');
-    tab = targets.find((t) => t.type === 'page' && t.url && t.url.includes('qoder.com.cn'));
-    if (tab) existingTab = true;
+    const planRes = await httpsGetJson(PLAN_URL, jar);
+    if (planRes.statusCode === 200 && planRes.json) plan = planRes.json;
   } catch (_) {}
 
-  if (!tab) {
-    try { tab = await openChromeTab('about:blank'); }
-    catch (err) { return { status: 'chrome_unavailable', error: 'open tab failed: ' + err.message }; }
-  }
-  if (!tab || !tab.id || !tab.webSocketDebuggerUrl) {
-    return { status: 'chrome_unavailable', error: 'tab missing ws url' };
-  }
-  const targetId = tab.id;
+  return { status: 'ok', fetchedAt: Date.now(), quota: quotaRes.json, plan };
+}
 
-  let session;
-  try {
-    session = await openPageSession(tab);
-    await session.send('Network.enable', {});
-    await session.send('Page.enable', {});
+// Fallback: drive a throwaway tab and read the SPA's own API responses. Slower
+// and visible to the user, so it only runs when the cookie path failed for a
+// reason a real page might get past.
+async function fetchViaPage(browser) {
+  return chrome.withPage(async (page) => {
+    await page.enable(['Network', 'Page']);
+    await page.navigate(USAGE_PAGE_URL);
 
-    const apiResponses = [];
-    const capturedCookies = [];
-
-    session.onEvent((evt) => {
-      if (evt.method === 'Network.responseReceived') {
-        const url = evt.params?.response?.url || '';
-        if (url.includes('/api/') && url.includes('qoder.com.cn')) {
-          apiResponses.push({ requestId: evt.params.requestId, url, status: evt.params.response.status });
-        }
-      }
-    });
-
-    await session.send('Page.navigate', { url: USAGE_URL });
-
-    // Poll for login state or API responses
-    const deadline = Date.now() + CDP_TIMEOUT_MS;
     let needsLogin = false;
+    const hit = await page.waitFor(async () => {
+      const href = await page.evaluate('location.href');
+      if (typeof href === 'string' && /sign-?in|login/i.test(href)) { needsLogin = true; return true; }
+      return page.findResponse((r) => r.url.includes('usages/big_model_credits') && !r.url.includes('histories'));
+    }, { timeoutMs: PAGE_TIMEOUT_MS });
 
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 800));
-
-      // Check if redirected to sign-in
-      try {
-        const nav = await session.send('Runtime.evaluate', {
-          expression: 'location.href',
-          returnByValue: true,
-        });
-        const href = nav?.result?.value || '';
-        if (href.includes('sign-in') || href.includes('login')) {
-          needsLogin = true;
-          break;
-        }
-      } catch (_) {}
-
-      // Check if we got the quota API response
-      const quotaResp = apiResponses.find((r) => r.url.includes('usages/big_model_credits') && !r.url.includes('histories'));
-      if (quotaResp) break;
-    }
-
-    if (needsLogin) {
-      return { status: 'needs_login', error: '请在 Chrome 9222 中登录 qoder.com.cn' };
-    }
-
-    // Extract cookies for curl reuse
-    try {
-      const cookieResult = await session.send('Network.getAllCookies', {});
-      const qoderCookies = (cookieResult.cookies || []).filter((c) =>
-        c.domain.includes('qoder.com.cn')
-      );
-      if (qoderCookies.length) saveCookies(qoderCookies);
-    } catch (_) {}
-
-    // Fetch response bodies
-    const quotaResp = apiResponses.find((r) => r.url.includes('usages/big_model_credits') && !r.url.includes('histories'));
-    const planResp = apiResponses.find((r) => r.url.includes('userplan'));
+    if (needsLogin) return { status: 'needs_login', error: '请在 Chrome 中登录 qoder.com.cn' };
+    if (!hit) return { status: 'unavailable', error: '未能捕获用量 API 响应' };
 
     let quota = null;
+    try { quota = JSON.parse(await page.responseBody(hit.requestId)); } catch (_) {}
+    if (!looksLikeQuota(quota)) return { status: 'unavailable', error: '用量 API 响应无法解析' };
+
     let plan = null;
+    const planHit = page.findResponse((r) => r.url.includes('userplan'));
+    if (planHit) { try { plan = JSON.parse(await page.responseBody(planHit.requestId)); } catch (_) {} }
 
-    if (quotaResp) {
-      try {
-        const body = await session.send('Network.getResponseBody', { requestId: quotaResp.requestId });
-        const text = body.base64Encoded ? Buffer.from(body.body, 'base64').toString() : body.body;
-        quota = JSON.parse(text);
-      } catch (_) {}
+    return { status: 'ok', fetchedAt: Date.now(), quota, plan };
+  }, { browser });
+}
+
+async function fetchQoderUsage() {
+  // 1. Cached cookies: the fast path, and the only one that works with the
+  //    browser closed.
+  const saved = loadSavedCookies();
+  if (saved) {
+    try {
+      const result = await fetchWithCookies(saved.cookies);
+      if (result.status === 'ok') return { ...result, source: 'saved-cookies' };
+    } catch (_) { /* fall through to the browser */ }
+  }
+
+  // 2. The live browser — which may hold a newer session than the file does.
+  let browser;
+  try { browser = await chrome.attach(); }
+  catch (err) {
+    if (err.code === 'chrome_unavailable') {
+      return { status: 'chrome_unavailable', error: '没有可连接的 Chrome 调试端点' };
     }
+    return { status: 'unavailable', error: err.message };
+  }
 
-    if (planResp) {
-      try {
-        const body = await session.send('Network.getResponseBody', { requestId: planResp.requestId });
-        const text = body.base64Encoded ? Buffer.from(body.body, 'base64').toString() : body.body;
-        plan = JSON.parse(text);
-      } catch (_) {}
+  try {
+    const cookies = await chrome.getCookies(SITE, { browser });
+    if (!cookies.length) {
+      return { status: 'needs_login', error: 'Chrome 中没有 qoder.com.cn 的登录态' };
     }
-
-    if (!quota) {
-      return { status: 'unavailable', error: '未能捕获用量 API 响应' };
+    const result = await fetchWithCookies(cookies);
+    if (result.status === 'ok') {
+      saveCookies(cookies);
+      return { ...result, source: 'chrome-cookies' };
     }
+    if (result.status === 'needs_login') return result;
 
-    return {
-      status: 'ok',
-      fetchedAt: Date.now(),
-      quota,
-      plan,
-    };
+    // The cookie is good enough to be worth a page, so let the SPA make the
+    // call itself before we give up.
+    const viaPage = await fetchViaPage(browser);
+    if (viaPage.status === 'ok') { saveCookies(cookies); return { ...viaPage, source: 'page' }; }
+    return viaPage;
+  } catch (err) {
+    return { status: 'unavailable', error: err.message };
   } finally {
-    if (session) try { session.close(); } catch (_) {}
-    if (!existingTab) { try { await closeChromeTab(targetId); } catch (_) {} }
+    browser.close();
   }
 }
 
@@ -254,34 +217,32 @@ function mountQoderQuotaRoutes(app) {
   app.get('/api/qoder/quota', async (req, res) => {
     try {
       const result = await fetchQoderUsage();
-      const status = result?.status || 'unavailable';
+      const status = (result && result.status) || 'unavailable';
       const httpStatus = status === 'ok' ? 200
         : status === 'needs_login' ? 401
-        : status === 'chrome_unavailable' ? 503 : 500;
+          : status === 'chrome_unavailable' ? 503 : 500;
       res.status(httpStatus).json(result);
     } catch (_) {
       res.status(500).json({ status: 'unavailable', error: 'qoder quota fetch failed' });
     }
   });
 
-  // Open qoder login page in Chrome for the user
+  // Open the login page for the user. This tab is deliberately left open —
+  // it is the one the user is about to type into.
   app.post('/api/qoder/quota/login', async (req, res) => {
+    let browser;
+    try { browser = await chrome.attach(); }
+    catch (_) { return res.status(503).json({ ok: false, error: 'chrome_unavailable' }); }
     try {
-      await cdpJson('/json/version');
-    } catch (_) {
-      return res.status(503).json({ ok: false, error: 'chrome_unavailable' });
-    }
-    try {
-      const targets = await cdpJson('/json');
-      const existing = targets.find((t) => t.type === 'page' && t.url && t.url.includes('qoder.com.cn'));
-      if (!existing) await openChromeTab('https://qoder.com.cn/account');
+      await browser.send('Target.createTarget', { url: LOGIN_PAGE_URL });
       res.json({ ok: true, message: '已在 Chrome 中打开 Qoder 登录页' });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
+    } finally {
+      browser.close();
     }
   });
 
-  // Get saved cookies for curl usage
   app.get('/api/qoder/quota/cookies', (req, res) => {
     const saved = loadSavedCookies();
     if (!saved) return res.status(404).json({ ok: false, error: 'no saved cookies' });
@@ -289,4 +250,11 @@ function mountQoderQuotaRoutes(app) {
   });
 }
 
-module.exports = { mountQoderQuotaRoutes, fetchQoderUsage };
+module.exports = {
+  mountQoderQuotaRoutes,
+  fetchQoderUsage,
+  // exposed for tests
+  cookieHeader,
+  looksLikeQuota,
+  isUnauthenticated,
+};
